@@ -42,7 +42,9 @@ describe("/projects/:projectId/runs", () => {
 
     const list = await screen.findByTestId("runs-list");
     const row = await within(list).findByTestId(`run-row-${WIRE_RUN_ID}`);
-    // The row names the pipeline by its library slug — the wire carries no title.
+    // The row names the pipeline by its library slug: this row carries no
+    // `title` (a pre-ADR-0064 server or an unnamed run), so the fallback is
+    // drawn — never an invented subject line.
     expect(row.textContent).toContain("feature-development");
     expect(within(row).getByTestId("run-status").textContent).toContain("running");
     // The row carries the pinned digest, not an invented revision number.
@@ -51,6 +53,24 @@ describe("/projects/:projectId/runs", () => {
 
     // A child run belongs to its parent's tree, never to this list.
     expect(within(list).queryByTestId(`run-row-${childRun.id}`)).toBeNull();
+  });
+
+  it("prints the run's own title and repository when the server serves them (ADR-0064)", async () => {
+    const titled = {
+      ...wireRun,
+      title: "Add saved cards to checkout",
+      repository_id: "01987b11-0000-0000-8000-0000000000fe",
+      repository_name: "widgets-core",
+    };
+    mountRuns({ runs: [titled] });
+
+    const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
+    expect(row.textContent).toContain("Add saved cards to checkout");
+    // The repository joins the mono line; the digest and the clock stay.
+    expect(row.textContent).toContain("widgets-core");
+    expect(row.textContent).toContain("3f2f3f2f3f2f");
+    // The titled row does not also print the slug headline — one name per row.
+    expect(row.textContent).not.toContain("feature-development");
   });
 
   it("opens on a lens with rows, and an empty lens still says which one is empty", async () => {

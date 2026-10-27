@@ -76,6 +76,13 @@ type cnvFakeStore struct {
 	// unchanged.
 	lastListOrigin string
 	lastListQuery  string
+	// listRepositoryID/listRepositoryName/listLastLine are the ADR-0065
+	// fields a test stamps onto the fake's one list row; the handler test
+	// then reads them back off the wire. Unset = the thread is unbound
+	// and/or the agent is silent, which the route must answer as nulls.
+	listRepositoryID   *string
+	listRepositoryName *string
+	listLastLine       *string
 	// usage is the scripted answer for GET /api/v1/agent-profiles/{id}/usage;
 	// usageErr answers ErrProfileNotFound (the invisible-subject arm) when set.
 	usage      AgentProfileUsage
@@ -322,6 +329,8 @@ func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectI
 		Title: f.chat.Title, Status: f.chat.Status, CreatedBy: f.chat.CreatedBy,
 		CreatedAt: f.chat.CreatedAt, UpdatedAt: f.chat.UpdatedAt,
 		Control: f.chat.Control, Origin: f.chat.Origin, RunLink: f.chat.RunLink,
+		RepositoryID: f.listRepositoryID, RepositoryName: f.listRepositoryName,
+		LastAgentLine: f.listLastLine,
 	}}, nil
 }
 
@@ -682,6 +691,75 @@ func TestListConversationsOriginAndQuery(t *testing.T) {
 		if rec.Code != http.StatusOK || store.lastListOrigin != "" || store.lastListQuery != "" {
 			t.Fatalf("GET list = %d (origin=%q query=%q), want a plain list", rec.Code,
 				store.lastListOrigin, store.lastListQuery)
+		}
+	})
+}
+
+// TestConversationSummaryADR0065Fields pins the wire of the three fields
+// ADR-0065 adds to ConversationSummary: a repo-bound, speaking thread
+// answers repository_id/repository_name/last_agent_line, and an unbound or
+// silent thread answers the same keys as nulls — never omitted, never an
+// empty string standing in for "not served".
+func TestConversationSummaryADR0065Fields(t *testing.T) {
+	listTarget := "http://localhost:8080/api/v1/projects/" + cnvTProject + "/conversations"
+
+	t.Run("served values ride the list row", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		repoID := "01987a70-1111-7000-8000-abcdef012345"
+		repoName := "acme-api"
+		line := "I pushed the fix."
+		store.listRepositoryID, store.listRepositoryName, store.listLastLine = &repoID, &repoName, &line
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET list = %d (%s), want 200", rec.Code, rec.Body)
+		}
+		var out struct {
+			Items []ConversationSummaryView `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body)
+		}
+		if len(out.Items) != 1 {
+			t.Fatalf("items = %s, want one row", rec.Body)
+		}
+		v := out.Items[0]
+		if v.RepositoryID == nil || *v.RepositoryID != repoID {
+			t.Errorf("repository_id = %v, want %q", v.RepositoryID, repoID)
+		}
+		if v.RepositoryName == nil || *v.RepositoryName != repoName {
+			t.Errorf("repository_name = %v, want %q", v.RepositoryName, repoName)
+		}
+		if v.LastAgentLine == nil || *v.LastAgentLine != line {
+			t.Errorf("last_agent_line = %v, want %q", v.LastAgentLine, line)
+		}
+	})
+
+	t.Run("unbound and silent answer nulls, not omissions", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET list = %d (%s), want 200", rec.Code, rec.Body)
+		}
+		var out struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body)
+		}
+		if len(out.Items) != 1 {
+			t.Fatalf("items = %s, want one row", rec.Body)
+		}
+		for _, key := range []string{"repository_id", "repository_name", "last_agent_line"} {
+			raw, ok := out.Items[0][key]
+			if !ok {
+				t.Errorf("%s is missing from the row: %s", key, rec.Body)
+				continue
+			}
+			if string(raw) != "null" {
+				t.Errorf("%s = %s, want null", key, raw)
+			}
 		}
 	})
 }

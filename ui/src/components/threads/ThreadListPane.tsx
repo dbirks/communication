@@ -3,20 +3,17 @@
  * of the open thread at `/threads/:id`, so moving between threads never
  * leaves the page.
  *
- * Data honesty (AGENTS.md): every row is a `ConversationSummary` from an
+ * Data (AGENTS.md): every row is a `ConversationSummary` from an
  * endpoint the app already calls — `GET /api/v1/conversations` (ADR-0047,
  * keyset page, newest first) across projects, or `GET
  * /projects/{id}/conversations` when the pane is filtered to one project.
  * The rows name ids only, so the project and profile *names* come from the
- * two directories this reads. Two things the design shows and the API does
- * not serve, and this never fakes:
- * - the repo inside the mono line (`project / repo · agent`) —
- *   `ConversationSummary` carries no repository, so the line is `project ·
- *   agent`; the list endpoint would need the conversation's workspace repo
- *   name to close the gap;
- * - the last agent line under a live row — the summary carries no transcript
- *   text, so nothing is rendered for it; `GET /api/v1/conversations` would
- *   need a `last_agent_line` field.
+ * two directories this reads. The design's `project / repo · agent` mono
+ * line and the last agent line under a row are served data, not guesses:
+ * ADR-0065 put `repository_name` and `last_agent_line` on
+ * `ConversationSummary`. Both are null when the thread has no repository
+ * binding or the agent has not spoken (and absent from an older server), so
+ * those rows honestly fall back to `project · agent` with no last line.
  *
  * Search and the chips filter the loaded page client-side (the cross-project
  * endpoint accepts no `q`/`origin` parameter — the project-scoped one does,
@@ -187,9 +184,11 @@ function ThreadGroup({
   );
 }
 
-/** One row: glyph · title · age, then the mono `project · agent` line, then
- *  (never faked) whatever the wire says about the status word. Selection is
- *  the raised treatment: ink edge, hard shadow, accent wash. */
+/** One row: glyph · title · age, then the mono `project / repo · agent` line
+ *  (ADR-0065's `repository_name`; no binding → the project alone, as before),
+ *  then the last line the agent wrote whenever the wire serves one — never
+ *  faked. Selection is the raised treatment: ink edge, hard shadow, accent
+ *  wash. */
 function ThreadItem({
   conversation,
   selected,
@@ -204,6 +203,7 @@ function ThreadItem({
   const state: StateName = stateOf(CONVERSATION_STATE[conversation.status]);
   const spec = STATES[state];
   const word = ROW_STATUS_WORDS[conversation.status];
+  const repo = conversation.repository_name ?? null;
   return (
     <li>
       <Link
@@ -228,9 +228,17 @@ function ThreadItem({
           </span>
         </span>
         <span className="block truncate pl-[17px] font-mono text-[10.5px] text-muted">
-          {projectName} · {profileName}
+          {repo ? `${projectName} / ${repo}` : projectName} · {profileName}
           {word ? ` · ${word}` : ""}
         </span>
+        {conversation.last_agent_line ? (
+          <span
+            className="block truncate pl-[17px] text-[12px] text-muted"
+            data-testid={`thread-last-line-${conversation.id}`}
+          >
+            {conversation.last_agent_line}
+          </span>
+        ) : null}
       </Link>
     </li>
   );

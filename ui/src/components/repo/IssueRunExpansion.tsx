@@ -18,10 +18,13 @@
  *   `422` lands inline), because pretending the click would work is worse
  *   than letting the server answer.
  *
- * Known gap (listed in the build report): a hand-started run records
- * `trigger.kind = manual` with no ref — the API has no way to attach the
- * issue to a manual start, so the run does NOT link back to the issue yet.
- * Only trigger-fired issue runs carry `trigger.ref = owner/repo#n`.
+ * - since ADR-0064 the submission names its issue: the body carries
+ *   `issue: { number }` (the server records the trigger-fired run's own
+ *   `{kind: issue, ref: owner/repo#n}` pair, so the collapsed issue row can
+ *   show "run in progress" for a hand start too — and `422`s honestly if the
+ *   selected workflow is not a repo-scoped pin on a GitHub remote) and the
+ *   `title` is the issue's own title, so the run banner reads like the
+ *   design's "Add saved cards to checkout", never an invented paraphrase.
  *
  * Submission carries one idempotency key per expansion (ADR-0023 § 12): a
  * double click or a retry re-answers with the same run.
@@ -133,6 +136,10 @@ export function IssueRunExpansion({
           assignment_id: active.id,
           inputs: wireInputsOf(fields, values),
           idempotency: idempotencyKey.current,
+          // ADR-0064: the run is titled by the issue it starts from and
+          // records the issue trigger pair, exactly as a trigger fire does.
+          title: issue.title.slice(0, 200),
+          issue: { number: issue.number },
         },
         idempotencyKey: idempotencyKey.current,
       },

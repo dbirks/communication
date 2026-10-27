@@ -103,6 +103,20 @@ describe("RunningNow", () => {
     expect(screen.getByTestId("home-open-board").getAttribute("href")).toBe("/board");
   });
 
+  it("puts the run's own title first when the API serves one (ADR-0064)", () => {
+    const { wrapper } = harness([]);
+    const titled: CrossProjectRunSummary = {
+      ...runFixture,
+      id: "01987a9a-4444-7000-8000-00000000d001",
+      title: "Add saved cards to checkout",
+    };
+    render(<RunningNow runs={[titled, runFixture]} />, { wrapper });
+    expect(screen.getByText("Add saved cards to checkout")).toBeTruthy();
+    // The unnamed run keeps the workflow-display-name fallback — the title
+    // never bleeds across rows and nothing is invented for it.
+    expect(screen.getByText("Feature Delivery")).toBeTruthy();
+  });
+
   it("spells the waiting count in the bar's label before the running one", () => {
     const { wrapper } = harness([]);
     const gated: CrossProjectRunSummary = {

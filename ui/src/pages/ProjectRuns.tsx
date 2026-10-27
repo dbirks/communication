@@ -4,12 +4,14 @@
  * 3d). The left column is the list; the run page reuses the very same column
  * so the list never disappears when a run opens.
  *
- * Honesty rules this page obeys: the wire carries no run *name* and no node
- * tallies, so a row shows the pipeline slug from the library (never an
- * invented title), the pinned revision digest the server reports, and the
- * elapsed wall clock it can derive from `started_at`/`finished_at`. "New run"
- * opens `NewRunForm`, whose fields are read off the pinned revision's
- * `spec.inputs` — the page never invents an input shape of its own.
+ * Honesty rules this page obeys: since ADR-0064 the wire carries each run's
+ * own `title` and repository, so a row shows them when the run has them and
+ * the pipeline slug from the library plus `#short-id` when it does not — never
+ * an invented title. The row also shows the pinned revision digest the server
+ * reports and the elapsed wall clock it can derive from
+ * `started_at`/`finished_at`. "New run" opens `NewRunForm`, whose fields are
+ * read off the pinned revision's `spec.inputs` — the page never invents an
+ * input shape of its own.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
@@ -210,12 +212,15 @@ function RunRow({
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-[6px]">
           <span className="truncate text-[13px] font-semibold">
-            #{shortId(run.id)} {slug}
+            {run.title ?? `#${shortId(run.id)} ${slug}`}
           </span>
           <RunStatusChip status={run.status} />
         </span>
         <span className="block truncate font-mono text-[10.5px] text-muted">
-          {shortDigest(run.revision_digest)} · {elapsed(run)}
+          {/* ADR-0064: the run's own repository when the server names one;
+              the digest and the clock are unchanged. */}
+          {shortDigest(run.revision_digest)}
+          {run.repository_name ? ` · ${run.repository_name}` : ""} · {elapsed(run)}
           {run.failed_cause ? ` · ${run.failed_cause}` : ""}
           {run.parent_run_id ? " · child" : ""}
         </span>

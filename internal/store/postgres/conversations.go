@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -276,6 +277,40 @@ type CnvSummary struct {
 	// whether it is manual or run-linked without the detail route's joins.
 	Origin  string
 	RunLink *CnvRunLink
+	// RepositoryID/RepositoryName (ADR-0065): the thread's repository — the
+	// first repository bound to its newest live-or-released workspace. Both
+	// empty when the thread has no binding.
+	RepositoryID   string
+	RepositoryName string
+	// LastAgentLine (ADR-0065): the newest agent message chunk rendered to a
+	// single preview line (cnvLastAgentLine); empty when the agent has not
+	// spoken.
+	LastAgentLine string
+}
+
+// cnvLastAgentLineMax is the wire cap on a list row's last-line preview, in
+// runes, ellipsis included (api/openapi.yaml ConversationSummary.last_agent_line
+// maxLength: 160; ADR-0065).
+const cnvLastAgentLineMax = 160
+
+// cnvLastAgentLine renders one agent transcript chunk as the list row's
+// preview: the first non-empty line, trimmed, cut to cnvLastAgentLineMax runes
+// with a trailing ellipsis when longer. "" (rendered as JSON null by
+// apiNullString) means no line: no chunk at all, or only whitespace.
+func cnvLastAgentLine(chunk string) string {
+	for _, raw := range strings.Split(chunk, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		// Rune-safe cut; the ellipsis counts toward the cap, so a truncated
+		// preview is exactly cnvLastAgentLineMax runes.
+		if utf8.RuneCountInString(line) > cnvLastAgentLineMax {
+			return string([]rune(line)[:cnvLastAgentLineMax-1]) + "…"
+		}
+		return line
+	}
+	return ""
 }
 
 // CnvStore is the conversation face of the store. Like ProjectStore it is
@@ -715,6 +750,55 @@ const cnvRunLinkSubquery = `
 		    LIMIT 1
 		) la ON true`
 
+// cnvRepoSubquery selects the thread's repository for the list row
+// (ADR-0065): the first repository (checkout-path order, the stable one)
+// bound to the conversation's NEWEST workspace row. Every state except
+// `lost` counts, exactly as in the run-from-thread head pinning
+// (m4api_runs_write.go): a released workspace keeps its binding by design
+// (ADR-0017 D1), a lost one's volume is gone. The lateral rides
+// workspaces_conversation_idx (migration 00021), so one list
+// row pays one index seek, never a scan of the table (ADR-0063).
+const cnvRepoSubquery = `
+		LEFT JOIN LATERAL (
+		    SELECT r.id::text AS repository_id, r.name AS repository_name
+		    FROM workspaces w
+		    JOIN workspace_repos wr ON wr.workspace_id = w.id
+		    JOIN repositories r ON r.id = wr.repository_id
+		    WHERE w.conversation_id = c.id
+		      AND w.scope_kind = 'conversation'
+		      AND w.state IN ('preparing','ready','quarantined','released')
+		    ORDER BY w.created_at DESC, w.id DESC, wr.checkout_path
+		    LIMIT 1
+		) repo ON true`
+
+// cnvLastAgentSubquery selects the newest agent-message chunk of the
+// conversation's transcript (ADR-0065): the last `conversation.message.agent`
+// journal row by global_seq, the order the transcript itself renders in. The
+// chunk is bounded by the worker's MaxChunkBytes at write time; the preview
+// line is cut further by cnvLastAgentLine. The lateral rides the partial
+// index domain_events_conversation_agent_message_idx (migration 00021):
+// a conversation whose agent never spoke is one empty index seek, not a
+// backward walk over its whole event stream (ADR-0063).
+const cnvLastAgentSubquery = `
+		LEFT JOIN LATERAL (
+		    SELECT e.payload ->> 'text' AS text
+		    FROM domain_events e
+		    WHERE e.conversation_id = c.id
+		      AND e.type = 'conversation.message.agent'
+		    ORDER BY e.global_seq DESC
+		    LIMIT 1
+		) lastmsg ON true`
+
+// cnvListSummaryExtraColumns are the SELECT arms the two list READS (project
+// and cross-project) share for the ADR-0065 fields, and cnvListSummaryExtraJoins
+// the LATERALs that feed them. COALESCE + value scan, the same sentinel
+// convention as the run-link columns: '' means the lateral matched nothing.
+const cnvListSummaryExtraColumns = `,
+		       COALESCE(repo.repository_id, ''), COALESCE(repo.repository_name, ''),
+		       COALESCE(lastmsg.text, '')`
+
+const cnvListSummaryExtraJoins = cnvRunLinkSubquery + cnvRepoSubquery + cnvLastAgentSubquery
+
 // cnvListFilters renders the optional list filters. Both are ” = off, so a
 // plain list costs one equality-free clause; the q pattern escapes the three
 // characters that would otherwise widen it (%, _, and the escape character
@@ -756,12 +840,13 @@ func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID, o
 		       ),
 		       COALESCE(la.run_id::text, ''), COALESCE(la.node_execution_id::text, ''),
 		       COALESCE(la.node_instance_key, ''), COALESCE(la.node_id, ''),
-		       COALESCE(la.attempt_id::text, ''), COALESCE(la.attempt_number, 0)
+		       COALESCE(la.attempt_id::text, ''), COALESCE(la.attempt_number, 0)`+
+		cnvListSummaryExtraColumns+`
 		FROM conversations c
 		JOIN conversation_control ctl ON ctl.conversation_id = c.id
 		LEFT JOIN users cb ON cb.id = c.created_by
 		LEFT JOIN users ctr ON ctr.id = ctl.controller_user_id`+
-		cnvRunLinkSubquery+`
+		cnvListSummaryExtraJoins+`
 		WHERE c.project_id = $1::uuid`+cnvListFilters()+`
 		ORDER BY c.created_at DESC, c.id DESC
 		LIMIT 100`, projectID, origin, query)
@@ -780,15 +865,18 @@ func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID, o
 		var (
 			laRunID, laNodeExec, laNodeKey, laNodeID, laAttemptID string
 			laAttemptNumber                                       int
+			lastAgentChunk                                        string
 		)
 		if err := rows.Scan(&cv.ID, &cv.ProjectID, &cv.AgentProfileID, &cv.Title, &cv.Status,
 			&cv.CreatedBy, &cv.CreatedByDisplay, &cv.CreatedAt, &cv.UpdatedAt,
 			&cv.Control.Kind, &cv.Control.UserID, &cv.Control.DisplayName,
 			&cv.Control.PreviousUserID, &cv.Control.Version,
 			&cv.HasActiveTurn, &cv.AgentConnected,
-			&laRunID, &laNodeExec, &laNodeKey, &laNodeID, &laAttemptID, &laAttemptNumber); err != nil {
+			&laRunID, &laNodeExec, &laNodeKey, &laNodeID, &laAttemptID, &laAttemptNumber,
+			&cv.RepositoryID, &cv.RepositoryName, &lastAgentChunk); err != nil {
 			return nil, fmt.Errorf("postgres: scan conversation: %w", err)
 		}
+		cv.LastAgentLine = cnvLastAgentLine(lastAgentChunk)
 		cv.Control.ConversationID = cv.ID
 		cv.CreatedAt = cv.CreatedAt.UTC()
 		cv.UpdatedAt = cv.UpdatedAt.UTC()
@@ -1990,24 +2078,35 @@ func (a APIConversationStore) ListConversations(ctx context.Context, c api.Calle
 	}
 	out := make([]api.ConversationSummaryView, 0, len(chats))
 	for _, cv := range chats {
-		out = append(out, api.ConversationSummaryView{
-			ID:               cv.ID,
-			ProjectID:        cv.ProjectID,
-			AgentProfileID:   cv.AgentProfileID,
-			Title:            cv.Title,
-			Status:           cv.Status,
-			CreatedBy:        cv.CreatedBy,
-			CreatedByDisplay: apiNullString(cv.CreatedByDisplay),
-			CreatedAt:        cv.CreatedAt,
-			UpdatedAt:        cv.UpdatedAt,
-			Control:          cnvAPIControl(cv.Control),
-			HasActiveTurn:    cv.HasActiveTurn,
-			AgentConnected:   cv.AgentConnected,
-			Origin:           cv.Origin,
-			RunLink:          cnvAPIRunLink(cv.RunLink),
-		})
+		out = append(out, cnvAPISummary(cv))
 	}
 	return out, nil
+}
+
+// cnvAPISummary maps one list row onto the ConversationSummary schema. Both
+// list READS (this project-scoped one and ADR-0047's cross-project one)
+// answer the same schema, so they map through this one function — the ADR-0065
+// members are null exactly when the row carries nothing.
+func cnvAPISummary(cv CnvSummary) api.ConversationSummaryView {
+	return api.ConversationSummaryView{
+		ID:               cv.ID,
+		ProjectID:        cv.ProjectID,
+		AgentProfileID:   cv.AgentProfileID,
+		Title:            cv.Title,
+		Status:           cv.Status,
+		CreatedBy:        cv.CreatedBy,
+		CreatedByDisplay: apiNullString(cv.CreatedByDisplay),
+		CreatedAt:        cv.CreatedAt,
+		UpdatedAt:        cv.UpdatedAt,
+		Control:          cnvAPIControl(cv.Control),
+		HasActiveTurn:    cv.HasActiveTurn,
+		AgentConnected:   cv.AgentConnected,
+		Origin:           cv.Origin,
+		RunLink:          cnvAPIRunLink(cv.RunLink),
+		RepositoryID:     apiNullString(cv.RepositoryID),
+		RepositoryName:   apiNullString(cv.RepositoryName),
+		LastAgentLine:    apiNullString(cv.LastAgentLine),
+	}
 }
 
 // CreateConversation implements api.ConversationStore.

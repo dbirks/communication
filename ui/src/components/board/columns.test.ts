@@ -151,11 +151,14 @@ describe("identity and age", () => {
     expect(shortId("b810aaaa-bbbb-cccc-dddd-eeeeeeee0000")).toBe("b810");
   });
 
-  it("the title falls back to the workflow's display name (no run title exists yet)", () => {
+  it("serves the run's own title and falls back to the workflow's display name (ADR-0064)", () => {
+    // A run nobody named (or a server predating runs.title) keeps the honest
+    // workflow name; a titled run shows its own banner, never a paraphrase.
     expect(runTitle(run())).toBe("Feature delivery");
-    expect(
-      runTitle({ ...run(), title: "Export invoices as CSV" } as unknown as CrossProjectRun),
-    ).toBe("Export invoices as CSV");
+    expect(runTitle({ ...run(), title: null })).toBe("Feature delivery");
+    // A blank title is no title — the fallback survives a sloppy server.
+    expect(runTitle({ ...run(), title: "  " })).toBe("Feature delivery");
+    expect(runTitle({ ...run(), title: "Export invoices as CSV" })).toBe("Export invoices as CSV");
   });
 
   it("ages read 1m / 2h / 3d", () => {

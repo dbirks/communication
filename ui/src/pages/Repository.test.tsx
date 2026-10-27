@@ -520,12 +520,77 @@ describe("/p/:projectId/:repo", () => {
     const body = JSON.parse(post.body ?? "{}") as {
       assignment_id: string;
       inputs: Record<string, unknown>;
+      title?: string;
+      issue?: { number: number };
     };
     expect(body.assignment_id).toBe(repoAssignment.id);
     expect(String(body.inputs.goal)).toContain("#512 The build is red");
     expect(String(body.inputs.goal)).toContain("CI is failing on main.");
+    // ADR-0064: the submission names its issue (the server then records the
+    // fire's own {kind: issue, ref: example/communication#512} pair, so the
+    // collapsed row shows "run in progress") and titles the run with the
+    // issue's own title — never a paraphrase.
+    expect(body.issue).toEqual({ number: 512 });
+    expect(body.title).toBe("The build is red");
     // One idempotency key per expansion (ADR-0023 § 12).
     expect(post.headers.get("idempotency-key")).toMatch(/^issuerrun-/);
+  });
+
+  it("claims a run for the repository through its own repository_id (ADR-0064) and prints its title", async () => {
+    // A run the server attributes by itself: repository_id set, assignment
+    // NOT among this repository's workflows. The row must show here without
+    // the honest "project's runs" note, and the title outranks the workflow
+    // name in the row text.
+    const ownRun: RunSummary = {
+      ...run,
+      id: "01987b15-6f9f-7c8d-8d64-7b8c9d0e1f2a",
+      assignment_id: null,
+      repository_id: repositoryId,
+      repository_name: repository.name,
+      title: "Add saved cards to checkout",
+    };
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: routes([
+        { path: `/api/v1/projects/${projectFixture.id}/runs`, body: { runs: [ownRun] } },
+      ]),
+    });
+
+    const row = await screen.findByTestId(`repo-run-${ownRun.id.replace(/-/g, "").slice(0, 13)}`);
+    expect(row.textContent).toContain("Add saved cards to checkout");
+    expect(screen.queryByTestId("repo-runs-project-note")).toBeNull();
+  });
+
+  it("keeps the workflow-name fallback for a run the server never titled", async () => {
+    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
+    const row = await screen.findByTestId(`repo-run-${run.id.replace(/-/g, "").slice(0, 13)}`);
+    // The `run` fixture carries no title (a pre-ADR-0064 row): the workflow
+    // name from the pipeline read is the honest answer, nothing invented.
+    expect(row.textContent).toContain("Feature development");
+    expect(row.textContent).not.toContain("Add saved cards");
+  });
+
+  it("shows run in progress for a HAND-started issue run — the ADR-0064 trigger pair", async () => {
+    // Exactly the fire's proof ({kind: issue, ref}) the collapsed row already
+    // reads; what changed is the server: `RunCreate.issue` records it for a
+    // start made from this row too.
+    const handRun: RunSummary = {
+      ...run,
+      id: "01987b16-7faf-7d9e-9e75-8c9d0e1f2a3b",
+      status: "running",
+      title: "The build is red",
+      trigger: { kind: "issue", ref: "example/communication#512" },
+    };
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: routes([
+        { path: `/api/v1/projects/${projectFixture.id}/runs`, body: { runs: [handRun, run] } },
+      ]),
+    });
+
+    const link = await screen.findByTestId(`repo-issue-active-run-${issue.number}`);
+    expect(link.getAttribute("href")).toBe(`/runs/${handRun.id}`);
+    expect(screen.queryByTestId(`repo-issue-run-${issue.number}`)).toBeNull();
   });
 
   it("cancels the inline expansion back to the row", async () => {

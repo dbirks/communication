@@ -3225,6 +3225,15 @@ export interface components {
       origin: "manual" | "run";
       /** @description The run node that opened this conversation — the newest attempt that references it — or null when `origin` is `manual`. */
       run_link: components["schemas"]["ConversationRunLink"] | null;
+      /**
+       * Format: uuid
+       * @description ADR-0065: the repository this thread works in — the first repository bound to the conversation's newest workspace (every state except `lost`), so a released thread keeps its repository. Null when the thread has no workspace binding; both repository members are null or non-null together.
+       */
+      repository_id?: string | null;
+      /** @description The name of `repository_id`, from the `repositories` row, so a list row renders `repo · agent` without a second read. Null exactly when `repository_id` is null (ADR-0065). */
+      repository_name?: string | null;
+      /** @description ADR-0065: the newest `conversation.message.agent` journal row's text — first non-empty line, trimmed, at most 160 characters (an ellipsis marks a cut). Null when the agent has not spoken in this thread. Derived from the journal at read time; nothing is stored twice. */
+      last_agent_line?: string | null;
     };
     /** ConversationSummaryList */
     ConversationSummaryList: {
@@ -4536,7 +4545,7 @@ export interface components {
       | "interrupted";
     /**
      * RunSummary
-     * @description A row of the project run list. The digests are on the list row on purpose: "which revision is this run actually executing?" is a first-glance question, and the answer is pinned, immutable data.
+     * @description A row of the project run list. The digests are on the list row on purpose: "which revision is this run actually executing?" is a first-glance question, and the answer is pinned, immutable data. The title and repository (ADR-0064, atop ADR-0060) are the run's human banner and the repository it works on — recorded at creation, never re-resolved, and null exactly when the run was never named or never worked on a named repository (the reader falls back to the workflow name, not to an invention).
      */
     RunSummary: {
       /** Format: uuid */
@@ -4552,6 +4561,15 @@ export interface components {
        * @description Null for a direct `pipeline_revision_id` start.
        */
       assignment_id?: string | null;
+      /** @description ADR-0064: the human banner the run was created with — the GitHub issue title an issue start carried (trigger-fired or hand-started with `issue`), the thread's own title for a handoff start (`source`), or the creator's `RunCreate.title`. Null means the run was never named; nothing backfills a guess, and a derived title longer than the bound is stored truncated to 200 characters. */
+      title?: string | null;
+      /**
+       * Format: uuid
+       * @description ADR-0060: the repository this run works on (the repo-scoped assignment's, the issue trigger's, an explicit body member, or a resolved `inputs.repository`); null means the run named none — a project-wide intent.
+       */
+      repository_id?: string | null;
+      /** @description Read-only display name of `repository_id`; null together with a null `repository_id`. */
+      repository_name?: string | null;
       /** @description Serialized verbatim as the run stored it. */
       revision_digest: string;
       plan_digest: string;
@@ -4732,6 +4750,12 @@ export interface components {
       /** @description Same semantics as the `Idempotency-Key` header (which wins when both are present); the mapping is stored per project for 24 h. */
       idempotency?: string;
       source?: components["schemas"]["RunSource"];
+      /** @description ADR-0064: the human banner for the run (1..200 characters; empty or over-long is `422`). Ignored by a thread start, which takes the thread's own title; the default banner of an `issue` start with no `title` is the issue's own title when the server can read it, else null. */
+      title?: string;
+      /** @description ADR-0064: "this run starts from this GitHub issue". Only legal with `assignment_id` on a repo-scoped assignment whose repository is a GitHub remote — otherwise `422` (`issue_requires_repo_assignment` / `issue_requires_github_repository`). The run then records the same trigger fact an issue-trigger fire records: `{kind: issue, ref: "owner/repo#<number>"}` (no `trigger_id` — no trigger row fired), and its repository is the assignment's. */
+      issue?: {
+        number: number;
+      };
     };
     /**
      * RunCreateResponse

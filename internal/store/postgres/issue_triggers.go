@@ -928,6 +928,10 @@ func (s *IssueTriggerStore) fireIssue(ctx context.Context, tx pgx.Tx, it IssueTr
 		TriggeredBy:        "", // NULL: a system start, exactly as 00005 models it
 		TriggerKind:        "issue",
 		TriggerRef:         repo.String() + "#" + fmt.Sprint(issue.Number),
+		// ADR-0064: the issue's own title is the run's banner — the trigger
+		// already fetched it to render the inputs; the store clamps it to the
+		// column bound rather than losing the run over a 259-character title.
+		Title: issue.Title,
 		// ADR-0062: the issue_triggers row this fire came from — the author
 		// whose name its agent turns carry is this row's created_by.
 		TriggerID:    it.ID,

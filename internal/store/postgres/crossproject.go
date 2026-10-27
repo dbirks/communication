@@ -59,6 +59,7 @@ const xpRunSelect = `
 	       r.depth, COALESCE(r.parent_run_id::text, ''),
 	       COALESCE(r.triggered_by::text, ''), r.priority,
 	       COALESCE(r.trigger_kind, ''), COALESCE(r.trigger_ref, ''),
+	       COALESCE(r.repository_id::text, ''), COALESCE(r.title, ''),
 	       r.created_at, r.started_at, r.finished_at
 	FROM runs r
 	JOIN projects p ON p.id = r.project_id
@@ -140,9 +141,10 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 	defer rows.Close()
 
 	var (
-		views  []api.CrossProjectRunView
-		runIDs []string
-		plans  = map[string]Run{}
+		views   []api.CrossProjectRunView
+		runIDs  []string
+		plans   = map[string]Run{}
+		repoIDs = map[string]bool{}
 	)
 	for rows.Next() {
 		var (
@@ -155,9 +157,12 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 			&pipelineSlug, &pipelineName, &r.PipelineRevisionID, &r.RevisionDigest,
 			&r.PlanDigest, &r.PlanSnapshot, &r.AssignmentID, &r.Status, &r.FailedCause,
 			&r.Depth, &r.ParentRunID, &r.TriggeredBy, &r.Priority,
-			&r.TriggerKind, &r.TriggerRef,
+			&r.TriggerKind, &r.TriggerRef, &r.RepositoryID, &r.Title,
 			&r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
 			return nil, "", fmt.Errorf("postgres: scan visible run: %w", err)
+		}
+		if r.RepositoryID != "" {
+			repoIDs[r.RepositoryID] = true
 		}
 		view := api.CrossProjectRunView{
 			RunSummaryView: m4RunSummary(r, ""),
@@ -183,6 +188,22 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 		runIDs = runIDs[:limit]
 	}
 
+	// ADR-0064: the repository display names of the page, in ONE statement
+	// only when at least one row names a repository (the pre-ADR read costs
+	// nothing extra). Names are resolved before the steps projection mutates
+	// the views, so a dropped probe row never asks for its repository.
+	if len(views) > 0 && len(repoIDs) > 0 {
+		names, err := xpRepositoryNames(ctx, pool, repoIDs)
+		if err != nil {
+			return nil, "", err
+		}
+		for i := range views {
+			if id := plans[views[i].ID].RepositoryID; id != "" {
+				views[i].RepositoryName = m4RunReadPtr(names[id])
+			}
+		}
+	}
+
 	// The one per-page statement for the whole projection: every top-level
 	// node execution of every page row, in one ANY(). No N+1 — a 200-row
 	// page costs these two statements.
@@ -196,6 +217,32 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 		}
 	}
 	return views, next, nil
+}
+
+// xpRepositoryNames is the page's one repository-name statement: the display
+// names of the repositories the page's rows work on (ADR-0064). A repository
+// id with no row (deleted — runs carry no cascade) answers the empty string,
+// which projects to a null name, never a guessed one.
+func xpRepositoryNames(ctx context.Context, pool *pgxpool.Pool, ids map[string]bool) (map[string]string, error) {
+	slice := make([]string, 0, len(ids))
+	for id := range ids {
+		slice = append(slice, id)
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT id::text, name FROM repositories WHERE id = ANY($1::uuid[])`, slice)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: page repository names: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("postgres: scan page repository name: %w", err)
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
 }
 
 // xpRunSteps is the projection's one statement: every TOP-LEVEL node
@@ -356,8 +403,9 @@ func (a APICrossProjectStore) ListVisibleApprovals(ctx context.Context, c api.Ca
 
 // xpConversationSelect is the project list's SELECT (conversation,
 // profile name, controller, creator display name, the two EXISTS liveness
-// probes and the run-link LATERAL) with the visibility predicate swapped:
-// the project id comes from the JOIN, so the predicate is the family's.
+// probes, the run-link LATERAL and the ADR-0065 repository/last-line
+// LATERALS) with the visibility predicate swapped: the project id comes
+// from the JOIN, so the predicate is the family's.
 const xpConversationSelect = `
 	SELECT c.id::text, c.project_id::text, c.agent_profile_id::text, c.title, c.status,
 	       c.created_by::text, COALESCE(cb.display_name, ''), c.created_at, c.updated_at,
@@ -375,12 +423,13 @@ const xpConversationSelect = `
 	       ),
 	       COALESCE(la.run_id::text, ''), COALESCE(la.node_execution_id::text, ''),
 	       COALESCE(la.node_instance_key, ''), COALESCE(la.node_id, ''),
-	       COALESCE(la.attempt_id::text, ''), COALESCE(la.attempt_number, 0)
+	       COALESCE(la.attempt_id::text, ''), COALESCE(la.attempt_number, 0)` +
+	cnvListSummaryExtraColumns + `
 	FROM conversations c
 	JOIN projects p ON p.id = c.project_id
 	JOIN conversation_control ctl ON ctl.conversation_id = c.id
 	LEFT JOIN users cb ON cb.id = c.created_by
-	LEFT JOIN users ctr ON ctr.id = ctl.controller_user_id` + cnvRunLinkSubquery + `
+	LEFT JOIN users ctr ON ctr.id = ctl.controller_user_id` + cnvListSummaryExtraJoins + `
 	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
 	WHERE p.organization_id = $2::uuid
 	  AND ($3::boolean OR m.user_id IS NOT NULL)`
@@ -426,15 +475,18 @@ func (a APICrossProjectStore) ListVisibleConversations(ctx context.Context, c ap
 			cv                                                    CnvSummary
 			laRunID, laNodeExec, laNodeKey, laNodeID, laAttemptID string
 			laAttemptNumber                                       int
+			lastAgentChunk                                        string
 		)
 		if err := rows.Scan(&cv.ID, &cv.ProjectID, &cv.AgentProfileID, &cv.Title, &cv.Status,
 			&cv.CreatedBy, &cv.CreatedByDisplay, &cv.CreatedAt, &cv.UpdatedAt,
 			&cv.Control.Kind, &cv.Control.UserID, &cv.Control.DisplayName,
 			&cv.Control.PreviousUserID, &cv.Control.Version,
 			&cv.HasActiveTurn, &cv.AgentConnected,
-			&laRunID, &laNodeExec, &laNodeKey, &laNodeID, &laAttemptID, &laAttemptNumber); err != nil {
+			&laRunID, &laNodeExec, &laNodeKey, &laNodeID, &laAttemptID, &laAttemptNumber,
+			&cv.RepositoryID, &cv.RepositoryName, &lastAgentChunk); err != nil {
 			return nil, "", fmt.Errorf("postgres: scan visible conversation: %w", err)
 		}
+		cv.LastAgentLine = cnvLastAgentLine(lastAgentChunk)
 		cv.Control.ConversationID = cv.ID
 		cv.CreatedAt = cv.CreatedAt.UTC()
 		cv.UpdatedAt = cv.UpdatedAt.UTC()
@@ -451,23 +503,7 @@ func (a APICrossProjectStore) ListVisibleConversations(ctx context.Context, c ap
 		} else {
 			cv.Origin = "manual"
 		}
-		view := api.ConversationSummaryView{
-			ID:               cv.ID,
-			ProjectID:        cv.ProjectID,
-			AgentProfileID:   cv.AgentProfileID,
-			Title:            cv.Title,
-			Status:           cv.Status,
-			CreatedBy:        cv.CreatedBy,
-			CreatedByDisplay: apiNullString(cv.CreatedByDisplay),
-			CreatedAt:        cv.CreatedAt,
-			UpdatedAt:        cv.UpdatedAt,
-			Control:          cnvAPIControl(cv.Control),
-			HasActiveTurn:    cv.HasActiveTurn,
-			AgentConnected:   cv.AgentConnected,
-			Origin:           cv.Origin,
-			RunLink:          cnvAPIRunLink(cv.RunLink),
-		}
-		out = append(out, view)
+		out = append(out, cnvAPISummary(cv))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", fmt.Errorf("postgres: list visible conversations rows: %w", err)

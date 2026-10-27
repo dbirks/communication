@@ -212,13 +212,15 @@ export function shortId(id: string): string {
 }
 
 /**
- * The card's title line. `CrossProjectRunSummary` carries no run title today
- * (gap analysis Q2: it would be a run input), so the honest value is the
- * workflow's display name — never an invented sentence.
+ * The card's title line: the run's own `title` when the server carries one
+ * (ADR-0064 — the issue title an issue start or hand issue start carried,
+ * the thread's own title for a handoff, or the creator's words). For a run
+ * nobody named — or a server build predating the field — the honest value
+ * stays the workflow's display name: never an invented sentence.
  */
 export function runTitle(run: CrossProjectRun): string {
-  const title = (run as { title?: unknown }).title;
-  return typeof title === "string" && title.trim() !== "" ? title : run.pipeline_display_name;
+  const title = run.title?.trim() ?? "";
+  return title === "" ? run.pipeline_display_name : title;
 }
 
 /** "1m" / "2h" / "3d" — the card's age line, from `created_at`. */

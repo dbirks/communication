@@ -296,6 +296,15 @@ type ConversationSummaryView struct {
 	// say whether it is manual or run-linked without the detail route's joins.
 	Origin  string                   `json:"origin"`
 	RunLink *ConversationRunLinkView `json:"run_link"`
+	// RepositoryID/RepositoryName (ADR-0065): the thread's repository — the
+	// first repository bound to its newest live-or-released workspace. Both
+	// null when the thread has no binding.
+	RepositoryID   *string `json:"repository_id"`
+	RepositoryName *string `json:"repository_name"`
+	// LastAgentLine (ADR-0065): the newest agent transcript row rendered to
+	// one preview line (first non-empty line, trimmed, ≤ 160 chars with an
+	// ellipsis when cut); null when the agent has not spoken.
+	LastAgentLine *string `json:"last_agent_line"`
 }
 
 // --- the store interfaces handlers call ---------------------------------

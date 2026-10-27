@@ -948,7 +948,13 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		postgres.APIAssignmentStore{S: pipelineStore},
 		apiProjects,
 		postgres.APIRunEventStream{Journal: projectStore, Wakes: wakes},
-		m4Trigger)
+		m4Trigger,
+		// ADR-0064: a hand start that names an issue (`RunCreate.issue`)
+		// defaults its banner from GitHub — the ADR-0031 read-only adapter,
+		// credentialed through the same ADR-0061 secret store the issues
+		// route reads with. Best-effort by contract: every failure of this
+		// read leaves the title null and the run still starts.
+		api.WithGitHubIssueReader(github.New(), secretStore))
 	api.RegisterSchedules(handler,
 		postgres.APIScheduleStore{S: &postgres.ScheduleStore{Pool: d.Pool}},
 		apiProjects)

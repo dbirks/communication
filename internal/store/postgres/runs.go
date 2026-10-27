@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -113,6 +115,12 @@ type Run struct {
 	// is NULL (the run started against no named repository — a project-wide
 	// intent or a resolved inputs.repository).
 	RepositoryID string
+	// Title (ADR-0064) is the human banner the run was created with: the issue
+	// title an issue start carried, the thread's own title for a handoff start,
+	// or the caller's words. Empty string is NULL — a run created before the
+	// column exists, or one nobody named. It is pinned at creation and never
+	// re-resolved.
+	Title string
 	// AgentProfileVersion (ADR-0058) is the profile version this run was pinned
 	// to at creation — the version its source conversation carried when the run
 	// was started from a thread, or the creation default for a direct start. It
@@ -203,7 +211,7 @@ const runColumns = `id, organization_id, project_id, pipeline_id, pipeline_revis
 	COALESCE(worker_affinity::text, ''), worker_volume_id,
 	priority, expression_evaluations, created_at, started_at, finished_at,
 	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, ''), COALESCE(trigger_id::text, ''),
-	COALESCE(repository_id::text, ''), agent_profile_version`
+	COALESCE(repository_id::text, ''), agent_profile_version, COALESCE(title, '')`
 
 func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 	var (
@@ -219,7 +227,7 @@ func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 		&r.Status, &cause, &paused, &cancelled, &r.Depth,
 		&r.ParentRunID, &r.TriggeredBy, &r.WorkerAffinity, &volume,
 		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished,
-		&r.TriggerKind, &r.TriggerRef, &r.TriggerID, &r.RepositoryID, &r.AgentProfileVersion)
+		&r.TriggerKind, &r.TriggerRef, &r.TriggerID, &r.RepositoryID, &r.AgentProfileVersion, &r.Title)
 	if err != nil {
 		return Run{}, err
 	}
@@ -267,9 +275,14 @@ type NewRun struct {
 	// inherits it with the kind and ref.
 	TriggerID string
 	// RepositoryID (ADR-0060) is the repository this run works on; empty string
-	// is NULL (the run started against no named repository — a project-wide
-	// intent or a resolved inputs.repository).
+	// is NULL (a project-wide intent or a resolved inputs.repository).
 	RepositoryID string
+	// Title (ADR-0064) is the human banner recorded at creation; empty string
+	// is NULL. The store never guesses one and never stores a lie: a derived
+	// title longer than the 200-character column bound is truncated on the rune
+	// boundary by the create itself (a 259-character GitHub issue title must
+	// not jam the insert past the CHECK).
+	Title string
 	// Inputs are validated against spec.inputs by the caller; the store
 	// writes one run_inputs row per entry.
 	Inputs map[string]RunInput
@@ -286,6 +299,22 @@ type NewRun struct {
 	// Event, when non-nil, is appended in the create transaction with the
 	// run correlation columns (run.created, contract § 3 row 1).
 	Event *RunEvent
+}
+
+// maxRunTitleLen is runs.title's column bound (00020's CHECK, the same
+// width conversations.title carries). Derived titles longer than it are
+// truncated on the rune boundary, never refused.
+const maxRunTitleLen = 200
+
+// clampRunTitle bounds a derived title to the column width without cutting a
+// rune in half. An empty (or whitespace-only) title is the honest no-title
+// answer and stays empty.
+func clampRunTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= maxRunTitleLen {
+		return s
+	}
+	return string([]rune(s)[:maxRunTitleLen])
 }
 
 // RunInput is one declared pipeline input, already validated/coerced: the
@@ -347,18 +376,18 @@ func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run R
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 				source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 				policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-				trigger_kind, trigger_ref, trigger_id, repository_id, agent_profile_version)
+				trigger_kind, trigger_ref, trigger_id, repository_id, agent_profile_version, title)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($20, '')::uuid, NULLIF($18, '')::uuid, $19)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($20, '')::uuid, NULLIF($18, '')::uuid, $19, NULLIF($21, '')::text)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion, in.TriggerID)); err != nil {
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion, in.TriggerID, clampRunTitle(in.Title))); err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
 

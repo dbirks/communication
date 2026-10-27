@@ -3,10 +3,11 @@
  * the 320px cross-project list beside the open thread. Rows are
  * `ConversationSummary` rows from `GET /api/v1/conversations` (C3 / ADR-0047)
  * — the page names projects and profiles from the directories, groups rows
- * LIVE / EARLIER off the server's own flags, and never fakes the repo or the
- * agent's last line the design shows but the list endpoint does not serve.
- * Empty, error and populated states are each proven here; `/threads/:id`
- * selects its row in the pane.
+ * LIVE / EARLIER off the server's own flags, and draws the ADR-0065
+ * `repository_name` / `last_agent_line` only when the wire serves them (an
+ * older server, or an unbound/silent thread, falls back to `project · agent`
+ * with no last line). Empty, error and populated states are each proven here;
+ * `/threads/:id` selects its row in the pane.
  */
 import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -112,6 +113,42 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
 
     // At `/threads` no thread is open: the right column says so honestly.
     expect(await screen.findByTestId("threads-no-selection")).toBeTruthy();
+  });
+
+  it("draws ADR-0065's repository and last agent line when the wire serves them", async () => {
+    // A repo-bound row with an agent that has spoken: the design's
+    // `project / repo · agent` and the last line, both served fields.
+    const repoBound: ConversationSummary = {
+      ...liveManual,
+      id: "01987a93-bbbb-7000-8000-abcdefbbbbbb",
+      repository_id: "01987a93-1234-7000-8000-abcdef123456",
+      repository_name: "communication",
+      last_agent_line: "Pushed the fix; CI is green now.",
+    };
+    // A row whose fields are explicitly null: no binding, silent agent.
+    const unbound: ConversationSummary = {
+      ...liveManual,
+      id: "01987a93-cccc-7000-8000-abcdefcccccc",
+      repository_id: null,
+      repository_name: null,
+      last_agent_line: null,
+    };
+    renderApp({ path: "/threads", routes: routes([repoBound, unbound, liveManual]) });
+
+    const row = await screen.findByTestId(`thread-row-${repoBound.id}`);
+    expect(row.textContent).toContain(`${projectFixture.name} / communication`);
+    expect(row.textContent).toContain("Claude Code");
+    expect(screen.getByTestId(`thread-last-line-${repoBound.id}`).textContent).toContain(
+      "Pushed the fix; CI is green now.",
+    );
+
+    // Nulls and a missing field (an older server's row, `liveManual`) both
+    // fall back honestly: the project alone, and no last line.
+    const unboundRow = await screen.findByTestId(`thread-row-${unbound.id}`);
+    expect(unboundRow.textContent).toContain(`${projectFixture.name} · Claude Code`);
+    expect(unboundRow.textContent).not.toContain("communication");
+    expect(screen.queryByTestId(`thread-last-line-${unbound.id}`)).toBeNull();
+    expect(screen.queryByTestId(`thread-last-line-${liveManual.id}`)).toBeNull();
   });
 
   it("filters with the chips: mine by author, from runs by origin", async () => {

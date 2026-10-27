@@ -12,15 +12,15 @@
  * - the GitHub access line says what the repository row says: no credential is
  *   `public · no credential`, a credential is named by the secret's own slug
  *   (ADR-0061), and an id the project does not list says so;
- * - RECENT RUNS are attributed through the run's `assignment_id` → the
- *   assignment's repository. When the assignments read fails the section says
+ * - RECENT RUNS are attributed by the run's own `repository_id` (ADR-0064/
+ *   ADR-0060) when the server serves one, else through `assignment_id` → the
+ *   assignment's repository. When neither read answers the section says
  *   plainly that it is showing the project's runs instead of this repo's;
- * - an issue "already has a run" only when a run carries `trigger.kind =
+ * - an issue "already has a run" when a run carries `trigger.kind =
  *   issue` and `trigger.ref = owner/repo#<number>` — the ref an issue-trigger
- *   start really records. A hand-started run records `manual` with no ref, so
- *   the inline start cannot mark its own issue (gap: `POST /runs` has no way
- *   to attach an issue to a manual start; the run also links back only via
- *   the inputs it was filled from);
+ *   start records and, since ADR-0064, the ref a hand start from this very
+ *   row records too (`RunCreate.issue`); a manual or thread start carries
+ *   neither and is never counted;
  * - the issue list is GitHub's, read anonymously; a refused or spent read
  *   renders the upstream's own answer, never an invented list.
  */
@@ -272,6 +272,7 @@ export default function Repository() {
           <RepoWork repository={repositoryData} projectId={id} />
           <RepoRuns
             projectId={id}
+            repository={repositoryData}
             names={names}
             runs={runs}
             assignments={assignments}
@@ -293,8 +294,11 @@ export default function Repository() {
 /** Issue number → the newest run that was started FROM that issue and has not
  * finished. The proof is the ADR-0056 pair the runs list really carries:
  * `trigger.kind = issue` plus `trigger.ref = owner/repo#<number>`, matched
- * against the `owner/repo` the issue list itself echoed. Nothing else counts:
- * a manual run — including one started from this very row — records no ref. */
+ * against the `owner/repo` the issue list itself echoed. Both hands that
+ * start an issue run record it: the trigger fire, and — since ADR-0064 — the
+ * inline start from this page (`RunCreate.issue`). A run that claims no
+ * issue (`manual`, `schedule`, `thread`) never counts, whatever else it ran
+ * with. */
 function activeIssueRuns(
   runsData: { runs: RunSummary[] } | undefined,
   issuesData: { repository: string } | undefined,
@@ -705,12 +709,14 @@ function useRunSummary(runId: string | null): { status: string; name: string | n
  * and shows the project's runs instead — never an unclaimed "this repo". */
 function RepoRuns({
   projectId,
+  repository,
   names,
   runs,
   assignments,
   usableAssignments,
 }: {
   projectId: string;
+  repository: Repository;
   names: ReadonlyMap<string, string>;
   runs: ReturnType<typeof useProjectRuns>;
   assignments: ReturnType<typeof useAssignments>;
@@ -726,12 +732,22 @@ function RepoRuns({
       .filter((run) => run.depth === 0)
       .slice()
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return (
-      attributable
-        ? all.filter((run) => run.assignment_id && assignmentIds.has(run.assignment_id))
-        : all
-    ).slice(0, 5);
-  }, [runs.data, attributable, assignmentIds]);
+    // ADR-0064: a run that names its own repository answers for itself, even
+    // on a server whose assignments read failed; the assignment attribution
+    // stays the fallback for rows the server never named (pre-ADR-0060 runs).
+    const named = all.filter((run) => run.repository_id === repository.id);
+    const rest = all.filter((run) => run.repository_id == null || run.repository_id === "");
+    const viaAssignment = attributable
+      ? rest.filter((run) => run.assignment_id && assignmentIds.has(run.assignment_id))
+      : // The assignments read failed: unnamed rows stay shown (with the
+        // note below), only repository-named ones are claimed for this repo.
+        rest;
+    return named
+      .concat(viaAssignment)
+      .slice()
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, 5);
+  }, [runs.data, attributable, assignmentIds, repository.id]);
 
   return (
     <Panel
@@ -783,8 +799,9 @@ function RepoRuns({
   );
 }
 
-/** One RECENT RUNS row (design 1e): state glyph, workflow name, age. The word
- * is there for screen readers (never color alone) without becoming a chip. */
+/** One RECENT RUNS row (design 1e): state glyph, the run's own title when the
+ * server carries one (ADR-0064) else the workflow name, age. The word is
+ * there for screen readers (never color alone) without becoming a chip. */
 function RunRow({ run, name }: { run: RunSummary; name: string | null }) {
   const state = RUN_STATE[run.status] ?? "queued";
   const spec = STATES[state];
@@ -802,7 +819,7 @@ function RunRow({ run, name }: { run: RunSummary; name: string | null }) {
         {SHORT_WORD[state]}
       </span>
       <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
-        {name ?? `run #${shortId(run.id)}`}
+        {run.title ?? name ?? `run #${shortId(run.id)}`}
       </span>
       <span className="shrink-0 font-mono text-[10.5px] text-faint">{elapsed(run)}</span>
     </Link>

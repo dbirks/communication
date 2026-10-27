@@ -4,11 +4,13 @@
  *
  * The row is the wire's own: glyph + word (`CONVERSATION_STATE`, never color
  * alone), the title, the age, and a mono line naming the agent profile — the
- * design's `storefront · Claude Code` also names a repository, and a
- * `ConversationSummary` has no repository field, so the repository appears only
- * when one of the project's workspaces says this thread checked it out
- * (`useProjectRepoIndex`). An agent profile id is never printed as a uuid: the
- * profile list is a separate read, so until it lands the line says so.
+ * design's `storefront · Claude Code` also names a repository, and
+ * `ConversationSummary` now serves one: ADR-0065's `repository_name` decides,
+ * and a null (an unbound thread, or an older server) falls back to what the
+ * project's workspaces say (`useProjectRepoIndex`). An agent profile id is
+ * never printed as a uuid: the profile list is a separate read, so until it
+ * lands the line says so. Under the title, a row shows `last_agent_line`
+ * whenever the wire serves one — never an invented line.
  */
 import { Link } from "react-router";
 import { useAgentProfiles, useConversations } from "../../api/queries";
@@ -31,7 +33,9 @@ export function byUpdatedDesc<T extends { updated_at: string }>(threads: T[]): T
 }
 
 /** The mono line: `repo · agent`, or `agent` alone, or `agent unread` — never a
- * uuid, and never a repository nobody reported for the thread. */
+ * uuid, and never a repository nobody reported for the thread. `repo` arrives
+ * from the served `repository_name` (ADR-0065) or, when that is null, from
+ * the project's workspace index — this line never guesses. */
 export function threadMeta(repo: string | null, profile: string | null): string {
   const parts: string[] = [];
   if (repo) parts.push(repo);
@@ -106,6 +110,10 @@ export function RecentThreads({
         <ul className="divide-y divide-line-soft" data-testid="project-threads">
           {rows.map((thread) => {
             const state = stateOf(CONVERSATION_STATE[thread.status]);
+            // ADR-0065: the served repository wins; a null (unbound thread,
+            // or a server predating the fields) falls back to what the live
+            // workspaces say, exactly as before.
+            const repo = thread.repository_name ?? repoSegment(repos.reposForThread(thread.id));
             return (
               <li key={thread.id}>
                 <Link
@@ -124,9 +132,17 @@ export function RecentThreads({
                     >
                       {thread.title}
                     </span>
+                    {thread.last_agent_line ? (
+                      <span
+                        className="block truncate text-[12.5px] text-muted"
+                        data-testid={`project-thread-last-line-${testidOf(thread.id)}`}
+                      >
+                        {thread.last_agent_line}
+                      </span>
+                    ) : null}
                     <span className="block truncate font-mono text-[10.5px] text-muted">
                       {threadMeta(
-                        repoSegment(repos.reposForThread(thread.id)),
+                        repo,
                         profiles.data?.items.find((p) => p.id === thread.agent_profile_id)?.name ??
                           null,
                       )}

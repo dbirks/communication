@@ -17,11 +17,14 @@
  * than pretending to be the whole list.
  *
  * Honesty rules, same as Home's section and `pages/ProjectRuns.tsx`: the wire
- * carries no run *title* and no repository, so a row names its run by the
- * workflow's display name and short id — the design's "Add saved cards to
- * checkout" is a run title this API cannot serve — and the bar is one segment
- * per step of the pinned revision, never per execution (a loop collapses into
- * its step, ADR-0047 § 4). Status is glyph + word always (rule 06).
+ * carries each run's own `title` and repository since ADR-0064 — a row shows
+ * the design's "Add saved cards to checkout" when the run has it, and falls
+ * back to the workflow's display name and short id (plus the workspace-derived
+ * repository segment, `useProjectRepoIndex`) when it does not, which is the
+ * honest answer for a run nobody named or a server build predating the field;
+ * and the bar is one segment per step of the pinned revision, never per
+ * execution (a loop collapses into its step, ADR-0047 § 4). Status is glyph +
+ * word always (rule 06).
  */
 import { Link } from "react-router";
 import { problemOf } from "../../api/client";
@@ -185,9 +188,9 @@ function RunRow({ run, repos }: { run: CrossProjectRun; repos: ProjectRepoIndex 
         <span className="min-w-0 flex-1">
           <span
             className="block truncate text-[12.5px] font-semibold"
-            title={run.pipeline_display_name}
+            title={run.title ?? run.pipeline_display_name}
           >
-            {run.pipeline_display_name}
+            {run.title ?? run.pipeline_display_name}
           </span>
           <StepLine run={run} step={step} repo={repoSegment(repos.reposForRun(run.id))} />
         </span>
@@ -200,9 +203,9 @@ function RunRow({ run, repos }: { run: CrossProjectRun; repos: ProjectRepoIndex 
   );
 }
 
-/** The mono line: slug, the run's own short id and the step it is on. No run
- * title, no repository (`RunSummary` records neither — see the brief's gap
- * list), so nothing here is inferred from the workflow's name. */
+/** The mono line: slug, the run's own short id and the step it is on. The
+ * title and repository are the run's own (ADR-0064) when the server carries
+ * them and are never guessed when it does not. */
 function StepLine({
   run,
   step,
@@ -213,10 +216,11 @@ function StepLine({
   repo: string | null;
 }) {
   const parts = [run.pipeline_slug];
-  // The design's middle segment. `RunSummary` records no repository, so it can
-  // only be named by a workspace that holds this run's checkout — and a queued
-  // run has none yet, which is why the segment goes missing rather than guessed.
-  if (repo) parts.push(repo);
+  // The design's middle segment: the run's own repository first (ADR-0064);
+  // else the only other honest answer — a workspace that holds this run's
+  // checkout; else nothing, which is what a queued unnamed run really has.
+  const repoName = run.repository_name ?? repo;
+  if (repoName) parts.push(repoName);
   parts.push(`#${shortId(run.id)}`);
   if (step) parts.push(`on ${step.node_id}`);
   else if (run.steps.length === 0) parts.push("steps unreadable");

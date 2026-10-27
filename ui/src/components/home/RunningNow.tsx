@@ -2,12 +2,13 @@
  * The briefing's "running now" section (artboard 2a): the caller's active
  * runs across every project they belong to, one 38px row each.
  *
- * Honesty rules are `pages/ProjectRuns.tsx`'s: the wire carries no run
- * *title*, so a row names its run by the workflow's display name (the
- * cross-project list embeds it, ADR-0047) and its short id — nothing is
- * invented. The segmented bar is one 7px segment per step of the pinned
- * revision (never per execution: a loop collapses into its step,
- * ADR-0047 §4), and the state always carries its glyph and its word.
+ * Honesty rules are `pages/ProjectRuns.tsx`'s: the wire carries each run's
+ * own `title` since ADR-0064, so a row names its run by that title and falls
+ * back — for a run nobody named or a server that predates the field — to the
+ * workflow's display name (the cross-project list embeds it, ADR-0047) and
+ * its short id; nothing is invented. The segmented bar is one 7px segment per
+ * step of the pinned revision (never per execution: a loop collapses into its
+ * step, ADR-0047 §4), and the state always carries its glyph and its word.
  */
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
@@ -95,9 +96,9 @@ function RunRow({ run }: { run: CrossProjectRunSummary }) {
         <span className="min-w-[160px] flex-1">
           <span
             className="block truncate text-[13px] font-semibold"
-            title={run.pipeline_display_name}
+            title={run.title ?? run.pipeline_display_name}
           >
-            {run.pipeline_display_name}
+            {run.title ?? run.pipeline_display_name}
           </span>
           <span className="block truncate font-mono text-[10.5px] text-muted">
             {run.pipeline_slug} #{shortId(run.id)} · {run.project_name}

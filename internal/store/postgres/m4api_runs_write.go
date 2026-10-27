@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -264,9 +265,24 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 	// ADR-0056: a run the caller starts by hand is 'manual'; a run handed from
 	// a thread (ADR-0053) is a 'thread' start — the thread is the trigger
 	// context, and the run keeps source_conversation_id for the reverse read.
+	// ADR-0064: a hand start that names an issue (`issue`) records the same
+	// {kind: issue, ref: owner/repo#<n>} fact a trigger fire records, so the
+	// issue row can point at its run whichever hand started it; the trigger
+	// row itself (trigger_id) stays null — no issue_triggers row fired.
 	triggerKind, triggerRef := "manual", ""
-	if in.Source != nil {
+	switch {
+	case in.Issue != nil:
+		triggerKind = "issue"
+		triggerRef = in.Issue.Repository + "#" + strconv.Itoa(in.Issue.Number)
+	case in.Source != nil:
 		triggerKind = "thread"
+	}
+	// ADR-0064's title precedence: the thread names a handoff run (its own
+	// title, always present); otherwise the caller's words (a hand start's
+	// `title`, issue-titled by the UI or by the server's best-effort read).
+	title := in.Title
+	if source != nil && source.Title != "" {
+		title = source.Title
 	}
 	newRun := NewRun{
 		OrganizationID:       c.OrganizationID,
@@ -285,6 +301,7 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 		TriggerKind:          triggerKind,
 		TriggerRef:           triggerRef,
 		RepositoryID:         in.RepositoryID,
+		Title:                title,
 		Inputs:               inputs,
 		Key:                  in.Key,
 		RequestSHA:           in.RequestSHA,
@@ -406,18 +423,18 @@ func (a APIRunStore) createRunPinnedTx(ctx context.Context, tx pgx.Tx, in NewRun
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-			 trigger_kind, trigger_ref, trigger_id, repository_id, agent_profile_version)
+			 trigger_kind, trigger_ref, trigger_id, repository_id, agent_profile_version, title)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($20, '')::uuid, NULLIF($18, '')::uuid, $19)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($20, '')::uuid, NULLIF($18, '')::uuid, $19, NULLIF($21, '')::text)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion, in.TriggerID))
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion, in.TriggerID, clampRunTitle(in.Title)))
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
@@ -585,6 +602,10 @@ type m4RunSourceAnswer struct {
 	RepoSnapshot   json.RawMessage
 	ArtifactIDs    []string
 	Summary        string
+	// Title (ADR-0064) is the thread's own title — the banner a handoff run
+	// carries. conversations.title is NOT NULL 1..200 (00003), so a source run
+	// always has one.
+	Title string
 }
 
 // m4RunSource answers ADR-0053's source clause with the row data the control
@@ -604,16 +625,16 @@ type m4RunSourceAnswer struct {
 //     unattached (a row in another project or a deleted row is the same 404
 //     as unknown — naming a resource that is not here is not a leak target).
 func m4RunSource(ctx context.Context, pool *pgxpool.Pool, c Caller, in *api.RunSourceInput, projectID string) (*m4RunSourceAnswer, error) {
-	var convProject string
+	var convProject, convTitle string
 	err := pool.QueryRow(ctx, `
-		SELECT c.project_id::text
+		SELECT c.project_id::text, c.title
 		FROM conversations c
 		JOIN projects p ON p.id = c.project_id
 		LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
 		WHERE c.id = $2::uuid
 		  AND p.organization_id = $3::uuid
 		  AND ($4::boolean OR m.user_id IS NOT NULL)`,
-		c.UserID, in.ConversationID, c.OrganizationID, c.IsOrgAdmin).Scan(&convProject)
+		c.UserID, in.ConversationID, c.OrganizationID, c.IsOrgAdmin).Scan(&convProject, &convTitle)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %w", api.ErrConversationNotFound, ErrConversationNotFound)
 	}
@@ -701,6 +722,7 @@ func m4RunSource(ctx context.Context, pool *pgxpool.Pool, c Caller, in *api.RunS
 		ConversationID: in.ConversationID,
 		Summary:        in.Summary,
 		ArtifactIDs:    artifactIDs,
+		Title:          convTitle,
 	}
 
 	type projRepo struct{ id, name string }

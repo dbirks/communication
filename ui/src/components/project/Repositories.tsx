@@ -13,19 +13,20 @@
  * - The workflow count is the assignments that run in this repository — a
  *   project-wide pin (ADR-0060's null `repository_id`) covers every repository
  *   of the project, so it counts here too.
- * - **Open issues are not counted here.** `GET /projects/{id}/repos` serves no
- *   issue count, and the only issues route the app has
- *   (`GET /projects/{id}/repos/{repoId}/issues`) is a live GitHub proxy — one
- *   request per repository per page view, anonymous, on a 60/hour budget, and
- *   it returns at most 50 rows with no total. The design's `3 open issues`
- *   therefore needs a server-side count; until then the row says so and links
- *   to the repository page, where the issues really are listed.
+ * - **Open issues are counted from GitHub, per row, only where that is
+ *   honest** (ADR-0065): a GitHub-hosted remote (`isGitHubRepository`, so no
+ *   request is ever made that could only answer `422`) reads the repository
+ *   page's own issues route — the same query key, so the two screens share one
+ *   cache entry. The route returns at most 50 rows with no total, so a full
+ *   page reads `50+ open issues`, none reads `no open issues`, and a refusal
+ *   or a non-GitHub remote prints nothing at all.
  */
 import { useState } from "react";
 import { Link } from "react-router";
 import { useRepositories } from "../../api/queries";
 import { useAssignments } from "../../api/pipelines";
-import type { Project } from "../../api/types";
+import { isGitHubRepository, useRepoIssues } from "../../api/issues";
+import type { Project, Repository } from "../../api/types";
 import { Button } from "../ds/Button";
 import { Panel } from "../ds/Panel";
 import { ProblemBanner, Spinner } from "../Feedback";
@@ -36,6 +37,41 @@ import { useProjectRepoIndex } from "./useProjectRepoIndex";
 
 export interface RepositoriesProps {
   project: Project;
+}
+
+/** The issues route's page cap (`per_page=50`, api/openapi.yaml
+ * GitHubIssueList): a full page is “at least this many”, never a total. */
+const GITHUB_ISSUES_PAGE_CAP = 50;
+
+/** The row's count in words: `no open issues` at 0, `50+ open issues` when
+ * the route answered its 50-row cap, `N open issues` otherwise. */
+export function openIssuesText(count: number): string {
+  if (count === 0) return "no open issues";
+  if (count >= GITHUB_ISSUES_PAGE_CAP) return `${GITHUB_ISSUES_PAGE_CAP}+ open issues`;
+  return `${count} open issues`;
+}
+
+/** One repository row's open-issue count (ADR-0065 UI half): the repository
+ * page's own `useRepoIssues` read, same query key, so opening the repository
+ * page after this one reuses the cached answer instead of spending the
+ * anonymous GitHub budget twice. Non-GitHub remotes never ask (the read is
+ * disabled); a refusal or an answer still in flight prints nothing. */
+function RepoIssueCount({ projectId, repo }: { projectId: string; repo: Repository }) {
+  const githubHosted = isGitHubRepository(repo.git_url);
+  const issues = useRepoIssues(projectId, repo.id, "", githubHosted);
+  const list = issues.data;
+  if (!githubHosted || issues.error || !list) return null;
+  return (
+    <>
+      {" · "}
+      <span
+        title="open issues read from GitHub — the route answers at most 50, newest first"
+        data-testid={`repo-issues-${repo.name}`}
+      >
+        {openIssuesText(list.items.length)}
+      </span>
+    </>
+  );
 }
 
 export function Repositories({ project }: RepositoriesProps) {
@@ -147,13 +183,7 @@ export function Repositories({ project }: RepositoriesProps) {
                         {assignments.data
                           ? `${workflows} workflow${workflows === 1 ? "" : "s"}`
                           : "reading workflows…"}
-                        {" · "}
-                        <span
-                          title="GET /projects/{id}/repos serves no issue count, and the issues route is a live GitHub proxy — see the repository page"
-                          data-testid={`repo-issues-${repo.name}`}
-                        >
-                          open issues not counted here
-                        </span>
+                        <RepoIssueCount projectId={project.id} repo={repo} />
                       </p>
                     </div>
                   </li>

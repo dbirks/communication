@@ -120,6 +120,7 @@ func m4RunSummary(r Run, repositoryName string) api.RunSummaryView {
 		CreatedAt: r.CreatedAt, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 	}
 	v.AssignmentID = m4RunReadPtr(r.AssignmentID)
+	v.Title = m4RunReadPtr(r.Title) // ADR-0064: null when the run was never named
 	v.FailedCause = m4RunReadPtr(r.FailedCause)
 	v.ParentRunID = m4RunReadPtr(r.ParentRunID)
 	v.TriggeredBy = m4RunReadPtr(r.TriggeredBy)

@@ -12,9 +12,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dbirks/communication/internal/authz"
 	"github.com/dbirks/communication/internal/events"
+	"github.com/dbirks/communication/internal/integrations/github"
 )
 
 // The M4 execution surface: assignments, runs, node executions, checkpoints,
@@ -92,6 +94,20 @@ const (
 	RunConflictIdempotencyMismatch   = "idempotency_key_mismatch"
 )
 
+// ADR-0064: the POST /runs `issue` refusals. The code is the problem's last
+// URI segment and its `code` member (the ADR-0030 convention), so a client
+// switches on it without reading prose.
+const (
+	// RunIssueCodeRepoAssignmentRequired: `issue` on a start that is not
+	// pinned to a repo-scoped assignment (a direct revision start, or a
+	// project-wide assignment). The run could not name a repository to own
+	// the issue link, so the claim is refused rather than dropped.
+	RunIssueCodeRepoAssignmentRequired = "issue_requires_repo_assignment"
+	// RunIssueCodeGitHubRequired: the assignment's repository is not a GitHub
+	// remote, so issue #<n> does not exist where the run would look for it.
+	RunIssueCodeGitHubRequired = "issue_requires_github_repository"
+)
+
 // RunRepositoryCodeInvalid is the POST /runs refusal for an explicit
 // `repository_id` that names no repository of the run's project (ADR-0060).
 const RunRepositoryCodeInvalid = "invalid_repository"
@@ -145,24 +161,29 @@ func (e *RunInputsInvalid) Error() string { return "api: run inputs failed valid
 // ADR-0060's: the run's repository (nullable — a project-wide intent or a
 // resolved inputs.repository names none) and its display name.
 type RunSummaryView struct {
-	ID                 string     `json:"id"`
-	ProjectID          string     `json:"project_id"`
-	PipelineID         string     `json:"pipeline_id"`
-	PipelineRevisionID string     `json:"pipeline_revision_id"`
-	AssignmentID       *string    `json:"assignment_id"`
-	RevisionDigest     string     `json:"revision_digest"`
-	PlanDigest         string     `json:"plan_digest"`
-	Status             string     `json:"status"`
-	FailedCause        *string    `json:"failed_cause"`
-	Depth              int        `json:"depth"`
-	ParentRunID        *string    `json:"parent_run_id"`
-	TriggeredBy        *string    `json:"triggered_by"`
-	RepositoryID       *string    `json:"repository_id"`
-	RepositoryName     *string    `json:"repository_name"`
-	Priority           int        `json:"priority"`
-	CreatedAt          time.Time  `json:"created_at"`
-	StartedAt          *time.Time `json:"started_at"`
-	FinishedAt         *time.Time `json:"finished_at"`
+	ID                 string  `json:"id"`
+	ProjectID          string  `json:"project_id"`
+	PipelineID         string  `json:"pipeline_id"`
+	PipelineRevisionID string  `json:"pipeline_revision_id"`
+	AssignmentID       *string `json:"assignment_id"`
+	// Title (ADR-0064) is the human banner the run was created with — the
+	// issue title an issue start carried, the thread's own title for a
+	// handoff, or the creator's words. Null is honest: the run was never
+	// named, and nothing here guesses one from the workflow's name.
+	Title          *string    `json:"title"`
+	RevisionDigest string     `json:"revision_digest"`
+	PlanDigest     string     `json:"plan_digest"`
+	Status         string     `json:"status"`
+	FailedCause    *string    `json:"failed_cause"`
+	Depth          int        `json:"depth"`
+	ParentRunID    *string    `json:"parent_run_id"`
+	TriggeredBy    *string    `json:"triggered_by"`
+	RepositoryID   *string    `json:"repository_id"`
+	RepositoryName *string    `json:"repository_name"`
+	Priority       int        `json:"priority"`
+	CreatedAt      time.Time  `json:"created_at"`
+	StartedAt      *time.Time `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at"`
 	// Trigger (ADR-0056) is how this run was started: manual, schedule, issue
 	// or thread, with the trigger's own identifier in Ref (the schedule id, the
 	// `owner/repo#<number>`, or null for a manual/thread start — the thread is
@@ -604,6 +625,27 @@ type RunCreateInput struct {
 	RepositoryID string
 	// Source (ADR-0053): the thread this run is handed from; nil = ordinary run.
 	Source *RunSourceInput
+	// Title (ADR-0064) is the caller-supplied run banner; empty means none
+	// (a thread start takes the thread's own title; an issue start takes the
+	// issue title when the server can read it; else the run stays unnamed).
+	Title string
+	// Issue (ADR-0064) is a hand start made FROM a GitHub issue: the run then
+	// records the trigger fact a trigger-fired issue run records —
+	// {kind: issue, ref: `<owner/repo>#<number>`} — so the issue row can
+	// point at its run. The handler validates it against the pin (a
+	// repo-scoped assignment on a GitHub remote) and fills Repository from
+	// the repository's git_url; nil = no issue claimed.
+	Issue *RunIssueInput
+}
+
+// RunIssueInput is the validated `RunCreate.issue` member (ADR-0064).
+type RunIssueInput struct {
+	// Number is the GitHub issue number (>= 1, validated by the handler).
+	Number int
+	// Repository is the canonical `owner/repo` the handler resolved from the
+	// assignment's repository git_url — the same form the issue-trigger fire
+	// writes into trigger_ref.
+	Repository string
 }
 
 // RunRetryInput is the retry request; empty NodeInstanceKeys means "every
@@ -655,6 +697,17 @@ type rnRunCreateBody struct {
 	// repository" member; empty means the run's repository came from the
 	// assignment or an inputs.repository name instead.
 	RepositoryID string `json:"repository_id,omitempty"`
+	// Title (ADR-0064) is the optional human banner for the run (1..200
+	// characters); absent means none.
+	Title *string `json:"title,omitempty"`
+	// Issue (ADR-0064) is the optional "this run starts from this GitHub
+	// issue" claim; only legal on a repo-scoped assignment whose repository
+	// is a GitHub remote (422 otherwise).
+	Issue *rnRunIssueBody `json:"issue,omitempty"`
+}
+
+type rnRunIssueBody struct {
+	Number int `json:"number"`
 }
 
 type rnRetryBody struct {
@@ -685,6 +738,40 @@ type rnAssignmentPatchBody struct {
 
 var m4IdempotencyKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
+// rnIssueTitle is ADR-0064's best-effort read of the issue title behind a
+// hand start's `issue` member. Every failure mode — no adapter mounted, the
+// repository's ADR-0061 credential unresolvable, an upstream refusal, timeout
+// or rate limit, or the issue simply not on the page GitHub listed first —
+// answers the empty string and the run starts with a null title: the create
+// never fails over its banner, and nothing is invented for it.
+func (h *rnHandlers) rnIssueTitle(r *http.Request, repo RepositoryView, ghRepo github.Repository, number int) string {
+	if h.issueLister == nil {
+		return ""
+	}
+	token := ""
+	if repo.CredentialSecretID != nil && *repo.CredentialSecretID != "" {
+		if h.issueCredentials == nil {
+			return ""
+		}
+		resolved, err := h.issueCredentials.ResolveRepositoryCredential(r.Context(), repo.ID, ghConsumerIssueRead, "system")
+		if err != nil {
+			return ""
+		}
+		token = resolved
+	}
+	issues, err := h.issueLister.ListIssues(r.Context(), ghRepo,
+		github.IssueQuery{State: github.StateAll}, token)
+	if err != nil {
+		return ""
+	}
+	for _, is := range issues {
+		if is.Number == number {
+			return is.Title
+		}
+	}
+	return ""
+}
+
 // rnRunRepositoryInput reads the optional `repository` string input of a run
 // create body (ADR-0060): the repository-binding name the caller named, which
 // the run resolves to one of the project's repositories by exact,
@@ -706,17 +793,37 @@ func rnRunRepositoryInput(inputs map[string]json.RawMessage) (string, bool) {
 // the project-prefixed routes and mutation role checks; the run/approval
 // views carry the caller's role (never serialized) so the resource-scoped
 // routes gate without a second lookup. trigger may be nil (see M4Trigger).
-func RegisterRuns(s *Server, store RunStore, assignments AssignmentStore, projects ProjectStore, stream RunEventStream, trigger M4Trigger) {
+// opts carry the optional seams (WithGitHubIssueReader).
+func RegisterRuns(s *Server, store RunStore, assignments AssignmentStore, projects ProjectStore, stream RunEventStream, trigger M4Trigger, opts ...RunOption) {
 	// The run stream's catch-up batch is 500 events per flush (§ 6); the
 	// heartbeat and poll stay on ADR-0014's values.
 	registerRuns(s, store, assignments, projects, stream, trigger,
-		evtTiming{heartbeat: 15 * time.Second, poll: 2 * time.Second, batch: 500})
+		evtTiming{heartbeat: 15 * time.Second, poll: 2 * time.Second, batch: 500}, opts...)
+}
+
+// RunOption is an optional seam for the run-family handlers (ADR-0064).
+type RunOption func(*rnHandlers)
+
+// WithGitHubIssueReader lets a hand start that names an issue (`RunCreate.issue`)
+// title itself from GitHub: the run's banner defaults to the issue's own
+// title when this read succeeds, and stays null when it does not (no reader
+// mounted, no token resolvable, upstream refusal) — the create NEVER fails
+// over its title. The lister is the ADR-0031 adapter; credentials the
+// ADR-0061 broker seam (nil means credentialed repositories are not read).
+func WithGitHubIssueReader(lister github.IssueLister, credentials RepositoryCredentialResolver) RunOption {
+	return func(h *rnHandlers) {
+		h.issueLister = lister
+		h.issueCredentials = credentials
+	}
 }
 
 func registerRuns(s *Server, store RunStore, assignments AssignmentStore, projects ProjectStore,
-	stream RunEventStream, trigger M4Trigger, timing evtTiming) {
+	stream RunEventStream, trigger M4Trigger, timing evtTiming, opts ...RunOption) {
 	h := &rnHandlers{store: store, assignments: assignments, projects: projects,
 		stream: stream, trigger: trigger, srv: s, timing: timing}
+	for _, opt := range opts {
+		opt(h)
+	}
 
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/assignments", http.HandlerFunc(h.listAssignments))
 	s.HandleAuthed("POST /api/v1/projects/{projectId}/assignments", http.HandlerFunc(h.createAssignment))
@@ -746,6 +853,11 @@ type rnHandlers struct {
 	trigger     M4Trigger
 	srv         *Server
 	timing      evtTiming
+	// issueLister/issueCredentials (ADR-0064, WithGitHubIssueReader) are the
+	// best-effort GitHub read behind a hand start's issue title; nil means
+	// that read is not mounted and the title simply stays null.
+	issueLister      github.IssueLister
+	issueCredentials RepositoryCredentialResolver
 }
 
 // --- assignment handlers (routes 17–20) --------------------------------------
@@ -1038,6 +1150,31 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ADR-0064: the title and issue members are shape-validated before any
+	// lookup (a malformed banner or a zero issue number is the client's
+	// mistake); whether the issue claim is TRUE is answered with the pin
+	// below (422 on a start that cannot name the repository it claims).
+	title := ""
+	if body.Title != nil {
+		title = strings.TrimSpace(*body.Title)
+		if title == "" || utf8.RuneCountInString(title) > 200 {
+			rnInvalid(w, "title must be 1 to 200 characters.")
+			return
+		}
+	}
+	if body.Issue != nil {
+		if body.Issue.Number < 1 {
+			rnInvalid(w, "issue.number must be an integer >= 1.")
+			return
+		}
+		if body.AssignmentID == "" {
+			m4WriteTypedProblem(w, http.StatusUnprocessableEntity, RunIssueCodeRepoAssignmentRequired,
+				"Issue Start Requires a Repo-Scoped Assignment",
+				"issue can only start a run from an assignment pinned to a repository; a direct pipeline_revision_id start names none.")
+			return
+		}
+	}
+
 	// ADR-0060: resolve the repository the run works on, first that applies:
 	// the explicit body member (validated against the run's project — a
 	// repository of another project is the 422 `invalid_repository` refusal),
@@ -1090,6 +1227,70 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ADR-0064: the issue claim. The run may only record {kind: issue,
+	// ref: owner/repo#<n>} when the pin really is a repo-scoped assignment on
+	// a GitHub remote — the same ref grammar the issue-trigger fire writes.
+	// A false claim is 422 (two visible objects, the assertion wrong), never
+	// a silently dropped member: a run that quietly lost its issue link would
+	// leave the issue row unable to show its own run.
+	var issueInput *RunIssueInput
+	if body.Issue != nil {
+		current, err := h.assignments.GetAssignment(r.Context(), c, body.AssignmentID)
+		if err != nil {
+			h.fail(w, r, c, projectID, "run.create", err)
+			return
+		}
+		assignmentRepo := ""
+		if current.RepositoryID != nil {
+			assignmentRepo = *current.RepositoryID
+		}
+		if assignmentRepo == "" {
+			m4WriteTypedProblem(w, http.StatusUnprocessableEntity, RunIssueCodeRepoAssignmentRequired,
+				"Issue Start Requires a Repo-Scoped Assignment",
+				"issue can only start a run from an assignment pinned to a repository; assignment "+body.AssignmentID+" is project-wide.")
+			return
+		}
+		repos, err := h.projects.ListRepositories(r.Context(), c, projectID)
+		if err != nil {
+			h.fail(w, r, c, projectID, "run.create", err)
+			return
+		}
+		var ghRepo github.Repository
+		var issueRepo *RepositoryView
+		for i := range repos {
+			if repos[i].ID == assignmentRepo {
+				issueRepo = &repos[i]
+				ghRepo, err = github.ParseRepository(repos[i].GitURL)
+				if err != nil {
+					m4WriteTypedProblem(w, http.StatusUnprocessableEntity, RunIssueCodeGitHubRequired,
+						"Issue Start Requires a GitHub Repository",
+						"Repository \""+repos[i].Name+"\" is not a GitHub remote, so it has no issue #"+fmt.Sprint(body.Issue.Number)+" to start from.")
+					return
+				}
+				break
+			}
+		}
+		if issueRepo == nil {
+			// The assignment names a repository the caller cannot see in this
+			// project — the same refusal an explicit foreign repository gets.
+			h.fail(w, r, c, projectID, "run.create", ErrRunRepositoryNotInProject)
+			return
+		}
+		if body.RepositoryID != "" && body.RepositoryID != assignmentRepo {
+			m4WriteTypedProblem(w, http.StatusUnprocessableEntity, RunRepositoryCodeInvalid,
+				"Invalid Repository",
+				"repository_id must be the assignment's repository when issue names the run's issue.")
+			return
+		}
+		repositoryID = assignmentRepo
+		issueInput = &RunIssueInput{Number: body.Issue.Number, Repository: ghRepo.String()}
+		if title == "" {
+			// The banner defaults to the issue's own title — best-effort: any
+			// failure of this read leaves the title null, the run still starts.
+			title = h.rnIssueTitle(r, *issueRepo, ghRepo, body.Issue.Number)
+		}
+	}
+
 	run, created, err := h.store.CreateRun(r.Context(), c, RunCreateInput{
 		ProjectID:          projectID,
 		AssignmentID:       body.AssignmentID,
@@ -1100,6 +1301,8 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		TriggeredBy:        c.UserID,
 		RepositoryID:       repositoryID,
 		Source:             source,
+		Title:              title,
+		Issue:              issueInput,
 	})
 	if err != nil {
 		h.fail(w, r, c, projectID, "run.create", err)

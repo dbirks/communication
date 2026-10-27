@@ -40,6 +40,9 @@ var m4FullDigest = "sha256:" + strings.Repeat("a", 64)
 type m4Projects struct {
 	role   string // the MyRole GetProject answers ("" = not visible)
 	getErr error
+	// repos (ADR-0064 tests) is what ListRepositories answers when set; nil
+	// keeps every pre-existing fake's "no repositories" answer.
+	repos  []RepositoryView
 	denied []string
 }
 
@@ -59,7 +62,7 @@ func (p *m4Projects) GetProject(context.Context, Caller, string) (ProjectView, e
 	return ProjectView{ID: "p-1", MyRole: p.role}, nil
 }
 func (p *m4Projects) ListRepositories(context.Context, Caller, string) ([]RepositoryView, error) {
-	return nil, nil
+	return p.repos, nil
 }
 func (p *m4Projects) AddRepository(context.Context, Caller, string, string, string, string, string) (RepositoryView, error) {
 	return RepositoryView{}, nil
@@ -240,12 +243,15 @@ type m4Runs struct {
 	checks    []RunCheckpointView
 	attempt   AttemptView
 	createOut RunView
-	created   bool
-	idem      map[string][2]string
-	createErr error
-	lifeErr   error // conflict for pause/resume/cancel
-	retryErr  error
-	getErr    error
+	// lastCreate (ADR-0064) is the input of the most recent CreateRun call,
+	// refusals included — handler tests assert what the store was told.
+	lastCreate RunCreateInput
+	created    bool
+	idem       map[string][2]string
+	createErr  error
+	lifeErr    error // conflict for pause/resume/cancel
+	retryErr   error
+	getErr     error
 
 	denied []string
 	calls  []string
@@ -253,6 +259,7 @@ type m4Runs struct {
 
 func (f *m4Runs) CreateRun(_ context.Context, c Caller, in RunCreateInput) (RunView, bool, error) {
 	f.calls = append(f.calls, "create:"+in.Key)
+	f.lastCreate = in
 	if f.createErr != nil {
 		return RunView{}, false, f.createErr
 	}

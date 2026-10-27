@@ -5,12 +5,15 @@
  *
  * The states each block can be in are asserted deliberately: populated from a
  * stubbed wire, honestly empty, refused (`404`) and broken (`5xx`). What the
- * design shows that no API serves — a run title, a repository on a run, an
- * issue count per repository — is asserted as *said*, never drawn as a number.
+ * design shows that no API serves — a run title, a repository on a run —
+ * is asserted as *said*, never drawn as a number; the repository row's open
+ * issues are the exception since ADR-0065: they read the repository page's
+ * own GitHub route, count included, with `50+` honesty at the page cap.
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
+import type { GitHubIssue } from "../api/issues";
 import {
   claudeProfile,
   codexProfile,
@@ -49,6 +52,7 @@ const assignmentsPath = `${projectPath}/assignments`;
 const schedulesPath = `${projectPath}/schedules`;
 const issueTriggersPath = `${projectPath}/issue-triggers`;
 const workspacesPath = `${projectPath}/workspaces`;
+const issuesPath = `${projectPath}/repos/${repositoryId}/issues`;
 const revisionPath = `/api/v1/revisions/${wireRevision.revision_digest}`;
 
 const repository: Repository = {
@@ -60,6 +64,29 @@ const repository: Repository = {
   created_at: "2026-10-14T18:00:00Z",
   credential: "configured",
 };
+
+/** A local remote: the issues route could only answer `422
+ * not_a_github_repository` for it, so the row must not ask (ADR-0065). */
+const localRepository: Repository = {
+  ...repository,
+  id: "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f1",
+  name: "lab",
+  git_url: "file:///srv/git/lab.git",
+};
+
+/** One open GitHub issue, as the issues route serves it. */
+function issue(number: number): GitHubIssue {
+  return {
+    number,
+    title: `Issue ${number}`,
+    body: "Something is broken.",
+    labels: [],
+    html_url: `https://github.com/example/communication/issues/${number}`,
+    state: "open",
+    updated_at: "2026-10-14T17:00:00Z",
+    body_truncated: false,
+  };
+}
 
 const member: Member = { user_id: meFixture.id, display_name: "Ada Lovelace", role: "maintainer" };
 const directoryUser = {
@@ -407,8 +434,9 @@ describe("/p/:projectId — running now", () => {
     const row = await screen.findByTestId(`recent-run-${key}`);
     expect(within(row).getByTestId(`recent-run-status-${key}`).textContent).toBe("running");
     // The workflow's display name and slug the wire serves, the run's short id,
-    // and the step it is on. There is no run title on this API, so none is
-    // printed — the design's invented subject line is not drawn.
+    // and the step it is on. This row carries no `title` (a pre-ADR-0064
+    // server or an unnamed run), so the fallback is drawn — never an invented
+    // subject line.
     expect(row.textContent).toContain("Feature development");
     expect(row.textContent).toContain("feature-development");
     expect(row.textContent).toContain("on implement");
@@ -425,6 +453,36 @@ describe("/p/:projectId — running now", () => {
       "1 finished today · 1 cancelled",
     );
     expect(screen.getByTestId("recent-runs-all").getAttribute("href")).toBe(`/p/${projectId}/runs`);
+  });
+
+  it("serves the run's own title and repository when the API carries them (ADR-0064)", async () => {
+    mounted([
+      {
+        path: crossRunsPath,
+        method: "GET",
+        body: {
+          runs: [
+            crossRun({
+              title: "Add saved cards to checkout",
+              repository_id: repository.id,
+              repository_name: "widgets-core",
+            }),
+          ],
+          next_cursor: null,
+        },
+      },
+    ]);
+    const key = testidOf(WIRE_RUN_ID);
+    const row = await screen.findByTestId(`recent-run-${key}`);
+    // The design's line: the run's title leads, its repository rides the mono
+    // line — the workflow display name steps back to the fallback role.
+    expect(row.textContent).toContain("Add saved cards to checkout");
+    expect(row.textContent).toContain("widgets-core");
+    expect(row.querySelector('[title="Add saved cards to checkout"]')?.textContent).toBe(
+      "Add saved cards to checkout",
+    );
+    // Nothing is invented twice: the slug stays in its mono-line seat.
+    expect(row.textContent).toContain("feature-development");
   });
 
   it("keeps child runs out of the list — they belong to their parent's tree", async () => {
@@ -514,14 +572,72 @@ describe("/p/:projectId — the inventory column", () => {
     expect(repoRow.textContent).toContain("1 workflow");
     // `workspaceFixture` is a ready workspace of THIS repository: one live.
     expect(within(repoRow).getByTestId("repo-live-communication").textContent).toContain("1");
-    // The design's `3 open issues`: no endpoint serves a count, and the row says
-    // so rather than inventing one or fanning a live GitHub proxy per repository.
-    expect(within(repoRow).getByTestId("repo-issues-communication").textContent).toContain(
-      "open issues not counted here",
-    );
+    // ADR-0065: the open-issue count rides the issues route, per row. Here
+    // the read refused (no stub → 404), and the row prints nothing rather
+    // than a number nobody served — no fake count, no proxy complaint.
+    expect(within(repoRow).queryByTestId("repo-issues-communication")).toBeNull();
     expect(within(repoRow).getByRole("link").getAttribute("href")).toBe(
       `/p/${projectId}/communication`,
     );
+  });
+
+  it("counts a GitHub repository's open issues from the issues route, in its own words", async () => {
+    const { requests } = mounted([
+      {
+        path: issuesPath,
+        method: "GET",
+        body: {
+          repository: "example/communication",
+          state: "open",
+          items: [issue(1), issue(2), issue(3)],
+        },
+      },
+    ]);
+
+    const repoRow = await screen.findByTestId("repo-row-communication");
+    expect(await within(repoRow).findByTestId("repo-issues-communication")).toBeTruthy();
+    expect(repoRow.textContent).toContain("3 open issues");
+    // The repository page's own query key: one request, cache-shared.
+    expect(requestsTo(requests, issuesPath, "GET").length).toBe(1);
+  });
+
+  it("says `50+ open issues` at the route's page cap and `no open issues` at zero", async () => {
+    const capped = Array.from({ length: 50 }, (_, i) => issue(i + 1));
+    mounted([
+      {
+        path: issuesPath,
+        method: "GET",
+        body: { repository: "example/communication", state: "open", items: capped },
+      },
+    ]);
+    const repoRow = await screen.findByTestId("repo-row-communication");
+    expect(await within(repoRow).findByTestId("repo-issues-communication")).toBeTruthy();
+    expect(repoRow.textContent).toContain("50+ open issues");
+  });
+
+  it("prints `no open issues` when GitHub answers with none", async () => {
+    mounted([
+      {
+        path: issuesPath,
+        method: "GET",
+        body: { repository: "example/communication", state: "open", items: [] },
+      },
+    ]);
+    const repoRow = await screen.findByTestId("repo-row-communication");
+    expect(await within(repoRow).findByTestId("repo-issues-communication")).toBeTruthy();
+    expect(repoRow.textContent).toContain("no open issues");
+  });
+
+  it("never asks the issues route for a non-GitHub remote and prints no count", async () => {
+    const { requests } = mounted([
+      { path: reposPath, method: "GET", body: { items: [localRepository] } },
+    ]);
+    const repoRow = await screen.findByTestId("repo-row-lab");
+    // The row still renders everything the repos read serves…
+    expect(repoRow.textContent).toContain("file:///srv/git/lab.git");
+    // …and the count is simply absent: no request, no fake number.
+    expect(within(repoRow).queryByTestId("repo-issues-lab")).toBeNull();
+    expect(requestsTo(requests, issuesPath, "GET").length).toBe(0);
   });
 
   it("opens the existing add-repository form in a dialog and posts it", async () => {
@@ -695,12 +811,46 @@ describe("/p/:projectId — the inventory column", () => {
       `project-thread-${testidOf(conversationSummaryFixture.id)}`,
     );
     // `workspaceFixture` is this conversation's workspace, holding `backend`.
+    // The fixture row carries no ADR-0065 `repository_name`, so the workspace
+    // index is still the honest source — the fallback stays drawn.
     expect(row.textContent).toContain(conversationSummaryFixture.title);
     expect(row.textContent).toContain("backend");
     expect(row.textContent).toContain(claudeProfile.name);
+    expect(
+      screen.queryByTestId(`project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`),
+    ).toBeNull();
     expect(screen.getByTestId("project-all-threads").getAttribute("href")).toBe(
       `/p/${projectId}/conversations`,
     );
+  });
+
+  it("prefers ADR-0065's served repository and draws the served last line under the title", async () => {
+    mounted([
+      {
+        path: conversationsPath,
+        method: "GET",
+        body: {
+          items: [
+            {
+              ...conversationSummaryFixture,
+              repository_id: repository.id,
+              repository_name: "communication",
+              last_agent_line: "Landed the checkpoint; waiting on review.",
+            },
+          ],
+        },
+      },
+    ]);
+    const row = await screen.findByTestId(
+      `project-thread-${testidOf(conversationSummaryFixture.id)}`,
+    );
+    // The served name wins over the workspace index's guess (`backend`).
+    expect(row.textContent).toContain("communication · Claude Code");
+    expect(row.textContent).not.toContain("backend");
+    expect(
+      screen.getByTestId(`project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`)
+        .textContent,
+    ).toContain("Landed the checkpoint; waiting on review.");
   });
 
   it("says the agent is unread rather than printing a profile id", async () => {

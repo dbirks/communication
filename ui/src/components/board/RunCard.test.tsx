@@ -66,6 +66,14 @@ describe("RunCard", () => {
     expect(card.textContent).toContain("0m");
   });
 
+  it("leads with the run's own title when the server serves one (ADR-0064)", () => {
+    renderCard(run({ title: "Export invoices as CSV" }));
+    const card = screen.getByTestId("board-card-9c1eaaaa-bbbb-cccc-dddd-eeeeeeee0000");
+    expect(card.textContent).toContain("Export invoices as CSV");
+    // The fallback keeps the card's mono identity line honest: slug + #id stay.
+    expect(card.textContent).toContain("#9c1e");
+  });
+
   it("spells the segmented bar's counts in its aria-label and names the current step", () => {
     renderCard(run());
     expect(screen.getByRole("img", { name: "2 of 4 steps done, 1 running" })).toBeInstanceOf(
