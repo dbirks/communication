@@ -3227,12 +3227,12 @@ export interface components {
       run_link: components["schemas"]["ConversationRunLink"] | null;
       /**
        * Format: uuid
-       * @description ADR-0065: the repository this thread works in — the first repository bound to the conversation's newest workspace (every state except `lost`), so a released thread keeps its repository. Null when the thread has no workspace binding; both repository members are null or non-null together.
+       * @description ADR-0065: the repository this thread works in — the first repository bound to the conversation's newest workspace (every state except `lost`), so a released thread keeps its repository. A thread with no binding of its own — the shape of a thread a run node opened, whose work lives in the RUN's workspace (ADR-0017) — answers the linked run's `repository_id` instead (ADR-0060/0064, read through the same `run_link`); the binding always wins, and a run that names no repository (a project-wide run) adds nothing. Null when neither the binding nor the linked run says one; both repository members are null or non-null together.
        */
       repository_id?: string | null;
-      /** @description The name of `repository_id`, from the `repositories` row, so a list row renders `repo · agent` without a second read. Null exactly when `repository_id` is null (ADR-0065). */
+      /** @description The name of `repository_id`, from the `repositories` row, so a list row renders `repo · agent` without a second read — whether the id came from the thread's workspace binding or from its linked run (ADR-0065). Null exactly when `repository_id` is null. */
       repository_name?: string | null;
-      /** @description ADR-0065: the newest `conversation.message.agent` journal row's text — first non-empty line, trimmed, at most 160 characters (an ellipsis marks a cut). Null when the agent has not spoken in this thread. Derived from the journal at read time; nothing is stored twice. */
+      /** @description ADR-0065: the newest `conversation.message.agent` journal row's text — first non-empty line, trimmed, at most 160 characters (an ellipsis marks a cut). When that row's text is exactly one JSON object — the structured output a run node's agent ends on — the line is the object's own top-level `summary` string, else `goal`, else its first top-level string, in the object's document order; never a nested value, never a paraphrase, and any other text (prose, a fenced block, a chunk split mid-object, an object with no top-level string) is rendered by the plain rule above. Null when the agent has not spoken in this thread. Derived from the journal at read time; nothing is stored twice. */
       last_agent_line?: string | null;
     };
     /** ConversationSummaryList */

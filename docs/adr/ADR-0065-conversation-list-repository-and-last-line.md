@@ -43,12 +43,37 @@ diverge between them):
   finished thread still shows where it worked; a lost workspace's volume is gone,
   so its binding must not be shown. Same rule the run-from-thread head pinning
   already applies (`m4api_runs_write.go`).
+  **Run-thread arm (seen on the lab):** a thread a run *node* opened usually has
+  no conversation-scoped workspace at all — the work happened in the run's own
+  workspace (ADR-0017), and only `attempts` link the thread to it — so the
+  binding lateral finds nothing and the row used to say `project · agent` with no
+  repository at all while its run was plainly working in `tally`. When (and only
+  when) the binding is empty, the read falls back to the **linked run's**
+  repository: `runs.repository_id` (ADR-0060, served since ADR-0064) joined to
+  `repositories.name`, keyed by the run-link lateral's own `la.run_id`. The
+  fallback is a fallback, not an override: a thread with a binding of its own
+  keeps it, and a thread with neither a binding nor a repository-bearing run
+  answers null as before. The extra arm is `cnvRunRepoSubquery`, one `runs`
+  primary-key seek plus one `repositories` primary-key seek — no migration, no
+  new index, still one statement (ADR-0063).
 - `last_agent_line` (`string|null`, ≤ 160 characters): the newest
   `conversation.message.agent` journal row's text (`ORDER BY global_seq DESC`, the
   order the transcript itself renders in), rendered as its first non-empty line,
   trimmed, cut on a rune boundary to 160 runes **with the ellipsis counted inside
   the cap**. Null when the agent has not spoken. This is a preview of the newest
   chunk; the transcript route stays the authority for the whole message.
+  **Structured-output arm (seen on the lab):** a run node's agent ends *on its
+  structured output*, so the newest chunk is `{"summary": "The repo already had a
+  full Node.js…", …}` and the row printed the braces. When the chunk is exactly
+  one JSON object (`cnvStructuredAgentText`), the line is taken from the object's
+  own top-level strings: `summary`, else `goal`, else the first top-level string
+  in the object's document order — still the agent's words, never a paraphrase,
+  and never a nested value's (a schema's inner strings are the shape, not the
+  line). Anything else — prose, a fenced block, an array, a chunk truncated by
+  the worker's chunking, an object with no top-level string — keeps today's rule
+  on the raw text, so a message that merely contains a brace is untouched. The
+  160-rune cap applies to the extracted line exactly as it applied to the raw
+  one.
 - Neither field gates anything: they ride the row's existing visibility predicate —
   a caller who may list a project's conversations may already read those
   conversations' transcripts on the detail and stream routes (same membership), so
@@ -87,9 +112,13 @@ page cap would be a number nobody served.
 - Limitations: the last line is the newest *chunk* — a turn whose flush split into
   chunks shows the tail's first line, and a `workspace:` note chunk counts as
   agent text. Both are honest readings of the journal; neither is fixed by storing
-  more. The repository member reflects the workspace binding, so a thread that
-  discussed a repository without ever checking it out still shows null — the same
-  evidence rule ADR-0053 pins heads by.
+  more. A split structured-output chunk reads as raw text, because half an object
+  is not evidence of a summary. The repository member reflects the workspace
+  binding first and the linked run's repository second, so a thread that
+  discussed a repository without ever checking it out *or* running against one
+  still shows null — the same evidence rule ADR-0053 pins heads by. A run-linked
+  thread whose run names no repository (a project-wide run, ADR-0060) shows
+  nothing either: there is no repository to name.
 - Backwards compatibility: purely additive JSON members; existing clients ignore
   them, and this UI treats *absent* and null identically (the fallback branch).
 
@@ -113,8 +142,20 @@ project that already lists its repositories.
   trimmed non-empty line; a 280-rune multi-byte first line truncates to exactly
   160 runes ending in `…`; and `ListVisibleConversations` (the cross-project
   read) answers the same three fields for the same rows.
+- `TestConversationListRunThreadRepository` (same file, real PostgreSQL) — the
+  run-thread arm on a real linked run (revision → run with `repository_id` →
+  node execution → attempt stamped with the thread and its turn): a run node's
+  thread with **no** binding resolves the run's repository and its structured
+  output resolves to the agent's summary; a bound *and* run-linked thread keeps
+  its own binding; a lost binding falls back to the run instead of going quiet;
+  a plain thread with neither stays null; and the cross-project read answers the
+  same rows.
 - `TestCnvLastAgentLine` — the renderer alone: empty/whitespace → none, exactly
-  160 stays, 161 truncates, a cut never splits a rune.
+  160 stays, 161 truncates, a cut never splits a rune, and the JSON arms: summary
+  wins over goal, goal over the first top-level string, nested strings never
+  count, a blank summary falls through, a pretty-printed object reads, and prose
+  / a fenced block / an array / a truncated chunk / an object with no strings all
+  keep the raw text.
 - `TestConversationSummaryADR0065Fields` (`internal/api/conversations_test.go`):
   the route serves the three keys with values when the store has them and as
   literal `null`s (never omissions, never empty strings) when it does not.

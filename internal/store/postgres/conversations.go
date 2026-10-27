@@ -277,9 +277,10 @@ type CnvSummary struct {
 	// whether it is manual or run-linked without the detail route's joins.
 	Origin  string
 	RunLink *CnvRunLink
-	// RepositoryID/RepositoryName (ADR-0065): the thread's repository — the
-	// first repository bound to its newest live-or-released workspace. Both
-	// empty when the thread has no binding.
+	// RepositoryID/RepositoryName (ADR-0065, run-thread arm): the thread's
+	// repository — the first repository bound to its newest live-or-released
+	// workspace, else (a thread with no binding of its own) the repository of
+	// the run it is linked to. Both empty when neither says one.
 	RepositoryID   string
 	RepositoryName string
 	// LastAgentLine (ADR-0065): the newest agent message chunk rendered to a
@@ -293,11 +294,97 @@ type CnvSummary struct {
 // maxLength: 160; ADR-0065).
 const cnvLastAgentLineMax = 160
 
+// cnvStructuredAgentText returns the words an agent actually chose when one
+// transcript chunk is a JSON object — the shape a run node ends on, because
+// the agent's last message IS its structured output (`{"summary": "…", …}`).
+// The answer is a top-level string of that object, in this precedence:
+// `summary`, else `goal`, else the first top-level string in the object's own
+// document order (never an alphabetical pick, and never a nested value's — a
+// schema's inner strings are the shape, not the agent's line).
+//
+// It returns "" — "no better line than the raw text" — when the chunk is not
+// one JSON object (prose, a fenced code block, a truncated multi-chunk tail,
+// an array), when it holds no top-level string at all, or when every candidate
+// is blank. The caller then renders the raw text as it always did, so a
+// message that merely happens to contain a brace is untouched and nothing is
+// invented.
+func cnvStructuredAgentText(chunk string) string {
+	text := strings.TrimSpace(chunk)
+	// Cheap gate first: only a brace-wrapped chunk can be an object, and this
+	// keeps ordinary prose out of the decoder entirely.
+	if !strings.HasPrefix(text, "{") || !strings.HasSuffix(text, "}") {
+		return ""
+	}
+	dec := json.NewDecoder(strings.NewReader(text))
+	open, err := dec.Token()
+	if err != nil {
+		return ""
+	}
+	if delim, ok := open.(json.Delim); !ok || delim != '{' {
+		return "" // prose, an array, a bare word: today's rule reads it as text
+	}
+	var (
+		goal, first string
+		found       bool
+	)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		key, _ := keyTok.(string)
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			break
+		}
+		if len(value) == 0 || value[0] != '"' {
+			continue // number, bool, null, object or array: not the agent's line
+		}
+		var s string
+		if err := json.Unmarshal(value, &s); err != nil || strings.TrimSpace(s) == "" {
+			continue
+		}
+		if !found {
+			first, found = s, true
+		}
+		switch key {
+		case "summary":
+			return s // the schema's own headline wins, wherever it sits
+		case "goal":
+			if goal == "" {
+				goal = s
+			}
+		}
+	}
+	// Close the object and demand the message stop there: `}{` or `… } trailing
+	// prose` is not one structured output, and guessing over it is worse than
+	// today's rule.
+	if _, err := dec.Token(); err != nil {
+		return ""
+	}
+	if dec.More() {
+		return ""
+	}
+	if goal != "" {
+		return goal
+	}
+	if found {
+		return first
+	}
+	return ""
+}
+
 // cnvLastAgentLine renders one agent transcript chunk as the list row's
 // preview: the first non-empty line, trimmed, cut to cnvLastAgentLineMax runes
-// with a trailing ellipsis when longer. "" (rendered as JSON null by
-// apiNullString) means no line: no chunk at all, or only whitespace.
+// with a trailing ellipsis when longer. A chunk that is one JSON object (a run
+// node ending on its structured output) is read through
+// cnvStructuredAgentText first, so the row shows the agent's summary instead
+// of `{"summary": "…`. "" (rendered as JSON null by apiNullString) means no
+// line: no chunk at all, or only whitespace.
 func cnvLastAgentLine(chunk string) string {
+	if structured := cnvStructuredAgentText(chunk); structured != "" {
+		chunk = structured
+	}
 	for _, raw := range strings.Split(chunk, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
@@ -771,6 +858,23 @@ const cnvRepoSubquery = `
 		    LIMIT 1
 		) repo ON true`
 
+// cnvRunRepoSubquery is ADR-0065's run-thread arm: a thread a run node
+// opened (origin=run) usually owns no conversation-scoped workspace at all —
+// the WORK happened in the run's own workspace (ADR-0017) — so its binding is
+// empty and the honest repository is the one the linked run works on
+// (runs.repository_id, ADR-0060/0064). It rides the run-link lateral's
+// `la.run_id`, so it pays the runs primary-key seek plus the repositories
+// primary-key seek and nothing else (ADR-0063); a manual thread has no
+// `la.run_id`, and for it the lateral is one empty seek.
+const cnvRunRepoSubquery = `
+		LEFT JOIN LATERAL (
+		    SELECT r.id::text AS repository_id, r.name AS repository_name
+		    FROM runs ru
+		    JOIN repositories r ON r.id = ru.repository_id
+		    WHERE ru.id = la.run_id
+		    LIMIT 1
+		) runrepo ON true`
+
 // cnvLastAgentSubquery selects the newest agent-message chunk of the
 // conversation's transcript (ADR-0065): the last `conversation.message.agent`
 // journal row by global_seq, the order the transcript itself renders in. The
@@ -793,12 +897,15 @@ const cnvLastAgentSubquery = `
 // and cross-project) share for the ADR-0065 fields, and cnvListSummaryExtraJoins
 // the LATERALs that feed them. COALESCE + value scan, the same sentinel
 // convention as the run-link columns: an empty string means the lateral
-// matched nothing.
+// matched nothing. The repository is the workspace binding first and the
+// linked run's repository second — a run thread with no binding of its own
+// still names where its run works (ADR-0065, run-thread arm).
 const cnvListSummaryExtraColumns = `,
-		       COALESCE(repo.repository_id, ''), COALESCE(repo.repository_name, ''),
+		       COALESCE(repo.repository_id, runrepo.repository_id, ''),
+		       COALESCE(repo.repository_name, runrepo.repository_name, ''),
 		       COALESCE(lastmsg.text, '')`
 
-const cnvListSummaryExtraJoins = cnvRunLinkSubquery + cnvRepoSubquery + cnvLastAgentSubquery
+const cnvListSummaryExtraJoins = cnvRunLinkSubquery + cnvRepoSubquery + cnvRunRepoSubquery + cnvLastAgentSubquery
 
 // cnvListFilters renders the optional list filters. Both are ” = off, so a
 // plain list costs one equality-free clause; the q pattern escapes the three

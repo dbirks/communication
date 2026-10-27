@@ -400,10 +400,113 @@ describe("/p/:projectId/:repo", () => {
     const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
     const runLink = await screen.findByTestId(`repo-workspace-run-${runWorkspace.id}`);
     expect(runLink.getAttribute("href")).toBe(`/runs/${run.id}`);
-    // The row speaks: the workflow the run executes, named once the reads land.
+    // The row speaks: the workflow the run executes, named once the reads land
+    // — and only while the run carries no title of its own (ADR-0064).
     await waitFor(() => expect(row.textContent).toContain("Feature development"));
     // The bare id stays a title attribute, never a label in the row text.
     expect(row.textContent).not.toContain(runWorkspace.id);
+  });
+
+  /** One run-work row: a run-scoped workspace, the worker's last recorded view
+   * of this repository as `repoStatus`, the run view as `runBody`. */
+  function renderRunWorkRow(repoStatus: WorkspaceRepoStatus, runBody: Run = runView): Workspace {
+    const runWorkspace: Workspace = {
+      ...workspace,
+      id: "01987a78-8888-7000-8000-abcdef012345",
+      run_id: run.id,
+    };
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: routes([
+        {
+          path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+          body: { workspaces: [runWorkspace] },
+        },
+        {
+          path: `/api/v1/workspaces/${runWorkspace.id}/repos/${repositoryId}/status`,
+          body: { ...repoStatus, workspace_id: runWorkspace.id },
+        },
+        { path: `/api/v1/runs/${run.id}`, body: runBody },
+      ]),
+    });
+    return runWorkspace;
+  }
+
+  it("titles a run row with the run's own title before the workflow name", async () => {
+    const runWorkspace = renderRunWorkRow(workspaceStatus, {
+      ...runView,
+      status: "completed",
+      title: "Add saved cards to checkout",
+    } as Run);
+
+    const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
+    await waitFor(() => expect(row.textContent).toContain("Add saved cards to checkout"));
+    // The workflow name is the fallback, not a second label: an issue run is
+    // not "Feature development", it is the issue it was started for.
+    expect(row.textContent).not.toContain("Feature development");
+  });
+
+  it("says what a completed run actually did when the head moved past the base", async () => {
+    const runWorkspace = renderRunWorkRow(
+      {
+        ...workspaceStatus,
+        dirty: false,
+        modified_paths: [],
+        head_commit: "9b3d7e1f22222222222222222222222222222222222222222222222222222222",
+      },
+      { ...runView, status: "completed", title: "Add saved cards to checkout" } as Run,
+    );
+
+    const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
+    await waitFor(() => expect(row.textContent).toContain("done"));
+    // The commit is what is true; “no changes yet” would deny it.
+    expect(row.textContent).toContain("committed 9b3d7e1");
+    expect(row.textContent).not.toContain("no changes yet");
+    // No invented counts: the row never claims a number of commits.
+    expect(row.textContent).not.toMatch(/\d+ commits?/);
+  });
+
+  it("says no changes yet only when the head still equals the base", async () => {
+    const runWorkspace = renderRunWorkRow({
+      ...workspaceStatus,
+      dirty: false,
+      modified_paths: [],
+      head_commit: workspaceStatus.base_commit,
+    });
+
+    const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
+    await waitFor(() => expect(row.textContent).toContain("no changes yet"));
+    expect(row.textContent).not.toMatch(/committed [0-9a-f]{7}/);
+  });
+
+  it("claims only what it can see when the status serves no head commit", async () => {
+    const runWorkspace = renderRunWorkRow({
+      ...workspaceStatus,
+      dirty: false,
+      modified_paths: [],
+      head_commit: null,
+    });
+
+    const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
+    // Without a head the read cannot tell a committed run from an idle one,
+    // so the row says the weaker true thing.
+    await waitFor(() => expect(row.textContent).toContain("no uncommitted changes"));
+    expect(row.textContent).not.toContain("no changes yet");
+    // No commit sha is named: this read has no head to name. (`committed c…`
+    // in “uncommitted changes” is not a sha.)
+    expect(row.textContent).not.toMatch(/committed [0-9a-f]{7}/);
+  });
+
+  it("keeps the path manifest in front when a commit came after it", async () => {
+    const runWorkspace = renderRunWorkRow({
+      ...workspaceStatus,
+      dirty: true,
+      modified_paths: ["src/app.ts", "src/main.ts"],
+    });
+
+    const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
+    await waitFor(() => expect(row.textContent).toContain("2 files changed"));
+    expect(row.textContent).toContain("committed 9b3d7e1");
   });
 
   it("opens the existing new-thread flow from the header's New thread here", async () => {

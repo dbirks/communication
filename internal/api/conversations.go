@@ -297,13 +297,18 @@ type ConversationSummaryView struct {
 	Origin  string                   `json:"origin"`
 	RunLink *ConversationRunLinkView `json:"run_link"`
 	// RepositoryID/RepositoryName (ADR-0065): the thread's repository — the
-	// first repository bound to its newest live-or-released workspace. Both
-	// null when the thread has no binding.
+	// first repository bound to its newest live-or-released workspace, else
+	// the repository of the run it is linked to (a run node's thread has no
+	// binding of its own; the work is in the run's workspace). Both null when
+	// neither says one.
 	RepositoryID   *string `json:"repository_id"`
 	RepositoryName *string `json:"repository_name"`
 	// LastAgentLine (ADR-0065): the newest agent transcript row rendered to
 	// one preview line (first non-empty line, trimmed, ≤ 160 chars with an
-	// ellipsis when cut); null when the agent has not spoken.
+	// ellipsis when cut); a row that is one JSON object — the structured
+	// output a run node's agent ends on — is read from its own `summary`/
+	// `goal`/first string instead of printing braces. Null when the agent has
+	// not spoken.
 	LastAgentLine *string `json:"last_agent_line"`
 }
 

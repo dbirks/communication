@@ -22,7 +22,12 @@
  *   row records too (`RunCreate.issue`); a manual or thread start carries
  *   neither and is never counted;
  * - the issue list is GitHub's, read anonymously; a refused or spent read
- *   renders the upstream's own answer, never an invented list.
+ *   renders the upstream's own answer, never an invented list;
+ * - a WORK IN THIS REPO row says what the worker's recorded view can support:
+ *   the path manifest, else the dirty flag, else the commits (`committed
+ *   <short head>` when the head moved past the base). It never says "no
+ *   changes yet" over a commit, and with no head served it says only that
+ *   there are no *uncommitted* changes.
  */
 import { useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
@@ -42,12 +47,18 @@ import {
   useRepoIssues,
   type GitHubIssue,
 } from "../api/issues";
-import type { Assignment, Repository, RunSummary, Workspace } from "../api/types";
+import type {
+  Assignment,
+  Repository,
+  RunSummary,
+  Workspace,
+  WorkspaceRepoStatus,
+} from "../api/types";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { Spinner, ProblemBanner } from "../components/Feedback";
 import { RUN_STATE, SHORT_WORD, STATES, WORKSPACE_STATE } from "../components/ds/states";
-import { formatAge, shortId, testidOf } from "../lib/format";
+import { formatAge, shortCommit, shortId, testidOf } from "../lib/format";
 import { routes } from "../lib/routes";
 import { elapsed } from "./ProjectRuns";
 import { NewRunForm } from "../components/m4/NewRunForm";
@@ -607,23 +618,24 @@ function RepoWorkRow({ workspace, repository }: { workspace: Workspace; reposito
   const state = run ? (RUN_STATE[run.status] ?? workspaceState) : workspaceState;
   const spec = STATES[state];
 
-  const changes = status.data
-    ? status.data.modified_paths.length > 0
-      ? `${status.data.modified_paths.length} ${status.data.modified_paths.length === 1 ? "file" : "files"} changed`
-      : status.data.dirty
-        ? "changes recorded, paths not listed"
-        : "no changes yet"
-    : status.isPending
-      ? "checking…"
-      : "changes unknown";
+  // What the checkout holds, in the order the evidence gets weaker (design
+  // 1e): the worker's manifest of paths, then its dirty flag, then the
+  // commits. A run that committed and pushed is NOT "no changes yet" — the
+  // head moved, and `committed <sha>` is the true sentence (ADR-0064's
+  // honesty rule: never a count nobody served, never a denial of a commit).
+  // A status with no `head_commit` at all may only say there is nothing
+  // *uncommitted*, because whether it committed is not served either.
+  const changes = repoChangeWords(status.data, status.isPending);
 
   const owner = runId
     ? `Run #${shortId(runId)}${run ? ` · ${SHORT_WORD[RUN_STATE[run.status] ?? "queued"]}` : ""}`
     : conversationId
       ? "Thread"
       : "Workspace";
+  // The run's own banner first (ADR-0064's served `title`), the workflow name
+  // only when the run was never named.
   const title = runId
-    ? (run?.name ?? `Run #${shortId(runId)}`)
+    ? (run?.title ?? run?.name ?? `Run #${shortId(runId)}`)
     : conversationId
       ? (conversation.data?.title ?? "Thread")
       : "Workspace";
@@ -683,14 +695,43 @@ function RepoWorkRow({ workspace, repository }: { workspace: Workspace; reposito
   );
 }
 
+/**
+ * What one checkout's last recorded view is worth saying (design 1e). The
+ * worker's manifest outranks its dirty flag, and either outranks the commits:
+ * `head != base` is a commit the run made, so the row names it; a clean
+ * checkout whose head never moved says `no changes yet`; a status that does
+ * not serve a head may only claim there is nothing *uncommitted* — whether the
+ * agent committed is a question that read cannot answer.
+ */
+function repoChangeWords(status: WorkspaceRepoStatus | undefined, pending: boolean): string {
+  if (!status) return pending ? "checking…" : "changes unknown";
+  const paths = status.modified_paths.length;
+  const files =
+    paths > 0
+      ? `${paths} ${paths === 1 ? "file" : "files"} changed`
+      : status.dirty
+        ? "changes recorded, paths not listed"
+        : null;
+  const base = status.base_commit ?? "";
+  const head = status.head_commit ?? "";
+  const committed = head !== "" && head !== base ? `committed ${shortCommit(head)}` : null;
+  if (committed && files) return `${files} · ${committed}`;
+  if (committed) return committed;
+  if (files) return files;
+  return head !== "" ? "no changes yet" : "no uncommitted changes";
+}
+
 /** The mono ref link styling, shared by the three owner branches above (each
  * keeps its own literal `data-testid` — the test-id guard reads literals). */
 const WORKSPACE_REF_CLASS =
   "break-all font-mono text-[10.5px] text-accent-text underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
 
-/** The run behind a workspace, from `GET /runs/{id}` — only `status` and the
- * workflow name are read; null while the run read is open or there is no run. */
-function useRunSummary(runId: string | null): { status: string; name: string | null } | null {
+/** The run behind a workspace: its status, its own banner when it has one
+ * (ADR-0064's served `title`), and the workflow name it falls back to. Null
+ * while the run read is open or there is no run. */
+function useRunSummary(
+  runId: string | null,
+): { status: string; title: string | null; name: string | null } | null {
   const run = useRun(runId ?? "");
   const pipelines = usePipelines();
   if (!runId || !run.data) return null;
@@ -699,6 +740,7 @@ function useRunSummary(runId: string | null): { status: string; name: string | n
   );
   return {
     status: run.data.status,
+    title: run.data.title ?? null,
     name: slug ? slug.display_name || slug.slug : null,
   };
 }
