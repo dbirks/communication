@@ -256,6 +256,9 @@ export default function RunWorkbench({ projectId: projectIdProp }: { projectId?:
     const found = runQuery.data?.inputs?.find((input) => input.name === "goal");
     return typeof found?.value === "string" ? found.value : null;
   }, [runQuery.data]);
+  // The run's own banner (`RunSummary.title`, ADR-0064), the next honest title
+  // when there is no `goal` input; null when nobody named the run.
+  const runTitle = runQuery.data?.title ?? null;
 
   // The Artifacts tab's rows: every step's `artifact_refs`, named by the step
   // that references it. The count is this sum — "referenced" artifacts, the
@@ -861,6 +864,7 @@ export default function RunWorkbench({ projectId: projectIdProp }: { projectId?:
           projectId={projectId}
           run={run}
           goal={goal}
+          runTitle={runTitle}
           slug={slug}
           streamStatus={stream.status}
           repoName={repoName}

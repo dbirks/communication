@@ -14,6 +14,7 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import RunWorkbench from "./RunWorkbench";
+import { shortId } from "../lib/format";
 import type { Attempt, NodeExecution } from "../api/types";
 import {
   WIRE_NODE_IMPLEMENT,
@@ -507,6 +508,80 @@ describe("the run header's meta line", () => {
 
     const button = await screen.findByTestId("run-new-draft");
     expect(button.textContent).toBe("Fix the workflow…");
+  });
+});
+
+/* ---------------- the header's width is never a property of its own content */
+
+/**
+ * The width contract, read off the structure (jsdom performs no layout, so the
+ * classes *are* the layout here). The title/meta column used to be `flex-1`,
+ * whose zero flex-basis makes its width whatever the actions column leaves:
+ * a completed run at 1280 whose `Retry` reason sentence is showing measures
+ * 930px of actions out of 1008px, which squeezed the breadcrumb, the title and
+ * the whole meta line into a 66px column. The column now carries a 20rem basis
+ * floor and the header wraps its lines at the right edge, so the actions drop
+ * below the meta rather than eating it — and a header that already fits is
+ * untouched, which is why the same classes are asserted for a normal run.
+ */
+function headerWidthContract() {
+  const meta = screen.getByTestId("run-header-meta");
+  const column = meta.parentElement as HTMLElement;
+  const header = column.parentElement as HTMLElement;
+  const actions = header.children[1] as HTMLElement;
+  expect(column.getAttribute("data-testid")).toBe("run-header-title");
+  // The floor, not the zero basis that made the meta's width the buttons' slack.
+  expect(column.className).not.toContain("flex-1");
+  expect(column.className).toContain("basis-[20rem]");
+  expect(column.className).toContain("grow");
+  expect(column.className).toContain("min-w-0");
+  // The actions column leaves the line when it cannot fit beside the floor,
+  // and lands against the right edge of its own line where it already sat.
+  expect(header.className).toContain("flex-wrap");
+  expect(header.className).toContain("justify-end");
+  expect(actions.className).not.toContain("flex-1");
+  // The meta is a block in that column: it spans the column's whole width.
+  expect(meta.tagName).toBe("P");
+  return { meta, column, header, actions };
+}
+
+describe("the run header's width", () => {
+  it("puts the meta line on a flex-basis floor so a wide action column wraps below it", async () => {
+    mount();
+    await screen.findByTestId("run-header-meta");
+    headerWidthContract();
+  });
+
+  it("keeps that floor for a run whose goal is empty — the title's length is not the layout", async () => {
+    // A run the API serves with no `goal` input at all: the case that read as a
+    // ~66px meta column at 1280.
+    mount("", [{ path: RUN_PATH, body: { ...wireRun, inputs: [] } }]);
+
+    await screen.findByTestId("run-header-meta");
+    headerWidthContract();
+    // The workflow name and the pin are still the meta line's, not the title's:
+    // an unnamed run loses nothing but the sentence nobody wrote.
+    expect(screen.getByTestId("run-header-meta").textContent).toContain("feature-development #");
+  });
+
+  it("titles an empty-goal run with the title the server serves", async () => {
+    mount("", [
+      { path: RUN_PATH, body: { ...wireRun, inputs: [], title: "Add saved cards to checkout" } },
+    ]);
+
+    const title = await screen.findByTestId("run-title");
+    expect(title.textContent).toBe("Add saved cards to checkout");
+    headerWidthContract();
+  });
+
+  it("titles a run nobody ever named `Run #<short id>` — the inspector's own words", async () => {
+    mount("", [{ path: RUN_PATH, body: { ...wireRun, inputs: [], title: null } }]);
+
+    const title = await screen.findByTestId("run-title");
+    expect(title.textContent).toBe(`Run #${shortId(WIRE_RUN_ID)}`);
+    // No worker, no invention: the fallback is the run's own id and nothing else.
+    expect(title.textContent).not.toContain("undefined");
+    headerWidthContract();
   });
 });
 

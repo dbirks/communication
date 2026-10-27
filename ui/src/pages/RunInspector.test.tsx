@@ -1028,3 +1028,93 @@ describe("the run page's Retry control", () => {
     expect(verdict.reason.toLowerCase()).not.toMatch(/resumed|restored|no data lost/);
   });
 });
+
+/* ------------- the inspector header's width is never a property of its verbs */
+
+/** The classes *are* the layout — jsdom performs none — so this reads the same
+ * width contract `RunWorkbench.test.tsx` reads off the workbench header, from
+ * the inspector's own page. The title/meta column used to be `flex-1`, whose
+ * zero flex-basis makes its width whatever the actions column leaves: a
+ * completed run at 1280 with the `Retry` reason sentence showing left the meta
+ * line and the title a ~54–66px column. The column now carries a 20rem basis
+ * floor, the header wraps its lines at the right edge, and `RunActions` puts
+ * that sentence UNDER its verbs instead of asking for the header's whole width
+ * beside them (`w-full` on a non-wrapping row). A header that already fits side
+ * by side is untouched — which is why the normal run asserts the same classes. */
+function inspectorHeaderWidthContract() {
+  const classes = (el: Element) => el.getAttribute("class")?.split(/\s+/) ?? [];
+  const meta = screen.getByTestId("run-inspector-meta");
+  const column = meta.parentElement as HTMLElement;
+  const header = column.parentElement as HTMLElement;
+  const actions = screen.getByTestId("run-actions");
+
+  // The floor, not the zero basis that made the meta's width the buttons' slack.
+  expect(column.getAttribute("data-testid")).toBe("run-inspector-title");
+  expect(classes(column)).not.toContain("flex-1");
+  expect(classes(column)).toContain("basis-[20rem]");
+  expect(classes(column)).toContain("grow");
+  expect(classes(column)).toContain("min-w-0");
+  // The actions column leaves the line when it cannot fit beside the floor, and
+  // lands against the right edge of its own line where it already sat.
+  expect(classes(header)).toContain("flex-wrap");
+  expect(classes(header)).toContain("justify-end");
+  expect(classes(actions)).not.toContain("flex-1");
+  expect(header.children[1]).toBe(actions);
+
+  // The reason sentence is a line under the verbs, never a `w-full` flex item
+  // beside them: it may span the actions column, but it cannot demand the
+  // header's whole width and crush the meta line to afford it.
+  const verbs = actions.children[0] as HTMLElement;
+  expect(classes(verbs)).not.toContain("flex-col");
+  expect(verbs.contains(screen.getByTestId("run-pause"))).toBe(true);
+  expect(verbs.contains(screen.getByTestId("run-cancel"))).toBe(true);
+  for (const line of Array.from(actions.querySelectorAll("p"))) {
+    expect(verbs.contains(line)).toBe(false);
+    expect(classes(line)).not.toContain("w-full");
+    expect(classes(line)).toContain("max-w-full");
+  }
+  return { meta, column, header, actions };
+}
+
+describe("the inspector header's width", () => {
+  it("puts the meta line on a flex-basis floor so a wide action column wraps below it", async () => {
+    // The crushed case: a completed run whose gate was answered rejected, so the
+    // long `Retry` reason sentence is showing beside three verbs.
+    mountRun("", [
+      { path: RUN_PATH, body: { ...wireRun, status: "completed" } },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireRejectedGateNodes } },
+    ]);
+    await screen.findByTestId("run-title");
+
+    expect(screen.getByTestId("run-retry-reason").textContent).toContain("business outcome");
+    inspectorHeaderWidthContract();
+  });
+
+  it("keeps the side-by-side geometry for a normal run — the floor only changes the crush", async () => {
+    mountRun();
+    await screen.findByTestId("run-title");
+
+    // No reason line at all while the run works: the header is the same two
+    // columns it was, the meta column simply absorbs the leftover space.
+    expect(screen.queryByTestId("run-retry-reason")).toBeNull();
+    inspectorHeaderWidthContract();
+    expect(screen.getByTestId("run-inspector-meta").textContent).toContain("frames folded");
+  });
+
+  it("keeps the floor when a refused verb explains itself with an error line", async () => {
+    // The other `RunActions` sentence: a refusal coming back over the stream.
+    mountRun("", [
+      {
+        path: `${RUN_PATH}/pause`,
+        method: "POST",
+        status: 409,
+        body: { code: "conflict", run_id: WIRE_RUN_ID, run_status: "completed" },
+      },
+    ]);
+    await screen.findByTestId("run-title");
+    fireEvent.click(screen.getByTestId("run-pause"));
+
+    await screen.findByTestId("run-action-error");
+    inspectorHeaderWidthContract();
+  });
+});

@@ -14,6 +14,21 @@
  * `run.created` / `run.started` frame in the journal buffer names the actor
  * (never a worker name — ADR-0016 § 8).
  *
+ * Width honesty: the title/meta column is `grow` with a 20rem flex-basis FLOOR,
+ * not `flex-1`'s zero basis, and the header wraps. A zero basis makes that
+ * column whatever the actions column leaves, so its width was a property of
+ * the buttons, not of the page: a completed run at 1280 with the `Retry` reason
+ * sentence showing measured 930px of actions out of 1008px, which left the
+ * title and the whole meta line a 66px column. The floor is the point where
+ * the two columns stop fitting side by side (292px of verbs + actions observed
+ * at 1280, 930px with the reason sentence): below it the actions column drops
+ * to its own line, and `justify-end` keeps it against the right edge exactly
+ * where it sat when it shared the line — so a run whose header already fits
+ * renders pixel-identically at 390 and 1280, and one that did not gets its meta
+ * line back at full width. The title's own length never enters into it: the
+ * half-empty title case (a run that serves no `goal` at all) is the fallback
+ * below, not a narrower column.
+ *
  * The digest in that line is `shortDigest`'s full 12 hex chars — the same
  * spelling the runs list, the newer-revision notice and the diagnostics pin
  * all print. `docs/m4-contract.md` § 7.2 row W4 is the reason: the run page
@@ -44,6 +59,10 @@ export interface RunHeaderProps {
   /** The run's `goal` input, from the raw run row — null when the API serves
    * no inputs or the run was started without one. */
   goal: string | null;
+  /** The run's own served title (`RunSummary.title`, ADR-0064) — null exactly
+   * when the run was never named, which is the case that must not leave the
+   * header with no title at all. */
+  runTitle: string | null;
   /** The pipeline's slug (the honest title half when no goal is served). */
   slug: string;
   streamStatus: string;
@@ -63,6 +82,7 @@ export function RunHeader({
   projectId,
   run,
   goal,
+  runTitle,
   slug,
   streamStatus,
   revision,
@@ -91,8 +111,8 @@ export function RunHeader({
   };
 
   return (
-    <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line pb-3">
-      <div className="min-w-0 flex-1">
+    <header className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-b border-line pb-3">
+      <div className="min-w-0 grow basis-[20rem]" data-testid="run-header-title">
         <nav
           aria-label="Breadcrumb"
           data-testid="run-breadcrumb"
@@ -116,7 +136,7 @@ export function RunHeader({
         </nav>
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="truncate text-[19px] font-bold" data-testid="run-title">
-            {goal ? `“${goal}”` : `${slug} · ${shortId(run.id)}`}
+            {goal ? `“${goal}”` : (runTitle ?? `Run #${shortId(run.id)}`)}
           </h1>
           <RunStatusChip status={run.status} testid="run-header-status" />
           <span className="font-mono text-[11px] text-faint" data-testid="run-stream-status">

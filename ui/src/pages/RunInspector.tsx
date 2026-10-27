@@ -357,9 +357,23 @@ export default function RunInspector({
 
       <main className="min-w-0 px-4 py-3">
         {embedded ? null : (
-          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line pb-3">
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-mono text-[11px] text-muted">
+          /* Width honesty, identical to `RunHeader`: the meta/title column is
+           * `grow` with a 20rem flex-basis FLOOR, not `flex-1`'s zero basis, and
+           * the header wraps at the right edge. A zero basis made that column
+           * whatever the actions column left, so its width was a property of the
+           * buttons — a completed run whose `Retry` reason sentence is showing
+           * measured ~930px of actions out of 1008px at 1280, which left the meta
+           * line and the title a ~54–66px column. Below the floor the actions
+           * column drops to its own line and `justify-end` keeps it against the
+           * right edge exactly where it sat when it shared the line, so a header
+           * that already fits side by side renders unchanged and one that did not
+           * gets its meta line back at full width. */
+          <header className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-b border-line pb-3">
+            <div className="min-w-0 grow basis-[20rem]" data-testid="run-inspector-title">
+              <p
+                className="truncate font-mono text-[11px] text-muted"
+                data-testid="run-inspector-meta"
+              >
                 {slug} · pinned {shortDigest(run.revision_digest)} · {stream.events.length} frames
                 folded
               </p>
@@ -565,6 +579,16 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
   };
 }
 
+/** The run's verbs, and the sentence explaining a verb that is not offered.
+ *
+ * Layout: a column with the buttons in their own wrapping row, so the reason is
+ * a line UNDER the verbs rather than a `w-full` flex item beside them. In a
+ * single non-wrapping row, `w-full` on that sentence asks the row for 100% of
+ * the header's width on top of the buttons, which is what forced the title/meta
+ * column to collapse: the sentence's own length became the actions column's
+ * demanded width. `max-w-full` lets it take the column's width and wrap inside
+ * it instead. A run with no reason to show — the normal side-by-side case — has
+ * one child in this column and renders exactly where it rendered before. */
 export function RunActions({
   runId,
   status,
@@ -594,53 +618,55 @@ export function RunActions({
   const retryRun = () => retry.mutate({}, { onSuccess: () => setConflict(""), onError: report });
 
   return (
-    <div className="flex items-center gap-2">
-      {status === "paused" ? (
+    <div className="flex min-w-0 flex-col items-end gap-2" data-testid="run-actions">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {status === "paused" ? (
+          <Button
+            variant="primary"
+            disabled={resume.isPending}
+            data-testid="run-resume"
+            onClick={resumeRun}
+          >
+            Resume
+          </Button>
+        ) : (
+          <Button
+            variant="secondary"
+            disabled={terminal || pause.isPending}
+            title="In-flight attempts finish honestly — this is a request, not a stop"
+            data-testid="run-pause"
+            onClick={pauseRun}
+          >
+            Pause
+          </Button>
+        )}
         <Button
-          variant="primary"
-          disabled={resume.isPending}
-          data-testid="run-resume"
-          onClick={resumeRun}
+          variant="danger"
+          disabled={terminal || cancel.isPending}
+          data-testid="run-cancel"
+          onClick={cancelRun}
         >
-          Resume
+          Cancel
         </Button>
-      ) : (
-        <Button
-          variant="secondary"
-          disabled={terminal || pause.isPending}
-          title="In-flight attempts finish honestly — this is a request, not a stop"
-          data-testid="run-pause"
-          onClick={pauseRun}
-        >
-          Pause
-        </Button>
-      )}
-      <Button
-        variant="danger"
-        disabled={terminal || cancel.isPending}
-        data-testid="run-cancel"
-        onClick={cancelRun}
-      >
-        Cancel
-      </Button>
-      {verdict.show ? (
-        <Button
-          variant="secondary"
-          disabled={!verdict.available || retry.isPending}
-          title={verdict.reason}
-          data-testid="run-retry"
-          onClick={retryRun}
-        >
-          {retry.isPending ? "Retrying…" : "Retry"}
-        </Button>
-      ) : null}
+        {verdict.show ? (
+          <Button
+            variant="secondary"
+            disabled={!verdict.available || retry.isPending}
+            title={verdict.reason}
+            data-testid="run-retry"
+            onClick={retryRun}
+          >
+            {retry.isPending ? "Retrying…" : "Retry"}
+          </Button>
+        ) : null}
+      </div>
       {verdict.show && !verdict.available ? (
-        <p className="w-full font-mono text-[11px] text-faint" data-testid="run-retry-reason">
+        <p className="max-w-full font-mono text-[11px] text-faint" data-testid="run-retry-reason">
           {verdict.reason}
         </p>
       ) : null}
       {conflict ? (
-        <p className="w-full font-mono text-[11px] text-failed" data-testid="run-action-error">
+        <p className="max-w-full font-mono text-[11px] text-failed" data-testid="run-action-error">
           {conflict}
         </p>
       ) : null}
