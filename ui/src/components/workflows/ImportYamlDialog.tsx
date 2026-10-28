@@ -161,7 +161,7 @@ function DialogBody({ onClose }: { onClose: () => void }) {
                 id="import-yaml-slug"
                 value={slug}
                 onChange={(event) => setSlug(event.target.value)}
-                placeholder="feature-delivery"
+                placeholder="workflow-slug"
                 data-testid="import-yaml-slug"
               />
             </Field>
@@ -170,7 +170,7 @@ function DialogBody({ onClose }: { onClose: () => void }) {
                 id="import-yaml-name"
                 value={displayName}
                 onChange={(event) => setDisplayName(event.target.value)}
-                placeholder="Feature delivery"
+                placeholder="Workflow name"
                 data-testid="import-yaml-name"
               />
             </Field>

@@ -277,7 +277,7 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
                 setName(event.target.value);
                 if (!idEdited) setId(generateSlug(event.target.value));
               }}
-              placeholder="Retry payments plan"
+              placeholder="Name this workflow"
               className="font-ui! text-[14px]!"
               data-testid="library-new-name-input"
             />

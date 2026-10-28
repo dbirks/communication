@@ -196,7 +196,7 @@ export function AssistantProposalBox({
                     <Textarea
                       data-testid="assistant-proposal-input"
                       rows={2}
-                      placeholder="Insert a code reviewer after the tests"
+                      placeholder="Describe the change you want"
                       value={instruction}
                       disabled={blockedReason !== null || submitting}
                       onChange={(event) => {
