@@ -6,7 +6,7 @@
 // Reads out/<passId>/results.json (one JSON object per line: screens and
 // defects, written by the emu fixture), writes out/<passId>/index.html —
 // a per-screen PASS/FAIL table (sidescroll/parity/clip/target/overlap per
-// width) up
+// width, plus the design-landmark column) up
 // top, then the defects, then one row per screen with the app screenshot
 // beside its design render (both scaled to 50%) — and prints the summary
 // line `PASS <id>: <n> screens, <m> defects`.
@@ -48,8 +48,22 @@ const escape = (value) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
-/** The per-width checks on a screen record (reflow.ts); old passes lack them. */
+/** The per-width checks on a screen record (reflow.ts + design.ts). */
 const CHECK_NAMES = ["sidescroll", "parity", "clip", "target", "overlap"];
+
+/** Design landmarks (design.ts) get a column of their own: they are the one
+ * check of what a screen IS rather than how it lays out. Passes recorded before
+ * the check existed have no `design` key — that renders as `n/a`, not a
+ * failure. */
+const designCell = (widths) => {
+  const records = [widths[1280], widths[390]].filter(
+    (screen) => screen && screen.checks && screen.checks.design !== undefined,
+  );
+  if (records.length === 0) return '<span class="muted">n/a</span>';
+  return records.every((screen) => screen.checks.design === true)
+    ? '<span class="ok">PASS</span>'
+    : '<span class="bad">FAIL</span> <span class="muted">see the design defects</span>';
+};
 
 // Rows of the per-screen table: one per badge+name, a column per width.
 const resultOrder = [];
@@ -79,6 +93,7 @@ const resultRows = resultOrder
       <td>${escape(badge)}<br /><span class="muted">${escape(name)}</span></td>
       <td>${checkCell(widths[1280])}</td>
       <td>${checkCell(widths[390])}</td>
+      <td>${designCell(widths)}</td>
     </tr>`;
   })
   .join("\n");
@@ -140,10 +155,10 @@ const html = `<!doctype html>
   <h2>Per-screen results</h2>
   <table>
     <thead>
-      <tr><th>screen</th><th>1280</th><th>390</th></tr>
+      <tr><th>screen</th><th>1280</th><th>390</th><th>design</th></tr>
     </thead>
     <tbody>
-${resultRows.length > 0 ? resultRows : '    <tr><td colspan="3" class="muted">no screens recorded</td></tr>'}
+${resultRows.length > 0 ? resultRows : '    <tr><td colspan="4" class="muted">no screens recorded</td></tr>'}
     </tbody>
   </table>
   <h2>Defects</h2>

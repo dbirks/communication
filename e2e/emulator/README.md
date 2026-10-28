@@ -29,6 +29,9 @@ journeys are added as screens land.
    - **overlapping content** at either viewport — leaf text and controls whose
      boxes paint over one another (`reflow.ts` `findOverlaps`), recorded as
      `kind: overlap`;
+   - the screen's **design landmarks** at either width — the headings, tabs,
+     buttons, sections and fields its design render draws (`design.ts`),
+     structure only and never data, recorded as `kind: design`;
    - a failing journey's own error, as `kind: assertion` — a journey that
      hits a missing design element is a real defect, recorded, and the
      journey FAILS with a clear message. Journeys are written against the
@@ -39,7 +42,9 @@ journeys are added as screens land.
    screenshot}`; the fingerprint is a stable hash of kind + journey +
    screen + normalised detail (uuids and numbers stripped), so the same
    defect files one issue across passes.
-5. `report.mjs` renders `out/<passId>/index.html` — defects on top, then
+5. `report.mjs` renders `out/<passId>/index.html` — defects on top, then the
+   per-screen results table (a column per width plus the **design** column),
+   then
    one row per screen with the app screenshot beside its design render
    (both at 50%) — and prints `PASS <id>: <n> screens, <m> defects`
    (exit 0 when clean, 1 otherwise).
@@ -92,8 +97,8 @@ e2e/emulator/out/<passId>/
 ## Defect rules
 
 - A defect is anything the fixture records: `pageerror`, `console`,
-  `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`, `overlap`. A pass is
-  clean when results.json holds zero defect lines.
+  `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`, `overlap`,
+  `design`. A pass is clean when results.json holds zero defect lines.
 - Deliberate failures a journey exercises inline are *declared*:
   `emu.expectFailure(/\/api\/v1\/pipelines$/, 409)`. Anything undeclared
   with status ≥ 400 is a defect.
@@ -164,10 +169,87 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
 Like sidescroll today, every violation is a RECORDED defect (one aggregated
 defect per kind per screen, so fingerprints stay stable) — never a throw —
 so the screenshot still lands and the loop files it. Each screen record in
-`results.json` carries `checks: {sidescroll, parity, clip, target, overlap}`
+`results.json` carries `checks: {sidescroll, parity, clip, target, overlap, design}`
 per width (true = pass; the 390-only checks trivially pass on the 1280 record,
-while `overlap` is evaluated at both), and `report.mjs` renders them as the
-**Per-screen results** table on top of the report.
+while `overlap` and `design` are evaluated at both), and `report.mjs` renders
+them as the **Per-screen results** table on top of the report.
+
+## Design landmarks (is this the screen its render drew?)
+
+Reflow proves a screen survives 390px; it proves nothing about whether the
+screen is the one the design drew. `e2e/emulator/design.ts` therefore holds
+`DESIGN_LANDMARKS`: one entry per captured screen, keyed `"<badge> <screen
+name>"` — the same words `emu.screen(badge, name)` records (`2a use-dialog`,
+`1g studio`, …). `emu.screen()` evaluates the screen's landmarks **at both
+widths**; a miss records `kind: design` with
+`design landmark missing: <desc>` (one defect per missing landmark per screen,
+fingerprinted exactly like the other kinds, so it files one issue across
+passes), and the screen record's `checks.design` goes false. `report.mjs`
+shows it as the table's **design** column.
+
+**Structure, never data.** The lab's data is real and the mock's is invented,
+so a landmark may only ask for the parts the design owns: a heading, a tab, a
+button, a section, a field. Specs address elements by
+
+- `testid` (optionally `current: true`, which additionally requires
+  `aria-current="page"` — how this app marks the tab you are standing on),
+- `{ role, name?, level? }` — an accessible role with a name **regex**
+  (`{ role: "heading", name: /^RUNNING NOW/i }` catches the panel whatever
+  its count reads), or
+- `{ text }` — a copy regex over words the *design* wrote (`/^pinned r/i`,
+  `/not used in any repo yet/i`), never a repo name, a count or a run id.
+
+A landmark is satisfied when **ANY** of its specs matches an element that
+renders — a non-zero box, not `display:none`/`visibility:hidden` — inside
+`<main>` or an open dialog; being scrolled out of view is fine, since the
+screen's own full-page screenshot shows it. `only?: 1280|390` narrows a
+landmark to one width, but the phone swap is better expressed as ONE landmark
+whose `any` carries both forms, which is the 390 rule read as a landmark: the
+content is there, or the one tap that reaches it is (`threads-1g`'s list
+landmark accepts the 1280 list pane or the 390 `← Threads` back link).
+
+Coverage cannot lapse: a badge that HAS a design render
+(`docs/design/handoff-workflows/png/<badge>.png`,
+`docs/design/handoff-projects/png/<badge>.png`) and no entry is itself a
+`design` defect (`no landmarks defined`), so adding a screen forces a landmark
+list. Screens with no design render at all — `run-gate`, `artifact` — are
+exempt and their `checks.design` trivially passes. A screen name whose tail is
+a per-pass id (`2e schedule-run-9c1e04f2`) finds its entry by shape: a run of
+6+ hex characters collapses to `*`, so it lives under `2e schedule-run-*`.
+
+What each list asserts is read off the renders themselves (and the app's real
+testids, never a guess): the 1b index's heading, both authoring verbs, the
+START BLANK + template starter cards, the search field, the `all` /
+`has open draft` chips and a row's `Edit` + `⋯`; the 1c dialog's NAME field,
+`id:` line with `change`, START FROM (Blank among them), FOLDER select and
+both footer verbs; the 1e breadcrumb, title, revision chip, four tabs,
+`Use in a repo…`, the read-only graph and the USED IN / INPUTS / LAST RUNS
+rail; the 1g header (draft chip, Canvas|YAML, undo, redo, Validate, Save,
+Publish), the ADD A STEP palette with its search and the Agent / Model /
+Command / Approval rows, WRAP STEPS with Repeat until and For each, the
+canvas, the inspector (plus the selected step's card, `kind · after` line,
+prompt field and advanced disclosure on the inspector-edit beat), the
+`Ask to change this draft…` row and the status bar; the 2a panel, its empty
+line or its rows' pinned revision and `Open ›` with the footnote; the 2c
+dialog's START IT WHEN segments, its arm's fields, THE RUN GETS and both
+verbs — and, for the saved arms, the STARTS WHEN row with its switch and
+`Edit` on the repo page; the 2d tab with its revision select, Copy, download
+and line-numbered text; the 2e/repo-1e page verbs, WORKFLOWS ON THIS REPO
+with its library link, the row verbs, the STARTS WHEN box, and (Projects
+Review) OPEN ISSUES, WORK IN THIS REPO and RECENT RUNS; the project overview's
+title, two verbs, six tabs and RUNNING NOW / RECENT THREADS / REPOSITORIES /
+WORKFLOWS panels; and threads-1g's heading, New thread, search, chips, thread
+title, control badge, transcript and composer with Send. Server-error variants
+keep the page heading and the error panel; `NEEDS YOUR DECISION`, the
+`used in <project>` chip, the header's `Edit workflow` verb and the thread
+`Stop` control are deliberately **not** landmarks — they appear only on a state
+or a permission the pass does not control (`Stop` needs a live turn, `Edit
+workflow` the library role, the chip a project of the viewer's that pins the
+workflow), so asserting them would prove who signed in rather than what the
+screen draws. Where an error state genuinely has no heading — the Studio whose
+draft read failed, the repository page whose repository list failed — the
+landmark STAYS in the list and the screen reports the miss: a failed read is not
+an excuse to lose the page.
 
 ## Current journeys
 

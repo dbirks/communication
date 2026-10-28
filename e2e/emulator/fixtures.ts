@@ -17,7 +17,13 @@
 //     and touch targets ≥ 44px — every violation is likewise RECORDED. At
 //     BOTH widths it runs the overlap check (`findOverlaps`): leaf text and
 //     controls whose boxes paint over one another by more than 4px on both
-//     axes is a defect on the desk as much as on the phone.
+//     axes is a defect on the desk as much as on the phone. At BOTH widths it
+//     also asserts the screen's DESIGN LANDMARKS (design.ts): the headings,
+//     tabs, buttons, sections and fields its design render draws, matched by
+//     testid, by role+name or by design-owned copy — structure, never data. A
+//     badge with a design render and no landmark entry is itself a defect
+//     (coverage cannot lapse silently); a badge with no design render
+//     (`run-gate`, `artifact`) is exempt.
 //
 // At each test's end the fixture appends one JSON line per screen and per
 // defect to out/<passId>/results.json. A journey that FAILS records a
@@ -39,6 +45,7 @@ import {
   type EmuChecks,
   type ReflowItem,
 } from "./reflow.js";
+import { landmarksFor, missingLandmarks, type Landmark } from "./design.js";
 
 /** A defect kind, as reported in results.json and the issue title. */
 export type EmuDefectKind =
@@ -50,7 +57,8 @@ export type EmuDefectKind =
   | "reflow"
   | "clip"
   | "target"
-  | "overlap";
+  | "overlap"
+  | "design";
 
 export interface EmuDefect {
   kind: EmuDefectKind;
@@ -74,8 +82,13 @@ export interface EmuScreen {
   designPng: string | null;
   /** The design render, relative to the pass output directory (for HTML). */
   designRel: string | null;
-  /** Per-width check outcomes (true = pass); see reflow.ts. */
-  checks: EmuChecks;
+  /** Per-width check outcomes (true = pass); see reflow.ts and design.ts. */
+  checks: EmuScreenChecks;
+}
+
+/** reflow.ts's per-width checks, plus this screen's design landmarks. */
+export interface EmuScreenChecks extends EmuChecks {
+  design: boolean;
 }
 
 /** The recording handle the fixture hands to a journey. */
@@ -276,10 +289,28 @@ class EmuRecorder {
    * on the 1280 record (they are defined against the phone reflow). The
    * overlap check (reflow.ts `findOverlaps`) is NOT 390-only: content painting
    * over content is a defect at either width, so it runs on every screen at
-   * 1280 and 390.
+   * 1280 and 390. The design landmarks (design.ts) run at both widths too: a
+   * screen that reflows perfectly but is missing its dialog's FOLDER select —
+   * or drew the wrong page altogether — is not the screen its render drew.
    */
   async screen(badge: string, name: string): Promise<void> {
     this.currentScreen = `${badge} ${name}`;
+    const design = designPngFor(badge);
+    // A badge WITH a design render must have landmarks. A badge with none
+    // (`run-gate`, `artifact`) is exempt: nothing to match, `checks.design`
+    // trivially passes.
+    const landmarks: Landmark[] | null = landmarksFor(badge, name) ?? null;
+    if (design !== null && landmarks === null) {
+      this.record(
+        "design",
+        `design landmark missing: no landmarks defined for "${badge} ${name}" — ` +
+          `${badge}.png is a design render, so this screen's structure is unasserted`,
+      );
+    }
+    // One defect per missing landmark per SCREEN (not one per width): the
+    // fingerprint is kind + journey + screen + normalised detail, and a
+    // landmark missing at both widths is one problem, filed once.
+    const reportedLandmarks = new Set<string>();
     let desktopItems: ReflowItem[] | null = null;
     for (const [width, height] of [
       [1280, 900],
@@ -295,12 +326,13 @@ class EmuRecorder {
         innerWidth: window.innerWidth,
         href: location.href,
       }));
-      const checks: EmuChecks = {
+      const checks: EmuScreenChecks = {
         sidescroll: true,
         parity: true,
         clip: true,
         target: true,
         overlap: true,
+        design: true,
       };
       const shot = `${badge}-${name}-${width}.png`;
       await this.page.screenshot({
@@ -330,6 +362,15 @@ class EmuRecorder {
           "overlap",
           `${overlaps.length} overlapping pair(s): ${overlaps.slice(0, 3).map(pair).join("; ")}${extra}`,
         );
+      }
+      if (landmarks !== null) {
+        const absent = await missingLandmarks(this.page, landmarks, width);
+        checks.design = absent.length === 0;
+        for (const landmark of absent) {
+          if (reportedLandmarks.has(landmark.id)) continue;
+          reportedLandmarks.add(landmark.id);
+          this.record("design", `design landmark missing: ${landmark.desc}`);
+        }
       }
       if (width === 1280) {
         desktopItems = items;
@@ -365,7 +406,6 @@ class EmuRecorder {
           );
         }
       }
-      const design = designPngFor(badge);
       this.screens.push({
         badge,
         name,
