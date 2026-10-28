@@ -535,6 +535,26 @@ if ! m4_stack_up; then
 fi
 say "readiness: both replicas 200"
 
+# The replicas answering is NOT sufficient: compose starts the `lb` (Caddy)
+# container LAST, and a request sent right after Caddy reports "Started" is
+# reset (measured 5/5: curl rc=56; Caddy answers ~50ms later). login() talks to
+# $M4_URL through the LB, so wait until readiness answers 200 THROUGH IT before
+# the first request — bounded at 30s, polling every 0.5s.
+lb_tries=0 lb_err=""
+lb_deadline=$((SECONDS + 30))
+while :; do
+    lb_tries=$((lb_tries + 1))
+    if lb_err="$(curl -fsS --max-time 5 "$M4_URL/api/v1/system/readiness" -o /dev/null 2>&1)"; then
+        say "readiness: load balancer 200 after $lb_tries tries"
+        break
+    fi
+    if [ "$SECONDS" -ge "$lb_deadline" ]; then
+        LAST_NOTE="curl: $(printf '%s' "$lb_err" | m4_oneline) — last of $lb_tries attempts in 30s (stack down? § 7.0 compose up first)"
+        loud "readiness: load balancer $M4_URL did not answer 200 on /api/v1/system/readiness within 30s"
+    fi
+    sleep 0.5
+done
+
 login alice; login bob; login carol; login dan; login erin; login admin
 create_project
 put_member bob contributor
