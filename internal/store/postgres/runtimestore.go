@@ -702,22 +702,28 @@ func writeRowsTx(ctx context.Context, tx pgx.Tx, st *runtime.State, hydrated hyd
 		if reflect.DeepEqual(old, *a) {
 			continue
 		}
-		if err := updateAttemptTx(ctx, tx, id, a); err != nil {
-			return err
-		}
 		// ADR-0023 § 4 step 1's decrement is not the worker's private debt. The
 		// engine terminalizes attempts on behalf of writers that can never reach
 		// RunStore.FinishAttempt — § 5.4 pass 1's lease interrupt, pass 5's lost
 		// workspace, a run cancel's cascade, § 5.3's human takeover hand-off, a
 		// control-plane fail — and this write-back is the single place all of
-		// them land. The slot goes back in THIS transaction, exactly once: the
-		// diff's own previous status (hydrated under the run row lock) must have
-		// been non-terminal, so a second pass over an already-terminal row writes
-		// nothing here.
-		if !attemptStatusTerminal(old.Status) && attemptStatusTerminal(a.Status) {
-			if err := releaseWorkerSlotTx(ctx, tx, id); err != nil {
-				return err
-			}
+		// them land. The slot goes back in THIS transaction, exactly once — but
+		// "was the row live, whose slot is it" must be read from the LIVE row
+		// under a lock, not from this pass's hydration snapshot: the worker
+		// claim path never takes the run row lock, so between hydrate and this
+		// write a queued row can have been claimed (the run-cancel leak: the
+		// stale write NULLs the worker_id, the join-based release then matches
+		// nothing, and the fence-refused owner never releases), and a
+		// leased/running row can have been terminalized by its owner (a second
+		// release charged to whichever slot the worker holds next — the
+		// `active_attempts > 0` backstop only hides it when the worker is at
+		// zero). releaseSlotOnEngineTerminalTx locks the row BEFORE the UPDATE
+		// overwrites the evidence and releases against what it finds.
+		if err := releaseSlotOnEngineTerminalTx(ctx, tx, id, a.Status); err != nil {
+			return err
+		}
+		if err := updateAttemptTx(ctx, tx, id, a); err != nil {
+			return err
 		}
 	}
 	for _, ap := range st.Approvals {

@@ -655,10 +655,15 @@ func attemptStatusTerminal(status string) bool { return attemptTerminalStatuses[
 // Exactly-once is the CALLER's proof, not this statement's: it only fires for a
 // transition whose PREVIOUS status was non-terminal, which the fenced worker
 // commit establishes under `FOR UPDATE` (runCheckFence refuses a terminal
-// attempt) and the engine's write-back establishes against its hydration
-// snapshot, taken under the run row lock. The `active_attempts > 0` guard is the
-// backstop that keeps a mis-call from going negative (workers active_attempts
-// CHECK), and a worker row that is already gone releases nothing.
+// attempt). The engine's write-back does NOT lean on its hydration snapshot —
+// the claim path takes no run lock, so the snapshot can be stale in exactly the
+// ways that corrupt this accounting; it decides against the live row under
+// `FOR UPDATE` instead (releaseSlotOnEngineTerminalTx below). The
+// `active_attempts > 0` guard is the backstop that keeps a mis-call from going
+// negative (workers active_attempts CHECK), and a worker row that is already
+// gone releases nothing. It is a backstop, not a semantic: an over-release it
+// silently clamps is a slot STOLEN from another live attempt while the worker
+// still holds capacity.
 //
 // The worker is read from the attempt row itself, so the slot always goes back
 // to the worker that was counted at claim time — never to a caller's memory of
@@ -670,6 +675,50 @@ func releaseWorkerSlotTx(ctx context.Context, tx pgx.Tx, attemptID string) error
 		WHERE a.id = $1::uuid AND w.id = a.worker_id AND w.active_attempts > 0`,
 		attemptID); err != nil {
 		return fmt.Errorf("postgres: release attempt slot for attempt %s: %w", attemptID, err)
+	}
+	return nil
+}
+
+// releaseSlotOnEngineTerminalTx is the engine write-back's half of the same
+// debt (ADR-0023 § 4 step 1): it gives the slot back when — and only when —
+// THIS transaction's updateAttemptTx is the write that ends the attempt. The
+// decision reads the LIVE row under `SELECT … FOR UPDATE`, not the pass's
+// hydrated snapshot, because the snapshot is stale in exactly the two ways that
+// corrupt the accounting: a claim that landed after hydration has already paid
+// a slot on a worker the pass never saw (a snapshot-based release joins the
+// worker_id this very write NULLs — the run-cancel cascade leak), and a
+// terminal write from the owner has already returned a slot the snapshot still
+// shows live (a double release charged to the worker's next held slot).
+// Holding the attempt row from the decision through the UPDATE makes the pair
+// atomic against both writers: the claim's `FOR UPDATE … SKIP LOCKED` will not
+// pick a locked row, and RunStore.FinishAttempt's fence waits behind this lock
+// (and is refused once the row is terminal), so the non-terminal→terminal
+// transition of one attempt row releases exactly once, in the transaction that
+// performs it.
+func releaseSlotOnEngineTerminalTx(ctx context.Context, tx pgx.Tx, attemptID, newStatus string) error {
+	if !attemptStatusTerminal(newStatus) {
+		return nil // this write does not end the attempt; its slot stays held
+	}
+	var status string
+	var workerID *string
+	err := tx.QueryRow(ctx, `
+		SELECT status, worker_id FROM attempts WHERE id = $1::uuid FOR UPDATE`, attemptID).
+		Scan(&status, &workerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // no row to terminalize: the write-back's UPDATE lands on nothing either
+	}
+	if err != nil {
+		return fmt.Errorf("postgres: lock live attempt %s for the engine terminal release: %w", attemptID, err)
+	}
+	if attemptStatusTerminal(status) || workerID == nil {
+		// Already terminal (the transition's own writer released), or unowned
+		// (a queued row never took a slot).
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE workers SET active_attempts = active_attempts - 1
+		WHERE id = $1::uuid AND active_attempts > 0`, *workerID); err != nil {
+		return fmt.Errorf("postgres: release engine-terminal slot of attempt %s on worker %s: %w", attemptID, *workerID, err)
 	}
 	return nil
 }

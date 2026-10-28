@@ -82,9 +82,12 @@ func arLedger(t *testing.T, ctx context.Context, f *m4Fixture, workerID string) 
 }
 
 // arGate asserts C3/C9a for one worker: the column equals the ledger, and never
-// goes negative (the workers active_attempts CHECK would refuse it anyway).
+// goes negative (the workers active_attempts CHECK would refuse it anyway). The
+// match itself runs through assertSlotsMatchLedger — the same C9a invariant the
+// cancel-cascade race tests check after every step.
 func arGate(t *testing.T, ctx context.Context, f *m4Fixture, workerID string, want int) {
 	t.Helper()
+	assertSlotsMatchLedger(t, ctx, f.pool, t.Name()+" gate", workerID)
 	active, ledger := arActive(t, ctx, f, workerID), arLedger(t, ctx, f, workerID)
 	if active != want || ledger != want {
 		t.Fatalf("worker gate: active_attempts = %d, non-terminal ledger = %d, want both %d",
