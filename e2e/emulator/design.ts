@@ -429,6 +429,13 @@ const STUDIO_DRAFT_ERROR: Landmark = {
   desc: "the panel that says the draft could not be read",
   any: [{ testid: "studio-draft-error" }, { role: "alert" }],
 };
+/** The failed draft read (issue #23): the Studio stays a Studio —
+ * `studio-error-page` keeps the `Workflows / …` breadcrumb and an H1 named only
+ * from what the reads answered (the pipeline's title, else `Workflow draft`) and
+ * puts the ProblemBanner with its Retry underneath. The landmark therefore asks
+ * for the H1, or either half of that header; `studio-page` — the frame the loaded
+ * Studio draws — stays as the alternate so the claim is one heading standing over
+ * the page, whichever frame is carrying it. */
 const STUDIO_ERROR_HEADING: Landmark = {
   id: "studio-error-heading",
   desc: "the page heading that stands over a failed draft read",
@@ -704,6 +711,14 @@ const REPO_RUNS_PANEL: Landmark = {
   desc: "the RECENT RUNS panel",
   any: [{ testid: "repo-runs" }, { role: "heading", name: /^RECENT RUNS/i }],
 };
+/** The repository page's failed reads. `repo-1e not-found` says so inside the
+ * `repo-page` frame, and since issue #24 so does the failed repositories read:
+ * `repo-error-page` keeps the project breadcrumb and the page's own H1
+ * (`Repository` — the repository's name is exactly what the failed read cannot
+ * answer) above the ProblemBanner and its Retry. Any of the H1, the not-found
+ * frame, or the loaded page's `repo-header` is a heading standing over the
+ * banner, which is the claim; the failure screen's own `repo-error-header` is not
+ * named here because the H1 spec already matches it. */
 const REPO_FAILED_HEADING: Landmark = {
   id: "repo-failed-heading",
   desc: "the page heading that stands over a failed repository read",
@@ -1086,6 +1101,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     STUDIO_ASSISTANT,
     STUDIO_STATUS_BAR,
   ],
+  // A draft that cannot be read is still the Studio page (#23): the breadcrumb
+  // and the H1 stand over the banner that quotes the server, with a Retry under
+  // it — the same rule the 1e workflow page's failed read has always followed.
   "1g server-error": [STUDIO_ERROR_HEADING, STUDIO_DRAFT_ERROR],
 
   /* ------------------------------------------------- 2a · Used in + its dialog */
@@ -1278,9 +1296,13 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   ],
   "repo-1e not-found": [REPO_PAGE, REPO_FAILED_HEADING, REPO_NOT_FOUND],
   // The design has no server-error render; the app's own rule (README) is that
-  // a failed read keeps its heading and quotes the server. `repo-page`/
-  // `repo-header` are in the heading landmark's `any` because the repos read
-  // failing renders the banner ALONE (no page frame) — a real gap, reported.
+  // a failed read keeps its heading and quotes the server, and the repos read now
+  // follows it (#24): `repo-error-page` keeps the project breadcrumb and the
+  // page's H1 (`Repository`) over the ProblemBanner, with a Retry beneath. The
+  // banner no longer renders alone, so `repo-page`/`repo-header` remain in the
+  // heading landmark's `any` only as the frames the neighbouring screens draw
+  // (`repo-1e not-found` and the loaded page) — the failure screen is proven by
+  // its own H1.
   "repo-1e server-error": [REPO_FAILED_HEADING, ERROR_PANEL],
 
   /* ------------------------------------------------ threads-1g · /threads */
