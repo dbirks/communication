@@ -15310,14 +15310,21 @@ def c14_lock_marks(services=("api-a", "api-b"), since=None):
     """{service: n} occurrences of the driver's lock-acquisition line in the compose
     logs; None when the logs are unreadable (an unobservable log GAPs, never PASSes).
     `since` bounds the read to an ISO timestamp (compose `--since`) so a long-lived lab
-    does not report an unbounded history as if it were the roll window."""
+    does not report an unbounded history as if it were the roll window.
+
+    Only a failed read (rc != 0, or the compose invocation raising) is "unreadable".
+    rc == 0 with empty output is a READABLE log with zero lines — that is a real
+    observation of 0 marks, so it returns {service: 0} and c14_lock_verdicts decides
+    the GAP from the 0 count. Treating it as unreadable made C14b's GAP reason flip
+    between runs ("the serve logs could not be read" vs "no acquisition line exists")
+    for the same underlying fact."""
     cmd = COMPOSE + ["logs", "--no-color"] + (["--since", since] if since else []) \
         + list(services)
     try:
         rc, out = run(cmd)
     except Exception:  # noqa: BLE001 — docker compose logs unreadable is a GAP, not a crash
         return None
-    if rc != 0 or not out.strip():
+    if rc != 0:
         return None
     return c14_lock_lines(out, services)
 

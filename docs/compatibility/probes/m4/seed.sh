@@ -536,10 +536,14 @@ fi
 say "readiness: both replicas 200"
 
 # The replicas answering is NOT sufficient: compose starts the `lb` (Caddy)
-# container LAST, and a request sent right after Caddy reports "Started" is
-# reset (measured 5/5: curl rc=56; Caddy answers ~50ms later). login() talks to
-# $M4_URL through the LB, so wait until readiness answers 200 THROUGH IT before
-# the first request — bounded at 30s, polling every 0.5s.
+# container LAST, so this guard waits until readiness answers 200 THROUGH the LB
+# before the first request (login() talks to $M4_URL through it) — bounded at 30s,
+# polling every 0.5s. HISTORY, honestly stated: this wait was added after a reseed
+# failure whose output was discarded, and the cause was NOT proven. Restarting `lb`
+# in situ and firing immediate requests produced 0 failures in 3+3 tries; the ~50ms
+# window in which a standalone Caddy container resets requests (curl rc=56) was
+# measured on a standalone container, not on this stack. So: a cheap guard against
+# an unconfirmed cause, not a documented workaround for a reproduced one.
 lb_tries=0 lb_err=""
 lb_deadline=$((SECONDS + 30))
 while :; do

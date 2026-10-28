@@ -309,6 +309,35 @@ class D6AdvisoryLockProbe(unittest.TestCase):
                                                 {"api-a": 2, "api-b": 1}),
                             "advisory lock moves to a surviving replica"))
 
+    def test_readable_but_empty_log_is_zero_marks_not_unreadable(self):
+        """compose `logs --since <now>` with no lines yet in the window returns rc=0 and
+        empty output: that is a READABLE log with zero marks, so it must report
+        {service: 0} (and GAP via the 0-count branch of c14_lock_verdicts). Only a
+        non-zero rc (or a raising invocation) means the logs could not be read."""
+        real = m.run
+        try:
+            for rc, out, want in ((0, "", {"api-a": 0, "api-b": 0}),
+                                 (0, "   \n", {"api-a": 0, "api-b": 0}),
+                                 (0, "api-b-1 | m4 driver acquired the advisory lock\n",
+                                  {"api-a": 0, "api-b": 1}),
+                                 (1, "docker: not found", None)):
+                m.run = lambda cmd, _rc=rc, _out=out: (_rc, _out)
+                self.assertEqual(want, m.c14_lock_marks(), f"rc={rc} out={out!r}")
+
+            def boom(cmd):
+                raise OSError("compose unreadable")
+            m.run = boom
+            self.assertIsNone(m.c14_lock_marks())
+        finally:
+            m.run = real
+        # the 0-count dict still GAPs — never a PASS by silence
+        self.assertIsNone(one(m.c14_lock_verdicts({"api-a": 0, "api-b": 0},
+                                                  {"api-a": 0, "api-b": 0}),
+                             "advisory lock moves to a surviving replica"))
+        self.assertIsNone(one(m.c14_off_replica_verdicts(
+            "api-a", "api-b", {"/x": 200}, (201, "r"), ["queued"], "running",
+            {"api-a": 0, "api-b": 0}), "never claims the driver's advisory lock"))
+
     def test_compose_log_prefix_is_matched_tolerantly(self):
         log = ("api-a  | 2026-10-16T03:00:00Z INF m4 driver acquired the advisory lock\n"
                "api-b  | 2026-10-16T03:00:01Z INF something else\n"
