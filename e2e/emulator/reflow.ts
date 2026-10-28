@@ -161,6 +161,20 @@ export function collectReflowItems(): ReflowItem[] {
     seen.add(key);
     items.push({ key, label, containers });
   };
+  // A tab's IDENTITY excludes live counts. A running job can add a count badge
+  // to a tab BETWEEN the two captures (dbirks/communication#22: the run
+  // workbench's Artifacts tab gains `<span …>1</span>` when the publish_plan
+  // step succeeds), so its textContent goes "Artifacts" → "Artifacts1" and the
+  // key `tab:Artifacts` looks LOST at 390 — a false positive. Drop descendant
+  // elements that carry only a number, then normalise what remains; a tab whose
+  // whole label is numeric keeps its text so it never disappears entirely.
+  const tabIdentity = (el: Element): string => {
+    const clone = el.cloneNode(true) as HTMLElement;
+    for (const child of Array.from(clone.querySelectorAll("*"))) {
+      if (/^\d+$/.test(norm(child.textContent))) child.remove();
+    }
+    return norm(clone.textContent);
+  };
   const nodes = main.querySelectorAll("h1, h2, h3, [role='heading'], [role='tab'], [data-testid]");
   for (const el of Array.from(nodes)) {
     if (inShell(el) || !rendered(el)) continue;
@@ -177,7 +191,7 @@ export function collectReflowItems(): ReflowItem[] {
       if (text) add(`heading:${text}`, `heading "${text.slice(0, 60)}"`, containers);
     }
     if (role === "tab") {
-      const name = norm(el.getAttribute("aria-label")) || norm(el.textContent);
+      const name = norm(el.getAttribute("aria-label")) || tabIdentity(el) || norm(el.textContent);
       if (name) add(`tab:${name}`, `tab "${name.slice(0, 60)}"`, containers);
     }
     const testid = el.getAttribute("data-testid");
