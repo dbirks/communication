@@ -20,7 +20,11 @@
 //     axes is a defect on the desk as much as on the phone. At BOTH widths it
 //     also asserts the screen's DESIGN LANDMARKS (design.ts): the headings,
 //     tabs, buttons, sections and fields its design render draws, matched by
-//     testid, by role+name or by design-owned copy — structure, never data. A
+//     testid, by role+name or by design-owned copy — structure, never data. At
+//     BOTH widths it also runs the NO-MADE-UP-DATA check (mockdata.ts): none
+//     of the design mock's invented people, repo/workflow names, issue titles,
+//     ids or amounts may appear in the page's visible text (kind
+//     made-up-data). A
 //     badge with a design render and no landmark entry is itself a defect
 //     (coverage cannot lapse silently); a badge with no design render
 //     (`run-gate`, `artifact`) is exempt.
@@ -46,6 +50,7 @@ import {
   type ReflowItem,
 } from "./reflow.js";
 import { landmarksFor, missingLandmarks, type Landmark } from "./design.js";
+import { findMockTexts, MOCK_DATA_TEXTS, sourcesFor } from "./mockdata.js";
 
 /** A defect kind, as reported in results.json and the issue title. */
 export type EmuDefectKind =
@@ -58,7 +63,8 @@ export type EmuDefectKind =
   | "clip"
   | "target"
   | "overlap"
-  | "design";
+  | "design"
+  | "made-up-data";
 
 export interface EmuDefect {
   kind: EmuDefectKind;
@@ -82,13 +88,18 @@ export interface EmuScreen {
   designPng: string | null;
   /** The design render, relative to the pass output directory (for HTML). */
   designRel: string | null;
-  /** Per-width check outcomes (true = pass); see reflow.ts and design.ts. */
+  /** Per-width check outcomes (true = pass); see reflow.ts, design.ts and
+   * mockdata.ts. */
   checks: EmuScreenChecks;
 }
 
-/** reflow.ts's per-width checks, plus this screen's design landmarks. */
+/** reflow.ts's per-width checks, plus this screen's design landmarks and the
+ * no-made-up-data check (mockdata.ts). */
 export interface EmuScreenChecks extends EmuChecks {
   design: boolean;
+  /** False when a MOCK_DATA string appears in the page's visible text — the
+   * mock's sample data, which the app must never show. */
+  data: boolean;
 }
 
 /** The recording handle the fixture hands to a journey. */
@@ -292,6 +303,11 @@ class EmuRecorder {
    * 1280 and 390. The design landmarks (design.ts) run at both widths too: a
    * screen that reflows perfectly but is missing its dialog's FOLDER select —
    * or drew the wrong page altogether — is not the screen its render drew.
+   * The no-made-up-data check (mockdata.ts) runs at both widths as well: any
+   * MOCK_DATA string (the mock's invented people, repos, workflow names,
+   * issues, ids…) visible on the page is a `made-up-data` defect — the
+   * honesty rule the design READMEs state ("All data is made up. Never fake
+   * data the API doesn't serve") turned into an assertion.
    */
   async screen(badge: string, name: string): Promise<void> {
     this.currentScreen = `${badge} ${name}`;
@@ -311,6 +327,9 @@ class EmuRecorder {
     // fingerprint is kind + journey + screen + normalised detail, and a
     // landmark missing at both widths is one problem, filed once.
     const reportedLandmarks = new Set<string>();
+    // Same dedupe rule for made-up-data hits: one string on the page at both
+    // widths is one problem, filed once.
+    const reportedMockHits = new Set<string>();
     let desktopItems: ReflowItem[] | null = null;
     for (const [width, height] of [
       [1280, 900],
@@ -333,6 +352,7 @@ class EmuRecorder {
         target: true,
         overlap: true,
         design: true,
+        data: true,
       };
       const shot = `${badge}-${name}-${width}.png`;
       await this.page.screenshot({
@@ -361,6 +381,21 @@ class EmuRecorder {
         this.record(
           "overlap",
           `${overlaps.length} overlapping pair(s): ${overlaps.slice(0, 3).map(pair).join("; ")}${extra}`,
+        );
+      }
+      // (f) no made-up data: the mock's sample values must never be on the
+      // page. Case-sensitive, whole-word match over document.body.innerText
+      // (the page's visible text) — see mockdata.ts for the list and its
+      // exclusions, and mockdata-scan.mjs for the browser-free twin.
+      const mockHits = await this.page.evaluate(findMockTexts, [...MOCK_DATA_TEXTS]);
+      checks.data = mockHits.length === 0;
+      for (const hit of mockHits) {
+        if (reportedMockHits.has(hit)) continue;
+        reportedMockHits.add(hit);
+        this.record(
+          "made-up-data",
+          `made-up data: the mock's sample value "${hit}" is visible on this screen ` +
+            `— mock source: ${sourcesFor(hit)}`,
         );
       }
       if (landmarks !== null) {

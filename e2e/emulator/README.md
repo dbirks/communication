@@ -32,6 +32,10 @@ journeys are added as screens land.
    - the screen's **design landmarks** at either width — the headings, tabs,
      buttons, sections and fields its design render draws (`design.ts`),
      structure only and never data, recorded as `kind: design`;
+   - **no made-up data** at either width — none of the design mocks'
+     invented sample values (people, repo/project/workflow names, issue
+     titles and numbers, run ids, amounts) may appear in the page's visible
+     text (`mockdata.ts`), recorded as `kind: made-up-data`;
    - a failing journey's own error, as `kind: assertion` — a journey that
      hits a missing design element is a real defect, recorded, and the
      journey FAILS with a clear message. Journeys are written against the
@@ -98,7 +102,7 @@ e2e/emulator/out/<passId>/
 
 - A defect is anything the fixture records: `pageerror`, `console`,
   `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`, `overlap`,
-  `design`. A pass is clean when results.json holds zero defect lines.
+  `design`, `made-up-data`. A pass is clean when results.json holds zero defect lines.
 - Deliberate failures a journey exercises inline are *declared*:
   `emu.expectFailure(/\/api\/v1\/pipelines$/, 409)`. Anything undeclared
   with status ≥ 400 is a defect.
@@ -169,9 +173,9 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
 Like sidescroll today, every violation is a RECORDED defect (one aggregated
 defect per kind per screen, so fingerprints stay stable) — never a throw —
 so the screenshot still lands and the loop files it. Each screen record in
-`results.json` carries `checks: {sidescroll, parity, clip, target, overlap, design}`
+`results.json` carries `checks: {sidescroll, parity, clip, target, overlap, design, data}`
 per width (true = pass; the 390-only checks trivially pass on the 1280 record,
-while `overlap` and `design` are evaluated at both), and `report.mjs` renders
+while `overlap`, `design` and `data` are evaluated at both), and `report.mjs` renders
 them as the **Per-screen results** table on top of the report.
 
 ## Design landmarks (is this the screen its render drew?)
@@ -250,6 +254,32 @@ screen draws. Where an error state genuinely has no heading — the Studio whose
 draft read failed, the repository page whose repository list failed — the
 landmark STAYS in the list and the screen reports the miss: a failed read is not
 an excuse to lose the page.
+
+## No made-up data (does the app show the mock's sample data?)
+
+**"No made-up data" means every person, project, repository, workflow, issue,
+run, id or amount on a screen is data the lab actually served — never a value
+copied out of the design mocks**, whose READMEs say outright that "All data is
+made up. Never fake data the API doesn't serve." `e2e/emulator/mockdata.ts`
+estates that rule as `MOCK_DATA`: a curated list (extracted statically from
+the two `.dc.html` review boards, their `screens.txt` dumps and
+`Sidebar.dc.html` — read, never executed) of the mocks' DATA values, each
+with the file and context it came from, deliberately excluding UI chrome
+(labels, verbs, empty-state copy the app reuses) and anything that is really
+lab or product content (the seeded repos `app`/`tally`, the shipped
+plan-with-approval / security-review / issue-to-pr templates and their
+descriptions, prompts and artifact names, the real profile names "Claude
+Code"/"Codex", live step ids). Two checks prove it: at capture time,
+`emu.screen()` runs `checks.data` **at both widths** — if any MOCK_DATA
+string appears in `document.body.innerText` (case-sensitive, whole-word), the
+screen records a `kind: made-up-data` defect naming the string and its mock
+source, and the report's **data** column fails; and without any browser,
+`node e2e/emulator/mockdata-scan.mjs` greps the same list through `ui/src`
+(test files, `test/` trees and doc comments excluded), so a value hardcoded
+into the source — even one that never reaches visible text, like a
+`placeholder=` — fails the scan with its `file:line`. A hit on either check
+is never answered by dropping the string from `MOCK_DATA`; the fix is for the
+UI to show what the API serves, or an honest empty state.
 
 ## Current journeys
 

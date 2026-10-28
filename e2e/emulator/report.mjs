@@ -6,7 +6,7 @@
 // Reads out/<passId>/results.json (one JSON object per line: screens and
 // defects, written by the emu fixture), writes out/<passId>/index.html —
 // a per-screen PASS/FAIL table (sidescroll/parity/clip/target/overlap per
-// width, plus the design-landmark column) up
+// width, plus the design-landmark column and the no-made-up-data column) up
 // top, then the defects, then one row per screen with the app screenshot
 // beside its design render (both scaled to 50%) — and prints the summary
 // line `PASS <id>: <n> screens, <m> defects`.
@@ -65,6 +65,19 @@ const designCell = (widths) => {
     : '<span class="bad">FAIL</span> <span class="muted">see the design defects</span>';
 };
 
+/** No made-up data (mockdata.ts) — evaluated at both widths like design; a
+ * FAIL names the strings in the made-up-data defects below. Passes recorded
+ * before the check existed have no `data` key — `n/a`, not a failure. */
+const dataCell = (widths) => {
+  const records = [widths[1280], widths[390]].filter(
+    (screen) => screen && screen.checks && screen.checks.data !== undefined,
+  );
+  if (records.length === 0) return '<span class="muted">n/a</span>';
+  return records.every((screen) => screen.checks.data === true)
+    ? '<span class="ok">PASS</span>'
+    : '<span class="bad">FAIL</span> <span class="muted">see the made-up-data defects</span>';
+};
+
 // Rows of the per-screen table: one per badge+name, a column per width.
 const resultOrder = [];
 const widthsByScreen = new Map();
@@ -94,6 +107,7 @@ const resultRows = resultOrder
       <td>${checkCell(widths[1280])}</td>
       <td>${checkCell(widths[390])}</td>
       <td>${designCell(widths)}</td>
+      <td>${dataCell(widths)}</td>
     </tr>`;
   })
   .join("\n");
@@ -155,10 +169,10 @@ const html = `<!doctype html>
   <h2>Per-screen results</h2>
   <table>
     <thead>
-      <tr><th>screen</th><th>1280</th><th>390</th><th>design</th></tr>
+      <tr><th>screen</th><th>1280</th><th>390</th><th>design</th><th>data</th></tr>
     </thead>
     <tbody>
-${resultRows.length > 0 ? resultRows : '    <tr><td colspan="4" class="muted">no screens recorded</td></tr>'}
+${resultRows.length > 0 ? resultRows : '    <tr><td colspan="5" class="muted">no screens recorded</td></tr>'}
     </tbody>
   </table>
   <h2>Defects</h2>
