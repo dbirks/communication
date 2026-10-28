@@ -13,7 +13,9 @@ concurrency, so all of them must keep the default 0.
 
 A green here means the run bodies and the wait windows are right; it never
 substitutes for the live kill/freeze (12-test-strategy.md: a mocked green is not
-done).
+done). One exception to "by nobody else": W2 and W10 watch a page MID-LEASE, so they
+post their OWN short sampling hold (W2_HOLD_SECONDS) through the same helper — never
+the 45s fault window.
 
 usage: python3 e2e/m4/test_hold_logic.py [-v]
 """
@@ -139,7 +141,8 @@ class FaultLegRunBodyTest(unittest.TestCase):
                     "hold_seconds", [k.arg for k in c.keywords],
                     f"{fn} posts the FAULT hold: C1's key/timing comparison, C7's "
                     "exhaustion and C8's in-flight concurrency are all graded against "
-                    "unhurried steps (W2's sampling hold is its own W2_HOLD_SECONDS)")
+                    "unhurried steps (W2's and W10's sampling hold is the short "
+                    "W2_HOLD_SECONDS, pinned below)")
 
     def test_w5_and_w6_run_the_same_fault_sequence_so_they_hold_too(self):
         src = open(DRIVER, encoding="utf-8").read()
@@ -148,25 +151,37 @@ class FaultLegRunBodyTest(unittest.TestCase):
                 n for n in tree().body if isinstance(n, ast.FunctionDef) and n.name == fn))
             self.assertIn("with_hold(mf(twin,", body,
                           f"{fn} must post its twin run with the hold")
-        self.assertNotIn("with_hold", ast.get_source_segment(src, next(
-            n for n in tree().body if isinstance(n, ast.FunctionDef) and n.name == "w10")),
-            "w10 is not a fault leg")
+        w10_body = ast.get_source_segment(src, next(
+            n for n in tree().body if isinstance(n, ast.FunctionDef) and n.name == "w10"))
+        self.assertIn('with_hold(mf(twin, "inputs", default={}), W2_HOLD_SECONDS)',
+                      w10_body,
+                      "w10 is not a fault leg, but its gate-release reading samples a "
+                      "lease like W2's row does — it posts the SHORT sampling hold too")
+        self.assertNotIn("hold_seconds=", w10_body,
+                         "and never the 45s a freeze/kill window needs")
 
-    def test_w2_holds_short_just_long_enough_to_be_sampled(self):
+    def test_w2_and_w10_hold_short_just_long_enough_to_be_sampled(self):
         """live8/W2.out: `no attempt was sampled MID-LEASE … the twin's process.exec
-        attempts finish faster than the poll's 2s interval`. W2 watches a page, it
-        kills nothing, so its hold is its OWN (W2_HOLD_SECONDS): long enough for the
-        leg's 2s poll and one DOM sample to land inside the lease, short enough that
-        none of the leg's timings, ordering or iteration arms move."""
+        attempts finish faster than the poll's 2s interval` — and two acceptance runs
+        later W10's gate-release verdict drifted GAP-then-PASS the same way (the
+        41↔42 GAP-count wobble). W2 and W10 watch pages, they kill nothing, so their
+        hold is the OWN sampling hold (W2_HOLD_SECONDS): long enough for the legs'
+        2s poll and one DOM sample to land inside the lease, short enough that none
+        of the legs' timings, ordering or iteration arms move — and the twin's two
+        until iterations (6 post-gate held steps ≈ 60-70s) still fit W10's 240s
+        settle loop and 300s wait_live_past_gate untouched."""
         src = open(DRIVER, encoding="utf-8").read()
-        body = ast.get_source_segment(src, next(
-            n for n in tree().body if isinstance(n, ast.FunctionDef) and n.name == "w2"))
-        self.assertIn('with_hold(mf(twin, "inputs", default={}), W2_HOLD_SECONDS)', body,
-                      "W2 must post its twin run through the same hold helper")
-        self.assertNotIn("hold_seconds=", body,
-                         "W2's is a sampling hold, not a fault hold: it never holds the "
-                         "45s a freeze/kill window needs")
-        self.assertGreater(m.W2_HOLD_SECONDS, 2, "longer than the leg's own 2s poll")
+        bodies = {fn: ast.get_source_segment(src, next(
+            n for n in tree().body
+            if isinstance(n, ast.FunctionDef) and n.name == fn)) for fn in ("w2", "w10")}
+        for fn, body in bodies.items():
+            self.assertIn('with_hold(mf(twin, "inputs", default={}), W2_HOLD_SECONDS)',
+                          body,
+                          f"{fn} must post its twin run through the same hold helper")
+            self.assertNotIn("hold_seconds=", body,
+                             f"{fn}'s is a sampling hold, not a fault hold: it never "
+                             "holds the 45s a freeze/kill window needs")
+        self.assertGreater(m.W2_HOLD_SECONDS, 2, "longer than the legs' own 2s poll")
         self.assertLess(m.W2_HOLD_SECONDS, m.C_FAULT_HOLD_SECONDS,
                         "and shorter than the fault legs' hold")
         self.assertLessEqual(m.W2_HOLD_SECONDS, 600, "within the input's schema maximum")

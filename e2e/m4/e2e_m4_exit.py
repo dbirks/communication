@@ -1715,11 +1715,15 @@ def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
 C_FAULT_HOLD_SECONDS = 45
 C_FAULT_HOLD_STEPS = 4          # plan + implement + test + review, each held open
 C_FAULT_LEASE_S = 45            # lease 30s + reconciler tick 15s (§ 7.1 C4a)
-# W2 is not a fault leg, but its row watches a page MID-LEASE: live8/W2.out GAPped
-# "no attempt was sampled MID-LEASE … the twin's process.exec attempts finish faster
-# than the poll's 2s interval", so its run holds each step open just long enough to
-# be sampled (10s > the 2s poll + the sample's own round trip) and no longer — the
-# leg's timings, iterations and journal comparisons stay as they are.
+# W2 and W10 are not fault legs, but both rows watch a page MID-LEASE: live8/W2.out
+# GAPped "no attempt was sampled MID-LEASE … the twin's process.exec attempts finish
+# faster than the poll's 2s interval", and two acceptance runs later W10's gate-release
+# verdict drifted the same way (GAP then PASS — the 41↔42 GAP-count wobble) because
+# wait_live_past_gate's 2s poll kept missing the twin's <1s post-gate attempts. Their
+# runs hold each step open just long enough to be sampled (10s > the 2s poll + the
+# sample's own round trip) and no longer — the legs' timings, iterations and journal
+# comparisons stay as they are, and the twin's TWO until iterations (6 post-gate held
+# steps ≈ 60-70s worst case) still sit inside W10's 240s settle loop and 300s gate wait.
 W2_HOLD_SECONDS = 10
 
 
@@ -19873,7 +19877,14 @@ def w10():
         return
     CTX["alice"] = client
     stamp = int(time.time())
-    body = {"pipeline_revision_id": rev, "inputs": mf(twin, "inputs", default={})}
+    # The same sampling hold W2 posts (see W2_HOLD_SECONDS): without it the gate-release
+    # verdict below is a coin flip — the twin's post-gate attempts close inside the
+    # poll's 2s window and "no attempt was sampled MID-LEASE" GAPs. The sibling holds too
+    # (same body): it never passes its own gate, so its only held step is /plan, which
+    # closes ~11s after posting — well before the roll, when both runs are parked at
+    # /approve exactly as this leg's roll-on-an-idle-stream claim needs.
+    body = {"pipeline_revision_id": rev,
+            "inputs": with_hold(mf(twin, "inputs", default={}), W2_HOLD_SECONDS)}
     r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
                     dict(body, idempotency=f"m4-exit-w10-{stamp}"))
     run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
