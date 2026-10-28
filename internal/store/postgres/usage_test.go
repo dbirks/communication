@@ -192,6 +192,31 @@ func TestUsageReports(t *testing.T) {
 	if err := pool.QueryRow(bg, `INSERT INTO organizations (slug, name) VALUES ('usage-org-2', 'Usage org two') RETURNING id`).Scan(&org2ID); err != nil {
 		t.Fatalf("insert usage org two: %v", err)
 	}
+	// The tenant-boundary rows (org, user, fixed-id profile, pipeline, draft,
+	// revision) are this test's, so this test owns their removal: the fixture
+	// cleanup only covers the primary org, and a leftover 'usage-org-2' slug
+	// or fixed uuid makes every later -count iteration of the package die on
+	// the first INSERT instead of on a real regression.
+	t.Cleanup(func() {
+		c := context.Background()
+		for _, stmt := range []string{
+			`DELETE FROM pipeline_revision_template_refs WHERE pipeline_revision_id IN
+				(SELECT id FROM pipeline_revisions WHERE organization_id = $1::uuid)`,
+			`DELETE FROM pipeline_revisions WHERE organization_id = $1::uuid`,
+			`DELETE FROM pipeline_drafts WHERE pipeline_id IN
+				(SELECT id FROM pipelines WHERE organization_id = $1::uuid)`,
+			`DELETE FROM pipelines WHERE organization_id = $1::uuid`,
+			`DELETE FROM agent_profile_versions WHERE profile_id IN
+				(SELECT id FROM agent_profiles WHERE organization_id = $1::uuid)`,
+			`DELETE FROM agent_profiles WHERE organization_id = $1::uuid`,
+			`DELETE FROM users WHERE organization_id = $1::uuid`,
+			`DELETE FROM organizations WHERE id = $1::uuid`,
+		} {
+			if _, err := pool.Exec(c, stmt, org2ID); err != nil {
+				t.Errorf("cleanup usage-org-2 (%s): %v", stmt, err)
+			}
+		}
+	})
 	var user2ID string
 	if err := pool.QueryRow(bg, `INSERT INTO users (organization_id, display_name) VALUES ($1, 'usage-user-2') RETURNING id`, org2ID).Scan(&user2ID); err != nil {
 		t.Fatalf("insert usage user two: %v", err)

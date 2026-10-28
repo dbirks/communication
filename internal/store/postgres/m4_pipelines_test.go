@@ -48,6 +48,13 @@ type m4Fixture struct {
 	revisionID string
 	digest     string // the published revision's revision_digest
 	planDigest string
+
+	// rtProfileIDs are agent profiles seeded under this fixture's org by
+	// helper constructors (rtConversation in runs_title_test.go) that the
+	// project-scoped deletes below cannot reach; the cleanup removes them so
+	// a later -count iteration of TestMigrate0003SeededProfiles still sees
+	// exactly the two migration-seeded default-org profiles.
+	rtProfileIDs []string
 }
 
 func m4Setup(t *testing.T) *m4Fixture {
@@ -147,6 +154,13 @@ func m4SetupShared(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *m4Fix
 			{`DELETE FROM conversation_turns WHERE conversation_id IN
 				(SELECT id FROM conversations WHERE project_id = $1)`, []any{f.projectID}},
 			{`DELETE FROM conversations WHERE project_id = $1`, []any{f.projectID}},
+			// After the conversations are gone nothing names these profiles
+			// any more; they live in the default org, not the project, so no
+			// project-scoped delete would ever reach them.
+			{`DELETE FROM agent_profile_versions WHERE profile_id = ANY($1::uuid[])`,
+				[]any{f.rtProfileIDs}},
+			{`DELETE FROM agent_profiles WHERE id = ANY($1::uuid[])`,
+				[]any{f.rtProfileIDs}},
 			{`DELETE FROM projects WHERE id = $1`, []any{f.projectID}},
 			{`DELETE FROM users WHERE id = $1`, []any{f.userID}},
 		}

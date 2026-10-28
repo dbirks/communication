@@ -46,6 +46,11 @@ func rtConversation(t *testing.T, f *m4Fixture, title string) string {
 		RETURNING id::text`, f.orgID).Scan(&profile); err != nil {
 		t.Fatalf("insert agent profile: %v", err)
 	}
+	// The profile lives in the shared default org, outside the project the
+	// fixture teardown unwinds: register it so that teardown deletes it too
+	// (an uncleaned row breaks TestMigrate0003SeededProfiles on the next
+	// -count iteration).
+	f.rtProfileIDs = append(f.rtProfileIDs, profile)
 	var id string
 	if err := f.pool.QueryRow(ctx, `
 		INSERT INTO conversations (project_id, agent_profile_id, title, created_by)
