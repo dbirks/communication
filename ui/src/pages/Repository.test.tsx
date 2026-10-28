@@ -752,6 +752,39 @@ describe("/p/:projectId/:repo", () => {
     expect(screen.queryByTestId(`repo-issue-active-run-${issue.number}`)).toBeNull();
   });
 
+  it("keeps the page heading over a failed repositories read", async () => {
+    // Issue #24: the failed list read used to render a BARE ProblemBanner. The
+    // design-landmark check `repo-failed-heading` asks for the heading that
+    // stands over it, the way the 1e workflow page does.
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: routes([
+        {
+          path: `/api/v1/projects/${projectFixture.id}/repos`,
+          status: 500,
+          body: {
+            type: "https://communication.dev/errors/internal",
+            title: "Internal error",
+            status: 500,
+            detail: "repos unavailable",
+          },
+        },
+      ]),
+    });
+
+    // The repository's own name is not known (the read that would answer it
+    // failed), so the H1 is the page's word — and the breadcrumb names the
+    // project, which the project read DID answer.
+    expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();
+    expect(screen.getByTestId("repo-breadcrumb").textContent).toBe(projectFixture.name);
+    // The panel is still the panel: role=alert quoting the server, plus retry.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("repos unavailable");
+    expect(screen.getByTestId("repo-load-retry").textContent).toBe("Retry");
+    // No repository page is assembled over the failed read.
+    expect(screen.queryByTestId("repo-page")).toBeNull();
+  });
+
   it("shows the error state when the run list fails", async () => {
     renderApp({
       path: `/p/${projectFixture.id}/communication`,

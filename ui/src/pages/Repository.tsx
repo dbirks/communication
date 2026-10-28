@@ -158,8 +158,45 @@ export default function Repository() {
   const projectData = project.data;
 
   if (repos.isPending) return <Spinner label="Loading repositories" />;
+  // The repositories read failing is not the page disappearing: the header the
+  // design draws (the project's breadcrumb, the page's own H1) stays and the
+  // panel quotes the server — the rule every other server-error screen follows
+  // (design-landmark check `repo-failed-heading`, issue #24). The repository's
+  // name is NOT said here: the read that would answer it is the one that failed,
+  // so the H1 is the page's own word, `Repository`.
   if (repos.error) {
-    return <ProblemBanner error={repos.error} fallback="Repositories could not be loaded." />;
+    return (
+      <div className="min-w-0 space-y-4" data-testid="repo-error-page">
+        <header className="min-w-0 space-y-1" data-testid="repo-error-header">
+          <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+            <Link to={routes.project(id)} data-testid="repo-breadcrumb">
+              {projectData.name}
+            </Link>
+            <span aria-hidden="true" className="px-1.5">
+              /
+            </span>
+          </nav>
+          <h1 id="repo-load-error-heading" className="text-[22px] leading-[28px] font-semibold">
+            Repository
+          </h1>
+        </header>
+        <section aria-labelledby="repo-load-error-heading" className="min-w-0 space-y-3">
+          <div className="max-w-[70ch]">
+            <ProblemBanner error={repos.error} fallback="Repositories could not be loaded." />
+          </div>
+          <Button
+            variant="secondary"
+            compact
+            className="h-[30px]"
+            onClick={() => void repos.refetch()}
+            disabled={repos.isFetching}
+            data-testid="repo-load-retry"
+          >
+            {repos.isFetching ? "Retrying…" : "Retry"}
+          </Button>
+        </section>
+      </div>
+    );
   }
 
   if (!repository) {

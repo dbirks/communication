@@ -320,6 +320,56 @@ spec:
     vi.unstubAllGlobals();
   });
 
+  it("keeps the page heading over a failed draft read", async () => {
+    // Issue #23: the failed read used to render a BARE ProblemBanner — every
+    // other server-error screen (the 1e workflow page above all) keeps the
+    // page's heading over the panel. The design-landmark check
+    // `studio-error-heading` asks for an h1 (or the studio page frame).
+    mount(studioPath, [
+      {
+        path: draftPath,
+        status: 500,
+        body: { type: "server_error", title: "Internal server error", detail: "draft gone" },
+      },
+    ]);
+    // The heading stands: the breadcrumb, and the title the pipeline read
+    // answers with (the draft's own name was never served).
+    expect(await screen.findByTestId("studio-breadcrumb")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "Feature development" })).toBeTruthy();
+    // The panel is still the panel: role=alert quoting the server.
+    const alert = await screen.findByTestId("studio-draft-error");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain("draft gone");
+    // And it offers the retry the read supports.
+    expect(screen.getByTestId("studio-draft-retry").textContent).toBe("Retry");
+    // No canvas, palette or status bar mounts over the failed read.
+    expect(screen.queryByTestId("studio-page")).toBeNull();
+    expect(screen.queryByTestId("studio-canvas")).toBeNull();
+  });
+
+  it("titles the failed-draft screen neutrally when the pipeline read failed too", async () => {
+    // Nothing answered the name, so the page says what it is rather than
+    // inventing one (design brief: honest data only).
+    mount(studioPath, [
+      {
+        path: pipelinePath,
+        status: 500,
+        body: { type: "server_error", title: "Internal server error", detail: "pipeline gone" },
+      },
+      {
+        path: draftPath,
+        status: 500,
+        body: { type: "server_error", title: "Internal server error", detail: "draft gone" },
+      },
+    ]);
+    expect(await screen.findByRole("heading", { level: 1, name: "Workflow draft" })).toBeTruthy();
+    expect(await screen.findByTestId("studio-draft-error")).toBeTruthy();
+    // The breadcrumb keeps the one thing the route always knows.
+    expect((await screen.findByTestId("studio-breadcrumb-workflows")).getAttribute("href")).toBe(
+      "/workflows",
+    );
+  });
+
   it("says the diff has nothing to compare on a zero-revision pipeline", async () => {
     mount(studioPath, [
       {

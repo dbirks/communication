@@ -9,15 +9,18 @@
  * way to the StepOutline fallback (§9).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
+import { ApiError } from "../api/client";
 import { useMe } from "../api/queries";
 import {
+  folderLabel,
   useDraft,
   usePipeline,
   usePublishDraft,
   useRevision,
   useValidateDraft,
 } from "../api/pipelines";
+import { routes } from "../lib/routes";
 import { viewValidate } from "../api/m4view";
 import type { ValidateBody } from "../lib/pipeline/contract";
 import { hasLibraryRole, LIBRARY_READ_ONLY_NOTE } from "../lib/pipeline/authoring";
@@ -105,6 +108,64 @@ function YamlEditor({
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The header of the Studio's failed-draft screen (issue #23): the breadcrumb and
+ * the title the page would have shown, built from the pipeline read alone. The
+ * draft's version chip, tabs and authoring actions are NOT drawn here — there is
+ * no draft to act on, and a dead verb is the thing the design brief calls a lie.
+ */
+function StudioFailureTitle({
+  pipelineName,
+  pipelineFolder,
+}: {
+  pipelineName: string | null;
+  pipelineFolder: string | null;
+}) {
+  return (
+    <header
+      className="flex flex-wrap items-center gap-x-[8px] gap-y-[8px] border-b border-line bg-surface px-4 py-2 md:flex-nowrap"
+      data-testid="studio-header"
+    >
+      <nav
+        aria-label="Breadcrumb"
+        className="flex min-w-0 max-w-full items-center gap-[6px]"
+        data-testid="studio-breadcrumb"
+      >
+        <Link
+          to={routes.workflows()}
+          className="shrink-0 font-mono text-[12px] text-muted underline decoration-line underline-offset-2 hover:text-ink"
+          data-testid="studio-breadcrumb-workflows"
+        >
+          Workflows
+        </Link>
+        <span aria-hidden="true" className="shrink-0 font-mono text-[12px] text-faint">
+          /
+        </span>
+        {pipelineName ? (
+          <>
+            <span
+              className="min-w-0 truncate font-mono text-[12px] text-muted"
+              data-testid="studio-breadcrumb-folder"
+            >
+              {folderLabel(pipelineFolder)}
+            </span>
+            <span aria-hidden="true" className="shrink-0 font-mono text-[12px] text-faint">
+              /
+            </span>
+          </>
+        ) : null}
+      </nav>
+      <h1
+        className="min-w-0 flex-1 truncate text-[15px] font-semibold"
+        data-testid="studio-title"
+        title={pipelineName ?? "Workflow draft"}
+      >
+        {pipelineName ?? "Workflow draft"}
+      </h1>
+    </header>
   );
 }
 
@@ -392,14 +453,50 @@ export function StudioPage() {
     }
   }
 
+  // A draft the reader cannot open is still the Studio page: the breadcrumb and
+  // the workflow's own name stand over the panel that quotes the server, the way
+  // the 1e workflow page handles its failed read (design-landmark check
+  // `studio-error-heading`). Only what the reads actually answered is named: the
+  // pipeline title when that read succeeded, a neutral `Workflow draft` when it
+  // did not — never the id. The failure keeps the `studio-draft-error` alert and
+  // offers the retry the read supports. All hooks have run by this point.
   if (draft.isPending) return <Spinner label="Loading the draft" />;
   if (draft.isError) {
+    const notFound = draft.error instanceof ApiError && draft.error.status === 404;
     return (
-      <ProblemBanner
-        error={draft.error}
-        fallback="The draft could not be read."
-        testid="studio-draft-error"
-      />
+      <div className="min-h-[calc(100dvh-44px)] bg-paper" data-testid="studio-error-page">
+        <StudioFailureTitle
+          pipelineName={pipeline.data?.display_name || pipeline.data?.slug || null}
+          pipelineFolder={pipeline.data?.folder ?? null}
+        />
+        <section aria-label="Draft unavailable" className="px-[22px] py-[22px] md:px-[28px]">
+          <div className="max-w-[70ch]">
+            <ProblemBanner
+              error={draft.error}
+              fallback={
+                notFound
+                  ? "Draft not found or you do not have access."
+                  : "The draft could not be read."
+              }
+              testid="studio-draft-error"
+            />
+          </div>
+          {notFound ? null : (
+            <div className="mt-[12px] flex flex-wrap items-center gap-[8px]">
+              <Button
+                variant="secondary"
+                compact
+                className="h-[30px]"
+                onClick={() => void draft.refetch()}
+                disabled={draft.isFetching}
+                data-testid="studio-draft-retry"
+              >
+                {draft.isFetching ? "Retrying…" : "Retry"}
+              </Button>
+            </div>
+          )}
+        </section>
+      </div>
     );
   }
 
