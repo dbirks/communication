@@ -21,8 +21,15 @@
  * The second line mirrors the Studio's rule (1g): kind glyph + kind word +
  * the ONE key fact the kind's own config carries — model name, executable,
  * approver, artifact — never an invention.
+ *
+ * The canvas FITS its width to the pane (`graphFit`): measured on mount and
+ * on resize, scaled down to the pane (never up — the 1280 look is untouched)
+ * and never under the readable floor. At the floor a still-wider graph
+ * left-aligns at its LEFT edge — centring the overflow would strand the
+ * left column in the browser's unscrollable dead zone, the 390px bug — and
+ * the pane says it pans. See `./graphFit.ts`.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DefinitionGraphLayout } from "../../lib/pipeline/layout";
 import {
   canvasLayout,
@@ -37,6 +44,7 @@ import {
   type DefinitionDocument,
   type DefinitionNode,
 } from "../../lib/pipeline/definition";
+import { fitScale, pansHorizontally } from "./graphFit";
 
 /** A node key as a selector-safe suffix (same rule as the m4 graph). */
 function keySlug(key: string): string {
@@ -131,6 +139,22 @@ export function GraphCanvas({ document, label }: GraphCanvasProps) {
     () => (document ? nodesByKey(document) : new Map<string, DefinitionNode>()),
     [document],
   );
+  /** The pane width the graph fits to: the root is block-level inside the
+   * Overview's scrollable canvas, so its own width IS the pane width, however
+   * wide the drawing inside it gets. Measured on mount and on every resize. */
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [pane, setPane] = useState(0);
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) return;
+    setPane(node.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const watcher = new ResizeObserver((entries) => {
+      for (const entry of entries) setPane(entry.contentRect.width);
+    });
+    watcher.observe(node);
+    return () => watcher.disconnect();
+  }, []);
   if (!canvas) return null;
   const { laid: shown, direction } = canvas;
 
@@ -163,112 +187,142 @@ export function GraphCanvas({ document, label }: GraphCanvasProps) {
   }
   const width = Math.max(shown.width + offsetX, ...allBoxes.map((box) => box.x + box.width)) + 8;
   const height = Math.max(shown.height + offsetY, ...allBoxes.map((box) => box.y + box.height)) + 8;
+  // Fit the pane's width (never zoom past 1 — at 1280 the seed graph fits and
+  // draws exactly as the design drew it), floored at the readable minimum; at
+  // the floor the graph still pans, from its left edge, and says so.
+  const scale = fitScale({ paneWidth: pane, graphWidth: width });
+  const pans = pansHorizontally({ paneWidth: pane, graphWidth: width, scale });
+  const scaledWidth = Math.round(width * scale);
+  const scaledHeight = Math.round(height * scale);
 
   return (
-    <div className="relative flex min-h-full flex-col" data-testid="workflow-graph">
-      <div className="flex flex-1 justify-center">
-        <div className="relative" style={{ width, height }} data-testid="workflow-graph-canvas">
-          {/* No arrowheads: the design's lines are plain (pass-4). */}
-          <svg
-            className="absolute inset-0 pointer-events-none"
-            width={width}
-            height={height}
-            aria-hidden
-            data-testid="workflow-graph-edges"
+    <div
+      ref={rootRef}
+      className="relative flex min-h-full flex-col"
+      data-testid="workflow-graph"
+      data-fit-scale={scale.toFixed(3)}
+      data-pans={pans ? "true" : "false"}
+    >
+      {/* Left-aligned while the graph overflows: `justify-center` would push
+          half the overflow into the pane's unscrollable inline-start dead
+          zone, stranding the graph's left column — the 390px cut-off. When it
+          fits, it centres exactly as the 1280 design draws it. */}
+      <div className={`flex flex-1 ${pans ? "justify-start" : "justify-center"}`}>
+        {/* The sized box is what the pane's scrollbars measure; the canvas
+            inside keeps its natural geometry (so cards, lines and the overlap
+            tests all read graph coordinates) and is scaled in place. */}
+        <div className="relative shrink-0" style={{ width: scaledWidth, height: scaledHeight }}>
+          <div
+            className="absolute left-0 top-0 origin-top-left"
+            style={{ width, height, transform: `scale(${scale})` }}
+            data-testid="workflow-graph-canvas"
+            data-scale={scale.toFixed(3)}
           >
-            {groupBoxes.map((group) => (
-              <rect
-                key={group.key}
-                data-testid={`workflow-graph-scope-${group.ownerId}`}
-                x={group.x}
-                y={group.y}
-                width={group.width}
-                height={group.height}
-                rx={8}
-                fill="var(--color-node-scope-fill)"
-                stroke="var(--color-node-border)"
-                strokeWidth={1}
-                strokeDasharray="4 3"
-              />
-            ))}
-            {shown.edges.map((edge) => {
-              const source = cards.get(edge.from);
-              const target = cards.get(edge.to);
-              if (!source || !target) return null;
-              // The Studio's router on the rendered card boxes: orthogonal,
-              // bottom-centre → top-centre for a vertical hop (straight down
-              // when the cards share the axis a centred chain does), the short
-              // single-bend connector for side-by-side siblings.
-              const { path } = routeEdge(
-                source,
-                target,
-                edgeAxis(source, target, false, direction),
-              );
-              return (
-                <path
-                  key={`${edge.from} ${edge.to}`}
-                  data-testid={`workflow-graph-edge-${edge.from.split("/").pop()}-to-${edge.to.split("/").pop()}`}
-                  data-from={edge.from}
-                  data-to={edge.to}
-                  d={path}
-                  fill="none"
-                  stroke={
-                    edge.kind === "error" ? "var(--color-node-error-route)" : "var(--color-ink-2)"
-                  }
-                  strokeWidth={1.5}
-                  strokeDasharray={edge.kind === "error" ? "3 3" : undefined}
-                />
-              );
-            })}
-          </svg>
-          {groupBoxes.map((group) => (
-            <span
-              key={group.key}
-              data-testid={`workflow-graph-scope-label-${group.ownerId}`}
-              className="absolute font-mono text-[11px] font-semibold tracking-[0.04em] text-ink-2"
-              style={{
-                left: group.x + 10,
-                top: group.y + 5,
-                width: group.headerWidth,
-                lineHeight: "18px",
-              }}
+            {/* No arrowheads: the design's lines are plain (pass-4). */}
+            <svg
+              className="absolute inset-0 pointer-events-none"
+              width={width}
+              height={height}
+              aria-hidden
+              data-testid="workflow-graph-edges"
             >
-              {group.headerText}
-            </span>
-          ))}
-          {shown.nodes.map((node) => {
-            const raw = rawNodes.get(node.key.replace(/^\//, ""));
-            const fact = keyFactFor(node.kind, raw?.config as Record<string, unknown> | undefined);
-            const card = cards.get(node.key) as EdgeBox;
-            return (
-              <div
-                key={node.key}
-                data-testid={`workflow-graph-node-${keySlug(node.key)}`}
-                data-node-key={node.key}
-                data-gate={node.gate ? "true" : undefined}
-                className="absolute flex flex-col justify-center gap-[4px] overflow-hidden rounded-[6px] border border-line bg-surface px-[10px] py-[8px]"
+              {groupBoxes.map((group) => (
+                <rect
+                  key={group.key}
+                  data-testid={`workflow-graph-scope-${group.ownerId}`}
+                  x={group.x}
+                  y={group.y}
+                  width={group.width}
+                  height={group.height}
+                  rx={8}
+                  fill="var(--color-node-scope-fill)"
+                  stroke="var(--color-node-border)"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                />
+              ))}
+              {shown.edges.map((edge) => {
+                const source = cards.get(edge.from);
+                const target = cards.get(edge.to);
+                if (!source || !target) return null;
+                // The Studio's router on the rendered card boxes: orthogonal,
+                // bottom-centre → top-centre for a vertical hop (straight down
+                // when the cards share the axis a centred chain does), the short
+                // single-bend connector for side-by-side siblings.
+                const { path } = routeEdge(
+                  source,
+                  target,
+                  edgeAxis(source, target, false, direction),
+                );
+                return (
+                  <path
+                    key={`${edge.from} ${edge.to}`}
+                    data-testid={`workflow-graph-edge-${edge.from.split("/").pop()}-to-${edge.to.split("/").pop()}`}
+                    data-from={edge.from}
+                    data-to={edge.to}
+                    d={path}
+                    fill="none"
+                    stroke={
+                      edge.kind === "error" ? "var(--color-node-error-route)" : "var(--color-ink-2)"
+                    }
+                    strokeWidth={1.5}
+                    strokeDasharray={edge.kind === "error" ? "3 3" : undefined}
+                  />
+                );
+              })}
+            </svg>
+            {groupBoxes.map((group) => (
+              <span
+                key={group.key}
+                data-testid={`workflow-graph-scope-label-${group.ownerId}`}
+                className="absolute font-mono text-[11px] font-semibold tracking-[0.04em] text-ink-2"
                 style={{
-                  left: card.x,
-                  top: card.y,
-                  width: card.width,
-                  height: card.height,
+                  left: group.x + 10,
+                  top: group.y + 5,
+                  width: group.headerWidth,
+                  lineHeight: "18px",
                 }}
               >
-                <span
-                  className="min-w-0 break-words text-[13.5px] leading-[17px] font-semibold text-ink"
-                  data-testid={`workflow-graph-node-id-${keySlug(node.key)}`}
+                {group.headerText}
+              </span>
+            ))}
+            {shown.nodes.map((node) => {
+              const raw = rawNodes.get(node.key.replace(/^\//, ""));
+              const fact = keyFactFor(
+                node.kind,
+                raw?.config as Record<string, unknown> | undefined,
+              );
+              const card = cards.get(node.key) as EdgeBox;
+              return (
+                <div
+                  key={node.key}
+                  data-testid={`workflow-graph-node-${keySlug(node.key)}`}
+                  data-node-key={node.key}
+                  data-gate={node.gate ? "true" : undefined}
+                  className="absolute flex flex-col justify-center gap-[4px] overflow-hidden rounded-[6px] border border-line bg-surface px-[10px] py-[8px]"
+                  style={{
+                    left: card.x,
+                    top: card.y,
+                    width: card.width,
+                    height: card.height,
+                  }}
                 >
-                  {node.id}
-                </span>
-                {/* glyph + kind word + the ONE key fact the config carries — the
+                  <span
+                    className="min-w-0 break-words text-[13.5px] leading-[17px] font-semibold text-ink"
+                    data-testid={`workflow-graph-node-id-${keySlug(node.key)}`}
+                  >
+                    {node.id}
+                  </span>
+                  {/* glyph + kind word + the ONE key fact the config carries — the
                   Studio's rule (1g); nothing is invented when it holds none. */}
-                <span className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted">
-                  <span aria-hidden>{kindGlyph(node.kind)}</span>
-                  {` ${node.word}${fact ? ` · ${fact}` : ""}`}
-                </span>
-              </div>
-            );
-          })}
+                  <span className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted">
+                    <span aria-hidden>{kindGlyph(node.kind)}</span>
+                    {` ${node.word}${fact ? ` · ${fact}` : ""}`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
       {/* The caption is part of the canvas (design 1e, bottom-left): one line
@@ -284,6 +338,17 @@ export function GraphCanvas({ document, label }: GraphCanvasProps) {
       >
         {label}
       </span>
+      {/* Only here when the floor could not fit the pane: plain words telling
+          the reader what to do, in the caption line's voice — no pixel counts,
+          no geometry. */}
+      {pans ? (
+        <span
+          className="block px-[16px] pb-[10px] font-mono text-[10.5px] text-faint"
+          data-testid="workflow-graph-pan-hint"
+        >
+          Scroll sideways to see the rest of the graph.
+        </span>
+      ) : null}
       {/* The same graph in words, for assistive tech and keyboard users —
           visually hidden here (the m4 card draws it; the design's canvas
           shows only the caption). */}

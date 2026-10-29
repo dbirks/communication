@@ -13,6 +13,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { GraphCanvas } from "./GraphCanvas";
+import { CARD_TITLE_PX, MIN_FIT_SCALE, MIN_TITLE_PX } from "./graphFit";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import { samplePipelineDocument } from "../../test/fixtures/m4/samplePipeline";
 
@@ -177,5 +178,76 @@ describe("GraphCanvas", () => {
     const plan = screen.getByTestId("workflow-graph-node-plan");
     expect(plan.textContent).toContain("◆");
     expect(plan.textContent).toContain("agent");
+  });
+});
+
+describe("GraphCanvas fit-to-pane (design 1e, 390px reflow)", () => {
+  /** Class list of the canvas root's first child — the stage that centres
+   * a fitting graph or left-aligns a panning one. */
+  function stageClass(): string {
+    const root = screen.getByTestId("workflow-graph").firstElementChild as HTMLElement;
+    return root.className;
+  }
+
+  it("draws at natural scale, centred, with no pan hint when the pane fits it (the 1280 look)", () => {
+    // jsdom does no layout: `clientWidth` is 0 = “unmeasured”, and an
+    // unmeasured pane must not shrink the graph to nothing.
+    render(<GraphCanvas document={doc} label="read-only · r1 · caption" />);
+    expect(screen.getByTestId("workflow-graph-canvas").getAttribute("data-scale")).toBe("1.000");
+    expect(screen.getByTestId("workflow-graph").getAttribute("data-pans")).toBe("false");
+    expect(stageClass()).toContain("justify-center");
+    expect(screen.queryByTestId("workflow-graph-pan-hint")).toBeNull();
+  });
+
+  it("a pane narrower than the graph holds the readable floor, left-aligns at the graph's left edge and says it pans", () => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 320 });
+    try {
+      render(<GraphCanvas document={doc} label="read-only · r1 · caption" />);
+      const canvas = screen.getByTestId("workflow-graph-canvas");
+      const scale = Number(canvas.getAttribute("data-scale"));
+      // Never under the floor, and the invariant in the reader's units.
+      expect(scale).toBeGreaterThanOrEqual(MIN_FIT_SCALE);
+      expect(CARD_TITLE_PX * scale).toBeGreaterThanOrEqual(MIN_TITLE_PX);
+      // The sized box the pane scrolls measures the scaled graph — and it is
+      // wider than the pane, which is exactly why the stage left-aligns: a
+      // centred overflow would strand the graph's left column in the
+      // unscrollable dead zone (the 390px cut-off this replaces).
+      const sized = canvas.parentElement as HTMLElement;
+      const boxWidth = parseFloat(sized.style.width);
+      expect(boxWidth).toBeGreaterThan(320);
+      expect(stageClass()).toContain("justify-start");
+      expect(stageClass()).not.toContain("justify-center");
+      expect(screen.getByTestId("workflow-graph").getAttribute("data-pans")).toBe("true");
+      // …and the pan is said out loud, in plain user words: what to do,
+      // in the caption line's voice — never pixel counts or geometry.
+      const hint = screen.getByTestId("workflow-graph-pan-hint");
+      expect(hint.textContent).toContain("Scroll sideways to see the rest of the graph.");
+      expect(hint.textContent).not.toMatch(/\d/);
+      expect(hint.textContent).not.toContain("edge");
+      // The hint rides BELOW the caption — the caption stays the canvas's
+      // last flow row before it (the pass-5 overlap rule keeps holding).
+      const caption = screen.getByTestId("workflow-graph-caption");
+      expect(caption.nextElementSibling).toBe(hint);
+      // The cards keep their graph coordinates inside the scaled layer — the
+      // fit is a transform, not a re-layout.
+      const card = screen.getByTestId("workflow-graph-node-plan");
+      expect(parseFloat(card.style.width)).toBeGreaterThanOrEqual(200);
+    } finally {
+      delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
+    }
+  });
+
+  it("a pane wider than the graph changes nothing: natural scale, centred, no hint", () => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 900 });
+    try {
+      render(<GraphCanvas document={doc} label="read-only · r1 · caption" />);
+      const canvas = screen.getByTestId("workflow-graph-canvas");
+      expect(canvas.getAttribute("data-scale")).toBe("1.000");
+      expect(screen.getByTestId("workflow-graph").getAttribute("data-pans")).toBe("false");
+      expect(stageClass()).toContain("justify-center");
+      expect(screen.queryByTestId("workflow-graph-pan-hint")).toBeNull();
+    } finally {
+      delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
+    }
   });
 });
