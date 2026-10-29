@@ -1,7 +1,7 @@
 # ADR-0063 — Bounded database work: a trigger fire's run creates ride its own transaction, and no lock may outlive its holder's liveness
 
 - **Date:** 2026-10-25
-- **Status:** Accepted (implemented in `944474c` and verified on real PostgreSQL — see Verification)
+- **Status:** Accepted (implemented in `944474c` and verified on real PostgreSQL — see Verification; Decision 2's single poll bound refined by the 2026-10-29 amendment at the end of this record)
 - **Owners:** control-plane persistence + worker loop maintainers
 - **Related decisions / contracts:** ADR-0013 D2/D3 (pgx v5.11.0, one `pgxpool.Pool` per process, goose forward-only), ADR-0014 (the per-project journal append lock `pg_advisory_xact_lock`, held to COMMIT, and "a foreign long transaction reads as latency"), ADR-0016 § 4 (reconciler discipline: "many replicas are safe, zero replicas only delay detection"; every input to a pass is a row whose deadline already passed), ADR-0023 § 4 (30 s attempt lease), § 9 (the fencing triple) and § 11 pass 1 (lease-expiry reclaim), ADR-0032 (schedule fires), ADR-0056 (`issue_triggers`, the fire path, `last_polled_at`/`last_error`), ADR-0062 (the unattended turn a fired run stamps), the pass-tx context carried for `pipeline.invoke` children since `21656f6` (`internal/store/postgres/passtx.go`), `communication-spec/02` ("Scheduling and recovery"), `communication-spec/09` (state transitions), `communication-spec/12` (test layers)
 
@@ -84,7 +84,12 @@ Implemented in `944474c`, no schema change, no new dependency.
    `fireIssueTriggerBounded` returns within that bound plus `issueTriggerFireJoinGrace = 2s` even
    if the poll's goroutine parks somewhere that ignores cancellation. 30 s is deliberately well
    under the `issueTriggerPollInterval = 60s` beat, so a cut-loose poll cannot outlive its own
-   beat. **Every exit records the poll**: the success path lands `last_polled_at` inside the fire
+   beat. *(The single bound wrapping "the fire transaction together" is superseded by the
+   2026-10-29 amendment at the end of this ADR: `PollTimeout` now bounds only the poll's EXTERNAL
+   calls and the fire transaction answers to its own `FireTimeout`. Everything else in this
+   Decision — the 2 s join grace, the 60 s beat rule, record-on-every-exit, the detached recorder
+   and the shutdown carve-out — stands as written.)*
+   **Every exit records the poll**: the success path lands `last_polled_at` inside the fire
    transaction, and any failure — including the timeout — is landed by
    `recordIssueTriggerPollFailed` as a *separate* write on a detached, bounded context
    (`context.WithoutCancel(ctx)` + 10 s) that commits whatever the fire transaction's fate was and
@@ -270,3 +275,70 @@ timeouts whose statements outlive their deadline. No operator action is required
 deployment that needs a longer ceiling sets the URL parameters named in Decision 4 rather than
 editing the constants. If a future statement needs a per-transaction ceiling, `SET LOCAL` is the
 forward path (Consequences), and that would be recorded against this ADR, not silently added.
+
+## Amendment (2026-10-29) — the poll bound and the fire transaction are two bounds, not one
+
+D2 wrapped the claim, the credential resolve, the GitHub list **and** the fire transaction in **one**
+`issueTriggerPollTimeout`; that wrapping is all this amendment narrows. The rule now, in
+`internal/store/postgres/issue_triggers.go`:
+
+1. **`issueTriggerPollTimeout = 30s` (`IssueTriggerStore.PollTimeout`) bounds the EXTERNAL half of
+   one poll only**: `issueTriggerToken` (the credential resolve), `ListIssues`, the `GithubNow`
+   clock read and the per-issue `issueLabelTiming` timelines. It is the deadline that exists to
+   catch a GitHub call that never answers.
+2. **`issueTriggerFireTimeout = 30s` (`IssueTriggerStore.FireTimeout`) bounds ONE fire transaction
+   end to end**: `Begin`, the claim re-check, the pin reads, the run creates, the journal appends,
+   the cursor write and the **COMMIT**. `fireIssueTrigger` takes two contexts — `ctx` (the fire
+   bound, the context every one of those statements actually runs under) and `pollCtx` (the
+   external slice) — and `fireIssueTriggerBounded` derives the poll deadline *from* the fire
+   deadline (`context.WithTimeout(fctx, every)`), so the external calls can never outlive the
+   transaction wrapped around them and a caller that drives `PollTimeout` above `FireTimeout`
+   gets the fire bound as its real ceiling. The tick's join timer is `FireTimeout +
+   issueTriggerFireJoinGrace`.
+3. **Both are derived from the tick's context, so D2's shutdown carve-out is untouched**: a fire
+   parked on Postgres rather than on GitHub still answers to `ctx.Err()`, and shutdown still
+   records nothing. The 60 s beat rule keeps its shape — 30 s fire + 2 s grace < 60 s — with D4's
+   server-side `statement_timeout = 60s` still the backstop underneath it.
+
+**Why.** `TestIssueTriggerEveryPassRecordsLastPolled` went red in the full-package `-race` run with
+`postgres: lock event journal: timeout: context deadline exceeded` (surfacing as
+`postgres: commit issue trigger fire …: timeout: context deadline exceeded`). One deadline had been
+serving two different failures at once — "a connection that went quiet" and "a journal append that
+is merely slow" — and the number chosen for the first was measuring the second. This ADR's own
+**Known limit** says exactly why that second case is normal: the per-project journal lock is still
+one advisory lock held to COMMIT (ADR-0014), so under load a fire's append queues behind another
+replica's commit and spends seconds doing nothing wrong. The shared bound let that healthy commit
+lose a fire it had already created and land a `last_error` blaming a poll that was never hung. The
+bounds now measure what they name: a slow commit is measured against Postgres, a hung call against
+GitHub, and neither against the other's ceiling.
+
+**What did not change**, and what pins each line:
+
+- **A poll cut loose by its own bound is still a failing beat, and still records its cause** (D2's
+  record-on-every-exit rule, verbatim). When the *poll* deadline expires while the transaction is
+  healthy, `recordIssueTriggerPoll` lands the precise cause on the row on the fire's own context
+  and returns an error carrying the `errIssueTriggerPollRecorded` marker, so the tick reports the
+  beat as failed while the detached net is prevented from overwriting that cause with its generic
+  cut-loose text. Pinned by `TestIssueTriggerHungPollIsCutLooseAndRecordedAndTickKeepsGoing`
+  (unchanged from § Verification) and hung beat 1 of `TestIssueTriggerEveryPassRecordsLastPolled`.
+- **A deadline spent mid-listing aborts the fire atomically** — D1's all-or-nothing fire applied to
+  a cut-loose poll. `fireIssueTrigger` checks `pollCtx.Err()` for each issue and returns before it
+  decides on the degraded `updated_at` proxy (ADR-0056's fallback) with a deadline nobody is
+  watching: nothing commits, the cursor does not move, and the `issue-<trigger id>-<number>`
+  idempotency keys make the next beat's re-fire safe.
+- **A slow-but-healthy commit still fires.** `TestIssueTriggerSlowCommitStillFiresOnce` builds this
+  ADR's Known limit on demand instead of waiting for it under load: a second transaction takes the
+  project's journal advisory lock — the exact key `AppendEvent` takes, held to COMMIT — and holds it
+  past a 2 s `PollTimeout`; the fire's run create queues behind it (a wait latched from `pg_locks`,
+  so a fire that never reached the lock fails loudly rather than passing vacuously), and when the
+  lock lands the beat has fired EXACTLY ONE run, advanced the cursor, and stayed green.
+
+No schema change, no new dependency, no wire or event change. Two error texts change: the cut-loose
+message names both bounds (`issue trigger poll exceeded 30s (poll bound 30s, fire-transaction bound
+30s) and was cut loose; …`) and the mid-listing abort adds `issue trigger poll bound of 30s spent
+mid-listing: …` (truncated to `maxIssueTriggerErrorLen` as before, no credential material in
+either). Evidence is the three tests above, which run against real PostgreSQL through
+`COMMUNICATION_TEST_DATABASE_URL` in `internal/store/postgres/issue_triggers_lease_test.go` — this
+record changes no code and re-runs nothing. Rolling the amendment back on its own (re-wrapping the
+fire in the poll deadline) restores the flake, not the wedge: D1's savepoint path and D4's
+server-side bounds are what hold the wedge, and both stay as accepted.

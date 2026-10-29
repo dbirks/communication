@@ -76,24 +76,40 @@ const issueTriggerTickBatch = 100
 // The serve tick runs this pass on its own ticker.
 const issueTriggerPollInterval = 60 * time.Second
 
-// issueTriggerPollTimeout bounds ONE attempt at ONE trigger: the claim, the
-// credential resolve, the GitHub list and the fire transaction together. It
-// exists because the fire runs a network call and a nested create
-// transaction inside an open row lock, and the 2026-10-25 lab proved what
+// issueTriggerPollTimeout bounds the EXTERNAL half of ONE poll of ONE
+// trigger: the credential resolve, the GitHub issue list, the GitHub clock
+// read and the per-issue label timelines. It exists because the fire runs a
+// network call inside an open row lock, and the 2026-10-25 lab proved what
 // happens without a bound: one parked poll held the trigger row and the
 // project's journal advisory lock forever — last_polled_at was never
 // recorded again, the replica's ticker goroutine never returned, and every
 // fenced writer queueing behind that advisory lock froze with it. A poll
-// that cannot finish in this window is cut loose, its deadline cancels its
-// statements, its failure lands on the row, and the tick moves on. Well
-// under issueTriggerPollInterval, so a cut-loose poll cannot outlive its
-// own beat.
+// whose upstream goes quiet in this window is cut loose, its deadline
+// cancels that call, its failure lands on the row, and the tick moves on.
+//
+// What it deliberately does NOT bound is the fire's DATABASE work (ADR-0063
+// Decision 2 as refined by the 2026-10-27 flake): the same window also
+// bounded the fire transaction's journal appends and COMMIT, and a commit
+// that is merely SLOW — a project whose appends are serialized behind
+// another replica's advisory lock, which is exactly what ADR-0063's Known
+// limit says this design still does — lost its fire to a deadline meant for
+// a hung GitHub. The database half has its own bound, issueTriggerFireTimeout.
 const issueTriggerPollTimeout = 30 * time.Second
+
+// issueTriggerFireTimeout bounds ONE fire transaction end to end: the claim,
+// the pin reads, the run creates, the cursor write and the commit — the
+// network call included, because the poll bound is a slice of THIS one. It is
+// derived from the tick's context, never from the poll deadline, so spending
+// the poll bound cannot drop a healthy fire, and so Postgres — not the tick —
+// is what a slow commit is measured against. 30 s plus the join grace stays
+// under issueTriggerPollInterval = 60 s, so a cut-loose fire cannot outlive
+// its own beat (the rule ADR-0063 Decision 2 states).
+const issueTriggerFireTimeout = 30 * time.Second
 
 // issueTriggerFireJoinGrace is how long the tick waits for a timed-out fire
 // goroutine to acknowledge its own cancellation before continuing without
 // it. A fire that honours its context is already rolling back; one that
-// ignores it is bounded by the poll deadline's effect on its database
+// ignores it is bounded by the fire deadline's effect on its database
 // statements and by the pool's idle-in-transaction timeout, never by the
 // tick.
 const issueTriggerFireJoinGrace = 2 * time.Second
@@ -112,6 +128,13 @@ const issueTriggerLabelTolerance = 2 * time.Minute
 // last_error: an operator reads it, a browser must not, and the cap keeps one
 // pathological upstream message from growing the column's story forever.
 const maxIssueTriggerErrorLen = 400
+
+// errIssueTriggerPollRecorded marks a failed fire whose row bookkeeping the
+// fire transaction ALREADY committed. The tick still reports the failure — a
+// poll cut loose by its own bound is a failing beat, not a green one — but
+// fireIssueTriggerBounded must not land its generic cut-loose text over the
+// precise cause that transaction just wrote.
+var errIssueTriggerPollRecorded = errors.New("issue trigger poll recorded on its fire transaction")
 
 // ErrIssueTriggerNotFound covers a missing id, a project mismatch on List,
 // and any assignment the caller's project does not own — one answer, so
@@ -145,9 +168,14 @@ type IssueTriggerStore struct {
 	// poll then fails onto last_error rather than going anonymous silently.
 	Credentials *SecretStore
 
-	// PollTimeout overrides issueTriggerPollTimeout (tests drive it); zero
-	// takes the default.
+	// PollTimeout overrides issueTriggerPollTimeout — the bound on ONE poll's
+	// EXTERNAL calls (tests drive it); zero takes the default.
 	PollTimeout time.Duration
+
+	// FireTimeout overrides issueTriggerFireTimeout, the bound on one fire
+	// transaction (its statements, its journal appends and its commit); zero
+	// takes the default.
+	FireTimeout time.Duration
 
 	Log *slog.Logger
 }
@@ -157,6 +185,13 @@ func (s *IssueTriggerStore) pollTimeout() time.Duration {
 		return s.PollTimeout
 	}
 	return issueTriggerPollTimeout
+}
+
+func (s *IssueTriggerStore) fireTimeout() time.Duration {
+	if s.FireTimeout > 0 {
+		return s.FireTimeout
+	}
+	return issueTriggerFireTimeout
 }
 
 func (s *IssueTriggerStore) runs() *RunStore {
@@ -546,20 +581,34 @@ func (s *IssueTriggerStore) TickIssueTriggers(ctx context.Context, now time.Time
 	return fired, errors.Join(errs...)
 }
 
-// fireIssueTriggerBounded runs one trigger's poll under its own deadline and
-// guarantees the tick returns within that deadline plus a join grace even if
-// the poll's goroutine parks somewhere that ignores the cancellation.
+// fireIssueTriggerBounded runs one trigger's fire under TWO deadlines and
+// guarantees the tick returns within the fire deadline plus a join grace even
+// if the fire's goroutine parks somewhere that ignores the cancellation.
+//
+// The poll deadline (PollTimeout) bounds the EXTERNAL calls; the fire
+// deadline (FireTimeout) bounds the fire transaction the calls run inside,
+// and is the context every database statement of the fire — including its
+// COMMIT — actually runs under. Both are derived from the tick's context, so
+// shutdown still reaches a fire that is waiting on Postgres rather than on
+// GitHub, and neither one is what a slow commit is measured against.
 //
 // Every exit records the poll: the success path lands last_polled_at inside
 // the fire transaction, and any failure — including the cut-loose timeout —
 // is recorded by a separate, detached write that commits whatever the fire
-// transaction's fate was. Poll bookkeeping must never depend on the success
+// transaction's fate was (unless the fire says it landed the cause itself).
+// Poll bookkeeping must never depend on the success
 // of the poll it describes: a trigger whose poll vanished without a trace
 // (last_polled_at NULL forever, the 2026-10-25 lab) is indistinguishable
 // from one that was never scheduled.
 func (s *IssueTriggerStore) fireIssueTriggerBounded(ctx context.Context, id string, now time.Time, lister github.IssueLister) (int, error) {
-	every := s.pollTimeout()
-	fctx, fcancel := context.WithTimeout(ctx, every)
+	every, fireEvery := s.pollTimeout(), s.fireTimeout()
+	// The fire transaction's own bounded context: derived from the TICK, so
+	// its commit answers to the shutdown signal and to its own deadline, and
+	// to nothing a hung GitHub consumed.
+	fctx, fcancel := context.WithTimeout(ctx, fireEvery)
+	// The external slice of it: a call that outlives this is cut loose even
+	// while the transaction around it still has room to record that it was.
+	pctx, pcancel := context.WithTimeout(fctx, every)
 
 	type fireResult struct {
 		n   int
@@ -569,24 +618,29 @@ func (s *IssueTriggerStore) fireIssueTriggerBounded(ctx context.Context, id stri
 	// release its connection) after the tick has already walked away.
 	done := make(chan fireResult, 1)
 	go func() {
+		defer pcancel()
 		defer fcancel()
-		n, err := s.fireIssueTrigger(fctx, id, now, lister)
+		n, err := s.fireIssueTrigger(fctx, pctx, id, now, lister)
 		done <- fireResult{n, err}
 	}()
 
-	timer := time.NewTimer(every + issueTriggerFireJoinGrace)
+	// fctx is the fire's hard lifetime (pctx is derived from it, so it can
+	// never outlive the transaction around it); a caller that drives
+	// PollTimeout above FireTimeout gets the fire bound as its real ceiling.
+	timer := time.NewTimer(fireEvery + issueTriggerFireJoinGrace)
 	defer timer.Stop()
 	select {
 	case r := <-done:
 		// The in-fire recorders commit on their own happy paths ((0, nil)
 		// answers); anything that comes back as an error left the row
-		// unrecorded, and the net below lands it.
-		if r.err != nil {
+		// unrecorded, and the net below lands it — except the failures the
+		// fire recorded and then reported, whose cause must survive.
+		if r.err != nil && !errors.Is(r.err, errIssueTriggerPollRecorded) {
 			s.recordIssueTriggerPollFailed(ctx, id, now, r.err)
 		}
 		return r.n, r.err
 	case <-timer.C:
-		cause := fmt.Errorf("issue trigger poll exceeded %s and was cut loose; its deadline is spent and its rows stand as they committed them", every)
+		cause := fmt.Errorf("issue trigger poll exceeded %s (poll bound %s, fire-transaction bound %s) and was cut loose; its deadline is spent and its rows stand as they committed them", fireEvery, every, fireEvery)
 		s.recordIssueTriggerPollFailed(ctx, id, now, cause)
 		return 0, cause
 	case <-ctx.Done():
@@ -654,7 +708,17 @@ func issueTriggerDueIDs(ctx context.Context, pool *pgxpool.Pool, now time.Time, 
 // was claimed by the tick's due scan and is re-checked under the lock: a row
 // that a concurrent tick took between scan and lock answers (0, nil) — the
 // answer for "another replica is already firing this one", not an error.
-func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now time.Time, lister github.IssueLister) (int, error) {
+//
+// Two contexts, in the two directions one fire can die. `ctx` bounds the
+// FIRE TRANSACTION — every statement, the run creates, the cursor write and
+// the commit; `pollCtx` bounds only the calls OUTSIDE this database: the
+// credential resolve, GitHub's issue list, its clock and its label
+// timelines. A hung GitHub spends pollCtx and the transaction is rolled back
+// with its cause recorded; a busy Postgres spends nothing but its own clock
+// and still commits its fire (the 2026-10-27 flake: one 2 s poll deadline
+// borrowed for both meant a healthy journal append under load lost the run
+// it had already created).
+func (s *IssueTriggerStore) fireIssueTrigger(ctx, pollCtx context.Context, id string, now time.Time, lister github.IssueLister) (int, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("postgres: begin issue trigger fire tx: %w", err)
@@ -754,14 +818,14 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 		// failure lands on the row's last_error exactly like a failed list —
 		// the trigger stays due, the tick keeps going, and the poll never
 		// silently falls back to anonymous.
-		token, err = s.issueTriggerToken(ctx, it.RepositoryID)
+		token, err = s.issueTriggerToken(pollCtx, it.RepositoryID)
 		if err != nil {
-			return s.recordIssueTriggerPoll(ctx, tx, id, now, err)
+			return s.recordIssueTriggerPoll(ctx, pollCtx, tx, id, now, err)
 		}
 	}
-	issues, err := lister.ListIssues(ctx, repo, ghQuery, token)
+	issues, err := lister.ListIssues(pollCtx, repo, ghQuery, token)
 	if err != nil {
-		return s.recordIssueTriggerPoll(ctx, tx, id, now, err)
+		return s.recordIssueTriggerPoll(ctx, pollCtx, tx, id, now, err)
 	}
 
 	// Arm the trigger on GitHub's own clock (migration 00018, ADR-0056
@@ -774,7 +838,7 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 	armed := it.GithubCreatedAt
 	if armed == nil {
 		if clk, ok := lister.(github.IssueClock); ok {
-			ghNow, cerr := clk.GithubNow(ctx, token)
+			ghNow, cerr := clk.GithubNow(pollCtx, token)
 			if cerr == nil {
 				base := it.CreatedAt.Add(-now.Sub(ghNow))
 				armed = &base
@@ -804,6 +868,16 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 	// verdict).
 	var heldBack *time.Time
 	for _, issue := range issues {
+		if pollCtx.Err() != nil {
+			// The poll bound was spent partway through the listing (a label
+			// timeline that went quiet is the usual cause). Do NOT keep deciding
+			// on the degraded updated_at proxy with a deadline nobody is
+			// watching: abort, roll the whole fire back with it, and let the net
+			// record. Nothing committed, the cursor did not move, and the
+			// idempotency keys make the next beat's re-fire safe (ADR-0063's
+			// atomic-fire trade, applied to a cut-loose poll).
+			return 0, fmt.Errorf("issue trigger poll bound of %s spent mid-listing: %w", s.pollTimeout(), pollCtx.Err())
+		}
 		if it.Event == "opened" {
 			// No backfill: an issue created before the trigger was authored is
 			// never fired by the `opened` arm — measured on the armed clock
@@ -816,7 +890,7 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 			continue
 		}
 		if it.Event == "labeled" {
-			switch verdict := issueLabelTiming(ctx, lister, s.logger(), repo, issue, it.Labels, token, cutoff, armed != nil); verdict {
+			switch verdict := issueLabelTiming(pollCtx, lister, s.logger(), repo, issue, it.Labels, token, cutoff, armed != nil); verdict {
 			case labelVerdictUndecided:
 				// The watch label is ON the issue but its labeled event is not
 				// (yet) visible — GitHub's event timeline lagging, a truncated
@@ -1282,13 +1356,24 @@ func issueLabelTiming(ctx context.Context, lister github.IssueLister, log *slog.
 // recordIssueTriggerPoll is the shared answer for a poll that failed — a
 // credential that would not resolve or a GitHub list that did not land: the
 // honest half of "never crash the tick". The failure is recorded on the row
-// (bounded message), the trigger stays due for the next beat, the tick
-// answers (0, nil) and keeps going.
-func (s *IssueTriggerStore) recordIssueTriggerPoll(ctx context.Context, tx pgx.Tx, id string, now time.Time, cause error) (int, error) {
+// (bounded message) on the FIRE TRANSACTION's own context — the poll's
+// deadline is exactly what such a failure spends, and the record must not
+// die with it — the trigger stays due for the next beat, the tick answers
+// (0, nil) and keeps going.
+//
+// One arm is not "upstream answered badly" but "upstream never answered": when
+// the POLLS's bound is what expired while the transaction is still healthy,
+// the beat failed and must be reported as failed (the hung-GitHub promise
+// ADR-0063 exists for), not answered as the green no-fire tick the ordinary
+// arms return. The row still carries the same record; only the tick's answer
+// differs, and the marker keeps fireIssueTriggerBounded from overwriting the
+// cause with its generic cut-loose text.
+func (s *IssueTriggerStore) recordIssueTriggerPoll(ctx, pollCtx context.Context, tx pgx.Tx, id string, now time.Time, cause error) (int, error) {
 	msg := cause.Error()
 	if len(msg) > maxIssueTriggerErrorLen {
 		msg = msg[:maxIssueTriggerErrorLen]
 	}
+	cutLoose := pollCtx.Err() != nil && ctx.Err() == nil
 	if _, uerr := tx.Exec(ctx, `
 		UPDATE issue_triggers SET last_polled_at = $1, last_error = $2 WHERE id = $3::uuid`,
 		now, msg, id); uerr != nil {
@@ -1299,6 +1384,10 @@ func (s *IssueTriggerStore) recordIssueTriggerPoll(ctx context.Context, tx pgx.T
 	}
 	s.logger().ErrorContext(ctx, "issue trigger poll failed",
 		slog.String("issue_trigger_id", id), slog.String("error", cause.Error()))
+	if cutLoose {
+		return 0, fmt.Errorf("issue trigger poll bound of %s spent: %w; %w",
+			s.pollTimeout(), cause, errIssueTriggerPollRecorded)
+	}
 	return 0, nil
 }
 

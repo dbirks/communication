@@ -9,13 +9,16 @@ package postgres
 // replica's due claim skipped the locked row WITHOUT recording anything.
 // Issue #12 got its label 70 minutes later and nothing ever looked.
 //
-// The three properties these tests pin against real Postgres:
+// The four properties these tests pin against real Postgres:
 //   - every poll records last_polled_at (and last_error when it failed);
-//   - the tick is bounded per trigger (issueTriggerPollTimeout /
-//     PollTimeout) and keeps looping after an errored or hung poll; and
+//   - the tick is bounded per trigger — PollTimeout on the EXTERNAL calls,
+//     FireTimeout on the fire transaction — and keeps looping after an
+//     errored or hung poll; and
 //   - a poll that matches MULTIPLE issues fires them all — the lab's
 //     self-deadlock shape, now impossible because the run create rides the
-//     fire's own transaction as a savepoint.
+//     fire's own transaction as a savepoint; and
+//   - a fire whose COMMIT is merely slow (the journal lock held past the poll
+//     bound by another writer) still fires exactly once.
 
 import (
 	"bytes"
@@ -26,8 +29,11 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dbirks/communication/internal/integrations/github"
 )
@@ -181,10 +187,11 @@ func TestIssueTriggerHungPollIsCutLooseAndRecordedAndTickKeepsGoing(t *testing.T
 	ctx := testCtx(t)
 	f := itSetup(t)
 	f.itDropTriggers(t, ctx)
-	// 2 s: the hang itself is what the bound must catch, and a race-build's
-	// claim-and-record statements need room the 150 ms of a fast build could
-	// spare. The bound assertion below (15 s) still fails loudly if the cut-
-	// loose machinery ever stops holding.
+	// 2 s: the hang itself is what the bound must catch. A race-build's claim,
+	// journal append and commit run under the fire transaction's own bound
+	// (FireTimeout, left at its default here), so this small number bounds
+	// only the hung GitHub call. The bound assertion below (15 s) still fails
+	// loudly if the cut-loose machinery ever stops holding.
 	f.triggers.PollTimeout = 2 * time.Second
 	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
 	if err != nil {
@@ -207,6 +214,9 @@ func TestIssueTriggerHungPollIsCutLooseAndRecordedAndTickKeepsGoing(t *testing.T
 	if terr == nil {
 		t.Fatal("hung tick reported success; the abandoned poll is a failure")
 	}
+	if !strings.Contains(terr.Error(), "2s") {
+		t.Fatalf("hung tick error %q does not name the poll bound that cut it loose", terr)
+	}
 	if hung > 15*time.Second {
 		t.Fatalf("hung tick took %s; the per-poll bound (PollTimeout + join grace) is not holding", hung)
 	}
@@ -216,6 +226,9 @@ func TestIssueTriggerHungPollIsCutLooseAndRecordedAndTickKeepsGoing(t *testing.T
 	}
 	if !lastErr.Valid || lastErr.String == "" {
 		t.Fatalf("last_error = %v after a cut-loose poll, want a bounded cause", lastErr)
+	}
+	if !strings.Contains(lastErr.String, "deadline") {
+		t.Fatalf("last_error = %q: a poll cut loose by its own bound must record the cause it died on, not a generic notice", lastErr.String)
 	}
 	// The abandoned fire may not leave its row locks behind: the next
 	// claim must see the trigger row free (a still-held FOR UPDATE would
@@ -406,8 +419,11 @@ func TestIssueTriggerEveryPassRecordsLastPolled(t *testing.T) {
 	f := itSetup(t)
 	f.itDropTriggers(t, ctx)
 	var logs bytes.Buffer
-	// 2 s: the hung beat (beat 1) is bounded by this, and the commit beat of
-	// a race-build journal append must not lose to it.
+	// 2 s: the hung beat (beat 1) is bounded by this. It is the EXTERNAL bound
+	// only — beats 4's journal append and commit run under the fire
+	// transaction's own bound (FireTimeout, left at its default), so a
+	// race-build commit does not lose to the number that exists to catch a
+	// parked GitHub call.
 	f.triggers.PollTimeout = 2 * time.Second
 	f.triggers.Log = slog.New(slog.NewJSONHandler(&logs, nil))
 	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
@@ -496,4 +512,214 @@ func mustPollTimeAfter(t *testing.T, ctx context.Context, f *itFixture, id strin
 		t.Fatalf("last_polled_at did not advance: %v -> %v", prev, now)
 	}
 	return now
+}
+
+// itJournalLockWaiter reports whether some other backend is queued on the
+// project's journal append lock: the ungranted advisory row whose key is
+// hashtextextended(key) split across pg_locks.classid (high 32 bits) and
+// pg_locks.objid (low 32 bits), which is how Postgres files the
+// single-bigint advisory locks AppendEvent takes (objsubid = 1).
+func itJournalLockWaiter(ctx context.Context, pool *pgxpool.Pool, lockKey string) (bool, error) {
+	var n int
+	if err := pool.QueryRow(ctx, `
+		WITH k AS (SELECT hashtextextended($1, 0) AS key)
+		SELECT count(*) FROM pg_locks l, k
+		WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+		  AND l.database = (SELECT d.oid FROM pg_database d WHERE d.datname = current_database())
+		  AND l.classid = ((k.key >> 32) & 4294967295)::oid
+		  AND l.objid = (k.key & 4294967295)::oid
+		  AND l.pid <> pg_backend_pid()`, lockKey).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// TestIssueTriggerSlowCommitStillFiresOnce is the 2026-10-27 flake fixed at
+// its layer. The full-package race run failed
+// `TestIssueTriggerEveryPassRecordsLastPolled` with
+// `firing tick = (0, …: postgres: commit issue trigger fire …: timeout: context
+// deadline exceeded)`: the ONE per-poll deadline bounded the hung GitHub call
+// AND the fire transaction's journal append and COMMIT together, so under
+// load a healthy commit that merely took longer than the number chosen to
+// catch a parked connection lost a real fire (and recorded a failure nobody
+// caused). ADR-0063 Decision 2 is refined accordingly: PollTimeout bounds the
+// EXTERNAL calls, FireTimeout bounds the fire transaction, and neither is
+// what a slow commit is measured against.
+//
+// The slowness here is ADR-0063's own Known limit, created on demand rather
+// than waited for: a second transaction takes the project's journal advisory
+// lock (the exact key AppendEvent takes, held to COMMIT per ADR-0014 § 9) and
+// holds it PAST PollTimeout. The fire's run create queues behind it — a wait
+// the test latches from pg_locks, so a fire that never reached the lock fails
+// loudly instead of passing vacuously — and when the lock lands, the beat must
+// have fired EXACTLY ONE run, advanced the cursor and stayed green.
+func TestIssueTriggerSlowCommitStillFiresOnce(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	// Deliberately tiny, and only the external bound: the whole point is that
+	// the fire's database work crosses it.
+	f.triggers.PollTimeout = 2 * time.Second
+	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"},
+		json.RawMessage(`{"prompt":"Goal: {{issue.title}}"}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	at := trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339)
+	lister := newITIssueLister([]itWireIssue{{Number: 11, Title: "Go go", State: "open",
+		HTMLURL:   "https://github.com/octo/widgets/issues/11",
+		CreatedAt: at, UpdatedAt: at,
+		Labels: []itWireLabel{{Name: "comm:go"}}}}, nil)
+	defer lister.Close()
+
+	// Hold the project's journal lock from another transaction. The lock lives
+	// with the transaction, so the statement's own context may be short; the
+	// release happens on a fresh detached one, and never later than the safety
+	// timer below — a stranded holder would take the pool (and every other
+	// test in the package) down with it.
+	var releaseOnce sync.Once
+	hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer hcancel()
+	holder, err := f.pool.Begin(hctx)
+	if err != nil {
+		t.Fatalf("begin journal-lock holder: %v", err)
+	}
+	if _, err := holder.Exec(hctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, evtLockKey(f.projectID, f.orgID)); err != nil {
+		_ = holder.Rollback(hctx)
+		t.Fatalf("hold the project journal lock: %v", err)
+	}
+	release := make(chan struct{})
+	letGo := func() { releaseOnce.Do(func() { close(release) }) }
+	committed := make(chan error, 1)
+	go func() {
+		select {
+		case <-release:
+		case <-time.After(60 * time.Second): // safety net, never the path taken
+		}
+		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ccancel()
+		cerr := holder.Commit(cctx)
+		if cerr != nil {
+			_ = holder.Rollback(cctx)
+		}
+		committed <- cerr
+	}()
+
+	type tickRes struct {
+		n   int
+		err error
+	}
+	holdStart := time.Now()
+	done := make(chan tickRes, 1)
+	go func() {
+		n, err := f.triggers.TickIssueTriggers(ctx, holdStart.UTC(), lister)
+		done <- tickRes{n, err}
+	}()
+
+	// Hold the lock for longer than the poll bound — the crossing that killed
+	// the flake — and latch the fact that the fire is genuinely queued behind
+	// it. The fire may answer early (that is the defect: a fire cut loose while
+	// it waited on a lock has nothing healthy about it); either way the hold
+	// runs its full course, so a waiter seen only in passing still proves the
+	// fire reached the queue.
+	var (
+		queued bool
+		early  *tickRes
+	)
+	for {
+		if !queued {
+			waiting, werr := itJournalLockWaiter(ctx, f.pool, evtLockKey(f.projectID, f.orgID))
+			if werr != nil {
+				letGo()
+				t.Fatalf("read pg_locks for the journal-lock wait: %v", werr)
+			}
+			queued = waiting
+		}
+		if early == nil {
+			select {
+			case r := <-done:
+				early = &r
+			default:
+			}
+		}
+		// Always run the hold out past the poll bound, even if the fire has
+		// already answered: how long the lock was held is what the assertions
+		// below compare the fire's own clock against.
+		if held := time.Since(holdStart); held >= f.triggers.PollTimeout+1500*time.Millisecond ||
+			held > 20*time.Second {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	letGo()
+	released := time.Since(holdStart)
+	if !queued {
+		if early != nil {
+			t.Fatalf("the tick answered (%d, %v) while the journal lock was held and its run create was never queued behind it: this test proved nothing",
+				early.n, early.err)
+		}
+		t.Fatal("the fire's run create never queued on the held journal lock (no ungranted advisory row for this project's key in pg_locks)")
+	}
+	if cerr := <-committed; cerr != nil {
+		t.Fatalf("release the journal-lock holder: %v", cerr)
+	}
+
+	var (
+		fired    int
+		terr     error
+		returned = time.Since(holdStart)
+	)
+	if early != nil {
+		fired, terr = early.n, early.err
+	} else {
+		select {
+		case r := <-done:
+			fired, terr = r.n, r.err
+			returned = time.Since(holdStart)
+		case <-time.After(60 * time.Second):
+			t.Fatal("the tick never returned after the journal lock was released")
+		}
+	}
+	if terr != nil || fired != 1 {
+		t.Fatalf("slow-commit tick = (%d, %v), want exactly one fire and a green tick: the poll bound exists for a hung GitHub, not to decide how long a healthy commit may take (the journal lock was held %s)",
+			fired, terr, released)
+	}
+	if returned <= f.triggers.PollTimeout {
+		t.Fatalf("the fire finished in %s, inside the %s poll bound: nothing was ever slow, so this proves nothing",
+			returned, f.triggers.PollTimeout)
+	}
+	if returned+250*time.Millisecond < released {
+		t.Fatalf("the fire finished %s after the beat began, %s before the journal lock was released: it was not the hold that slowed it",
+			returned, released)
+	}
+
+	// One run, exactly — a commit that survives its wait must not be followed
+	// by a retry that fires the same issue twice.
+	if runID, kind := itIssueRunFor(t, ctx, f, "octo/widgets#11"); kind != "issue" || runID == "" {
+		t.Fatalf("issue #11 did not fire (run %q kind %q)", runID, kind)
+	}
+	var n int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM runs WHERE trigger_ref = 'octo/widgets#11'`).Scan(&n); err != nil {
+		t.Fatalf("count #11 runs: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("issue #11 fired %d runs, want exactly one across the slow commit", n)
+	}
+	polled, lastErr := itPollState(t, ctx, f, trigger.ID)
+	if !polled.Valid {
+		t.Fatal("last_polled_at is NULL after a poll that committed its fire")
+	}
+	if lastErr.Valid && lastErr.String != "" {
+		t.Fatalf("last_error = %q after a slow-but-successful poll, want clean", lastErr.String)
+	}
+	var cursorAt *time.Time
+	if err := f.pool.QueryRow(ctx,
+		`SELECT cursor_at FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&cursorAt); err != nil {
+		t.Fatalf("read the fired trigger's cursor: %v", err)
+	}
+	if cursorAt == nil {
+		t.Fatal("cursor_at did not advance across the slow commit: the next poll will re-offer issue #11")
+	}
 }
