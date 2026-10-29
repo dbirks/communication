@@ -249,7 +249,8 @@ written to the manifest or the log.
 
 Document 1 is `internal/pipelines/testdata/feature-development-contract.yaml`
 (contract § 9.3, the shape `contractprobe`/`cmd/probes` already compile) with
-four deliberate, provenance-headed adjustments:
+deliberate, provenance-headed adjustments — the numbered list below is the
+deviation ledger, nine entries as of the two publishers in 9:
 
 1. **Test node executes the fixture script.** § 9.3's `go test ./...` carried
    over from the spec example, but § 7.0's fixture is Python (`pytest.ini`,
@@ -275,7 +276,9 @@ four deliberate, provenance-headed adjustments:
 3. **`maxChildDepth: 1`** (was 0) because the fan-out invokes depth-1 child
    runs; `issue-implementation` keeps 0, which is what makes C8f's third
    level refuse.
-4. **Twin as document 2**: same eight node ids, three `agent.acp` →
+4. **Twin as document 2**: same ten node ids (deviation 9 grew the pair to
+   `publish_plan` and the until body's `test_evidence`, added to BOTH documents for
+   exactly this reason), three `agent.acp` →
    `process.exec` (`m4-exit.sh [plan|implement|review]`,
    `json_from_stdout`, `secretRefs` and workspace modes unchanged, `passWhen`
    unchanged) ⇒ equal `node_instance_key` sets, which is what C1 asserts
@@ -297,7 +300,7 @@ four deliberate, provenance-headed adjustments:
    leaves stdout byte-identical (`emit_items`/`fan_out` and the C8 child carry no
    hold on purpose — C8b measures real in-flight concurrency). Node ids, count
    and the `until` cap are unchanged, so C1's key-set equality still holds
-   (measured by compiling both documents: 12 identical `node_instance_key`s).
+   (measured by compiling both documents: 14 identical `node_instance_key`s).
    Document 2's leading comment block cannot grow: `c12_splice` requires
    `apiVersion:`/`kind: Pipeline` inside the first 600 characters of the
    document's text, and they already sit at 543/582 — hence this note lives in
@@ -388,16 +391,102 @@ four deliberate, provenance-headed adjustments:
    reads) — and states the rule outright: `approved: true` when the test result
    reports `successful=true` and the change serves the goal and every criterion,
    never a refusal for a missing plan document, only an observed defect. The
-   declared outputs schema, the twin (document 2) and the 12-key node set are
-   untouched.
+   declared outputs schema, the twin (document 2) and the node key set are
+   untouched (the key set has since grown by deviation 9's two publishers — 14
+   compiled `node_instance_key`s, still identical across the two documents).
+
+9. **Two `artifact.publish` nodes so § 7.1 C7b and C9f have bytes to read.** Both arms
+   were GAPs whose reason was the fixture, not the product: the seed had no artifact
+   where the contract names one. § 7.1 C9f's last sentence ("the run's other branches
+   keep running: the sample's `/plan` artifact is still readable … while an unrelated
+   gate waits") wants an artifact readable while the run sits `waiting_human`, and the
+   twin's `/plan` was `process.exec` with outputs only, while its single publisher
+   (`publish_verified` → `review-evidence.md`) sits downstream of `/verdict`, i.e. behind
+   the very gate being waited on — so the waiting run had ZERO rows in `artifacts` and
+   `c9f_branch_verdicts` could only say so (live16/C9.out: "this run has ZERO artifact
+   rows … GAP, never PASS"). § 7.1 C7b's own line
+   (`select count(*) from artifacts where run_id='$RUN' and name like 'test-%'` # 3)
+   was worse than empty-handed: on an exhaustion run every post-gate node is cancelled
+   with the failed loop's other descendants (§ 5.1 step 5, which `c7_no_route_verdicts`
+   asserts), so the count could never have been anything but 0.
+
+   The seed now publishes in both places:
+
+   * `publish_plan` — root scope, `dependsOn: [plan]`, and `/approve` gained
+     `dependsOn: [plan, publish_plan]`. The dependency is the arm: it makes the
+     publication an ANTECEDENT of the gate, so an unheld run has a `ready`, readable
+     `plan-evidence.md` row before it ever goes `waiting_human`. A `when:`-guarded or
+     sibling placement leaves the same race the arm GAPped on. `kind: markdown`,
+     `mediaType: text/markdown`, `from: {mode: output_json, value: ${{
+     nodes.plan.outputs }}}` — the same shape `publish_verified` publishes today.
+   * `test_evidence` — inside the `until` body, `dependsOn: [test]`, publishing
+     `name: test-${{ iteration }}.json` (`kind: json`) from `${{ nodes.test.outputs }}`.
+     `iteration` is an until-body root (`expr.ScopeUntil.Roots()`, ADR-0022 § 2), it is
+     interpolable in a body node's `bindingText` — the compiler proves that shape on its
+     own fixture `internal/pipelines/compiler/testdata/c13d-roots-in-scope.yaml:157`
+     (`prompt: 'iteration -> ${{ iteration > 1 ? … }}'`) — and it is resolved at claim
+     time (ADR-0027, `runtime.varsAt` seeds `iteration` from the row's own key index),
+     which is what keeps one DISTINCT name per iteration: the append-only half of C7b.
+     Every iteration runs every body node, so an exhausted loop books `maxIterations`
+     rows, and C7's own re-authored revision (which lowers the cap to 3) gets
+     `test-1.json`…`test-3.json`.
+
+   Both are appended LAST in their lists — root index 8 and body index 3 — because
+   `internal/pipelines/compiler/body_scope_test.go` pins
+   `/spec/nodes/2/config/body/nodes/2/config/prompt` and the driver's C13 head splice
+   keys off `\n  nodes:`; inserting anywhere earlier moves pointers that are not ours to
+   move. Two consequences the driver carries explicitly, both in
+   `e2e/m4/e2e_m4_exit.py`:
+
+   * `C7_BODY_NODES` stays `("implement", "test", "review")`. § 7.1 C7a's arithmetic is
+     the contract's own (`3 iterations × 3 body nodes = 9 rows`) and counts the loop's
+     WORK nodes; the evidence publisher is measured by C7b's artifact arm instead, so an
+     exhausted run really does present 12 body rows and the 9-row claim still means what
+     the contract wrote. `test_seed_artifact_nodes_logic.py` pins that split from the
+     document.
+   * the held-step arithmetic is unchanged (`W11_HOLD_STEPS_MAX = 1 + 4 × 3`,
+     `C_FAULT_HOLD_STEPS = 4`): the hold is `M4_HOLD_SECONDS`, which only the twin's
+     `process.exec` steps pass — an `artifact.publish` step has no such env and closes in
+     milliseconds, so it can be neither the lease a sampling poll chases nor the attempt
+     a freeze/kill window lands on. `test_hold_logic.py` re-derives the count from the
+     document's four `M4_HOLD_SECONDS` splices, so a future hold added to a publish step
+     fails a test instead of silently stretching a window.
+
+   `expected_node_keys`/`C1_ROOT_KEYS` (C1d's expected side, reused by C5g/C6c) and the
+   C1d worker-location regex grew with the two keys. Because `/approve` is now
+   `dependsOn: [plan, publish_plan]`, the Postgres tests that hand-drive a seed run to
+   its gate cannot stop at `/plan` any more — the gate stays `pending` with
+   `/publish_plan` `ready` forever (the 26723d3 ci failure). They now share
+   `internal/store/postgres/m4_pregate_drive_test.go`: `m4CompleteGateStep` settles one
+   pre-gate step through the same fenced claim/start/complete trio a worker uses and
+   asserts the claim belongs to the node it names, and `m4DriveToApprovalGate` runs both
+   steps and refuses to return unless the graph itself reports `/approve` waiting. No
+   assertion in those tests was relaxed; the drive just walks the whole published path.
+   What is proven offline: the schema
+   validator above, `go test ./internal/pipelines/compiler/` — which compiles document 1
+   exactly as shipped, both new nodes included, body-scope `iteration` name and the
+   64-expression budget (39 compiled expressions) — and
+   `e2e/m4/test_seed_artifact_nodes_logic.py`, which grades the declared graph (both
+   documents, 14 keys each, identical id sets) against the driver's expectations.
+
+   Two honest limits, so nobody reads the above as a live pass. First, **no committed test
+   compiles document 2**: the compiler and assistant tests read document 1 only
+   (`seedDoc1`, `strings.Split(raw, "\n---\n")[0]`), so document 2's CEL compile — and the
+   claim that both documents yield the same 14 keys — is checked here by hand and
+   authoritatively by the `validate` route `seed.sh` calls for every document. Second,
+   **the live arms were not run for this change**: C7b's three `test-<n>.json` rows and
+   C9f's readable `plan-evidence.md` while the gate waits are the fixture doing what the
+   contract names, and only `bash seed.sh && python3 e2e/m4/e2e_m4_exit.py --only C7,C9`
+   on a real lab says whether the engine writes and keeps them readable
+   (`12-test-strategy.md`: a mocked green is not done).
 
 ### Offline validation (no server needed)
 
 ```bash
 cd docs/compatibility/probes/m4
 python3 validate_pipeline.py pipeline.yaml
-# OK   pipeline.yaml#1 kind=Pipeline name=feature-development nodes=8
-# OK   pipeline.yaml#2 kind=Pipeline name=feature-development-deterministic nodes=8
+# OK   pipeline.yaml#1 kind=Pipeline name=feature-development nodes=9
+# OK   pipeline.yaml#2 kind=Pipeline name=feature-development-deterministic nodes=9
 # OK   pipeline.yaml#3 kind=Pipeline name=issue-implementation nodes=1
 # docs=3 errors=0
 ```
@@ -408,6 +497,19 @@ structure only, exactly the layer enforced server-side; loader/compiler rules
 route the seed calls on every run. Cross-evidence that the *asset itself* is
 sound in the pinned validator: `go run ./cmd/communication doctor --pipelines`
 (all lanes `ok`, reports the `cel_env_digest` revisions pin).
+
+The `nodes=` numbers above are the current file, and they move with it: deviation
+9's two publishers took documents 1–2 from 8 nodes to 9 each. On a host without
+the (non-repo) `PyYAML`/`jsonschema` pair the same check runs as
+`uv run --with pyyaml --with jsonschema python validate_pipeline.py pipeline.yaml`
+— that is the spelling the deviation-9 change was verified with, and its literal
+output is the block above. Structure is only half the proof for those two nodes:
+the compiler side (the until-body `iteration` root in `test_evidence`'s artifact
+name, the `nodes.plan.outputs` binding, the appended positions, the 64-expression
+budget) is proven by `go test ./internal/pipelines/compiler/`, which compiles
+document 1 as shipped, and by the seed's own `validate` calls for every document.
+`e2e/m4/test_seed_artifact_nodes_logic.py` grades the driver's expectations
+against these bytes offline.
 
 ## Rerun
 

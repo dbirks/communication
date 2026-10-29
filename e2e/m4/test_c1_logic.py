@@ -117,13 +117,61 @@ class ManifestTest(unittest.TestCase):
 class KeySetTest(unittest.TestCase):
     def test_expected_two_iteration_set(self):
         exp = m.expected_node_keys(2)
-        self.assertEqual(len(exp), 8 + 6)
+        # 9 root keys (the seed's eight plus /publish_plan, the pre-gate artifact
+        # publisher § 7.1 C9f reads) + 2 iterations × 4 body nodes (implement, test,
+        # review and the per-iteration test_evidence publisher § 7.1 C7b counts).
+        self.assertEqual(len(exp), 9 + 8)
+        self.assertEqual(exp["/publish_plan"], "succeeded")
         self.assertEqual(exp["/publish_needs_attention"], "skipped")
         self.assertEqual(exp["/emit_items"], "skipped")
         self.assertEqual(exp["/fan_out"], "skipped")
         self.assertEqual(exp["/build_until_verified[2]/review"], "succeeded")
+        self.assertEqual(exp["/build_until_verified[2]/test_evidence"], "succeeded")
         self.assertNotIn("/build_until_verified[3]/review", exp)
         self.assertNotIn("/build_until_verified[1]", exp)  # composite is unsuffixed
+
+    def test_the_expected_set_matches_the_seed_document_node_ids(self):
+        """The key set is a READING of the seed, so it is checked against the seed.
+        Both documents must carry the same node ids (that identity is what C1's
+        cross-variant arm compares), the pre-gate publisher must sit upstream of the
+        gate, and the evidence publisher must live inside the until body."""
+        path = os.path.join(m.REPO_DIR, "docs", "compatibility", "probes", "m4",
+                            "pipeline.yaml")
+        with open(path, encoding="utf-8") as f:
+            docs = [d for d in re.split(r"(?m)^---\s*$", f.read())
+                    if "kind: Pipeline" in d][:2]
+        root_ids, body_ids = [], []
+        for doc in docs:
+            spec = yaml.safe_load(doc)["spec"]
+            nodes = spec["nodes"]
+            root_ids.append(tuple(n["id"] for n in nodes))
+            until = next(n for n in nodes if n["kind"] == "until")
+            body_ids.append(tuple(n["id"] for n in until["config"]["body"]["nodes"]))
+            approve = next(n for n in nodes if n["kind"] == "human.approval")
+            publish = next(n for n in nodes
+                           if n["id"] == m.C9F_PUBLISH_PLAN_KEY.strip("/"))
+            self.assertEqual(["plan"], publish["dependsOn"],
+                             "the pre-gate publisher must depend on nothing but /plan")
+            self.assertIn(publish["id"], approve["dependsOn"],
+                          "/approve must wait for the publication C9f reads")
+            self.assertEqual("artifact.publish", publish["kind"])
+            self.assertEqual(m.C9F_PLAN_ARTIFACT, publish["config"]["name"])
+            evidence = next(n for n in until["config"]["body"]["nodes"]
+                            if n["id"] == m.C7_EVIDENCE_NODE)
+            self.assertEqual("artifact.publish", evidence["kind"])
+            self.assertEqual(["test"], evidence["dependsOn"])
+            self.assertEqual(m.C7_ARTIFACT_PREFIX + "${{ iteration }}" + ".json",
+                             evidence["config"]["name"],
+                             "the per-iteration name is what C7b's expected set spells:")
+        self.assertEqual(root_ids[0], root_ids[1], "both documents declare the same node ids")
+        self.assertEqual(body_ids[0], body_ids[1], "both until bodies declare the same node ids")
+        self.assertEqual(sorted(k for k in m.expected_node_keys(1) if "[" not in k),
+                         sorted("/" + i for i in root_ids[0]),
+                         "C1_ROOT_KEYS is the seed's root list, not a remembered one")
+        loop = [k for k in m.expected_node_keys(1)
+                if k.startswith(m.C7_UNTIL_KEY + "[")]
+        self.assertEqual(sorted({k.rsplit("/", 1)[1] for k in loop}), sorted(body_ids[0]),
+                         "the until body's expected keys are the seed's body list")
 
     def test_observed_iterations(self):
         keys = set(m.expected_node_keys(3))
@@ -138,11 +186,12 @@ class KeySetTest(unittest.TestCase):
         self.assertFalse(same)
         self.assertEqual(ob, ["/build_until_verified[2]/implement",
                               "/build_until_verified[2]/review",
-                              "/build_until_verified[2]/test"])
+                              "/build_until_verified[2]/test",
+                              "/build_until_verified[2]/test_evidence"])
         self.assertEqual(oa, [])
 
     def test_cross_variant_identity(self):
-        # The twin claim: same 8 node ids both documents — key sets equal at
+        # The twin claim: same 10 node ids in both documents — key sets equal at
         # equal iteration counts whatever the kinds behind them are.
         agent = set(m.expected_node_keys(2))
         twin = {k.replace("/implement", "/implement") for k in agent}

@@ -341,16 +341,27 @@ export const LAYOUT_SPACING = {
    * its midpoint) — with the ~60px measured box height that is a 54px
    * ranksep, not the pill-height floor of 24 that compressed the chain to
    * ~78px.
+   *
+   * The graph-overlap fix: the canvas renders EVERY step as a 200×52 card
+   * (Studio `STEP_BOX`, re-centred on the dagre box; the Overview grows the
+   * card to the dagre box when an id needs more), so dagre must space
+   * 200-wide boxes — at the old 96 floor two same-rank siblings could sit
+   * 122px centre-to-centre and their rendered cards overlapped 28px
+   * (`review`/`test_evidence` in the m4 until body), exactly the defect
+   * `graphOverlap.test.tsx` pins. `groupPad` rises to the 8px the canvases
+   * grow a group around its re-centred cards with, so that grow is a no-op
+   * on true boxes, and `nodesep` clears 2×8 of group padding plus room to
+   * breathe when two scopes sit side by side in one rank.
    */
   dense: {
-    nodesep: 14,
+    nodesep: 24,
     ranksep: 54,
     edgesep: 12,
     margin: 8,
-    groupPad: 6,
+    groupPad: 8,
     groupGap: 6,
     groupFoot: 6,
-    nodeMin: { width: 96, height: 54 },
+    nodeMin: { width: 200, height: 54 },
   },
 } as const;
 

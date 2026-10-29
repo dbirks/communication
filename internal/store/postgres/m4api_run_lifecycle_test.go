@@ -700,35 +700,19 @@ func TestM4RunLifecycleRetryRearmsDownstream(t *testing.T) {
 		t.Errorf("retried attempt retry_context = %s, want the failed attempt's error_class", retryCtx)
 	}
 
-	// --- the retried attempt lands: the run proceeds as a fresh run would.
+	// --- the retried attempt lands: the run proceeds as a fresh run would,
+	// which since the seed's deviation 9 means BOTH pre-gate steps: the retried
+	// /plan, then /publish_plan (the pre-gate artifact publisher /approve waits
+	// on). m4CompleteGateStep asserts each claim is the node it names, so this
+	// cannot quietly complete the wrong one.
 	if _, err := f.pool.Exec(ctx, `
 		UPDATE attempts SET scheduled_at = now() - interval '1 minute'
 		WHERE run_id = $1::uuid AND status = 'queued'`, view.ID); err != nil {
 		t.Fatalf("age retried attempt: %v", err)
 	}
-	a, err := m4Runtime.Claim(ctx, view.ID, workerID)
-	if err != nil || a == nil {
-		t.Fatalf("claim retried attempt: a=%v err=%v", a, err)
-	}
-	if err := m4Runtime.Start(ctx, view.ID, a.ID, workerID, a.FencingToken); err != nil {
-		t.Fatalf("start retried attempt: %v", err)
-	}
-	var workspaceID string
-	if err := f.pool.QueryRow(ctx, `
-		INSERT INTO workspaces (organization_id, project_id, scope_kind, run_id, worker_id,
-		                        volume_id, root_path, state, ready_at)
-		VALUES ($1, $2, 'run', $3, $4, 'sha256:' || repeat('1', 64), '/workspaces/runs/retry', 'ready', now())
-		RETURNING id`, f.orgID, f.projectID, view.ID, workerID).Scan(&workspaceID); err != nil {
-		t.Fatalf("seed run workspace: %v", err)
-	}
-	ckpt := runtime.CheckpointRecord{
-		InputsDigest: "sha256:" + strings.Repeat("1", 64), OutputsDigest: "sha256:" + strings.Repeat("2", 64),
-		VolumeID: "sha256:" + strings.Repeat("1", 64), WorkspaceID: workspaceID, WorkerID: workerID,
-	}
-	if err := m4Runtime.Complete(ctx, view.ID, a.ID, workerID, a.FencingToken,
-		m4LifecyclePlanOutputs(), "sha256:"+strings.Repeat("3", 64),
-		nil, "", ckpt); err != nil {
-		t.Fatalf("complete retried attempt: %v", err)
+	workspaceID := m4GateWorkspace(t, ctx, f, view.ID, workerID, "retry")
+	for _, step := range m4GateSteps(t, ctx, f) {
+		m4CompleteGateStep(t, ctx, f, m4Runtime, view.ID, workerID, workspaceID, step)
 	}
 	done := m4LifeNodeStatuses(t, f, view.ID)
 	events := m4LifeEvents(t, f, view.ID)

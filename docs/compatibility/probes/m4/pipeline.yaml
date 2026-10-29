@@ -31,8 +31,11 @@
 # see README.md "Offline validation" for the exact commands. seed.sh posts one document per
 # `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
 #
-# Document 1: agent-driven variant — Plan -> Approve -> Implement -> Test -> Review ->
-# Loop -> verdict, C8 fan-out arm, then publish evidence.
+# Document 1: agent-driven variant — Plan -> plan evidence (publish_plan, § 7.1 C9f) ->
+# Approve -> Implement -> Test -> Review -> per-iteration test evidence (test_evidence,
+# § 7.1 C7b) -> Loop -> verdict, C8 fan-out arm, then publish evidence. Both publishers are
+# in document 2 too (identical node ids are the twin claim) and are appended last in their
+# lists; README's seed-pipeline deviation 9 carries the reason.
 apiVersion: communication.dev/v1alpha1
 kind: Pipeline
 metadata:
@@ -120,7 +123,7 @@ spec:
                   action: {type: string, minLength: 1}
   - id: approve
     kind: human.approval
-    dependsOn: [plan]
+    dependsOn: [plan, publish_plan]
     retry:
       maxAttempts: 1
     config:
@@ -246,6 +249,26 @@ spec:
               approved: {type: boolean}
               evidence: {type: [string, array], items: {type: string}}
               findings: {type: array, items: {type: string}}
+        # test_evidence is the per-iteration artifact § 7.1 C7b's psql line counts
+        # (`select count(*) from artifacts where name like 'test-%'` = maxIterations).
+        # Unconditional, depends on the test node of its OWN iteration, appended last so
+        # the review node keeps its /spec/nodes/2/config/body/nodes/2 pointer; `iteration`
+        # is an until-body root (ADR-0022 § 2) resolved at claim time (ADR-0027).
+        - id: test_evidence
+          kind: artifact.publish
+          dependsOn: [test]
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+            retriableErrors: [infra, interrupted]
+          config:
+            name: test-${{ iteration }}.json
+            kind: json
+            mediaType: application/json
+            sensitivity: standard
+            from:
+              mode: output_json
+              value: ${{ nodes.test.outputs }}
       resultBindings:
         implementation_summary: ${{ nodes.implement.outputs.summary }}
         review_feedback: ${{ nodes.review.outputs.evidence }}
@@ -333,6 +356,24 @@ spec:
       from:
         mode: output_json
         value: ${{ nodes.build_until_verified.outputs }}
+  # publish_plan is the pre-gate publication § 7.1 C9f counts ("the run's other branches
+  # keep running: the sample's /plan artifact is still readable ... while an unrelated
+  # gate waits"). /approve depends on it, so the artifact row exists, is ready and is
+  # readable BEFORE the gate opens: a `when`-guarded or post-gate publisher leaves the
+  # waiting run with zero artifact rows, which is what GAPped C9f's readable-artifact arm
+  # (live16/C9.out). It is appended last because Go and driver probes key off node list
+  # positions (compiler/body_scope_test.go pins /spec/nodes/2/...).
+  - id: publish_plan
+    kind: artifact.publish
+    dependsOn: [plan]
+    config:
+      name: plan-evidence.md
+      kind: markdown
+      mediaType: text/markdown
+      sensitivity: standard
+      from:
+        mode: output_json
+        value: ${{ nodes.plan.outputs }}
   resultBindings:
     implementation_summary: ${{ nodes.build_until_verified.outputs.implementation_summary }}
     review_approved: ${{ nodes.build_until_verified.outputs.approved }}
@@ -414,7 +455,7 @@ spec:
         plan: {type: string, minLength: 1}
   - id: approve
     kind: human.approval
-    dependsOn: [plan]
+    dependsOn: [plan, publish_plan]
     retry:
       maxAttempts: 1
     config:
@@ -513,6 +554,26 @@ spec:
               approved: {type: boolean}
               evidence: {type: string}
               findings: {type: array, items: {type: string}}
+        # test_evidence is the per-iteration artifact § 7.1 C7b's psql line counts
+        # (`select count(*) from artifacts where name like 'test-%'` = maxIterations).
+        # Unconditional, depends on the test node of its OWN iteration, appended last so
+        # the review node keeps its /spec/nodes/2/config/body/nodes/2 pointer; `iteration`
+        # is an until-body root (ADR-0022 § 2) resolved at claim time (ADR-0027).
+        - id: test_evidence
+          kind: artifact.publish
+          dependsOn: [test]
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+            retriableErrors: [infra, interrupted]
+          config:
+            name: test-${{ iteration }}.json
+            kind: json
+            mediaType: application/json
+            sensitivity: standard
+            from:
+              mode: output_json
+              value: ${{ nodes.test.outputs }}
       resultBindings:
         implementation_summary: ${{ nodes.implement.outputs.summary }}
         review_feedback: ${{ nodes.review.outputs.evidence }}
@@ -600,6 +661,22 @@ spec:
       from:
         mode: output_json
         value: ${{ nodes.build_until_verified.outputs }}
+  # publish_plan publishes /plan's outputs BEFORE the gate: § 7.1 C9f reads "the sample's
+  # /plan artifact ... still readable while an unrelated gate waits", and the twin's only
+  # other publisher sits AFTER the gate, so the waiting run had zero artifact rows to read.
+  # Appended last: /spec/nodes/2/... pointers (compiler/body_scope_test.go, the driver's
+  # C13 head splice) are position-sensitive.
+  - id: publish_plan
+    kind: artifact.publish
+    dependsOn: [plan]
+    config:
+      name: plan-evidence.md
+      kind: markdown
+      mediaType: text/markdown
+      sensitivity: standard
+      from:
+        mode: output_json
+        value: ${{ nodes.plan.outputs }}
   resultBindings:
     implementation_summary: ${{ nodes.build_until_verified.outputs.implementation_summary }}
     review_approved: ${{ nodes.build_until_verified.outputs.approved }}

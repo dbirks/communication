@@ -470,35 +470,72 @@ class FWaitedTest(unittest.TestCase):
 
 
 class FBranchTest(unittest.TestCase):
+    """§ 7.1 C9f's 'the run's other branches keep running: the sample's /plan artifact
+    is still readable … while an unrelated gate waits'. The seed's `publish_plan` node
+    (docs/compatibility/probes/m4/pipeline.yaml, both documents — /plan → publish_plan →
+    /approve) is what puts a readable row in the ledger BEFORE the gate opens, so these
+    tests carry that node's ledger row and the name it publishes."""
     PLAN = {"status": "succeeded", "outputs_present": "t"}
+    PUB = {"status": "succeeded", "outputs_present": "t"}
+    PLAN_ART = {"id": "a1", "name": m.C9F_PLAN_ARTIFACT}
 
-    def test_plan_outputs_and_a_readable_artifact_pass(self):
-        v = m.c9f_branch_verdicts(self.PLAN, [{"id": "a1"}], {"a1": 200})
+    def test_plan_outputs_and_a_readable_plan_artifact_pass(self):
+        v = m.c9f_branch_verdicts(self.PLAN, [self.PLAN_ART], {"a1": 200},
+                                  run_status_during="waiting_human", publisher=self.PUB)
         self.assertTrue(all(ok for _, ok, _ in v), v)
+        self.assertEqual(3, len(v), v)
+        self.assertIn(m.C9F_PLAN_ARTIFACT, " ".join(l for l, _, _ in v))
 
-    def test_plan_outputs_alone_still_carries_the_run_when_there_are_no_bytes(self):
-        v = m.c9f_branch_verdicts(self.PLAN, [], {})
+    def test_a_succeeded_publisher_with_no_artifact_row_is_a_fail(self):
+        """The node ran and the ledger holds nothing: that is the product losing the
+        publication, not a case the seed failed to author."""
+        v = m.c9f_branch_verdicts(self.PLAN, [], {}, publisher=self.PUB)
         self.assertTrue(ok_of(v, "/plan is succeeded"), v)
-        self.assertIsNone(ok_of(v, "artifact is still readable"), v)
-        self.assertIn("deterministic twin", detail_of(v, "artifact is still readable"))
+        self.assertIs(False, ok_of(v, "artifact is still readable"), v)
+        self.assertIn("succeeded", detail_of(v, "artifact is still readable"))
+
+    def test_zero_rows_gap_only_while_nothing_upstream_of_the_gate_published(self):
+        for pub in ({}, {"status": "running"}, {"status": "pending"}, None):
+            v = m.c9f_branch_verdicts(self.PLAN, [], {}, publisher=pub)
+            self.assertIsNone(ok_of(v, "artifact is still readable"), (pub, v))
+
+    def test_a_publisher_that_ended_any_other_way_did_not_land_the_artifact(self):
+        for status in ("failed", "skipped", "cancelled", "interrupted"):
+            v = m.c9f_branch_verdicts(self.PLAN, [], {},
+                                      publisher={"status": status})
+            self.assertIs(False, ok_of(v, "artifact is still readable"), (status, v))
 
     def test_an_unreadable_artifact_fails(self):
-        v = m.c9f_branch_verdicts(self.PLAN, [{"id": "a1"}, {"id": "a2"}],
-                                  {"a1": 200, "a2": 404})
+        v = m.c9f_branch_verdicts(self.PLAN,
+                                  [self.PLAN_ART, {"id": "a2", "name": "other.json"}],
+                                  {"a1": 200, "a2": 404}, publisher=self.PUB)
         self.assertFalse(ok_of(v, "artifact is still readable"), v)
 
+    def test_rows_that_are_not_the_plan_evidence_do_not_satisfy_the_name_arm(self):
+        """A non-empty ledger is not the arm: § 7.1 names the /plan artifact, so a run
+        whose only pre-gate row came from somewhere else still fails this verdict."""
+        v = m.c9f_branch_verdicts(self.PLAN, [{"id": "a1", "name": "something-else.json"}],
+                                  {"a1": 200}, publisher=self.PUB)
+        self.assertTrue(ok_of(v, "artifact is still readable"), v)
+        self.assertIs(False, ok_of(v, "IS the plan evidence"), v)
+
+    def test_the_name_arm_gaps_when_the_publisher_row_was_never_read(self):
+        v = m.c9f_branch_verdicts(self.PLAN, [self.PLAN_ART], {"a1": 200})
+        self.assertIsNone(ok_of(v, "IS the plan evidence"), v)
+
     def test_a_missing_artifact_read_gaps(self):
-        v = m.c9f_branch_verdicts(self.PLAN, None, {})
+        v = m.c9f_branch_verdicts(self.PLAN, None, {}, publisher=self.PUB)
         self.assertIsNone(ok_of(v, "artifact is still readable"), v)
 
     def test_no_plan_row_gaps_its_own_arm(self):
         for row in (None, {}, "x"):
-            v = m.c9f_branch_verdicts(row, [{"id": "a1"}], {"a1": 200})
+            v = m.c9f_branch_verdicts(row, [self.PLAN_ART], {"a1": 200}, publisher=self.PUB)
             self.assertIsNone(ok_of(v, "/plan is succeeded"), (row, v))
 
     def test_a_plan_row_that_is_not_succeeded_fails(self):
         self.assertFalse(ok_of(m.c9f_branch_verdicts(
-            {"status": "running", "outputs_present": "f"}, [], []), "/plan is succeeded"))
+            {"status": "running", "outputs_present": "f"}, [], [], publisher=self.PUB),
+            "/plan is succeeded"))
 
 
 class FSiblingTest(unittest.TestCase):

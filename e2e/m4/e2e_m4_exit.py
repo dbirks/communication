@@ -602,8 +602,18 @@ II_SLUG = "issue-implementation"
 # pair and the losing publish arm exist as TERMINAL `skipped` rows (the
 # pipeline.yaml header says so in words: "appear as node.execution_skipped
 # exactly like publish_needs_attention already does").
+#
+# /publish_plan is the seed's PRE-gate artifact publisher (§ 7.1 C9f's "the
+# sample's /plan artifact is still readable while … an unrelated gate waits"):
+# it depends on /plan alone and /approve depends on it, so an unheld run
+# always holds one readable artifact row while it is waiting_human. It landed
+# in BOTH seed documents, so this set (and expected_node_keys below, which is
+# the expected side of C1d/C5g/C6c and the cross-variant identity) grew by one
+# root key and one until-body key; the seed document is the authority and the
+# live ledger is graded against this map.
 C1_ROOT_KEYS = {
     "/plan": "succeeded",
+    "/publish_plan": "succeeded",
     "/approve": "succeeded",
     "/build_until_verified": "succeeded",
     "/emit_items": "skipped",
@@ -620,7 +630,10 @@ def expected_node_keys(iterations):
     [n] suffix; the loop itself is the unsuffixed composite row)."""
     keys = dict(C1_ROOT_KEYS)
     for i in range(1, iterations + 1):
-        for n in ("implement", "test", "review"):
+        # test_evidence is the seed's per-iteration artifact publisher — the row
+        # § 7.1 C7b's `name like 'test-%'` count is produced by (see C7_BODY_NODES
+        # for why it is not one of the loop's three WORK nodes).
+        for n in ("implement", "test", "review", "test_evidence"):
             keys[f"/build_until_verified[{i}]/{n}"] = "succeeded"
     return keys
 
@@ -1713,7 +1726,13 @@ def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
 # stdout byte-identical (README: "the fault gates therefore have to post their runs
 # with hold_seconds: 45").
 C_FAULT_HOLD_SECONDS = 45
-C_FAULT_HOLD_STEPS = 4          # plan + implement + test + review, each held open
+C_FAULT_HOLD_STEPS = 4          # plan + implement + test + review, each held open.
+                                # The seed's two artifact.publish nodes (/publish_plan,
+                                # /build_until_verified[n]/test_evidence) are NOT counted:
+                                # only the twin's process.exec steps take the M4_HOLD_SECONDS
+                                # env (docs/compatibility/probes/m4/README.md note 5), so a
+                                # publish step closes in well under a second and cannot be
+                                # the live attempt a kill/freeze window is aimed at
 C_FAULT_LEASE_S = 45            # lease 30s + reconciler tick 15s (§ 7.1 C4a)
 # W2 and W10 are not fault legs, but both rows watch a page MID-LEASE: live8/W2.out
 # GAPped "no attempt was sampled MID-LEASE … the twin's process.exec attempts finish
@@ -1970,7 +1989,8 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
     ctrl = {k: v["loc"] for k, v in seen.items()
             if k in ("/approve", "/verdict") and v["loc"] != "control_plane"}
     ctrl |= {k: v["loc"] for k, v in seen.items()
-             if re.match(r"^/build_until_verified\[\d+\]/(implement|test|review)$", k)
+             if re.match(r"^/build_until_verified\[\d+\]/"
+                         r"(implement|test|review|test_evidence)$", k)
              and v["loc"] != "worker"}
     ok_all &= check("C1d /approve,/verdict control_plane; loop bodies worker (two writers, "
                     "ADR-0023 § 3)", not ctrl, str(ctrl))
@@ -4251,7 +4271,21 @@ def c5_journal_verdicts(rows, run_st):
 def c5_boundary_verdicts(before, after, ready_before, ready_after, uploading_after):
     """C5c — the durable boundary survived the SIGKILL. before/after are
     c5_checkpoint_set lists; the artifact counts are ledger counts of ready /
-    uploading rows for the run."""
+    uploading rows for the run.
+
+    The ready-artifact comparison stays honest with the seed's two publishers: the
+    BEFORE reading is taken after the gate released the run (C_LIVE_TARGET_KEY is
+    post-gate), so /publish_plan's plan-evidence.md is already a row in BOTH counts — the
+    gate cannot even open without it. The only rows that can still arrive inside this
+    window are the until body's `test-<n>.json` evidence, and the body cannot reach its
+    publisher that fast: the AFTER reading is taken as soon as the killed attempt stops
+    being live (C5_KILL_WAIT_S=50 plus a 3s-granularity poll), while the first
+    test_evidence row needs the retry re-leased (~10s backoff), implement[1] held open
+    C_FAULT_HOLD_SECONDS=45, then test[1] held open another 45 — ~100s at the earliest,
+    and review[1]'s hold pushes it past 145s. A lab slow enough to break that margin
+    FAILS the arm; the count is never widened to absorb the seed's new publishers, and
+    the uploading=0 arm is untouched by them (a publish that died mid-upload is exactly
+    what that arm is there to catch)."""
     if not before:
         return [("C5c the durable checkpoint boundary survived the kill", None,
                  "0 run_checkpoints rows existed BEFORE the kill (the killed attempt was the "
@@ -5862,7 +5896,18 @@ def _c5h_kill_and_grade(alice, facts, run_id):
 # reads "resumed" is always a FAIL: D-009/D-024 are only honest when the
 # journal says what actually happened to the bytes.
 
-C6_RESTORE_KEY = "/plan"            # the checkpointed boundary the restore resets to
+C6_RESTORE_KEY = "/plan"            # the checkpointed boundary the restore resets to.
+                                    # Since the seed's deviation 9 the NEWEST checkpoint
+                                    # before the killed node is /publish_plan's, not /plan's
+                                    # (runtime/retry.go takes the newest), and the C6b pair
+                                    # below reads /plan's recorded head. That stays the same
+                                    # commit: both nodes record `ref.RepoStates` off the one
+                                    # run-workspace row (worker/procexec.go:1320,
+                                    # worker/artifactpublish.go:329) with nothing between them
+                                    # — /plan edits nothing and publish_plan is a publication,
+                                    # no commit is authored in the chain — so
+                                    # `from_commit … VERBATIM` compares one value read twice,
+                                    # not two boundaries that happen to look alike.
 C6_KILL_KEY = C_LIVE_TARGET_KEY     # the held post-gate node C6 kills inside (§ 7.1)
 C6_RESTORE_POLICY = "restore_checkpoint"
 C6_LOSS_WORKER = "communication-m4-worker-c"   # throwaway, own workspaces + repos volumes
@@ -7209,10 +7254,22 @@ def _c6d_kill_and_refuse(alice, facts, run_id):
 # bound was reached by evaluating the predicate maxIterations times.
 
 C7_UNTIL_KEY = "/build_until_verified"
+# § 7.1 C7a's arithmetic — "3 iterations × 3 body nodes = 9 rows" — is the loop's three
+# WORK nodes. The seed's until body also carries a fourth, unconditional node,
+# `test_evidence` (kind artifact.publish): it is what makes § 7.1 C7b's own psql line
+# (`select count(*) from artifacts where run_id='$RUN' and name like 'test-%'` # 3)
+# measurable at all — with only the three work nodes in the body the exhausted run
+# published ZERO artifact rows, because the seed's single publisher
+# (/publish_verified → review-evidence.md) sits downstream of the failed loop and is
+# cancelled with every other descendant (§ 5.1 step 5; c7_no_route_verdicts asserts
+# exactly that). The evidence node is therefore NOT folded into C7_BODY_NODES — that
+# would make C7a assert 12 rows against a contract that says 9 — and is measured by
+# c7_artifact_verdicts' artifact arm instead.
 C7_BODY_NODES = ("implement", "test", "review")
+C7_EVIDENCE_NODE = "test_evidence"    # the until body's artifact.publish node
 C7_PROBE_NODE = "prev_probe"          # the has(previous.*)-gated C7d witness
 C7_MAX_ITERATIONS = 3                 # § 7.1 C7: the re-authored bound (seed ships 4)
-C7_ARTIFACT_PREFIX = "test-"
+C7_ARTIFACT_PREFIX = "test-"          # § 7.1 C7b's `name like 'test-%'`
 C7_EVAL_CAP = 10000                   # § 6 'Evaluations per run'
 C7_NOOP_STEP = "plan"                 # m4-exit.sh's edit-free step: prints {plan}, writes no file
 C7_TERMINAL = ("succeeded", "failed", "skipped", "cancelled", "interrupted")
@@ -7343,17 +7400,42 @@ def c7_event_verdicts(events, max_iter=C7_MAX_ITERATIONS):
     return v
 
 
+def c7_artifact_names_expected(want=C7_MAX_ITERATIONS, prefix=C7_ARTIFACT_PREFIX):
+    """The evidence names § 7.1 C7b's psql line counts for an exhaustion run: the seed
+    names its per-iteration publisher `test-<iteration>.json`, so the expected set is
+    spelled here rather than counted off a prefix — a prefix alone would let `test-.json`,
+    two artifacts from one iteration or a name that lost its iteration ride pass."""
+    return sorted(f"{prefix}{i}.json" for i in range(1, want + 1))
+
+
 def c7_artifact_verdicts(names, want=C7_MAX_ITERATIONS, prefix=C7_ARTIFACT_PREFIX):
     """C7b — per-iteration evidence preserved: one `test-<n>` artifact per iteration,
-    distinct names (append-only — an overwrite would collapse the set)."""
-    names = [str(x).strip() for x in (names or []) if str(x).strip()]
-    if not names:
+    distinct names (append-only — an overwrite would collapse the set).
+
+    `names=None` is the ONLY gap shape here: the read itself failed, so there is
+    nothing to count. An EMPTY list is a FAIL, never a gap — § 7.1 C7b's own psql line
+    expects `maxIterations` 'test-%' rows and the seed's until body publishes one per
+    iteration (pipeline.yaml docs 1-2, node `test_evidence`), so zero rows means the
+    evidence the case names is missing (that zero is what live16/C7.out reported as a
+    GAP: the then-shipped twin published its only artifact downstream of the failed
+    loop, so no exhaustion run could ever have had a 'test-%' row)."""
+    if names is None:
         return [(f"C7b artifacts: {want} distinct '{prefix}*' rows (per-iteration evidence)",
-                 None, "no artifact rows readable for this run")]
+                 None, "the artifact read failed — no rows to count")]
+    names = [str(x).strip() for x in names if str(x).strip()]
+    want_names = c7_artifact_names_expected(want, prefix)
     hit = sorted({n for n in names if n.startswith(prefix)})
+    if not hit:
+        return [(f"C7b artifacts: {want} distinct '{prefix}*' rows (per-iteration evidence)",
+                 False,
+                 f"ZERO '{prefix}*' rows among {len(names)} artifact row(s) {sorted(names)[:6]} "
+                 f"— the seed's until body publishes one per iteration "
+                 f"({C7_EVIDENCE_NODE} → {want_names[:1]}…), so the exhaustion run is missing "
+                 "the evidence § 7.1 C7b names (FAIL, never GAP)")]
     return [
-        (f"C7b artifacts: {want} distinct '{prefix}*' rows (one per iteration)",
-         len(hit) == want, f"{len(hit)} of {want}: {hit[:6]}"),
+        (f"C7b artifacts: {want} distinct '{prefix}*' rows (one per iteration, "
+         f"expected {want_names})",
+         hit == want_names, f"{len(hit)} of {want}: {hit[:6]}"),
         ("C7b evidence artifacts are append-only (no duplicate name per iteration)",
          len(hit) == len([n for n in names if n.startswith(prefix)]),
          f"names={sorted(names)[:8]}"),
@@ -8523,12 +8605,26 @@ C8_SELF_DOC_NODE = """  - id: fan
 # spec.inputs REQUIRES goal/repository, and a child run posting unknown inputs is a
 # 422) and the graph swapped for the single invoke node. Depth is measured off the
 # runs tree, never assumed.
+#
+# The invoke config's inputs are schema bindingOrString VALUES (pipeline-v1alpha1
+# $defs: type string, minLength 1) — a bare `number: 1` is refused at validate with
+# schema_shape "got number, want string" (the exact 409 that GAPed C8f live: the
+# l3 draft never published, so no root was ever posted). A quoted '1' passes the
+# schema but m4ChildInputs then refuses it against the child's declared integer
+# (no string coercion), so the authored form must be a binding — the same
+# `${{ … }}` spelling the seed's fan_out invoke carries for item.number, which is
+# proven to keep the JSON integer type through ResolveConfig into the child pin.
+# `repository` is an OPTIONAL chain-level input (no default): when the seed
+# manifest names one, both arms post it so the ROOT run resolves a repository
+# through ADR-0060 exactly like the scratch arms that complete today; the
+# invoke-authored inputs (number/title) are all the child runs ever receive.
 C8F_IO = """
   inputs:
     type: object
     properties:
       number: {type: integer, minimum: 1, default: 1}
       title: {type: string, default: ''}
+      repository: {type: string}
   outputs:
     type: object
     properties:
@@ -8541,7 +8637,7 @@ C8F_LEVEL_NODES = """  - id: invoke
     config:
       pipeline: @@TARGET@@
       inputs:
-        number: 1
+        number: ${{ inputs.number }}
         title: m4x-c8f chain
   resultBindings:
     child: ${{ nodes.invoke.outputs.child_run_id }}
@@ -8689,8 +8785,13 @@ def c8f_chain(alice, admin, facts):
         revs[lvl] = rev
 
     def post(rev, tag):
+        inputs = {}
+        repo = str((mf(facts, "inputs") or {}).get("repository") or "")
+        if repo:
+            inputs["repository"] = repo   # ADR-0060: the root names its repository
+                                          # by the manifest's own input, as C5h does
         r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
-                       {"pipeline_revision_id": rev, "inputs": {},
+                       {"pipeline_revision_id": rev, "inputs": inputs,
                         "idempotency": idem_key(f"m4x-c8f-{tag}")})
         show(f"C8f {tag}: POST runs (chain revision) -> {r.status}", r.text[:160])
         return (r.json() or {}).get("run_id") if r.status in (200, 201) else None
@@ -9196,6 +9297,13 @@ C9F_SUB_FLOOR_S = 20           # the value the brief asked for: the probe, not t
 C9F_TICK_S = 2
 C9F_ARM_WAIT_S = 90            # arm + tick + slack for the ONE-deadline arms
 C9F_EXPIRE_WAIT_S = 180        # 'expire' re-requests with the SAME window, so 2x
+# The artifact § 7.1 C9f reads while the gate waits. The seed's `publish_plan` node
+# (docs/compatibility/probes/m4/pipeline.yaml, both documents) publishes /plan's outputs
+# BEFORE /approve opens, so this name is the row the arm must find; the driver checks the
+# NAME rather than any row, because "the sample's /plan artifact" is a claim about which
+# bytes are readable, not about the ledger being non-empty.
+C9F_PLAN_ARTIFACT = "plan-evidence.md"
+C9F_PUBLISH_PLAN_KEY = "/publish_plan"
 
 
 def c9f_deadline_doc(canonical, name, on_timeout, deadline_seconds=C9F_DEADLINE_S):
@@ -9328,12 +9436,20 @@ def c9f_waited_verdicts(snap, expired):
     ]
 
 
-def c9f_branch_verdicts(plan_row, artifacts, reads, run_status_during=""):
+def c9f_branch_verdicts(plan_row, artifacts, reads, run_status_during="", publisher=None,
+                        artifact_name=C9F_PLAN_ARTIFACT):
     """§ 7.1 C9f's last sentence, measurable half: 'the run's other branches keep
     running: the sample's /plan artifact is still readable'. `plan_row` is the /plan
-    node's ledger row {status, outputs_present}; `artifacts` are the run's artifact
-    rows (C1f's shape) and `reads` the {artifact_id: status} answers of
-    GET /artifacts/{id}. A missing read is a GAP, never a pass."""
+    node's ledger row {status, outputs_present}; `publisher` is the same row for
+    /publish_plan, the artifact.publish node the seed authors BEFORE the gate (the gate
+    depends on it, so an unheld run has one readable artifact row by the time it is
+    waiting_human); `artifacts` are the run's artifact rows (C1f's shape) and `reads`
+    the {artifact_id: status} answers of GET /artifacts/{id}. A missing read is a GAP,
+    never a pass — but an EMPTY ledger is not a gap while the publisher node reports
+    'succeeded': the node ran, the row it promised does not exist, and that is a
+    product finding (live16/C9.out GAPped this arm for the opposite reason: the
+    then-shipped twin published its only artifact AFTER the gate, so the waiting run
+    had no bytes to read and the arm was measuring a seed shape, not the product)."""
     out = [("C9f the gated run's upstream work survives the wait: /plan is succeeded "
             "and its outputs are still readable",
             None if not isinstance(plan_row, dict) or not plan_row else
@@ -9344,21 +9460,40 @@ def c9f_branch_verdicts(plan_row, artifacts, reads, run_status_during=""):
         out.append(("C9f the sample's /plan artifact is still readable while the gate "
                     "waits", None, "the artifacts read failed"))
         return out
+    pub = str((publisher or {}).get("status") or "") if isinstance(publisher, dict) else ""
     if not artifacts:
-        out.append(("C9f the sample's /plan artifact is still readable while the gate "
-                    "waits", None,
-                    "this run has ZERO artifact rows: the deterministic twin publishes "
-                    "its only artifact (review-evidence.md) AFTER the gate and its "
-                    "/plan is process.exec with outputs, not artifact.publish "
-                    "(pipeline.yaml doc 2). The /plan outputs row above is the "
-                    "readable evidence; nothing behind a waiting gate has published "
-                    "bytes yet — GAP, never PASS"))
+        if pub == "succeeded":
+            out.append(("C9f the sample's /plan artifact is still readable while the gate "
+                        "waits", False,
+                        "/publish_plan reports 'succeeded' yet this run holds ZERO artifact "
+                        f"rows while {run_status_during!r}: the node ran and left no readable "
+                        "row behind (a ledger/write finding, not a missing fixture)"))
+        elif pub in ("", "pending", "running", "leased", "queued", "in_progress"):
+            out.append(("C9f the sample's /plan artifact is still readable while the gate "
+                        "waits", None,
+                        f"ZERO artifact rows and /publish_plan is {pub or 'unreadable'!r}: no "
+                        "artifact.publish node upstream of the gate had finished, so there are "
+                        "no bytes to read — GAP, never PASS"))
+        else:
+            out.append(("C9f the sample's /plan artifact is still readable while the gate "
+                        "waits", False,
+                        f"/publish_plan is {pub!r} and the run holds ZERO artifact rows while "
+                        "the gate waits — the pre-gate publication did not land"))
         return out
-    bad = [a for a in artifacts if reads.get(str(a.get("id"))) not in (200, 201, 206)]
+    rows = [a for a in artifacts if isinstance(a, dict)]
+    bad = [a for a in rows if reads.get(str(a.get("id"))) not in (200, 201, 206)]
     out.append(("C9f the sample's /plan artifact is still readable while the gate "
-                f"waits ({len(artifacts)} row(s), GET /artifacts/{{id}})",
+                f"waits ({len(rows)} row(s), GET /artifacts/{{id}})",
                 not bad, f"un-readable={[a.get('id') for a in bad][:3]} "
                          f"run_status_while_waiting={run_status_during!r}"))
+    named = [a for a in rows if str(a.get("name")) == artifact_name]
+    out.append((f"C9f the readable row IS the plan evidence: a row named {artifact_name!r} "
+                "(pipeline.yaml's publish_plan, upstream of the gate) exists and reads back",
+                None if not isinstance(publisher, dict) or not publisher else
+                bool(named) and all(reads.get(str(a.get("id"))) in (200, 201, 206)
+                                    for a in named),
+                f"names={sorted({str(a.get('name')) for a in rows})[:6]} "
+                f"publish_plan={pub or 'unreadable'}"))
     return out
 
 
@@ -9909,14 +10044,29 @@ def c9_plan_row(run_id):
     """The gated run's /plan row: {status, outputs_present} — C9f's 'the run's other
     branches keep running' is read here, because the twin's /plan is upstream of the
     gate and must have finished (with its outputs) before the wait even begins."""
+    return c9_node_row(run_id, "/plan")
+
+
+def c9_node_row(run_id, key):
+    """One node_instance_key's {status, outputs_present} from the ledger ('' dict when
+    the read fails, {} when the run has no such row). C9f grades the PRE-gate publisher
+    with this: /publish_plan's status is what tells a zero-artifact ledger apart — a
+    succeeded publisher with no artifact row is the product failing to write one, while
+    a publisher that never ran says the revision had nothing to read (a gap)."""
     try:
         rows = psql_rows(psql(f"SELECT status || '|' || (outputs IS NOT NULL)::text FROM "
                               f"node_executions WHERE run_id = '{run_id}' AND "
-                              "node_instance_key = '/plan'"), 2)
+                              f"node_instance_key = '{key}'"), 2)
     except RuntimeError as e:
-        show("C9 /plan row (psql)", str(e)[:200])
+        show(f"C9 {key} row (psql)", str(e)[:200])
         return None
     return dict(zip(("status", "outputs_present"), rows[0])) if rows else {}
+
+
+def c9_plan_publish_row(run_id):
+    """/publish_plan's ledger row — the node that must have written the artifact C9f
+    reads while the gate waits (pipeline.yaml's pre-gate publisher)."""
+    return c9_node_row(run_id, C9F_PUBLISH_PLAN_KEY)
 
 
 def c9_artifact_reads(client, run_id):
@@ -10116,7 +10266,8 @@ def c9f_deadline_arms(alice, admin, facts):
              json.dumps(snap) if snap else "(no row)")
         c5_emit(c9f_waited_verdicts(snap, c9_expired_rows(aid, run_id)))
         c5_emit(c9f_branch_verdicts(c9_plan_row(run_id), *c9_artifact_reads(alice, run_id),
-                                    run_status_during=str(snap.get("run_status"))))
+                                    run_status_during=str(snap.get("run_status")),
+                                    publisher=c9_plan_publish_row(run_id)))
         # The sibling arm, measured in the SAME window: a SECOND run, released from
         # its own gate, whose nodes must reach terminal rows while OUR gate holds.
         sib = c9_f_sibling(alice, facts, label)
@@ -12968,12 +13119,13 @@ def c11():
         return
     base_hits = c11_collector_hits(after_probe) if base_hits is None else base_hits
 
-    # C11a — post the TWIN with the injected issue body as its title input; the
-    # seed twin interpolates inputs.title into the implement command's env and
-    # its produced summary into the parent's bindingText (pipeline.yaml line
-    # 556/177) — the exact vector ADR-0022's Security section records.
-    # (the seed twin's `goal` input IS the "issue body": pipeline.yaml line 337
-    # interpolates it into the downstream approval instruction verbatim).
+    # C11a — post the TWIN with the injected issue body as its `goal` input: the
+    # vector ADR-0022's Security section records. The citation is by node, not by
+    # line (deviation 9's two publishers moved every line number in the file, and a
+    # stale "line 337" is worse than none): document 2 declares EXACTLY ONE
+    # `${{ inputs.goal }}` interpolation — the /approve gate's `Plan for …` summary —
+    # so the injected bytes reach approval_requests.summary and the gate card, and
+    # there is no agent turn in the twin for them to steer.
     inputs = dict(mf(twin, "inputs", default={}) or {})
     inputs["goal"] = C11_INJECTION
     body = {"pipeline_revision_id": mf(twin, "revision_id"), "inputs": inputs,
@@ -20290,6 +20442,14 @@ def w11_expand(session, already, cap=24, delay=1):
 #             = 7 held steps × 10s = 70s;
 #   cap:      until.maxIterations is 4, so the most a twin run can ever book is
 #             1 + 4 × 3 = 13 held steps × 10s = 130s.
+#   The seed's two artifact.publish steps (/publish_plan pre-gate, and the until body's
+#   test_evidence from deviation 9) are NOT held steps and are NOT in this arithmetic:
+#   the hold is the M4_HOLD_SECONDS env that only the twin's process.exec nodes carry, so
+#   they cost milliseconds each and can never be the lease the 2s poll is chasing. What
+#   they do change is the run's SHAPE — one extra row before the gate (/publish_plan) and
+#   one extra row per iteration (/build_until_verified[n]/test_evidence), so a two-
+#   iteration twin run books 17 node rows where it booked 14 — and every W11 arm reads
+#   that shape from GET /runs/{id}/tree, never from a count written in this file.
 #   * W11_GATE_WINDOW_S stays 300 even aimed post-gate: a targeted poll ticks at
 #     C_LIVE_POLL_S (0.5s, finer than the 10s hold it chases), waits past /plan's hold,
 #     decides /approve on C1b's route and catches /build_until_verified[1]/implement —
@@ -20308,6 +20468,12 @@ def w11_expand(session, already, cap=24, delay=1):
 #     waited out to 25 children), w11_expand is capped at 24 snapshots/clicks, and the
 #     leg's last `time.sleep(2)` is one repaint. A held run makes the tree richer, never
 #     later; the `finally` still cancels whatever is left, cascade and all (C8g).
+# /plan + until cap × (implement, test, review). The seed's artifact.publish steps
+# (/publish_plan, and /build_until_verified[n]/test_evidence inside the loop) are NOT
+# in this arithmetic on purpose: the hold is the M4_HOLD_SECONDS env that only the
+# twin's process.exec steps carry, so a publish step costs milliseconds, not 10s.
+# The keys the twin test in test_hold_logic.py counts are the M4_HOLD_SECONDS splices
+# in the document — still exactly four after the seed grew its two publishers.
 W11_HOLD_STEPS_MAX = 1 + 4 * 3      # /plan + until cap × (implement, test, review)
 W11_GATE_WINDOW_S = 300             # unchanged: 300s against the 130s held-run cap
 W11_FANOUT_WINDOW_S = 300 + W11_HOLD_STEPS_MAX * W2_HOLD_SECONDS   # 430 = 300 + 130

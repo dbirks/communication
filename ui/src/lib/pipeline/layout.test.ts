@@ -440,7 +440,7 @@ describe("canvas (dense) spacing", () => {
     );
   });
 
-  it("packs the dense cut tighter than the standard one in both directions", () => {
+  it("packs the dense cut tighter than the standard one on the rank axis, at the rendered box floor", () => {
     const stdLR = layoutDefinition(samplePipelineDocument, {
       spacing: "standard",
       rankdir: "LR",
@@ -449,8 +449,29 @@ describe("canvas (dense) spacing", () => {
       spacing: "dense",
       rankdir: "LR",
     })!;
-    expect(denseLR.width).toBeLessThan(stdLR.width);
+    // Old contract (before the graph-overlap fix): dense fed dagre a 96px
+    // box floor and packed the RANK AXIS narrower in both directions. That
+    // is the divergence the overlap test forbids — the canvas renders every
+    // step as a ≥200px card, so dagre spacing narrower ranks is what made
+    // rendered boxes intersect. The rank gap (ranksep 54 vs 84) and the
+    // cross-axis stacking are still tighter; the rank axis of the cut the
+    // authoring canvas actually renders (TB → vertical) must stay tighter.
+    const stdTB = layoutDefinition(samplePipelineDocument, {
+      spacing: "standard",
+      rankdir: "TB",
+    })!;
+    const denseTB = layoutDefinition(samplePipelineDocument, {
+      spacing: "dense",
+      rankdir: "TB",
+    })!;
     expect(denseLR.height).toBeLessThan(stdLR.height);
+    expect(denseTB.height).toBeLessThan(stdTB.height);
+    // The new floor: every dense box is at least the 200×52 the canvas
+    // paints, so dagre's spacing is the spacing the user sees.
+    for (const node of denseTB.nodes) {
+      expect(node.width).toBeGreaterThanOrEqual(200);
+      expect(node.height).toBeGreaterThanOrEqual(52);
+    }
   });
 
   it("lays a scope body sideways when the graph runs top-to-bottom", () => {

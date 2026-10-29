@@ -226,11 +226,15 @@ const scopeScopeKey = (n: GraphNode): string => JSON.stringify(n.scope);
 
 /**
  * The rendered step box (design 1g): 200×52, radius 6, every step centred on
- * one vertical axis in a straight chain. dagre places each step in a box
- * sized to its label (108–288 wide); the canvas renders a fixed 200×52 box,
+ * one vertical axis in a straight chain. dagre is fed the TRUE rendered
+ * width (the dense cut's `nodeMin` floors at this 200px — see
+ * `LAYOUT_SPACING.dense`), sizing only larger for ids that need it (up to
+ * `NODE_MAX_WIDTH`) or a `when` row; the canvas renders a fixed 200×52 box,
  * so the flow normalises every step box to 200×52 RE-CENTRED on the dagre
  * box — the chain's axis stays where the layout put it, and the edge router
  * (which reads these boxes) attaches to the node the user actually sees.
+ * Fed-96 boxes were what let two same-rank siblings' rendered cards
+ * intersect; `graphOverlap.test.tsx` pins that away.
  */
 export const STEP_BOX = { width: 200, height: 52 } as const;
 

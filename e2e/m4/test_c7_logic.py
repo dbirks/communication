@@ -145,16 +145,64 @@ class C7bJournal(unittest.TestCase):
 
 
 class C7bArtifacts(unittest.TestCase):
+    """§ 7.1 C7b's psql line (`name like 'test-%'` # 3) graded against the seed's own
+    names: pipeline.yaml's until body publishes `test-<iteration>.json` from its
+    `test_evidence` node, so the expected set is spelled out, not prefix-counted."""
+
+    NAMES = ["plan-evidence.md", "test-1.json", "test-2.json", "test-3.json"]
+
     def test_pass_three_distinct(self):
-        self.assertNotIn(False, [ok for _l, ok, _d in m.c7_artifact_verdicts(
-            ["test-1", "test-2", "test-3", "review-evidence.md"])])
+        rows = m.c7_artifact_verdicts(self.NAMES + ["review-evidence.md"])
+        self.assertNotIn(False, [ok for _l, ok, _d in rows], str(rows))
+        self.assertEqual(2, len(rows), str(rows))
+
+    def test_the_expected_names_are_the_seed_published_ones(self):
+        self.assertEqual(["test-1.json", "test-2.json", "test-3.json"],
+                         m.c7_artifact_names_expected())
 
     def test_fail_iteration_evidence_collapsed(self):
-        self.assertIs(False, one(m.c7_artifact_verdicts(["test-1", "test-1"]),
+        self.assertIs(False, one(m.c7_artifact_verdicts(["test-1.json", "test-1.json"]),
                                  f"{m.C7_MAX_ITERATIONS} distinct"))
 
-    def test_gap_nothing_written(self):
-        self.assertIs(None, one(m.c7_artifact_verdicts([]), "distinct"))
+    def test_fail_when_only_the_unnamed_prefix_shows_up(self):
+        # Three rows, one iteration twice and one missing: the prefix alone cannot tell
+        # that story, the names can.
+        self.assertIs(False, one(m.c7_artifact_verdicts(
+            ["test-1.json", "test-1.json", "test-2.json"]),
+            f"{m.C7_MAX_ITERATIONS} distinct"))
+
+    def test_zero_rows_is_a_fail_now_that_the_seed_publishes_them(self):
+        """The old helper GAPped an empty ledger because the shipped twin published its
+        only artifact AFTER the gate, so no exhaustion run could ever have had a 'test-%'
+        row (live16/C7.out). The seed now publishes one per iteration, so zero rows is
+        the evidence § 7.1 C7b names going missing — a FAIL, never a GAP."""
+        rows = m.c7_artifact_verdicts([])
+        self.assertIs(False, one(rows, "distinct"), str(rows))
+        self.assertIn("ZERO", hits(rows, "distinct")[0][2])
+        self.assertIn(m.C7_EVIDENCE_NODE, hits(rows, "distinct")[0][2])
+
+    def test_rows_that_are_not_evidence_do_not_satisfy_the_arm(self):
+        rows = m.c7_artifact_verdicts(["plan-evidence.md", "review-evidence.md"])
+        self.assertIs(False, one(rows, "distinct"), str(rows))
+
+    def test_a_failed_read_is_the_only_gap(self):
+        rows = m.c7_artifact_verdicts(None)
+        self.assertIs(None, one(rows, "distinct"), str(rows))
+        self.assertIn("read failed", hits(rows, "distinct")[0][2])
+
+    def test_the_evidence_node_is_a_fourth_body_row_but_not_a_work_node(self):
+        """C7a's arithmetic is the contract's (`3 iterations × 3 body nodes = 9 rows`), so
+        the seed's fourth, unconditional until-body node — the evidence publisher — must
+        NOT be folded into C7_BODY_NODES: the live read returns 12 body rows for an
+        exhausted run and the arm still counts nine."""
+        self.assertEqual(("implement", "test", "review"), m.C7_BODY_NODES)
+        self.assertNotIn(m.C7_EVIDENCE_NODE, m.C7_BODY_NODES)
+        rows = canned_rows(3, nodes=m.C7_BODY_NODES + (m.C7_EVIDENCE_NODE,))
+        verdicts = m.c7_exhausted_verdicts(m.c7_body_rows(rows), "failed", "until_exhausted")
+        self.assertNotIn(False, [ok for _l, ok, _d in verdicts], str(verdicts))
+        self.assertIn("9 body rows",
+                      " ".join(l for l, _o, _d in verdicts), str(verdicts))
+        self.assertIn("9 rows", " ".join(d for _l, _o, d in verdicts), str(verdicts))
 
 
 class C7aNoRoute(unittest.TestCase):

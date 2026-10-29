@@ -251,7 +251,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await gotoApp(page, state.draftUrl);
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
 
-    // The "+" on the test → review edge (inside the until scope) opens the step picker.
+    // The "+" on the test → review edge (inside the until scope) opens the step
+    // picker. The seed's per-iteration `test_evidence` publisher hangs off the
+    // same `test` step; this splice must touch only the test → review edge.
     await page.getByTestId("edge-add-test-review").click();
     const picker = page.getByTestId("step-picker");
     await expect(picker).toBeVisible();
@@ -312,6 +314,16 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     expect(yaml).toContain("kind: agent.acp");
     expect(yaml).toContain("profile: m4-reviewer");
     expect(yamlDependsOn(yaml, "code_review"), "review must now depend on code_review").toBe(true);
+    // The seed's per-iteration publisher keeps its own edge: `test` still has a
+    // dependent, so test_evidence was neither dropped nor rewired onto
+    // code_review by the splice.
+    expect(yaml, "the seeded per-iteration publisher survives the splice").toContain(
+      "test_evidence",
+    );
+    expect(
+      yamlDependsOn(yaml, "test"),
+      "test_evidence must still depend on the test step of its own iteration",
+    ).toBe(true);
     expect(yaml).toContain("onExecutionError: continue");
     await evidence(
       page,
@@ -559,7 +571,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // A fresh draft: A2's publish locked the journey draft (a published draft
     // is read-only — revisions are immutable), so A3 works in its own clone
     // of the newest revision. The plan → approve and verdict → publish edges
-    // it exercises exist in that clone too.
+    // it exercises exist in that clone too — and the plan → approve splice
+    // keeps the seed's second approve dependency (`publish_plan`, which the § 7
+    // exit seed added so a waiting gate has an artifact to read) in place.
     await gotoApp(page, `/workflows/${state.pipelineId}`);
     await openNewDraft(page, state.pipelineId);
     state.draftA3 = new URL(page.url()).href;
@@ -621,8 +635,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await dispatchDrag('[data-testid="studio-canvas"]', "drop", centre);
     await dispatchDrag('[data-testid="palette-item-human.approval"]', "dragend");
 
-    // The plan → approve edge is guarded (approve carries a `when`), so the
-    // drop stops at the AmbiguityDialog; confirming it inserts the node.
+    // The plan → approve edge is a BINDING edge (the twin's gate renders
+    // `nodes.plan.outputs.plan` in its summary), so the drop stops at the
+    // AmbiguityDialog; confirming it inserts the node.
     if ((await page.getByTestId("studio-ambiguity-dialog").count()) > 0) {
       await page.getByTestId("studio-ambiguity-insert").click();
     }
@@ -707,11 +722,16 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // right; the instruction was ambiguous. Ask instead for a role the draft
     // has NO node for, anchored to the one root node with no dependents at
     // all — `publish_verified`, the verified publish branch (A2 anchored its
-    // tail steps on `publish_needs_attention`, so that one is taken). Every
-    // other root anchor is an edge the server refuses to split: `plan` →
+    // tail steps on `publish_needs_attention`, so that one is taken). The seed
+    // has exactly two other `artifact.publish` nodes and neither is a root
+    // anchor: `publish_plan` waits below `approve` (the gate's dependsOn is
+    // [plan, publish_plan]) and `test_evidence` publishes inside the until
+    // body. Every other root anchor is an edge the server refuses to split:
+    // `plan` →
     // approve and `emit_items` → `fan_out` are output-bound/`when`-guarded,
     // `verdict` is a condition with two dependents, and the reviewer
-    // candidates (implement/test/review/code_review) all live inside the
+    // candidates (implement/test/review/code_review) — like the seed's
+    // per-iteration `test_evidence` publisher — all live inside the
     // seeded until scope. Name the id and the kind so the model never has to
     // invent either.
     const NEW_NODE_ID = "security_scan";

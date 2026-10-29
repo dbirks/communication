@@ -47,6 +47,10 @@ type m4GateFixture struct {
 	approvalID string
 	version    int
 	createdAt  time.Time
+	// workerID is the worker the pre-gate steps were completed by. A leg that
+	// retries the run claims the re-armed attempt as the same worker (route 31's
+	// retry does not reassign affinity), so the id has to survive the fixture.
+	workerID string
 }
 
 func m4GateRun(t *testing.T) *m4GateFixture {
@@ -90,36 +94,12 @@ func m4GateRun(t *testing.T) *m4GateFixture {
 	if err := rt.Advance(ctx, view.ID); err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	// /plan to success, by the real claim/start/complete trio.
-	workerID := m4Worker(t, ctx, f.pool, "gate-retry", 4)
-	a, err := rt.Claim(ctx, view.ID, workerID)
-	if err != nil || a == nil {
-		t.Fatalf("claim plan attempt: a=%v err=%v", a, err)
-	}
-	if err := rt.Start(ctx, view.ID, a.ID, workerID, a.FencingToken); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	var workspaceID string
-	if err := f.pool.QueryRow(ctx, `
-		INSERT INTO workspaces (organization_id, project_id, scope_kind, run_id, worker_id,
-		                        volume_id, root_path, state, ready_at)
-		VALUES ($1, $2, 'run', $3, $4, 'sha256:' || repeat('1', 64),
-		        '/workspaces/runs/gate-retry', 'ready', now())
-		RETURNING id`, f.orgID, f.projectID, view.ID, workerID).Scan(&workspaceID); err != nil {
-		t.Fatalf("seed run workspace: %v", err)
-	}
-	ckpt := runtime.CheckpointRecord{
-		InputsDigest:  "sha256:" + strings.Repeat("1", 64),
-		OutputsDigest: "sha256:" + strings.Repeat("2", 64),
-		VolumeID:      "sha256:" + strings.Repeat("1", 64),
-		WorkspaceID:   workspaceID, WorkerID: workerID,
-	}
-	if err := rt.Complete(ctx, view.ID, a.ID, workerID, a.FencingToken,
-		m4LifecyclePlanOutputs(), "sha256:"+strings.Repeat("3", 64), nil, "", ckpt); err != nil {
-		t.Fatalf("complete plan attempt: %v", err)
-	}
+	// Both pre-gate worker steps to success, by the real claim/start/complete
+	// trio: /plan, and the seed's pre-gate artifact publisher /publish_plan that
+	// /approve now depends on (m4_pregate_drive_test.go names the reason).
+	workerID := m4DriveToApprovalGate(t, ctx, f, rt, view.ID, "gate-retry")
 	x := &m4GateFixture{f: f, rt: rt, caller: caller, runs: runAPI,
-		approvals: APIApprovalStore{R: rt}, run: view}
+		approvals: APIApprovalStore{R: rt}, run: view, workerID: workerID}
 	x.approvalID, x.version, x.createdAt = m4GateRow(t, ctx, f, view.ID)
 	return x
 }

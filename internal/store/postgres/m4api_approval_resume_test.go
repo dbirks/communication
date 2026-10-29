@@ -15,7 +15,6 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/dbirks/communication/internal/api"
@@ -63,33 +62,11 @@ func TestM4RunLifecycleApprovalResumesRun(t *testing.T) {
 		t.Fatalf("advance: %v", err)
 	}
 
-	// --- drive /plan to success the way a worker does: claim, start,
-	// complete with a checkpoint (the retry test's proven shape).
-	workerID := m4Worker(t, ctx, f.pool, "resume", 4)
-	a, err := m4Runtime.Claim(ctx, view.ID, workerID)
-	if err != nil || a == nil {
-		t.Fatalf("claim plan attempt: a=%v err=%v", a, err)
-	}
-	if err := m4Runtime.Start(ctx, view.ID, a.ID, workerID, a.FencingToken); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	var workspaceID string
-	if err := f.pool.QueryRow(ctx, `
-		INSERT INTO workspaces (organization_id, project_id, scope_kind, run_id, worker_id,
-		                        volume_id, root_path, state, ready_at)
-		VALUES ($1, $2, 'run', $3, $4, 'sha256:' || repeat('1', 64), '/workspaces/runs/resume', 'ready', now())
-		RETURNING id`, f.orgID, f.projectID, view.ID, workerID).Scan(&workspaceID); err != nil {
-		t.Fatalf("seed run workspace: %v", err)
-	}
-	ckpt := runtime.CheckpointRecord{
-		InputsDigest: "sha256:" + strings.Repeat("1", 64), OutputsDigest: "sha256:" + strings.Repeat("2", 64),
-		VolumeID: "sha256:" + strings.Repeat("1", 64), WorkspaceID: workspaceID, WorkerID: workerID,
-	}
-	if err := m4Runtime.Complete(ctx, view.ID, a.ID, workerID, a.FencingToken,
-		m4LifecyclePlanOutputs(), "sha256:"+strings.Repeat("3", 64),
-		nil, "", ckpt); err != nil {
-		t.Fatalf("complete plan attempt: %v", err)
-	}
+	// --- drive the pre-gate steps to success the way a worker does: claim,
+	// start, complete with a checkpoint, for /plan AND the seed's pre-gate
+	// artifact publisher /publish_plan (m4_pregate_drive_test.go says why the
+	// second one is part of reaching the gate at all).
+	workerID := m4DriveToApprovalGate(t, ctx, f, m4Runtime, view.ID, "resume")
 
 	// The gate opened: node waiting, run parked, ONE pending gate row.
 	st := m4LifeNodeStatuses(t, f, view.ID)

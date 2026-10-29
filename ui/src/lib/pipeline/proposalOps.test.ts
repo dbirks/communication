@@ -109,7 +109,10 @@ describe("applyProposal · insert_after", () => {
   it("inserts a configured agent after a terminal step (root scope)", () => {
     // publish_needs_attention is a terminal root step (no dependents), so a
     // bare insert_after is well-formed there; insertAfter itself refuses a
-    // step that still runs into others (see below).
+    // step that still runs into others (see below). The seed's pre-gate
+    // publisher publish_plan is NOT such an anchor — approve depends on it.
+    // Inside the until body the seed's test_evidence is a second body exit
+    // beside review (see the body-scope case below).
     const op: ProposalOp = {
       op: "insert_after",
       after: "publish_needs_attention",
@@ -139,6 +142,29 @@ describe("applyProposal · insert_after", () => {
     expect(placed?.dependsOn).toEqual(["publish_needs_attention"]);
     // Every other node (including approve's own dependencies) is untouched.
     untouchedUnchanged(FIXTURE, result.text, ["assistant_note"]);
+  });
+
+  it("appends after the seed's per-iteration publisher, inside the until body", () => {
+    // test_evidence is a body exit (nothing depends on it), so a bare
+    // insert_after is well-formed there — and it follows the anchor into the
+    // loop body rather than pulling the new step to the root scope.
+    const result = applyProposal(FIXTURE, {
+      op: "insert_after",
+      after: "test_evidence",
+      kind: "agent.acp",
+      id: "x_note",
+      config: { profile: "m4-reviewer", prompt: "Note the iteration's evidence." },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(failReason(result));
+    const parsed = parseGraph(result.text);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const placed = findNode(parsed.model, "x_note");
+    expect(placed?.scope).toEqual(["build_until_verified"]);
+    expect(placed?.dependsOn).toEqual(["test_evidence"]);
+    expect(placed?.pointer).toBe("/spec/nodes/2/config/body/nodes/4");
+    untouchedUnchanged(FIXTURE, result.text, ["x_note"]);
   });
 
   it("refuses an anchor that does not exist", () => {
@@ -239,6 +265,44 @@ describe("applyProposal · insert_on_edge", () => {
     if (result.ok || !("ambiguous" in result) || !result.ambiguous)
       throw new Error(failReason(result));
     expect(result.reasons.join("; ")).toMatch(/approve reads nodes\.plan\.\*/);
+  });
+
+  it("returns the seed's plan -> publish_plan publisher edge as ambiguous", () => {
+    // publish_plan is the pre-gate publication the § 7 exit seed added: it
+    // reads nodes.plan.outputs, so splicing between plan and the publisher is
+    // the same binding-edge ambiguity, reported with the publisher's own words.
+    const result = applyProposal(FIXTURE, {
+      op: "insert_on_edge",
+      from: "plan",
+      to: "publish_plan",
+      kind: "agent.acp",
+      id: "x_gate",
+      config: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok || !("ambiguous" in result) || !result.ambiguous)
+      throw new Error(failReason(result));
+    expect(result.reasons.join("; ")).toMatch(/publish_plan reads nodes\.plan\.\*/);
+  });
+
+  it("splices into the seed's two-dependency approve without dropping publish_plan", () => {
+    // The seed made approve depend on [plan, publish_plan]. The human-gesture
+    // path (the A3 ambiguity dialog's "Insert") replaces ONLY plan and keeps
+    // the publisher in its original position — applyProposal never takes this
+    // route (ADR-0044 returns ambiguous results to the UI untouched), so the
+    // graphDoc op is what the dialog calls.
+    const result = insertOnEdge(
+      FIXTURE,
+      { from: "plan", to: "approve" },
+      { kind: "agent.acp", id: "x_gate" },
+      { acceptAmbiguity: true },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(nodeOf(result.text, "approve")?.dependsOn).toEqual(["x_gate", "publish_plan"]);
+    expect(nodeOf(result.text, "publish_plan")?.dependsOn).toEqual(["plan"]);
+    expect(nodeOf(result.text, "x_gate")?.dependsOn).toEqual(["plan"]);
+    expect(parseGraph(result.text).ok).toBe(true);
   });
 
   it("returns a guarded edge as ambiguous for the UI to explain (ADR-0042 §4)", () => {

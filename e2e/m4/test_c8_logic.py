@@ -375,7 +375,15 @@ class PolicyArmDocTest(unittest.TestCase):
 
 class ChainLevelDocTest(unittest.TestCase):
     """C8f's chain levels are seed-header documents with only inputs/outputs and the
-    single invoke node swapped — the shape known to publish, not an invented one."""
+    single invoke node swapped — the shape known to publish, not an invented one.
+    The invoke config's inputs are schema bindingOrString VALUES: live C8f died
+    when a bare `number: 1` was refused at validate (schema_shape "got number,
+    want string", /spec/nodes/0/config/inputs/number -> #/$defs/bindingOrString),
+    so the document never published and no root run existed. A quoted '1' would
+    pass the schema but be refused at child-run booking (issue-implementation
+    declares number as an INTEGER and m4ChildInputs coerces nothing), so the only
+    form that survives BOTH gates is the binding the seed's fan_out invoke uses
+    for item.number — `${{ … }}` keeps the JSON type through ResolveConfig."""
 
     def test_chain_doc_shape_round_trips(self):
         doc = m.c8_chain_doc("m4x-c8f-l2", "m4x-c8f-l3")
@@ -390,9 +398,39 @@ class ChainLevelDocTest(unittest.TestCase):
         node = spec["nodes"][0]
         self.assertEqual("pipeline.invoke", node["kind"])
         self.assertEqual("m4x-c8f-l3", node["config"]["pipeline"])
-        self.assertEqual(1, node["config"]["inputs"]["number"],
-                         "issue-implementation declares number as an INTEGER")
+        authored = node["config"]["inputs"]
+        self.assertEqual(m.BIND_OPEN + "inputs.number" + m.BIND_CLOSE,
+                         authored["number"],
+                         "a binding is the only spelling that is both a schema "
+                         "string and a runtime JSON integer for the child pin")
+        for name, value in authored.items():
+            self.assertIsInstance(value, str,
+                                  f"invoke config input {name!r} must be authored "
+                                  "as a bindingOrString (the live 409: got number, "
+                                  "want string)")
+        self.assertEqual("m4x-c8f chain", authored["title"])
         self.assertEqual("cascade", spec["policies"]["cancelPolicy"])
+
+    def test_authored_inputs_satisfy_the_shipped_invoke_schema(self):
+        """bindingOrString is read from the SAME schema asset the server validates
+        against — the rule is pinned to the product, not to this file's memory."""
+        schema_at = os.path.join(m.REPO_DIR, "internal", "pipelines", "schema",
+                                 "assets", "pipeline-v1alpha1.schema.json")
+        with open(schema_at, encoding="utf-8") as f:
+            schema = json.load(f)
+        bostring = schema["$defs"]["bindingOrString"]
+        self.assertEqual("string", bostring["type"],
+                         "bindingOrString changed shape — reread § 7 C8f's brief")
+        invoke_cfg = schema["$defs"]["configPipelineInvoke"]
+        self.assertEqual("#/$defs/bindingOrString",
+                         invoke_cfg["properties"]["inputs"]["additionalProperties"]["$ref"])
+        authored = yaml.safe_load(m.c8_chain_doc("m4x-c8f-l1", "m4x-c8f-l2")) \
+            ["spec"]["nodes"][0]["config"]["inputs"]
+        self.assertTrue(authored, "the level authors at least one child input")
+        for name, value in authored.items():
+            self.assertIsInstance(value, str, f"{name}: schema wants a string")
+            self.assertGreaterEqual(len(value), bostring["minLength"])
+            self.assertLessEqual(len(value), bostring["maxLength"])
 
     def test_empty_when_header_unreadable(self):
         keep = m._C13_HEADER.get("header")

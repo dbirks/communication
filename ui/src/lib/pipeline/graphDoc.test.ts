@@ -125,9 +125,11 @@ describe("parseGraph", () => {
         "invoke",
         "plan",
         "publish_needs_attention",
+        "publish_plan",
         "publish_verified",
         "review",
         "test",
+        "test_evidence",
         "verdict",
       ].sort(),
     );
@@ -138,11 +140,21 @@ describe("parseGraph", () => {
   it("gives until-body nodes the loop scope and body pointers", () => {
     const result = parseGraph(FIXTURE);
     if (!result.ok) throw new Error("fixture must parse");
-    for (const id of ["implement", "test", "review"]) {
+    for (const id of ["implement", "test", "review", "test_evidence"]) {
       const n = findNode(result.model, id);
       expect(n?.scope).toEqual(["build_until_verified"]);
     }
     expect(findNode(result.model, "implement")?.pointer).toBe("/spec/nodes/2/config/body/nodes/0");
+    // The seed appends each publisher LAST in its list so the position-sensitive
+    // pointers its Go probes pin hold: test_evidence is the body's 4th node,
+    // publish_plan the root's 9th (/spec/nodes/8), never a re-numbering of the
+    // loop at /spec/nodes/2.
+    expect(findNode(result.model, "test_evidence")?.pointer).toBe(
+      "/spec/nodes/2/config/body/nodes/3",
+    );
+    expect(findNode(result.model, "publish_plan")?.pointer).toBe("/spec/nodes/8");
+    expect(findNode(result.model, "publish_plan")?.scope).toEqual([]);
+    expect(findNode(result.model, "approve")?.dependsOn).toEqual(["plan", "publish_plan"]);
     expect(findNode(result.model, "build_until_verified")?.isScope).toBe(true);
     expect(findNode(result.model, "fan_out")?.isScope).toBe(true);
     expect(findNode(result.model, "invoke")?.scope).toEqual(["fan_out"]);
@@ -171,6 +183,24 @@ describe("parseGraph", () => {
     expect(e?.id).toBe("build_until_verified:implement->test");
     expect(e?.kind).toBe("depends");
     expect(e?.reasons).toEqual([]);
+    // The seed's per-iteration publisher sits in the SAME body scope and reads
+    // its own iteration's test outputs, so it is a body edge with a binding
+    // reason — not a root edge and not an unbound dependency.
+    const pub = result.model.edges.find((ed) => ed.from === "test" && ed.to === "test_evidence");
+    expect(pub?.scope).toEqual(["build_until_verified"]);
+    expect(pub?.id).toBe("build_until_verified:test->test_evidence");
+    expect(pub?.kind).toBe("depends");
+    expect(pub?.reasons).toEqual(["test_evidence reads nodes.test.*"]);
+  });
+
+  it("wires the seed's pre-gate publisher to plan with its binding reason", () => {
+    const result = parseGraph(FIXTURE);
+    if (!result.ok) throw new Error("fixture must parse");
+    const e = result.model.edges.find((ed) => ed.from === "plan" && ed.to === "publish_plan");
+    expect(e?.scope).toEqual([]);
+    expect(e?.id).toBe(":plan->publish_plan");
+    expect(e?.kind).toBe("depends");
+    expect(e?.reasons).toEqual(["publish_plan reads nodes.plan.*"]);
   });
 
   it("records a depends edge reason when the downstream node reads the upstream outputs", () => {

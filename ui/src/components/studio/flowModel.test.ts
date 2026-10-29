@@ -84,15 +84,21 @@ describe("toFlow", () => {
     const laid = canvasLayout(probeDocument)?.laid ?? null;
     if (!laid) throw new Error("canvas layout for the probe document not found");
     const abs = new Map(laid.nodes.map((n) => [n.pointer, n]));
-    for (const childId of ["implement", "test", "review"]) {
+    // The seed lists the body's steps in this order (its per-iteration
+    // publisher is appended LAST so these pointers keep holding).
+    const bodyIds = ["implement", "test", "review", "test_evidence"];
+    for (const childId of bodyIds) {
       const child = node(`build_until_verified/${childId}`);
       expect(child.parentId).toBe("build_until_verified");
       expect(child.type).toBe("step");
       // The child's flow position plus the group's is the dagre absolute.
       const layoutNode =
-        (abs.get(
-          `/spec/nodes/2/config/body/nodes/${["implement", "test", "review"].indexOf(childId)}`,
-        ) as { x: number; y: number; width: number; height: number }) ?? null;
+        (abs.get(`/spec/nodes/2/config/body/nodes/${bodyIds.indexOf(childId)}`) as {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        }) ?? null;
       if (!layoutNode) throw new Error(`layout node for ${childId} not found`);
       // Design 1g: every step box is the fixed 200×52 rendered box, re-centred
       // on the dagre box — so the child's absolute position is the dagre
@@ -203,11 +209,15 @@ spec:
   it("flags exactly the nodes with no dependents in their scope as terminal", () => {
     const flow = toFlow(model, probeDocument);
     const isTerminal = (id: string) => flow.nodes.find((n) => n.id === id)?.data.terminal;
-    // Root scope: plan feeds approve; verdict fans to both publish routes.
-    expect(isTerminal("plan")).toBe(false); // approve depends on it
+    // Root scope: plan feeds approve AND the pre-gate publisher publish_plan
+    // (which approve in turn waits on); verdict fans to both publish routes.
+    expect(isTerminal("plan")).toBe(false); // approve + publish_plan depend on it
+    expect(isTerminal("publish_plan")).toBe(false); // approve dependsOn [plan, publish_plan]
     expect(isTerminal("approve")).toBe(false); // build_until_verified + emit_items depend on it
     expect(isTerminal("build_until_verified/implement")).toBe(false); // test depends on it
+    expect(isTerminal("build_until_verified/test")).toBe(false); // review + test_evidence depend on it
     expect(isTerminal("build_until_verified/review")).toBe(true); // body exit
+    expect(isTerminal("build_until_verified/test_evidence")).toBe(true); // body exit too
     expect(isTerminal("verdict")).toBe(false); // both publish routes depend on it
     expect(isTerminal("publish_verified")).toBe(true);
     expect(isTerminal("publish_needs_attention")).toBe(true);
