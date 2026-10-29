@@ -56,6 +56,18 @@ def posts_with_hold(fn_name, poster):
                for c in calls_in(fn_name))
 
 
+def gate_waits(fn_name):
+    """Every `wait_live_past_gate(...)` call a leg makes, as (timeout arg, kwargs) —
+    the shape the gate-release legs' shared verdict is decided on."""
+    out = []
+    for c in calls_in(fn_name):
+        if c.func.id == "wait_live_past_gate":
+            out.append((c.args[3] if len(c.args) > 3 else None,
+                        {k.arg: ast.unparse(k.value) for k in c.keywords}))
+    assert out, f"{fn_name} never calls wait_live_past_gate"
+    return out
+
+
 class FakeResp:
     status, text = 201, '{"run_id":"run-1","status":"queued"}'
 
@@ -227,6 +239,51 @@ class FaultLegRunBodyTest(unittest.TestCase):
         self.assertEqual(client.body["assignment_id"], "a-1",
                          "the leg runs the seed's ASSIGNMENT, never a re-pin")
         self.assertNotIn("pipeline_revision_id", client.body)
+
+    def test_w11_aims_its_gate_wait_at_a_post_gate_lease(self):
+        """A PASS on `the gate released the run into real work` is only worth its label if
+        the lease it caught is BEHIND the gate. accept/7f9c768 W11 read `PASS … the poll
+        caught attempt 889df89c… (/plan) leased to worker-b` — /plan is the twin's
+        PRE-gate node, so that PASS was evidence about a step that ran before anybody
+        approved anything (the same misreading W2's leg documents and pins against, and
+        the same one test_c5_logic.py's `test_the_kill_legs_aim_at_the_target_node` holds
+        W2 to). W11 aims the same way now, at the post-gate node its OWN fan-out run
+        really executes, and the window is rechecked around a targeted poll."""
+        wants = {"w2": None, "w11": "W11_GATE_WINDOW_S"}
+        for fn, want_timeout in wants.items():
+            for timeout, kw in gate_waits(fn):
+                self.assertEqual(kw.get("target"), "C_LIVE_TARGET_KEY",
+                                 f"{fn} waits for ANY held attempt, so its gate-release "
+                                 f"PASS can be a pre-gate /plan lease: {kw}")
+                if want_timeout:
+                    self.assertIsNotNone(timeout,
+                                         "W11's gate wait names its timeout positionally")
+                    self.assertEqual(ast.unparse(timeout), want_timeout,
+                                     f"{fn}'s gate wait must name its own computed window")
+        self.assertEqual(m.C_LIVE_TARGET_KEY, "/build_until_verified[1]/implement",
+                         "the key W11 now waits for is the twin's first POST-GATE held step")
+        # …and the 25-child run W11 posts really books it: the until loop is unconditional
+        # and hangs off /approve, while the fan-out's `when: inputs.fanout == true` guards
+        # sit on emit_items/fan_out only. Read off the probe's own document, not a comment.
+        doc = open(PROBE, encoding="utf-8").read().split("\n---\n")[1]
+        until = doc[doc.index("- id: build_until_verified"):doc.index("- id: emit_items")]
+        self.assertIn("dependsOn: [approve]", until,
+                      "the target is not behind the approval gate after all")
+        self.assertIn("- id: implement", until, "the target is no until-body node")
+        self.assertNotIn("when:", until, "a guarded until loop could skip the target run")
+        # The window around a TARGETED wait: it ticks at C_LIVE_POLL_S (finer than the
+        # lease it chases, so a 10s hold is catchable), waits past /plan's hold, decides
+        # /approve and catches /build_until_verified[1]/implement — ~15-30s observed, and
+        # 300s still outlasts even the 13 × 10s = 130s a fully held parent run can book.
+        self.assertLess(m.C_LIVE_POLL_S, m.W2_HOLD_SECONDS,
+                        "a targeted poll must be finer than the hold it is chasing")
+        self.assertGreaterEqual(m.W11_GATE_WINDOW_S,
+                                m.W11_HOLD_STEPS_MAX * m.W2_HOLD_SECONDS,
+                                "the gate wait must outlast the held parent run that "
+                                "sits in front of the target")
+        self.assertEqual(m.W11_GATE_WINDOW_S, 300,
+                         "300s still fits aimed post-gate; no window was stretched to "
+                         "make a lease easier to catch")
 
     def test_w11_windows_still_cover_the_held_fanout(self):
         """The arithmetic the brief owes: the twin holds every process.exec step

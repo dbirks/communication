@@ -20197,10 +20197,18 @@ def w11_expand(session, already, cap=24, delay=1):
 # C8's fan-out runs the shipped twin, whose process.exec steps are printfs closing in
 # <1s, so that verdict was a coin flip: accept/20261029-011645-9ff7f90 W11 GAPped "no
 # attempt was sampled MID-LEASE (status now 'completed', 9 attempt(s) in the ledger) …
-# faster than the poll's 2s interval" while earlier passes PASSed. The fix is W10's
-# (b69eec6): post the run W11 judges through with_hold with the SHORT sampling hold,
-# W2_HOLD_SECONDS — long enough for the 2s poll to land inside a lease, nowhere near
-# the 45s a freeze/kill window needs, and W11 still kills nothing.
+# faster than the poll's 2s interval" while earlier passes PASSed. Two changes make it
+# mean what it says, and they are both W2's/W10's:
+#   * the run is posted through with_hold with the SHORT sampling hold, W2_HOLD_SECONDS
+#     (W10, b69eec6) — long enough for the poll to land inside a lease, nowhere near the
+#     45s a freeze/kill window needs, and W11 still kills nothing;
+#   * the wait is aimed at C_LIVE_TARGET_KEY (W2's shape) — accept/7f9c768's PASS read
+#     "the poll caught attempt 889df89c… (/plan) leased to worker-b", and /plan runs
+#     BEFORE /approve, so a /plan lease is no evidence at all that the gate released the
+#     run. /build_until_verified is `dependsOn: [approve]` and its first body node is
+#     `implement`, so /build_until_verified[1]/implement is a POST-GATE lease this
+#     fan-out run books — the `when: inputs.fanout == true` guards sit only on
+#     emit_items/fan_out, never on the until loop.
 #
 # W11 cannot take the hold out of `c8_post_run` itself: C8b measures REAL in-flight
 # concurrency and the probe README ("The seed pipeline" note 5) keeps that run's steps
@@ -20215,9 +20223,14 @@ def w11_expand(session, already, cap=24, delay=1):
 #             = 7 held steps × 10s = 70s;
 #   cap:      until.maxIterations is 4, so the most a twin run can ever book is
 #             1 + 4 × 3 = 13 held steps × 10s = 130s.
-#   * W11_GATE_WINDOW_S stays 300: the wait returns on the FIRST lease it catches (~2-4s
-#     after the POST), and even the 130s cap leaves it 2.3x headroom. C5's kill legs are
-#     the only reason to lengthen it and W11 kills nothing.
+#   * W11_GATE_WINDOW_S stays 300 even aimed post-gate: a targeted poll ticks at
+#     C_LIVE_POLL_S (0.5s, finer than the 10s hold it chases), waits past /plan's hold,
+#     decides /approve on C1b's route and catches /build_until_verified[1]/implement —
+#     ~15-30s observed. The worst case that can sit in front of that first body node is
+#     the held parent run itself, and the 130s cap leaves 300s 2.3x over. C5's kill legs
+#     are the only reason to lengthen it and W11 kills nothing; if the target is never
+#     caught the shared verdict GAPs (never PASSes on /plan) and the fan-out wait below
+#     still releases the run.
 #   * the /tree fan-out wait grows by the CAP, not the observation: every second of held
 #     parent work now sits in front of the first child row, so 300s of today's gate +
 #     25-child drain headroom + 13 × 10s = 430s. The wait breaks the moment the 25th
@@ -20263,8 +20276,9 @@ def w11():
     says why the agent variant cannot be used unattended. The gate is decided with the
     shared wait_live_past_gate/gate_then_live_action helpers like every other leg, and
     the run is posted with W2/W10's SHORT sampling hold (`w11_post_fanout_run`) so that
-    shared gate-release verdict has a lease to sample; W11_HOLD_STEPS_MAX works out the
-    windows around a held run.
+    shared gate-release verdict has a lease to sample — aimed, like W2's, at
+    C_LIVE_TARGET_KEY, because only a POST-GATE lease is evidence of the gate releasing
+    anything. W11_HOLD_STEPS_MAX works out the windows around a held run.
 
     The tree rows are opened by clicking the component's own `+` controls (the tree
     collapses every branch by default), and the attempt pane is reached by the URL the
@@ -20288,15 +20302,21 @@ def w11():
                            "open (the POST verdict is above)")
         return
     CTX["w11_run_id"] = run_id
-    live = wait_live_past_gate(client, project_id, run_id, W11_GATE_WINDOW_S, "W11")
+    live = wait_live_past_gate(client, project_id, run_id, W11_GATE_WINDOW_S, "W11",
+                               target=C_LIVE_TARGET_KEY)
     # The sampling hold on the POST above is what makes this shared reading decidable:
-    # at shipped speed every process.exec attempt closed inside the poll's 2s window, so
+    # at shipped speed every process.exec attempt closed inside the poll's window, so
     # 'the gate released the run into real work' PASSed or GAPped on the race (the
-    # W11_HOLD_STEPS_MAX block computes the windows around a 10s-held run). The poll
-    # stays untargeted exactly as W10's is since b69eec6 — the lease it catches is the
-    # twin's first held step, and the fan-out wait below still decides the gate itself on
-    # C1b's route. The verdict is unchanged; a step that never stays open long enough to
-    # be sampled is the fixture's speed, not the run's.
+    # W11_HOLD_STEPS_MAX block computes the windows around a 10s-held run). The wait is
+    # aimed at C_LIVE_TARGET_KEY — W2's shape, for W2's reason: accept/7f9c768 read
+    # 'PASS … the poll caught attempt 889df89c… (/plan) leased to worker-b', and /plan
+    # sits BEFORE /approve, so that lease said nothing about the gate releasing anything.
+    # /build_until_verified is `dependsOn: [approve]` and `implement` is its first body
+    # node, so /build_until_verified[1]/implement is the POST-GATE lease this fan-out run
+    # really books (its `when: inputs.fanout` guards sit only on emit_items/fan_out).
+    # The verdict itself is untouched: no post-gate lease inside the window is still the
+    # honest GAP it was, and the fan-out wait below keeps deciding the gate on C1b's
+    # route as the safety net it has always been.
     c5_emit([w_gate_release_verdict(live, run_status(run_id), c1_attempt_count(run_id),
                                     tag="W11")])
     # --- the fan-out really happened: GET /runs/{id}/tree is the answer key ----
@@ -20308,11 +20328,12 @@ def w11():
     # 300 s + the 130 s of held parent steps computed above) the leg keeps today's
     # behaviour with what was read — the verdict says so rather than pretending.
     #
-    # The gate is decided INSIDE that wait, not assumed from it: `--only W11` left both
-    # passes with 'PASS the gate released the run into real work' (the PRE-gate /plan
-    # lease) then 'GAP the child-run tree arms — the /tree route holds no children', with
-    # the run still waiting_human in postgres afterwards. /fan_out is behind the approval
-    # gate, so W11 decides it on C1b's own route and says so in its own report.
+    # The gate is decided INSIDE both waits, never assumed from them: `--only W11` once
+    # left both passes with 'PASS the gate released the run into real work' (the PRE-gate
+    # /plan lease, which the targeted wait above no longer accepts) then 'GAP the child-
+    # run tree arms — the /tree route holds no children', with the run still
+    # waiting_human in postgres afterwards. /fan_out is behind the approval gate, so W11
+    # decides it on C1b's own route and says so in its own report.
     children = w11_wait_fanout_children(client, run_id, C8_ITEMS, W11_FANOUT_WINDOW_S,
                                         project_id=project_id)
     show(f"W11 GET /runs/{run_id}/tree",
