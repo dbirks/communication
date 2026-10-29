@@ -66,13 +66,17 @@ A gate that *crashes* records a FAIL naming the raising frame
 (`gate_crash_location`) and the driver continues to the next gate — a broken
 gate is a fact about the gate, never a silent green.
 
-**Offline verdict tests.** Each `e2e/m4/test_*_logic.py` runs standalone
+**Offline verdict tests.** Each `e2e/m4/test_*.py` runs standalone
 (`python3 e2e/m4/test_hold_logic.py`) with stdlib unittest only — canned
 Postgres/API evidence through the reducer, no stack, no agent. CI's
-`m4-gate-logic` job globs `e2e/m4/test_c*_logic.py`, so
-`test_hold_logic.py`, `test_names_logic.py` and `test_w_logic.py` only run
-when you invoke them. They prove the reducer is self-consistent; they are
-never § 7 evidence.
+`m4-gate-logic` job globs every `e2e/m4/test_*.py` (all 22 files, including
+`test_hold_logic.py`, `test_names_logic.py` and `test_w_logic.py`), fails on a
+non-zero exit, and fails if any file's unittest summary reports `skipped=` —
+a skipped test proves nothing, so there are no skip guards to lean on. The
+YAML-aware tests parse through `e2e/m4/yamlmini.py`: a stdlib-only YAML subset
+for the logic tests, matched against PyYAML, because CI's runner `python3` has
+no PyYAML and no test may skip for want of it. They prove the reducer is
+self-consistent; they are never § 7 evidence.
 
 ## The fixture
 
