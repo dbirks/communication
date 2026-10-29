@@ -77,6 +77,10 @@ async function emitInterleaved(source: FakeEventSource, count: number): Promise<
 
 describe("/projects/:projectId read storm", () => {
   it("reads the project a bounded number of times across a journal replay", async () => {
+    // The overview is a lazy route chunk (App.tsx) and a module read is real
+    // I/O, which a fake clock never advances: warm it first, outside fake time,
+    // so the assertions below still describe a mounted page.
+    await import("./Project");
     vi.useFakeTimers();
     try {
       const { requests } = renderApp({ path: `/projects/${projectId}`, routes });
@@ -102,6 +106,8 @@ describe("/projects/:projectId read storm", () => {
   });
 
   it("still refetches the project once the coalescing window closes", async () => {
+    // Same lazy-chunk warm-up as the test above — see its comment.
+    await import("./Project");
     vi.useFakeTimers();
     try {
       const { requests } = renderApp({ path: `/projects/${projectId}`, routes });
