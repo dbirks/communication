@@ -97,9 +97,11 @@ const (
 	tcpProbeDetailBound = 1024
 )
 
-// ClassifyTCPProbeOutput decides the classification from the child's combined
-// output and exec result. It is pure so the decision is unit-testable with a
-// fake launcher result: no kernel, no nono, no node involved.
+// ClassifyTCPProbeOutput decides the classification from the child's own report
+// (its STDOUT, as nonoOutput.Machine returns it — nono's stderr chatter must not
+// be able to produce or hide a marker) and the exec result. It is pure so the
+// decision is unit-testable with a fake launcher result: no kernel, no nono, no
+// node involved.
 //
 // The rule is asymmetric on purpose: a successful probe must be corroborated
 // by the child's own marker (a process that exited 0 without connecting says
@@ -218,8 +220,11 @@ func (l *Launcher) TCPConnectSelfTest(ctx context.Context, scratchRoot string, t
 		"--open-port", strconv.Itoa(res.Port),
 		"--", nodeBin, "-e", script}
 	out, err := l.run(ctx, timeout, dir, nonoEnv(l), argv...)
-	res.Classification, res.Errno, res.OK = ClassifyTCPProbeOutput(out, err)
-	res.Detail = boundDetail(out)
+	// The child's marker arrives on stdout; nono's chatter (banner, tracing,
+	// release notice) is stderr, so the classification reads stdout and cannot be
+	// steered by a notice, while Detail keeps both streams verbatim for the log.
+	res.Classification, res.Errno, res.OK = ClassifyTCPProbeOutput(out.Machine(), err)
+	res.Detail = boundDetail(out.Text())
 	if res.Classification == TCPProbeOK {
 		// The marker proves the connect; the parent's accept is the second
 		// witness. A race that missed it is an environment fact, and the

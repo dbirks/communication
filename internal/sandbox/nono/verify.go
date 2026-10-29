@@ -146,17 +146,19 @@ func (l *Launcher) Verify(ctx context.Context, spec LaunchSpec) (*VerificationRe
 		return res, &Failure{Stage: StageProfile, Reason: "binary_missing", Err: err}
 	}
 	if out, err := l.run(ctx, probeTimeout, "", l.launcherEnv(spec), bin, "profile", "validate", spec.Profile.Path); err != nil {
-		return res, &Failure{Stage: StageProfile, Reason: "profile_invalid", Err: fmt.Errorf("nono profile validate refused our policy file: %v (%s)", err, firstLine(out))}
+		return res, &Failure{Stage: StageProfile, Reason: "profile_invalid", Err: fmt.Errorf("nono profile validate refused our policy file: %v (%s)", err, out.ErrLine())}
 	}
 
 	// ---- N-c: assert AF_UNIX mediation ------------------------------------
 	showOut, err := l.run(ctx, probeTimeout, "", l.launcherEnv(spec), bin, "profile", "show", spec.Profile.Path)
 	if err != nil {
-		return res, &Failure{Stage: StagePolicyAssert, Reason: "profile_invalid", Err: fmt.Errorf("nono profile show failed on our policy file: %v (%s)", err, firstLine(showOut))}
+		return res, &Failure{Stage: StagePolicyAssert, Reason: "profile_invalid", Err: fmt.Errorf("nono profile show failed on our policy file: %v (%s)", err, showOut.ErrLine())}
 	}
-	mediation, ok := afUnixMediation(showOut)
+	// `profile show` prints the profile on stdout and its chatter (banner,
+	// release notice) on stderr, so N-c reads stdout.
+	mediation, ok := afUnixMediation(showOut.Machine())
 	if !ok {
-		return res, &Failure{Stage: StagePolicyAssert, Reason: "af_unix_not_mediated", Err: fmt.Errorf("`nono profile show` printed no AF_UNIX mediation line at all, so nothing proves the mediation the policy asks for: %s", onelineList(showOut))}
+		return res, &Failure{Stage: StagePolicyAssert, Reason: "af_unix_not_mediated", Err: fmt.Errorf("`nono profile show` printed no AF_UNIX mediation line at all, so nothing proves the mediation the policy asks for: %s", onelineList(showOut.Text()))}
 	}
 	res.AfUnixMediation = mediation
 	if mediation != "pathname" {
@@ -173,9 +175,14 @@ func (l *Launcher) Verify(ctx context.Context, spec LaunchSpec) (*VerificationRe
 	// the real launch will get.
 	dry, err := l.run(ctx, verifyTimeout, spec.Plan.Cwd, l.launcherEnv(spec), append([]string{bin}, verifyArgv...)...)
 	if err != nil {
-		return res, &Failure{Stage: StageGrantAssert, Reason: "grant_mismatch", Err: fmt.Errorf("nono run -v --dry-run refused the policy before exec: %v (%s)", err, firstLine(dry))}
+		return res, &Failure{Stage: StageGrantAssert, Reason: "grant_mismatch", Err: fmt.Errorf("nono run -v --dry-run refused the policy before exec: %v (%s)", err, dry.ErrLine())}
 	}
-	parsed, err := parseGrants(dry)
+	// N-d reads both streams on purpose: measured on 0.80.0, the verbose
+	// dry-run prints its whole capability/grant table to STDERR and nothing to
+	// stdout, so a stdout-only read would parse 0 grants and abort a launch that
+	// nono accepted. parseGrants matches rule lines, so the banner and the
+	// release notice in the same stream cannot be mistaken for a grant.
+	parsed, err := parseGrants(dry.Text())
 	if err != nil {
 		return res, &Failure{Stage: StageGrantAssert, Reason: "grant_mismatch", Err: err}
 	}
@@ -205,16 +212,19 @@ func (l *Launcher) launcherEnv(spec LaunchSpec) []string {
 		home = l.Home
 	}
 	if home == "" {
-		return nil // inherit: only reachable on the doctor path, which has no workspace
+		// Inherit path (doctor only, which has no workspace): exec.Cmd with a nil
+		// Env rides os.Environ(), so naming it explicitly changes nothing but the
+		// chatter opt-out.
+		return append(os.Environ(), noUpdateCheckEnv...)
 	}
-	return []string{
+	return append([]string{
 		"PATH=" + envOrDefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
 		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
 		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
-	}
+	}, noUpdateCheckEnv...)
 }
 
 // grantEntry is one printed rule from the verbose dry-run.

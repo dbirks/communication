@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -92,9 +93,135 @@ func (l *Launcher) resolveBinary() (string, error) {
 	return path, nil
 }
 
-// run executes one nono helper command with a timeout and returns its
-// combined output. No shell is involved.
-func (l *Launcher) run(ctx context.Context, timeout time.Duration, dir string, env []string, args ...string) (string, error) {
+// noUpdateCheckEnv turns off nono's release notice for nono's OWN helper
+// invocations.
+//
+// nono 0.80.0 prints, to STDERR:
+//
+//	  update 0.81.0 available (current: 0.80.0)
+//	  $ cargo install nono-cli
+//	  https://github.com/always-further/nono/releases/tag/v0.81.0
+//
+// The adapters no longer read it in the middle of a machine surface (see
+// nonoOutput), but a notice that never fires is still the cheaper bug, so every
+// launcher-side invocation opts out. `NONO_NO_UPDATE_CHECK` is the variable nono
+// itself checks — observed in the pinned binary's string table next to its
+// `update-check.json` cache file and its CI-provider detection list
+// (`GITHUB_ACTIONS`, `GITLAB_CI`, … `CIgeneric`, `NONO_NO_UPDATE_CHECK`), and
+// measured live: with the variable set, `nono audit list --json` prints the JSON
+// document on stdout and nothing on stderr, where without it the three notice
+// lines appear on stderr. `NONO_NO_PACK_UPDATE_HINTS` is its sibling for the
+// separate installed-pack hint (`nono run: nono update`, same string table,
+// `pack-update-hints.json`). Neither flag touches enforcement: they suppress
+// nono's own chatter, not a rule.
+var noUpdateCheckEnv = []string{
+	"NONO_NO_UPDATE_CHECK=1",
+	"NONO_NO_PACK_UPDATE_HINTS=1",
+}
+
+// probeEnv is the environment for the capability probe, which has no workspace
+// and therefore rides the ambient login (same as the nil env it passed before).
+// Copying os.Environ() is what exec.Cmd does with a nil Env, so the only change
+// here is the update-notice opt-out.
+func (l *Launcher) probeEnv() []string {
+	return append(os.Environ(), noUpdateCheckEnv...)
+}
+
+// nonoOutput is one nono helper invocation with its two streams kept apart.
+//
+// The streams are not one blob, and treating them as one was a product bug: on
+// the pinned 0.80.0 binary, `nono audit list --json` writes the JSON document to
+// STDOUT and its update notice to STDERR, so merging the two let a release
+// announcement stand in front of the document and break the worker's real egress
+// audit (`invalid character 'u' looking for beginning of value`). Measured:
+//
+//	$ HOME=<launcher> nono audit list --json 2>/dev/null   →  []
+//	$ HOME=<launcher> nono audit list --json 2>&1 1>/dev/null →  the notice lines
+//
+// so machine surfaces read Machine() (stdout only), errors quote ErrLine()
+// (stderr's real complaint, not the notice), and the surfaces nono itself prints
+// to stderr — the verbose `--dry-run` grant table, measured stdout-empty with the
+// whole table on stderr — read Text().
+type nonoOutput struct {
+	stdout string
+	stderr string
+}
+
+// Machine returns nono's machine-readable surface: STDOUT only. JSON documents,
+// `--version`, and the `setup --check-only` report all live here.
+func (o nonoOutput) Machine() string { return o.stdout }
+
+// Text returns both streams in order, stdout first. It is for the human-shaped
+// surfaces nono prints to stderr and for carrying verbatim detail into a log;
+// never for a JSON parse.
+func (o nonoOutput) Text() string {
+	switch {
+	case o.stderr == "":
+		return o.stdout
+	case o.stdout == "":
+		return o.stderr
+	}
+	return o.stdout + "\n" + o.stderr
+}
+
+// ErrLine is the line that says what actually failed: the first useful STDERR
+// line (falling back to STDOUT), skipping nono's banner, tracing records and
+// update notice so an error never blames the release feed for a refusal.
+func (o nonoOutput) ErrLine() string {
+	for _, s := range []string{o.stderr, o.stdout} {
+		if line := errorLine(s); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// ansiRe strips SGR/ANSI escapes: nono's tracing records wrap their level names
+// in them, and the chatter test has to see through them.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// noticeLineRe matches nono's own chatter: the release notice (0.80.0: three
+// lines), the `nono v0.80.0` banner and the installed-pack hint.
+var noticeLineRe = regexp.MustCompile(`(?i)^(?:update \S+ available|\$ cargo install \S+|https?://\S+/releases/\S+|nono v\d[^\s]*|run: nono update.*|\[[a-z0-9 ._-]+\] *$)`)
+
+// tracingRe matches a tracing record line (`… WARN …`), which is nono's log, not
+// the failure.
+var tracingRe = regexp.MustCompile(`\b(?:WARN|DEBUG|TRACE)\b`)
+
+// errorLine picks the failing line out of one stream.
+func errorLine(s string) string {
+	var first, noise string
+	for _, raw := range strings.Split(s, "\n") {
+		line := strings.TrimSpace(ansiRe.ReplaceAllString(raw, ""))
+		if line == "" {
+			continue
+		}
+		if tracingRe.MatchString(line) {
+			if noise == "" {
+				noise = line
+			}
+			continue
+		}
+		if noticeLineRe.MatchString(line) {
+			continue
+		}
+		if first == "" {
+			first = line
+		}
+		// nono prefixes its own refusals; that line is the answer.
+		if strings.HasPrefix(line, "nono:") || strings.Contains(line, "error:") || strings.Contains(line, "Error:") {
+			return line
+		}
+	}
+	if first != "" {
+		return first
+	}
+	return noise
+}
+
+// run executes one nono helper command with a timeout and returns its two
+// streams separately. No shell is involved.
+func (l *Launcher) run(ctx context.Context, timeout time.Duration, dir string, env []string, args ...string) (nonoOutput, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -103,8 +230,11 @@ func (l *Launcher) run(ctx context.Context, timeout time.Duration, dir string, e
 	if len(env) > 0 {
 		cmd.Env = env
 	}
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return nonoOutput{stdout: stdout.String(), stderr: stderr.String()}, err
 }
 
 // Probe reports nono's observed capabilities from `nono --version` and
@@ -118,22 +248,22 @@ func (l *Launcher) Probe(ctx context.Context) (domain.SandboxCapabilities, error
 		return caps, err
 	}
 
-	out, err := l.run(ctx, probeTimeout, "", nil, bin, "--version")
+	out, err := l.run(ctx, probeTimeout, "", l.probeEnv(), bin, "--version")
 	if err != nil {
 		return caps, fmt.Errorf("%w: %s --version failed: %v (%s)",
-			sandbox.ErrUnavailable, filepath.Base(bin), err, firstLine(out))
+			sandbox.ErrUnavailable, filepath.Base(bin), err, out.ErrLine())
 	}
-	caps.Version = parseVersion(out)
+	caps.Version = parseVersion(out.Machine())
 
-	check, err := l.run(ctx, probeTimeout, "", nil, bin, "setup", "--check-only", "-v")
-	caps.Notes = append(caps.Notes, notesFromCheckOutput(check)...)
+	check, err := l.run(ctx, probeTimeout, "", l.probeEnv(), bin, "setup", "--check-only", "-v")
+	caps.Notes = append(caps.Notes, notesFromCheckOutput(check.Machine())...)
 	if err != nil {
 		return caps, fmt.Errorf("%w: %s setup --check-only failed: %v (%s)",
-			sandbox.ErrNotEnforceable, filepath.Base(bin), err, firstLine(check))
+			sandbox.ErrNotEnforceable, filepath.Base(bin), err, check.ErrLine())
 	}
 
-	caps.Filesystem = reportsFilesystemSupport(check)
-	caps.Network = reportsNetworkSupport(check)
+	caps.Filesystem = reportsFilesystemSupport(check.Machine())
+	caps.Network = reportsNetworkSupport(check.Machine())
 	if !caps.Filesystem {
 		caps.Notes = append(caps.Notes, "check output does not report verified Landlock filesystem support")
 	}
@@ -185,14 +315,6 @@ func reportsFilesystemSupport(out string) bool {
 func reportsNetworkSupport(out string) bool {
 	lower := strings.ToLower(out)
 	return strings.Contains(lower, "tcp network rule support verified")
-}
-
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
 }
 
 // BuildArgs renders the nono argv for a policy and command. It is pure and
@@ -355,8 +477,8 @@ func (l *Launcher) launchRequired(ctx context.Context, policy domain.SandboxPoli
 	out, err := l.run(ctx, verifyTimeout, cmd.Dir, cmd.Env, append([]string{bin}, dry...)...)
 	if err != nil {
 		return nil, errors.Join(
-			fmt.Errorf("%w: %s run --dry-run refused the policy before launch: %v\noutput: %s",
-				sandbox.ErrNotEnforceable, BackendName, err, strings.TrimSpace(out)),
+			fmt.Errorf("%w: %s run --dry-run refused the policy before launch: %v (%s)\noutput: %s",
+				sandbox.ErrNotEnforceable, BackendName, err, out.ErrLine(), strings.TrimSpace(out.Text())),
 			err,
 		)
 	}

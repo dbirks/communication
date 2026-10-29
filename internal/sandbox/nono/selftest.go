@@ -76,9 +76,9 @@ func (l *Launcher) SelfTest(ctx context.Context, scratchRoot string, timeout tim
 	// The version leg doubles as the binary-presence leg; a self-test that cannot
 	// even ask for a version has nothing to report.
 	if out, err := l.run(ctx, timeout, "", nonoEnv(l), bin, "--version"); err != nil {
-		return res, fmt.Errorf("sandbox: self-test could not run %s --version: %w", filepath.Base(bin), err)
+		return res, fmt.Errorf("sandbox: self-test could not run %s --version: %w (%s)", filepath.Base(bin), err, out.ErrLine())
 	} else {
-		res.Version = parseVersion(out)
+		res.Version = parseVersion(out.Machine())
 	}
 
 	dir, err := os.MkdirTemp(scratchRoot, "nono-selftest-")
@@ -108,10 +108,12 @@ func (l *Launcher) SelfTest(ctx context.Context, scratchRoot string, timeout tim
 		"echo payload > " + allowed + " && echo granted-writable"}
 	out, err := l.run(ctx, timeout, granted, nonoEnv(l), append([]string{bin}, argv...)...)
 	if err != nil {
-		return res, fmt.Errorf("sandbox: the granted-write leg failed, so nothing was proven (a sandbox that cannot exec would pass a denial-only test): %w (%s)", err, firstLine(out))
+		return res, fmt.Errorf("sandbox: the granted-write leg failed, so nothing was proven (a sandbox that cannot exec would pass a denial-only test): %w (%s)", err, out.ErrLine())
 	}
-	if !strings.Contains(out, "granted-writable") {
-		return res, fmt.Errorf("sandbox: the granted-write leg did not report its write: %s", firstLine(out))
+	// The child's own report is read from stdout only: nono's chatter belongs to
+	// stderr, so a banner or release notice can never be mistaken for the marker.
+	if !strings.Contains(out.Machine(), "granted-writable") {
+		return res, fmt.Errorf("sandbox: the granted-write leg did not report its write: %s", out.ErrLine())
 	}
 	if _, err := os.Stat(allowed); err != nil {
 		return res, fmt.Errorf("sandbox: the child claimed a write that left no file: %w", err)
@@ -136,16 +138,16 @@ func (l *Launcher) SelfTest(ctx context.Context, scratchRoot string, timeout tim
 		// A non-zero status here needs unpacking: `denied-ok` means the sandbox
 		// worked and `sh` exited on some unrelated problem, while `LEAKED` means
 		// the write succeeded and the sandbox is decorative.
-		if strings.Contains(out, "LEAKED") {
+		if strings.Contains(out.Machine(), "LEAKED") {
 			return res, fmt.Errorf("%w: a child under a narrowed grant wrote outside it", ErrNotEnforced)
 		}
-		return res, fmt.Errorf("sandbox: the denied-write leg errored without reporting: %w (%s)", err, firstLine(out))
+		return res, fmt.Errorf("sandbox: the denied-write leg errored without reporting: %w (%s)", err, out.ErrLine())
 	}
-	if strings.Contains(out, "LEAKED") {
+	if strings.Contains(out.Machine(), "LEAKED") {
 		return res, fmt.Errorf("%w: a child under a narrowed grant wrote outside it", ErrNotEnforced)
 	}
-	if !strings.Contains(out, "denied-ok") {
-		return res, fmt.Errorf("sandbox: the denied-write leg did not reach its assertion: %s", firstLine(out))
+	if !strings.Contains(out.Machine(), "denied-ok") {
+		return res, fmt.Errorf("sandbox: the denied-write leg did not reach its assertion: %s", out.ErrLine())
 	}
 	if _, err := os.Stat(deniedTarget); err == nil {
 		// The child's own report is not enough: a write that succeeded while the
@@ -174,9 +176,10 @@ func refuseNonoStateRoot(path string) error {
 }
 
 // nonoEnv is the environment for nono's *own* invocations (probe, validate,
-// dry-run, self-test). It is not the agent's environment and it carries nothing:
-// a helper process that could read the worker's environment could read
-// COMMUNICATION_DATABASE_URL.
+// dry-run, self-test). It is not the agent's environment and it carries no
+// secret: a helper process that could read the worker's environment could read
+// COMMUNICATION_DATABASE_URL. The only additions are nono's own chatter opt-outs
+// (see noUpdateCheckEnv).
 func nonoEnv(l *Launcher) []string {
 	path := os.Getenv("PATH")
 	if path == "" {
@@ -186,5 +189,5 @@ func nonoEnv(l *Launcher) []string {
 	if l.Home != "" {
 		env = append(env, "HOME="+l.Home)
 	}
-	return env
+	return append(env, noUpdateCheckEnv...)
 }

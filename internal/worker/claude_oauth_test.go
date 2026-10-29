@@ -193,14 +193,17 @@ func TestClaudeOAuthTokenReachesRealSandboxedChild(t *testing.T) {
 		t.Fatalf("find the audit session by its argv marker: %v", err)
 	}
 	auditEnv := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + nonoHome}
-	var buf bytes.Buffer
+	// The audit JSON is stdout; stderr is nono's chatter (banner, tracing, the
+	// 0.80.0 update notice), so the two are kept apart exactly as the adapter
+	// keeps them.
+	var outBuf, errBuf bytes.Buffer
 	auditCmd := exec.CommandContext(ctx, bin, "audit", "show", sessionID, "--json")
 	auditCmd.Dir, auditCmd.Env = base, auditEnv
-	auditCmd.Stdout, auditCmd.Stderr = &buf, &buf
+	auditCmd.Stdout, auditCmd.Stderr = &outBuf, &errBuf
 	if err := auditCmd.Run(); err != nil {
-		t.Fatalf("nono audit show: %v: %s", err, buf.String())
+		t.Fatalf("nono audit show: %v: %s", err, errBuf.String())
 	}
-	if strings.Contains(buf.String(), claudeFakeToken) {
-		t.Fatalf("the audit journal contains the token value:\n%s", buf.String())
+	if strings.Contains(outBuf.String(), claudeFakeToken) {
+		t.Fatalf("the audit journal contains the token value:\n%s", outBuf.String())
 	}
 }

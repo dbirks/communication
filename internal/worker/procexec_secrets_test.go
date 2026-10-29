@@ -529,17 +529,20 @@ func TestProcExecEnvMountSentinelUnderRealNonoStaysInTheExecEnv(t *testing.T) {
 	listCmd := exec.CommandContext(ctx, f.launcher.Binary, "audit", "list", "--json", "--recent", "50")
 	listCmd.Dir = f.proc.LauncherHome
 	listCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + f.proc.LauncherHome}
-	var listBuf bytes.Buffer
-	listCmd.Stdout, listCmd.Stderr = &listBuf, &listBuf
+	// Streams kept apart, the way the adapter reads them: nono's JSON surface is
+	// stdout, and its stderr carries the banner, tracing and — since 0.80.0 — the
+	// "update X available" notice. Merging them made the listing unparsable.
+	var listOut, listErr bytes.Buffer
+	listCmd.Stdout, listCmd.Stderr = &listOut, &listErr
 	if err := listCmd.Run(); err != nil {
-		t.Fatalf("nono audit list: %v: %s", err, listBuf.String())
+		t.Fatalf("nono audit list: %v: %s", err, listErr.String())
 	}
 	var entries []struct {
 		SessionID string   `json:"session_id"`
 		Command   []string `json:"command"`
 	}
-	if err := json.Unmarshal(listBuf.Bytes(), &entries); err != nil {
-		t.Fatalf("parse the audit listing: %v", err)
+	if err := json.Unmarshal(listOut.Bytes(), &entries); err != nil {
+		t.Fatalf("parse the audit listing: %v (stdout %q, stderr %q)", err, listOut.String(), listErr.String())
 	}
 	own := -1
 	for i := range entries {
@@ -550,28 +553,30 @@ func TestProcExecEnvMountSentinelUnderRealNonoStaysInTheExecEnv(t *testing.T) {
 		}
 	}
 	if own < 0 {
-		t.Fatalf("no audited session carries the launch marker %q: %s", marker, listBuf.String())
+		t.Fatalf("no audited session carries the launch marker %q: %s", marker, listOut.String())
 	}
 	for _, arg := range entries[own].Command {
 		if strings.Contains(arg, sentinel) {
 			t.Fatalf("the env-delivered secret value reached the launch argv the audit journal records verbatim: %q", arg)
 		}
 	}
-	if strings.Contains(listBuf.String(), sentinel) {
-		t.Fatalf("the env-delivered secret value reached the audit listing: %s", listBuf.String())
+	// The leak check still covers both streams: a secret printed on stderr is as
+	// much a leak as one printed on stdout.
+	if leak := listOut.String() + listErr.String(); strings.Contains(leak, sentinel) {
+		t.Fatalf("the env-delivered secret value reached the audit listing: %s", leak)
 	}
 	sessionID := entries[own].SessionID
 
 	auditCmd := exec.CommandContext(ctx, f.launcher.Binary, "audit", "show", sessionID, "--json")
 	auditCmd.Dir = f.proc.LauncherHome
 	auditCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + f.proc.LauncherHome}
-	var auditBuf bytes.Buffer
-	auditCmd.Stdout, auditCmd.Stderr = &auditBuf, &auditBuf
+	var auditOut, auditErr bytes.Buffer
+	auditCmd.Stdout, auditCmd.Stderr = &auditOut, &auditErr
 	if err := auditCmd.Run(); err != nil {
-		t.Fatalf("nono audit show: %v: %s", err, auditBuf.String())
+		t.Fatalf("nono audit show: %v: %s", err, auditErr.String())
 	}
-	if strings.Contains(auditBuf.String(), sentinel) {
-		t.Fatalf("the env-delivered secret value reached the nono audit journal: %s", auditBuf.String())
+	if strings.Contains(auditOut.String(), sentinel) {
+		t.Fatalf("the env-delivered secret value reached the nono audit journal: %s", auditOut.String())
 	}
 
 	// The audit journal is nono's own state dir under the launcher's home

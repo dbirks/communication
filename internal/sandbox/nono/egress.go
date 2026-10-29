@@ -368,9 +368,11 @@ func (l *Launcher) AuditSession(ctx context.Context, sessionID string) (EgressOb
 	}
 	out, err := l.run(ctx, egressAuditTimeout, "", l.launcherEnv(LaunchSpec{}), bin, "audit", "show", sessionID, "--json")
 	if err != nil {
-		return EgressObservation{}, fmt.Errorf("sandbox: nono audit show %s failed: %v (%s)", sessionID, err, firstLine(out))
+		return EgressObservation{}, fmt.Errorf("sandbox: nono audit show %s failed: %v (%s)", sessionID, err, out.ErrLine())
 	}
-	obs, err := AuditEgressObservation([]byte(out))
+	// stdout only: 0.80.0 prints the update notice on stderr, and a notice in
+	// front of the document is not a document (see nonoOutput).
+	obs, err := AuditEgressObservation([]byte(out.Machine()))
 	if err != nil {
 		return EgressObservation{}, err
 	}
@@ -401,10 +403,10 @@ func (l *Launcher) FindSessionByMarker(ctx context.Context, marker string) (stri
 	out, err := l.run(ctx, egressAuditTimeout, "", l.launcherEnv(LaunchSpec{}),
 		bin, "audit", "list", "--json", "--recent", strconv.Itoa(auditListRecent))
 	if err != nil {
-		return "", fmt.Errorf("sandbox: nono audit list failed: %v (%s)", err, firstLine(out))
+		return "", fmt.Errorf("sandbox: nono audit list failed: %v (%s)", err, out.ErrLine())
 	}
 	var entries []auditListingEntry
-	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+	if err := json.Unmarshal([]byte(out.Machine()), &entries); err != nil {
 		return "", fmt.Errorf("sandbox: nono audit list is not the JSON this adapter understands: %w", err)
 	}
 	for _, e := range entries { // newest first, as measured
