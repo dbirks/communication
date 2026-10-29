@@ -16,7 +16,7 @@
  * run the server last reported, not the one just asked for.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert } from "../components/ds/Alert";
 import { Button } from "../components/ds/Button";
@@ -84,6 +84,7 @@ import {
   shortId,
 } from "./ProjectRuns";
 import { routes } from "../lib/routes";
+import { NewRevisionNotice } from "../components/workbench/RunHeader";
 
 type Tab = "definition" | "execution" | "timeline";
 const TABS: readonly { id: Tab; label: string }[] = [
@@ -91,6 +92,81 @@ const TABS: readonly { id: Tab; label: string }[] = [
   { id: "execution", label: "Execution" },
   { id: "timeline", label: "Timeline" },
 ];
+
+/* ------------------------------------------- the diagnostics grid's columns */
+
+/** Three panes sit side by side once their own ceilings fit with room for the
+ * middle one: the runs column reads at 13–15rem, the node detail at 22.5–26rem
+ * (the run view's drawn width) and a stage strip, a definition graph or a
+ * branch grid under ~19rem is a caption rather than a work surface. 1040px —
+ * the workbench `<main>` with its dock CLOSED at 1280 — clears it with 384px
+ * left for the panes, which is the look the run view was drawn at, unchanged. */
+export const DIAGNOSTICS_PANES_MIN = 960;
+/** Two panes — the runs list beside the strip/graph/tree, the node detail
+ * under them across the full width — need the runs column's 15rem ceiling plus
+ * that same middle pane. 593px — the workbench `<main>` with the 440px dock
+ * OPEN at 1280 — clears it and leaves the middle pane 353px, the width the
+ * stage strip says it is drawn for. */
+export const DIAGNOSTICS_SPLIT_MIN = 540;
+
+/** What the grid does at a measured width: all three panes across, the runs
+ * column across with the detail below it, or one stacked column (the 390
+ * reflow, which is also the answer when nothing has been measured yet). */
+export type DiagnosticsTier = "panes" | "split" | "stacked";
+
+export function diagnosticsTierFor(width: number): DiagnosticsTier {
+  if (width >= DIAGNOSTICS_PANES_MIN) return "panes";
+  if (width >= DIAGNOSTICS_SPLIT_MIN) return "split";
+  return "stacked";
+}
+
+/** How the runs list reads at each tier: the collapse control still reaches it,
+ * so the collapsed rail is its own template rather than a hidden column.
+ *
+ * Every class here is written OUT in full, never built from pieces: Tailwind
+ * scans the source as text, so an interpolated `grid-cols-[${nav}_${PANES}]`
+ * compiles to no rule at all and the grid silently falls back to one implicit
+ * column per child — the failure this page is about, only harder to see. Each
+ * template is `minmax` floors with an `fr` middle, so no tier can ask for more
+ * than its host has and paint the difference under the workbench dock. */
+const LAYOUT: Record<DiagnosticsTier, { open: string; shut: string }> = {
+  panes: {
+    open: "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+    shut: "grid-cols-[2.25rem_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+  },
+  split: {
+    open: "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)]",
+    shut: "grid-cols-[2.25rem_minmax(0,1fr)]",
+  },
+  stacked: { open: "grid-cols-1", shut: "grid-cols-1" },
+};
+
+export interface DiagnosticsLayout {
+  /** which tier the width cleared */
+  tier: DiagnosticsTier;
+  /** the grid element's own column classes (replaces the `xl:` template) */
+  grid: string;
+  /** the runs column's separating border */
+  nav: string;
+  /** the node detail's placement and separating border */
+  detail: string;
+}
+
+export function diagnosticsLayoutFor(width: number, navOpen: boolean): DiagnosticsLayout {
+  const tier = diagnosticsTierFor(width);
+  const grid = navOpen ? LAYOUT[tier].open : LAYOUT[tier].shut;
+  if (tier === "panes")
+    return { tier, grid, nav: "border-r border-line", detail: "border-l border-line" };
+  if (tier === "split")
+    return {
+      tier,
+      grid,
+      nav: "border-r border-line",
+      // The detail is the whole run of the row under the other two panes.
+      detail: "col-span-2 border-t border-line",
+    };
+  return { tier, grid, nav: "border-b border-line", detail: "border-t border-line" };
+}
 
 export default function RunInspector({
   embedded = false,
@@ -114,6 +190,15 @@ export default function RunInspector({
   // under the sidebar. The old `marginLeft: -left, width: viewport` assumed
   // the top-bar layout where content started at x=0 and parked this page
   // under the sticky column.
+  //
+  // Embedded in the Run Workbench there is nothing outside `<main>` to bleed
+  // out to: its parent is the flex row that ALSO carries the node-detail dock,
+  // and measuring that row (as this page did) made the grid 1040px wide inside
+  // a 593px column, so the node detail and the right pixel of every stage cell
+  // painted underneath the dock. Embedded, the measured column is `<main>`'s own
+  // box — 593px with the 440px dock open at 1280, 1040px with it collapsed and
+  // 390px on a phone — and that width picks the column tier
+  // (`diagnosticsLayoutFor`) instead of the viewport.
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [bleed, setBleed] = useState<{ offset: number; width: number } | null>(null);
   const [navOpen, setNavOpen] = useState(true);
@@ -125,37 +210,66 @@ export default function RunInspector({
     const parent = el?.parentElement;
     if (!el || !parent) return;
     const main = el.closest("main");
-    const column = main?.parentElement ?? null;
+    const column = embedded ? main : (main?.parentElement ?? null);
+    const columnStyle = column ? window.getComputedStyle(column) : null;
+    const padding = column
+      ? parseFloat(columnStyle?.paddingLeft || "0") + parseFloat(columnStyle?.paddingRight || "0")
+      : 0;
+    // Standalone the shell column keeps its own gutter, so its content box is
+    // the bleed. Embedded `<main>`'s padding is the workbench header's gutter
+    // and the grid has always run into it: its border box is the space.
+    const columnWidth = column ? column.clientWidth - (embedded ? 0 : padding) : 0;
     const staticLeft =
       parent.getBoundingClientRect().left +
       parseFloat(window.getComputedStyle(parent).paddingLeft || "0");
     const offset = column ? staticLeft - column.getBoundingClientRect().left : 0;
-    const columnStyle = column ? window.getComputedStyle(column) : null;
-    const columnWidth = column
-      ? column.clientWidth -
-        parseFloat(columnStyle?.paddingLeft || "0") -
-        parseFloat(columnStyle?.paddingRight || "0")
-      : 0;
+    // An embedded grid that has not been measured yet takes the narrow answer
+    // — stacking is never wrong, painting under the dock is — while the
+    // standalone page falls back to the viewport, which is the column it bleeds
+    // to once it is mounted.
     const width =
       columnWidth > 0
         ? columnWidth
-        : document.documentElement.clientWidth || window.innerWidth || el.offsetWidth;
+        : embedded
+          ? 0
+          : document.documentElement.clientWidth || window.innerWidth || el.offsetWidth;
     // Equal values do not re-render: this runs from a ref callback, and a new
     // object every time would be a render loop with a measurement in it.
     setBleed((current) =>
       current && current.offset === offset && current.width === width ? current : { offset, width },
     );
-  }, []);
+  }, [embedded]);
   // A ref callback rather than an effect: the page is a loading skeleton for its
   // first paint, and an effect that ran once would have measured nothing and
   // never come back. It stays stable across renders for the same reason — a new
   // callback identity every render would re-attach the ref on every commit.
+  // Embedded, it also watches `<main>` itself: the workbench dock is resized
+  // with the pointer and collapsed with a button, and neither is a window
+  // resize, so a window listener alone would leave the columns on the width
+  // the host had when the page first painted.
+  const spaceWatcher = useRef<ResizeObserver | null>(null);
   const attachRoot = useCallback(
     (node: HTMLDivElement | null) => {
       rootRef.current = node;
-      if (node) measureBleed();
+      spaceWatcher.current?.disconnect();
+      spaceWatcher.current = null;
+      if (!node) return;
+      measureBleed();
+      const column = embedded ? node.closest("main") : null;
+      if (column && typeof ResizeObserver !== "undefined") {
+        const watcher = new ResizeObserver(() => measureBleed());
+        watcher.observe(column);
+        spaceWatcher.current = watcher;
+      }
     },
-    [measureBleed],
+    [embedded, measureBleed],
+  );
+  useEffect(
+    () => () => {
+      spaceWatcher.current?.disconnect();
+      spaceWatcher.current = null;
+    },
+    [],
   );
   useEffect(() => {
     window.addEventListener("resize", measureBleed);
@@ -163,10 +277,19 @@ export default function RunInspector({
   }, [measureBleed]);
 
   const runQuery = useRun(runId);
+  // The canonical run page is `/runs/:runId` — the workbench's deep link
+  // (ADR-0043): `RunDeepLink` resolves the project off the run read and hands
+  // it to `RunWorkbench` as a prop, so on this page `useParams` carries no
+  // `projectId` at all. Every project-scoped read here is `enabled` on a
+  // non-empty id, so passing the empty string left them `isPending` forever
+  // without ever issuing a request — that is how the Diagnostics Runs column
+  // sat on "Loading runs…" with all-zero counts over a project with runs.
+  // The run's own read names its project; fall back to it.
+  const scopedProjectId = projectId || runQuery.data?.project_id || "";
   const nodesQuery = useRunNodes(runId);
   const treeQuery = useRunTree(runId);
   const pipelines = usePipelines();
-  const stream = useRunEvents(runId, projectId);
+  const stream = useRunEvents(runId, scopedProjectId);
 
   const baseRun = useMemo(() => (runQuery.data ? viewRun(runQuery.data) : null), [runQuery.data]);
   // W4 (`docs/m4-contract.md` § 7.2): the revisions list is what turns "a new
@@ -313,16 +436,29 @@ export default function RunInspector({
   // Runs column on the left (collapsible), the panes flexible in the middle —
   // never less than about 60% of what is left — and the node's detail on the
   // right at the 360–420px the run view is drawn at.
-  const columns = navOpen
+  //
+  // As its own route the page bleeds to the shell's whole content column, so
+  // the viewport and the grid's width are the same number and `xl:` is honest.
+  // In the workbench's Diagnostics tab it is not: `<main>` is 593px wide with
+  // the 440px dock open at 1280 and 1040px with it collapsed, so the tiers are
+  // read off the measured width (`diagnosticsLayoutFor`) instead of the
+  // viewport — the one template the viewport offers is the wide one, and drawn
+  // into 593px it put the node detail under the dock.
+  const paneLayout = embedded ? diagnosticsLayoutFor(bleed?.width ?? 0, navOpen) : null;
+  const tracks = navOpen
     ? "xl:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]"
     : "xl:grid-cols-[2.25rem_minmax(0,1fr)_minmax(22.5rem,26rem)]";
+  const columns = paneLayout ? paneLayout.grid : `grid-cols-1 ${tracks}`;
 
   return (
     <div
       ref={attachRoot}
       data-testid="run-inspector"
-      data-full-width={bleed ? bleed.width : "unmeasured"}
-      className={`grid min-h-full grid-cols-1 ${columns} border-y border-line bg-paper`}
+      data-full-width={
+        bleed === null || (embedded && bleed.width === 0) ? "unmeasured" : bleed.width
+      }
+      data-diagnostics-tier={paneLayout ? paneLayout.tier : "route"}
+      className={`grid min-h-full ${columns} border-y border-line bg-paper`}
       style={
         bleed
           ? { width: bleed.width || undefined, marginLeft: -bleed.offset, maxWidth: "none" }
@@ -330,15 +466,15 @@ export default function RunInspector({
       }
     >
       <aside
-        className="min-w-0 border-b border-line xl:border-b-0 xl:border-r"
+        className={`min-w-0 ${paneLayout ? paneLayout.nav : "border-b border-line xl:border-b-0 xl:border-r"}`}
         data-testid="run-inspector-nav"
       >
         {navOpen ? (
           <>
             <div className="border-b border-line px-3 py-2">
-              <ProjectSectionNav projectId={projectId} active="runs" />
+              <ProjectSectionNav projectId={scopedProjectId} active="runs" />
             </div>
-            <RunsListColumn projectId={projectId} selectedRunId={runId} />
+            <RunsListColumn projectId={scopedProjectId} selectedRunId={runId} />
           </>
         ) : (
           <div className="flex justify-center border-b border-line py-2">
@@ -397,29 +533,15 @@ export default function RunInspector({
           </header>
         )}
 
+        {/* The same notice the workbench header shows, reused verbatim — the
+            one copy that wraps cleanly at 390px (see RunHeader.tsx). */}
         {!embedded && revisionNotice ? (
-          <div className="pt-3">
-            <Alert
-              state="info"
-              label="NEW REVISION PUBLISHED"
-              testid="run-new-revision-notice"
-              action={
-                <Link
-                  to={routes.workflow(run.pipeline_id)}
-                  className="shrink-0 rounded-[3px] border border-line px-2 py-[3px] font-mono text-[11px] text-ink-2 underline-offset-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  data-testid="run-new-revision-link"
-                >
-                  {slug} in the library
-                </Link>
-              }
-            >
-              <span className="text-[12.5px]">
-                revision {revisionNotice.newest} published since this run started — this run is
-                pinned to {revisionNotice.pinned} ({shortDigest(run.revision_digest)}). The run
-                stays on the revision it started with.
-              </span>
-            </Alert>
-          </div>
+          <NewRevisionNotice
+            notice={revisionNotice}
+            slug={slug}
+            pipelineId={run.pipeline_id}
+            revisionDigest={run.revision_digest}
+          />
         ) : null}
 
         {/* The strip rides above every tab, as in 4a: it is how a reader
@@ -434,7 +556,12 @@ export default function RunInspector({
           />
         </div>
 
-        <div className="flex items-center gap-1 py-3">
+        {/* Same width honesty as the header above: the tablist keeps its three
+            tabs on one line and the runs-column verb drops BELOW them when the
+            host is too narrow to hold both, instead of the row pushing its
+            right edge past the host (the workbench at its widest dock leaves
+            this column ~280px, where the verb stuck out by 5px). */}
+        <div className="flex flex-wrap items-center gap-1 py-3">
           {/* The tablist holds only its tab children (axe aria-required-
            * children); the collapse control sits beside it. */}
           <div role="tablist" aria-label="Run views" className="flex gap-1">
@@ -491,7 +618,7 @@ export default function RunInspector({
         {tab === "timeline" ? (
           <RunTimelineTab
             runId={runId}
-            projectId={projectId}
+            projectId={scopedProjectId}
             events={stream.events}
             nodes={projection.nodes}
             selectedExecutionId={selectedNode?.id ?? null}
@@ -501,12 +628,14 @@ export default function RunInspector({
       </main>
 
       <aside
-        className="min-w-0 border-t border-line bg-surface px-3 py-3 xl:border-l xl:border-t-0"
+        className={`min-w-0 bg-surface px-3 py-3 ${
+          paneLayout ? paneLayout.detail : "border-t border-line xl:border-l xl:border-t-0"
+        }`}
         data-testid="run-inspector-detail"
       >
         <RunNodeDetail
           runId={runId}
-          projectId={projectId}
+          projectId={scopedProjectId}
           node={selectedNode}
           nodes={projection.nodes}
           frames={stream.events}
@@ -551,10 +680,11 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
           .join(", ")}` +
         // § 7.2 W6: the ENGINE never retries a lost workspace (ADR-0023 § 7), so this
         // control is only ever the operator's own rerun — and it says what that can and
-        // cannot bring back, rather than implying the edits come along with it.
+        // cannot bring back, rather than implying the edits come along with it. The
+        // words the reader sees cite no contract internals; `copy-spec-speak`.
         (lost.length
-          ? " — manual rerun (route 31): no automatic retry is offered for a lost " +
-            "workspace (ADR-0023 § 7), so prior edits lost, rerun required from this " +
+          ? " — manual rerun: no automatic retry is offered for a lost " +
+            "workspace, so prior edits lost, rerun required from this " +
             "node's inputs."
           : ""),
     };
@@ -566,16 +696,14 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
       available: false,
       reason:
         `${gate.node_instance_key} answered rejected — a rejection is a business outcome, ` +
-        "not an execution failure (M4 contract § 5.3). No node failed, was interrupted or " +
+        "not an execution failure. No node failed, was interrupted or " +
         "cancelled, so Retry has no target; start a new run to go down another path.",
     };
   }
   return {
     show: true,
     available: false,
-    reason:
-      "No node failed, was interrupted or cancelled, so Retry has no target " +
-      "(route 31 re-queues those states only).",
+    reason: "Nothing failed, was interrupted or was cancelled, so there is nothing to retry.",
   };
 }
 

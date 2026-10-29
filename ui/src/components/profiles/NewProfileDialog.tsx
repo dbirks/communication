@@ -538,7 +538,7 @@ function DialogBody({
                   value never shown · granting adds the secret's allowlist entry after create
                 </p>
                 <p className="text-[11.5px] text-muted">
-                  A GitHub token here lets the agent push and open PRs (ADR-0045).
+                  A GitHub token here lets the agent push and open PRs.
                 </p>
               </div>
             )}

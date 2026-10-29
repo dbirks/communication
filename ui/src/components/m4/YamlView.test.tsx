@@ -64,13 +64,20 @@ describe("YamlView", () => {
     );
   });
 
-  it("names the milestone a deferred kind waits for, in the server's words", () => {
+  it("says a deferred kind cannot run, in plain words, with the server's sentence kept as data", () => {
     render(<YamlView text={w8DraftYaml} validation={w8Validation} />);
     const index = w8Validation.errors.findIndex(
       (issue) => issue.code === "kind_not_implemented" && issue.message.includes("git.commit"),
     );
-    expect(screen.getByTestId(`yaml-finding-message-${index}`).textContent).toContain(
-      "kind git.commit is not implemented until M6",
+    expect(index).toBeGreaterThanOrEqual(0);
+    const message = screen.getByTestId(`yaml-finding-message-${index}`);
+    expect(message.textContent).toBe("git.commit steps can't run yet.");
+    expect(message.getAttribute("data-server-message")).toBe(w8Validation.errors[index].message);
+    // The internal roadmap name is never a word a person reads.
+    expect(screen.getByTestId("yaml-validation-errors").textContent).not.toMatch(/\bM\d\b/);
+    // The code the contract names still renders verbatim.
+    expect(screen.getByTestId(`yaml-finding-${index}`).textContent).toContain(
+      "kind_not_implemented",
     );
   });
 

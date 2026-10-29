@@ -363,7 +363,7 @@ describe("DefinitionGraph", () => {
     expect(onSelectKey).toHaveBeenCalledWith("/approve");
   });
 
-  it("marks the seven kinds M4 refuses, with the milestone named", () => {
+  it("marks the kinds a workflow cannot run yet, without naming a milestone", () => {
     const deferred = {
       ...fanOutPipelineDocument,
       spec: {
@@ -375,7 +375,22 @@ describe("DefinitionGraph", () => {
       },
     };
     render(<DefinitionGraph document={deferred} />);
-    expect(screen.getByTestId("definition-graph-node-push").textContent).toContain("not until M6");
+    expect(screen.getByTestId("definition-graph-node-push").textContent).toContain(
+      "not available yet",
+    );
+    // The internal build milestone never reaches the words a person reads.
+    expect(screen.getByTestId("definition-graph-node-push").textContent).not.toMatch(/\bM[0-9]\b/);
+    // The accessible name says the same thing, in the same words.
+    expect(screen.getByTestId("definition-graph-node-push").getAttribute("aria-label")).toContain(
+      "not available yet",
+    );
+    // The list row's chip (the shared KindChip) and its tooltip agree.
+    const row = screen.getByTestId("definition-graph-list-push");
+    const chip = row.querySelector('[data-testid="kind-chip-deferred"]');
+    expect(chip?.textContent).toBe("not available yet");
+    expect(chip?.closest("[data-testid='kind-chip']")?.getAttribute("title")).toBe(
+      "git.publish — not available yet: a workflow can't run this step today",
+    );
   });
 
   it("shows a node's run rollup when the caller has one, without touching the definition", () => {

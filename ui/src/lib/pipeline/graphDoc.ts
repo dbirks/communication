@@ -139,44 +139,44 @@ export const STEP_LIBRARY: {
   {
     kind: "parallel",
     label: "Parallel",
-    description: "Run independent branches (not runnable yet: M5).",
+    description: "Run independent branches (not runnable yet).",
     runnable: false,
   },
   {
     kind: "join",
     label: "Join",
-    description: "Wait for parallel branches (not runnable yet: M5).",
+    description: "Wait for parallel branches (not runnable yet).",
     runnable: false,
   },
   {
     kind: "gate",
     label: "Gate",
-    description: "Barrier step (not runnable yet: M5).",
+    description: "Barrier step (not runnable yet).",
     runnable: false,
   },
   {
     kind: "git.commit",
     label: "Git commit",
-    description: "Commit workspace changes (not runnable yet: M6).",
+    description: "Commit workspace changes (not runnable yet).",
     runnable: false,
   },
   {
     kind: "git.publish",
     label: "Git publish",
-    description: "Publish commits as a branch or PR (not runnable yet: M6).",
+    description: "Publish commits as a branch or PR (not runnable yet).",
     runnable: false,
     offered: false, // ADR-0045 — kept in the YAML catalogue, hidden from the picker/palette
   },
   {
     kind: "integration.query",
     label: "Integration query",
-    description: "Query an external system (not runnable yet: M6).",
+    description: "Query an external system (not runnable yet).",
     runnable: false,
   },
   {
     kind: "integration.action",
     label: "Integration action",
-    description: "Act on an external system (not runnable yet: M6).",
+    description: "Act on an external system (not runnable yet).",
     runnable: false,
   },
 ];

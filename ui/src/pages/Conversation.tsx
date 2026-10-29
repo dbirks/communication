@@ -391,8 +391,8 @@ export default function ConversationPage({
               >
                 <p className="text-[12.5px] text-ink">
                   This asks the agent to push its branch and open a draft PR with the GitHub token
-                  on its profile (ADR-0045). It only works if the profile's account holds a token
-                  and the worker's egress allows github.com.
+                  on its profile. It only works if the profile's account holds a token and the
+                  worker's egress allows github.com.
                 </p>
                 <div className="flex items-center justify-end gap-2">
                   <Button

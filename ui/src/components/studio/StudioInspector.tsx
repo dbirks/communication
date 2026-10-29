@@ -921,7 +921,7 @@ export function StudioInspector({
         </span>
         {deferred ? (
           <p className="font-mono text-[11px] text-faint" data-testid="insp-deferred">
-            Not runnable yet — {kind} runs in {deferred}. These fields still write the YAML.
+            Not runnable yet — a workflow can't run {kind} today. These fields still write the YAML.
           </p>
         ) : null}
       </div>

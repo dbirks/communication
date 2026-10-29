@@ -15,10 +15,10 @@ import type { Artifact, ArtifactSensitivity, PreviewToken } from "./types";
 /** Why an artifact may not be previewed, in words, or null when it may. */
 export function previewBlockReason(artifact: Artifact): string | null {
   if (artifact.sensitivity === "restricted") {
-    return "restricted artifacts never preview (ADR-0020 §3): metadata only, and downloading one needs a project maintainer";
+    return "restricted artifacts can't be previewed — only their details are shown, and downloading one needs a project maintainer";
   }
   if (artifact.sensitivity === "secret") {
-    return "an artifact labelled `secret` has no download path and no preview in M3 at all";
+    return "a `secret` artifact can't be previewed and has no download path";
   }
   if (artifact.state !== "ready") {
     return `this artifact is ${artifact.state}, and only a ready one is served`;
@@ -40,7 +40,7 @@ export function isHtml(artifact: Artifact): boolean {
 /** Whether bytes may be fetched at all (`secret` has no path for anyone). */
 export function downloadBlockedReason(sensitivity: ArtifactSensitivity): string | null {
   if (sensitivity === "secret") {
-    return "a `secret` artifact has no download path in M3 — the label exists so a policy can be written against it before the mechanism does";
+    return "a `secret` artifact has no download path for anyone";
   }
   if (sensitivity === "restricted") {
     return "restricted content needs a project maintainer";
@@ -94,7 +94,7 @@ export function sensitivityCopy(sensitivity: ArtifactSensitivity): string {
     case "restricted":
       return "restricted · maintainer only, never previewed";
     case "secret":
-      return "secret · no download path and no preview in M3";
+      return "secret · no download path and no preview";
   }
 }
 

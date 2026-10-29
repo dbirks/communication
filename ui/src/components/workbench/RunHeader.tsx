@@ -195,7 +195,20 @@ export function RunHeader({
 }
 
 /** The notice body, lifted so the workbench header and the embedded
- * diagnostics tab word the same sentence identically. */
+ * diagnostics tab word the same sentence identically.
+ *
+ * Width honesty (390 reflow): the chip is NOT Alert's `action` slot — that
+ * row pins the action `shrink-0` beside a zero-basis text column, so at a
+ * phone's ~338px body a ~230px chip left the sentence a ~101px box reading
+ * one word per line. Inside the body it is a wrapping flex row instead: the
+ * text carries a 20rem flex-basis FLOOR, so the pair sits side by side
+ * whenever both fit (pixel-identical to the old layout at 1280), and below
+ * that floor + chip the chip drops to its own line and the text keeps the
+ * full width — where `max-w-full` caps the chip at the body box so its own
+ * long mono slug wraps inside it instead of hanging past the border (a
+ * 390px viewport with the 354px `feature-development-deterministic in the
+ * library` chip measured exactly that bleed). Stacking is never wrong;
+ * one word per line is. */
 export function NewRevisionNotice({
   notice,
   slug,
@@ -209,25 +222,21 @@ export function NewRevisionNotice({
 }) {
   return (
     <div className="pt-3">
-      <Alert
-        state="info"
-        label="NEW REVISION PUBLISHED"
-        testid="run-new-revision-notice"
-        action={
+      <Alert state="info" label="NEW REVISION PUBLISHED" testid="run-new-revision-notice">
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <span className="min-w-0 flex-1 basis-[20rem] text-[12.5px]">
+            revision {notice.newest} published since this run started — this run is pinned to{" "}
+            {notice.pinned} ({shortDigest(revisionDigest)}). The run stays on the revision it
+            started with.
+          </span>
           <Link
             to={routes.workflow(pipelineId)}
-            className="shrink-0 rounded-[3px] border border-line px-2 py-[3px] font-mono text-[11px] text-ink-2 underline-offset-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="max-w-full shrink-0 rounded-[3px] border border-line px-2 py-[3px] font-mono text-[11px] text-ink-2 underline-offset-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid="run-new-revision-link"
           >
             {slug} in the library
           </Link>
-        }
-      >
-        <span className="text-[12.5px]">
-          revision {notice.newest} published since this run started — this run is pinned to{" "}
-          {notice.pinned} ({shortDigest(revisionDigest)}). The run stays on the revision it started
-          with.
-        </span>
+        </div>
       </Alert>
     </div>
   );

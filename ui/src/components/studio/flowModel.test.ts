@@ -195,6 +195,44 @@ spec:
     }
   });
 
+  it("labels a kind the runtime refuses with plain words, never a milestone", () => {
+    const doc = `kind: Pipeline
+spec:
+  nodes:
+    - id: start
+      kind: process.exec
+      config:
+        executable: sh
+        args: []
+    - id: ship
+      kind: git.commit
+      dependsOn:
+        - start
+      config:
+        message: "chore: shipped"
+    - id: review
+      kind: gate
+      dependsOn:
+        - ship
+      config:
+        reason: "release"`;
+    const parsed = parseGraph(doc);
+    if (!parsed.ok) throw new Error(`deferred-kind doc must parse: ${parsed.error}`);
+    const flow = toFlow(parsed.model, parseDocument(doc).toJS());
+    expect(flow.nodes.map((n) => n.id).sort()).toEqual(["review", "ship", "start"]);
+    const words = (id: string): string | null =>
+      flow.nodes.find((n) => n.id === id)?.data.deferred ?? null;
+    // The refused steps say the plain thing; the runnable one says nothing.
+    expect(words("ship")).toBe("not available yet");
+    expect(words("review")).toBe("not available yet");
+    expect(words("start")).toBeNull();
+    // The internal milestone the data map carries reaches nobody: the chip only
+    // ever holds these words.
+    for (const n of flow.nodes) {
+      expect(String(n.data.deferred ?? "")).not.toMatch(/\bM\d\b/);
+    }
+  });
+
   it("lets ui_layout overrides replace the dagre positions", () => {
     const flow = toFlow(model, probeDocument, { nodes: { plan: { x: 500, y: 320 } } });
     const plan = flow.nodes.find((n) => n.id === "plan");

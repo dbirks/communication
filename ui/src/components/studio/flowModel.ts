@@ -37,7 +37,9 @@ export interface FlowNodeData {
   /** Approachable name from the step library. */
   label: string;
   kindWord: string;
-  /** Milestone word for deferred kinds, e.g. "not runnable yet: M5". */
+  /** Words for a kind the runtime refuses (`kind_not_implemented`): the plain
+   * "not available yet", never the internal build milestone the data map
+   * carries — a person reading a canvas cannot decode `M5`. */
   deferred: string | null;
   /** The `when` CEL guard, for labels and steps-list prose. */
   when: string | null;
@@ -522,10 +524,7 @@ export function toFlow(
         kind: node.kind,
         label: node.label,
         kindWord: kindWord(node.kind),
-        deferred:
-          node.kind in DEFERRED_KINDS
-            ? (DEFERRED_KINDS[node.kind as keyof typeof DEFERRED_KINDS] ?? "not runnable yet")
-            : null,
+        deferred: node.kind in DEFERRED_KINDS ? "not available yet" : null,
         when: node.when,
         scope: node.scope,
         terminal: !isScope && hasNoDependents(model, node),

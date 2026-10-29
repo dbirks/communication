@@ -362,7 +362,7 @@ function DialogBody({
             <Field
               id="assign-repo-select"
               label="repository"
-              hint="one repo, or the whole project (every repo in it) — ADR-0060"
+              hint="one repo, or the whole project (every repo in it)"
             >
               <Select
                 id="assign-repo-select"

@@ -301,9 +301,14 @@ function ValidationFindings({
             <p
               className="mt-[3px] text-[12.5px] leading-[18px]"
               data-testid={`yaml-finding-message-${index}`}
+              data-server-message={
+                issue.code === "kind_not_implemented" ? issue.message : undefined
+              }
             >
               {issue.code === "secret_literal_detected" ? (
                 <SecretLiteralFinding message={issue.message} />
+              ) : issue.code === "kind_not_implemented" ? (
+                deferredKindCopy(issue.message)
               ) : (
                 issue.message
               )}
@@ -344,6 +349,24 @@ function ValidationFindings({
       ))}
     </div>
   );
+}
+
+/** `kind X is not implemented …` as the compiler sends it (ADR-0024). */
+const KIND_NOT_IMPLEMENTED = /^kind (\S+) is not implemented\b/;
+
+/**
+ * The visible words for a `kind_not_implemented` finding.
+ *
+ * The server's sentence names an internal build milestone ("kind parallel is
+ * not implemented until M5"). A person using the app has no milestone
+ * vocabulary to decode, so the row says the true thing plainly; the server's
+ * text is never rewritten — it stays on the finding as `data-server-message`
+ * for support, and the `kind_not_implemented` code still renders verbatim
+ * (`docs/m4-contract.md` § 2.2).
+ */
+export function deferredKindCopy(message: string): string {
+  const kind = KIND_NOT_IMPLEMENTED.exec(message)?.[1];
+  return kind ? `${kind} steps can't run yet.` : "This step can't run yet.";
 }
 
 /** A secret-literal finding shows the *shape*, never the value: the server

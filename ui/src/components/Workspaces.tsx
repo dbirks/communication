@@ -232,7 +232,7 @@ export function WorkspacesPanel({ projectId }: WorkspacesPanelProps) {
         ) : null}
         <p className="font-mono text-[10.5px] text-faint">
           refs and paths a machine produced; the checkout lives on one worker's volume, so no
-          restore or discard is offered here (ADR-0017).
+          restore or discard is offered here.
         </p>
       </div>
     </Panel>

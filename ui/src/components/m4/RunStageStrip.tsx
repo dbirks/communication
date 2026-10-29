@@ -11,6 +11,13 @@
  * Counts accompany every colour (identity rule 06), and the words come from
  * `ds/states.ts` — the same table the rest of the app uses, so a stage cell and
  * a tree row never disagree about what cerulean means.
+ *
+ * Width rule (the run page's Diagnostics pane is ~350px on a 1280 screen): the
+ * stage id is the thing the reader came for, so a cell is never narrower than
+ * its own name. The strip is a grid whose columns are as few as that floor
+ * allows — one column in a 350px pane, several in a wide one — and the id
+ * WRAPS (`break-words`) instead of ellipsising, so `BUILD_UNTIL_VERIFIED` is
+ * never read as `BUILD_UNTIL_V…` and the page never scrolls sideways at 390.
  */
 import { parentKeyOf } from "../../lib/pipeline/runView";
 import type { NodeExecutionSummary } from "../../lib/pipeline/contract";
@@ -115,6 +122,18 @@ function segmentsOf(
 /** Kinds that repeat, so their `[n]` rows are places and not separate executions. */
 const SCOPE_STRIP_KINDS = new Set(["until", "for_each"]);
 
+/**
+ * Cells are at least 13rem wide — about the longest stage id on one line — and
+ * `auto-fit` hands the leftover width to the last row instead of leaving empty
+ * tracks for the hairline grid to show through. `min(13rem, 100%)` keeps a
+ * narrow container from being forced wider than itself (390px must not scroll
+ * sideways). It is an inline style because Tailwind v4 generates no rule for an
+ * arbitrary `grid-cols-[repeat(auto-fit,minmax(min(13rem,100%),1fr))]` — commas
+ * inside nested math functions are not a value it will emit, and a class that
+ * compiles to nothing would silently leave the strip one column wide everywhere.
+ */
+const STRIP_GRID = { gridTemplateColumns: "repeat(auto-fit, minmax(min(13rem, 100%), 1fr))" };
+
 export function stageCells(nodes: NodeExecutionSummary[], definitionOrder?: string[]): StageCell[] {
   const byKey = new Map(nodes.map((node) => [node.node_instance_key, node]));
   const byNode = new Map<string, NodeExecutionSummary[]>();
@@ -205,7 +224,8 @@ export function RunStageStrip({
         role="group"
         aria-label="Run progress by definition node"
         data-testid="run-stage-strip"
-        className="flex flex-wrap items-stretch divide-x divide-line rounded-b-[3px] border-t-0 bg-surface"
+        className="grid gap-px rounded-b-[3px] bg-line"
+        style={STRIP_GRID}
       >
         {cells.map((cell) => {
           const spec = STATES[cell.state];
@@ -218,19 +238,29 @@ export function RunStageStrip({
               data-testid={`run-stage-cell-${cell.nodeId}`}
               aria-current={selected ? "true" : undefined}
               onClick={() => onSelectNode?.(cell.nodeId)}
-              className={`min-w-[7rem] flex-1 px-[11px] py-[7px] text-left transition-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
-                selected ? "bg-accent-wash" : ""
+              className={`min-w-0 px-[11px] pt-[7px] pb-[8px] text-left transition-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
+                selected ? "bg-accent-wash" : "bg-surface"
               }`}
             >
-              <span className="block truncate font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
-                {cell.nodeId}
+              {/* The name keeps its width: it wraps (`break-words`, never
+                  `truncate`) and the state word rides the right edge, so one
+                  stage reads as one line in a narrow pane and the words line up
+                  down the column in a wide one. */}
+              <span className="flex flex-wrap items-baseline gap-x-[6px]">
+                <span
+                  className="min-w-0 break-words font-mono text-[11px] font-semibold tracking-[.04em] text-muted uppercase"
+                  data-testid={`run-stage-id-${cell.nodeId}`}
+                >
+                  {cell.nodeId}
+                </span>
+                <span className="ml-auto flex shrink-0 items-center gap-[5px] text-[12.5px] font-semibold">
+                  <span aria-hidden>{spec.glyph}</span>
+                  {spec.word}
+                </span>
               </span>
-              <span className="mt-[2px] flex items-center gap-[5px] text-[12.5px] font-semibold">
-                <span aria-hidden>{spec.glyph}</span>
-                {spec.word}
-              </span>
-              {/* PROGRESS-J's counts-in-words line, kept on one line at every
-                  width: 1280px must show 150 ✓ / 38 ● / 15 need you. */}
+              {/* PROGRESS-J's counts-in-words line: 1280px must show 150 ✓ /
+                  38 ● / 15 need you. It rides under the name and wraps only
+                  when a cell is narrower than the words it owes. */}
               <span
                 className="mt-[2px] flex flex-wrap gap-x-[6px] font-mono text-[10.5px] text-muted tabular-nums"
                 data-testid={`run-stage-counts-${cell.nodeId}`}

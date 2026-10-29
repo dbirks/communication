@@ -1241,7 +1241,7 @@ describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", 
 
     fireEvent.click(screen.getByTestId("thread-draft-pr-open"));
     const confirm = await screen.findByTestId("thread-draft-pr-confirm");
-    expect(confirm.textContent).toContain("GitHub token on its profile (ADR-0045)");
+    expect(confirm.textContent).toContain("GitHub token on its profile");
     expect(confirm.textContent).toContain("the worker's egress allows github.com");
     fireEvent.click(within(confirm).getByTestId("thread-draft-pr-send"));
 

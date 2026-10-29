@@ -351,7 +351,7 @@ function GraphNode({
       data-gate={node.gate ? "true" : undefined}
       data-state={state ?? "unscheduled"}
       aria-pressed={selected}
-      aria-label={`Definition node ${node.id}${scopeOf(node) ? ` in scope ${scopeOf(node)}` : ""}, kind ${node.kind}${node.deferredTo ? `, not implemented until ${node.deferredTo}` : ""}${node.bindings.length === 1 ? ", 1 binding" : `, ${node.bindings.length} bindings`}`}
+      aria-label={`Definition node ${node.id}${scopeOf(node) ? ` in scope ${scopeOf(node)}` : ""}, kind ${node.kind}${node.deferredTo ? ", not available yet" : ""}${node.bindings.length === 1 ? ", 1 binding" : `, ${node.bindings.length} bindings`}`}
       onClick={() => onSelect?.(node.key)}
       onMouseEnter={() => onHover?.(node.key)}
       onMouseLeave={() => onHover?.(null)}
@@ -417,7 +417,7 @@ function GraphNode({
             {`${STATES[state].glyph} ${SHORT_WORD[state]}`}
           </span>
         ) : node.deferredTo ? (
-          <span className="shrink-0 text-faint">{`not until ${node.deferredTo}`}</span>
+          <span className="shrink-0 text-faint">not available yet</span>
         ) : definitionOnly ? null : (
           <span className="shrink-0 text-faint">pending</span>
         )}

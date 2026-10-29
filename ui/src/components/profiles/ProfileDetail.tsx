@@ -168,7 +168,7 @@ export default function ProfileDetail({
             <span
               className="ml-2 font-mono text-[11px] text-muted"
               data-testid="profile-version"
-              title="The profile's current version (ADR-0058): the optimistic-concurrency token a write must echo and the latest entry of its history."
+              title="The profile's current version. Every save must match this number, so an edit started from an older copy is refused instead of overwriting newer changes — it is also the latest entry of the profile's history."
             >
               v{profile.version}
             </span>
@@ -177,7 +177,7 @@ export default function ProfileDetail({
           <span
             className="font-mono text-[11px] text-faint"
             data-testid={`agent-permission-${profile.id}`}
-            title="not writable: ask is the only mode an unverified launcher may have (ADR-0009)"
+            title="not writable: ask is the only mode an unverified launcher may have"
           >
             permission: {profile.permission_mode}
           </span>
@@ -289,7 +289,7 @@ export default function ProfileDetail({
       >
         <AccountSection profileId={profile.id} {...accounts} />
         <p className="border-t border-line px-[10px] pt-2 text-[11px] text-muted">
-          A GitHub token here lets the agent push and open PRs (ADR-0045).
+          A GitHub token here lets the agent push and open PRs.
         </p>
       </Panel>
 

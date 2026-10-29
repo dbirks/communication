@@ -93,7 +93,7 @@ export const MATERIALIZATION_REASON_COPY: Record<string, string> = {
   exists: "a file already sits at that target, and overwriting it is not this path's job",
   keyring_unreadable: "the worker could not read the master key, so it wrote nothing",
   revoked_version: "the secret (or the version pinned) is revoked, so no unit may receive it",
-  broker_unsupported: "integration_broker delivery is declared but not implemented in M3",
+  broker_unsupported: "integration_broker delivery is declared but not implemented yet",
   symlink_parent: "a parent directory is a symlink, and a symlink escape is never followed",
   mirror_writable: "the shared mirror would have been writable, which no launch may grant",
 };
@@ -126,5 +126,5 @@ export const ENV_FILE_TRUST_WARNING =
 export const LIFECYCLE_COPY: Record<string, string> = {
   turn: "removed when the turn ends",
   workspace: "removed when the workspace is released",
-  node_attempt: "removed when the node attempt ends (needs M4 attempts)",
+  node_attempt: "removed when the node attempt ends",
 };

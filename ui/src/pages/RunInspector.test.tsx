@@ -6,7 +6,7 @@
  * same doubles that prove `/__m4-preview?source=live`.
  */
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   FakeEventSource,
   claudeProfile,
@@ -22,7 +22,12 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import { mountRunPage } from "../test/inspectorMount";
-import RunInspector, { attentionNodeId, retryVerdict } from "./RunInspector";
+import RunInspector, {
+  attentionNodeId,
+  diagnosticsLayoutFor,
+  retryVerdict,
+  type DiagnosticsLayout,
+} from "./RunInspector";
 import type { NodeExecution } from "../api/types";
 import type { NodeExecutionSummary } from "../lib/pipeline/contract";
 import { viewNodeExecution } from "../api/m4view";
@@ -1116,5 +1121,181 @@ describe("the inspector header's width", () => {
 
     await screen.findByTestId("run-action-error");
     inspectorHeaderWidthContract();
+  });
+});
+
+/* ---------------- the diagnostics grid fits the space its host actually has */
+
+/** What a `grid-cols-[a_b_c]` template asks its host for as a floor: every
+ * track's minimum — a `minmax`'s first argument, a fixed length in full, and
+ * nothing from a flexible track. A grid that asks for more than the host has
+ * paints the difference OUTSIDE the host, which is precisely how the node
+ * detail and the right pixel of every stage cell got under the dock. */
+function templateFloorPx(layout: DiagnosticsLayout): number {
+  const template = /^grid-cols-\[(.+)\]$/.exec(layout.grid)?.[1];
+  if (!template) return 0; // `grid-cols-1`: one column, whatever the host has
+  return template.split("_").reduce((sum, track) => {
+    const floor = /^minmax\(([0-9.]+)(rem|px)/.exec(track) ?? /^([0-9.]+)(rem|px)$/.exec(track);
+    if (!floor) return sum;
+    return sum + Number(floor[1]) * (floor[2] === "rem" ? 16 : 1);
+  }, 0);
+}
+
+/** And what the flexible pane is left with once the fixed tracks have taken
+ * their ceilings — a grid fills those before it gives an `fr` anything. */
+function templatePanePx(layout: DiagnosticsLayout, host: number): number {
+  const template = /^grid-cols-\[(.+)\]$/.exec(layout.grid)?.[1];
+  if (!template) return host;
+  return (
+    host -
+    template.split("_").reduce((sum, track) => {
+      const ceiling =
+        /^minmax\([^,]+,([0-9.]+)(rem|px)\)$/.exec(track) ?? /^([0-9.]+)(rem|px)$/.exec(track);
+      if (!ceiling) return sum;
+      return sum + Number(ceiling[1]) * (ceiling[2] === "rem" ? 16 : 1);
+    }, 0)
+  );
+}
+
+describe("the diagnostics grid's columns", () => {
+  // The widths this grid is read at: 1040 = the workbench `<main>` with the
+  // dock collapsed at 1280, 593 = the same screen with the default 440px dock
+  // open, 314 = the dock dragged to its 720px maximum, 390 = the phone. Plus
+  // the widths either side of each threshold, where a tier chosen one pixel
+  // early is the bug. Measured against the running page, not invented:
+  // see the workbench-dock-grid report.
+  const HOSTS = [
+    200, 313, 314, 358, 390, 480, 539, 540, 541, 593, 640, 700, 820, 959, 960, 961, 1040, 1280,
+    1600,
+  ];
+
+  for (const navOpen of [true, false]) {
+    it(`asks for no more than its host has${navOpen ? "" : " with the runs column collapsed"}`, () => {
+      for (const host of HOSTS) {
+        const layout = diagnosticsLayoutFor(host, navOpen);
+        expect(templateFloorPx(layout), `${host} → ${layout.grid}: floor`).toBeLessThanOrEqual(
+          host,
+        );
+        if (layout.tier !== "stacked") {
+          // The middle pane is the work surface; under ~19rem it is a caption.
+          expect(
+            templatePanePx(layout, host),
+            `${host} → ${layout.grid}: pane`,
+          ).toBeGreaterThanOrEqual(300);
+        }
+      }
+    });
+  }
+
+  it("keeps the run view's three panes exactly where the design has them", () => {
+    // 1280 with the dock closed is the drawn look, so it is still the drawn
+    // template: the same tracks the inspector's own route puts on at `xl:`.
+    expect(diagnosticsLayoutFor(1040, true).grid).toBe(
+      "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+    );
+    expect(diagnosticsLayoutFor(1040, true).tier).toBe("panes");
+  });
+
+  it("gives up one column at a time as the dock takes the room", () => {
+    expect(diagnosticsLayoutFor(593, true).tier).toBe("split"); // 1280, 440px dock open
+    expect(diagnosticsLayoutFor(314, true).tier).toBe("stacked"); // 1280, dock at its 720px max
+    expect(diagnosticsLayoutFor(390, true).tier).toBe("stacked"); // the phone's reflow
+    // The tiers read the host's width alone, so collapsing the runs column
+    // changes the template, never which tier is chosen: the phone still stacks
+    // with the rail collapsed, exactly as it did before the dock existed.
+    expect(diagnosticsLayoutFor(390, false).tier).toBe("stacked");
+    expect(diagnosticsLayoutFor(593, false).grid).toBe("grid-cols-[2.25rem_minmax(0,1fr)]");
+  });
+});
+
+describe("the diagnostics grid hosted by the workbench", () => {
+  // jsdom defines `clientWidth` up the prototype chain, not on HTMLElement.
+  const clientWidthOwner = (() => {
+    for (
+      let proto: object | null = HTMLElement.prototype;
+      proto;
+      proto = Object.getPrototypeOf(proto)
+    )
+      if (Object.getOwnPropertyDescriptor(proto, "clientWidth")) return proto;
+    throw new Error("no clientWidth to put back");
+  })();
+  const clientWidthPatch = Object.getOwnPropertyDescriptor(clientWidthOwner, "clientWidth")!;
+  afterEach(() => {
+    Object.defineProperty(clientWidthOwner, "clientWidth", clientWidthPatch);
+  });
+
+  /** The workbench's own frame: `<main>` with the node-detail dock beside it in
+   * the same flex row. jsdom lays nothing out, so the host's measured width IS
+   * the number the page reads — 593 with the 440px dock open at 1280, 1040 with
+   * it collapsed, 390 on a phone. */
+  function mountEmbedded(hostWidth: number) {
+    Object.defineProperty(clientWidthOwner, "clientWidth", {
+      configurable: true,
+      get: () => hostWidth,
+    });
+    return mountRunPage({
+      path: `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}`,
+      routes: routes(),
+      element: (
+        <main data-testid="host-main">
+          <RunInspector embedded />
+        </main>
+      ),
+    });
+  }
+
+  it("reads its columns off `<main>`, not off the viewport", async () => {
+    // The old answer was the one viewport template at 1280 whatever the dock
+    // cost. Here the window is jsdom's 1024, under every desktop breakpoint,
+    // and the grid still resolves the dock-open template — because the width it
+    // measured is its host's, not the window's.
+    mountEmbedded(593);
+    const inspector = await screen.findByTestId("run-inspector");
+    expect(inspector.getAttribute("data-diagnostics-tier")).toBe("split");
+    expect(inspector.className).toContain("grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)]");
+    expect(inspector.className).not.toContain("minmax(22.5rem,26rem)");
+    expect(inspector.className).not.toContain("xl:");
+    // The node detail is the whole run of the row under the other two panes.
+    expect(screen.getByTestId("run-inspector-detail").className).toContain("col-span-2");
+  });
+
+  it("keeps all three panes when the dock is closed", async () => {
+    mountEmbedded(1040);
+    const inspector = await screen.findByTestId("run-inspector");
+    expect(inspector.getAttribute("data-diagnostics-tier")).toBe("panes");
+    expect(inspector.className).toContain(
+      "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+    );
+    const detail = screen.getByTestId("run-inspector-detail");
+    expect(detail.className).toContain("border-l");
+    expect(detail.className).not.toContain("col-span-2");
+  });
+
+  it("stacks into one column on a phone", async () => {
+    mountEmbedded(390);
+    const inspector = await screen.findByTestId("run-inspector");
+    expect(inspector.getAttribute("data-diagnostics-tier")).toBe("stacked");
+    expect(inspector.className).toContain("grid min-h-full grid-cols-1 border-y");
+    const detail = screen.getByTestId("run-inspector-detail");
+    expect(detail.className).toContain("border-t");
+    expect(detail.className).not.toContain("col-span-2");
+    // And the runs list is a top bar again, not a column with a right border.
+    expect(screen.getByTestId("run-inspector-nav").className).toContain("border-b");
+  });
+
+  it("keeps its own route on the viewport's three panes", async () => {
+    // The standalone page bleeds to the shell's whole column, so `xl:` is the
+    // honest read there and nothing about this fix touches it.
+    Object.defineProperty(clientWidthOwner, "clientWidth", {
+      configurable: true,
+      get: () => 1024,
+    });
+    mountRun();
+    const inspector = await screen.findByTestId("run-inspector");
+    expect(inspector.getAttribute("data-diagnostics-tier")).toBe("route");
+    expect(inspector.className).toContain("grid-cols-1");
+    expect(inspector.className).toContain(
+      "xl:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+    );
   });
 });

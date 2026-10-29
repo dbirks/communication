@@ -133,8 +133,8 @@ export function shortVolume(volumeId: string | null | undefined): string {
   return hex ? `vol-${hex.slice(0, 6)}` : "unknown";
 }
 
-/** The `unknown volume` warning in ADR-0017 D2's own words. */
-export const UNKNOWN_VOLUME_WARNING = "unknown volume: no M3 workspace may bind here (ADR-0017 D2)";
+/** The warning for ADR-0017 D2's `unknown volume` refusal, in plain words. */
+export const UNKNOWN_VOLUME_WARNING = "This volume isn't known, so no workspace can use it.";
 
 /**
  * The `isolation="none"` label `05` requires on every event from a launch that
@@ -163,7 +163,7 @@ export function systemIntegrity(
   const findings: string[] = [];
   if (system.workers.length < 2) {
     findings.push(
-      `one worker reports, so this is not a fleet: version and policy agreement cannot be observed across replicas (ADR-0019 D5)`,
+      "one worker reports, so this is not a fleet: version and policy agreement cannot be observed across replicas",
     );
   }
   const versions = new Set(system.workers.map((worker) => worker.backend_version ?? "unknown"));

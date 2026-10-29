@@ -169,9 +169,29 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
         ))}
       </div>
       <div className="min-h-0 flex-1 space-y-[6px] overflow-y-auto" data-testid="runs-list">
-        {runs.isPending ? <Spinner label="Loading runs" /> : null}
+        {/* A missing project id is a caller bug, not a state of the world:
+            the read below is `enabled` on a non-empty id, so an empty one
+            would stay `isPending` forever and press a permanent spinner for
+            a request that never happens. Say so instead. */}
+        {!projectId ? (
+          <p className="px-1 text-[12.5px] text-muted" data-testid="runs-no-project">
+            This page has no project, so there is no run list to read — the list never asked, and
+            never will.
+          </p>
+        ) : runs.isPending ? (
+          <Spinner label="Loading runs" />
+        ) : null}
         {runs.isError ? (
-          <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
+          <div className="space-y-[6px]">
+            <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
+            <Button
+              variant="secondary"
+              onClick={() => void runs.refetch()}
+              data-testid="runs-retry"
+            >
+              Retry
+            </Button>
+          </div>
         ) : null}
         {runs.data && filter !== null && matched.length === 0 ? (
           <p className="px-1 text-[12.5px] text-muted" data-testid="runs-empty">

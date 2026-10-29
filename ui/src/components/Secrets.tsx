@@ -375,7 +375,7 @@ export function SecretsPanel({ project, profiles, onSelect, selectedId }: Secret
                 label="Delivery"
                 hint={
                   <p className="font-mono text-[10.5px] text-faint">
-                    integration_broker is refused in M3 (ADR-0018 clause 8)
+                    integration_broker is not available yet — the server refuses it
                   </p>
                 }
               >
@@ -423,8 +423,7 @@ export function SecretsPanel({ project, profiles, onSelect, selectedId }: Secret
                     className="font-mono text-[10.5px] text-faint"
                     data-testid="secret-profiles-hint"
                   >
-                    none selected = denied to every profile (ADR-0018 D3); cmd-click to choose
-                    several
+                    none selected = denied to every profile; cmd-click to choose several
                   </p>
                 }
               >
@@ -688,7 +687,7 @@ export function SecretMountsPanel({
                 >
                   <option value="turn">turn</option>
                   <option value="workspace">workspace</option>
-                  <option value="node_attempt">node_attempt (needs M4)</option>
+                  <option value="node_attempt">node_attempt</option>
                 </Select>
               </Field>
               {delivery === "env_file" ? (

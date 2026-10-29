@@ -144,20 +144,41 @@ describe("ValidatePanel (W8)", () => {
     expect(screen.getAllByTestId(/^validate-panel-row-/)).toHaveLength(w8Validation.errors.length);
   });
 
-  it("names the milestone a kind_not_implemented waits for, as the response names it", async () => {
+  it("says a kind_not_implemented step cannot run, in plain words, with no milestone", async () => {
     renderPanel();
     fireEvent.click(screen.getByTestId("validate-panel-submit"));
     await waitFor(() =>
       expect(screen.getAllByTestId(/^validate-panel-row-/).length).toBeGreaterThan(0),
     );
-    const milestones = screen
-      .getAllByTestId(/^validate-panel-milestone-/)
+    // One marker per refused kind, and the marker says what is missing rather
+    // than when the roadmap intends to fix it.
+    const deferredCount = w8Validation.errors.filter(
+      (issue) => issue.code === "kind_not_implemented",
+    ).length;
+    const markers = screen
+      .getAllByTestId(/^validate-panel-deferred-/)
       .map((node) => node.textContent ?? "");
-    expect(milestones.length).toBe(
-      w8Validation.errors.filter((issue) => issue.code === "kind_not_implemented").length,
-    );
-    expect(milestones.join(" ")).toContain("M6");
-    expect(milestones.join(" ")).toContain("M5");
+    expect(markers).toHaveLength(deferredCount);
+    for (const marker of markers) expect(marker).toBe("not available yet");
+
+    // Every refused row shows the plain sentence built from its own kind, and
+    // keeps the server's sentence as data rather than as the words a reader sees.
+    expect(
+      ordered(w8Validation.errors).filter((i) => i.code === "kind_not_implemented").length,
+    ).toBe(deferredCount);
+    ordered(w8Validation.errors).forEach((issue, ordinal) => {
+      if (issue.code !== "kind_not_implemented") return;
+      const kind = /^kind (\S+) is not implemented\b/.exec(issue.message)?.[1] ?? "";
+      expect(kind).not.toBe("");
+      const message = screen.getByTestId(`validate-panel-message-${ordinal}`);
+      expect(message.textContent).toBe(`${kind} steps can't run yet.`);
+      expect(message.getAttribute("data-server-message")).toBe(issue.message);
+      expect(screen.getByTestId(`validate-panel-code-${ordinal}`).textContent).toBe(
+        "kind_not_implemented",
+      );
+    });
+    // No milestone name reaches the screen anywhere in the findings.
+    expect(screen.getByTestId("validate-panel-findings").textContent).not.toMatch(/\bM\d\b/);
   });
 
   it("clicking a row marks that location in the YAML view of the submitted text", async () => {

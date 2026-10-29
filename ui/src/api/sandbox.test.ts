@@ -144,7 +144,7 @@ describe("volume identity display", () => {
   });
 
   it("carries ADR-0017's refusal in the warning itself", () => {
-    expect(UNKNOWN_VOLUME_WARNING).toContain("no M3 workspace may bind here");
+    expect(UNKNOWN_VOLUME_WARNING).toContain("no workspace can use it");
   });
 
   it("uses the wire values verbatim as enforcement words", () => {

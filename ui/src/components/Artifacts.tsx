@@ -102,7 +102,7 @@ export function ArtifactsPanel({
         )}
         <p className="font-mono text-[10.5px] text-faint">
           sensitivity is filtered server-side: a row you cannot see is not hidden from you, it is
-          absent (ADR-0020 §3).
+          absent.
         </p>
       </div>
     </Panel>
@@ -211,8 +211,7 @@ export function ArtifactPreview({ artifact, currentOrigin }: ArtifactPreviewProp
       {!mint.error && mint.isSuccess && !src ? (
         <Alert state="failed" label="REFUSED" role="alert" testid="artifact-preview-origin-refused">
           The preview URL the API returned is not a different origin, so it was not embedded. A
-          preview must come from another hostname — that is what removes the session cookie
-          (ADR-0020 D6).
+          preview must come from another hostname — that is what removes the session cookie.
         </Alert>
       ) : null}
     </div>

@@ -15,8 +15,9 @@
  * `instance_location`, its `source` and its `hint`; and a
  * `secret_literal_detected` row shows only what the server sent, never the
  * textarea's raw value re-read back into the row.
- * `kind_not_implemented` is a validate-time refusal whose whole point is the
- * milestone (ADR-0024), so the row surfaces the milestone the *response* names.
+ * `kind_not_implemented` is a validate-time refusal (ADR-0024). The row keeps
+ * the code and the response's location, but says the refusal in plain words:
+ * the milestone the server names is our roadmap vocabulary, not the reader's.
  */
 import { useEffect, useMemo, useState } from "react";
 import { ProblemBanner } from "../Feedback";
@@ -32,7 +33,7 @@ import {
 } from "../../api/pipelines";
 import { viewValidate } from "../../api/m4view";
 import type { ValidateBody, ValidationIssue } from "../../lib/pipeline/contract";
-import { YamlView } from "./YamlView";
+import { YamlView, deferredKindCopy } from "./YamlView";
 
 /** A pipeline the panel may open a scratch draft against. */
 export interface ValidatePanelOption {
@@ -63,9 +64,6 @@ interface ScratchDraft {
   id: string;
   version: number;
 }
-
-/** `M5` / `M6` as the compiler names them in a message or hint (ADR-0024). */
-const MILESTONE_IN_TEXT = /\b(M\d+)\b/;
 
 export function ValidatePanel({
   pipelines,
@@ -194,8 +192,8 @@ export function ValidatePanel({
           </select>
         </label>
         <p className="font-mono text-[10.5px] text-faint" data-testid="validate-panel-not-editor">
-          not an editor: paste YAML and validate it. In-browser authoring is M5 — this box only
-          turns text into the server&apos;s verdict through a scratch draft.
+          not an editor: paste YAML and validate it. In-browser authoring is not available yet —
+          this box only turns text into the server&apos;s verdict through a scratch draft.
         </p>
         <textarea
           value={text}
@@ -319,10 +317,12 @@ function FindingList({
   );
 }
 
-/** One finding, as the server described it: source, code, the milestone a
- * deferred kind names, the message, the pointer and the hint. */
+/** One finding, as the server described it: source, code, whether the step can
+ * run at all, the message, the pointer and the hint. A `kind_not_implemented`
+ * row keeps the code and the server's sentence as data and shows the plain
+ * words in their place. */
 function FindingRow({ issue, index }: { issue: ValidationIssue; index: number }) {
-  const milestone = issue.code === "kind_not_implemented" ? milestoneOf(issue) : null;
+  const deferred = issue.code === "kind_not_implemented";
   return (
     <>
       <span className="flex flex-wrap items-center gap-[6px]">
@@ -337,20 +337,21 @@ function FindingRow({ issue, index }: { issue: ValidationIssue; index: number })
         >
           {issue.code}
         </span>
-        {milestone ? (
+        {deferred ? (
           <span
             className="font-mono text-[10px] text-accent-text"
-            data-testid={`validate-panel-milestone-${index}`}
+            data-testid={`validate-panel-deferred-${index}`}
           >
-            lands in {milestone}
+            not available yet
           </span>
         ) : null}
       </span>
       <span
         className="mt-[3px] block text-[12.5px] leading-[18px]"
         data-testid={`validate-panel-message-${index}`}
+        data-server-message={issue.code === "kind_not_implemented" ? issue.message : undefined}
       >
-        {issue.message}
+        {deferred ? deferredKindCopy(issue.message) : issue.message}
         {issue.code === "secret_literal_detected" ? (
           // Only the server's redacted words are shown — the textarea's raw
           // value is never re-read into a row (ADR-0021 Security invariant 5).
@@ -399,11 +400,4 @@ function orderSources(errors: ValidationIssue[]): Record<string, ValidationIssue
     (grouped[issue.source] ?? (grouped[issue.source] = [])).push(issue);
   }
   return grouped;
-}
-
-/** The milestone a `kind_not_implemented` names — read off the response, never
- * a UI-side table that could drift from ADR-0024. */
-function milestoneOf(issue: ValidationIssue): string | null {
-  const text = `${issue.message} ${issue.hint ?? ""}`;
-  return MILESTONE_IN_TEXT.exec(text)?.[1] ?? null;
 }

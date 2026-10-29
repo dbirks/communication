@@ -189,7 +189,14 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           >
             {secondLine}
           </span>
-          {data.deferred && <span className={chip}>{data.deferred}</span>}
+          {data.deferred && (
+            <span
+              className={chip}
+              title={`${data.kind} — ${data.deferred}: a workflow can't run this step today`}
+            >
+              {data.deferred}
+            </span>
+          )}
         </div>
       </div>
 

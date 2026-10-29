@@ -254,7 +254,7 @@ describe("/artifacts/:artifactId", () => {
       ]),
     });
     expect((await screen.findByTestId("artifact-preview-blocked")).textContent).toContain(
-      "never preview",
+      "can't be previewed",
     );
     expect(screen.getByTestId("artifact-download-unavailable").textContent).toContain("maintainer");
     expect(screen.queryByTestId("artifact-download")).toBeNull();

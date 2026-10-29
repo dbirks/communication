@@ -278,7 +278,7 @@ describe("/ops sandbox health", () => {
     await screen.findByTestId("sandbox-worker-list");
     // An empty identity is ADR-0017's `unknown volume`, quoted per root.
     expect((await screen.findByTestId("volume-unknown-repos")).textContent).toContain(
-      "no M3 workspace may bind here",
+      "no workspace can use it",
     );
   });
 

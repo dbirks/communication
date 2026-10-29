@@ -56,8 +56,8 @@ export default function Steps() {
             <FormError error={listQuery.error} testid="steps-error" />
           ) : listQuery.data === null ? (
             <Alert state="info" label="NOT AVAILABLE YET" testid="steps-registry-unavailable">
-              This server does not expose the step registry yet (ADR-0049 part 1). The steps you
-              save in a workflow will appear here once it does.
+              This server does not expose the step registry yet. The steps you save in a workflow
+              will appear here once it does.
             </Alert>
           ) : templates.length === 0 ? (
             <div className="max-w-[560px] text-[12.5px]">
