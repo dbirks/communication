@@ -3234,6 +3234,18 @@ def _atexit_register():
     atexit.register(run_deferred_regrades)
 
 
+def supersede_gap(label):
+    """Drop the in-place GAP line for LABEL from the summary pool: a deferred
+    regrade has just printed this row's replacement verdict, so the stale GAP
+    must not survive into the final summary or inflate the GAP tally.
+    (gap() files each line as '<label>: <why>' — the exact in-place label plus
+    its colon is the row's identity.)"""
+    prefix = f"{label}: "
+    before = len(GAPS)
+    GAPS[:] = [g for g in GAPS if not g.startswith(prefix)]
+    return before - len(GAPS)
+
+
 def run_deferred_regrades():
     """Print the deferred regrades (also called directly by the offline tests)."""
     if not DEFERRED:
@@ -3393,22 +3405,40 @@ def c3_child_run_ids(run_id):
 
 
 def c3_parent_handout_sql(run_id):
-    """§ 7.1 C3a's literal group-by, verbatim in shape (`a.run_id='$RUN8' group by
-    1,2 order by 3 desc`): the fan-out PARENT run's attempts by worker and status."""
-    return (f"SELECT coalesce(a.worker_id::text, '(unclaimed)') || ' ' || a.status || ' ' || "
+    """§ 7.1 C3a's group-by over the fan-out PARENT run's attempts by worker and
+    status (`a.run_id='$RUN8' group by 1,2 order by 3 desc`). The contract's ordinals
+    count over a THREE-column projection; psql -tA prints one concatenated text column
+    (`worker|status|count`), so the ordinals have to be spelled out as the expressions
+    they name: `ORDER BY 3` over a one-column select is `ERROR: ORDER BY position 3 is
+    not in select list`, which is what deleted this read — and the C3a verdict built on
+    it — in accept 20261029-100606-1c190fe (m4.out:470-474). Same class as D4's
+    `GROUP BY 1` bug over at c14_terminal_group_sql."""
+    return (f"SELECT coalesce(a.worker_id::text, '(unclaimed)') || '|' || a.status || '|' || "
             f"count(*)::text FROM attempts a JOIN node_executions ne "
             f"ON ne.id = a.node_execution_id WHERE a.run_id = '{run_id}' "
-            f"GROUP BY a.worker_id, a.status ORDER BY 3 DESC")
+            f"GROUP BY coalesce(a.worker_id::text, '(unclaimed)'), a.status "
+            f"ORDER BY count(*) DESC")
 
 
 def c3_child_handout_sql(run_id):
-    """The same hand-out read over EVERY CHILD run of the fan-out: child attempts
-    grouped by the claiming worker's NAME (the uuid the contract's row prints is
-    the same fact; names make the two-worker verdict readable)."""
-    return (f"SELECT coalesce(w.name, '(unclaimed)') || '|' || count(*)::text "
+    """THE hand-out § 7.1 C3a asks to watch, measured where it actually happens: every
+    CHILD run of the fan-out, its attempt rows grouped by the worker that LEASED them
+    (`worker_id` survives the claim, so the ledger keeps the fact after completion).
+    Rows are `worker|count`; never-claimed attempts print as `(unclaimed)|count` so the
+    verdict can tell a queue nobody drained from a queue two workers drained.
+    A claimed attempt whose workers row is gone still prints as `worker:<uuid8>`, never
+    as `(unclaimed)` — losing the name must not fake a never-leased queue. The
+    grouping/ordering expressions are written out, not numbered: `GROUP BY 1` would
+    group by the whole projection (which contains count(*)) — `aggregate functions are
+    not allowed in GROUP BY` — and `ORDER BY 2` names a position that does not exist in
+    a one-column select (m4.out:484-488, the read behind the C3a GAP)."""
+    name = ("CASE WHEN a.worker_id IS NULL THEN '(unclaimed)' ELSE coalesce(w.name, "
+            "'worker:' || left(a.worker_id::text, 8)) END")
+    return (f"SELECT {name} || '|' || count(*)::text "
             f"FROM attempts a JOIN runs c ON c.id = a.run_id "
             f"LEFT JOIN workers w ON w.id = a.worker_id "
-            f"WHERE c.parent_run_id = '{run_id}' GROUP BY 1 ORDER BY 2 DESC")
+            f"WHERE c.parent_run_id = '{run_id}' GROUP BY {name} "
+            f"ORDER BY count(*) DESC, {name}")
 
 
 def c3_child_groups_sql(run_id):
@@ -3444,16 +3474,549 @@ def c3_claim_overlap_sql(run_id):
             "FROM ev) q ORDER BY rn")
 
 
+# --- C3a: the liveness rule the PRODUCT applies, and contention measured honestly --
+#
+# (1) THE ONLINE READ. The precondition used to be `SELECT count(*) FROM workers WHERE
+#     status = 'online'` — the STORED column. The product's read side does not trust
+#     that column: WorkerRegistry.ListWorkersWithLiveness
+#     (internal/store/postgres/worker_registry.go:233-239) reports
+#         CASE WHEN status='online' AND last_heartbeat_at < now() - $window
+#              THEN 'offline' ELSE status END
+#     with $window = heartbeat interval × regLivenessIntervals = 3
+#     (worker_registry.go:22-25) at regDefaultHeartbeat = 10s (worker_registry.go:27-29,
+#     mirrored in the store because it may not import internal/worker), and
+#     APILauncherStore.CountLaunchWorkers applies the SAME rule to its count
+#     (internal/store/postgres/launchers.go:36-52: "a stored online row whose heartbeat
+#     went stale counts as offline, so a worker that died without writing its offline
+#     row cannot inflate the count"). The lab sets COMMUNICATION_WORKER_HEARTBEAT: "10s"
+#     (compose.m4.yml:190 and :246), so the window the driver must reuse is 30 seconds.
+#     communication-m4-worker-c is the row this bug lived in: C6's throwaway is
+#     start_throwaway/stop_throwaway'd, its container is gone while its workers row still
+#     says status='online' with an hour-old last_heartbeat_at, and the raw read counted it
+#     as a claimant — "both lab workers online" printed 3 when only 2 could claim.
+#
+# (2) WHAT "CONTENTION" MEANS HERE. § 7.1 C3a (docs/m4-contract.md:1014-1018) reads:
+#     "both workers must be online to contend for anything, so contention is created where
+#     the queue is deep rather than by stopping a worker: set worker-a capacity 3 /
+#     worker-b capacity 1, start the C8 fan-out run (25 queued attempts at once) and watch
+#     the hand-out", and the query it names groups `a.run_id='$RUN8'` — the FAN-OUT
+#     PARENT RUN's own attempts, not only the children's. So the contention the contract
+#     means is: both online claimants drew ready attempts of ONE run out of ONE queue.
+#     "worker-a=25" over the children alone does not show the scheduler starving anybody:
+#     worker-b has capacity 1 and the same run's parent chain (/plan … /publish_verified,
+#     held 15 s each) can occupy that slot for every second the child queue waits, and a
+#     scheduler that hands a 26th attempt to a full worker would be BROKEN. So C3a is
+#     measured two ways and the honest FAIL is kept:
+#       · claims per worker over ALL attempts of the run family (parent chain + children)
+#         inside OVERLAPPING time windows — § 7.1's own read, plus the seconds both
+#         claimants held this run at once;
+#       · the load/queue curve (workers.capacity × attempts.started_at/finished_at of
+#         every run) that tells "busy" from "never polled": an online worker with a free
+#         slot while a child sat unclaimed and no claim from it is a MEASURED FAIL.
+#     No evidence at all is a GAP, never a PASS and never a fake FAIL.
+C3_WORKER_HEARTBEAT_S = 10   # compose.m4.yml COMMUNICATION_WORKER_HEARTBEAT = regDefaultHeartbeat
+C3_LIVENESS_INTERVALS = 3    # worker_registry.go regLivenessIntervals
+C3_LIVENESS_WINDOW_S = C3_WORKER_HEARTBEAT_S * C3_LIVENESS_INTERVALS   # 30 seconds
+C3_IDLE_SLOT_MIN_S = 5.0     # internal/worker/turnloop.go:22 DefaultClaimInterval = 1s: a
+                             # worker with a free slot gets >=5 claim cycles before its
+                             # silence is called "never polled" rather than a poll race
+C3_QUEUE_KEY = "(queue)"     # the pseudo-worker the queue-depth events are stamped with
+
+
+def c3_secs(v):
+    """Seconds for detail text; anything unreadable prints '?' (never a silent 0)."""
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def c3_effective_status_expr(window_s=C3_LIVENESS_WINDOW_S):
+    """worker_registry.go:236's downgrade spelled in SQL: a stored 'online' row whose
+    heartbeat went stale IS offline. `draining` is left alone — it is a deliberate state,
+    not silence (the store applies the same exception). An unreadable window falls back to
+    the product's own 30s rather than to 0, which would call every worker dead."""
+    secs = _int(window_s)
+    if secs <= 0:
+        secs = C3_LIVENESS_WINDOW_S
+    return ("CASE WHEN status = 'online' AND last_heartbeat_at < now() - "
+            f"make_interval(secs => {secs}) THEN 'offline' ELSE status END")
+
+
+def c3_worker_liveness_sql(window_s=C3_LIVENESS_WINDOW_S):
+    """name|stored status|EFFECTIVE status|heartbeat age (s)|capacity|active_attempts.
+    One concatenated text column with the expressions written out — § 7.1's ordinal
+    spellings break a one-column projection (see c3_parent_handout_sql)."""
+    return ("SELECT name || '|' || status || '|' || " + c3_effective_status_expr(window_s) +
+            " || '|' || coalesce(round(extract(epoch FROM now() - last_heartbeat_at)"
+            "::numeric, 1)::text, 'unknown') || '|' || capacity::text || '|' || "
+            "active_attempts::text FROM workers ORDER BY name")
+
+
+def c3_worker_liveness_rows(text):
+    """The liveness read as rows; ragged lines dropped (psql_rows), never verdicted."""
+    keys = ("worker", "db_status", "status", "heartbeat_age_s", "capacity", "active_attempts")
+    return [dict(zip(keys, r)) for r in psql_rows(text, 6)]
+
+
+def c3_online_workers(rows):
+    """Rows whose EFFECTIVE status is online: the raw column AND the product's 3×
+    heartbeat window, so C6's dead throwaway is never counted as a claimant. Pure."""
+    return [r for r in rows or [] if str(r.get("status", "")).strip() == "online"]
+
+
+def c3_workers_online_verdict(rows, read_error="", need=2):
+    """§ 7.1 C3a's precondition ("both workers must be online to contend for anything")
+    graded over the LIVENESS read, not the stored status: an online row whose heartbeat
+    went stale is offline (worker_registry.go:236 / launchers.go:36-52), which is exactly
+    what C6's stop_throwaway'd communication-m4-worker-c is — its container is gone while
+    its row still says online, and the raw count handed C3a a phantom third claimant.
+    A row that only differs because of staleness is named in the detail, so a reader sees
+    WHY the count dropped. Unreadable => GAP (never a FAIL blamed on the lab, never a
+    PASS). Pure. [(label, ok|None, detail)]."""
+    label = ("C3a both lab workers online — two claimers must exist to contend "
+             f"(heartbeat staleness applied: {C3_WORKER_HEARTBEAT_S}s x "
+             f"{C3_LIVENESS_INTERVALS} intervals = {C3_LIVENESS_WINDOW_S}s)")
+    if not rows:
+        return [(label, None, "the workers table was unreadable"
+                 + (f" — {str(read_error)[:160]}" if read_error else "")
+                 + " — with no liveness rows the leg cannot say whether two claimants "
+                   "exist, so contention is unmeasurable (GAP, not a verdict on the lab)")]
+    online = c3_online_workers(rows)
+    stale = [r for r in rows if str(r.get("db_status", "")).strip() == "online"
+             and str(r.get("status", "")).strip() != "online"]
+    detail = ("; ".join(f"{r['worker']} stored={r['db_status']} "
+                        f"effective={r['status']} heartbeat={r['heartbeat_age_s']}s "
+                        f"cap={r['capacity']} active={r['active_attempts']}" for r in rows)
+              + f" → {len(online)} effectively online of {len(rows)} row(s)")
+    if stale:
+        detail += ("; counted OFFLINE on a stale heartbeat (the product's own rule — "
+                   "a worker that died without writing its offline row cannot inflate "
+                   "the count): " + ", ".join(str(r["worker"]) for r in stale))
+    return [(label, len(online) >= need, detail)]
+
+
+def c3_epoch(v):
+    """An epoch the ledger read emitted, or None for the '-' a NULL leaves behind."""
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def c3_family_claims_sql(run_id):
+    """EVERY attempt of the fan-out's run family — the parent's own chain AND the child
+    runs' rows — as `scope|worker|created|started|finished` (epoch seconds; '-' when a
+    time is NULL). § 7.1 C3a's read groups the parent run; the children live in their own
+    runs (runs.parent_run_id), so the family read is that query plus the rows the fan-out
+    opened. `worker_id` survives the claim, so this stays readable after the run finishes;
+    a claimed attempt whose workers row is gone prints as `worker:<uuid8>`, never as
+    `(unclaimed)` — losing the name must not fake a never-leased queue."""
+    name = ("CASE WHEN a.worker_id IS NULL THEN '(unclaimed)' ELSE coalesce(w.name, "
+            "'worker:' || left(a.worker_id::text, 8)) END")
+    scope = f"CASE WHEN a.run_id = '{run_id}' THEN 'parent' ELSE 'child' END"
+    return (f"SELECT {scope} || '|' || {name} || '|' || "
+            "coalesce(round(extract(epoch FROM coalesce(a.created_at, a.scheduled_at))"
+            "::numeric, 3)::text, '-') || '|' || "
+            "coalesce(round(extract(epoch FROM a.started_at)::numeric, 3)::text, '-') || '|' || "
+            "coalesce(round(extract(epoch FROM a.finished_at)::numeric, 3)::text, '-') "
+            "FROM attempts a LEFT JOIN workers w ON w.id = a.worker_id "
+            f"WHERE a.run_id = '{run_id}' OR a.run_id IN "
+            f"(SELECT r.id FROM runs r WHERE r.parent_run_id = '{run_id}') "
+            "ORDER BY a.node_execution_id, a.attempt_number")
+
+
+def c3_capacity_events_sql(run_id):
+    """The busy-vs-never-polled curve as `epoch|worker|kind|delta` events the driver
+    integrates in Python (c3_slot_windows):
+      kind='load'  +1/-1 on a worker's LIVE attempts over EVERY run in the window, so
+                    "busy" means what that worker's own capacity says it means — a
+                    capacity-3 worker holding 3 attempts had no free slot whoever owns
+                    the next ready attempt. Intervals are clipped to the window, so a
+                    load that began before it is not lost.
+      kind='queue' +1 when a fan-out CHILD attempt exists and is still unclaimed, -1 when
+                    it is taken. The claim instant is not stored (attempts has no
+                    claimed_at; started_at is set by BeginAttempt, a poll cycle later), so
+                    started_at — falling back to finished_at/lease_expires_at — is used as
+                    the claim point. That is CONSERVATIVE: it lengthens the seconds a child
+                    counts as waiting, so it can only make an idle worker look MORE idle.
+    A child that was never claimed emits no -1: the queue stays non-empty to the end of the
+    window and every free slot in it is evidence against the scheduler."""
+    fam = ("fam AS (SELECT a.id, coalesce(a.created_at, a.scheduled_at) AS queued_at, "
+           "coalesce(a.started_at, a.finished_at, a.lease_expires_at) AS claimed_at "
+           "FROM attempts a WHERE a.run_id IN "
+           f"(SELECT r.id FROM runs r WHERE r.parent_run_id = '{run_id}'))")
+    bnd = ("bnd AS (SELECT coalesce(min(f.queued_at), now()) AS t0, greatest("
+           "coalesce(max(f.queued_at), now()), coalesce(max(f.claimed_at), now())) AS t1 "
+           "FROM fam f)")
+    ld = ("ld AS (SELECT greatest(x.started_at, b.t0) AS ts, 1 AS d, w.name AS worker "
+          "FROM attempts x JOIN workers w ON w.id = x.worker_id CROSS JOIN bnd b "
+          "WHERE x.started_at < b.t1 AND coalesce(x.finished_at, now()) > b.t0 "
+          "UNION ALL SELECT least(coalesce(x.finished_at, b.t1), b.t1) AS ts, -1 AS d, "
+          "w.name AS worker FROM attempts x JOIN workers w ON w.id = x.worker_id "
+          "CROSS JOIN bnd b WHERE x.started_at < b.t1 "
+          "AND coalesce(x.finished_at, b.t1) > b.t0)")
+    qe = ("qe AS (SELECT f.queued_at AS ts, 1 AS d FROM fam f UNION ALL "
+          "SELECT f.claimed_at AS ts, -1 AS d FROM fam f WHERE f.claimed_at IS NOT NULL)")
+    return ("WITH " + fam + ", " + bnd + ", " + ld + ", " + qe + " "
+            "SELECT round(extract(epoch FROM e.ts)::numeric, 3)::text || '|' || e.worker "
+            "|| '|' || e.kind || '|' || e.d::text FROM (SELECT ts, worker, 'load' AS kind, "
+            f"d FROM ld UNION ALL SELECT ts, '{C3_QUEUE_KEY}' AS worker, 'queue' AS kind, "
+            "d FROM qe) e WHERE e.ts IS NOT NULL AND e.worker IS NOT NULL "
+            "ORDER BY e.ts, e.kind, e.d")
+
+
+def c3_claim_rows(text):
+    """c3_family_claims_sql rows -> [{'scope','worker','created','started','finished'}]."""
+    keys = ("scope", "worker", "created", "started", "finished")
+    return [dict(zip(keys, r)) for r in psql_rows(text, 5)]
+
+
+def c3_capacity_events(text):
+    """c3_capacity_events_sql rows -> (load, queue) event lists:
+    load = [(epoch, worker, delta)], queue = [(epoch, delta)]. Unreadable rows are dropped;
+    an empty curve is GAPped downstream, never read as 'idle' or as 'busy'."""
+    load, queue = [], []
+    for ts, worker, kind, delta in psql_rows(text, 4):
+        t, d = c3_epoch(ts), count_or_none(delta)
+        if t is None or d is None:
+            continue
+        if kind == "queue":
+            queue.append((t, d))
+        elif kind == "load":
+            load.append((t, worker, d))
+    return load, queue
+
+
+def c3_family_claims(rows):
+    """Claims per worker over the run family, split by scope. A row carries a claim when
+    the ledger names a worker for it (worker_id survives the claim); the TIMES only feed
+    the overlap algebra, so a leased-but-never-begun row is still a claim. Rows with no
+    worker are counted as unclaimed children — never credit. Pure."""
+    out = {"parent": {}, "child": {}, "family": {}, "unclaimed_children": 0, "attempts": 0}
+    for r in rows or []:
+        scope = str(r.get("scope", "")).strip()
+        worker = str(r.get("worker", "")).strip()
+        if scope not in ("parent", "child"):
+            continue
+        out["attempts"] += 1
+        if not worker or worker == "(unclaimed)":
+            if scope == "child":
+                out["unclaimed_children"] += 1
+            continue
+        for bucket in (out[scope], out["family"]):
+            bucket[worker] = bucket.get(worker, 0) + 1
+    return out
+
+
+def _c3_segments(points):
+    """[(epoch, delta)] -> [(t0, t1, level)] segments of the running counter: the level
+    AFTER the events at t0 holds until t1. +1 and -1 at the same instant are folded
+    together, so a sibling finishing exactly when another starts never fakes a level (the
+    tie-break c3_claim_overlap_sql documents)."""
+    by_t = {}
+    for t, d in points or []:
+        by_t[t] = by_t.get(t, 0) + d
+    times = sorted(by_t)
+    segs, live = [], 0
+    for i, t in enumerate(times):
+        live = max(0, live + by_t[t])
+        if i + 1 < len(times) and times[i + 1] > t:
+            segs.append((t, times[i + 1], live))
+    return segs
+
+
+def c3_slot_windows(load, queue, capacities):
+    """How long each worker held a FREE SLOT while the fan-out queue waited — the read
+    that separates "busy" from "never polled".
+      load: [(epoch, worker, delta)] live-attempt events (every run in the window),
+      queue: [(epoch, delta)] unclaimed-child events, capacities: {worker: capacity}.
+    -> {worker: {"queue_s", "free_queue_s", "busy_queue_s", "busy_s", "max_free"}} where
+    queue_s is the time at least one child sat unclaimed, free_queue_s the part of it with
+    >=1 free slot, busy_queue_s the part at full capacity and max_free the widest free gap
+    observed. Workers without a readable capacity are absent — unmeasurable, never idle.
+    Pure."""
+    caps = {w: c for w, c in (capacities or {}).items() if _int(c or 0) > 0}
+    out = {w: {"queue_s": 0.0, "free_queue_s": 0.0, "busy_queue_s": 0.0, "busy_s": 0.0,
+               "max_free": 0, "capacity": _int(caps[w])} for w in caps}
+    grid = sorted({t for t, _w, _d in load or []} | {t for t, _d in queue or []})
+    if not grid or not caps:
+        return out
+    qd = {}
+    for t, d in queue or []:
+        qd[t] = qd.get(t, 0) + d
+    ld = {w: {} for w in caps}
+    for t, w, d in load or []:
+        if w in ld:
+            ld[w][t] = ld[w].get(t, 0) + d
+    live = {w: 0 for w in caps}
+    queued = 0
+    for i, t in enumerate(grid):
+        queued = max(0, queued + qd.get(t, 0))
+        for w in caps:
+            live[w] = max(0, live[w] + ld[w].get(t, 0))
+        if i + 1 >= len(grid):
+            break
+        dt = grid[i + 1] - t
+        if dt <= 0:
+            continue
+        for w, cap in caps.items():
+            row = out[w]
+            if live[w] > 0:
+                row["busy_s"] += dt
+            if queued <= 0:
+                continue
+            free = cap - min(live[w], cap)
+            row["queue_s"] += dt
+            row["max_free"] = max(row["max_free"], free)
+            if free > 0:
+                row["free_queue_s"] += dt
+            else:
+                row["busy_queue_s"] += dt
+    return out
+
+
+def c3_worker_live_segments(rows):
+    """[(epoch, worker, delta)] from family claim rows: +1 at started_at, -1 at
+    finished_at. A row whose finished_at is NULL (leased/running when the ledger was read)
+    emits no -1 — it stays live to the end of the curve, which is what the ledger says
+    about it. Unclaimed rows and rows that never began carry no interval. Pure."""
+    out = []
+    for r in rows or []:
+        worker = str(r.get("worker", "")).strip()
+        t0 = c3_epoch(r.get("started"))
+        if not worker or worker == "(unclaimed)" or t0 is None:
+            continue
+        out.append((t0, worker, 1))
+        t1 = c3_epoch(r.get("finished"))
+        if t1 is not None and t1 > t0:
+            out.append((t1, worker, -1))
+    return out
+
+
+def c3_cross_worker_overlap(rows):
+    """§ 7.1 C3a's "contend" IN TIME: how long two different workers each held an attempt
+    of the SAME run family at once. -> {"peak_workers", "overlap_s", "pairs", "busy_s",
+    "points"} — points 0 means no readable claim window at all (a GAP), not that nothing
+    overlapped. Pure."""
+    points = c3_worker_live_segments(rows)
+    grid = sorted({t for t, _w, _d in points})
+    by_t = {}
+    for t, w, d in points:
+        by_t.setdefault(t, []).append((w, d))
+    live = {}
+    out = {"peak_workers": 0, "overlap_s": 0.0, "pairs": {}, "busy_s": {},
+           "points": len(grid)}
+    for i, t in enumerate(grid):
+        for w, d in by_t[t]:
+            live[w] = max(0, live.get(w, 0) + d)
+        if i + 1 >= len(grid):
+            break
+        dt = grid[i + 1] - t
+        if dt <= 0:
+            continue
+        active = sorted(w for w, n in live.items() if n > 0)
+        for w in active:
+            out["busy_s"][w] = out["busy_s"].get(w, 0.0) + dt
+        out["peak_workers"] = max(out["peak_workers"], len(active))
+        if len(active) >= 2:
+            out["overlap_s"] += dt
+            for a in range(len(active)):
+                for b in range(a + 1, len(active)):
+                    k = f"{active[a]}+{active[b]}"
+                    out["pairs"][k] = out["pairs"].get(k, 0.0) + dt
+    return out
+
+
+def _c3_per_worker(claimed):
+    """{'worker-a': 25} -> 'worker-a=25' — the shape every C3a detail line quotes."""
+    return ", ".join(f"{w}={n}" for w, n in sorted((claimed or {}).items())) or "(none)"
+
+
+def _c3_cap_of(windows, worker):
+    """The capacity numbers a detail line quotes: workers.capacity as the ledger states it
+    and max_free, the widest free gap the curve actually observed — never a capacity the
+    read did not show."""
+    win = (windows or {}).get(worker) or {}
+    return (f"capacity {win.get('capacity')}, widest free gap {win.get('max_free')} "
+            f"slot(s)" if win.get("capacity") else "capacity unreadable")
+
+
+def c3_contention_verdicts(claimed, workers_online, contention):
+    """The § 7.1 C3a contention arms ONCE the capacity evidence is in hand.
+      claimed:        {worker: n} child-attempt claims (the hand-out itself)
+      workers_online: the EFFECTIVE-online worker count (staleness applied)
+      contention:     {"family": c3_family_claims dict, "overlap": c3_cross_worker_overlap
+                       dict, "windows": c3_slot_windows dict, "online": [effective-online
+                       worker names], "errors": [psql error texts or ""]}
+    Contention = both online claimants drew ready attempts of ONE run out of ONE queue
+    while both were live. An online worker that took no child is blamed ONLY when the
+    ledger shows it held a free slot while a child sat unclaimed — that FAIL is the arm
+    this measurement exists to keep, and it is unreachable by absence of evidence: no
+    curve, no PASS. Pure. [(label, ok|None, detail)]; ok=None is a GAP.
+    """
+    cont = contention or {}
+    names = [str(n) for n in (cont.get("online") or [])]
+    fam = cont.get("family") or {}
+    fam_claimed = {w: n for w, n in (fam.get("family") or {}).items() if n}
+    parent_claimed = {w: n for w, n in (fam.get("parent") or {}).items() if n}
+    child_claimed = {w: n for w, n in (fam.get("child") or {}).items() if n}
+    windows = cont.get("windows") or {}
+    overlap = cont.get("overlap") or {}
+    errs = [e for e in (cont.get("errors") or []) if e]
+
+    def online_only(counts):
+        return {w: n for w, n in (counts or {}).items() if not names or w in names}
+
+    crossed_child = online_only(claimed if claimed else child_claimed)
+    crossed_family = online_only(fam_claimed)
+
+    # busy-vs-never-polled, for every online worker that took no child at all
+    idle, saturated, unknown = [], [], []
+    for w in names:
+        if crossed_child.get(w):
+            continue
+        win = windows.get(w)
+        if not win or win.get("queue_s", 0) <= 0:
+            unknown.append(w)
+        elif win["free_queue_s"] >= C3_IDLE_SLOT_MIN_S:
+            idle.append(w)
+        else:
+            saturated.append(w)
+    curve_measurable = bool(names) and bool(windows) and not unknown
+    overlap_measurable = bool(overlap.get("points"))
+    fam_measurable = bool(fam.get("attempts"))
+
+    why_idle = "; ".join(
+        f"{w} ({_c3_cap_of(windows, w)}) had a free slot for "
+        f"{c3_secs(windows[w]['free_queue_s'])}s of the "
+        f"{c3_secs(windows[w]['queue_s'])}s the fan-out queue waited and claimed "
+        f"{crossed_child.get(w, 0)} children" for w in idle)
+    why_busy = "; ".join(
+        f"{w} was at full capacity for {c3_secs(windows[w]['busy_queue_s'])}s of the "
+        f"{c3_secs(windows[w]['queue_s'])}s the queue waited (free "
+        f"{c3_secs(windows[w]['free_queue_s'])}s)" for w in saturated)
+    queue_wait = c3_secs(max([w["queue_s"] for w in windows.values()] or [0]))
+
+    arms = []
+    if workers_online < 2:
+        arms.append(("C3a hand-out crossed BOTH online workers (contention)", None,
+                     f"only {workers_online} worker row(s) EFFECTIVELY online (raw status "
+                     f"plus the {C3_LIVENESS_WINDOW_S}s heartbeat window the store applies) "
+                     f"while claims read {_c3_per_worker(crossed_child)} — no second "
+                     "claimant exists to contend the queue"))
+    elif len(crossed_child) >= 2:
+        arms.append(("C3a hand-out crossed BOTH online workers (contention)", True,
+                     f"claims per worker: {_c3_per_worker(crossed_child)} — both online "
+                     "claimants drew children out of the one deep queue"))
+    elif idle:
+        arms.append(("C3a hand-out crossed BOTH online workers (contention)", False,
+                     f"only {_c3_per_worker(crossed_child)} claimed children while " + why_idle
+                     + " — the claim scan left capacity idle (MEASURED FAIL: staleness "
+                       "applied, the load/queue curve was read, this is not the lab)"))
+    elif not (curve_measurable and fam_measurable):
+        missing = ((["the family/curve reads FAILED: " + " | ".join(str(e)[:120] for e in errs)]
+                    if errs else [])
+                   + (["no queue/capacity curve rows for " + ", ".join(unknown)] if unknown
+                      else [])
+                   + (["no attempt rows for the run family"] if not fam_measurable else []))
+        arms.append(("C3a hand-out crossed BOTH online workers (contention)", None,
+                     f"claims per worker: {_c3_per_worker(crossed_child)} — contention is "
+                     "unmeasurable, so never a PASS: " + ("; ".join(missing)
+                                                          or "no capacity evidence")))
+    elif len(crossed_family) >= 2 and overlap_measurable and overlap["peak_workers"] >= 2:
+        arms.append(("C3a hand-out crossed BOTH online workers (contention)", True,
+                     f"children all went to {_c3_per_worker(crossed_child)}: " + why_busy
+                     + " — its slots were full, and a scheduler that queued a 26th attempt "
+                       "onto a full worker would be broken, not brave. Contention measured as "
+                       "§ 7.1 C3a's own read draws it — over the run the fan-out IS "
+                       "(parent chain + children): " + _c3_per_worker(crossed_family)
+                       + f" claims with {c3_secs(overlap.get('overlap_s', 0))}s of both "
+                       "claimants holding this run at once"))
+    else:
+        arms.append(("C3a hand-out crossed BOTH online workers (contention)", None,
+                     f"claims per worker: {_c3_per_worker(crossed_child)} (family: "
+                     f"{_c3_per_worker(crossed_family)}): no online worker held a free slot "
+                     "while a child waited, and the run never had both claimants holding it "
+                     "at once — this run gave the two workers no shared instant to contend, "
+                     "so contention is UNMEASURED here (never disproven, never a PASS). "
+                     "Fix the experiment, not the verdict: post the fan-out so worker-b's "
+                     "single slot is free while the children queue (a run whose parent "
+                     "chain is idle), or raise worker-b's capacity"))
+
+    fam_label = ("C3a claims over the whole run (parent chain + children) crossed both "
+                 "online workers while both held it at once")
+    if not fam_measurable:
+        arms.append((fam_label, None, "no attempt rows for the run family"
+                     + (" — " + str(errs[0])[:120] if errs else "")))
+    elif len(crossed_family) < 2:
+        arms.append((fam_label, None,
+                     f"one claimant only: {_c3_per_worker(crossed_family)} of "
+                     f"{fam.get('attempts')} family attempt rows carry a worker_id "
+                     "(unclaimed children: " + str(fam.get("unclaimed_children")) + ") — "
+                     "nothing to overlap; see the contention arm for what that means"))
+    elif not overlap_measurable:
+        arms.append((fam_label, None,
+                     f"{_c3_per_worker(crossed_family)} claimed the family but no "
+                     "started_at/finished_at pair was readable, so the overlap window is "
+                     "unreadable (never a PASS on an unreadable curve)"))
+    else:
+        arms.append((fam_label, overlap["peak_workers"] >= 2,
+                     f"claim windows: parent {_c3_per_worker(parent_claimed)}, children "
+                     f"{_c3_per_worker(child_claimed)}, family "
+                     f"{_c3_per_worker(crossed_family)}; peak workers holding this run at "
+                     f"once={overlap['peak_workers']}, "
+                     f"{c3_secs(overlap.get('overlap_s', 0))}s overlapped over "
+                     f"{overlap.get('points')} curve point(s)"))
+
+    idle_label = ("C3a no online worker sat idle while the fan-out queue waited "
+                  "(busy is not the same as never polling)")
+    if workers_online < 2:
+        arms.append((idle_label, None,
+                     f"only {workers_online} worker row(s) EFFECTIVELY online (the "
+                     f"{C3_LIVENESS_WINDOW_S}s heartbeat window applied) — there is no "
+                     "second claimant whose idleness could be judged"))
+    elif not curve_measurable:
+        arms.append((idle_label, None,
+                     "the load/queue curve is unreadable"
+                     + (" — " + str(errs[0])[:120] if errs else "")
+                     + f" (workers with curve rows: {_c3_per_worker({k: 1 for k in windows})}; "
+                       "workers with no claim: " + (", ".join(unknown or idle or saturated)
+                                                    or "(none)") + ") — idleness is never "
+                       "verdicted PASS on an unreadable curve"))
+    else:
+        arms.append((idle_label, not idle,
+                     (("IDLE WITH WORK TO DO: " + why_idle) if idle else
+                      (f"{workers_online} claimant(s) online, queue waited {queue_wait}s; "
+                       + (why_busy + " — " if why_busy else "")
+                       + "free-slot seconds per online worker: "
+                       + ", ".join(f"{w}:{c3_secs(win['free_queue_s'])}s/"
+                                   f"{c3_secs(win['queue_s'])}s(cap {win.get('capacity')}, "
+                                   f"max free {win.get('max_free')})"
+                                   for w, win in sorted(windows.items()))))))
+    return arms
+
+
 def c3_handout_groups(text):
     """'workername|count' rows -> [{'worker','n'}]. Ragged/blank lines are dropped
     (psql_rows), never verdicted."""
     return [{"worker": w, "n": c} for w, c in psql_rows(text, 2)]
 
 
-def c3_fanout_handout_verdicts(groups, workers_online, samples):
+def c3_fanout_handout_verdicts(groups, workers_online, samples, read_error="",
+                               child_runs=None, contention=None):
     """§ 7.1 C3a measured over the fan-out's CHILD attempts — the hand-out itself,
-    not a ledger echo. groups: [{'worker','n'}]; workers_online: rows of `workers`
-    in status 'online'; samples: [(point, running)] from c3_claim_overlap_sql.
+    not a ledger echo. groups: [{'worker','n'}]; workers_online: how many workers are
+    ONLINE IN THE PRODUCT'S SENSE (c3_online_workers: raw status plus the 3×heartbeat
+    window — C6's dead throwaway is not one); samples: [(point, running)] from
+    c3_claim_overlap_sql; read_error: the psql failure text when the hand-out read itself
+    errored (a broken read is named as one — it is NOT evidence that the queue opened no
+    children); child_runs: how many child runs the ledger recorded, quoted in the GAP so a
+    reader can tell an unreadable ledger from an empty fan-out.
+    contention: the capacity evidence (c3_contention_verdicts' dict). WITH it, the
+    contention arm is the honest family-window + free-slot measurement; WITHOUT it the arm
+    stays what it always was — one claimant out of two online workers is a measured FAIL,
+    because no evidence then distinguishes a starved claimant from a saturated one.
     [(label, ok|None, detail)]; ok=None is a GAP — an arm the queue never let the
     driver watch cannot PASS. Pure."""
     claimed = {}
@@ -3465,9 +4028,16 @@ def c3_fanout_handout_verdicts(groups, workers_online, samples):
                                              for g in (groups or []))
     out = []
     if not groups:
-        out.append(("C3a fan-out queue handed child attempts out", None,
-                    "no worker|count rows read — the fan-out opened no child attempts "
-                    "(or the ledger was unreadable), so the hand-out is unmeasurable"))
+        if read_error:
+            why = (f"C3a's own hand-out read FAILED ({str(read_error)[:200]}) — that is the "
+                   f"driver, not the queue: "
+                   f"{child_runs if child_runs is not None else 'an unreadable number of'} "
+                   "child run(s) are recorded under the fan-out parent, so the child "
+                   "attempts may well exist while no worker|count row was ever read")
+        else:
+            why = ("no worker|count rows read — the fan-out opened no child attempts "
+                   "(or the ledger was unreadable), so the hand-out is unmeasurable")
+        out.append(("C3a fan-out queue handed child attempts out", None, why))
     elif seen == 0:
         out.append(("C3a fan-out queue handed child attempts out", None,
                     "rows were read but every count is unreadable/zero — nothing to measure"))
@@ -3478,7 +4048,9 @@ def c3_fanout_handout_verdicts(groups, workers_online, samples):
     else:
         out.append(("C3a fan-out queue handed child attempts out", True,
                     f"{total} of {seen} child attempts carry a worker_id"))
-        if workers_online < 2:
+        if contention is not None:
+            out.extend(c3_contention_verdicts(claimed, workers_online, contention))
+        elif workers_online < 2:
             out.append(("C3a hand-out crossed BOTH online workers (contention)", None,
                         f"only {workers_online} worker row(s) online — no second claimant "
                         "exists to contend the queue"))
@@ -3526,14 +4098,23 @@ def c3_emit3(verdicts):
             check(label, ok, detail)
 
 
+def c3_psql2(sql, what):
+    """(rows, error_text) — c3_psql plus the reason a read came back empty, so a GAP
+    can name a broken query instead of blaming the queue for it (1c190fe: C3a GAPped
+    'the fan-out opened no child attempts' while the real cause was an `ORDER BY` the
+    ledger refused and 25 children sat completed in the same run)."""
+    try:
+        return psql(sql), ""
+    except RuntimeError as e:
+        msg = str(e)[:240]
+        show(f"C3 {what}", f"psql failed: {msg}")
+        return "", msg
+
+
 def c3_psql(sql, what):
     """psql that never crashes the gate: a failed read is shown and returned as ''
     — the verdicts downstream then GAP on 'no rows' instead of losing the leg."""
-    try:
-        return psql(sql)
-    except RuntimeError as e:
-        show(f"C3 {what}", f"psql failed: {str(e)[:240]}")
-        return ""
+    return c3_psql2(sql, what)[0]
 
 
 def c4_live_attempt(text):
@@ -3696,12 +4277,60 @@ def c3_wait_terminal(client, facts, run_id, cap, tag):
     return status
 
 
-def c3_build_queue(online):
+def c3_contention_evidence(run_id, workers):
+    """Read the two ledger facts an honest § 7.1 C3a verdict rests on and hand them to
+    c3_contention_verdicts: (a) every attempt of the run FAMILY with its claim window
+    (c3_family_claims_sql — § 7.1's own read is grouped over the parent run, whose chain
+    and children share one queue), and (b) the load/queue curve that says whether each
+    online worker ever held a free slot while a child sat unclaimed
+    (c3_capacity_events_sql + workers.capacity). Both reads are shown, so a GAP quotes
+    the psql error rather than accusing the queue. Pure except for psql."""
+    names = [str(r.get("worker")) for r in c3_online_workers(workers)]
+    fam_text, fam_err = c3_psql2(c3_family_claims_sql(run_id), "family claim rows")
+    fam_rows = c3_claim_rows(fam_text)
+    fam = c3_family_claims(fam_rows)
+    ev_text, ev_err = c3_psql2(c3_capacity_events_sql(run_id), "load/queue curve")
+    load, queue = c3_capacity_events(ev_text)
+    # capacity comes from the workers table; judge the online claimants plus anyone who
+    # actually touched this run (a worker whose row is gone has no capacity: unmeasurable)
+    caps = {str(r.get("worker")): _int(r.get("capacity")) for r in workers or []
+            if r.get("worker")}
+    wanted = set(names) | set(fam.get("family") or {})
+    windows = c3_slot_windows(load, queue, {w: c for w, c in caps.items() if w in wanted})
+    overlap = c3_cross_worker_overlap(fam_rows)
+    show(f"C3a claims over the run family of {run_id} (parent chain + children, "
+         f"{fam.get('attempts')} attempt rows; unclaimed children "
+         f"{fam.get('unclaimed_children')})",
+         "parent: " + _c3_per_worker(fam.get("parent")) + "\nchild:  "
+         + _c3_per_worker(fam.get("child")) + "\nworkers online (effective): "
+         + (", ".join(names) or "(none)"))
+    show("C3a load/queue curve — seconds each worker held a free slot while a fan-out "
+         "child sat unclaimed (capacity x live attempts of EVERY run)",
+         "\n".join(f"{w}: cap={win.get('capacity')} queue={c3_secs(win['queue_s'])}s "
+                   f"free={c3_secs(win['free_queue_s'])}s "
+                   f"at-full={c3_secs(win['busy_queue_s'])}s max_free={win['max_free']}"
+                   for w, win in sorted(windows.items()))
+         or "(no curve rows — the read returned nothing)"
+         + (f" [psql: {ev_err[:160]}]" if ev_err else ""))
+    show(f"C3a claim-window overlap over the family ({overlap.get('points')} curve points)",
+         f"peak workers holding this run at once={overlap.get('peak_workers')}, "
+         f"{c3_secs(overlap.get('overlap_s', 0))}s overlapped"
+         + (", pairs: " + ", ".join(f"{k}={c3_secs(v)}s" for k, v in
+                                    sorted(overlap.get("pairs", {}).items()))
+            if overlap.get("pairs") else ""))
+    return {"family": fam, "overlap": overlap, "windows": windows, "online": names,
+            "errors": [e for e in (fam_err, ev_err) if e]}
+
+
+def c3_build_queue(online, workers=None):
     """Post and drive the leg's OWN 25-item fan-out, then emit every C3a/C3b read it
     can make. Returns the run id (its attempt rows stay readable after the run —
     worker_id and fencing_token survive the claim), or None after an honest GAP.
-    require_fault_hold is owed because this leg POSTS hold_seconds: a stale
-    fixture drains the whole queue in <1s and the C3c claim never exists."""
+    `workers` is the liveness read (raw status, heartbeat age, capacity) so the
+    contention arm can tell a starved claimant from a saturated one; `online` stays the
+    EFFECTIVE-online count. require_fault_hold is owed because this leg POSTS
+    hold_seconds: a stale fixture drains the whole queue in <1s and the C3c claim never
+    exists."""
     seed = c8_seed_facts()
     if not seed:
         gap("C3a deep-queue hand-out (25 queued attempts at once)",
@@ -3732,12 +4361,15 @@ def c3_build_queue(online):
     show(f"C3a child runs the fan-out queued ({len(kids)} of {C8_ITEMS})",
          "\n".join(kids[:5]) + (f"\n  ... {len(kids) - 5} more" if len(kids) > 5 else "")
          or "(none)")
-    groups = c3_handout_groups(c3_psql(c3_child_handout_sql(fan_id), "child hand-out"))
+    handout_text, handout_err = c3_psql2(c3_child_handout_sql(fan_id), "child hand-out")
+    groups = c3_handout_groups(handout_text)
     samples = c8_running_samples(c3_psql(c3_claim_overlap_sql(fan_id), "claim overlap sweep"))
     show("C3a in-flight claim sweep over the children (point:in_flight)",
          " ".join(f"{s}:{c}" for s, c in c8_sample_series(samples, 25))[:400]
          or "(no commit points)")
-    c3_emit3(c3_fanout_handout_verdicts(groups, online, samples))
+    contention = c3_contention_evidence(fan_id, workers) if workers is not None else None
+    c3_emit3(c3_fanout_handout_verdicts(groups, online, samples, read_error=handout_err,
+                                        child_runs=len(kids), contention=contention))
     if not groups:
         fault_hold_evidence(alice, fan_id, "C3a", expected=C3_FANOUT_HOLD_SECONDS)
     grows = [dict(zip(("key", "attempt_number", "held", "workers"), r))
@@ -3845,6 +4477,7 @@ def c3d_cite_c4():
                                      roll, len(entries))[-1]
     if ok is None:
         return
+    supersede_gap(label)
     check(label + " [regraded after C4]", ok, detail)
 
 
@@ -3853,14 +4486,17 @@ printed_by_c3d = [""]
 
 def c3():
     """C3 — two workers claim one ready attempt; only one fencing token commits (12 case 2).
-    Acceptance: both lab workers online; the leg POSTS its OWN fan-out run (§ 7.1
-    C3a's contention: fanout=true, fanout_count=25, hold_seconds=15) so 25 child
-    attempts queue at once, and the hand-out is watched across BOTH workers with
-    the claims overlapping; every attempt group has leased<=1 and never two
-    distinct workers; one /implement attempt — the parent's, held open by the
-    post — is claimed exactly once (count(distinct worker_id)=1), fencing_token>0,
-    max(fencing_token) = claim count; record the negative-control sentence: the
-    claim is not exactly-once execution — the fence is (C4 proves it)."""
+    Acceptance: both lab workers ONLINE IN THE PRODUCT'S SENSE (raw status plus the store's
+    3×heartbeat staleness window — C6's dead throwaway is not a claimant); the leg POSTS its
+    OWN fan-out run (§ 7.1 C3a's contention: fanout=true, fanout_count=25, hold_seconds=15)
+    so 25 child attempts queue at once; contention is then measured the way § 7.1 C3a draws
+    it — claims per worker over the whole run (parent chain + children) inside overlapping
+    claim windows — with the load/queue curve deciding whether a worker that took no child
+    was saturated or simply never polled (only the latter is a FAIL); every attempt group has
+    leased<=1 and never two distinct workers; one /implement attempt — the parent's, held
+    open by the post — is claimed exactly once (count(distinct worker_id)=1),
+    fencing_token>0, max(fencing_token) = claim count; record the negative-control sentence:
+    the claim is not exactly-once execution — the fence is (C4 proves it)."""
     if not CTX.get("stack_up"):
         skip("C3", "contended claims hand out once; the sequence draws per claim")
         return
@@ -3868,15 +4504,17 @@ def c3():
     if facts is not None:
         CTX["manifest"] = facts
     run_ids, source = c3_run_ids(facts)
-    show("workers (the capacity split contention rests on)",
-         c3_psql("SELECT name || ' ' || status || ' cap=' || capacity::text || ' active=' || "
-                 "active_attempts::text FROM workers ORDER BY name", "workers read"))
-    online = _int(c3_psql("SELECT count(*) FROM workers WHERE status = 'online'",
-                          "online worker count"))
-    check("C3a both lab workers online — two claimers must exist to contend", online >= 2,
-          c3_psql("SELECT string_agg(name || '=' || status, ' ' ORDER BY name) FROM workers",
-                  "worker statuses") or "the workers table was unreadable (see above)")
-    fan_id = c3_build_queue(online)
+    live_text, live_err = c3_psql2(c3_worker_liveness_sql(), "workers liveness")
+    live_rows = c3_worker_liveness_rows(live_text)
+    live_shown = "\n".join(f"{r['worker']} stored={r['db_status']} effective={r['status']} "
+                           f"heartbeat={r['heartbeat_age_s']}s cap={r['capacity']} "
+                           f"active={r['active_attempts']}" for r in live_rows)
+    show("workers (the capacity split contention rests on — EFFECTIVE status applies the "
+         "store's 3x heartbeat liveness window, worker_registry.go:22-29 and :236)",
+         live_shown or (f"psql failed: {live_err[:160]}" if live_err else "(no worker rows)"))
+    c3_emit3(c3_workers_online_verdict(live_rows, live_err))
+    online = len(c3_online_workers(live_rows))
+    fan_id = c3_build_queue(online, live_rows)
     if fan_id:
         # The parent run joins the ledger reads below: its /implement attempts are
         # the worker-held CLAIMS C3c counts (the old leg could only GAP — the seed
@@ -4454,15 +5092,48 @@ def c5_auto_retry_verdicts(sched, rows, manual_status):
              and attempt2, f"retry_scheduled rows={n} attempts={seen}")]
 
 
-def c5_retry_api_verdicts(status, body, live_rows):
-    """C5e's POST /runs/{id}/retry arm. Either the explicit retry is accepted, or the
-    budget had ALREADY armed attempt 2 (409 run-not-retriable on a still-running run)
-    — the gate reports WHICH path it observed instead of hiding the difference."""
+def c5_retry_api_verdicts(status, body, live_rows, run_retriable=None,
+                          measured_elsewhere=False):
+    """C5e's POST /runs/{id}/retry arm, graded against the door the ledger says spoke.
+
+    `status=None` means the driver did NOT post, and it only withholds the request when
+    the run row is not in route 31's retriable set (c6_run_is_retriable) — § 7.1 C5b's own
+    'run row is still running (retry armed)' is that state on the shipped twin, and
+    internal/api/runs.go answers it with run_not_retriable BEFORE runtime/retry.go builds
+    a plan, so a POST there measures the run-status door and not C5e. That is a NOTE while
+    the manual arm (c5e_retry_door_arm) grades the row's '-> 200' on a run its own budget
+    refused; with no such arm the row's claim stays visible as the GAP it is.
+
+    With a status, `run_retriable=True` is the ledger's own words that the door WAS open:
+    a 409 then is route 31 refusing a run it lists as retriable — a product contradiction,
+    reported as a FAIL, not the soft GAP 1c190fe used to print for a POST the driver should
+    never have made."""
     retry_armed = any(_int(r.get("attempt_number")) > 1 for r in live_rows)
+    if status is None:
+        if measured_elsewhere:
+            return [("C5e POST /runs/{id}/retry on the twin's crashed run — not asked", C5_NOTE,
+                     f"runs.status was not in route 31's retriable set, so § 7.1 C5b's "
+                     "'running (retry armed)' state has the ENGINE owning this retry "
+                     "(c5_auto_retry_verdicts grades it); § 7.1 C5e's 'the UI's button "
+                     "posts exactly this -> 200' is graded on the retriable scratch arm "
+                     "(its own lines are printed with this leg)")]
+        return [("C5e POST /runs/{id}/retry -> 200 (the UI's button posts exactly this)", None,
+                 "no retry request was asked of this run: the ledger shows a "
+                 "non-retriable (engine-owned) run and § 5 route 31 answers that state with "
+                 "run_not_retriable BEFORE the checkpoint plan or the attempt ledger C5e "
+                 "names is built. The manual arm that could answer it produced nothing "
+                 "above, so the row is reported unmeasured rather than forced")]
     if status == 200:
         return [("C5e POST /runs/{id}/retry -> 200 (§ 7.1: the UI's button posts exactly this)",
                  True, f"{status} {str(body)[:120]} — retried rows: "
                  f"{[(r.get('attempt_number'), r.get('status')) for r in live_rows]}")]
+    if c5_run_not_retriable(status, body) and run_retriable:
+        return [("C5e POST /runs/{id}/retry -> 200 (the UI's button posts exactly this)",
+                 False,
+                 f"observed 409 run-not-retriable while the ledger showed the run "
+                 f"RETRIABLE ({str(body)[:140]}): § 5 route 31 acts on "
+                 "failed/interrupted/cancelled and answers this refusal only on a running "
+                 "or terminal-successful run — the door refused a run its own list admits")]
     if c5_run_not_retriable(status, body):
         if retry_armed:
             return [("C5e POST /runs/{id}/retry -> 200 (the UI's button)", None,
@@ -4478,6 +5149,566 @@ def c5_retry_api_verdicts(status, body, live_rows):
                  f"accepted the retry nor armed one ({str(body)[:160]})")]
     return [("C5e POST /runs/{id}/retry -> 200 (§ 7.1: the UI's button posts exactly this)",
              False, f"observed {status} {str(body)[:160]}")]
+
+
+C5E_MANUAL_SENTENCE = ("C5e  retry from the last checkpoint (the UI's button posts exactly "
+                       "this): POST .../api/v1/runs/$RUN/retry -d '{\"reason\":\"crash\"}' "
+                       "→ 200; then psql the killed key's attempts — expect: 1 interrupted "
+                       "| 2 queued|running with retry_context = {attempt:1, "
+                       "error_class:'interrupted', head_commit:'$HEAD_BEFORE', "
+                       "modified_path_count:$DIRTY_BEFORE} (docs/m4-contract.md § 7.1 C5e)")
+
+# --- C5e / C6c's manual-retry instrument ---------------------------------------
+#
+# 1c190fe implemented § 7.1 C5e's "kill the worker as in C5, then retry it" — and the
+# same sentence inside C6b — as a POST /runs/{id}/retry at the CRASHED TWIN. The ledger
+# answered 409 run-not-retriable and the row GAPped, twice, because the restore leg posts
+# that same request at its own still-running run (docs/m4-exit-status.md live20: "C5e POST
+# /runs/{id}/retry -> 200 (the UI's button) -> observed 409 run-not-retriable"). That
+# answer is § 5 route 31's RUN-status door, which internal/api/runs.go's RetryRun answers
+# BEFORE internal/pipelines/runtime/retry.go ever builds a plan: only failed / interrupted
+# / cancelled are re-opened, so a POST measures the door it reached, not the row it was
+# aimed at.
+#
+# The twin can never open that door, and by the contract's own ordering. Its killed node
+# carries the shipped retry.maxAttempts 2 (document 2 in
+# docs/compatibility/probes/m4/pipeline.yaml, quoted by c5h_scratch_doc), so § 7.1 C5b's
+# sentence — "the run row is still running (retry armed)" — is exactly the state the
+# ENGINE leaves behind: node.attempt.retry_scheduled plus attempt 2 carrying
+# retry_context, which c5_auto_retry_verdicts grades (PASS, live20). runtime/retry.go
+# writes `run.retried` on the MANUAL path ALONE, so on an engine-armed run C6c's
+# "run.retried's workspace_policies names the mode the retried node declared" has no row
+# to read however long the driver polls, and neither does "the UI's button posts exactly
+# this → 200". Polling harder is not the fix: the subject was wrong.
+#
+# So the driver stops knocking on a door it has proven closed and builds the subject that
+# door stands open on — a gate-published scratch of the shape the C5h budget arm and C6d's
+# dirty-boundary arm already ship (§ 7.0: a scratch revision is the gate's own instrument;
+# the § 7.0 twin's key set stays intact for C1/C8/W11), with the thing neither of them
+# had: a node that SUCCEEDS first, so a boundary exists for the retry to inherit.
+#
+#   boundary_seed   Either copy of the twin's held node (only its id, retry block and
+#                   dependsOn differ) run with retry := maxAttempts 1, so nothing but the
+#                   node under test is ever re-queued. Which m4-exit.sh step it runs is
+#                   the arm's ONE other variable and it is what the two rows need to be
+#                   different:
+#                     · `implement` (C5e) — the step verbatim, so it closes with its own
+#                       UNCOMMITTED edit in the tree and the boundary it records carries
+#                       modified_path_count > 0. continue_workspace asks nothing of that
+#                       row's committed flag (only restore_checkpoint refuses it, C6d's
+#                       arm), and the count is the fact § 7.1 C5e's
+#                       "modified_path_count:$DIRTY_BEFORE" asks the retry to be TOLD —
+#                       the carry arm 1c190fe could only GAP on the twin, whose killed
+#                       node sleeps before it edits and so left nothing behind.
+#                     · `plan` (C6c) — the same node with its step argument switched to
+#                       m4-exit.sh's edit-free plan step and its outputs schema renamed to
+#                       that step's own, exactly the switch c7_exhaustion_doc makes for
+#                       the same reason ("a true no-op: it prints {plan} and writes no
+#                       file"). Its boundary then measures a CLEAN tree — committed=true /
+#                       modified_path_count=0, the state ADR-0023 § 6 restores TO and the
+#                       row live20 C6b printed for the shipped /plan checkpoint — which is
+#                       the ONLY state runtime/retry.go lets restore_checkpoint through.
+#                       An implement copy here would refuse: C6d's 409, not C6c's 200.
+#   <kill node>     The twin's held node copied verbatim (config: executable, args,
+#                   cwd: repos/app, the M4_HOLD_SECONDS and M4_LEAVE_DIRTY bindings riding
+#                   the RUN inputs, secretRefs, outputExtraction, its outputs and the
+#                   run_workspace binding over inputs.repository) with retry :=
+#                   maxAttempts 1 — plus workspacePolicy: restore_checkpoint when the
+#                   caller is C6c — and dependsOn: [boundary_seed]. Killed inside its hold
+#                   the interruption exhausts a budget of 1, the node and the RUN fail
+#                   (route 31's own C5h wording), and the run row becomes something
+#                   RetryRun re-opens — inheriting the seed's recorded boundary.
+#
+# The kill lands where § 7.1 C5a/C6b put it and the POST goes out only after runs.status
+# has been SEEN in the retriable set (_c6d_wait_retriable — the poll the C6d fix
+# introduced, reused rather than re-authored). What that buys, row by row: C5e's
+# "POST → 200" with attempt 2 carrying the last checkpoint as retry_context, and C6c's
+# accepted restore with the mode named in the journal (`c6c_retried_verdicts`).
+C5E_SEED_NODE = "boundary_seed"       # completes -> the boundary the retry inherits
+C5E_KILL_NODE = "retry_target"        # C5e: the retry's default mode, continue_workspace
+C6C_KILL_NODE = "restore_target"      # C6c: restore_checkpoint (what run.retried must name)
+C5E_SEED_STEP = "plan"                # m4-exit.sh's edit-free step (c7_exhaustion_doc's switch)
+C5E_SEED_EDIT = "implement"           # m4-exit.sh's held step, verbatim (leaves a dirty tree)
+C5E_CONTINUE = "continue_workspace"   # runtime/retry.go's default mode, named not assumed
+
+
+C5E_NODE_REF_RE = re.compile(r"\b(?:nodes|steps)\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def c5e_scratch_ref_pairs(scratch):
+    """EVERY node reference the assembled scratch document still makes, as
+    [(referrer, target)]: the dependsOn edges of each node, plus every
+    `nodes.<id>.*` / `steps.<id>.*` expression anywhere in the document (a spec
+    resultBinding or outputs expression included — the compiler reads those in the whole
+    /spec scope, which is where the first C5e/C6c draft died:
+    compiler/unknown_dependency@/spec/resultBindings/implementation_summary). An author
+    who drops the until loop must drop what pointed into it, so the arms measure against
+    a graph they can show resolves, not against a refusal they have to explain."""
+    spec = (scratch or {}).get("spec") if isinstance(scratch, dict) else None
+    if not isinstance(spec, dict):
+        return []
+    out = []
+
+    def walk(value, where):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k == "dependsOn" and isinstance(v, list):
+                    out.extend((where, str(x)) for x in v)
+                else:
+                    walk(v, where)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v, where)
+        elif isinstance(value, str):
+            out.extend((where, m.group(1)) for m in C5E_NODE_REF_RE.finditer(value))
+
+    for n in spec.get("nodes") or []:
+        walk(n, str(n.get("id")))
+    walk({k: v for k, v in spec.items() if k != "nodes"}, "/spec")
+    return out
+
+
+def c5e_retry_scratch_doc(canonical, name, policy=None, seed_step=C5E_SEED_EDIT,
+                          seed_node=C5E_SEED_NODE, kill_node=C5E_KILL_NODE):
+    """Build the two-node manual-retry scratch described above. `policy=None` leaves the
+    killed node on the retry's DEFAULT mode (continue_workspace — § 7.1 C5e's subject); a
+    policy string is written into its retry block (restore_checkpoint — C6c's subject, and
+    the mode its run.retried row must then name). `seed_step` chooses the boundary state
+    the arm needs: C5E_SEED_EDIT keeps the held step verbatim (its own uncommitted edit is
+    the modified_path_count the retried attempt is told), C5E_SEED_STEP switches it to the
+    twin's edit-free plan step (the committed clean tree restore_checkpoint resets to).
+
+    Every guard refuses instead of inventing: `doc` stays None unless both nodes are
+    copies of shipped twin nodes, so what the arm grades is the twin's own step contract.
+    spec.inputs carries the twin's own required list plus every input either copy selects,
+    each with the twin's OWN schema (an undeclared selection is refused by the compiler
+    with unknown_field — the 1c190fe class of failure, seen offline against the Go
+    compiler). Returns {doc, applied, missing, input_refs, inputs_declared, input_props,
+    seed_node, kill_node, seed_step, policy} in the shape the other builders use."""
+    out = {"doc": None, "applied": [], "missing": [], "input_refs": [],
+           "inputs_declared": False, "input_props": [], "seed_node": seed_node,
+           "kill_node": kill_node, "seed_step": seed_step, "node_ids": [], "refs": [],
+           "policy": policy or C5E_CONTINUE}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (GET /revisions/{id} served no canonical "
+                              "kind: Pipeline document)")
+        return out
+    held = doc_body_node(canonical, C5H_NODE_ID)
+    if held is None:
+        out["missing"].append(f"the twin's held node '{C5H_NODE_ID}' (not exactly one "
+                              "until-body node with that id)")
+        return out
+    cfg = held.get("config") if isinstance(held.get("config"), dict) else {}
+    if cfg.get("executable") != "m4-exit.sh" or (cfg.get("args") or []) != [C5E_SEED_EDIT]:
+        out["missing"].append(f"held node '{C5H_NODE_ID}' is no longer the m4-exit.sh "
+                              f"{C5E_SEED_EDIT} step (executable={cfg.get('executable')!r} "
+                              f"args={cfg.get('args')!r}) — the copy would not be the "
+                              "twin's held step")
+        return out
+    if "M4_HOLD_SECONDS" not in (cfg.get("env") or {}):
+        out["missing"].append("held node has no M4_HOLD_SECONDS env — nothing to kill a "
+                              "worker mid-way through, so the run never fails")
+        return out
+    if (cfg.get("workspace") or {}).get("mode") != "run_workspace":
+        out["missing"].append("held node does not run in the run_workspace — the retry "
+                              "would inherit no checkout to resume or to reset")
+        return out
+    if "maxAttempts: 2" not in doc_yaml_emit({"retry": held.get("retry") or {}}):
+        out["missing"].append("held node's retry block no longer carries the shipped "
+                              "maxAttempts: 2 budget — this arm measures the budget the "
+                              "DOCUMENT authors, and a copy that no longer shows it "
+                              "changes two variables instead of one")
+        return out
+    seed_src = held
+    if seed_step == C5E_SEED_STEP:
+        tops = [n for n in ((canonical.get("spec") or {}).get("nodes") or [])
+                if isinstance(n, dict) and n.get("id") == C5E_SEED_STEP]
+        if len(tops) != 1:
+            out["missing"].append(f"the twin's own '{C5E_SEED_STEP}' node (the edit-free "
+                                  "step the seed switch needs, with the outputs schema its "
+                                  "stdout satisfies) is not exactly one top-level node")
+            return out
+        top = tops[0]
+        tcfg = top.get("config") if isinstance(top.get("config"), dict) else {}
+        if (tcfg.get("args") or []) != [C5E_SEED_STEP] \
+                or (tcfg.get("outputExtraction") or {}).get("mode") != "json_from_stdout" \
+                or not isinstance(top.get("outputs"), dict):
+            out["missing"].append(f"the twin's '{C5E_SEED_STEP}' node no longer closes with "
+                                  "json_from_stdout against a declared outputs schema — the "
+                                  "seed would record a boundary for a contract this arm "
+                                  "invented")
+            return out
+        seed_src = json.loads(json.dumps(held))
+        seed_src["config"]["args"] = [C5E_SEED_STEP]
+        seed_src["outputs"] = json.loads(json.dumps(top["outputs"]))
+    elif seed_step != C5E_SEED_EDIT:
+        out["missing"].append(f"seed_step={seed_step!r} is neither {C5E_SEED_EDIT!r} nor "
+                              f"{C5E_SEED_STEP!r} — the arm will not invent a third "
+                              "m4-exit.sh step")
+        return out
+    twin_spec = canonical.get("spec") if isinstance(canonical.get("spec"), dict) else {}
+    # The scratch is assembled FRESH (the shape c5h_scratch_doc and
+    # c6_dirty_scratch_doc publish in), not deep-copied: spec.outputs/resultBindings bind
+    # /build_until_verified, a node this document does not carry, and the compiler refuses
+    # the draft with compiler/unknown_dependency@/spec/resultBindings/implementation_summary
+    # before it ever reaches the two copies (the lab's publish=409 on the first C5e/C6c
+    # pass). The arm reads no run outputs, so there is nothing to re-target.
+    scratch = {"apiVersion": canonical.get("apiVersion"), "kind": "Pipeline",
+               "metadata": {"name": name}}
+    meta = scratch["metadata"]
+    sp = scratch["spec"] = {}
+    seed_says = (
+        " (the edit-free step: the boundary its completion captures measures a CLEAN "
+        "tree — committed=true, modified_path_count=0 — the state ADR-0023 § 6 restores TO)"
+        if seed_step == C5E_SEED_STEP else
+        " (its own uncommitted edit stays in the tree, so the boundary it records carries "
+        "the modified_path_count the retried attempt is TOLD)")
+    pol_says = (f" and workspacePolicy {policy}" if policy
+                else " (no workspacePolicy, so the retry stays on its default "
+                     "continue_workspace mode)")
+    meta["description"] = (
+        "M4 exit C5e/C6c manual-retry arm. TWO copies of the twin's OWN held m4-exit.sh "
+        "node: '" + seed_node + "' runs its " + seed_step + " step with retry.maxAttempts "
+        "1 so it COMPLETES" + seed_says + "; '" + kill_node + "' is the held node verbatim "
+        "with retry := maxAttempts 1" + pol_says + " and dependsOn " + seed_node + ", "
+        "killed inside its hold so the RUN fails honestly (route 31's retriable state, "
+        "§ 5) and the manual POST /runs/{id}/retry lands on a run the route re-opens, "
+        "inheriting the seed's recorded boundary. The gate's own instrument (§ 7.0), never "
+        "the § 7.1 seed twin — whose held node keeps budget 2 because C5g's and C6b's "
+        "completion arms need it. Run outputs and resultBindings are dropped with the "
+        "until loop: this arm reads its facts from the ledger, never from run outputs.")
+    sp["policies"] = json.loads(json.dumps(twin_spec.get("policies") or {}))
+    seed = json.loads(json.dumps(seed_src))
+    seed["id"] = seed_node
+    seed.pop("dependsOn", None)
+    seed["retry"] = {"maxAttempts": 1}
+    kill = json.loads(json.dumps(held))
+    kill["id"] = kill_node
+    kill["dependsOn"] = [seed_node]
+    kill["retry"] = {"maxAttempts": 1}
+    if policy:
+        kill["retry"]["workspacePolicy"] = policy
+    sp["nodes"] = [seed, kill]
+    # spec.inputs IS the schema object in a canonical pipeline document (the seed twin
+    # declares `inputs: {type: object, required: [...], properties: {...}}`), so the
+    # properties are read off it directly — the same accessor c6_dirty_scratch_doc uses.
+    schema = twin_spec.get("inputs") if isinstance(twin_spec.get("inputs"), dict) else {}
+    if not isinstance(schema.get("properties"), dict):
+        out["missing"].append("the twin declares no spec.inputs schema to copy from")
+    else:
+        twin_props = schema["properties"]
+        twin_required = [x for x in (schema.get("required") or []) if x in twin_props]
+        seed_refs = doc_input_refs(seed)
+        refs = seed_refs + [x for x in doc_input_refs(kill) if x not in seed_refs]
+        chosen = list(twin_required) + [x for x in refs if x not in twin_required]
+        gap_props = [x for x in chosen if x not in twin_props]
+        if gap_props:
+            out["missing"].append(f"neither copy may read inputs.{gap_props[0]}: the twin "
+                                  "declares no such property and this builder never "
+                                  "invents a schema for one")
+        else:
+            # REQUIRED stays the twin's own list: the arm POSTs goal/repository plus
+            # with_hold's hold_seconds, and leave_dirty (declared because the held copy's
+            # M4_LEAVE_DIRTY binding reads it) has the twin's default false. Marking a
+            # defaulted input required would have the run POST refused for what the arm
+            # deliberately does not send.
+            sp["inputs"] = {"type": "object",
+                            "required": [x for x in chosen
+                                         if x in twin_required or x == "hold_seconds"],
+                            "properties": {x: json.loads(json.dumps(twin_props[x]))
+                                           for x in chosen}}
+            out["inputs_declared"] = True
+            out["input_refs"] = refs
+            out["input_props"] = chosen
+    out["applied"].append(
+        f"'{seed_node}' = the twin's held node copied with only its id and retry block "
+        f"changed, running m4-exit.sh's {seed_step} step "
+        + ("(a true no-op: it prints {plan} and writes no file — the switch "
+           "c7_exhaustion_doc makes for the same reason), so it COMPLETES and the boundary "
+           "the retry inherits measures a COMMITTED clean tree (ADR-0023 § 6's 'the state "
+           "of the workspace when the last successful node completed'), which is the only "
+           "state runtime/retry.go lets restore_checkpoint through"
+           if seed_step == C5E_SEED_STEP else
+           "(verbatim, including its uncommitted sed edit), so it COMPLETES and the "
+           "boundary the retry inherits carries modified_path_count > 0 — the fact § 7.1 "
+           "C5e asks the retried attempt to be TOLD, which continue_workspace accepts "
+           "without asking the row's committed flag (only restore_checkpoint refuses it, "
+           "as C6d measures)")
+        + " — with retry := maxAttempts 1 so nothing but the node under test is re-queued")
+    out["applied"].append(
+        f"'{kill_node}' = the twin's held implement copied verbatim (config: executable / "
+        "args / cwd / env / secretRefs / outputExtraction / outputs and the run_workspace "
+        f"binding) with retry := {json.dumps(kill['retry'], sort_keys=True)} and dependsOn "
+        f"{seed_node} — its M4_HOLD_SECONDS and M4_LEAVE_DIRTY bindings still ride the RUN "
+        "inputs (nothing baked into the document), so killing it inside the hold exhausts "
+        "budget 1, fails the RUN (route 31's retriable state) and leaves the seed's "
+        "boundary as the one the retried attempt inherits")
+    out["applied"].append(
+        "spec carries ONLY inputs / policies / nodes — the twin's spec.outputs and "
+        "spec.resultBindings bind /build_until_verified, which this document does not "
+        "copy, and the compiler refuses a binding to an absent node with "
+        "unknown_dependency (the publish=409 the first C5e/C6c pass drew)")
+    out["node_ids"] = [n.get("id") for n in sp["nodes"]]
+    out["refs"] = c5e_scratch_ref_pairs(scratch)
+    out["applied"].append(
+        f"spec.inputs required={json.dumps(out['input_props'])} — the twin's own required "
+        f"list plus every input either copy selects ({sorted(set(out['input_refs']))}), "
+        "each with the twin's OWN schema; an undeclared selection is refused by the "
+        "compiler with unknown_field")
+    blocks = [{"id": n.get("id"), "retry": n.get("retry"), "kind": n.get("kind"),
+               "args": (n.get("config") or {}).get("args"),
+               "workspace": (n.get("config") or {}).get("workspace") or {}}
+              for n in sp["nodes"]]
+    out["applied"].append("retry blocks carried by the scratch: "
+                          + json.dumps(blocks, sort_keys=True))
+    # A copy that selects an input the twin does not declare is refused by the compiler
+    # with unknown_field — the failure that killed 1c190fe's C5h/C6d arms before a node
+    # ran — so no document is emitted at all: the arm reports the reason instead of
+    # POSTing bytes it can already show will be rejected.
+    out["doc"] = None if out["missing"] else doc_yaml_emit(scratch)
+    return out
+
+
+def c5e_retry_doc_verdicts(splices):
+    """Honesty of the manual-retry scratch: both nodes copies of a shipped twin node, the
+    ONE variable the arm changes named in the open, no second budget / until body / gate
+    left over, and every input either copy reads declared. Shared by the C5e continue arm
+    and the C6c restore arm, so neither grades a document it cannot show the compiler
+    actually read."""
+    applied = splices.get("applied") or []
+    missing = splices.get("missing") or []
+    doc, pol = splices.get("doc"), splices.get("policy") or C5E_CONTINUE
+    seed_node, kill_node = splices.get("seed_node"), splices.get("kill_node")
+    seed_step = splices.get("seed_step")
+    detail = " | ".join(applied) if applied else "; ".join(missing)
+    v = [("C5e/C6c scratch doc: the seed node is a copy of the twin's OWN held node run on "
+          f"its {seed_step} step "
+          + ("(edit-free — the boundary the retry inherits measures a COMMITTED clean tree, "
+             "the state ADR-0023 § 6 restores TO)" if seed_step == C5E_SEED_STEP else
+             "(verbatim — the boundary the retry inherits carries the modified_path_count "
+              "§ 7.1 C5e asks the retried attempt to be told)")
+          + ", so a boundary EXISTS before the retry is ever asked (§ 5 route 31: 'the "
+          "retried attempt is TOLD the previous attempt's facts as retry_context')",
+          any(a.startswith(f"'{seed_node}'") and "COMPLETES" in a for a in applied), detail)]
+    v.append(("C5e/C6c scratch doc: the killed node is the twin's held implement COPIED "
+              "VERBATIM (config: executable/args/cwd/env/secretRefs/outputExtraction/"
+              "outputs/workspace) — its M4_HOLD_SECONDS and M4_LEAVE_DIRTY bindings ride "
+              "the run inputs, so the kill still lands mid-step exactly as in § 7.1 C5a",
+              any(a.startswith(f"'{kill_node}'") and "verbatim" in a
+                  and "M4_LEAVE_DIRTY" in a for a in applied), detail))
+    blocks = next((a.split(": ", 1)[1] for a in applied
+                   if a.startswith("retry blocks carried")), None)
+    try:
+        parsed = json.loads(blocks) if blocks else None
+    except ValueError:
+        parsed = None
+    want_kill = {"maxAttempts": 1}
+    if pol != C5E_CONTINUE:
+        want_kill["workspacePolicy"] = pol
+    shaped = (isinstance(parsed, list) and len(parsed) == 2
+              and parsed[0].get("id") == seed_node
+              and parsed[0].get("retry") == {"maxAttempts": 1}
+              and parsed[1].get("id") == kill_node
+              and parsed[1].get("retry") == want_kill
+              and (parsed[1].get("workspace") or {}).get("mode") == "run_workspace"
+              and all(n.get("kind") == "process.exec" for n in parsed))
+    pol_strings = doc.count("workspacePolicy:") if isinstance(doc, str) else None
+    budgets = doc.count("maxAttempts:") if isinstance(doc, str) else None
+    v.append((f"C5e/C6c scratch doc: ONE variable differs — the killed node carries "
+              f"retry.maxAttempts 1"
+              + (f" and workspacePolicy {pol}" if pol != C5E_CONTINUE else
+                 " and NO workspacePolicy, so the retry stays on its default "
+                 "continue_workspace mode (the mode § 7.1 C5f's clause about a continued "
+                 "workspace recording no run.checkpoint_restored is about)")
+              + " — no shipped maxAttempts: 2, no until body, no gate survives into it",
+              shaped and budgets == 2 and pol_strings == (1 if pol != C5E_CONTINUE else 0),
+              f"retry blocks={blocks!r} 'maxAttempts:' strings={budgets!r} "
+              f"'workspacePolicy:' strings={pol_strings!r}"))
+    ids = set(splices.get("node_ids") or [])
+    unresolved = [(w, t) for w, t in (splices.get("refs") or []) if t not in ids]
+    v.append(("C5e/C6c scratch doc: every node reference the draft makes resolves to a "
+              "node it CARRIES — spec.outputs and spec.resultBindings bind "
+              "/build_until_verified, which this graph does not copy, so they are dropped "
+              "with the until loop instead of being left for the compiler to refuse with "
+              "unknown_dependency (the publish=409 the first C5e/C6c pass got: "
+              "compiler/unknown_dependency@/spec/resultBindings/implementation_summary)",
+              bool(ids) and not unresolved and isinstance(doc, str),
+              f"node ids={sorted(ids)} references the draft makes="
+              f"{json.dumps(sorted(set(map(tuple, splices.get('refs') or []))))} "
+              f"unresolved={unresolved or '(none)'}"))
+    refs = splices.get("input_refs") or []
+    v.append((f"C5e/C6c scratch doc: every input either copy reads is declared in "
+              f"spec.inputs ({sorted(set(refs))}) with the twin's own schema — the held "
+              "copy's M4_LEAVE_DIRTY binding is exactly what made 1c190fe's scratch arms "
+              "die at publish with unknown_field before they could be measured",
+              bool(splices.get("inputs_declared"))
+              and all(r in (splices.get("input_props") or []) for r in refs),
+              f"required={splices.get('input_props')} refs read={sorted(set(refs))}"))
+    return v
+
+
+def c5e_precondition_verdicts(run_st, cks, want_node, policy=C5E_CONTINUE):
+    """Both doors RetryRun answers, in ITS order, graded from the ledger BEFORE the manual
+    POST is asked at all. Returns (verdicts, may_post) — may_post only when every verdict
+    reads True, because a POST the arm guessed its way past a precondition measures a door
+    the row never asked about (1c190fe's error) and, in restore mode, can be destructive:
+    an accepted reset throws away the workspace state the row is standing on.
+
+    Door 1 — § 5 route 31's run-status door: only failed / interrupted / cancelled are
+    re-opened. While the ledger still says 'running (retry armed)' the ENGINE owns this
+    run's retry (§ 7.1 C5b's own sentence, the shipped twin's budget-2 shape) and the
+    manual arm has no subject; a run that COMPLETED is worse — nothing ever failed, so the
+    premise is contradicted rather than merely missing.
+    Door 2 — the boundary the retry INHERITS. RetryPlan takes the newest recorded checkpoint
+    that is NOT the retried node's own, here the seed's row, and the two modes read it
+    differently — that difference is the whole point of the pair of arms: continue_workspace
+    needs a recorded boundary (route 31 resumes the same checkout and asks nothing of its
+    tree state), restore_checkpoint is refused with 409 checkpoint_unavailable unless the
+    row reads COMMITTED (C6d's refusal). So an uncommitted seed boundary makes C6c's
+    'accepted' arm C6d's, which is the attribution error this fix exists to stop."""
+    st = str(run_st or "").strip().lower()
+    if not st:
+        ok, why = None, (f"runs.status={run_st or '(unreadable)'} — the runs row did not "
+                         "answer, so neither door can be placed")
+    elif c6_run_is_retriable(st):
+        ok, why = True, f"runs.status={run_st} — route 31 re-opens this run"
+    elif st == "completed":
+        ok, why = False, (f"runs.status={run_st} — the killed budget-1 node never failed "
+                          "the run, so there is nothing for route 31 to re-open (it answers "
+                          "run_not_retriable on a terminal-successful run)")
+    else:
+        ok, why = None, (f"runs.status={run_st} — route 31 answers run_not_retriable here "
+                         "BEFORE runtime/retry.go sees a plan. A run still 'running (retry "
+                         "armed)' is § 7.1 C5b's engine-owned retry (the shipped twin's "
+                         "budget-2 shape); this row's subject is a run its OWN budget "
+                         "refused, so the arm GAPs instead of grading that door")
+    v = [("C5e/C6c the manual retry is asked of a run § 5 route 31 RE-OPENS (failed | "
+          "interrupted | cancelled — a refusal from run_not_retriable is another row's "
+          "door)", ok, why)]
+    rows = [c for c in (cks or []) if c.get("node") == want_node]
+    if policy == C5E_CONTINUE:
+        good = [c for c in rows if c.get("head") and c.get("head") != "-"]
+        v.append((f"C5e the boundary the manual retry inherits ({want_node}) is RECORDED "
+                  "with a HEAD — the facts § 7.1 C5e asks the retried attempt to be TOLD "
+                  "(retry_context.head_commit / modified_path_count). It does NOT gate "
+                  "the POST here: RetryPlan reads repo states for restore_checkpoint only "
+                  "(runtime/retry.go:116-138), a continued workspace is never reset away, "
+                  "so an unrecorded boundary costs this arm its comparisons, not its 200",
+                  True if good else (None if not rows else False),
+                  f"rows for {want_node}={json.dumps(rows[:2]) or '(none)'} mode={policy}"))
+        return v, ok is True
+    good = [c for c in rows if c.get("committed") is True and c.get("head")
+            and c.get("head") != "-"]
+    v.append((f"C6c the boundary the manual retry inherits ({want_node}) is recorded "
+              "COMMITTED and CAPTURED with a HEAD — the state ADR-0023 § 6 restores TO and "
+              "the only one runtime/retry.go lets reset through (it refuses "
+              "uncommitted AND un-captured repo states: 'a destructive default is the "
+              "failure mode C6d names'). Unlike the continue arm this door gates the POST: "
+              "an accepted reset here would throw the workspace state away",
+              True if good else (False if rows else None),
+              f"rows for {want_node}={json.dumps(rows[:2]) or '(none)'} mode={policy}"))
+    return v, (ok is True and v[1][1] is True)
+
+
+def c5e_manual_retry_verdicts(a, tag="C5e"):
+    """Grade the manual retry the arm actually asked, on the subject route 31 re-opens.
+    `a` is the arm's readings: may_post, run_st, final_st, status/body (the POST), rows
+    (the killed node's attempt rows), seed_rows, seed_ne, seed_node, head_before,
+    dirty_before.
+
+    The claims are § 7.1 C5e's own list — POST → 200, then "1 interrupted | 2
+    queued|running with retry_context = {attempt:1, error_class:'interrupted',
+    head_commit:'$HEAD_BEFORE', modified_path_count:$DIRTY_BEFORE}" — plus the note its
+    literal block carries (a node that already succeeded gains nothing), read off the
+    ledger the MANUAL path wrote. Where the lab produced no reading the row GAPs with the
+    reason, and the twin's engine-armed lines above stay as they were."""
+    may_post, status = a.get("may_post"), a.get("status")
+    body, rows = a.get("body") or "", a.get("rows") or []
+    fin = str(a.get("final_st") or "").strip().lower()
+    seen = [(r.get("attempt_number"), r.get("status")) for r in rows]
+    first = next((r for r in rows if _int(r.get("attempt_number")) == 1), {})
+    second = next((r for r in rows if _int(r.get("attempt_number")) > 1), {})
+    ctx = c5_parse_retry_context(second.get("retry_context")) or {}
+    # An accepted retry whose attempt row carries NO context at all contradicts route 31
+    # ("the retried attempt is TOLD the previous attempt's facts as retry_context, and
+    # nothing else") — that reads FAIL. A row whose context came back unparseable is the
+    # driver's own read failing, so it GAPs.
+    ctx_absent = str(second.get("retry_context") or "").strip() in ("", "-")
+    posted = status == 200
+    v = []
+    if status is None:
+        v.append((f"{tag} POST /runs/{{id}}/retry -> 200 (the UI's button posts exactly "
+                  "this)", None,
+                  f"the arm never asked the route (may_post={may_post}, runs.status="
+                  f"{a.get('run_st')!r} when the doors were graded) — the precondition "
+                  "lines above carry the reason, and a POST guessed past one of them "
+                  "measures the run-status door, not this row (1c190fe's error)"))
+    elif c5_run_not_retriable(status, body) and c6_run_is_retriable(a.get("run_st")):
+        v.append((f"{tag} POST /runs/{{id}}/retry -> 200 (the UI's button posts exactly "
+                  "this)", False,
+                  f"observed 409 run-not-retriable on a run the ledger showed RETRIABLE "
+                  f"(runs.status={a.get('run_st')!r} when the POST went out): route 31's "
+                  "own door list admits failed/interrupted/cancelled, so it should have "
+                  f"opened and handed the question to runtime/retry.go ({str(body)[:160]})"))
+    else:
+        v.append((f"{tag} POST /runs/{{id}}/retry -> 200 (the UI's button posts exactly "
+                  "this)", posted,
+                  f"observed {status} {str(body)[:160]} — runs.status was "
+                  f"{a.get('run_st')!r} when the POST went out"))
+    v.append((f"{tag} the accepted manual retry RE-OPENED the failed run (route 31 puts "
+              "the row back to running and the work resumes on the worker that owns its "
+              "workspace; § 7.1 C5e's retry is not a new run)",
+              None if (not posted or not fin)
+              else (fin in ("running", "completed")),
+              f"runs.status after the retry={fin or '(unreadable)'} (was "
+              f"{a.get('run_st')!r}; POST {status!r})"))
+    v.append((f"{tag} attempt 2 was APPENDED to the killed node (its budget was 1, so "
+              "nothing but this retry could queue it — § 7.1 C5e's '2 queued|running')",
+              None if not posted else bool(second),
+              f"attempt rows={seen} (POST {status!r})"))
+    v.append((f"{tag} attempt 1 of the retried node is 'interrupted' (§ 7.1 C5e's "
+              "'1 interrupted' — the kill the run failed on)",
+              str(first.get("status") or "") == "interrupted",
+              f"attempt 1 status={first.get('status')!r}"))
+    ctx_says = (json.dumps(ctx)[:200] if ctx else
+                ("NULL — the manual retry armed attempt 2 with no facts at all"
+                 if ctx_absent else
+                 "UNPARSEABLE: " + str(second.get("retry_context"))[:60]))
+    v.append((f"{tag} the retried attempt carries retry_context from the LAST CHECKPOINT "
+              "with attempt=1 and error_class='interrupted' (§ 5 route 31: 'the retried "
+              "attempt is TOLD the previous attempt's facts as retry_context, and nothing "
+              "else')",
+              None if not posted else (True if ctx else (False if ctx_absent else None)),
+              f"attempt 2 status={second.get('status')!r} retry_context={ctx_says}"))
+    head, dirty = str(a.get("head_before") or "").strip(), a.get("dirty_before")
+    want_head = ctx.get("head_commit")
+    v.append((f"{tag} retry_context.head_commit = $HEAD_BEFORE, the HEAD read from the "
+              "workspace before the kill (= the seed's recorded boundary) — § 2.7's 'the "
+              "retry's workspace content comes from the LAST CHECKPOINT, not from the "
+              "dead process's memory'",
+              None if (not posted or not head or not want_head)
+              else str(want_head).startswith(head[:12]) or head.startswith(str(want_head)[:12]),
+              f"retry_context.head_commit={str(want_head)[:12]!r} HEAD_BEFORE="
+              f"{head[:12] or '(unreadable)'}"))
+    carried, want = count_or_none(ctx.get("modified_path_count")), count_or_none(dirty)
+    v.append((f"{tag} retry_context.modified_path_count = $DIRTY_BEFORE, the "
+              "'git status --porcelain | wc -l' read from the workspace before the kill "
+              "(the boundary's own manifest, never a live read — runtime/retry.go)",
+              None if not posted or want is None
+              else (carried is not None and carried == want),
+              f"retry_context.modified_path_count={ctx.get('modified_path_count')!r} "
+              f"DIRTY_BEFORE={dirty!r} (the key is omitted for a zero count; the seed here "
+              f"ran m4-exit.sh's {a.get('seed_step') or '?'} step)"))
+    srows = a.get("seed_rows") or []
+    sne = _int((a.get("seed_ne") or {}).get("ne"))
+    v.append((f"{tag} the node that already succeeded gained NOTHING from the manual "
+              f"retry — {a.get('seed_node')!r} still owns one node_executions row and no "
+              "attempt beyond its own (ADR-0023 § 6; § 7.1 C5e's psql note 'no new "
+              "node_executions for nodes that already succeeded')",
+              None if (not posted or not sne) else (sne == 1 and len(srows) <= 1),
+              f"seed node_executions={sne!r} seed attempts={len(srows)} "
+              f"seed statuses={[r.get('status') for r in srows]}"))
+    return v
 
 
 def c5_append_only_verdicts(rows):
@@ -4624,9 +5855,13 @@ def c5h_scratch_doc(canonical, name):
     editing the fixture: a deep copy of the held until-body node lifted to top level
     with its retry block replaced by maxAttempts: 1 — the one variable. No gate, no
     loop, no outputs block (the schema requires only spec.inputs and spec.nodes);
-    inputs keeps exactly goal/repository/hold_seconds so M4_HOLD_SECONDS still
-    rides the run input. Returns {doc, applied, missing}, doc None (the caller
-    GAPs) unless every splice verbatim applied — a node the gate invented is not
+    spec.inputs carries the schema for EVERY input the copied node reads (read off
+    the copy with doc_input_refs) plus the twin's own required list — goal, repository
+    and hold_seconds are what it happens to need today, leave_dirty is the one that
+    GAPped the gate at 1c190fe — so M4_HOLD_SECONDS still rides the run input. The
+    schemas are copied from the twin, never authored here. Returns
+    {doc, applied, missing, input_refs, inputs_declared}, doc None (the caller GAPs)
+    unless every splice verbatim applied — a node the gate invented is not
     the twin's held node and would prove nothing about the twin's budget rule."""
     out = {"doc": None, "applied": [], "missing": []}
     if not doc_is_pipeline(canonical):
@@ -4647,38 +5882,93 @@ def c5h_scratch_doc(canonical, name):
         out["missing"].append("held node has no M4_HOLD_SECONDS env — nothing to kill "
                               "a worker mid-way through")
         return out
-    props = ((canonical.get("spec") or {}).get("inputs") or {}).get("properties") or {}
-    kept = {k: props[k] for k in ("goal", "repository", "hold_seconds") if k in props}
-    for k in ("repository", "hold_seconds"):
-        if k not in kept:
-            out["missing"].append(f"inputs.{k} on the seed twin ({k} is what the held "
-                                  "node's bindings read)")
-    if out["missing"]:
-        return out
     node = json.loads(json.dumps(held))            # deep copy; the twin doc stays put
     node.pop("dependsOn", None)                    # it is the only node
     node["retry"] = {"maxAttempts": 1}
+    # The scratch must declare EVERY input the copied node reads. The 1c190fe GAP
+    # was exactly this: the held node's env carries M4_LEAVE_DIRTY: ${{
+    # string(inputs.leave_dirty) }}, the old splice hard-coded goal/repository/
+    # hold_seconds, and the compiler refused the revision at publish with
+    # unknown_field "inputs.leave_dirty selects an input the pipeline does not
+    # declare" (validate answers 200 with valid:false — the body, not the status,
+    # carries the refusal). The reference set is read off the COPIED node, the
+    # schemas are taken from the twin's own declaration (defaults included), and an
+    # input the twin does not declare is a GAP reason — the gate never invents one.
+    inp = (canonical.get("spec") or {}).get("inputs") or {}
+    props = inp.get("properties") if isinstance(inp.get("properties"), dict) else {}
+    required = [k for k in (inp.get("required") or []) if isinstance(k, str)]
+    refs = doc_input_refs(node)
+    # required inputs stay declared too: the live arm POSTs goal/repository, and an
+    # input the run sends that the schema does not declare is the same refusal.
+    need = sorted(set(refs) | set(required))
+    for k in need:
+        if k not in props:
+            out["missing"].append(f"inputs.{k} on the seed twin ({k} is "
+                                  + ("read by the copied node's bindings" if k in refs
+                                     else "required by the twin and sent with the "
+                                          "scratch run") + ")")
+    if out["missing"]:
+        return out
+    kept = {k: props[k] for k in props if k in need}
     scratch = {"apiVersion": canonical.get("apiVersion"), "kind": "Pipeline",
                "metadata": {"name": name,
                             "description": "C5h budget arm: the twin's held node with "
                                            "retry.maxAttempts 1 and nothing else"},
-               "spec": {"inputs": {"type": "object", "required": ["goal", "repository"],
+               "spec": {"inputs": {"type": "object",
+                                   "required": [k for k in required if k in kept],
                                    "properties": kept},
                         "policies": json.loads(json.dumps(
                             (canonical.get("spec") or {}).get("policies") or {})),
                         "nodes": [node]}}
+    out["input_refs"] = refs
+    out["inputs_declared"] = sorted(kept)
     out["applied"].append(f"held node '{C5H_NODE_ID}' (m4-exit.sh + M4_HOLD_SECONDS) "
                           "copied to top level verbatim")
     out["applied"].append("retry := {maxAttempts: 1} (the one variable — backoff and "
                           "retriableErrors are gone with the old budget too)")
+    out["applied"].append(f"spec.inputs declares {sorted(kept)} — every input the copied "
+                          f"node reads {refs} plus the twin's required list, each schema "
+                          "copied from the twin")
     out["doc"] = doc_yaml_emit(scratch)
     return out
+
+
+def c5h_publish_report(pub):
+    """The compiler's own words about the scratch revision, for a GAP line that
+    refuses to hide a refusal: validate answers 200 with valid:false when the
+    document is broken (§ 2.2), so the STATUS proves nothing and the body has to be
+    quoted; a publish that never landed adds the raw problem+json tail (the publish
+    response is the last thing c13_draft_probe appends to `raw`). Nothing here is
+    the gate's summary of the engine — it is the engine's text."""
+    if not isinstance(pub, dict):
+        return ("no draft could be created (POST /api/v1/pipelines/{id}/drafts refused) "
+                "— nothing reached the compiler")
+    bits = [f"validate={pub.get('validate_status')}",
+            f"publish={pub.get('publish_status')}"]
+    vr = pub.get("vresp")
+    if isinstance(vr, dict):
+        bits.append(f"valid={vr.get('valid')!r}")
+        errs = [e for e in (vr.get("errors") or []) if isinstance(e, dict)]
+        if errs:
+            bits.append(f"validate errors [{c13_brief(errs)}]")
+            for e in errs[:4]:
+                bits.append(f"{e.get('source')}/{e.get('code')}"
+                            f"@{e.get('instance_location')}: "
+                            f"{str(e.get('message') or '')[:180]}")
+    raw = str(pub.get("raw") or "")
+    if raw.strip():
+        bits.append(f"raw (validate then publish): {raw[-420:].strip()}")
+    return " | ".join(bits)
 
 
 def c5h_doc_verdicts(res):
     """Honesty gate on the scratch document itself: the arm only measures the twin's
     kill target if that target was copied verbatim and the ONE change is the
-    budget."""
+    budget. The input-declaration arm is what 1c190fe GAPped on: a copied node whose
+    bindings select an input the scratch never declares is refused by the compiler
+    at publish (unknown_field), so the arm checks the reference set the builder read
+    off the copied node against the declaration it wrote (test_c5_logic.py re-reads
+    the emitted YAML and proves the same claim off the bytes, independently)."""
     sp = res if isinstance(res, dict) else {}
     applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
     v = [("C5h scratch doc: the twin's held node (m4-exit.sh + M4_HOLD_SECONDS) copied "
@@ -4692,6 +5982,15 @@ def c5h_doc_verdicts(res):
         v.append(("C5h scratch doc: every required splice applied", False,
                   f"missing={missing}"))
     if isinstance(doc, str):
+        refs = [str(x) for x in (sp.get("input_refs") or [])] or doc_input_refs(doc)
+        declared = set(str(x) for x in (sp.get("inputs_declared") or []))
+        undeclared = sorted(set(refs) - declared)
+        v.append(("C5h scratch doc: every input the copied node reads is declared in "
+                  "spec.inputs (an undeclared selection is the compiler's "
+                  "unknown_field refusal)",
+                  bool(refs) and not undeclared,
+                  f"refs={sorted(set(refs))} declared={sorted(declared)}"
+                  + (f" undeclared={undeclared}" if undeclared else "")))
         v.append(("C5h scratch doc: ONE node and no other retry budget anywhere "
                   "(no gate, no until, no maxAttempts: 2)",
                   doc.count("executable: m4-exit.sh") == 1 and "maxAttempts: 1" in doc
@@ -4924,6 +6223,38 @@ C4E_FREEZE_S = C_FAULT_LEASE_S          # lease 30s + reconciler tick 15s (§ 7.
 C4E_CLOSE_POLL_S = 150                  # the wake-up: reconciler + retry bookkeeping
 C4E_QUIET_S = 20                        # grace for a stale append to become visible
 C4E_WINDOW_S = 900                      # the real /plan turn precedes the gate
+# 1c190fe's C4e GAP: the fence landed seconds after the /implement turn leased,
+# before anything at all was journalled — before=0/after=0 is silence over
+# nothing. The first fix waited for the turn's first conversation.message.agent
+# row, and lab turn 01a188d5-7154-… proved that wait can never fence a live
+# turn: its ledger read conversation.tool.call ×5, conversation.tool.update ×20,
+# conversation.permission.requested/decided ×4 each, conversation.message.agent
+# ×1 — the single agent-text row (internal/worker/sink.go coalesces text on 300ms
+# idle, any non-chunk event, or turn end) landed only after the attempt had
+# already reached 'succeeded' on its own. A real Claude turn STREAMS tools and
+# keeps its text for the end, so the arm now waits for the turn's FIRST streamed
+# transcript row (C4E_TRANSCRIPT_TYPES below) and GAPs (never fences) a turn that
+# streams none within this cap.
+C4E_FIRST_CHUNK_S = 180                 # cap on the wait for the turn's first row
+
+# What "the transcript" is for C4e: 09-api-events-data.md's M2 (ADR-0016) list
+# fixes the conversation family — `conversation.message.agent` (worker-coalesced
+# readable chunks), `conversation.thought`, `conversation.tool.call`,
+# `conversation.tool.update`, `conversation.permission.requested/decided`,
+# `conversation.turn.*` — and is explicit that "the transcript is `domain_events`
+# scoped by `conversation_id`": the transcript is the whole conversation stream,
+# not one type in it. § 7.1 C4e's psql samples ONLY
+# type='conversation.message.agent', which 01a188d5 shows lands at turn end — a
+# sample that cannot fence a turn mid-flight, while C4e's actual claim ("NO
+# transcript row was appended after unpause") is about the stream a stale worker
+# would append to. conversation.turn.* is excluded from the watched set because
+# § 7.1 C4e itself EXPECTS the system to append conversation.turn.interrupted
+# AFTER the fence — counting it would fail the quiet arm on the product's own
+# correct write; the permission pair is excluded because its decided half is
+# written by the approving side, not attributable to the stale worker. The
+# streamed set the arm fences on, and then keeps quiet, is:
+C4E_TRANSCRIPT_TYPES = ("conversation.message.agent", "conversation.thought",
+                        "conversation.tool.call", "conversation.tool.update")
 
 
 def c4e_emit(verdicts):
@@ -4959,20 +6290,96 @@ def c4e_turn_types_sql(turn):
             f"WHERE payload->>'turn_id' = '{turn}' ORDER BY global_seq")
 
 
+def c4e_transcript_type_in():
+    """C4E_TRANSCRIPT_TYPES as a SQL IN-list — one spelling shared by the seq and
+    the timing read, so the two silence arms can never disagree on what the
+    transcript is."""
+    return ", ".join(f"'{t}'" for t in C4E_TRANSCRIPT_TYPES)
+
+
 def c4e_transcript_seq_sql(turn):
-    """§ 7.1 C4e's literal max(global_seq) over the fenced turn's agent transcript
-    rows, read the same turn-scoped way (§ 7.1's `where turn_id='$TURN'`)."""
+    """max(global_seq) over the fenced turn's STREAMED transcript rows
+    (C4E_TRANSCRIPT_TYPES), read the same turn-scoped way § 7.1 uses
+    (`where turn_id='$TURN'` → payload->>'turn_id'). § 7.1's sample query filters
+    type='conversation.message.agent' alone, but a real Claude turn only lands
+    agent text at turn end (01a188d5: message.agent ×1 after 'succeeded',
+    tool.call ×5 / tool.update ×20 the whole way), so the stream — which is what
+    the transcript IS (09-api-events-data.md: "the transcript is domain_events
+    scoped by conversation_id") — is what 'NO transcript row was appended after
+    unpause' is measured over. The sample's type stays in the set."""
     return (f"SELECT coalesce(max(global_seq), 0)::text FROM domain_events "
             f"WHERE payload->>'turn_id' = '{turn}' "
-            f"AND type = 'conversation.message.agent'")
+            f"AND type IN ({c4e_transcript_type_in()})")
 
 
 def c4e_transcript_predates_sql(turn, ts):
-    """§ 8's timing arm, compared in Postgres's own clock: did every agent
-    transcript row of the fenced turn land at or before the unpause?"""
+    """§ 8's timing arm, compared in Postgres's own clock: did every streamed
+    transcript row (C4E_TRANSCRIPT_TYPES) of the fenced turn land at or before
+    the unpause? Same set as the seq read, via the same IN-list helper."""
     return (f"SELECT coalesce(max(occurred_at) <= '{ts}'::timestamptz, true) "
             f"FROM domain_events WHERE payload->>'turn_id' = '{turn}' "
-            f"AND type = 'conversation.message.agent'")
+            f"AND type IN ({c4e_transcript_type_in()})")
+
+
+C4E_ATTEMPT_TERMINAL = ("succeeded", "failed", "cancelled", "interrupted")
+
+
+def c4e_first_transcript_gap(seq, status, cap_s):
+    """C4e's precondition as a verdict, read BEFORE anything is frozen: the turn
+    must already journal >=1 streamed transcript row (C4E_TRANSCRIPT_TYPES: an
+    agent message, thought, tool call or tool update — whatever the transcript
+    shows), or its attempt must have closed on its own. Returns [] when the
+    transcript exists — the post-fence c4e_pre_transcript_verdict prints the PASS
+    line then — and exactly one GAP-shaped (label, None, detail) when it does
+    not: § 7.1 C4e's max(global_seq) 0-vs-0 would green a measurement that was
+    never taken (1c190fe), and freezing a turn that closed itself fences nothing.
+    Pure: seq/status/cap_s are the two ledger reads' texts."""
+    if _int(seq) > 0:
+        return []
+    streamed = "/".join(t[len("conversation."):] for t in C4E_TRANSCRIPT_TYPES)
+    why = (f"the turn journaled 0 streamed transcript rows ({streamed}) in "
+           f"{cap_s}s (last attempt status {status!r}) — no agent message, "
+           "thought, tool call or tool update ever named this turn, so its "
+           "transcript was empty when the fence window ended. § 7.1 C4e's "
+           "max(global_seq)-unchanged would compare 0 against 0: silence over "
+           "nothing proves nothing. GAP, never PASS — the journal slice printed "
+           "above says what the turn DID emit.")
+    if status in C4E_ATTEMPT_TERMINAL:
+        why = (f"the attempt reached {status!r} on its own before any streamed "
+               f"transcript row landed (0 rows in {cap_s}s) — " + why)
+    return [("C4e the fenced turn had a transcript to keep quiet (>=1 streamed "
+             "conversation row before the unpause: message.agent / thought / "
+             "tool.call / tool.update)", None, why)]
+
+
+def c4e_first_chunk_still_fencable(status):
+    """Pure poll-exit rule: keep waiting while the attempt is live (or its row
+    is unreadable — unreadable is not evidence of a closed attempt); stop the "
+    "wait the moment the attempt itself goes terminal, because there is then no "
+    "lease left to fence."""
+    return status not in C4E_ATTEMPT_TERMINAL
+
+
+def wait_c4e_first_transcript(turn, att, cap_s):
+    """Poll § 7.1 C4e's transcript read until the turn's FIRST streamed row
+    (C4E_TRANSCRIPT_TYPES — tool calls/updates land long before the turn-end
+    agent text), or the attempt closes on its own, or the cap elapses. Returns
+    (max_global_seq_text, last-attempt-status-text). Without this the fence
+    lands on a turn that leased seconds ago and the silence arm measures 0==0
+    (1c190fe's GAP); and waiting for agent TEXT alone never fences mid-turn at
+    all, because a real Claude turn streams tools first and texts last — the
+    01a188d5 GAP ("reached 'succeeded' … 0 rows in 180s")."""
+    deadline = time.time() + cap_s
+    seq = psql(c4e_transcript_seq_sql(turn))
+    status = ""
+    while not _int(seq) and time.time() < deadline:
+        time.sleep(max(1.0, C_LIVE_POLL_S))
+        row = psql_rows(psql(c4e_attempt_status_sql(att)), 2)
+        status = row[0][0] if row else "unreadable"
+        if not c4e_first_chunk_still_fencable(status):
+            break
+        seq = psql(c4e_transcript_seq_sql(turn))
+    return seq, status
 
 
 def c4e_attempt_shape_sql(att):
@@ -5044,13 +6451,19 @@ def c4e_turn_row_verdicts(row):
 def c4e_pre_transcript_verdict(before_seq):
     """C4e's own precondition: the turn had a transcript before the fence, or
     'max(global_seq) unchanged' is a comparison over nothing. GAP (None), never a
-    PASS, when the fenced turn had appended no agent transcript row at all."""
+    PASS, when the fenced turn had appended no streamed transcript row ("""
+    """C4E_TRANSCRIPT_TYPES) at all."""
     seq = _int(before_seq)
-    return [("C4e the fenced turn had a transcript to keep quiet (>=1 "
-             "conversation.message.agent row before the unpause)",
+    return [("C4e the fenced turn had a transcript to keep quiet (>=1 streamed "
+             "conversation row before the unpause: message.agent / thought / "
+             "tool.call / tool.update)",
              True if seq > 0 else None,
-             f"max(global_seq) before the unpause={before_seq!r} — a turn whose first "
-             "chunk never landed cannot be proven quiet")]
+             f"max(global_seq) before the unpause={before_seq!r}" +
+             ("" if seq > 0 else
+              " — the arm only freezes a turn whose first streamed transcript row "
+              "already landed (wait_c4e_first_transcript), so 0 here means the "
+              "pre-fence wait was bypassed; a turn with no transcript cannot be "
+              "proven quiet (1c190fe)"))]
 
 
 def c4e_turn_event_verdicts(rows):
@@ -5098,14 +6511,27 @@ def c4e_attempt_verdicts(row):
 
 
 def c4e_transcript_verdicts(before_seq, after_seq, fence_ts_ok, has_turn=True):
-    """c4_transcript_verdicts plus C4e's vacuity guard: a turn whose transcript was
-    still EMPTY when the fence landed cannot prove 'nothing was appended after the
-    unpause' by having nothing at all — silence over 0==0 would green a measurement
-    that was never taken. A row that DID land after the fence is the failure § 7.1
-    C4e names, so that comparison is always reported."""
-    if has_turn and not _int(before_seq) and not _int(after_seq):
+    """C4e's silence arm over the STREAMED transcript: before/after are the
+    max(global_seq) of the turn's C4E_TRANSCRIPT_TYPES rows read either side of
+    the wake-up, fence_ts_ok is Postgres's own `max(occurred_at) <= unpause
+    now()`. The vacuity guard stays — a turn whose transcript was EMPTY when the
+    fence landed cannot prove 'nothing was appended after the unpause' by having
+    nothing at all (silence over 0==0 would green a measurement never taken) —
+    and a row that DID land after the fence is the failure § 7.1 C4e names, so
+    that comparison is always reported. Separate rows from c4_transcript_verdicts
+    because C4e's read spans the streamed set, not the contract's single
+    message.agent sample type (01a188d5: agent text lands only at turn end)."""
+    if not has_turn or (not _int(before_seq) and not _int(after_seq)):
         return []
-    return c4_transcript_verdicts(before_seq, after_seq, fence_ts_ok, has_turn=has_turn)
+    quiet = str(before_seq) == str(after_seq)
+    return [
+        ("C4e no transcript row appended after unpause (max global_seq of the "
+         "turn's streamed conversation rows unchanged across the wake-up)", quiet,
+         f"before={before_seq!r} after={after_seq!r}"),
+        ("C4e every streamed transcript row predates the unpause (§ 8 timing, "
+         "compared in Postgres's clock)", truthy(fence_ts_ok),
+         f"observed {fence_ts_ok!r}"),
+    ]
 
 
 def c4e_no_live_gap(run_id, status, timeout):
@@ -5179,6 +6605,25 @@ def c4e_agent_turn(facts=None, alice=None):
         gap(label, f"the claim at {live['key']} carries attempts.turn_id NULL, so § 7.1 "
                    "C4e's turn-scoped reads have no $TURN to scope to (the shape line "
                    "above says whether the node was agent.acp at all)")
+        return
+    # 1c190fe: the fence caught the turn seconds after it leased, its transcript
+    # still empty, and the silence arm measured 0==0. Wait for the turn's FIRST
+    # streamed row — tool calls/updates land long before the turn-end agent text
+    # (01a188d5 streamed tool.call ×5 / tool.update ×20 and journaled its single
+    # message.agent only after 'succeeded'). There must BE a transcript to keep
+    # quiet before anything is frozen.
+    first_seq, first_status = wait_c4e_first_transcript(turn, att, C4E_FIRST_CHUNK_S)
+    pre = c4e_first_transcript_gap(first_seq, first_status, C4E_FIRST_CHUNK_S)
+    if pre:
+        show(f"C4e every journal row naming the turn {turn} (nothing to fence)",
+             "\n".join(" | ".join(r) for r in psql_rows(
+                 psql(c4e_turn_types_sql(turn)), 2))
+             or "(the journal says nothing about this turn at all)")
+        c4e_emit(pre)
+        r = alice.post(LB, f"/api/v1/runs/{run_id}/cancel",
+                       {"reason": "M4 exit C4e: the turn streamed no transcript row "
+                                  "before the fence window — no transcript to keep quiet"})
+        show(f"C4e cleanup POST /runs/{run_id}/cancel -> {r.status}", r.text[:160])
         return
     rc, out = run(COMPOSE + ["pause", owner])
     if rc != 0:
@@ -5558,9 +7003,31 @@ def c5():
             f"JOIN node_executions ne ON ne.id = a.node_execution_id "
             f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
             f"ORDER BY a.attempt_number"), 5, sep="\t")]
-    r = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "crash"})
-    show(f"C5e POST /api/v1/runs/{run_id}/retry -> {r.status}", r.text[:300])
-    manual_status = r.status
+    # Route 31's OWN order decides what a POST here can measure: RetryRun answers the
+    # run-status door first (only failed / interrupted / cancelled re-open) and only then
+    # asks runtime/retry.go for the plan § 7.1 C5e reads. The shipped twin's killed node
+    # carries the authored maxAttempts 2, so § 7.1 C5b's own sentence — "the run row is
+    # still running (retry armed)" — is where its kill leaves the ledger, and 1c190fe
+    # graded the 409 that door answers as C5e's "-> 200" (live20, twice: here and in C6's
+    # copy of the same POST). So ask the button only of a run the ledger shows as
+    # retriable; otherwise the engine owns THIS retry (c5_auto_retry_verdicts grades that
+    # pair, and it passed in live20) and the row's manual arm is c5e_retry_door_arm, run
+    # at the end of this leg once the twin's own workspace reads are done.
+    run_st = run_status(run_id)
+    run_retriable = c6_run_is_retriable(run_st)
+    manual_status, manual_body = None, ""
+    if run_retriable:
+        r = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "crash"})
+        manual_status, manual_body = r.status, r.text[:200]
+        show(f"C5e POST /api/v1/runs/{run_id}/retry (runs.status={run_st!r}, retriable) "
+             f"-> {manual_status}", manual_body)
+    else:
+        show(f"C5e POST /api/v1/runs/{run_id}/retry — NOT asked (runs.status={run_st!r})",
+             "§ 7.1 C5b's 'running (retry armed)': the ENGINE's budget owns this run's "
+             "next attempt, and § 5 route 31 answers a POST to a running run with "
+             "run_not_retriable BEFORE the checkpoint plan or the attempt ledger C5e "
+             "names is reached; the UI's-button claim is graded on the retriable scratch "
+             "at the end of this leg")
     rows = attempts_of_key()
     deadline = time.time() + hold_window(180)
     while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1 for x in rows):
@@ -5569,9 +7036,13 @@ def c5():
     show(f"C5e every attempt of the killed node {key}",
          "\n".join(f"{x['attempt_number']}: {x['status']} {x['error_class']} "
                    f"retry_context={x['retry_context']}" for x in rows) or "(none)")
-    # The refusal is graded AFTER the poll: only a run the ledger shows as neither
-    # explicitly accepted NOR budget-armed is a real 'neither path retried' FAIL.
-    c5_emit(c5_retry_api_verdicts(manual_status, r.text[:200], rows))
+    # NOT graded here. Whether this row is a NOTE or an honest GAP depends on whether the
+    # manual arm (which runs at the END of this leg, after C5f's worktree reads — the arm
+    # kills a worker and the twin's workspace is released at terminal) actually produced a
+    # measurement, and c5_emit can only answer that once it has. The refusal is graded
+    # after the poll either way: only a run the ledger shows as neither explicitly accepted
+    # NOR budget-armed is a real 'neither path retried' FAIL.
+    c5e_row = (manual_status, manual_body, rows, run_retriable)
     # WHO armed the retry: the engine's budget (node.attempt.retry_scheduled, the
     # case § 7.1 C5b's 'running (retry armed)' describes) or the manual POST above.
     sched = psql(f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' "
@@ -5638,6 +7109,37 @@ def c5():
     c5_emit(c5_budget_verdicts(limit, final[0][0] if final else "",
                                final[0][1] if final else "",
                                scratch_ran=bool(scratch)))
+    # C5e's manual arm — the UI's button, asked of a run route 31 re-opens. It runs HERE,
+    # at the end of the leg, for two reasons: it kills a worker (the twin's own retry must
+    # have finished its worktree reads first), and its subject must be a run whose OWN
+    # budget was spent, which the twin never is (attempt_limit 2 → § 7.1 C5b's engine-owned
+    # 'running (retry armed)' → the run-status door answers before runtime/retry.go sees a
+    # plan, and run.retried — the row C6c reads the mode from — is written by the manual
+    # path alone). The scratch is published by the gate (c5e_retry_scratch_doc), its
+    # boundary-setting node SUCCEEDS first, and its killed node carries maxAttempts 1, so
+    # the run fails honestly and the POST lands on an open door. When the twin answered
+    # 200 on its own there is nothing to duplicate.
+    arm = None if manual_status == 200 else c5e_retry_door_arm(
+        alice, facts, tw, "C5e", seed_step=C5E_SEED_EDIT, kill_node=C5E_KILL_NODE,
+        slug_prefix="m4x-c5e-retry")
+    # C5e's own line, printed once, here, where both readings exist: the twin's POST (or
+    # the door that made the driver skip it) and the arm's outcome.
+    c5_emit(c5_retry_api_verdicts(*c5e_row[:2], c5e_row[2], run_retriable=c5e_row[3],
+                                  measured_elsewhere=arm is not None))
+    if arm is None and manual_status != 200:
+        gap("C5e POST /runs/{id}/retry -> 200 (the UI's button posts exactly this)",
+            "the retriable-subject arm produced no graded retry — the lines above say "
+            "where it stopped (no admin session, no canonical document, the scratch "
+            "revision refused by the compiler, no live attempt to kill, or the run never "
+            "reached route 31's retriable state). The twin itself cannot answer this row: "
+            "its budget-2 kill leaves it 'running (retry armed)' and § 5 route 31 owns "
+            "that answer (live20's 409 GAP)")
+    elif arm is not None:
+        CTX["c5e_manual_arm"] = arm
+        show("C5e the sentence § 7.1 requires the report to repeat, and where THIS pass "
+             "read it", C5E_MANUAL_SENTENCE + f" [run {arm['run_id']}, "
+             f"runs.status was {arm['run_st']!r} when the POST went out]")
+        EVIDENCE["C5e"] = C5E_MANUAL_SENTENCE
     CTX["c5"] = {"run_id": run_id, "attempt_id": att, "owner": owner, "key": key,
                  "head_before": head_before, "dirty_before": dirty_before,
                  "volume_before": ws_before.get("volume_id"),
@@ -5701,11 +7203,14 @@ def c5h_scratch_arm(alice, facts, tw):
         return
     pub = c7_publish(admin, pid, "C5h maxAttempts=1 hold node", res["doc"])
     rev = str((pub or {}).get("revision_id") or "")
-    if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
+    # A 200 from /validate is NOT acceptance (§ 2.2 answers 200 with valid:false and
+    # the compiler's errors in the body), so the verdict reads the body and the GAP
+    # quotes what the compiler said instead of truncating our own guess at it.
+    refused = pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev
+    show("C5h scratch draft -> validate -> publish answer", c5h_publish_report(pub))
+    if refused:
         gap("C5h scratch arm", f"the maxAttempts=1 revision could not be drafted/"
-            f"validated/published (validate={pub and pub.get('validate_status')} "
-            f"publish={pub and pub.get('publish_status')} errors="
-            f"{str((pub or {}).get('vresp') or '')[:240]}) — with no published "
+            f"validated/published ({c5h_publish_report(pub)}) — with no published "
             "budget-1 node there is no refusal to measure")
         return
     check("C5h scratch revision published through draft -> validate -> publish "
@@ -6176,6 +7681,23 @@ def doc_is_pipeline(value):
             and value.get("kind") == "Pipeline")
 
 
+DOC_INPUT_REF_RE = re.compile(r"inputs\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def doc_input_refs(value):
+    """Every input NAME a document fragment READS — `${{ inputs.x }}` interpolations
+    and bare expression operands (`when: inputs.fanout == true`) alike — collected off
+    the fragment's own JSON text, so a binding in a prompt, an env value, a workspace
+    repository list or a `when` counts the same way. Sorted, deduped. A scratch
+    document that copies a node must declare all of them: the compiler refuses a
+    selection of an undeclared input with unknown_field (§ 9.1)."""
+    try:
+        text = json.dumps(value)
+    except (TypeError, ValueError):
+        text = str(value)
+    return sorted(set(DOC_INPUT_REF_RE.findall(text)))
+
+
 def c6_emit(verdicts):
     """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
     for label, ok, detail in verdicts:
@@ -6259,20 +7781,32 @@ def c6_dirty_scratch_doc(canonical, name):
     change C1's key set). So C6d measures on the gate's OWN two-node scratch, published
     draft -> validate -> publish like C5h (c5h_scratch_doc is the template):
 
-      dirty_seed (node A): a verbatim copy of the twin's held implement node with
-        env M4_LEAVE_DIRTY: 'true' — it COMPLETES, and the boundary the worker
-        captures at its completion records committed=false (modified_path_count>0).
-      kill_target (node B): the same held node with retry replaced by
+      dirty_seed (node A): the twin's held implement node copied VERBATIM (only its id
+        and retry block differ), so its env still carries
+        `M4_LEAVE_DIRTY: ${{ string(inputs.leave_dirty) }}`: the gate sets leave_dirty on
+        the RUN INPUT (with_dirty, the twin's own opt-in) and m4-exit.sh writes one
+        UNCOMMITTED file after its edit, so the boundary captured at A's COMPLETION
+        records committed=false (modified_path_count>0). Nothing is baked into the
+        document — the flag the run sends is the flag the node reads.
+      kill_target (node B): the same verbatim copy with retry replaced by
         {maxAttempts: 1, workspacePolicy: restore_checkpoint} and M4_HOLD_SECONDS
         riding the run input — the gate KILLS the owning worker mid-B so the run
-        fails honestly (budget 1, no engine auto-retry), then POSTs /runs/{id}/retry
-        for B. B's inherited boundary is A's DIRTY checkpoint -> RetryPlan refuses
-        ErrCheckpointUnavailable -> the 409 problem+json code=checkpoint_unavailable.
+        fails honestly (budget 1, no engine auto-retry) and reaches route 31's
+        RETRIABLE state BEFORE any POST, then retries B. B's inherited boundary is A's
+        DIRTY checkpoint -> RetryPlan refuses ErrCheckpointUnavailable -> the 409
+        problem+json code=checkpoint_unavailable (the CHECKPOINT door, not the
+        run-status door — see c6d_precondition_verdicts).
 
-    inputs keeps goal/repository/hold_seconds (+ their defaults) so the node bindings
-    resolve; leave_dirty rides the RUN input, the scratch hard-codes M4_LEAVE_DIRTY on
-    A only. Returns {doc, applied, missing} with doc None unless every splice applied
-    verbatim — an invented node proves nothing about the twin's refusal."""
+    spec.inputs carries the schema for EVERY input either copy reads — read off the
+    copies with the shared doc_input_refs, exactly like c5h_scratch_doc — plus the
+    twin's own required list. The held node reads inputs.leave_dirty, so the old
+    hard-coded goal/repository/hold_seconds list is refused by the compiler at publish
+    with unknown_field (the 1c190fe shape of bug, seen offline against the Go compiler:
+    `unknown_field [/spec/nodes/0/config/env/M4_LEAVE_DIRTY] inputs.leave_dirty selects
+    an input the pipeline does not declare`). Schemas are copied from the twin, never
+    invented, and an input the twin does not declare is a GAP reason. Returns
+    {doc, applied, missing, input_refs, inputs_declared} with doc None unless every
+    splice applied verbatim — an invented node proves nothing about the twin's refusal."""
     out = {"doc": None, "applied": [], "missing": []}
     if not doc_is_pipeline(canonical):
         out["missing"].append("source document (GET /revisions/{id} served no canonical "
@@ -6296,59 +7830,88 @@ def c6_dirty_scratch_doc(canonical, name):
         out["missing"].append("held node does not run in the run_workspace — a read_only "
                               "checkout captures no dirty boundary and resets nothing")
         return out
-    props = ((canonical.get("spec") or {}).get("inputs") or {}).get("properties") or {}
-    kept = {k: props[k] for k in ("goal", "repository", "hold_seconds") if k in props}
-    for k in ("repository", "hold_seconds"):
-        if k not in kept:
-            out["missing"].append(f"inputs.{k} on the seed twin ({k} is what the held "
-                                  "node's bindings read)")
-    if out["missing"]:
+    if "M4_LEAVE_DIRTY" not in (cfg.get("env") or {}):
+        out["missing"].append(f"held node has no M4_LEAVE_DIRTY env — the copy would "
+                              "write nothing uncommitted, so no boundary would ever read "
+                              "committed=false and the refusal has nothing to refuse")
         return out
 
+    # Both copies stay VERBATIM apart from id / dependsOn / retry: node A's dirty write is
+    # driven by the run's own leave_dirty input through the twin's own binding, which is
+    # what makes the boundary the ledger records attributable to the flag the gate sent.
     seed = json.loads(json.dumps(held))              # node A: deep copy of the held node
     seed["id"] = C6D_SEED_NODE
     seed.pop("dependsOn", None)
     seed["retry"] = {"maxAttempts": 1}               # it only needs to succeed once
-    seed_cfg = seed.setdefault("config", {})
-    seed_env = seed_cfg.setdefault("env", {})
-    seed_env["M4_LEAVE_DIRTY"] = "true"             # the one variable on A: leave it dirty
 
     kill = json.loads(json.dumps(held))             # node B: the killed restore_checkpoint node
     kill["id"] = C6D_KILL_NODE
     kill["dependsOn"] = [C6D_SEED_NODE]             # it inherits A's boundary
     kill["retry"] = {"maxAttempts": 1, "workspacePolicy": C6_RESTORE_POLICY}
-    kill_cfg = kill.setdefault("config", {})
-    kill_env = kill_cfg.setdefault("env", {})
-    kill_env["M4_LEAVE_DIRTY"] = "false"            # B is held+ killed, not the dirty one
+
+    # The scratch must declare EVERY input the copied nodes read — the shared
+    # doc_input_refs read, not a list authored here (that hard-coded list is what made
+    # the C5h scratch a 409 unknown_field and would do the same to this one, since the
+    # held node binds inputs.leave_dirty). Required inputs stay declared too: the live
+    # arm POSTs goal/repository, and an input the run sends that the schema does not
+    # declare is the same refusal (§ 9.1).
+    inp = (canonical.get("spec") or {}).get("inputs") or {}
+    props = inp.get("properties") if isinstance(inp.get("properties"), dict) else {}
+    required = [k for k in (inp.get("required") or []) if isinstance(k, str)]
+    refs = sorted(set(doc_input_refs(seed)) | set(doc_input_refs(kill)))
+    need = sorted(set(refs) | set(required))
+    for k in need:
+        if k not in props:
+            out["missing"].append(f"inputs.{k} on the seed twin ({k} is "
+                                  + ("read by a copied node's bindings" if k in refs
+                                     else "required by the twin and sent with the "
+                                          "scratch run") + ")")
+    if out["missing"]:
+        return out
+    kept = {k: props[k] for k in props if k in need}
 
     scratch = {"apiVersion": canonical.get("apiVersion"), "kind": "Pipeline",
                "metadata": {"name": name,
                             "description": "C6d refusal arm: node A leaves a committed=false "
-                                           "boundary, node B (restore_checkpoint, budget 1) "
-                                           "is killed mid-way and its retry refuses"},
-               "spec": {"inputs": {"type": "object", "required": ["goal", "repository"],
+                                           "boundary (the run's own leave_dirty input), node B "
+                                           "(restore_checkpoint, budget 1) is killed mid-way "
+                                           "and its retry refuses at the checkpoint door"},
+               "spec": {"inputs": {"type": "object",
+                                   "required": [k for k in required if k in kept],
                                    "properties": kept},
                         "policies": json.loads(json.dumps(
                             (canonical.get("spec") or {}).get("policies") or {})),
                         "nodes": [seed, kill]}}
-    out["applied"].append(f"'{C6D_SEED_NODE}' = the twin's held implement copied verbatim + "
-                          "M4_LEAVE_DIRTY: true (it completes -> dirty boundary)")
+    out["input_refs"] = refs
+    out["inputs_declared"] = sorted(kept)
+    out["applied"].append(f"'{C6D_SEED_NODE}' = the twin's held implement copied verbatim "
+                          "(its M4_LEAVE_DIRTY binding still rides inputs.leave_dirty, so the "
+                          "run's leave_dirty=true completes A over a committed=false boundary)")
     out["applied"].append(f"'{C6D_KILL_NODE}' = the same node with retry := "
                           f"{{maxAttempts: 1, workspacePolicy: {C6_RESTORE_POLICY}}} "
-                          f"dependsOn {C6D_SEED_NODE} (killed -> run fails -> its retry "
-                          "inherits A's dirty boundary)")
+                          f"dependsOn {C6D_SEED_NODE} (killed on budget 1 -> the RUN reaches "
+                          "route 31's retriable state -> its retry inherits A's dirty boundary)")
+    out["applied"].append(f"spec.inputs declares {sorted(kept)} — every input the copied "
+                          f"nodes read {refs} plus the twin's required list, each schema "
+                          "copied from the twin")
     out["doc"] = doc_yaml_emit(scratch)
     return out
 
 
 def c6_dirty_doc_verdicts(splices):
-    """Honesty gate on the C6d scratch: node A must carry the dirty write and node B
-    the ONE restore budget — nothing else. A doc the gate cannot show carrying both
-    the leave_dirty env and the restore policy cannot license the refusal."""
+    """Honesty gate on the C6d scratch: node A must carry the twin's own dirty-write
+    binding, node B the ONE restore budget, and the document must declare every input
+    those copies select — nothing else. A doc the gate cannot show carrying the
+    leave_dirty binding, the restore policy AND its input declarations cannot license
+    the refusal: the compiler refuses undeclared selections at publish (unknown_field),
+    so an undeclared scratch never became a revision and its refusal is nobody's."""
     sp = splices if isinstance(splices, dict) else {}
     applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
-    v = [(f"C6d scratch doc: '{C6D_SEED_NODE}' copied with M4_LEAVE_DIRTY: true",
-          any(C6D_SEED_NODE in a and "M4_LEAVE_DIRTY: true" in a for a in applied),
+    v = [(f"C6d scratch doc: '{C6D_SEED_NODE}' is the twin's held node copied verbatim "
+          f"(its M4_LEAVE_DIRTY binding still rides inputs.leave_dirty — the run input "
+          "leaves the boundary dirty, nothing is baked in)",
+          any(C6D_SEED_NODE in a and "M4_LEAVE_DIRTY" in a and "verbatim" in a
+              and "inputs.leave_dirty" in a for a in applied),
           f"applied={applied[:3]}")]
     v.append((f"C6d scratch doc: '{C6D_KILL_NODE}' carries restore_checkpoint + maxAttempts 1 "
               f"and dependsOn the dirty node",
@@ -6359,11 +7922,26 @@ def c6_dirty_doc_verdicts(splices):
         v.append(("C6d scratch doc: every required splice applied", False,
                   f"missing={missing}"))
     if isinstance(doc, str):
-        v.append(("C6d scratch doc: TWO nodes, one restore policy, one dirty write "
-                  "and no other retry budget (no gate, no until)",
+        # The 1c190fe C5h class: an undeclared selection is a COMPILER refusal
+        # (unknown_field at publish), so a scratch that cannot show its declaration set
+        # never reached a revision, and its refusal would be nobody's.
+        refs = [str(x) for x in (sp.get("input_refs") or [])] or doc_input_refs(doc)
+        declared = set(str(x) for x in (sp.get("inputs_declared") or []))
+        undeclared = sorted(set(refs) - declared)
+        v.append(("C6d scratch doc: every input the copied nodes read is declared in "
+                  "spec.inputs (an undeclared selection is the compiler's "
+                  "unknown_field refusal)",
+                  bool(refs) and bool(declared) and not undeclared,
+                  f"refs={sorted(set(refs))} declared={sorted(declared)}"
+                  + (f" undeclared={undeclared}" if undeclared else "")))
+        v.append(("C6d scratch doc: TWO nodes, one restore policy, the dirty write bound "
+                  "to the run input on BOTH copies and no other retry budget "
+                  "(no gate, no until)",
                   doc.count(f"workspacePolicy: {C6_RESTORE_POLICY}") == 1
-                  and doc.count('M4_LEAVE_DIRTY: "true"') + doc.count("M4_LEAVE_DIRTY: 'true'")
-                  + doc.count("M4_LEAVE_DIRTY: true") == 1
+                  and doc.count("M4_LEAVE_DIRTY: ") == 2
+                  and doc.count("string(inputs.leave_dirty)") == 2
+                  and 'M4_LEAVE_DIRTY: "true"' not in doc
+                  and "M4_LEAVE_DIRTY: 'true'" not in doc
                   and doc.count("maxAttempts: 1") == 2
                   and "kind: until" not in doc
                   and "human.approval" not in doc,
@@ -6421,10 +7999,15 @@ def c6d_dirty_arm(alice, facts, tw):
         return
     pub = c7_publish(admin, pid, "C6d dirty-boundary scratch", res["doc"])
     rev = str((pub or {}).get("revision_id") or "")
-    if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
+    refused = pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev
+    # /validate answers 200 with valid:false when the document is broken (§ 2.2), so the
+    # STATUS proves nothing: the GAP quotes the COMPILER (c5h_publish_report is the
+    # shared reporter — this is exactly how an undeclared inputs.leave_dirty would show
+    # itself as unknown_field instead of vanishing into a truncated repr).
+    show("C6d dirty-scratch draft -> validate -> publish answer", c5h_publish_report(pub))
+    if refused:
         gap("C6d dirty-boundary arm", f"the dirty-boundary revision could not be drafted/"
-            f"validated/published (validate={pub and pub.get('validate_status')} "
-            f"errors={str((pub or {}).get('vresp') or '')[:240]}) — with no published "
+            f"validated/published ({c5h_publish_report(pub)}) — with no published "
             "scratch there is no boundary for RetryPlan to refuse on")
         return
     check("C6d dirty scratch revision published (the § 7.0 seed twin untouched)", True,
@@ -6432,12 +8015,23 @@ def c6d_dirty_arm(alice, facts, tw):
     if not require_fault_hold("C6d"):
         return
     base = mf(tw, "inputs", default={}) or mf(facts, "inputs", default={}) or {}
-    # The scratch revision declares goal/repository/hold_seconds ONLY — node A's
-    # M4_LEAVE_DIRTY is baked into the published document, NOT a run input (posting
-    # an undeclared leave_dirty would be refused by run-input validation). with_hold
-    # gives the held node its live window; the dirty file is the scratch's own work.
-    inputs = with_hold({k: base[k] for k in ("goal", "repository") if k in base},
-                       C_FAULT_HOLD_SECONDS)
+    inputs = {k: base[k] for k in ("goal", "repository") if k in base}
+    if "repository" not in inputs:
+        gap("C6d dirty-boundary arm", "the § 7.0 seed manifest carries no inputs.repository — "
+            "the copied node's workspace binding reads it, so the scratch run cannot be "
+            "posted honestly")
+        return
+    # leave_dirty IS a run input here: the copies kept the twin's own
+    # `M4_LEAVE_DIRTY: ${{ string(inputs.leave_dirty) }}` binding (nothing baked into the
+    # document), and the scratch declares it because the copies read it. with_dirty sets
+    # the flag (m4-exit.sh writes one uncommitted file after implement's edit, so the
+    # boundary its COMPLETION captures records committed=false); with_hold gives the held
+    # node its live window. Posting an undeclared input would be refused by run-input
+    # validation — which is exactly why the declaration above is load-bearing.
+    inputs = with_dirty(with_hold(inputs, C_FAULT_HOLD_SECONDS))
+    show("C6d scratch run inputs (the refusal's ONLY variable)",
+         f"{sorted(inputs)}; leave_dirty={inputs.get('leave_dirty')!r} "
+         f"hold_seconds={inputs.get('hold_seconds')!r}")
     r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
                    {"pipeline_revision_id": rev, "inputs": inputs,
                     "idempotency": idem_key("m4x-c6d")})
@@ -6496,35 +8090,127 @@ def c6_ckpts(text):
     return out
 
 
-def c6_avail_verdicts(cks):
+def c6_avail_verdicts(cks, want_node=None):
     """C6d's precondition arm — is there a checkpoint whose OWN recorded state is
     uncommitted? That is the only state the engine reads at retry time
     (runtime/retry.go's RetryPlan refuses on repo_states.committed=false). None
-    (GAP) when no such row exists: checkpoints record commits, never paths."""
+    (GAP) when no such row exists: checkpoints record commits, never paths.
+
+    `want_node` names the boundary the retry actually INHERITS (RetryPlan takes the
+    newest checkpoint that is not the retried node's own, so for C6d's scratch that is
+    completed node A, '/'+C6D_SEED_NODE). With it the arm is attribution, not just
+    existence: a dirty row on some OTHER node does not license this refusal."""
     dirty = [c for c in cks if c.get("committed") is False or (c.get("mpc") or 0) > 0]
-    if dirty:
-        return [("C6d precondition: a boundary whose recorded state is uncommitted "
-                 "exists", True, f"dirty-boundary nodes={[c['node'] for c in dirty][:3]}")]
-    known = [c for c in cks if c.get("committed") is True]
-    if known:
+    if not dirty:
+        known = [c for c in cks if c.get("committed") is True]
+        if known:
+            return [("C6d precondition: an uncommitted recorded boundary exists", None,
+                     f"every run_checkpoints.repo_states row says committed=true "
+                     f"(nodes={[c['node'] for c in known][:3]}) — the engine's refusal reads "
+                     "ONLY the recorded state, and the lab cannot make a committed boundary "
+                     "dirty from outside without forging ledger rows. The 409 arm needs a "
+                     "boundary left uncommitted INSIDE the checkpointed node, which is what "
+                     "the scratch run's own leave_dirty input does (m4-exit.sh M4_LEAVE_DIRTY "
+                     "writes an uncommitted file after implement's edit, so the boundary its "
+                     "COMPLETION captures records committed=false) — a run posted without it "
+                     "is honest and clean, and this GAP is the truthful answer.")]
         return [("C6d precondition: an uncommitted recorded boundary exists", None,
-                 f"every run_checkpoints.repo_states row says committed=true "
-                 f"(nodes={[c['node'] for c in known][:3]}) — the engine's refusal reads "
-                 "ONLY the recorded state, and the lab cannot make a committed boundary "
-                 "dirty from outside without forging ledger rows. The 409 arm needs a "
-                 "boundary left uncommitted INSIDE the checkpointed node: post this run "
-                 "with the twin's opt-in `leave_dirty` run input (m4-exit.sh M4_LEAVE_DIRTY "
-                 "writes an uncommitted file after implement's edit, so the boundary its "
-                 "COMPLETION captures records committed=false) — with the default false the "
-                 "boundary is honest and clean, and this GAP is the truthful answer.")]
-    return [("C6d precondition: an uncommitted recorded boundary exists", None,
-             "no readable run_checkpoints.repo_states rows (committed flag unreadable or "
-             "no checkpoints) — the refusal arm has nothing to stand on")]
+                 "no readable run_checkpoints.repo_states rows (committed flag unreadable or "
+                 "no checkpoints) — the refusal arm has nothing to stand on")]
+    v = [("C6d precondition: a boundary whose recorded state is uncommitted "
+          "exists", True, f"dirty-boundary nodes={[c['node'] for c in dirty][:3]}")]
+    if want_node:
+        rows = [c for c in cks if c.get("node") == want_node]
+        mine = [c for c in rows if c.get("committed") is False or (c.get("mpc") or 0) > 0]
+        v.append((f"C6d precondition: the INHERITED boundary (the newest checkpoint "
+                  f"before the retried node, i.e. {want_node}) is the dirty one "
+                  "RetryPlan reads",
+                  True if mine else (None if not rows else False),
+                  f"rows for {want_node}={json.dumps(rows[:2]) or '(none)'} "
+                  f"dirty={json.dumps(mine[:2]) or '(none)'} "
+                  f"dirty-boundary nodes={[c['node'] for c in dirty][:3]}"))
+    return v
+
+
+# --- C6d's precondition: WHICH door may be asked, and in what order -----------
+#
+# The retry route's own row (docs/m4-contract.md § 5 route 31, quoted by
+# internal/api/runs.go's RetryRun docblock) states two refusals in one sentence:
+#   * re-queue “with restore_checkpoint where the node declares it **and** every repo is
+#     committed at that boundary, else 409 checkpoint_unavailable”, and
+#   * “run_not_retriable on a terminal-successful or running run”.
+# communication-spec/09-api-events-data.md is the same claim from the API side (“POST
+# /runs/{id}:retry … enforces checkpoint availability”) and 03-pipeline-engine.md's
+# checkpoint rule is the engine side (“For an interrupted active step, retry from
+# previous completed boundary”). So the ORDER is the contract's own, and the shipped
+# code matches it: internal/store/postgres/m4api_runs_write.go's RetryRun refuses a
+# running/completed run BEFORE it ever asks the engine, and runtime/retry.go validates
+# every RetryPlan before any row moves. Nothing here changes Go; what the ORDER costs
+# the GATE is the point: while the run row is still 'running' (the engine's auto-retry
+# owns this pass per § 7.1 C5b), the per-node checkpoint plan is never evaluated, so a
+# refusal measured there is not C6d's refusal — and any attempt the ledger shows
+# predates the POST, which is exactly how 1c190fe's 'no new attempt' became
+# unattributable. C6d must therefore drive the scratch to a RETRIABLE run state first
+# (node B carries maxAttempts 1, so the kill fails the run honestly, route 31's own
+# C5h shape) standing on an uncommitted recorded boundary, and only then POST.
+C6D_RETRIABLE_RUN_STATES = ("failed", "cancelled", "interrupted")
+
+
+def c6_run_is_retriable(status):
+    """Route 31's run-status door in one line: a manual POST /retry acts on a failed /
+    cancelled / interrupted run and refuses a running or terminal-successful one. An
+    empty/unreadable status answers False — there is nothing to attribute."""
+    return str(status or "").strip().lower() in C6D_RETRIABLE_RUN_STATES
+
+
+def c6d_precondition_verdicts(run_st, cks, want_node=None):
+    """The two doors that must be OPEN before C6d asks the checkpoint door, plus the
+    caller's go/no-go: (1) the RUN is in a retriable state (route 31 — while it is
+    'running' the run-status door owns the answer, 1c190fe's GAP), and (2) the boundary
+    the retry INHERITS is recorded uncommitted (runtime/retry.go refuses restore on
+    repo_states.committed=false; a committed or un-captured boundary is a legal restore,
+    not a refusal). Returns (verdicts, may_post) — may_post only when EVERY precondition
+    verdict reads True; a GAP the driver POSTed through would be a guess, and a POST the
+    checkpoint door ACCEPTS would reset the workspace this row is measuring."""
+    st = str(run_st or "").strip().lower()
+    retriable = c6_run_is_retriable(st)
+    # True only with a run route 31 re-opens. A run still mid-flight ('running' etc.)
+    # GAPs: WHO must fail it is § 7.1 C5h's claim (the scratch's maxAttempts 1) and an
+    # engine-owned 'running (retry armed)' row is § 7.1 C5b's own sentence — C6d's row
+    # cannot be measured either way, and grading the run-status door as C6d's refusal is
+    # exactly what 1c190fe reported. A run that COMPLETED is different: nothing failed at
+    # all, so the arm's premise (a retriable run on a dirty boundary) is contradicted by
+    # the ledger, not merely missing — that reads FAIL, and C5h's row reads it too.
+    if not st:
+        ok = None
+        why = (f"runs.status={run_st or '(unreadable)'} — the runs row did not answer, so "
+               "neither door can be placed")
+    elif retriable:
+        ok, why = True, f"runs.status={run_st} — route 31 re-opens this run"
+    elif st == "completed":
+        ok, why = False, (f"runs.status={run_st} — the killed budget-1 node never failed the "
+                          "run, so there is nothing for route 31 to re-open (it answers "
+                          "run_not_retriable on a terminal-successful run) and C5h's own "
+                          "row reads the same contradiction")
+    else:
+        ok, why = None, (f"runs.status={run_st} — the run-status door owns this answer: the "
+                         "per-node checkpoint plan is never evaluated, so a refusal here is "
+                         "not checkpoint_unavailable and any attempt the ledger shows "
+                         "predates the POST (GAPed, not FAILed: see C5h/C5b above)")
+    v = [("C6d precondition: the scratch run reached a RETRIABLE state before the retry "
+          "POST (§ 5 route 31: retry acts on failed/interrupted/cancelled runs and "
+          "answers run_not_retriable on a running or completed one)", ok, why)]
+    boundary = c6_avail_verdicts(cks, want_node=want_node)
+    v.extend(boundary)
+    may_post = bool(st) and retriable and bool(boundary) and \
+        all(_ok is True for _l, _ok, _d in v)
+    return v, may_post
 
 
 def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_before,
                             dirty_after, restored_after, attempts_after,
-                            body="", attempts_before=None, restored_before=None):
+                            body="", attempts_before=None, restored_before=None,
+                            run_retriable=None):
     """C6d — the refusal must be 409 problem+json code=checkpoint_unavailable AND
     nothing may move: same HEAD, same dirty count, zero restore events, no new
     attempt. A refusal that reset first would be a data-loss bug wearing a
@@ -6537,11 +8223,16 @@ def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_
     (run-not-retriable, fires FIRST — live11/C6.out: the engine's auto-retry kept
     the run 'running (retry armed)' per § 7.1 C5b, so the per-node checkpoint plan
     — the only thing that can answer checkpoint_unavailable — was never evaluated)
-    and the checkpoint door. Hitting the run-status door GAPs the checkpoint-door
-    arms instead of FAILing them: the arm needs a retriable run (a budget the
-    engine exhausted, or C5h's maxAttempts=1) standing on an uncommitted boundary.
+    and the checkpoint door. Hitting the run-status door while the ledger says the run
+    was retriable (`run_retriable=True`, the case C6d's scratch arm drives) is the
+    ENGINE's door ordering, so it FAILs and is reported; hitting it with the run still
+    'running' (`run_retriable=False/None` — the engine's own auto-retry owns the row per
+    § 7.1 C5b) is the sequencing GAP 1c190fe measured, never a checkpoint-door result.
     'no new attempt' compares BEFORE against AFTER: an attempt the engine armed
-    on its own predates the refusal and cannot be attributed to it."""
+    on its own predates the refusal and cannot be attributed to it.
+    `run_retriable=None` additionally covers the leg's own readings: an EMPTY worktree
+    read on both sides (C6ResetWindowTest: the corpse's container answers '') now GAPs
+    the nothing-was-reset arm instead of passing it vacuously."""
     if status in (None, "", 0):
         return [("C6d the uncommitted-boundary retry refuses 409 checkpoint_unavailable",
                  None, "no retry request was issued (see the precondition GAP above)")]
@@ -6549,23 +8240,42 @@ def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_
           status == 409, f"observed {status} code={code!r} ctype={ctype!r}")]
     hit_status_door = code != "checkpoint_unavailable" and c5_run_not_retriable(status, body)
     if hit_status_door:
-        v.append(("C6d the refusal is problem+json code=checkpoint_unavailable", None,
+        label = ("C6d the refusal is problem+json code=checkpoint_unavailable"
+                 if run_retriable is not True else
+                 "C6d the refusal is problem+json code=checkpoint_unavailable — the "
+                 "run-status door refused a run the ledger says IS retriable")
+        v.append((label, None if run_retriable is not True else False,
                   f"observed 409 run-not-retriable ({str(body)[:120]}): the run-status door "
-                  "fired before the per-node checkpoint plan was validated — the run was "
-                  "still 'running' because the ENGINE owns the auto-retry (§ 7.1 C5b/C6b "
-                  "'running (retry armed)'). The contract's C6d refusal arm needs a FAILED "
-                  "run (an exhausted/maxAttempts=1 budget) with an uncommitted recorded "
-                  "boundary (see the precondition line above); reported, not forced"))
+                  "fired before the per-node checkpoint plan was validated"
+                  + (" while runs.status already read retriable (§ 5 route 31 acts on a "
+                     "failed/interrupted/cancelled run) — the shipped RetryRun checks the "
+                     "run row BEFORE it asks runtime/retry.go for the plan, so the "
+                     "checkpoint door was never consulted; reported, not forced"
+                     if run_retriable is True else
+                     " — the run was still 'running' because the ENGINE owns the "
+                     "auto-retry (§ 7.1 C5b/C6b 'running (retry armed)'). The contract's "
+                     "C6d refusal arm needs a FAILED run (an exhausted/maxAttempts=1 "
+                     "budget) with an uncommitted recorded boundary (see the precondition "
+                     "lines above); reported, not forced")))
     else:
         v.append(("C6d the refusal is problem+json code=checkpoint_unavailable",
                   ("problem+json" in (ctype or "")) and code == "checkpoint_unavailable",
                   f"code={code!r} ctype={ctype!r}"))
-    moved = bool(head_before) and bool(head_after) and head_before != head_after
-    dirtied = "" not in (dirty_before, dirty_after) and dirty_before != dirty_after
-    v.append(("C6d NOTHING was reset on the refusal path — HEAD and the dirty set "
-              "are untouched", not moved and not dirtied,
-              f"HEAD {head_before[:12]!r}->{head_after[:12]!r}, "
-              f"dirty {dirty_before!r}->{dirty_after!r}"))
+    hb, ha = str(head_before or ""), str(head_after or "")
+    db, da = (str(dirty_before) if dirty_before not in (None,) else ""), \
+        (str(dirty_after) if dirty_after not in (None,) else "")
+    if not any(x != "" for x in (hb, ha, db, da)):
+        v.append(("C6d NOTHING was reset on the refusal path — HEAD and the dirty set "
+                  "are untouched", None,
+                  "the worktree answered NOTHING on either side of the POST (no HEAD, no "
+                  "dirty count) — an unreadable tree is not an untouched one, so the arm "
+                  "GAPs instead of passing vacuously"))
+    else:
+        moved = bool(hb) and bool(ha) and hb != ha
+        dirtied = "" not in (db, da) and db != da
+        v.append(("C6d NOTHING was reset on the refusal path — HEAD and the dirty set "
+                  "are untouched", not moved and not dirtied,
+                  f"HEAD {hb[:12]!r}->{ha[:12]!r}, dirty {db!r}->{da!r}"))
     after_n, before_n = count_or_none(restored_after), count_or_none(restored_before)
     zero_after_refusal = (after_n == before_n) if before_n is not None else after_n == 0
     v.append(("C6d zero run.checkpoint_restored events after the refusal",
@@ -6573,12 +8283,15 @@ def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_
               f"count={restored_after!r} before={restored_before!r}"))
     label = "C6d the refusal appended no new attempt"
     if hit_status_door:
-        v.append((label, None,
+        v.append((label, None if run_retriable is not True else False,
                   f"attempts before={attempts_before!r} after={attempts_after!r} — the POST "
                   "was refused at the run-status door, so any attempt the ledger shows "
                   "(e.g. the engine's own retry) predates it and is not this refusal's "
                   "append; the checkpoint-door arm needs the run to reach a retriable "
-                  "state first"))
+                  "state first"
+                  + (" — and it DID (the driver verified runs.status retriable before "
+                     "posting), so the refusal the ledger reports is not "
+                     "checkpoint_unavailable" if run_retriable is True else "")))
         return v
     want = 1 if attempts_before is None else attempts_before
     v.append((label, (attempts_after or 0) <= want,
@@ -6662,28 +8375,47 @@ def c6_loss_verdicts(recovery, run_st, err_class, attempts, retried_sched, detai
     return v
 
 
-def c6_final_verdicts(status, retried, c1_keys, c6_keys):
+def c6_final_verdicts(status, retried, c1_keys, c6_keys, manual_graded=False):
     """C6c — the restore arm completes with C1's key set (retry appends, never
     rewrites — graded on the SHARED iteration normalizer, see
     key_set_identity_verdicts), and run.retried's workspace_policies names WHICH
-    mode ran. A mode claim needs the run.retried row the MANUAL retry posts: when
-    the engine's budget armed attempt 2 itself (§ 7.1 C5b 'running (retry armed)')
-    the explicit POST was refused, no run.retried exists, and the mode arm GAPs
-    with that reason — an absent journal row is never read as an empty map (the C5e
-    sequencing class again). Key-set equality likewise needs TWO measured sets."""
+    mode ran. A mode claim needs the run.retried row the MANUAL retry posts, and
+    runtime/retry.go writes that row on the manual path ALONE: on the shipped twin the
+    engine's own budget armed attempt 2 (§ 7.1 C5b 'running (retry armed)'), the
+    explicit POST was answered by the run-status door, and no run.retried exists to
+    read. With `manual_graded` — the retriable scratch arm (c5e_retry_door_arm) DID
+    produce a run.retried row to read — this line is a NOTE saying WHERE the row is
+    measured; without it the mode claim is the GAP it was, because an absent journal
+    row is never read as an empty map (the C5e sequencing class again). Key-set
+    equality likewise needs TWO measured sets."""
     pol = (retried or {}).get("policies") if isinstance(retried, dict) else None
     v = [("C6c the restored run reached 'completed'", status == "completed",
           f"status={status!r}")]
     mode_label = (f"C6c run.retried's workspace_policies names {C6_RESTORE_POLICY} for the "
                   f"{C6_KILL_KEY} node")
-    if pol is None:
+    if pol is None and manual_graded:
+        v.append((mode_label, C5_NOTE,
+                  "no run.retried row on the SHIPPED twin's journal, and none can be "
+                  "written there: run.retried is the row the manual POST /runs/{id}/retry "
+                  "appends (runtime/retry.go's RetryRun), while this run's attempt 2 was "
+                  "armed by its own budget (§ 7.1 C5b's 'run row is still running (retry "
+                  "armed)') — so route 31's RUN-status door, not the checkpoint door, owns "
+                  "any POST aimed at this run. The mode claim is graded on the accepted "
+                  "manual retry in this leg (c6c_retried_verdicts: the SAME "
+                  "restore_checkpoint node, on a run whose own budget 1 let the route "
+                  "re-open it"))
+    elif pol is None:
         v.append((mode_label, None,
                   "no run.retried row for the run — run.retried is the journal row the "
                   "MANUAL POST /runs/{id}/retry writes (runtime/retry.go's RetryRun); "
                   "this pass the engine's own budget armed attempt 2 (§ 7.1 C5b's 'run "
                   "row is still running (retry armed)') and the explicit POST was "
                   "refused 409, so the journal never got a workspace_policies map to "
-                  "name the mode from"))
+                  "name the mode from — and the retriable scratch that COULD answer it "
+                  "(c5e_retry_door_arm with policy=restore_checkpoint) produced no "
+                  "run.retried either: the C6c lines above say where that arm stopped. "
+                  "The claim stays a GAP rather than reading an absent row as an empty "
+                  "map"))
     else:
         v.append((mode_label, any(p == C6_RESTORE_POLICY for k, p in pol.items()
                                   if "implement" in k),
@@ -6694,6 +8426,123 @@ def c6_final_verdicts(status, retried, c1_keys, c6_keys):
         k1, k6,
         f"c1_keys={len(k1)} c6_keys={len(k6)} — the equality needs TWO measured "
         "sets; inventing the missing one would prove nothing"))
+    return v
+
+
+def c6_retry_door_verdicts(status, body, run_st, live_rows):
+    """C6b's manual POST, graded as the door route 31 actually answers at. The shipped
+    restore twin's killed node carries the authored maxAttempts 2, so § 7.1 C5b's own
+    sentence — the run row is still 'running (retry armed)' — is where its kill leaves
+    the ledger, and RetryRun's run-status door refuses there BEFORE runtime/retry.go ever
+    reads the restore policy. 1c190fe printed that 409 in C6's report under C5e's label
+    (docs/m4-exit-status.md live20) and then GAPped C6c's mode claim on the run.retried
+    row the manual path writes alone. So the driver asks the POST only of a run the ledger
+    shows as retriable, and says which door spoke. C6b's RESTORE evidence is the engine's
+    attempt 2 (graded by c6_restored_verdicts); the manual journal is § 7.1 C6c's arm
+    (c6c_retried_verdicts, measured on the retriable scratch)."""
+    retriable = c6_run_is_retriable(run_st)
+    if status is None:
+        return [("C6b the manual POST /runs/{id}/retry on the shipped restore twin", C5_NOTE,
+                 f"NOT asked: runs.status={run_st or '(unreadable)'} — route 31 answers "
+                 "run_not_retriable there (only failed / interrupted / cancelled re-open), "
+                 "and the engine's budget already owns this run's attempt 2 (§ 7.1 C5b). "
+                 "C6b's restore rows below read the ENGINE's attempt; the manual journal "
+                 "C6c's row stands on is measured on the retriable scratch (its own lines "
+                 "are printed with this leg). POSTing here is what produced live20's "
+                 "run-not-retriable GAP under a C5e label")]
+    if status == 200:
+        return [("C6b the shipped restore twin accepted the manual POST /retry -> 200 "
+                 "(both modes implemented: the engine's attempt 2 AND the route)", True,
+                 f"{status} {str(body)[:120]} — attempts now "
+                 f"{[r.get('attempt_number') for r in (live_rows or [])]}")]
+    if c5_run_not_retriable(status, body) and retriable:
+        return [("C6b the manual POST /retry on a run route 31 admits -> 200", False,
+                 f"observed 409 run-not-retriable while runs.status={run_st!r} IS in "
+                 "route 31's retriable set — the run-status door should have opened and "
+                 f"let runtime/retry.go plan the restore ({str(body)[:160]})")]
+    return [("C6b the manual POST /retry on the shipped restore twin", None if retriable
+             else C5_NOTE,
+             f"observed {status} {str(body)[:160]} with runs.status={run_st!r}"
+             + (" — an answer this row does not recognise, reported rather than sorted "
+                "into somebody else's verdict" if retriable else
+                "; the door refused a run it is allowed to refuse, and C6c's manual arm "
+                "is measured on the retriable scratch"))]
+
+
+def c6c_retried_verdicts(a, tag="C6c"):
+    """§ 7.1 C6c's accepted restore, graded on the subject route 31 re-opens — the arm is
+    c5e_retry_door_arm with policy=restore_checkpoint and the EDIT-FREE seed (the
+    committed clean tree runtime/retry.go resets TO; C6d's scratch is the same instrument
+    on the opposite boundary state, which is why its POST is a 409 and this one a 200).
+
+    `a` is that arm's readings: status/body, policies (run.retried's workspace_policies,
+    None when the row does not exist), kill_node, restore (the run.checkpoint_restored
+    row), final_st. The row's own words: "the retry succeeded and the run completed →
+    both modes are implemented, and the pair of events is what makes 'where is the
+    boundary' answerable from the journal rather than from folklore" — the JOURNAL half is
+    what this arm can prove, and C6b already carries the reset's CONTENT on the twin."""
+    status, pol = a.get("status"), a.get("policies")
+    key = "/" + str(a.get("kill_node") or "")
+    fin = str(a.get("final_st") or "").strip().lower()
+    ev = a.get("restore") or {}
+    posted = status == 200
+    says = json.dumps(pol)[:200] if pol is not None else "(no run.retried row)"
+    v = [(f"{tag} the manual retry journalled run.retried (runtime/retry.go writes it on "
+          "the MANUAL path alone — the engine's budget-armed retry writes "
+          "node.attempt.retry_scheduled, which is why C6c's mode claim cannot be read off "
+          "the twin)",
+          None if not posted else pol is not None,
+          f"workspace_policies={says} (POST {status!r}, runs.status was "
+          f"{a.get('run_st')!r})")]
+    v.append((f"{tag} run.retried's workspace_policies names {C6_RESTORE_POLICY} for the "
+              f"retried node {key} — the journal, not folklore, says which mode ran "
+              "(§ 3 row 6)",
+              None if (pol is None or not posted) else pol.get(key) == C6_RESTORE_POLICY,
+              f"workspace_policies={json.dumps(pol) if pol is not None else '(none)'} "
+              f"retried key={key!r} (the killed node carried "
+              f"retry.workspacePolicy={a.get('policy')!r}"))
+    v.append((f"{tag} run.retried names ONLY the node the retry re-queued — the seed that "
+              f"already succeeded ({a.get('seed_node')!r}) is absent, because ADR-0023 § 6 "
+              "re-queues failed work and never rewrites finished work",
+              None if (pol is None or not posted) else set(pol) == {key},
+              f"keys in the map={sorted(pol) if isinstance(pol, dict) else '(none)'}"))
+    pair = bool(ev) and str(ev.get("key") or "") == key
+    if not posted:
+        v.append((f"{tag} the pair of events is journalled for the retried node: "
+                  f"run.retried + run.checkpoint_restored (route 31's 'the run CHECKPOINTED "
+                  f"the workspace before the retry, not after it')", None,
+                  f"the manual POST was {status!r} — with no accepted retry there is no "
+                  "pair to read, and the mode the node declared is unmeasurable here"))
+    elif pair:
+        v.append((f"{tag} the pair of events is journalled for the retried node: "
+                  f"run.retried + run.checkpoint_restored for {key} (ADR-0023 § 6's "
+                  "unsandboxed reset belongs to the attempt that rides it)", True,
+                  f"run.checkpoint_restored={json.dumps(ev.get('payload'))[:200]}"))
+    elif fin == "completed":
+        v.append((f"{tag} the pair of events is journalled for the retried node: "
+                  f"run.retried + run.checkpoint_restored for {key}", False,
+                  f"the retry was ACCEPTED (run.retried present) and the run COMPLETED, "
+                  "yet no run.checkpoint_restored row names the retried node — a "
+                  "restore_checkpoint retry that silently continues the workspace instead "
+                  "of resetting it is the mode this row exists to prove implemented"))
+    else:
+        v.append((f"{tag} the pair of events is journalled for the retried node: "
+                  f"run.retried + run.checkpoint_restored for {key}", None,
+                  f"run.retried is journalled but the reset is not: the reopened attempt "
+                  f"got no further than runs.status={fin or '(unreadable / still live)'} "
+                  f"cause={a.get('cause')!r} on worker {a.get('worker')!r}. The reset is a "
+                  "worker-side act pinned to the volume's owner (ADR-0023 § 4's claim "
+                  "predicate), and what happened to the attempt that should have performed "
+                  "it is § 7.1 C6e/C9's subject, not this row's — C6b already carries a "
+                  "reset that DID run, on the twin"))
+    live_fin = fin in ("running", "queued", "paused", "pending", "waiting_human")
+    v.append((f"{tag} the retried restore run reached 'completed' (§ 7.1 C6c's 'the retry "
+              "succeeded and the run completed')",
+              None if (not fin or live_fin) else fin == "completed",
+              f"runs.status={fin or '(unreadable)'} cause={a.get('cause')!r}"
+              + (" — the watch ran out while the retry's own attempt was still live (it "
+                 f"holds {C_FAULT_HOLD_SECONDS}s), which is an unfinished measurement and "
+                 "not a failed run" if live_fin else "")))
     return v
 
 
@@ -6790,6 +8639,254 @@ def c6_retry_policies(run_id):
 # ONLY through start_throwaway — compose.m4.yml has no worker-c service, and the
 # driver never stops or starts a container it did not create. Every stop has a
 # finally that restores the lab.
+
+# --- C5e / C6c's manual-retry arm — live ---------------------------------------
+
+
+def c5e_attempt_rows(run_id, key):
+    """One node's attempt rows WITH the columns § 7.1 C5e's own psql names
+    (attempt_number / status / error_class / retry_context / scheduled_at), in
+    attempt_number order. The C5e leg reads them through its own closure; this is the
+    same SELECT for a run the arm owns, so the twin and the scratch are judged on one
+    read. '' from the reader (psql refused) comes back [] — the verdicts then GAP."""
+    return [dict(zip(("attempt_number", "status", "error_class", "retry_context",
+                      "scheduled_at"), r)) for r in psql_rows(c6_row(
+        f"SELECT a.attempt_number::text || chr(9) || a.status || chr(9) || "
+        f"coalesce(a.error_class,'-') || chr(9) || coalesce(a.retry_context::text,'-') "
+        f"|| chr(9) || coalesce(a.scheduled_at::text,'-') FROM attempts a "
+        f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+        f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
+        f"ORDER BY a.attempt_number", "attempt rows"), 5, sep="\t")]
+
+
+def c5e_ne_counts(run_id):
+    """node_instance_key -> {'ne': node_executions rows, 'attempts': attempts} for the
+    whole run: the append-only read § 7.1 C5e's note asks for ('no new node_executions
+    for nodes that already succeeded'), in the shape C5g's group-by already uses."""
+    return {r[0]: {"ne": _int(r[1]), "attempts": _int(r[2])} for r in psql_rows(c6_row(
+        f"SELECT ne.node_instance_key || '|' || count(DISTINCT ne.id)::text || '|' || "
+        f"count(a.id)::text FROM node_executions ne LEFT JOIN attempts a "
+        f"ON a.node_execution_id = ne.id WHERE ne.run_id = '{run_id}' "
+        f"GROUP BY ne.node_instance_key", "node_executions counts"), 3)}
+
+
+def c5e_retry_door_arm(alice, facts, tw, tag, policy=None, seed_step=C5E_SEED_EDIT,
+                       kill_node=C5E_KILL_NODE, slug_prefix="m4x-c5e-retry",
+                       grade=None):
+    """§ 7.1 C5e's manual retry (and, with `policy` set, § 7.1 C6c's accepted restore) on
+    the subject route 31 actually re-opens: the two-node scratch c5e_retry_scratch_doc
+    publishes. The twin can never be that subject — its killed node carries budget 2, so
+    § 7.1 C5b's own sentence keeps the run 'running (retry armed)' and RetryRun's
+    run-status door answers run_not_retriable before runtime/retry.go sees a plan;
+    run.retried, the row C6c reads its mode from, is written by the MANUAL path alone.
+
+    The sequence is the C6d arm's, in the order the routes require, under § 7.0's
+    isolation rules (compose project communication-m4, containers killed BY NAME after
+    compose_container proves the label, the worker always composed back up): publish the
+    scratch (draft -> validate -> publish via c7_publish, the C8e route C5h/C6d use, with
+    c5h_publish_report quoting the COMPILER on refusal) -> POST a run with the twin's own
+    inputs + hold_seconds (leave_dirty at the twin's default: the seed's own state is what
+    `seed_step` chose) -> wait for a live attempt at /<kill_node>, the seed's boundary
+    already recorded -> read $HEAD_BEFORE / $DIRTY_BEFORE inside the owning worker, which
+    is what § 7.1 C5e's expectations are written against -> kill that worker (the
+    sandboxed child dies with it, ADR-0017 § 4.3's step tree) -> wait the lease +
+    reconciler window and POLL runs.status until route 31 admits the run (_c6d_wait_retriable)
+    -> bring the worker back (host safety, and the reopened attempt must land on the
+    container that owns the volume, ADR-0023 § 4's claim predicate) -> grade BOTH doors
+    from the ledger (c5e_precondition_verdicts) -> POST /runs/{id}/retry ONLY when they are
+    open -> read the attempt rows, the node_executions counts and run.retried's
+    workspace_policies -> watch the re-opened run to a terminal state, because an accepted
+    retry puts live work back in the lab and this leg never leaves it behind.
+
+    Returns the readings c5e_manual_retry_verdicts and c6c_retried_verdicts consume, or
+    None when the arm never reached the route — every step that fails prints its own GAP
+    with the reason, so an unmeasured row stays visible instead of quietly disappearing."""
+    pol = policy or C5E_CONTINUE
+    grade = c5e_manual_retry_verdicts if grade is None else grade
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap(f"{tag} manual-retry arm", "no admin (library-role) session — the two-node "
+            "scratch is an extra PUBLISHED revision and only the library role may draft "
+            "it (§ 7.0), so there is no retriable subject to ask the route about")
+        return None
+    src = doc_revision_canonical(admin, mf(tw, "revision_id"))
+    if src is None:
+        gap(f"{tag} manual-retry arm",
+            f"GET /revisions/{mf(tw, 'revision_id')!r} served no canonical Pipeline "
+            "document — this arm copies the twin's own held node and will not author a "
+            "retriable run out of memory")
+        return None
+    slug = schema_name(slug_prefix)
+    res = c5e_retry_scratch_doc(src, slug, policy=policy, seed_step=seed_step,
+                                kill_node=kill_node)
+    c5_emit(c5e_retry_doc_verdicts(res))
+    show(f"{tag} manual-retry splices applied to the twin document",
+         " | ".join(res["applied"])[:520] or "(none)")
+    if res["doc"] is None:
+        gap(f"{tag} manual-retry arm", f"the twin document is not the shape this arm "
+            f"copies ({res['missing']}) — an invented node would not be the twin's held "
+            "step and would say nothing about the twin's retry")
+        return None
+    r = admin.post(LB, "/api/v1/pipelines", {"slug": slug, "display_name": slug,
+                                            "description": f"{tag} manual-retry arm"})
+    show(f"{tag} POST /api/v1/pipelines (scratch) -> {r.status}", r.text[:160])
+    pid = str((r.json() or {}).get("id") or "") if r.status in (201, 409) else ""
+    if r.status == 409 and not pid:
+        for p in (admin.get(LB, "/api/v1/pipelines").json() or {}).get("pipelines") or []:
+            if p.get("slug") == slug:
+                pid = str(p.get("id") or "")
+    if not pid:
+        gap(f"{tag} manual-retry arm", f"POST /api/v1/pipelines -> {r.status}: no scratch "
+            "pipeline to hold the retriable draft")
+        return None
+    pub = c7_publish(admin, pid, f"{tag} manual-retry scratch", res["doc"])
+    rev = str((pub or {}).get("revision_id") or "")
+    if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
+        # /validate answers 200 with valid:false (§ 2.2), so the STATUS proves nothing:
+        # the GAP quotes the COMPILER (c5h_publish_report is the shared reporter).
+        gap(f"{tag} manual-retry arm", f"the retriable revision could not be drafted/"
+            f"validated/published ({c5h_publish_report(pub)}) — with no published scratch "
+            "there is no run whose own budget route 31 refused")
+        return None
+    check(f"{tag} manual-retry scratch revision published (the § 7.0 seed twin "
+          f"untouched)", True, f"revision {rev[:8]} on scratch pipeline {slug}; spec "
+          "carries only inputs/policies/nodes (the twin's outputs/resultBindings bind the "
+          "until loop this scratch drops — keeping them is what the compiler answered "
+          "unknown_dependency for)")
+    if policy:
+        # The mode has to reach the COMPILED PLAN, not just the document: that is what
+        # runtime/retry.go reads as pn.Retry.WorkspacePolicy (§ 7.1 C6a's own reader).
+        c6_policy_in_plan(admin, rev)
+    if not require_fault_hold(tag):
+        # The hold is the kill's premise in BOTH legs (m4-exit.sh sleeps before it
+        # touches anything); a fixture that ignores it makes the run close before the axe
+        # falls, and the arm's own GAP is the honest answer.
+        return None
+    base = mf(tw, "inputs", default={}) or mf(facts, "inputs", default={}) or {}
+    inputs = {k: base[k] for k in ("goal", "repository") if k in base}
+    if "repository" not in inputs:
+        gap(f"{tag} manual-retry arm", "the § 7.0 seed manifest carries no "
+            "inputs.repository — the copied node's workspace binding selects it, so the "
+            "scratch run cannot be posted honestly")
+        return None
+    # leave_dirty stays at the twin's DEFAULT (false): the seed's boundary state is the
+    # job of `seed_step` (the implement copy's own sed edit is already uncommitted), and
+    # the killed node must still be inside its hold when the axe falls.
+    inputs = with_hold(inputs, C_FAULT_HOLD_SECONDS)
+    show(f"{tag} manual-retry scratch run inputs",
+         f"{sorted(inputs)} hold_seconds={inputs.get('hold_seconds')!r} "
+         f"leave_dirty={inputs.get('leave_dirty', '(twin default: false)')!r}")
+    r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                   {"pipeline_revision_id": rev, "inputs": inputs,
+                    "idempotency": idem_key(f"m4x-{_idem_slug(tag)}-retry")})
+    show(f"{tag} POST runs (scratch {rev[:8]}, killed node=/{kill_node}, mode={pol}) "
+         f"-> {r.status}", r.text[:200])
+    if r.status not in (200, 201):
+        gap(f"{tag} manual-retry arm", f"POST runs -> {r.status} {r.text[:160]} — the "
+            "retriable pipeline never ran, so the route has no ledger to answer from")
+        return None
+    run_id = (r.json() or {}).get("run_id")
+    CTX[f"{_idem_slug(tag)}_manual_retry_run"] = run_id
+    return _c5e_kill_and_retry(alice, facts, tw, run_id, tag, pol, seed_step, kill_node,
+                               grade)
+
+
+def _c5e_kill_and_retry(alice, facts, tw, run_id, tag, pol, seed_step, kill_node,
+                        grade=None):
+    """The live half of the manual-retry arm on a run the caller already posted (split
+    out so the publish/run preamble above stays readable). `grade` — the row's own verdict
+    function — is applied HERE, at the end of the arm's evidence trail, so a reader sees
+    the door readings, the POST, the attempt rows and the verdicts in one block; the
+    caller keeps only the arm-could-not-run GAP. See c5e_retry_door_arm."""
+    seed_node = C5E_SEED_NODE
+    live = wait_live_past_gate(alice, mf(facts, "project_id"), run_id,
+                               hold_window(C5_KILL_POLL_S), tag, target="/" + kill_node)
+    if live is None:
+        gap(f"{tag} the mid-node kill on the retriable scratch",
+            f"no attempt on run {run_id} was ever HELD at /{kill_node} inside the window "
+            f"(status={run_status(run_id)!r}) — with nothing running there is no kill, the "
+            "run never fails on budget 1, and the POST would answer the run-status door "
+            "instead of the retry § 7.1 asks about")
+        return None
+    owner, key = live["worker"], live["key"]
+    svc = c4_worker_service(owner)
+    if svc is None:
+        gap(f"{tag} the mid-node kill on the retriable scratch",
+            f"the live claim belongs to worker row {owner!r}, which is not one of this "
+            "project's two lab workers — the driver never kills a container it did not "
+            "create (§ 7.0)")
+        return None
+    head_before, dirty_before = c6_worktree_read(run_id, svc)
+    show(f"{tag} $HEAD_BEFORE / $DIRTY_BEFORE read inside {owner} before the kill",
+         f"HEAD={head_before[:12] or '(unreadable)'} "
+         f"dirty={dirty_before or '(unreadable)'} (live attempt "
+         f"{str(live['id'])[:8]} on {key!r}) — § 7.1 C5e's expectation values")
+    run_st, killed = "", None
+    try:
+        rc, out = run(COMPOSE + ["kill", owner])
+        if rc != 0:
+            gap(f"{tag} compose kill the owning worker",
+                f"rc={rc}: {out[-240:]} — without a kill the run never fails on budget 1")
+            return None
+        killed = owner
+        show(f"compose kill {owner} — the worker and its sandboxed child die together "
+             "(ADR-0017 § 4.3's step tree)", out[-240:])
+        time.sleep(C5_KILL_WAIT_S)
+        run_st = _c6d_wait_retriable(run_id)
+    finally:
+        if killed:
+            rc, out = run(COMPOSE + ["start", killed])
+            show(f"compose start {killed} (host safety: the gate never leaves the lab "
+                 f"down, and the reopened attempt needs the container that owns its "
+                 f"volume; rc={rc})", out[-200:] or killed)
+            wait_worker_row(killed, 120)
+    fr = psql_rows(c6_row(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM runs "
+                          f"WHERE id = '{run_id}'", "run row"), 2)
+    run_cause = fr[0][1] if fr else ""
+    if fr:
+        run_st = fr[0][0]
+    ck = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints") or "")
+    show(f"{tag} the scratch run's row and its recorded boundaries before the POST",
+         f"status={run_st!r} cause={run_cause!r} ckpts={json.dumps(ck[:4]) or '(none)'}")
+    pre, may_post = c5e_precondition_verdicts(run_st, ck, want_node="/" + seed_node,
+                                              policy=pol)
+    c5_emit(pre)
+    status, body = None, ""
+    if may_post:
+        rr = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "crash"})
+        status, body = rr.status, rr.text[:300]
+        show(f"{tag} POST /api/v1/runs/{{id}}/retry (the UI's button, on a run verified "
+             f"retriable) -> {status}", body)
+    else:
+        show(f"{tag} the manual retry was NOT posted",
+             "a door above is not open — the run-status and boundary lines carry the "
+             "reason. POSTing through one of them grades a door this row never asked "
+             "about (1c190fe) and, in restore mode, could reset the very workspace the "
+             "row stands on")
+    rows = c5e_attempt_rows(run_id, "/" + kill_node)
+    seed_rows = c5e_attempt_rows(run_id, "/" + seed_node)
+    ne = c5e_ne_counts(run_id)
+    final_st = ""
+    if status == 200:
+        # The reopen put live work back on the ledger: the retry's own attempt holds for
+        # C_FAULT_HOLD_SECONDS, so the window is the hold plus the lease/reconciler slack
+        # the other legs use, and nothing is left running behind this arm.
+        final_st, _w = watch_run(alice, tw, run_id, hold_window(C5_KILL_POLL_S),
+                                 f"{_idem_slug(tag)}-manual")
+    show(f"{tag} the retried node's attempt rows (the ledger the MANUAL path wrote)",
+         "\n".join(f"{r.get('attempt_number')}: {r.get('status')} {r.get('error_class')} "
+                   f"ctx={str(r.get('retry_context'))[:170]}" for r in rows) or "(none)")
+    readings = {"run_id": run_id, "run_st": run_st, "cause": run_cause, "final_st": final_st,
+            "may_post": may_post, "status": status, "body": body, "rows": rows,
+            "seed_rows": seed_rows, "seed_ne": ne.get("/" + seed_node) or {},
+            "seed_node": seed_node, "kill_node": kill_node, "seed_step": seed_step,
+            "policy": pol, "head_before": head_before, "dirty_before": dirty_before,
+            "ckpts": ck, "policies": c6_retry_policies(run_id),
+            "restore": c6_restore_event(run_id), "worker": owner}
+    if grade:
+        c5_emit(grade(readings))
+    return readings
+
 
 
 def c6():
@@ -6986,45 +9083,43 @@ def c6():
         show("C6b the worktree the kill left behind (HEAD / dirty)",
              f"{gitout('rev-parse HEAD')[:12] or '(unreadable)'} "
              f"dirty={gitout('status --porcelain | wc -l') or '(unreadable)'}")
-        c6_emit(c6_avail_verdicts(ck_after))
+        # C6d is NOT measured here, only witnessed. On the shipped twin every recorded
+        # boundary is committed (its steps commit their tracked edits — the rows above
+        # are the ledger's own words, printed rather than graded), so the refusal this
+        # run COULD answer here is the run-status door's (`run-not-retriable` while the
+        # ENGINE's auto-retry keeps the row 'running (retry armed)', § 7.1 C5b), a door
+        # that never evaluates the per-node checkpoint plan: 1c190fe's C6d rows were
+        # graded against a refusal from the wrong door, so "no new attempt" (which may
+        # count the engine's own attempt 2) and "zero restore events" (which may count
+        # attempt 2's own reset) were unattributable. § 7.1 C6d's refusal is measured on
+        # the gate's own dirty scratch, where node B's budget 1 makes the run reach
+        # route 31's retriable state BEFORE the POST: c6d_dirty_arm + _c6d_kill_and_refuse
+        # (which reads the same c6_avail_verdicts / c6_unavailable_verdicts algebra).
+        show("C6b the twin's own boundary states (C6d's refusal is measured on the "
+             "dirty scratch, not on a committed boundary)",
+             f"committed={[c['node'] for c in ck_after if c.get('committed') is True][:4]} "
+             f"uncommitted={[c['node'] for c in ck_after
+                             if c.get('committed') is False][:4]} "
+             f"worktree HEAD={head_killed[:12] or '(unreadable)'} "
+             f"dirty={dirty_killed or '(unreadable)'}")
 
-        # C6d — the refusal path, attempted with the ledger's ACTUAL boundary states.
-        # A committed boundary is C6a's own premise, so the refusal may be honestly
-        # unmeasurable here; the verdicts say which arm was exercised.
-        n_before = len(c6_attempts_of_key(run_id, key))
-        # The refusal's event window OPENS here: attempt 2's own reset (the
-        # engine's retry, not this POST's doing) is a legitimate
-        # run.checkpoint_restored that must not be charged to the refusal
-        # (live19 C6d counted the run's whole history and FAILed on 1).
-        n_restored_before = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
-                                   f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'",
-                                   "restored count before")
-        r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
-                       {"reason": "c6 uncommitted-boundary arm",
-                        "node_instance_keys": [C6_KILL_KEY]})
-        head_ref, dirty_ref = gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
-        try:
-            code = str((r.json() or {}).get("code") or "")
-        except ValueError:
-            code = ""
-        if not code and "checkpoint" in str(r.text).lower():
-            code = "checkpoint_unavailable"    # some wires spell it in type/detail
-        show(f"C6d POST /api/v1/runs/{{id}}/retry -> {r.status}",
-             f"ctype={r.headers.get('Content-Type','')} code={code!r} {r.text[:260]}")
-        n_restored = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
-                            f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'", "restored count")
-        c6_emit(c6_unavailable_verdicts(
-            r.status, r.headers.get("Content-Type", ""), code,
-            head_killed, head_ref, dirty_killed, dirty_ref, n_restored,
-            len(c6_attempts_of_key(run_id, key)), body=r.text[:300],
-            attempts_before=n_before, restored_before=n_restored_before))
-
-        # C6b/C6c — the real retry: the one the contract posts (a 409 above left the
-        # run untouched and retryable, so it is posted again WITHOUT the arm note).
-        r2 = r
-        if r.status == 409:
+        # C6b/C6c — the retry the contract posts, asked of the door it is actually told
+        # to answer. The twin's boundary IS committed, so restore_checkpoint would be LEGAL
+        # here — but route 31 never gets that far on this run: the killed node carries
+        # maxAttempts 2, § 7.1 C5b's own sentence leaves the row 'running (retry armed)',
+        # and RetryRun's run-status door answers run_not_retriable before runtime/retry.go
+        # reads a policy. 1c190fe posted anyway and the report printed that 409 under a
+        # C5e label, then GAPped C6c's mode claim on the run.retried row only the MANUAL
+        # path writes. So: POST only a run the ledger shows as retriable, and grade which
+        # door spoke under C6's own label.
+        run_st6 = run_status(run_id)
+        manual6, manual6_body = None, ""
+        if c6_run_is_retriable(run_st6):
             r2 = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "restore"})
-            show(f"C6b POST /api/v1/runs/{{id}}/retry (restore) -> {r2.status}", r2.text[:260])
+            manual6, manual6_body = r2.status, r2.text[:260]
+        show(f"C6b POST /api/v1/runs/{{id}}/retry (restore) "
+             f"{'-> ' + str(manual6) if manual6 is not None else '— NOT asked'} "
+             f"(runs.status={run_st6!r})", manual6_body)
         rows = c6_attempts_of_key(run_id, key)
         deadline = time.time() + hold_window(180)
         while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1
@@ -7034,11 +9129,11 @@ def c6():
         # Graded AFTER the poll (same rule as C5e): a 409 while the ENGINE has
         # already armed attempt 2 is § 7.1 C5b's 'running (retry armed)', not a
         # product refusal to retry — and WHO armed it is its own honest line.
-        c5_emit(c5_retry_api_verdicts(r2.status, r2.text[:200], rows))
+        c5_emit(c6_retry_door_verdicts(manual6, manual6_body, run_st6, rows))
         sched6 = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
                         f"'{run_id}' AND type = 'node.attempt.retry_scheduled' "
                         f"AND attempt_id = '{att}'", "retry_scheduled")
-        c5_emit(c5_auto_retry_verdicts(count_or_none(sched6), rows, r2.status))
+        c5_emit(c5_auto_retry_verdicts(count_or_none(sched6), rows, manual6))
     finally:
         rc, out = run(COMPOSE + ["start", owner])
         show(f"compose start {owner} — the killed worker is brought back (host safety: the "
@@ -7077,8 +9172,36 @@ def c6():
     ne_rows = psql_rows(c6_row(f"SELECT node_instance_key FROM node_executions WHERE "
                                f"run_id = '{run_id}' ORDER BY node_instance_key", "keys"), 1)
     c1_keys = ((CTX.get("c1") or {}).get("twin") or {}).get("keys") or set()
-    c6_emit(c6_final_verdicts(status or "", {"policies": c6_retry_policies(run_id)},
-                              c1_keys, {r[0] for r in ne_rows}))
+    # C6c's row is a JOURNAL claim — "run.retried's workspace_policies names the mode the
+    # retried node declared" — and that row exists on the MANUAL path alone. The twin's
+    # restore ran on the ENGINE's attempt 2 (C6b reads its reset, and PASSed it in live20),
+    # so the accepted manual restore is measured on the gate's own retriable scratch: the
+    # same instrument as C5e's arm with the ONE variable that makes a restore legal, a seed
+    # whose recorded boundary reads COMMITTED (m4-exit.sh's edit-free plan step; C6d's arm
+    # is the same shape on the opposite boundary state, which is why its POST is a 409).
+    # It runs before the final verdicts so the mode arm can say where it was graded.
+    arm6c = c5e_retry_door_arm(alice, facts, twin, "C6c", policy=C6_RESTORE_POLICY,
+                              seed_step=C5E_SEED_STEP, kill_node=C6C_KILL_NODE,
+                              slug_prefix="m4x-c6c-restore", grade=c6c_retried_verdicts)
+    if arm6c is None:
+        # A GAP of its OWN label: c6_final_verdicts grades the twin-side mode claim (and
+        # NOTEs when THIS arm produced the journal), so the two lines never collide.
+        gap("C6c the accepted-restore arm (run.retried on a run route 31 re-opens)",
+            "the arm produced no graded retry — the "
+                            "lines above say where it stopped (no admin session, no "
+                            "canonical document, the scratch revision refused by the "
+                            "compiler, no live attempt to kill, or the run never reached "
+                            "route 31's retriable state)")
+    else:
+        show("C6c the sentence § 7.1 requires the report to repeat, and where THIS pass "
+             "read the journal half",
+             C6_PAIR_SENTENCE + f" [manual retry on run {arm6c['run_id']}: POST "
+             f"{arm6c['status']!r}, workspace_policies={arm6c['policies']!r}]")
+    # c5_emit, not c6_emit: the mode arm can read C5_NOTE ("measured on the accepted
+    # manual retry"), and c6_emit would print a NOTE object as a PASS.
+    c5_emit(c6_final_verdicts(status or "", {"policies": c6_retry_policies(run_id)},
+                              c1_keys, {r[0] for r in ne_rows},
+                              manual_graded=bool(arm6c and arm6c.get("policies") is not None)))
     if not c1_keys:
         gap("C6c key-set equality against C1", "C1's twin key set is not in CTX (C1 did not "
                                                "run in this pass) — the comparison needs two "
@@ -7148,9 +9271,11 @@ def c6():
     # only GAP (live20: 'every run_checkpoints.repo_states row says committed=true').
     # The opt-in `leave_dirty` fixture behaviour is the ONE thing that produces the
     # dirty boundary — so C6d measures on its OWN published scratch (c6d_dirty_arm,
-    # like C5h's budget arm), where node A (leave_dirty) completes on a committed=
-    # false boundary and node B (restore_checkpoint + maxAttempts 1) is killed to
-    # fail the run, leaving a genuinely retriable FAILED run on a dirty boundary.
+    # like C5h's budget arm), where node A (riding the run's own leave_dirty input,
+    # the twin's binding kept verbatim) completes over a committed=false boundary and
+    # node B (restore_checkpoint + maxAttempts 1) is killed to fail the run, leaving a
+    # genuinely retriable FAILED run on a dirty boundary: route 31's run-status door is
+    # open, so the 409 that comes back can only be the checkpoint door's.
     c6d_dirty_arm(alice, facts, twin)
     CTX["c6"] = {"run_id": run_id, "revision_id": rev, "attempt_id": att, "owner": owner,
                  "key": key, "head_boundary": head_bnd, "events": ev,
@@ -7158,15 +9283,67 @@ def c6():
                  "checkpoints": ck_after}
 
 
+def c6_checkout_root(run_id):
+    """The run workspace's agent_root — the same layout fact C5/C6b read (the worktree
+    lives at workspaces.agent_root (= root_path || '/work') /repos/app, not at § 7.1's
+    shorthand /workspaces/run/$RUN/repos/app). Falls back to § 7.1's spelling when the
+    row will not answer, so a read that fails still fails on the product's path."""
+    root = (c6_row(f"SELECT coalesce(agent_root,'') FROM workspaces WHERE run_id = "
+                   f"'{run_id}' ORDER BY created_at DESC LIMIT 1", "agent_root") or "").strip()
+    return root or f"/workspaces/run/{run_id}/work"
+
+
+def c6_worktree_read(run_id, worker_svc):
+    """(HEAD, dirty-count) of a run's checkout, or ('', '') when the worker/worktree
+    will not answer. Empty is NEVER 'clean': c6_unavailable_verdicts GAPs on it, so a
+    read from a dead container can no longer pass the nothing-was-reset arm vacuously
+    (C6ResetWindowTest)."""
+    if worker_svc is None:
+        return "", ""
+    root = c6_checkout_root(run_id)
+
+    def gitout(sh):
+        rc, out = wexec(f"git -C {root}/repos/app {sh}", worker=worker_svc)
+        return out.strip() if rc == 0 and "fatal:" not in out else ""
+    return gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
+
+
+def _c6d_wait_retriable(run_id, cap=C5_KILL_POLL_S):
+    """Poll runs.status until the scratch run reaches one of route 31's RETRIABLE
+    terminal states (§ 5: retry acts on failed/interrupted/cancelled and answers
+    run_not_retriable on a running or terminal-successful run). § 7.1 C6d asks the
+    CHECKPOINT door, and the run-status door answers first — 1c190fe POSTed while the
+    row was still 'running', so the refusal was run-not-retriable, RetryPlan was never
+    consulted, and 'no new attempt' counted the engine's own attempt. Node B carries
+    maxAttempts 1, so the kill has to land the run in 'failed' (cause
+    node_execution_failed:/kill_target, C5h's shape) before this arm asks anything.
+    Returns the last observed status."""
+    deadline, st = time.time() + cap, ""
+    while time.time() < deadline:
+        st = run_status(run_id)
+        low = str(st).strip().lower()
+        if c6_run_is_retriable(low) or low == "completed":
+            # retriable → the checkpoint door may be asked; completed → nothing failed,
+            # so route 31 will refuse the reopen and the arm is a GAP, not a retry.
+            return st
+        time.sleep(3)
+    return st
+
+
 def _c6d_kill_and_refuse(alice, facts, run_id):
     """The C6d live sequence on the dirty scratch: wait for the held node B
-    ('kill_target') to be HELD by a worker (node A already completed, so its dirty
-    boundary is recorded), kill the owner so the run fails on budget 1, wait for the
-    run to reach a terminal FAILED state, then POST /runs/{id}/retry — the one door
-    left is RetryPlan's checkpoint door. Reads the HEAD/dirty set either side of the
-    POST and the run.checkpoint_restored count either side, and grades
-    c6_unavailable_verdicts with them (which asserts § 7.1 C6d verbatim). Host safety
-    as in C5/C6b: the killed worker is always composed back up."""
+    ('kill_target') to be HELD by a worker (node A already completed, so the boundary
+    its completion recorded reads committed=false — the run rode leave_dirty=true), kill
+    the owner so the run fails honestly on budget 1, and DRIVE THE RUN to a RETRIABLE
+    state (_c6d_wait_retriable) BEFORE any POST — route 31's run-status door fires
+    first, so a retry asked while the row is 'running' measures that door, not the
+    checkpoint door (1c190fe). Then c6d_precondition_verdicts grades BOTH doors from the
+    ledger and the refusal is posted ONLY when both are open, where the one answer left
+    is RetryPlan's checkpoint_unavailable. Reads HEAD + the dirty count and the
+    run.checkpoint_restored count either side of the POST and grades
+    c6_unavailable_verdicts with them (which asserts § 7.1 C6d verbatim); with the run
+    verified retriable, a refusal from the run-status door is a FAIL, not a silent GAP.
+    Host safety as in C5/C6b: the killed worker is always composed back up."""
     live = wait_live_past_gate(alice, mf(facts, "project_id"), run_id,
                                hold_window(C5_KILL_POLL_S), "C6d",
                                target="/" + C6D_KILL_NODE)
@@ -7196,10 +9373,7 @@ def _c6d_kill_and_refuse(alice, facts, run_id):
         show(f"compose kill {owner} — the owning worker and its child die together",
              out[-240:])
         time.sleep(C5_KILL_WAIT_S)
-        deadline = time.time() + C5_KILL_POLL_S
-        while time.time() < deadline and run_status(run_id) not in ("failed", "completed",
-                                                                    "cancelled"):
-            time.sleep(3)
+        run_st = _c6d_wait_retriable(run_id)
     finally:
         if killed:
             rc, out = run(COMPOSE + ["start", killed])
@@ -7208,15 +9382,41 @@ def _c6d_kill_and_refuse(alice, facts, run_id):
 
     fr = psql_rows(c6_row(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM runs "
                           f"WHERE id = '{run_id}'", "run row"), 2)
-    run_st, run_cause = (fr[0][0], fr[0][1]) if fr else ("", "")
+    run_st, run_cause = (fr[0][0], fr[0][1]) if fr else (str(run_st or ""), "")
     ck = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints") or "")
     show("C6d the scratch run closed / its recorded boundaries",
          f"status={run_st!r} cause={run_cause!r} ckpts={json.dumps(ck[:4]) or '(none)'}")
-    c6_emit(c6_avail_verdicts(ck))
+    # BOTH doors graded from the ledger BEFORE the POST, with the boundary attributed to
+    # the node whose checkpoint the retry actually inherits (RetryPlan takes the newest
+    # recorded boundary before the retried node, i.e. completed node A).
+    pre, may_post = c6d_precondition_verdicts(run_st, ck,
+                                              want_node="/" + C6D_SEED_NODE)
+    c6_emit(pre)
+    head_before, dirty_before = c6_worktree_read(run_id, svc)
     n_before = len(c6_attempts_of_key(run_id, "/" + C6D_KILL_NODE))
     n_restored_before = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
                                f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'",
                                "restored count before")
+    show("C6d the worktree + ledger just before the refusal window",
+         f"HEAD={head_before[:12] or '(unreadable)'} "
+         f"dirty={dirty_before or '(unreadable)'} "
+         f"attempts({C6D_KILL_NODE})={n_before} restored={n_restored_before!r} "
+         f"may_post={may_post}")
+    if not may_post:
+        # A POST here would be a guess: with the run still 'running' it answers the
+        # run-status door (1c190fe), and on a committed/un-captured boundary the
+        # checkpoint door would ACCEPT the restore and reset the very workspace this row
+        # is measuring. The precondition lines above carry the reason; the refusal arms
+        # GAP with it instead of grading somebody else's door.
+        show("C6d the refusal was NOT posted", "a precondition above is not True — see "
+             "the run-status/boundary lines; the checkpoint-door arms GAP with that "
+             "reason rather than grading the wrong door")
+        graded = c6_unavailable_verdicts(None, "", "", head_before, "", dirty_before, "",
+                                         "0", n_before, attempts_before=n_before,
+                                         restored_before=n_restored_before,
+                                         run_retriable=c6_run_is_retriable(run_st))
+        c6_emit(graded)
+        return graded
     r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
                    {"reason": "C6d dirty-boundary refusal arm",
                     "node_instance_keys": ["/" + C6D_KILL_NODE]})
@@ -7228,13 +9428,15 @@ def _c6d_kill_and_refuse(alice, facts, run_id):
         code = "checkpoint_unavailable"
     show(f"C6d POST /api/v1/runs/{{id}}/retry (dirty scratch) -> {r.status}",
          f"ctype={r.headers.get('Content-Type','')} code={code!r} {r.text[:260]}")
+    head_after, dirty_after = c6_worktree_read(run_id, svc)
     n_restored = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
                         f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'", "restored count")
     graded = c6_unavailable_verdicts(
         r.status, r.headers.get("Content-Type", ""), code,
-        "", "", "", "", n_restored,
+        head_before, head_after, dirty_before, dirty_after, n_restored,
         len(c6_attempts_of_key(run_id, "/" + C6D_KILL_NODE)), body=r.text[:300],
-        attempts_before=n_before, restored_before=n_restored_before)
+        attempts_before=n_before, restored_before=n_restored_before,
+        run_retriable=c6_run_is_retriable(run_st))
     c6_emit(graded)
     show("C6d § 7.1 C6d verbatim (the row this arm measures)",
          "the refusal path: on a boundary where the repo has uncommitted changes, the "
@@ -7400,6 +9602,33 @@ def c7_event_verdicts(events, max_iter=C7_MAX_ITERATIONS):
     return v
 
 
+def c7_scope_iterations_from_events(events, until_key=None):
+    """How many iterations the until scope itself reported spending: the counter on the
+    scope's OWN terminal journal row — `node.scope.failed.iterations_stopped` (§ 3 row 19)
+    when the loop died, `node.scope.completed.iterations` (§ 3 row 18) when it passed.
+    This is where the engine records the count: `node_executions` has NO iterations
+    column (contract § 1's CREATE TABLE carries no scope-state column — see
+    internal/pipelines/runtime/scope_state.go), so the old
+    `SELECT iterations::text FROM node_executions` read errored on EVERY run and the
+    C7a counter arm could only ever GAP with iterations=None. The journal is append-only
+    and arrives in global_seq order, so the scope's last own row wins. Returns the int,
+    or None when there is no readable row/counter for that scope — the honest GAP; a
+    wrong int is the FAIL that follows. `events` is c7_events' shape (or its None)."""
+    key = C7_UNTIL_KEY if until_key is None else until_key
+    it = None
+    for e in events or []:
+        if not isinstance(e, dict) or e.get("type") not in ("node.scope.failed",
+                                                            "node.scope.completed"):
+            continue
+        p = e.get("payload")
+        if not isinstance(p, dict) or p.get("node_instance_key") != key:
+            continue
+        raw = p.get("iterations_stopped" if e["type"] == "node.scope.failed"
+                    else "iterations")
+        it = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    return it
+
+
 def c7_artifact_names_expected(want=C7_MAX_ITERATIONS, prefix=C7_ARTIFACT_PREFIX):
     """The evidence names § 7.1 C7b's psql line counts for an exhaustion run: the seed
     names its per-iteration publisher `test-<iteration>.json`, so the expected set is
@@ -7453,7 +9682,10 @@ def c7_no_route_verdicts(root_rows, rb=None, max_iter=C7_MAX_ITERATIONS):
     /C1.out:49-51 is the shape: /verdict, /publish_verified and /publish_needs_attention all
     `cancelled`). The old arms — labelled C7f, which § 7.1 never defined — asserted the
     opposite of the contract, so /verdict could never satisfy them.
-    root_rows: 'key|status|outcome' of the ROOT scope; rb: the until row's own readings."""
+    root_rows: 'key|status|outcome' of the ROOT scope; rb: the until row's own readings
+    ({'iterations': int|None}) — the count comes from the scope's OWN terminal journal
+    row (c7_scope_iterations_from_events), not from a node_executions column that does
+    not exist (contract § 1)."""
     rows = {k.strip(): (s.strip(), o.strip()) for k, s, o in psql_rows(root_rows, 3)}
     label = ("C7a the exhausted loop's descendants are CANCELLED and no route is taken "
              "(§ 5.1 step 5; § 7.1 has no C7f arm)")
@@ -7487,10 +9719,13 @@ def c7_no_route_verdicts(root_rows, rb=None, max_iter=C7_MAX_ITERATIONS):
     ]
     rb = rb if isinstance(rb, dict) else {}
     it = rb.get("iterations")
-    out.append((f"C7a the until scope's own ledger row reports iterations == {max_iter}",
+    out.append((f"C7a the until scope's own journal row reports iterations == {max_iter} "
+                "(node.scope.failed.iterations_stopped, § 3 row 19 — node_executions "
+                "has no iterations column, contract § 1)",
                 None if it is None else (isinstance(it, int) and not isinstance(it, bool)
                                          and it == max_iter),
-                f"iterations={it!r} (the root-scope rows above are the cancelled half)"))
+                f"iterations_stopped={it!r} off the until scope's own terminal journal "
+                "row (the root-scope rows above are the cancelled half)"))
     return out
 
 
@@ -7860,13 +10095,6 @@ def c7_scope_row(run_id):
     return {"status": st, "outcome": oc, "failed_cause": fc}
 
 
-def c7_scope_iterations(run_id):
-    """The until row's `iterations` counter (route 24's member) — int or None."""
-    text = c7_sql(f"SELECT iterations::text FROM node_executions WHERE run_id = '{run_id}' "
-                  f"AND node_instance_key = '{C7_UNTIL_KEY}'", "scope iterations")
-    return count_or_none(text) if text else None
-
-
 def c7_run_to_terminal(client, facts, run_id, cap, label):
     """Poll to a terminal state, landing alice's gate on the way. Unlike C1's watcher
     this one EXPECTS `failed` and dumps evidence on timeout."""
@@ -7968,7 +10196,8 @@ def c7():
             c7_emit(c7_event_verdicts(exh_ev))
             c7_emit(c7_artifact_verdicts(c7_artifact_names(run_id)))
             c7_emit(c7_no_route_verdicts(c7_root_rows(run_id),
-                                         {"iterations": c7_scope_iterations(run_id)}))
+                                         {"iterations":
+                                          c7_scope_iterations_from_events(exh_ev)}))
             c7_emit(c7_budget_verdicts(c7_evaluations(run_id),
                                        c7_evaluations_api(alice, run_id)))
             c7_emit(c7_carry_verdicts(c7_probe_rows(run_id)))
@@ -9198,9 +11427,14 @@ def c9_cas_verdicts(responses, snap):
     return out
 
 
-def c9_rejection_verdicts(snap, run_st, failed_cause, skipped, skip_reasons):
+def c9_rejection_verdicts(snap, run_st, failed_cause, skipped, skip_reasons, guard_key=None):
     """§ 7.1 C9e — a rejection is a BUSINESS outcome: succeeded|rejected on the
-    gate's node, the graph's `when` doing the rest, and no execution error."""
+    gate's node, the graph's `when` doing the rest, and no execution error.
+
+    `guard_key` is the node_instance_key of a dependant THIS revision guards on
+    nodes.approve.outputs.decision (C9e authors one — c9e_rejection_doc). None means the
+    run is on the seeded § 7.0 twin, which guards nothing on the decision, and the
+    dependant arm then says so rather than crediting the fan-out pair's skips."""
     if not snap:
         return [("C9e the rejected gate's node row is readable", None,
                  "no gate row came back after the rejection")]
@@ -9221,19 +11455,328 @@ def c9_rejection_verdicts(snap, run_st, failed_cause, skipped, skip_reasons):
     # condition_default on every row would demand the engine forget that distinction.
     direct = sorted(k for k, v in reason_of.items() if v == "condition_default")
     transitive = {k: v for k, v in reason_of.items() if v != "condition_default"}
-    out.append(("C9e the when-gated dependant is skipped with {{reason:'condition_default'}} "
-                "and its own dependants with dependency_skipped (row 14) — none failed",
-                bool(direct)
-                and all(v == "dependency_skipped" for v in transitive.values())
-                and any("condition_default" in str(x) for x in skip_reasons or []),
-                f"condition_default={direct or '(none)'} dependency_skipped="
-                f"{sorted(transitive) or '(none)'} "
-                f"journal reasons={skip_reasons or '(none)'}"))
+    if guard_key is None:
+        # The honest version of the old claim. On the § 7.0 twin the rows below are
+        # /emit_items + /fan_out, skipped because inputs.fanout is false; the rejection
+        # decided none of them, so PASSing here would be the vacuity the arm exists to
+        # remove (c9e_rejection_doc authors the graph that CAN answer).
+        out.append(("C9e a dependant guarded on nodes.approve.outputs.decision is skipped "
+                    "BECAUSE of the rejection", None,
+                    "this run's revision guards nothing on the decision (its when-skipped "
+                    "pair is gated on inputs.fanout), so the rows below are not evidence "
+                    f"about the rejection: condition_default={direct or '(none)'} "
+                    f"dependency_skipped={sorted(transitive) or '(none)'} — C9e's own "
+                    "revision (c9e_rejection_doc) is the graph that measures this"))
+    else:
+        out.append((f"C9e the dependant guarded on the decision ({guard_key}) is skipped "
+                    "with {{reason:'condition_default'}} and its own dependants with "
+                    "dependency_skipped (row 14) — none failed",
+                    guard_key in direct and bool(direct)
+                    and all(v == "dependency_skipped" for v in transitive.values())
+                    and any("condition_default" in str(x) for x in skip_reasons or []),
+                    f"condition_default={direct or '(none)'} dependency_skipped="
+                    f"{sorted(transitive) or '(none)'} "
+                    f"journal reasons={skip_reasons or '(none)'}"))
     out.append(("C9e the run terminates on the graph's terms — never run.failed{{"
                 "error_class:'approval_expired'}} for a decision a human made",
                 str(run_st) in C9_TERMINAL_RUNS
                 and "approval" not in str(failed_cause).lower(),
                 f"runs.status={run_st!r} failed_cause={failed_cause!r}"))
+    return out
+
+
+# --- C9e's own revision: a graph that GUARDS a dependant on the decision -----------
+#
+# docs/m4-contract.md § 7.1 C9e, verbatim:
+#   C9e  rejection is a business outcome: a second run rejected at the gate →
+#        /approve status='succeeded' outcome='rejected', and the run terminates per the
+#        graph's `when` (skipped dependants,
+#        node.execution_skipped{reason:'condition_default'}), NOT an execution error.
+# The shipped § 7.0 graph cannot answer the second half of that sentence: NOTHING in it
+# reads nodes.approve.outputs.decision — /build_until_verified hangs off the gate with no
+# `when` at all (so a rejected gate lets the whole loop run), and the only when-skipped
+# pair, /emit_items + /fan_out, is gated on inputs.fanout, so its condition_default rows
+# say "no fan-out was armed", not "the approver said no". Published revisions are
+# immutable (§ 7.0), so — the C5h/C7/C8e/C9f pattern, and README's "publish extra
+# revisions, don't widen this one" — C9e authors its OWN revision from the twin's
+# canonical document: the twin's /plan and /approve VERBATIM, every later node dropped,
+# and the two nodes below spliced in.
+#
+# What the guard may read is the spec's own statement of what a gate outputs: 03's node
+# catalogue gives `human.approval` "artifact/context, approvers, deadline → decision,
+# comments", and § 5.3 spells the runtime's shape — "the node goes `succeeded` with
+# outputs={decision: 'rejected', comments_present: boolean} and downstream `when`/passWhen
+# expressions read it" (internal/pipelines/runtime/advancer.go closeGate writes exactly
+# those two members). 03 has no `if/else`; the guard is a node-level `when` holding bare
+# restricted CEL (schema $defs/celExpression: "no ${{ }} delimiters" — ADR-0022), which
+# is how the engine's own gate fixtures write it
+# (internal/pipelines/runtime/testdata/gate_sibling.yaml: `when:
+# nodes.gate.outputs.decision == 'approved'`).
+#
+# The second node is there for § 3 row 14's TWO reasons: the guarded node's own condition
+# decided (`condition_default`) while anything downstream of a skipped node never became
+# ready (`dependency_skipped`). One node could show the first and hide the second.
+C9E_GUARD_NODE = "ship"                 # node ids: ^[a-z][a-z0-9_]{0,62}$ (schema
+C9E_DOWNSTREAM_NODE = "ship_evidence"   # $defs/identifier) — so the keys are /ship, ...
+C9E_KEPT_NODES = ("plan", "approve")    # the twin's pre-gate pair, copied verbatim
+C9E_GATE_NODE = "approve"               # the guard names the gate it waits on
+C9E_GUARD_WHEN = "nodes.approve.outputs.decision == 'approved'"
+C9E_GUARD_KEY = "/" + C9E_GUARD_NODE
+C9E_DOWNSTREAM_KEY = "/" + C9E_DOWNSTREAM_NODE
+# The scratch graph is the pre-gate pair plus the guard chain and NOTHING ELSE: a kept
+# /build_until_verified would run four iterations after the rejection (it has no `when`),
+# and /emit_items' condition_default is the fan-out arm's reason, not the rejection's.
+C9E_FORBIDDEN_NODES = ("build_until_verified", "emit_items", "fan_out", "verdict",
+                       "publish_verified", "publish_needs_attention", "publish_plan")
+C9E_ROW_COLS = ("status", "reason", "attempts", "outcome", "error_class",
+                "outputs_present")
+
+
+def c9e_dependant_nodes(gate=C9E_GATE_NODE, guard=C9E_GUARD_NODE,
+                        downstream=C9E_DOWNSTREAM_NODE):
+    """The two nodes C9e adds, as canonical-document node dicts (C7_PROBE_NODE_SPEC's
+    shape: a structure, never a text splice). Both are `artifact.publish`, the twin's own
+    post-gate kind — the guard is what makes them C9e's, not their kind, and publishing
+    the GATE's outputs means the rejected branch has nothing else it could be waiting on.
+    /ship carries the `when`; the evidence node deliberately carries NONE, so the only
+    reason it can fail to run is that its parent did not (dependency_skipped)."""
+    return [
+        {"id": guard,
+         "kind": "artifact.publish",
+         "dependsOn": [gate],
+         "when": f"nodes.{gate}.outputs.decision == 'approved'",
+         "timeoutSeconds": 300,
+         "retry": {"maxAttempts": 1},
+         "config": {"name": "c9e-ship.json", "kind": "json",
+                    "mediaType": "application/json", "sensitivity": "standard",
+                    "from": {"mode": "output_json",
+                             "value": "${{ nodes." + gate + ".outputs }}"}}},
+        {"id": downstream,
+         "kind": "artifact.publish",
+         "dependsOn": [guard],
+         "timeoutSeconds": 300,
+         "retry": {"maxAttempts": 1},
+         "config": {"name": "c9e-ship-evidence.json", "kind": "json",
+                    "mediaType": "application/json", "sensitivity": "standard",
+                    "from": {"mode": "output_json",
+                             "value": "${{ nodes." + guard + ".outputs }}"}}},
+    ]
+
+
+def c9e_rejection_doc(canonical, name, guard=C9E_GUARD_NODE, downstream=C9E_DOWNSTREAM_NODE):
+    """C9e's own revision: the twin's /plan and /approve with the decision-guarded pair
+    bolted on, published as a NEW revision (the § 7.0 seed stays byte-identical).
+    Returns {doc, applied, missing, kept, guard_key, downstream_key, guard_when,
+    input_refs, inputs_declared, node_ids}; doc is None — the caller GAPs — unless every
+    splice landed, because a graph this gate invented rather than copied would measure
+    this file's opinion of § 5.3 instead of the engine's. spec.inputs carries the schema
+    for EVERY input the kept and the spliced nodes read (doc_input_refs, the C5h helper)
+    PLUS the twin's own required list, each schema copied from the twin — the compiler
+    refuses a selection of an input the pipeline does not declare (§ 9.1), and the run
+    POSTs the twin's inputs unchanged. spec.outputs/resultBindings are DROPPED: they
+    bind /build_until_verified, which this revision does not carry."""
+    out = {"doc": None, "applied": [], "missing": [], "kept": [], "guard_key": None,
+           "downstream_key": None, "guard_when": C9E_GUARD_WHEN, "input_refs": [],
+           "inputs_declared": [], "node_keys": []}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (GET /revisions/{id} served no canonical "
+                              "kind: Pipeline document — the bytes the compiler read)")
+        return out
+    spec = canonical.get("spec") if isinstance(canonical.get("spec"), dict) else {}
+    nodes = [n for n in (spec.get("nodes") or []) if isinstance(n, dict)]
+    by_id = {}
+    for n in nodes:
+        by_id.setdefault(str(n.get("id")), []).append(n)
+    plan = by_id.get("plan") or []
+    gates = [n for n in nodes if n.get("kind") == "human.approval"]
+    if len(plan) != 1:
+        out["missing"].append(f"the twin's one /plan node (found {len(plan)}) — the guard "
+                              "is measured on a run, so the pre-gate work must be there")
+    if len(gates) != 1:
+        out["missing"].append(f"the twin's one top-level human.approval gate (found "
+                              f"{len(gates)})")
+    elif str(gates[0].get("id")) != C9E_GATE_NODE:
+        out["missing"].append(f"the gate is not '{C9E_GATE_NODE}' (its id is "
+                              f"{gates[0].get('id')!r}) — the guard's CEL names "
+                              f"nodes.{C9E_GATE_NODE}.outputs.decision and the seed's "
+                              "published twin does not rename it")
+    clash = sorted(({guard, downstream} | set(C9E_KEPT_NODES)) & set(by_id) - set(C9E_KEPT_NODES))
+    if clash:
+        out["missing"].append(f"node ids {clash} already exist in the source document — "
+                              "C9e would be colliding with the seed's graph, not guarding it")
+    if out["missing"]:
+        return out
+
+    kept = json.loads(json.dumps([plan[0], gates[0]]))   # deep copy; the twin stays put
+    gate = kept[1]
+    deps = [d for d in (gate.get("dependsOn") or []) if isinstance(d, str)]
+    drop = [d for d in deps if d not in C9E_KEPT_NODES]
+    if drop:
+        gate["dependsOn"] = [d for d in deps if d in C9E_KEPT_NODES]
+        out["applied"].append(f"/approve dependsOn: {deps} -> {gate['dependsOn']} (the "
+                              "dropped nodes are not in this revision: a dependsOn on an "
+                              "undeclared node is a compile error, not a shortcut)")
+    spliced = c9e_dependant_nodes(gate=C9E_GATE_NODE, guard=guard, downstream=downstream)
+
+    inp = spec.get("inputs") if isinstance(spec.get("inputs"), dict) else {}
+    props = inp.get("properties") if isinstance(inp.get("properties"), dict) else {}
+    required = [k for k in (inp.get("required") or []) if isinstance(k, str)]
+    if not props:
+        out["missing"].append("spec.inputs.properties on the twin (the scratch run posts "
+                              "the twin's inputs unchanged; an undeclared input is a run "
+                              "refusal)")
+    refs = doc_input_refs(kept + spliced)
+    for k in sorted(set(refs) | set(required)):
+        if k not in props:
+            out["missing"].append(f"inputs.{k} on the seed twin ({k} is "
+                                  + ("read by a kept or spliced node" if k in refs
+                                     else "required by the twin and sent with the run")
+                                  + ")")
+    if out["missing"]:
+        return out
+    declared = {k: props[k] for k in props if k in set(refs) | set(required)}
+    doc = {"apiVersion": canonical.get("apiVersion"), "kind": "Pipeline",
+           "metadata": {"name": name,
+                        "description": "C9e: the twin's /plan and /approve with ONE "
+                                       "dependant guarded on the gate's decision"},
+           "spec": {"inputs": {"type": "object",
+                               "required": [k for k in required if k in declared],
+                               "properties": declared},
+                    "policies": json.loads(json.dumps(spec.get("policies") or {})),
+                    "nodes": kept + spliced}}
+    out["kept"] = [str(n.get("id")) for n in kept]
+    out["input_refs"] = refs
+    out["inputs_declared"] = sorted(declared)
+    out["guard_key"] = "/" + guard
+    out["downstream_key"] = "/" + downstream
+    out["node_keys"] = ["/" + str(n.get("id")) for n in kept + spliced]
+    out["applied"].append("metadata.name (a new revision; the seed's published bytes are "
+                          "immutable)")
+    out["applied"].append(f"/plan and /approve copied VERBATIM from the twin "
+                          f"{[str(n.get('id')) for n in kept]}")
+    out["applied"].append("/ship when: " + C9E_GUARD_WHEN + " — 03's when-guard syntax "
+                          "over § 5.3's outputs.decision, bare CEL (no celExpression "
+                          "delimiters)")
+    out["applied"].append(f"/ship_evidence dependsOn [/ship] with NO when of its own — the "
+                          "dependency_skipped witness (row 14's second reason)")
+    out["applied"].append(f"every other twin node dropped {list(C9E_FORBIDDEN_NODES)} — on "
+                          "this graph the ONLY reason a dependant fails to run is the "
+                          "decision it reads")
+    out["applied"].append(f"spec.inputs declares {out['inputs_declared']} (schemas copied "
+                          "from the twin); spec.outputs/resultBindings dropped (they bind "
+                          "/build_until_verified)")
+    out["doc"] = doc_yaml_emit(doc)
+    return out
+
+
+def c9e_doc_verdicts(sp):
+    """Honesty gate on C9e's re-authored document: the graph this gate may verdict § 7.1
+    C9e on is the twin's pre-gate pair PLUS the decision guard and nothing else. A
+    refused splice is reported here so the leg then has no revision to run and says so,
+    never verdicts an unauthored guard."""
+    sp = sp or {}
+    applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    nothing = not applied and not missing and not isinstance(doc, str)
+    v = [("C9e its own revision authored — the twin's /plan + /approve plus ONE dependant "
+          "guarded on nodes.approve.outputs.decision",
+          None if nothing else any("/ship when" in a for a in applied)
+          and any("/plan and /approve copied VERBATIM" in a for a in applied),
+          "no splice report at all" if nothing else f"applied={applied}")]
+    if missing:
+        v.append(("C9e the scratch revision is the twin's pre-gate pair PLUS the guard",
+                  False, f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append((f"C9e the authored bytes carry the guard verbatim ({C9E_GUARD_WHEN}) and "
+                  f"the dependency witness (id: {C9E_DOWNSTREAM_NODE})",
+                  f"when: {C9E_GUARD_WHEN}" in doc
+                  and f"id: {C9E_GUARD_NODE}" in doc and f"id: {C9E_DOWNSTREAM_NODE}" in doc,
+                  f"{len(doc)} bytes"))
+        v.append(("C9e the guarded graph carries NO other twin node (the loop, the fan-out "
+                  "and the seed's publishers are dropped: their skips would be their own "
+                  "reasons, not the rejection's)",
+                  not [n for n in C9E_FORBIDDEN_NODES
+                       if f"id: {n}" in doc or f"nodes.{n}." in doc]
+                  and sp.get("node_keys") == ["/" + k for k in (sp.get("kept") or [])]
+                  + [sp.get("guard_key"), sp.get("downstream_key")],
+                  f"keys={sp.get('node_keys')}"))
+    return v
+
+
+def c9e_graph_verdicts(rows, run_row=None, guard_key=C9E_GUARD_KEY,
+                       downstream_key=C9E_DOWNSTREAM_KEY, guard_when=C9E_GUARD_WHEN):
+    """§ 7.1 C9e's dependant half, measured on the graph that GUARDS it: the rejected
+    gate's dependant is SKIPPED, never cancelled and never run, and the reason names the
+    node's own false condition (`condition_default`, advancer.go decidePending — the
+    `when` that reads outputs.decision), while its own dependant carries
+    `dependency_skipped` (§ 3 row 14 keeps the two apart on purpose).
+    rows: {node_instance_key: {status, reason, attempts, outcome, error_class}} — None
+    means the ledger would not answer (GAP, never a zero). run_row: c9_run_row()'s dict.
+    guard_key None = the leg fell back to the seeded twin, whose graph guards nothing on
+    the decision: every arm is then the GAP it always was, never a FAIL this file
+    invented and never a PASS borrowed from the fan-out pair."""
+    if guard_key is None:
+        # The claim itself is GAPped by c9_rejection_verdicts on this path; a second GAP
+        # would count the same open item twice, so the missing precondition is a NOTE.
+        return [("C9e its own revision carries the guarded dependant the sentence needs",
+                 C5_NOTE,
+                 "no revision was authored/published/pulled to a gate in this pass, so "
+                 "the graph under test is the § 7.0 twin — whose when-skipped pair "
+                 "(/emit_items, /fan_out) is gated on inputs.fanout, so its "
+                 "condition_default rows say 'no fan-out armed', not 'the approver said "
+                 "no' (the lines above say which step of authoring failed)")]
+    if rows is None:
+        return [("C9e the guarded run's node rows are readable", None,
+                 "the node ledger would not answer — a ledger that will not speak is not "
+                 "a skipped dependant")]
+    out = []
+    down_key = downstream_key or C9E_DOWNSTREAM_KEY
+    guard, down = rows.get(guard_key) or {}, rows.get(down_key) or {}
+    g_status, g_reason = str(guard.get("status", "")), str(guard.get("reason", "-"))
+    out.append((f"C9e the dependant guarded on `{guard_when}` ({guard_key}) is SKIPPED "
+                "with {{reason:'condition_default'}} — its own when decided, and the "
+                "ledger says nothing cancelled or ran it",
+                bool(guard) and g_status == "skipped" and g_reason == "condition_default",
+                "no row at all (the revision carried no guard?)" if not guard else
+                f"status={g_status!r} reason={g_reason!r} "
+                f"attempts={guard.get('attempts')!r} outcome={guard.get('outcome')!r} "
+                f"error_class={guard.get('error_class')!r}"))
+    att = count_or_none(guard.get("attempts")) if guard else None
+    out.append((f"C9e {guard_key} NEVER RAN: zero attempts, no outputs, no error_class "
+                "(a rejection is a business outcome, so the dependant is not executed "
+                "and then called a skip)",
+                None if not guard else att == 0 and g_status == "skipped"
+                and str(guard.get("error_class", "-")) in ("-", "", "NULL")
+                and not truthy(guard.get("outputs_present")),
+                "no row" if not guard else
+                f"attempts={guard.get('attempts')!r} status={g_status!r} "
+                f"error_class={guard.get('error_class')!r} "
+                f"outputs_present={guard.get('outputs_present')!r}"))
+    out.append((f"C9e the skip PROPAGATES as its own reason: {down_key} (no `when` "
+                "of its own) is skipped with {{reason:'dependency_skipped'}} — row 14 "
+                "keeps the guarded node's condition_default apart from its downstream",
+                bool(down) and str(down.get("status")) == "skipped"
+                and str(down.get("reason")) == "dependency_skipped",
+                "no row" if not down else
+                f"status={down.get('status')!r} reason={down.get('reason')!r} "
+                f"attempts={down.get('attempts')!r}"))
+    dead = sorted(k for k, r in rows.items()
+                  if str(r.get("status")) in ("cancelled", "failed", "interrupted"))
+    out.append(("C9e nothing on the rejected branch was CANCELLED or FAILED (the honest "
+                "terminal for a false `when` is skipped, not cancelled — the graph's "
+                "terms, not an execution error)",
+                not dead, f"cancelled/failed/interrupted rows={dead or '(none)'} "
+                          f"rows={sorted(rows)}"))
+    if not isinstance(run_row, dict):
+        out.append(("C9e the guarded run terminates on the graph's terms", None,
+                    "the runs row is unreadable — nothing to grade"))
+    else:
+        out.append(("C9e the guarded run terminates on the graph's terms (completed, no "
+                    "failed_cause, no approval_expired)",
+                    str(run_row.get("status")) == "completed"
+                    and str(run_row.get("failed_cause", "-")).startswith("-")
+                    and "approval" not in str(run_row.get("failed_cause", "")).lower(),
+                    f"runs.status={run_row.get('status')!r} "
+                    f"failed_cause={run_row.get('failed_cause')!r}"))
     return out
 
 
@@ -10185,6 +12728,145 @@ def c9_f_hold_watch(aid, sib, cap):
     return {"ran": ran, "held": held, "ticks": ticks}
 
 
+# --- C9e's live half: reject a gate on the revision C9e published -----------------
+#
+# The scratch graph is /plan -> /approve -> /ship (when) -> /ship_evidence, so the
+# waits below are shorter than the twin's on purpose: there is no loop, no fan-out and
+# no agent turn in it, and an arm that waits as long as C9e's own gate-open cap would
+# spend C9f's envelope measuring nothing.
+C9E_ARM_GATE_CAP_S = 420       # /plan is one process.exec step, then the gate opens
+C9E_ARM_RUN_CAP_S = 300        # after the rejection: two skips and the run is done
+# The scratch run's inputs come from the manifest's twin block (see c9e_run_inputs); the
+# fallback below is that block's OWN shape in the seed's own words (seed.sh posts
+# {"goal": …, "repository": "app"}), used only when the manifest carries no inputs at all
+# — with no goal there is no plan summary and no gate, so the arm would post a document it
+# cannot run.
+C9E_FALLBACK_INPUTS = {"goal": "C9e: a rejected gate skips its dependants",
+                       "repository": "app"}
+
+
+def c9e_graph_rows(run_id):
+    """Every node row of C9e's guarded run as {key: {status, reason, attempts, outcome,
+    error_class, outputs_present}}. The reason comes from the node's OWN
+    node.execution_skipped row (§ 3 row 14 — the table has no skip_reason column, the
+    journal does), the attempt count from attempts and the outputs from the row's own
+    jsonb column, because 'it was skipped, not run' is a claim about three ledger
+    facts and not about a word in a status column. None = the ledger would not
+    answer."""
+    try:
+        rows = psql_rows(psql(
+            f"SELECT ne.node_instance_key || '|' || ne.status || '|' || "
+            f"coalesce((SELECT e.payload->>'reason' FROM domain_events e WHERE "
+            f"e.node_execution_id = ne.id AND e.type = 'node.execution_skipped' ORDER BY "
+            f"e.global_seq DESC LIMIT 1), '-') || '|' || "
+            f"(SELECT count(*) FROM attempts a WHERE a.node_execution_id = ne.id)::text "
+            f"|| '|' || coalesce(ne.outcome, '-') || '|' || coalesce(ne.error_class, '-') "
+            f"|| '|' || coalesce((ne.outputs IS NOT NULL)::text, 'f') "
+            f"FROM node_executions ne WHERE ne.run_id = '{run_id}'"), 7)
+    except RuntimeError as e:
+        show("C9e guarded node rows (psql)", str(e)[:260])
+        return None
+    return {r[0]: dict(zip(C9E_ROW_COLS, r[1:])) for r in rows}
+
+
+def c9e_run_inputs(twin_inputs, declared, required=()):
+    """The scratch run's inputs: exactly the DECLARED members of the twin's run inputs.
+    The document copies its input schemas from the twin and drops the nodes that read
+    the rest, so posting the twin's whole block would hand the compiler an input nothing
+    in this graph declares (C5h's 1c190fe refusal, seen from the other side). A required
+    member the manifest does not carry is a `missing` reason — the gate never invents a
+    goal to make its own run legal. {inputs, missing, dropped}."""
+    src = twin_inputs if isinstance(twin_inputs, dict) else {}
+    declared = set(declared or ())
+    inputs = {k: v for k, v in src.items() if k in declared}
+    missing = sorted(k for k in (required or ()) if k not in inputs)
+    return {"inputs": None if missing else inputs, "missing": missing,
+            "dropped": sorted(k for k in src if k not in declared)}
+
+
+def c9e_own_gate(alice, admin, facts, used):
+    """Author -> publish -> run -> wait at the gate, on a revision C9e wrote. Returns
+    (run_id, approval_id, source, guard_key, downstream_key), or None for 'measure the
+    business outcome on the twin instead' — every bail-out PRINTS why first, so the
+    caller never has to guess which half it lost. Nothing is decided here: C9e decides
+    the gate it is handed, on route 36."""
+    pid = mf(facts, "project_id")
+    tw = mvariant(facts, "twin") or {}
+    if admin is None:
+        show("C9e no own revision: admin never signed in",
+             "a scratch revision may only be drafted by the library role (C9f's rule) — the "
+             "rejection is measured on the twin and its dependant arm is a GAP")
+        return None
+    src = doc_revision_canonical(admin, mf(tw, "revision_id")
+                                 or mf(facts, "revision_id", variant="twin"))
+    if src is None:
+        show("C9e no own revision: no canonical twin document",
+             "GET /revisions/{id} served no canonical kind: Pipeline document — the gate "
+             "will not author a guard into bytes it cannot show the compiler read")
+        return None
+    sp = c9e_rejection_doc(src, schema_name("m4x-c9e-guard"))
+    c5_emit(c9e_doc_verdicts(sp))
+    if sp["doc"] is None:
+        return None
+    pub = c7_publish(admin, mf(facts, "pipeline_id"), "C9e rejection guard", sp["doc"])
+    rev = str((pub or {}).get("revision_id") or "")
+    if not rev:
+        c5_emit([("C9e its own revision published (draft -> validate -> publish)", None,
+                  c5h_publish_report(pub))])
+        return None
+    check("C9e its own revision published (draft -> validate -> publish, the § 7.0 "
+          "twin untouched)", True,
+          f"revision {rev[:8]} carries {sp['node_keys']}")
+    want = tw.get("inputs") if isinstance(tw.get("inputs"), dict) \
+        else mf(facts, "inputs", variant="twin")
+    ri = c9e_run_inputs(want, sp["inputs_declared"], ["goal", "repository"])
+    if ri["missing"] and isinstance(want, dict) and want:
+        c5_emit([("C9e the scratch run's inputs are the twin's own", False,
+                  f"the manifest's twin inputs lack {ri['missing']} "
+                  f"(declared={sp['inputs_declared']})")])
+        return None
+    inputs = ri["inputs"] if ri["inputs"] is not None else C9E_FALLBACK_INPUTS
+    show("C9e the scratch run is posted with",
+         f"{inputs} (dropped from the twin's block: {ri['dropped'] or '(nothing)'}; "
+         f"declared={sp['inputs_declared']})")
+    run_id = c9_f_post(alice, pid, rev, inputs, schema_name("m4x-c9e"), "C9e")
+    if not run_id:
+        return None
+    aid = c9_wait_for_gate(alice, pid, run_id, C9E_ARM_GATE_CAP_S, used)
+    if not aid:
+        dump_run_evidence(alice, run_id)
+        show("C9e its own revision never opened a gate",
+             f"run {run_id} reached {run_status(run_id)!r} without a pending gate in "
+             f"{C9E_ARM_GATE_CAP_S}s (evidence dumped above) — the run is C9e's, so the "
+             "caller reports the half-measure instead of starting a second run")
+        return (run_id, None,
+                f"C9e's own revision {rev[:8]} started run {run_id} and never opened a "
+                f"gate within {C9E_ARM_GATE_CAP_S}s (status={run_status(run_id)!r})",
+                None, None)
+    return (run_id, aid,
+            f"C9e's own revision {rev[:8]} ({' + '.join(sp['node_keys'])})",
+            sp["guard_key"], sp["downstream_key"])
+
+
+def c9e_acquire_gate(alice, admin, facts, used):
+    """A gate to reject, on C9e's OWN revision when this gate can author and publish one
+    (the C5h/C7/C8e/C9f pattern: the § 7.0 seed is immutable and guards nothing on the
+    decision). (run_id, approval_id, source, guard_key, downstream_key) — guard_key None
+    says 'the run is the seeded twin after all', which c9_rejection_verdicts reports as
+    the GAP it is rather than crediting the fan-out pair with the rejection.
+    Nothing is decided here: C9e decides the gate it is handed."""
+    own = c9e_own_gate(alice, admin, facts, used)
+    # A run of C9e's OWN revision that never opened its gate is the finding, not a
+    # reason to start a second run: route 22 accepted a published revision whose gate
+    # did not appear, and burning the twin's 900 s wait on top of it would spend C9f's
+    # envelope to measure the same nothing. Only a bail-out BEFORE a run existed falls
+    # back to the seeded twin (where the dependant arm says GAP).
+    if own and (own[0] or own[1]):
+        return own
+    run_id, aid, src_txt = c9_acquire_gate(alice, facts, used, "C9e")
+    return run_id, aid, src_txt, None, None
+
+
 def c9f_deadline_arms(alice, admin, facts):
     """C9f — the deadline ARMS, measured. The § 7.0 seed authors deadlineSeconds:
     86400 / onTimeout: fail, so expire and cancel_run have no row to expire until
@@ -10813,7 +13495,11 @@ def c9():
 
     Live shape: reuse a pending seeded gate when the lab has one (the § 7.0 seed
     POSTs two runs that wait for a decision), else start a twin run and wait for
-    its gate. Every decision goes through route 36; SQL observes and never decides.
+    its gate. C9e is the exception the contract forces: its sentence is about the
+    GRAPH, and the seed guards nothing on the decision, so C9e publishes its own
+    revision first (c9e_acquire_gate) and only falls back to the twin — where the
+    dependant arm says GAP — if authoring, publishing or the gate itself fails.
+    Every decision goes through route 36; SQL observes and never decides.
     The ONE lab-side write is alice's removal/re-restore (no DELETE-member route
     exists in the frozen 37-route table — M3 D10's exception, as in seed.sh).
     """
@@ -11029,9 +13715,16 @@ def c9():
             c5_emit(c9_cas_verdicts(replies, snap_d))
 
     # ---- C9e: a rejection is a business outcome, on its OWN run ----
-    run_e, aid_e, src_e = c9_acquire_gate(alice, facts, {aid}, "C9e")
+    # § 7.1 C9e is a sentence about the GRAPH ('the run terminates per the graph's `when`
+    # (skipped dependants …)'), and the § 7.0 twin guards nothing on
+    # nodes.approve.outputs.decision — so C9e publishes the revision that does (c9e_
+    # acquire_gate; C5h/C7/C8e/C9f's pattern) and rejects THAT gate on route 36, the same
+    # call C1b and the rest of C9 make. guard_e None = the authored graph could not be
+    # landed and the leg is back on the twin, where the dependant arm is a GAP.
+    run_e, aid_e, src_e, guard_e, down_e = c9e_acquire_gate(alice, admin, facts, {aid})
+    show("C9e the run about to be rejected waits on", src_e or "(no gate)")
     if not aid_e:
-        gap("C9e rejection is a business outcome", f"no second gate to reject: {src_e}")
+        gap("C9e rejection is a business outcome", f"no gate to reject: {src_e}")
     else:
         CTX["c9_reject_run"], CTX["c9_reject_gate"] = run_e, aid_e
         gate_e = c9_gate_row(aid_e)
@@ -11041,7 +13734,7 @@ def c9():
                        "(docs/m4-contract.md § 5.3)")
         check("C9e a REJECTION is accepted by route 36 (200 — it is a decision, not a refusal)",
               rr["status"] == 200, f"{rr['status']} {json.dumps(rr['body'])[:200]}")
-        status_e = c9_run_to_terminal(run_e, 900, alice, "C9e")
+        status_e = c9_run_to_terminal(run_e, C9E_ARM_RUN_CAP_S if guard_e else 900, alice, "C9e")
         snap_e = c9_gate_row(aid_e)
         show("C9e the rejected gate's row", json.dumps(snap_e) if snap_e else "(no row)")
         try:
@@ -11064,11 +13757,22 @@ def c9():
             run_row = []
         c5_emit(c9_rejection_verdicts(snap_e, status_e or (run_row[0][0] if run_row else ""),
                                       run_row[0][1] if run_row else "",
-                                      skipped, [s["reason"] for s in skipped]))
-        gap("C9e the dependants skipped BECAUSE of the rejection", "the seeded § 7.0 graph guards "
-            "nothing on nodes.approve.outputs.decision (its when-skipped pair is gated on "
-            "inputs.fanout), so 'rejected skips its dependants' is not producible without "
-            "publishing an extra revision — C7/C8's authored-revision pattern, not this gate's")
+                                      skipped, [s["reason"] for s in skipped],
+                                      guard_key=guard_e))
+        # The same ledger, read per NODE: the contract's words are 'skipped dependants,
+        # node.execution_skipped{reason:'condition_default'}', and a run-level list of
+        # reasons cannot tell the guarded node's own condition from a cascade. c9e_graph_
+        # rows carries each node's reason AND its attempt count, which is the only way to
+        # say 'skipped, never run' with evidence.
+        grows = c9e_graph_rows(run_e)
+        show("C9e the guarded graph's rows, with each node's own skip reason and attempt "
+             "count", "\n".join(f"{k} status={v['status']} reason={v['reason']} "
+                                f"attempts={v['attempts']} outcome={v['outcome']} "
+                                f"error_class={v['error_class']}"
+                                for k, v in sorted((grows or {}).items())) or "(no rows)")
+        c5_emit(c9e_graph_verdicts(grows, dict(zip(("status", "failed_cause"), run_row[0]))
+                                   if run_row else {"status": status_e, "failed_cause": "-"},
+                                   guard_key=guard_e, downstream_key=down_e))
 
     # ---- C9f: the timeout arms, armed by revisions THIS gate publishes ----
     # The § 7.0 seed authors deadlineSeconds: 86400 / onTimeout: fail, so the
@@ -13065,6 +15769,7 @@ def c11c_regrade():
     for label, ok, detail in c11c_structural_verdicts():
         if ok is None or before.get(label) is ok:
             continue          # still unmeasured: the in-place GAP line stands
+        supersede_gap(label)
         check(f"{label} [regraded once its witnesses printed]", ok, detail)
 
 
@@ -15556,7 +18261,9 @@ def c14_lock_marks(services=("api-a", "api-b"), since=None):
 # serves reads and never claims or advances; a run started against it stays 'queued'
 # and the other replica picks it up." cmd/communication/serve.go is the only place the
 # flag is read; an off replica prints one startup line about itself, and the driver's
-# acquire mark (C14_LOCK_MARK) is the evidence it never advanced anything.
+# acquire mark (C14_LOCK_MARK) is the evidence it never advanced anything. The arm now
+# SETS UP that precondition itself (recreate api-a off, restore on in a finally) instead
+# of GAPing whenever the lab comes up all-on — see c14_recreate_cmd/c14_off_replica.
 C14_SCHED_OFF_MARK = "pipeline scheduler disabled on this replica"
 
 
@@ -15589,15 +18296,243 @@ def c14_off_pair(states):
     return (off[0], on[0]) if len(off) == 1 and len(on) == 1 else None
 
 
-def c14_off_replica_verdicts(off, on, reads, posted, queued_seen, picked_up, lock_marks):
-    """C14c's claims from what the arm OBSERVED:
-      reads      {path: status} answered by the off replica ALONE (it must serve reads);
+# C14c does not wait for a lab that came up with one replica off: it SETS UP that
+# precondition itself by recreating ONLY api-a with COMMUNICATION_PIPELINE_SCHEDULER_A
+# =off (compose.m4.yml reads the flag per replica) and restoring it in a try/finally.
+# The flag travels in the PROCESS ENV exactly like § 7.0's bring-up — never in argv —
+# and the recreate is a `docker compose -p communication-m4 ... up -d --no-deps
+# --force-recreate`, with --no-deps so api-b, the workers and postgres stay exactly as
+# they were (same project pin as C14a's `restart` and W7's `stop`/`start`).
+# WHICH -f FILES is the part that used to be wrong. The driver's own COMPOSE list is
+# compose.yml + compose.harness.yml + compose.m4.yml, but a lab brought up by
+# lab_reset.sh carries a FOURTH file, compose.real.yml (the real model-key mounts for
+# api-a/api-b/worker-a/worker-b), and recreating api-a from only the three silently
+# strips that configuration from the replica the LATER gates inherit. Docker already
+# recorded the answer: the container's com.docker.compose.project.config_files label
+# lists, in order, the files compose created it from and
+# com.docker.compose.project.working_dir the directory it read them in — so the
+# recreate reads BOTH off the running container, and only falls back to COMPOSE's own
+# list when the label cannot be read, saying so in the evidence.
+C14_SCHED_ENV_PREFIX = "COMMUNICATION_PIPELINE_SCHEDULER_"
+C14_CONFIG_FILES_LABEL = "com.docker.compose.project.config_files"
+C14_WORKING_DIR_LABEL = "com.docker.compose.project.working_dir"
+# what docker's own templates print for a label the container does not carry
+C14_LABEL_MISSING = ("", "<no value>", "null", "None", "[]", "{}")
+
+
+def c14_compose_label_paths(raw):
+    """Parse a com.docker.compose.project.config_files label value into the ORDERED -f
+    list compose created this container from: the plain shape is comma-separated
+    absolute paths (`/lab/compose.yml,/lab/compose.real.yml`); a `{{json ...}}` inspect
+    prints a JSON list, accepted too. Empty/dishonest answers ('', '<no value>',
+    whitespace, unparsable JSON, a non-list, blank entries) give [] — the caller reads
+    that as 'no label, use COMPOSE's own files' rather than inventing a lab."""
+    if not isinstance(raw, str):
+        return []
+    text = raw.strip()
+    if text in C14_LABEL_MISSING:
+        return []
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return []
+        parts = [p for p in data if isinstance(p, str)] if isinstance(data, list) else []
+    else:
+        parts = text.split(",")
+    out, seen = [], set()
+    for part in parts:
+        path = str(part).strip().strip('"').strip()
+        if path in C14_LABEL_MISSING or path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
+
+
+def c14_recreate_cmd(svc, files=None):
+    """Recreate exactly ONE replica, deps untouched: `up -d --no-deps
+    --force-recreate <svc>` on this project. `files` is the -f list read off the
+    RUNNING container's config_files label by c14_container_compose_labels() — a lab
+    built with a fourth overlay must be recreated WITH that overlay. Empty/unreadable
+    falls back to the driver's own COMPOSE -f list (and c14_recreate_source_note says
+    so). The project pin is kept in both paths; no flag and no value in argv."""
+    files = _c14_path_list(files)
+    if files:
+        base = ["docker", "compose", "-p", COMPOSE_PROJECT]
+        for f in files:
+            base += ["-f", f]
+    else:
+        base = list(COMPOSE)
+    return base + ["up", "-d", "--no-deps", "--force-recreate", str(svc)]
+
+
+def _c14_path_list(files):
+    """Clean a -f list that may arrive as the raw label string or a list: ordered,
+    stripped, de-duplicated, blanks gone. Pure."""
+    if isinstance(files, str):
+        return c14_compose_label_paths(files)
+    out, seen = [], set()
+    for part in list(files or []):
+        path = str(part).strip().strip('"').strip()
+        if path in C14_LABEL_MISSING or path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
+
+
+def c14_recreate_cwd(files, working_dir=""):
+    """Directory the recreate runs in: the container's compose working_dir label when
+    the -f list came from that label (the lab lives outside the repo — its relative
+    build contexts and mount paths resolve there), else REPO_DIR, exactly where every
+    other COMPOSE lever in this driver runs. Pure; a bogus/relative working_dir label
+    does not move the command."""
+    wd = "" if working_dir is None else str(working_dir).strip()
+    if _c14_path_list(files) and wd not in C14_LABEL_MISSING and os.path.isabs(wd):
+        return wd
+    return REPO_DIR
+
+
+def c14_recreate_plan(svc, files=None, working_dir=""):
+    """The recreate as ONE pure decision from whatever the labels answered:
+    {cmd, cwd, files, source}. source 'label' = the -f list came off the running
+    container (the lab recreates itself with its OWN files, compose.real.yml and any
+    other overlay included); 'fallback' = the label was unreadable, so the command
+    rides the driver's COMPOSE list — a real risk of dropping configuration, reported
+    in the evidence by c14_recreate_source_note, never hidden."""
+    files = _c14_path_list(files)
+    return {"cmd": c14_recreate_cmd(svc, files),
+            "cwd": c14_recreate_cwd(files, working_dir),
+            "files": files,
+            "source": "label" if files else "fallback"}
+
+
+def c14_compose_f_args(cmd=None):
+    """The -f values of a compose command (default: the driver's COMPOSE). Pure."""
+    cmd = list(COMPOSE if cmd is None else cmd)
+    return [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "-f"]
+
+
+def c14_recreate_source_note(svc, plan):
+    """The evidence line for one recreate: which -f files it rides and where. The
+    fallback row names the driver's own list and the configuration it may be
+    missing — a silently-crippled api-a must be readable in the report."""
+    if not isinstance(plan, dict):
+        plan = c14_recreate_plan(svc, None, "")
+    files = _c14_path_list(plan.get("files"))
+    if plan.get("source") == "label" and files:
+        return (f"{len(files)} -f file(s) read from the running {svc} container's "
+                f"{C14_CONFIG_FILES_LABEL} label: {', '.join(files)} "
+                f"(compose working dir {plan.get('cwd')})")
+    return (f"WARNING: {svc} reports no readable {C14_CONFIG_FILES_LABEL} label — the "
+            f"recreate falls back to the driver's own -f list "
+            f"({', '.join(c14_compose_f_args())} from {REPO_DIR}). If this lab was "
+            "brought up with an extra compose file (lab_reset.sh adds compose.real.yml), "
+            "the recreated replica comes back WITHOUT that configuration")
+
+
+def c14_container_compose_labels(service):
+    """(config_files, working_dir) read off the container compose ACTUALLY created for
+    one of this project's services. compose_container() is the gate: it only names a
+    container whose com.docker.compose.project label says communication-m4 (§ 7.0), and
+    this inspect re-reads that project label beside the two paths, so a reference that
+    went away in between still cannot aim the recreate at another stack. ([], '') when
+    nothing provable answers — the caller falls back to COMPOSE and says so. Never
+    raises: a docker that cannot be reached is an unreadable label (a reported
+    fallback), not a crash in the middle of a gate that still has a container to
+    restore."""
+    try:
+        name = compose_container(service)
+    except Exception:  # noqa: BLE001 — unreadable addressing is the fallback path
+        return [], ""
+    if not name:
+        return [], ""
+    try:
+        rc, out = run(["docker", "inspect", "-f",
+                       '{{index .Config.Labels "com.docker.compose.project"}}|'
+                       '{{index .Config.Labels "' + C14_CONFIG_FILES_LABEL + '"}}|'
+                       '{{index .Config.Labels "' + C14_WORKING_DIR_LABEL + '"}}', name])
+    except Exception:  # noqa: BLE001
+        return [], ""
+    if rc != 0:
+        return [], ""
+    proj, _, rest = str(out).strip().partition("|")
+    files, _, working_dir = rest.partition("|")
+    if proj.strip() != COMPOSE_PROJECT:
+        return [], ""
+    return (c14_compose_label_paths(files),
+            "" if str(working_dir).strip() in C14_LABEL_MISSING else str(working_dir).strip())
+
+
+def c14_recreate_plan_for_service(svc):
+    """Read the labels, then decide: the same pure plan c14_recreate_plan builds, from
+    the live container. Used by C14c's precondition recreate and (unless the arm
+    passes the precondition's own plan) by its try/finally restore."""
+    files, working_dir = c14_container_compose_labels(svc)
+    return c14_recreate_plan(svc, files, working_dir)
+# every ledger status the runs table can answer with between POST and terminal —
+# anything else (a PSQL_ERROR string, empty output) is not an observation.
+C14_RUN_STATUSES = ("queued", "running", "waiting_human") + C14_TERMINAL
+
+
+def c14_sched_env_var(svc):
+    """The per-replica env var compose.m4.yml interpolates for a compose service
+    ('api-a' -> COMMUNICATION_PIPELINE_SCHEDULER_A, 'api-b' -> ..._B). None for a
+    service the compose file gives no scheduler flag — recreating those with a
+    COMMUNICATION_PIPELINE_SCHEDULER_* in the env would be a silent no-op."""
+    suffix = {"api-a": "A", "api-b": "B"}.get(str(svc or ""))
+    return C14_SCHED_ENV_PREFIX + suffix if suffix else None
+
+
+def c14_recreate_env(svc, value):
+    """The process env for c14_recreate_cmd: COMPOSE_ENV (so HOST_UID/HOST_GID and
+    every § 7.0 variable survive) with exactly the one per-replica scheduler flag
+    overridden. ValueError on a service with no flag of its own — setting _A while
+    recreating api-b would silently leave the lab configured exactly as it was."""
+    var = c14_sched_env_var(svc)
+    if var is None:
+        raise ValueError(f"compose.m4.yml gives {svc!r} no per-replica "
+                         f"{C14_SCHED_ENV_PREFIX}[AB] variable")
+    return dict(COMPOSE_ENV, **{var: str(value)})
+
+
+def c14_restore_verdicts(restore):
+    """The try/finally restore as ONE pure claim: None (the arm recreated nothing —
+    the lab already had its off replica) claims nothing; 'on' PASSES; 'off' FAILs
+    (later gates inherit a crippled lab); anything else is an unproven restore —
+    a GAP, never a silent PASS."""
+    if restore is None:
+        return []
+    svc, state = restore
+    label = f"C14c restore: {svc} came back with its engine on for the later gates"
+    if state == "on":
+        return [(label, True,
+                 f"recreated with {c14_sched_env_var(svc)}=on; readiness answered and the "
+                 "fresh startup log carries no 'engine off' mark")]
+    if state == "off":
+        return [(label, False,
+                 "the try/finally restore did NOT take: the replica still prints its "
+                 "'engine off' startup line — later gates inherit a crippled lab")]
+    return [(label, None,
+             f"post-restore engine state reads {state!r} (readiness or logs unreadable) "
+             "— the restore is unproven, not unseen")]
+
+
+def c14_off_replica_verdicts(off, on, reads, posted, advance, lock_marks, restore=None):
+    """C14c's claims from what the arm OBSERVED (BOTH replicas stay up — the arm flips
+    the flag by recreating one replica; it never stops anything):
+      reads      {path: status} answered by the off replica (it must serve reads,
+                 including the read of the run it has just accepted);
       posted     (status, run_id|None) of the run POSTed to the off replica's own port;
-      queued_seen statuses read back off the off replica while `on` was stopped (every
-                 one must still be 'queued' — § 7.1 C14c's own words);
-      picked_up  the status seen after `on` came back ('queued' = it never moved;
-                 None = unobserved, which GAPs rather than PASSes);
-      lock_marks {service: acquire-count} over the arm's window (None = logs unreadable).
+      advance    the run's ledger statuses sampled over the arm window — with the on
+                 replica's engine running the whole time, 'the on replica keeps
+                 advancing runs' is this list leaving 'queued'; 'the off replica
+                 advances NOTHING' is carried by the advisory-lock claim below;
+      lock_marks {service: acquire-count} over the arm's window (None = logs unreadable);
+      restore    None when the lab itself supplied the off replica (the arm recreated
+                 nothing), else (service, 'on'|'off'|'unobservable') — the engine state
+                 the try/finally restore left for every later gate.
     Pure: no HTTP, no compose."""
     out = []
     label = f"C14c {off} serves READS with its engine off"
@@ -15614,24 +18549,19 @@ def c14_off_replica_verdicts(off, on, reads, posted, queued_seen, picked_up, loc
     else:
         out.append((f"C14c a run POSTed to {off} is accepted",
                     st in (200, 201) and bool(run_id), f"status={st} run_id={run_id!r}"))
-    seen = [s for s in (queued_seen or []) if s]
-    label = f"C14c that run stays 'queued' while {off} is the only replica up"
+    seen = [s for s in (advance or []) if s]
+    label = f"C14c {on} keeps advancing the run while {off}'s engine is off"
     if not seen:
         out.append((label, None,
-                    f"no status was read back off {off} while {on} was stopped — the "
-                    "down-window produced no observation"))
+                    f"no readable status was sampled over the arm window — whether {on} "
+                    "kept advancing is unmeasured"))
     else:
         moved = [s for s in seen if s != "queued"]
-        out.append((label, not moved,
+        out.append((label, bool(moved),
                     f"observed={seen}"
-                    + (f" — left 'queued' as {moved[0]!r} while only the off replica was up"
-                       if moved else " (the off replica advanced nothing)")))
-    label = f"C14c {on} picks the run up once its engine is back"
-    if picked_up is None:
-        out.append((label, None, "no read after the restore — the hand-over is unobserved"))
-    else:
-        out.append((label, picked_up != "queued",
-                    f"status after {on} came back={picked_up!r}"))
+                    + (f" — left 'queued' as {moved[-1]!r} while {off} never touched the driver"
+                       if moved else
+                       " — stayed 'queued' the whole window: NOTHING advanced the run")))
     label = f"C14c {off} never claims the driver's advisory lock"
     if not isinstance(lock_marks, dict):
         out.append((label, None,
@@ -15649,7 +18579,10 @@ def c14_off_replica_verdicts(off, on, reads, posted, queued_seen, picked_up, loc
                     f"acquire marks in window={lock_marks}"
                     + (f" — {on} ticked, {off} did not" if n == 0 else
                        " — a replica with the engine off ticked the driver")))
+    out.extend(c14_restore_verdicts(restore))
     return out
+
+
 
 
 def c14_replica_engines(services=("api-a", "api-b")):
@@ -15666,119 +18599,175 @@ def c14_replica_engines(services=("api-a", "api-b")):
     return c14_engine_states(c14_scheduler_off_lines(out, services))
 
 
-def c14_wait_replica_down(base, timeout=60):
-    """True once ONE replica's OWN readiness endpoint stops answering (the mirror of
-    c14_wait_replica — never the lb, which would answer for the peer)."""
-    probe, deadline = Client("probe"), time.time() + timeout
-    while time.time() < deadline:
-        try:
-            if probe.get(base, "/api/v1/system/readiness", timeout=4).status != 200:
-                return True
-        except Exception:  # noqa: BLE001 — refused/reset IS 'down'
-            return True
-        time.sleep(2)
-    return False
+def c14_restore_state(states, svc, ready):
+    """What the try/finally restore actually left behind, read from the post-restore
+    c14_replica_engines read. Pure: a replica that never answered readiness, or whose
+    logs cannot be read, is 'unobservable' (a GAP) — never a silent 'on'."""
+    if not ready or not isinstance(states, dict) or states.get(svc) not in ("on", "off"):
+        return "unobservable"
+    return states[svc]
+
+
+def c14_restore_engine_on(svc, base, plan=None):
+    """The always-restore half of C14c: recreate ONE replica back with its per-replica
+    flag on (the same command/env shape as the precondition, value 'on'), wait for its
+    OWN readiness endpoint, and read the engine state back off its fresh startup log.
+    `plan` is the precondition's own recreate plan when the arm has one — restoring on
+    the SAME -f files the lab was created from, never on a half-read subset (an api-a
+    that came back from three files while the lab rides four is a crippled lab for every
+    later gate). Returns 'on' | 'off' | 'unobservable' for the verdict row and the
+    printed evidence."""
+    plan = plan or c14_recreate_plan_for_service(svc)
+    show(f"C14c restore config files for {svc}", c14_recreate_source_note(svc, plan))
+    try:
+        rc, out = run(plan["cmd"], env=c14_recreate_env(svc, "on"), cwd=plan["cwd"])
+    except Exception as e:  # noqa: BLE001 — a raising compose call is an rc, not a lost restore
+        rc, out = 127, f"{type(e).__name__}: {e}"
+    show(" ".join(plan["cmd"]) + f" with {c14_sched_env_var(svc)}=on (rc={rc})", out[-200:])
+    ready = c14_wait_replica(base, 180)
+    states = c14_replica_engines((svc,))
+    state = c14_restore_state(states, svc, ready)
+    show(f"C14c restore: {svc} after the flag-on recreate",
+         f"ready={ready} states={states if states is not None else '(logs unreadable)'} "
+         f"-> engine {state}")
+    return state
 
 
 def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
-    """§ 7.1 C14c live arm: one replica's engine is off (compose.m4.yml gives each
-    replica its own COMMUNICATION_PIPELINE_SCHEDULER_[AB], shipped in 9af17dc). With
-    the ON replica stopped (compose stop/start, the same project-scoped lever W7 uses
-    on the workers — a stop, never the `up -d` recreate § 7.0 keeps out of the gates)
-    a run POSTed to the off replica's OWN port must stay 'queued' in the ledger; when
-    the on replica comes back, it advances. Brought up all-on (or all-off) the arm
-    GAPs with the command that would make it measurable."""
+    """§ 7.1 C14c live arm — and it SETS UP its own precondition instead of GAPing on
+    a normal lab. The lab ships all-on (compose.m4.yml defaults both flags to on), so
+    the arm recreates ONLY api-a with COMMUNICATION_PIPELINE_SCHEDULER_A=off —
+    `up -d --no-deps --force-recreate api-a` on the -f files the RUNNING api-a was
+    created from (its com.docker.compose.project.config_files label, project-proven; the
+    driver's own COMPOSE list only as a reported fallback), the flag carried in the
+    process env and never in argv — waits for readiness, and reads
+    the engine states back off the fresh startup logs. Then, with BOTH replicas up, it
+    measures the contract: the off replica serves reads (including the run it just
+    accepted), a run POSTed to its own port is accepted, the ON replica keeps advancing
+    that run, and the off replica never claims the driver's advisory lock. A try/finally
+    ALWAYS restores api-a to engine-on, waits for readiness and reports the restore in
+    the evidence, so later gates see the normal lab. A lab that already came up with
+    exactly one replica off is measured as found (nothing to restore); one that came up
+    all-off or with unreadable logs GAPs — flipping a SECOND replica is not this arm's
+    lever."""
     services = tuple(s for s, _b in roll)
+    bases = dict(roll)
     states = c14_replica_engines(services)
     show("C14c replica engine flags (compose logs, per-service startup line)",
          f"states={states if states is not None else '(logs unreadable)'}")
     pair = c14_off_pair(states)
-    if pair is None:
-        gap("C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica",
-            f"this lab came up with {states if states is not None else '(unreadable logs)'}. "
-            "C14c compares ONE off replica against one that keeps advancing; compose.m4.yml "
-            "already gives each replica its own variable "
-            "(api-a: ${COMMUNICATION_PIPELINE_SCHEDULER_A:-on}, api-b: "
-            "${COMMUNICATION_PIPELINE_SCHEDULER_B:-on}, split in 9af17dc), so a lab run sets "
-            "COMMUNICATION_PIPELINE_SCHEDULER_B=off at § 7.0's `up -d --build`. Flipping it "
-            "mid-gate needs `up -d` on that one container — a RECREATE (env change), which "
-            "§ 7.0 keeps out of the gates and which would fight C14a's roll; this gate's only "
-            "replica lever is stop/start, which cannot change an environment variable. The "
-            "'flag off EVERYWHERE, M2/M3 intact' "
-            "half needs a second bring-up with both variables off and stays a GAP.")
-        return
-    off_name, on_name = pair
-    off_base = dict(roll)[off_name]
-    on_base = dict(roll)[on_name]
-    reads, posted, queued_seen, picked_up, marks = {}, None, [], None, None
-    for path in ("/api/v1/system/readiness", "/api/v1/system/scheduler",
-                 f"/api/v1/projects/{project_id}/runs"):
+    recreated = None
+    plan = None
+    if pair is None and isinstance(states, dict) and states \
+            and all(v == "on" for v in states.values()):
+        # THE PRECONDITION: turn the normal all-on lab into C14c's lab with ONE
+        # service recreated. A non-zero rc may still have touched the container, so
+        # `recreated` stays set regardless — the finally below must restore whatever
+        # the command left behind, and the lab must end as it was found.
+        recreated = "api-a" if "api-a" in bases else services[0]
+        # The lab recreates itself with the files it was BUILT from: a compose.real.yml
+        # overlay lab (lab_reset.sh) must come back with compose.real.yml, not with the
+        # driver's three.
+        plan = c14_recreate_plan_for_service(recreated)
+        show(f"C14c recreate config files for {recreated}",
+             c14_recreate_source_note(recreated, plan))
         try:
-            reads[path] = client.get(off_base, path).status
-        except Exception as e:  # noqa: BLE001 — a refused read is a status, not a crash
-            reads[path] = 0
-            show(f"C14c GET {path} on {off_name}", str(e)[:140])
-    show(f"C14c reads answered by {off_name} ALONE ({off_base})", json.dumps(reads))
-    run_id = None
+            rc, out = run(plan["cmd"], env=c14_recreate_env(recreated, "off"),
+                          cwd=plan["cwd"])
+        except Exception as e:  # noqa: BLE001 — even a raising command may have touched
+            rc, out = 127, f"{type(e).__name__}: {e}"   # the container: restore it anyway
+        show(" ".join(plan["cmd"]) + f" with {c14_sched_env_var(recreated)}=off (rc={rc})",
+             out[-200:])
+        if rc == 0:
+            ready = c14_wait_replica(bases[recreated], 180)
+            show(f"C14c precondition: {recreated} readiness on {bases[recreated]} after "
+                 "the off-recreate", str(ready))
+            states = c14_replica_engines(services)
+            pair = c14_off_pair(states)
+            show("C14c replica engine flags after the precondition",
+                 f"states={states if states is not None else '(logs unreadable)'}")
+    reads, posted, advance, marks, run_id = {}, None, [], None, None
+    restore, off_name, on_name = None, None, None
     try:
-        rc, out = run(COMPOSE + ["stop", on_name])
-        show(f"docker compose -p {COMPOSE_PROJECT} stop {on_name} (rc={rc})", out[-160:])
-        down = c14_wait_replica_down(on_base)
-        if not check(f"C14c {on_name} is stopped — {off_name} is the only replica up",
-                     down, f"readiness on {on_base} stopped answering={down} "
-                           f"(engine on {off_name}={states[off_name]})"):
-            c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, None, [], None, None))
-            return
-        # The window starts here: the lock-mark read below is bounded to it (D6).
-        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        rev = mf(facts, "revision_id", "twin") or mf(facts, "revision_id", "agent")
-        body = {"pipeline_revision_id": rev,
-                "inputs": mf(facts, "inputs", "twin", default={}) or {},
-                "idempotency": f"m4-exit-c14c-{int(time.time())}"}
-        r = client.post(off_base, f"/api/v1/projects/{project_id}/runs", body)
-        run_id = r.json().get("run_id") if r.status in (200, 201) else None
-        posted = (r.status, run_id)
-        show(f"C14c POST /projects/{{id}}/runs straight to {off_name} ({on_name} down)",
-             f"{r.status} replica={r.replica} run_id={run_id}")
-        if run_id:
-            try:                      # a read served while this replica stands alone
-                rb = client.get(off_base, f"/api/v1/runs/{run_id}")
-                reads[f"/api/v1/runs/{{id}} (alone on {off_name})"] = rb.status
-            except Exception as e:  # noqa: BLE001
-                reads[f"/api/v1/runs/{{id}} (alone on {off_name})"] = 0
-                show(f"C14c run read-back on {off_name} alone", str(e)[:140])
-            for _ in range(6):                       # ~20s with ONLY the off replica up
-                queued_seen.append(run_status(run_id))
-                time.sleep(4)
-            back = run(COMPOSE + ["start", on_name])
-            show(f"docker compose -p {COMPOSE_PROJECT} start {on_name} (rc={back[0]})",
-                 back[1][-160:])
-            ok = c14_wait_replica(on_base, 120)
-            check(f"C14c {on_name} is back on {on_base} (the stack is left as found)", ok,
-                  f"readiness={ok}")
-            deadline = time.time() + 240
-            while time.time() < deadline:
-                picked_up = run_status(run_id)
-                if picked_up != "queued":
-                    break
-                time.sleep(5)
-            show(f"C14c the run's ledger status after {on_name} returned",
-                 f"{picked_up!r} (was {queued_seen[0]!r} while it was down)")
-        marks = c14_lock_marks(services, since=since)
-        show(f"C14c driver lock marks in the window (compose logs --since {since})",
-             f"{marks if marks is not None else '(unreadable)'}")
-        c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, posted, queued_seen,
-                                         picked_up, marks))
+        if pair is None:
+            gap("C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica",
+                f"this lab came up with {states if states is not None else '(unreadable logs)'}"
+                + (f"; the precondition recreate of {recreated} with "
+                   f"{c14_sched_env_var(recreated)}=off did not leave exactly one replica "
+                   "off; the restore evidence below reports the state it was left in"
+                   if recreated else
+                   ". C14c compares ONE off replica against one that keeps advancing; an "
+                   "all-off lab is ADR-0023's rollback configuration and this arm does not "
+                   "recreate a SECOND replica to fix it"))
+        else:
+            off_name, on_name = pair
+            off_base = bases[off_name]
+            for path in ("/api/v1/system/readiness", "/api/v1/system/scheduler",
+                         f"/api/v1/projects/{project_id}/runs"):
+                try:
+                    reads[path] = client.get(off_base, path).status
+                except Exception as e:  # noqa: BLE001 — a refused read is a status, not a crash
+                    reads[path] = 0
+                    show(f"C14c GET {path} on {off_name}", str(e)[:140])
+            show(f"C14c reads answered by {off_name} with its engine off ({off_base})",
+                 json.dumps(reads))
+            # The window starts here: the lock-mark read below is bounded to it (D6).
+            since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            rev = mf(facts, "revision_id", "twin") or mf(facts, "revision_id", "agent")
+            body = {"pipeline_revision_id": rev,
+                    "inputs": mf(facts, "inputs", "twin", default={}) or {},
+                    "idempotency": f"m4-exit-c14c-{int(time.time())}"}
+            r = client.post(off_base, f"/api/v1/projects/{project_id}/runs", body)
+            run_id = r.json().get("run_id") if r.status in (200, 201) else None
+            posted = (r.status, run_id)
+            show(f"C14c POST /projects/{{id}}/runs straight to {off_name} (engine off)",
+                 f"{r.status} replica={r.replica} run_id={run_id}")
+            if run_id:
+                try:              # the off replica must still SERVE the run it accepted
+                    rb = client.get(off_base, f"/api/v1/runs/{run_id}")
+                    reads[f"/api/v1/runs/{{id}} (served by {off_name} mid-arm)"] = rb.status
+                except Exception as e:  # noqa: BLE001
+                    reads[f"/api/v1/runs/{{id}} (served by {off_name} mid-arm)"] = 0
+                    show(f"C14c run read-back on {off_name}", str(e)[:140])
+                deadline = time.time() + 240
+                while time.time() < deadline:
+                    st = run_status(run_id)
+                    if st in C14_RUN_STATUSES:
+                        advance.append(st)
+                    if st != "queued":
+                        break
+                    time.sleep(5)
+                for _ in range(3):          # advancing is a series, not a single point
+                    time.sleep(4)
+                    st = run_status(run_id)
+                    if st in C14_RUN_STATUSES:
+                        advance.append(st)
+                show("C14c the run's ledger statuses over the arm window",
+                     json.dumps(advance) if advance else "(no readable status)")
+            marks = c14_lock_marks(services, since=since)
+            show(f"C14c driver lock marks in the window (compose logs --since {since})",
+                 f"{marks if marks is not None else '(unreadable)'}")
     finally:
-        rc, out = run(COMPOSE + ["start", on_name])
-        if not c14_wait_replica(on_base, 120):
-            check(f"C14c restore: {on_name} answers readiness on {on_base}", False,
-                  f"compose start rc={rc} {out[-140:]}")
-        if run_id and run_status(run_id) not in C14_TERMINAL:
-            try:
-                client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
-            except Exception:  # noqa: BLE001 — housekeeping, never a verdict
-                pass
+        if recreated:
+            restore = (recreated, c14_restore_engine_on(recreated, bases[recreated], plan=plan))
+    if pair is not None:
+        c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, posted, advance, marks,
+                                         restore=restore))
+        gap("C14c the flag off EVERYWHERE leaves M2/M3 intact",
+            "this arm measured ONE replica off against one that kept advancing; the second "
+            "half of § 7.1 C14c (ADR-0023 Migration/rollback) needs a separate bring-up "
+            "with COMMUNICATION_PIPELINE_SCHEDULER_A and _B both off — a § 7.0 lab "
+            "decision, not a mid-gate recreate")
+    elif restore is not None:
+        # The arm never ran, but the precondition recreate did — the restore claim
+        # still belongs in the verdicts, so a crippled api-a can never slip past
+        # into the later gates unreported.
+        c5_emit(c14_restore_verdicts(restore))
+    if run_id and run_status(run_id) not in C14_TERMINAL:
+        try:
+            client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+        except Exception as e:  # noqa: BLE001 — housekeeping, never a verdict
+            show(f"C14c could not cancel the arm's run {run_id}", str(e)[:140])
 
 
 def c14_wait_replica(base, timeout=120):
@@ -16085,7 +19074,8 @@ def c14():
         "safety argument and the advisory lock is an optimization; the no-duplicate verdicts "
         "above are what actually re-prove the safety claim, and a forced simultaneous advance "
         "would need a store-level seam this lab does not have")
-    # C14c runs last: it stops one replica on purpose, so nothing else may be mid-roll.
+    # C14c runs last: it recreates api-a's engine flag on purpose (and restores it),
+    # so nothing else may be mid-roll while it owns the replica lever.
     c14_off_replica(alice, facts, pid)
     CTX["c14"] = {"run_id": run_id, "approval_id": aid, "rolled": rolled,
                   "reconnects": stream.reconnects, "frames": len(stream.frames),
@@ -17057,6 +20047,59 @@ def w_run_sample(run_id, candidates, session, tag):
     return out
 
 
+def w_strip_reading(run_id, session, tries=15, delay=2):
+    """One reading of the run page's STAGE STRIP - the surface that answers whether the
+    loop became one stage or two.
+
+    WHERE to look is the half that GAPped this arm in 1c190fe. The run page is the
+    graph-first workbench (ADR-0043 / docs/design/studio-workbench.md section 6), which
+    mounts the strip inside its DIAGNOSTICS view only: RunWorkbench.tsx renders
+    `view === "diagnostics" ? <RunInspector embedded /> : null` and the strip rides above
+    that inspector's own tabs, while Graph, Timeline and Tree render their own panes with
+    no strip in them. Measured on the lab: the workbench TIMELINE view of a
+    feature-development run holds 24 buttons and ZERO strip cells (its own tally line,
+    `9 of 9 events`, is there - so the leg's other arms read a live page and this one read
+    a view that never had a strip); the same run switched to Diagnostics holds the panel,
+    its note line and exactly ONE cell named `build_until_verified queued
+    build_until_verified, 1 pending`. W2's premise that the strip rides above the tabs in
+    EVERY tab is a pre-ADR-0043 fact about the old inspector page.
+
+    HOW to get there is the other half of the fix: `pw_goto` with a bare path is not
+    resolved against the open page by this CLI (observed: `navigating to
+    "https://runs/<id>?view=diagnostics"` -> `ERR_NAME_NOT_RESOLVED`, `location.href` =
+    `chrome-error://chromewebdata/`), so the arm CLICKS the workbench's own Diagnostics tab
+    - what a reader does, and a workbench view switch is URL state rather than a new
+    document - and only falls back to an ABSOLUTE `?view=diagnostics` goto.
+
+    READY means the strip's note line AND at least one cell: the panel and its note render
+    as soon as the run row does while its cells wait on the node rows, so a note-only
+    reading is an empty strip that would be reported as a product finding - the driver's own
+    race, not the UI's. When neither paints, the verdict GAPs. Returns
+    {nodes, dom, ready, landed_by}; never raises."""
+    clicked, click_ref, _click_detail = pw_click(role="tab", name="Diagnostics", session=session)
+    if not clicked:
+        pw_goto(f"{LB}/runs/{run_id}?view=diagnostics", session=session)
+    landed, _nodes = pw_poll(lambda ns: STRIP_NOTE in " ".join(w8_dom_text(ns).split()).lower()
+                             and bool(w_strip_cells(ns, node_id=None)),
+                             session=session, tries=tries, delay=delay)
+    _rc, raw = pw_snapshot(session=session)
+    nodes = pw_snapshot_nodes(raw)
+    # The shot is the evidence, and at phone width the strip sits far down the page: bring
+    # it to the top of the viewport first so the picture shows the thing it claims.
+    pw("eval", "() => { const s = document.querySelector('[data-testid=run-stage-strip]');"
+                " if (s) s.scrollIntoView({block: 'start'}); return !!s; }",
+       session=session)
+    shot = pw_shot("w2-strip", session=session)
+    landed_by = (f"Diagnostics tab click {click_ref}" if clicked
+                 else f"goto {LB}/runs/{run_id}?view=diagnostics")
+    show("W2 the view the strip lives on (workbench Diagnostics)",
+         f"landed_by={landed_by} strip ready={landed} "
+         f"cells={len(w_strip_cells(nodes, node_id=None))} named build_until_verified="
+         f"{[pw_text(c)[:60] for c in w_strip_cells(nodes)][:3]} [{shot}]")
+    return {"nodes": nodes, "dom": w8_dom_text(nodes, raw), "ready": landed,
+            "landed_by": landed_by}
+
+
 def w2_live_verdicts(samples):
     """"render live, with no gap" read the only way a browser can prove it: several
     DOM samples of ONE document taken while the run advanced. `marker` is the
@@ -17200,13 +20243,50 @@ def w2_no_gap_verdict(visible, journal_types, dom_text, tag="W2"):
                          f"drawn at least once{tail}")
 
 
-def w2_iteration_verdicts(nodes, dom_text, keys, tag="W2"):
+# The strip panel's own honesty line (`run-stage-note` in RunStageStrip.tsx): when it is
+# on the page the strip painted, cells and all — so it separates "the view has no strip"
+# from "the strip rendered and the loop has no cell".
+STRIP_NOTE = "loop is not duplicated as stages"
+
+
+def w_strip_cells(nodes, node_id="build_until_verified"):
+    """The run page's STAGE-STRIP cells — the loop's, or (with `node_id=None`) every
+    cell the strip drew.
+
+    A cell's accessible name ENDS in the sr-only counts line RunStageStrip.tsx writes
+    (`build_until_verified, 1 pending`) and on the live page starts with the cell's own
+    visible id and state word (`build_until_verified queued build_until_verified, 1
+    pending` — read off the real page at .playwright-cli/page-2026-10-26T00-26-15-252Z.yml
+    :126). Nothing else on the run page has that shape, which is what keeps the count
+    honest: the Timeline tab's stage chip is named `build_until_verified` and NOTHING
+    else, the execution-tree row begins with `collapse`/`expand` and ends in its instance
+    key, the definition-graph box is named `Definition node build_until_verified …, kind
+    until, 1 binding` (and repeats no id before its first comma), and a timeline row
+    starts with a clock. Counting one of those as a second cell is how live6/W2 reported
+    "2 cells" on a strip with one.
+
+    `node_id=None` asks for the whole strip, so the id must appear TWICE (visible id, then
+    the sr-only line) — the form that finds cells and only cells, which is how
+    `w_strip_reading` knows the node rows have arrived. Pure."""
+    shape = (re.compile(rf"^{re.escape(node_id)}\b[^,]*,\s*\d+\s") if node_id
+             else re.compile(r"^([a-z][\w.]*)\b[^\d,]*\1,\s*\d+\s"))
+    return [n for n in nodes or []
+            if n.get("role") == "button" and shape.match(pw_text(n).strip())]
+
+
+def w2_iteration_verdicts(nodes, dom_text, keys, tag="W2", strip=None):
     """The row's second sentence: "the node timeline shows `/build_until_verified[1]/…`
     and `[2]` as **iterations**, not as duplicated definition nodes". Measured as
     (a) the ledger really wrote [1] and [2], (b) the page names both places, and
     (c) the stage strip holds exactly ONE cell for the loop node — two cells would be
     the duplication the row forbids. `nodes` is the parsed snapshot, `keys` the run's
-    node_instance_key set."""
+    node_instance_key set.
+
+    (a) and (b) are read on the Timeline view the page is already on. (c) may NOT: the
+    run page is the graph-first workbench (ADR-0043), which mounts the stage strip in
+    its Diagnostics view only — so `strip` is that second reading (see
+    `w_strip_reading`); omitted, the strip half is judged against `nodes`, which is what
+    the pure tests do with a canned strip."""
     out = []
     iters = {n for k in (keys or set())
              if (m := re.match(r"^/build_until_verified\[(\d+)\]", str(k)))
@@ -17230,23 +20310,29 @@ def w2_iteration_verdicts(nodes, dom_text, keys, tag="W2"):
         if keys is not None and n not in iters:
             out[-1] = (label, None, f"the ledger wrote no /build_until_verified[{n}] row, so "
                                     "there was nothing for the page to show")
-    # A strip cell's accessible name is `"<node id>, <n> <word>, …"` (the sr-only
-    # counts line RunStageStrip.tsx writes); the Timeline tab's stage chip for the
-    # same node is named `build_until_verified` and NOTHING else, and counting that
-    # chip as a second cell is how live6/W2 reported "2 cells" on a strip with one.
-    cells = [n for n in nodes or [] if n["role"] == "button"
-             and re.match(r"^build_until_verified\b[^,]*,\s*\d+\s", pw_text(n).strip())]
+    strip_nodes = (strip or {}).get("nodes", nodes)
+    strip_body = " ".join((((strip or {}).get("dom")) or dom_text or "").split())
+    cells = w_strip_cells(strip_nodes)
     label = (f"{tag} the stage strip holds ONE cell for build_until_verified, not one "
              "per iteration (10 J7: iterations are repeat counts on one stage)")
-    note = "loop is not duplicated as stages" in body.lower()
+    note = STRIP_NOTE in strip_body.lower()
+    every = w_strip_cells(strip_nodes, node_id=None)
+    drawn = sorted({pw_text(cell).split()[0] for cell in every})
     if not cells:
-        out.append((label, None, "no stage-strip cell for build_until_verified appeared in "
-                                 "the snapshot (strip note visible=" + str(note) + ") — the "
-                                 "duplication claim has nothing to count"))
+        # The strip painted and skipped the loop is a product finding; the strip never
+        # being on the view read is the driver's own blindness, and says which it was.
+        out.append((label, False if note else None,
+                    (f"the strip painted — its note line is on the page and it drew "
+                     f"{len(every)} cell(s) {drawn[:12]} — and holds NO cell for "
+                     "build_until_verified: the loop got no stage" if note else
+                     "no stage-strip cell for build_until_verified appeared in the "
+                     "snapshot (strip note visible=False) — the duplication claim has "
+                     "nothing to count")))
     else:
         out.append((label, len(cells) == 1,
                     f"{len(cells)} cell(s) named build_until_verified: "
-                    f"{[pw_text(c)[:60] for c in cells][:3]}; strip note present={note}"))
+                    f"{[pw_text(c)[:60] for c in cells][:3]}; {len(every)} cell(s) on the "
+                    f"strip, note present={note}"))
     return out
 
 
@@ -17988,15 +21074,18 @@ def w2():
              str(w_frame_surfaces(final["nodes"], final["raw"], sorted(final["types"]),
                                   dom_text=final["dom"]))[:700]
              or "(no timeline rows in the final sample)")
-        # The iteration half of the row is read on the same tab: the timeline names each
-        # row's node_instance_key (`<code>`), so /build_until_verified[1]/… and [2] are
-        # on screen, and the stage strip — which the page renders above the tabs, in
-        # EVERY tab — says whether the loop became one cell or two.
-        c5_emit(w2_iteration_verdicts(final["nodes"], final["dom"], c12_node_keys(run_id)))
+        # The iteration half of the row is read on TWO views: the Timeline view names
+        # each row's node_instance_key (`<code>`), so /build_until_verified[1]/… and [2]
+        # are on screen there, and the STAGE STRIP — which the graph-first workbench
+        # mounts inside its Diagnostics view, NOT above the workbench's own tabs
+        # (ADR-0043; w_strip_reading) — says whether the loop became one cell or two.
+        strip = w_strip_reading(run_id, "m4w2")
+        c5_emit(w2_iteration_verdicts(final["nodes"], final["dom"], c12_node_keys(run_id),
+                                      strip=strip))
         show("W2 the strip as the page drew it",
-             str([pw_text(n)[:70] for n in final["nodes"]
-                  if n["role"] == "button" and "build_until_verified" in pw_text(n)][:3])
-             + f" [{shot_mid}]")
+             f"read on {strip['landed_by']}; cells named build_until_verified="
+             f"{[pw_text(n)[:70] for n in w_strip_cells(strip['nodes'])][:3]}"
+             f"; strip ready={strip['ready']} [{shot_mid}]")
     finally:
         if run_status(run_id) not in C14_TERMINAL:
             try:
@@ -20729,6 +23818,12 @@ def gate_crash_location(exc):
 
 
 def finish():
+    # The deferred regrades run HERE, before the summary is built, so the final
+    # summary and the FAIL/GAP tally reflect the regraded verdicts (a regraded
+    # row replaces its in-place GAP via supersede_gap). The atexit registration
+    # stays as the fallback for an exit that never reaches finish(); DEFERRED is
+    # cleared here, so a regrade can never print or supersede twice.
+    run_deferred_regrades()
     step("summary")
     print(f"  FAIL={len(FAILURES)}  GAP={len(GAPS)}  "
           f"SKIP={len(SKIPPED)}/{len(GATES)} gates", flush=True)

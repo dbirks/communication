@@ -267,6 +267,82 @@ class C7aNoRoute(unittest.TestCase):
         self.assertIn("c7_no_route_verdicts", whole)
 
 
+class C7aScopeIterations(unittest.TestCase):
+    """The until scope reports how many iterations it spent on its OWN terminal journal
+    row — node.scope.failed.iterations_stopped (§ 3 row 19), node.scope.completed.
+    iterations (§ 3 row 18) on the pass path. node_executions has NO iterations column
+    (contract § 1's CREATE TABLE carries no scope-state column; internal/pipelines/
+    runtime/scope_state.go says so outright), so acceptance 1c190fe's
+    'iterations=None' GAP was the arm reading a phantom column (`SELECT
+    iterations::text FROM node_executions` errors on every run), NOT the loop failing
+    to record its bound — the engine wrote iterations_stopped the whole time. These
+    tests pin the journal read and the verdict built on it."""
+
+    @staticmethod
+    def failed_row(it, key=K):
+        return [{"type": "node.scope.failed",
+                 "payload": {"node_instance_key": key, "failed_cause": "until_exhausted",
+                             "iterations_stopped": it}}]
+
+    def test_reads_iterations_stopped_off_the_scope_own_failed_row(self):
+        got = m.c7_scope_iterations_from_events(self.failed_row(3))
+        self.assertEqual(3, got)
+        v = m.c7_no_route_verdicts(C7aNoRoute.ROOT, {"iterations": got})
+        self.assertIs(True, one(v, "reports iterations"), str(v))
+
+    def test_wrong_count_is_a_fail_not_a_gap(self):
+        for wrong in (0, 2, 4):
+            got = m.c7_scope_iterations_from_events(self.failed_row(wrong))
+            self.assertEqual(wrong, got)
+            self.assertIs(False,
+                          one(m.c7_no_route_verdicts(C7aNoRoute.ROOT, {"iterations": got}),
+                              "reports iterations"), wrong)
+
+    def test_reads_iterations_off_the_completed_row_too(self):
+        ev = [{"type": "node.scope.completed",
+               "payload": {"node_instance_key": K, "kind": "until", "iterations": 2}}]
+        self.assertEqual(2, m.c7_scope_iterations_from_events(ev))
+
+    def test_the_scope_own_terminal_row_wins_and_nothing_else_counts(self):
+        ev = self.failed_row(3) + [
+            {"type": "node.scope.iteration",
+             "payload": {"node_instance_key": K, "iteration": 2}},
+            {"type": "run.failed", "payload": {"failed_cause": "until_exhausted"}}]
+        self.assertEqual(3, m.c7_scope_iterations_from_events(ev))
+
+    def test_other_scopes_rows_do_not_feed_the_counter(self):
+        self.assertIsNone(m.c7_scope_iterations_from_events(self.failed_row(3, key="/fan_out")))
+
+    def test_missing_or_malformed_counter_is_the_gap(self):
+        bad = [None, [],
+               [{"type": "node.scope.failed", "payload": {}}],
+               [{"type": "node.scope.failed", "payload": {"node_instance_key": K}}],
+               [{"type": "node.scope.failed",
+                 "payload": {"node_instance_key": K, "iterations_stopped": "3"}}],
+               [{"type": "node.scope.failed",
+                 "payload": {"node_instance_key": K, "iterations_stopped": None}}],
+               [{"type": "node.scope.failed",
+                 "payload": {"node_instance_key": K, "iterations_stopped": True}}],
+               [{"type": "node.scope.failed", "payload": "not-a-dict"}],
+               "not-a-list-of-dicts"]
+        for case in bad:
+            self.assertIsNone(m.c7_scope_iterations_from_events(case), case)
+            self.assertIs(None,
+                          one(m.c7_no_route_verdicts(C7aNoRoute.ROOT,
+                                                     {"iterations":
+                                                      m.c7_scope_iterations_from_events(case)}),
+                              "reports iterations"), case)
+
+    def test_the_driver_never_reads_the_phantom_column_again(self):
+        """The GAP's root cause: a SELECT of a column the schema never had. It must
+        not come back, in the driver or in a helper next to it."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        self.assertNotIn("SELECT iterations::text FROM node_executions WHERE", src)
+        self.assertNotIn("def c7_scope_iterations(", src)
+        self.assertIn("c7_scope_iterations_from_events", src)
+
+
 class C7gBudget(unittest.TestCase):
     def test_pass_counted(self):
         self.assertNotIn(False, [ok for _l, ok, _d in m.c7_budget_verdicts("9", 9)])

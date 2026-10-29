@@ -96,7 +96,9 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_quotes,
     w_retry_controls,
     w_spinner_nodes,
+    w_strip_cells,
     pw_snapshot_nodes,
+    pw_text,
 )
 
 CANNED_SNAPSHOT = """
@@ -680,6 +682,114 @@ def test_w2_iteration_verdicts():
     oneshot = w2_iteration_verdicts(nodes, CANNED_TIMELINE, {"/build_until_verified[1]/test"})
     assert one(oneshot, "really ran /build_until_verified[2]") is False, "the run never iterated twice"
     assert one(oneshot, "shows /build_until_verified[2]") is None
+
+
+# The run page's Diagnostics view — where the graph-first workbench (ADR-0043) mounts the
+# stage strip — trimmed from the browser's own capture of a live run
+# (.playwright-cli/page-2026-10-26T00-26-15-252Z.yml:76-169: the workbench's own tablist
+# with `Diagnostics` selected, then the strip's cells and its note paragraph). Note the
+# cell's REAL accessible name: `<id> <state word> <id>, <n> <word>`, not the bare counts
+# line the canned timeline above carries.
+CANNED_STRIP = """
+### Snapshot
+```yaml
+- main:
+  - region:
+    - heading "STAGES" [level=2] [ref=e305]
+    - group "Run progress by definition node" [ref=e306]:
+      - button "plan done plan, 1 done" [ref=e307]
+      - button "approve waiting approve, 1 need you" [ref=e316]
+      - button "build_until_verified queued build_until_verified, 1 pending" [ref=e325]
+      - button "emit_items queued emit_items, 1 pending" [ref=e334]
+    - paragraph [ref=e379]: one cell per definition node; segments inside a cell are its
+      iterations and fan-out instances — the loop is not duplicated as stages.
+```
+"""
+
+# Everything else on the run page that carries the loop node's NAME and is not a strip
+# cell — the shapes that once read as "2 cells" on a strip with one (live6/W2.out).
+CANNED_DECOYS = """
+### Snapshot
+```yaml
+- button "collapse /build_until_verified" [ref=e200]
+- button "build_until_verified done /build_until_verified" [ref=e224]
+- button "Definition node build_until_verified in scope build_until_verified, kind until, 1 binding" [ref=e230]
+- button "13:01:31 node.attempt.started /build_until_verified[2]/implement att 2 worker" [ref=e67]
+- button "build_until_verified ⟳ 2 of 4" [ref=e300]
+- button "build_until_verified in build_until_verified" [ref=e302]
+- tab "build_until_verified" [ref=e301]
+```
+"""
+
+
+def test_w_strip_cells_takes_only_the_strip():
+    """A strip cell is counted by its accessible-name SHAPE (the sr-only counts line
+    `"<id>, <n> <word>"` that RunStageStrip.tsx writes, which the live page prefixes
+    with the cell's id and state word), so no other button naming the loop joins it."""
+    strip = pw_snapshot_nodes(CANNED_STRIP)
+    assert [pw_text(c) for c in w_strip_cells(strip)] == [
+        "build_until_verified queued build_until_verified, 1 pending"], strip
+    # The whole-strip form (what w_strip_reading waits on) takes the four cells and only
+    # the four cells: it demands the id twice, visible id then the counts line.
+    assert [pw_text(c) for c in w_strip_cells(strip, node_id=None)] == [
+        "plan done plan, 1 done",
+        "approve waiting approve, 1 need you",
+        "build_until_verified queued build_until_verified, 1 pending",
+        "emit_items queued emit_items, 1 pending"], strip
+    decoys = pw_snapshot_nodes(CANNED_DECOYS)
+    assert w_strip_cells(decoys) == [], [pw_text(n) for n in w_strip_cells(decoys)]
+    assert w_strip_cells(decoys, node_id=None) == [], \
+        [pw_text(n) for n in w_strip_cells(decoys, node_id=None)]
+    assert w_strip_cells(pw_snapshot_nodes(CANNED_TIMELINE), node_id="plan") == []
+    assert len(w_strip_cells(pw_snapshot_nodes(CANNED_TIMELINE))) == 1, \
+        "the timeline's own cell shape is still a cell"
+
+
+def test_w2_strip_verdict_is_read_on_the_view_that_has_the_strip():
+    """The 1c190fe GAP ('no stage-strip cell … strip note visible=False') was the driver
+    asking the workbench's TIMELINE view for a component ADR-0043 moved to Diagnostics.
+    With the strip reading the claim is measured; without it, it GAPs and says the strip
+    never painted; and once the strip HAS painted, a missing loop cell is a FAIL — a view
+    that shows the note and no stage is the product's lie, not the driver's."""
+    keys = {"/build_until_verified", "/build_until_verified[1]/implement",
+            "/build_until_verified[2]/implement"}
+    nodes = pw_snapshot_nodes(CANNED_TIMELINE)
+    strip = {"nodes": pw_snapshot_nodes(CANNED_STRIP), "dom": CANNED_STRIP, "ready": True}
+    verdict = w2_iteration_verdicts(nodes, CANNED_TIMELINE, keys, strip=strip)
+    assert one(verdict, "ONE cell for build_until_verified") is True, verdict
+    # The Timeline view alone: no strip, no claim — a GAP, not a product finding. (The
+    # canned timeline above CARRIES a cell-shaped button; this is the same page without
+    # it, which is exactly what the workbench's Timeline view renders post-ADR-0043.)
+    timeline_only = CANNED_TIMELINE.replace(
+        '  - button "build_until_verified, 2 done, 1 running" [ref=e50]\n', "")
+    assert w_strip_cells(pw_snapshot_nodes(timeline_only)) == [], \
+        "the timeline view has no strip cell to find"
+    naked_nodes = pw_snapshot_nodes(timeline_only)
+    naked = w2_iteration_verdicts(naked_nodes, timeline_only, keys,
+                                  strip={"nodes": naked_nodes, "dom": timeline_only})
+    assert one(naked, "ONE cell for build_until_verified") is None, naked
+    assert "visible=False" in one(naked, "ONE cell for build_until_verified", detail=True), naked
+    assert one(naked, "shows /build_until_verified[1]") is True, \
+        "the place arms still read the timeline the page is on"
+    # The strip painted and the loop is not a stage: FAIL, and say which it was.
+    no_cell = {"nodes": [n for n in strip["nodes"] if "build_until_verified" not in pw_text(n)],
+               "dom": CANNED_STRIP}
+    missing = w2_iteration_verdicts(nodes, CANNED_TIMELINE, keys, strip=no_cell)
+    assert one(missing, "ONE cell for build_until_verified") is False, missing
+    why = one(missing, "ONE cell for build_until_verified", detail=True)
+    assert "its note line is on the page" in why and "the loop got no stage" in why, missing
+    assert "'plan'" in why, f"the detail names what the strip DID draw: {why}"
+    # Two cells for the loop is still the duplication the row forbids, on the strip view too.
+    doubled = {"nodes": strip["nodes"] + [{"role": "button",
+                                          "name": "build_until_verified running "
+                                                  "build_until_verified, 1 running",
+                                          "text": "", "ref": "e999"}],
+               "dom": CANNED_STRIP}
+    assert one(w2_iteration_verdicts(nodes, CANNED_TIMELINE, keys, strip=doubled),
+               "ONE cell for build_until_verified") is False, doubled
+    # The [1]/[2] place arms still come from the Timeline reading, not the strip's.
+    assert one(verdict, "shows /build_until_verified[1]") is True, verdict
+    assert one(verdict, "really ran /build_until_verified[2]") is True, verdict
 
 
 # --- W10 (row § 7.2 W10) -----------------------------------------------------
@@ -1906,7 +2016,9 @@ if __name__ == "__main__":
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,
                test_w2_live_and_order_verdicts, test_w2_turn_gap_and_no_gap,
-               test_w2_iteration_verdicts, test_w10_resume_cursor_is_read_from_the_browser_log,
+               test_w2_iteration_verdicts, test_w_strip_cells_takes_only_the_strip,
+               test_w2_strip_verdict_is_read_on_the_view_that_has_the_strip,
+               test_w10_resume_cursor_is_read_from_the_browser_log,
                test_w10_continuity_across_the_roll, test_w10_new_types_and_foreign_events,
                test_w11_short_id_is_the_uuid_tail_the_tree_prints, test_w11_tree_verdicts,
                test_w11_attempt_list_verdicts, test_w11_internals_stay_out_of_the_dom,

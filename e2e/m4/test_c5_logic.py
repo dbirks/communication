@@ -10,16 +10,43 @@ maxAttempts budget arm. A green here means the VERDICT ALGEBRA is right; it neve
 substitutes for C5's live kill of a real worker container (12-test-strategy.md:
 "validated state after crash/retry" is only proven by really killing one).
 
+maxAttempts budget arm AND — offline against the REAL § 7.0 seed document — the C5h
+scratch revision's input declarations (1c190fe: the copied node reads
+`${{ inputs.leave_dirty }}`, the scratch declared only goal/repository/hold_seconds,
+validate answered 200 with valid:false and publish refused with the compiler's
+unknown_field).
+
 usage: python3 e2e/m4/test_c5_logic.py [-v]
 """
+import ast
+import io
+import json
 import os
+import re
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
+import yamlmini as yaml  # noqa: E402 — stdlib YAML subset (CI's python3 has no PyYAML)
 
+SEED_YAML = os.path.abspath(os.path.join(HERE, "..", "..", "docs", "compatibility",
+                                         "probes", "m4", "pipeline.yaml"))
 HEAD = "9f3c1ab2d4e5f60718293a4b5c6d7e8f90a1b2c3"
+
+
+def twin_canonical():
+    """Document #2 of the REAL § 7.0 seed (the deterministic twin the live arm
+    splices), in the shape GET /api/v1/revisions/{id} serves canonical_document: the
+    fixture parsed, re-exported canonically and parsed back, so the offline proof
+    runs on the structure the API serves rather than the fixture's formatting (RC3)."""
+    with open(SEED_YAML, encoding="utf-8") as f:
+        raw = f.read()
+    docs = [d for d in re.split(r"(?m)^---\s*$", raw) if "kind: Pipeline" in d]
+    assert len(docs) >= 2, f"expected >=2 documents in {SEED_YAML}"
+    return yaml.safe_load(yaml.safe_dump(yaml.safe_load(docs[1]), indent=4,
+                                         sort_keys=True, allow_unicode=True))
 
 
 def attempt(n=1, status="interrupted", error_class="interrupted", ctx=None,
@@ -41,6 +68,24 @@ def ok_of(verdicts, needle):
 
 def detail_of(verdicts, needle):
     return [d for label, _, d in verdicts if needle in label][0]
+
+import ast as _ast
+import json as _json
+
+DRIVER = os.path.join(HERE, "e2e_m4_exit.py")
+
+
+def driver_src(name):
+    """Source text of one module-level driver function (or MethodDef-free plain def):
+    the pin for SEQUENCE claims — which door is asked before which POST, what reads
+    what — that no canned ledger can express."""
+    with open(DRIVER, encoding="utf-8") as fh:
+        text = fh.read()
+    fn = next((n for n in _ast.parse(text).body
+               if isinstance(n, _ast.FunctionDef) and n.name == name), None)
+    assert fn is not None, f"{name} is not a module-level def in {DRIVER}"
+    return _ast.get_source_segment(text, fn)
+
 
 
 class EmitTest(unittest.TestCase):
@@ -1035,12 +1080,141 @@ class C5hScratchDocTest(unittest.TestCase):
         self.assertTrue(any("m4-exit.sh" in why for why in res["missing"]))
 
 
+class C5hScratchInputsTest(unittest.TestCase):
+    """The 1c190fe GAP, offline and on the REAL seed twin: the scratch revision
+    must declare every input its copied node reads, and only inputs the twin itself
+    declares. A scratch the compiler refuses is not a budget arm — it is nothing."""
+
+    def scratch(self):
+        res = m.c5h_scratch_doc(twin_canonical(), "m4x-c5h-hold-test")
+        self.assertEqual([], res["missing"],
+                         f"the seed twin is not the shape C5h splices: {res['missing']}")
+        self.assertIsInstance(res["doc"], str)
+        return res, yaml.safe_load(res["doc"])
+
+    def test_every_input_the_emitted_doc_reads_is_declared_by_that_same_doc(self):
+        """The claim, read off the BYTES the driver posts: parse the emitted YAML and
+        check every ${{ inputs.X }} inside spec.nodes against spec.inputs.properties."""
+        _res, doc = self.scratch()
+        declared = set((doc["spec"]["inputs"]["properties"] or {}).keys())
+        read = m.doc_input_refs(doc["spec"]["nodes"])
+        self.assertTrue(read, "a scratch node that reads no input holds nothing to kill")
+        self.assertEqual([], sorted(set(read) - declared),
+                         f"undeclared inputs the compiler would refuse with "
+                         f"unknown_field: read={read} declared={sorted(declared)}")
+        self.assertEqual(1, len(doc["spec"]["nodes"]), "C5h's scratch is ONE node")
+
+    def test_the_real_twin_forces_leave_dirty_into_the_declaration(self):
+        """The exact field 1c190fe died on. If the twin ever stops reading it the
+        scratch must follow the twin, not a hard-coded list."""
+        res, doc = self.scratch()
+        read = set(m.doc_input_refs(doc["spec"]["nodes"]))
+        twin_read = set(m.doc_input_refs(m.doc_body_node(twin_canonical(), m.C5H_NODE_ID)))
+        self.assertEqual(twin_read, read,
+                         "the scratch node reads a different input set than the twin's "
+                         f"held node ({twin_read} vs {read}) — the copy is not verbatim")
+        self.assertIn("leave_dirty", twin_read | read,
+                      "the seed twin's held node no longer reads inputs.leave_dirty — "
+                      "this regression test needs the twin's current binding set")
+        self.assertEqual(sorted(set(twin_read) | set(res["input_refs"])),
+                         sorted(res["input_refs"]),
+                         f"the builder read {res['input_refs']} off a node binding "
+                         f"{sorted(twin_read)}")
+        for name in twin_read:
+            self.assertIn(name, doc["spec"]["inputs"]["properties"],
+                          f"inputs.{name} is read and undeclared")
+
+    def test_declared_schemas_are_the_twins_copied_verbatim_and_nothing_invented(self):
+        twin = twin_canonical()
+        props = twin["spec"]["inputs"]["properties"]
+        twin_required = twin["spec"]["inputs"]["required"]
+        _res, doc = self.scratch()
+        declared = doc["spec"]["inputs"]["properties"]
+        for name, schema in declared.items():
+            self.assertIn(name, props, f"inputs.{name} invented (the twin declares "
+                                       f"{sorted(props)})")
+            self.assertEqual(props[name], schema,
+                             f"inputs.{name} re-authored instead of copied — its "
+                             "default/type is what the run posts against")
+        for name in doc["spec"]["inputs"]["required"]:
+            self.assertIn(name, twin_required, "the scratch demands an input the twin "
+                                              "does not demand")
+        self.assertTrue(set(doc["spec"]["inputs"]["required"]) <= {"goal", "repository",
+                                                                  "hold_seconds"},
+                        "the live arm posts goal/repository/hold_seconds only — a "
+                        "required input beyond those never reaches the scratch run")
+
+    def test_the_real_twin_scratch_is_a_deep_copy_and_never_mutates_it(self):
+        twin = twin_canonical()
+        frozen = yaml.safe_dump(twin, indent=4, sort_keys=True, allow_unicode=True)
+        res = m.c5h_scratch_doc(twin, "m4x-c5h-hold-copy")
+        self.assertIsInstance(res["doc"], str)
+        self.assertEqual(frozen, yaml.safe_dump(twin, indent=4, sort_keys=True,
+                                                allow_unicode=True),
+                         "the splice mutated the twin document — C1's key set is the "
+                         "gate's own precondition")
+        self.assertEqual(2, m.doc_body_node(twin, m.C5H_NODE_ID)["retry"]["maxAttempts"],
+                         "the twin's own budget must still read 2 after the copy")
+
+    def test_an_input_the_twin_does_not_declare_is_a_gap_reason_not_an_invention(self):
+        doc = twin_canonical()
+        held = m.doc_body_node(doc, m.C5H_NODE_ID)
+        self.assertIsNotNone(held, "the twin's held implement node moved — the splice "
+                                   "tests below would be testing nothing")
+        held["config"]["env"]["M4_INVENTED"] = "${{ inputs.not_in_the_twin }}"
+        res = m.c5h_scratch_doc(doc, "x")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("inputs.not_in_the_twin" in why for why in res["missing"]),
+                        f"missing={res['missing']}")
+        self.assertIn(False, [ok for _l, ok, _d in m.c5h_doc_verdicts(res)])
+
+    def test_the_doc_verdict_arm_fails_when_a_declaration_is_lost(self):
+        """A builder that silently drops a declaration must not read as an honest
+        splice (that is the 1c190fe shape of bug, verdict side)."""
+        res = m.c5h_scratch_doc(twin_canonical(), "m4x-c5h-hold-test")
+        honest = [ok for label, ok, _ in m.c5h_doc_verdicts(res) if "declared in" in label]
+        self.assertEqual([True], honest, m.c5h_doc_verdicts(res))
+        broken = dict(res, inputs_declared=[k for k in res["inputs_declared"]
+                                           if k != "leave_dirty"])
+        self.assertEqual([False], [ok for label, ok, _ in m.c5h_doc_verdicts(broken)
+                                   if "declared in" in label])
+
+    def test_the_arm_quotes_the_compiler_rather_than_a_truncated_repr(self):
+        """The live leg's GAP line must carry c5h_publish_report's rendering (the
+        compiler's code + message), not `str(vresp)[:240]`."""
+        fn = next(n for n in ast.parse(open(os.path.join(HERE, "e2e_m4_exit.py"),
+                                           encoding="utf-8").read()).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "c5h_scratch_arm")
+        body = ast.unparse(fn)
+        self.assertIn("c5h_publish_report(pub)", body,
+                      "the publish GAP no longer reports the compiler's own words")
+        self.assertNotIn("[:240]", body,
+                         "a truncated repr() of the validate body is not the compiler's "
+                         "refusal — report the errors themselves")
+
+    def test_publish_report_carries_the_unknown_field_refusal(self):
+        errs = [{"source": "compiler", "code": "unknown_field",
+                 "instance_location": "/spec/nodes/0/config/env/M4_LEAVE_DIRTY",
+                 "message": "inputs.leave_dirty selects an input the pipeline does not "
+                            "declare (inputs.leave_dirty)"}]
+        pub = {"validate_status": 200, "publish_status": 409, "revision_id": "",
+               "vresp": {"valid": False, "errors": errs},
+               "raw": '{"valid": false}\n{"code":"invalid_pipeline_document"}'}
+        rep = m.c5h_publish_report(pub)
+        for needle in ("validate=200", "publish=409", "valid=False", "unknown_field",
+                       "selects an input the pipeline does not declare",
+                       "invalid_pipeline_document"):
+            self.assertIn(needle, rep, rep)
+        self.assertIn("no draft", m.c5h_publish_report(None))
+
+
 class C5hDocVerdictsTest(unittest.TestCase):
     def test_honest_copy_passes_every_arm(self):
         res = m.c5h_scratch_doc(c5h_twin_canonical(), "m4x-c5h-hold")
         v = m.c5h_doc_verdicts(res)
         self.assertTrue(all(ok for _, ok, _ in v), str(v))
-        self.assertEqual(len(v), 3)
+        self.assertEqual(len(v), 4, "copy / budget / input-declaration / shape")
+        self.assertTrue(any("declared in" in label for label, _ok, _d in v), v)
 
     def test_missing_splices_are_a_loud_fail(self):
         v = m.c5h_doc_verdicts({"doc": None, "applied": [], "missing": ["the twin's held node"]})
@@ -1118,6 +1292,719 @@ class C5hRefusalVerdictsTest(unittest.TestCase):
                                   refusal(att_status="failed", att_class="infra"))[0], False)
         self.assertIs(self.graded("retry is REFUSED", refusal(sched=None))[0], None)
         self.assertIs(self.graded("retry is REFUSED", refusal(attempts=None))[0], None)
+
+
+
+
+def manual_twin():
+    """The REAL § 7.0 seed twin (document 2 of the probe file) in canonical_document
+    shape — the structure c5e_retry_scratch_doc copies its two nodes from. The fixture,
+    never a fixture of a fixture: the arm's whole claim is that its nodes are copies."""
+    return twin_canonical()
+
+
+def manual_held(doc=None):
+    return m.doc_body_node(doc or manual_twin(), m.C5H_NODE_ID)
+
+
+def manual_plan(doc=None):
+    return next(n for n in (doc or manual_twin())["spec"]["nodes"]
+                if n.get("id") == m.C5E_SEED_STEP)
+
+
+def manual_arm(status=200, may_post=True, run_st="failed", final_st="completed",
+               rows=None, head=HEAD, dirty=1, seed_ne=1, seed_rows=None, body="{}",
+               seed_node=None):
+    """A complete, mutually consistent set of readings from the manual-retry arm: the
+    killed node's attempt rows carry the boundary the seed recorded, and the seed itself
+    gained nothing."""
+    rows = rows if rows is not None else [
+        attempt(1, "interrupted", "interrupted"),
+        attempt(2, "queued", "-", ctx_json(1, "interrupted", head, 1))]
+    return {"run_id": "run-m", "run_st": run_st, "cause": "node_execution_failed:/x",
+            "final_st": final_st, "may_post": may_post, "status": status, "body": body,
+            "rows": rows, "seed_rows": seed_rows if seed_rows is not None
+            else [attempt(1, "succeeded", "-")],
+            "seed_ne": {"ne": seed_ne, "attempts": 1},
+            "seed_node": seed_node or m.C5E_SEED_NODE, "kill_node": m.C5E_KILL_NODE,
+            "seed_step": m.C5E_SEED_EDIT, "policy": m.C5E_CONTINUE,
+            "head_before": head, "dirty_before": dirty, "ckpts": [], "policies": {},
+            "restore": None, "worker": "worker-a"}
+
+
+class C5eManualRetryScratchDocTest(unittest.TestCase):
+    """c5e_retry_scratch_doc: the gate's OWN retriable subject is TWO copies of the twin's
+    held node — a seed that SUCCEEDS (so a boundary exists to inherit) and a budget-1 node
+    the kill fails the run on — with nothing else from the twin carried over."""
+
+    def test_continue_build_is_two_verbatim_copies_with_one_budget_each(self):
+        src = manual_twin()
+        res = m.c5e_retry_scratch_doc(src, "m4x-c5e-retry")
+        self.assertEqual(res["missing"], [], res["missing"])
+        self.assertIsInstance(res["doc"], str)
+        doc = res["doc"]
+        self.assertEqual(doc.count("maxAttempts:"), 2, doc)
+        self.assertNotIn("maxAttempts: 2", doc, "the shipped budget must not survive")
+        self.assertNotIn("kind: until", doc)
+        self.assertNotIn("human.approval", doc)
+        self.assertNotIn("workspacePolicy:", doc,
+                         "C5e's arm stays on the retry's DEFAULT mode; inventing a "
+                         "policy into the document would test a mode the twin never chose")
+        self.assertNotIn("backoff", doc)
+        self.assertIn("m4x-c5e-retry", doc)
+        parsed = yaml.safe_load(doc)
+        nodes = parsed["spec"]["nodes"]
+        self.assertEqual([n["id"] for n in nodes],
+                         [m.C5E_SEED_NODE, m.C5E_KILL_NODE])
+        # the killed node is the twin's held step, config and all
+        self.assertEqual(nodes[1]["config"], manual_held(src)["config"])
+        self.assertEqual(nodes[1]["retry"], {"maxAttempts": 1})
+        self.assertEqual(nodes[1]["dependsOn"], [m.C5E_SEED_NODE])
+        self.assertEqual(nodes[0]["config"], manual_held(src)["config"],
+                         "the dirty-seed arm keeps the held step verbatim: its own "
+                         "unstaged edit is the modified_path_count the retry must carry")
+        self.assertNotIn("dependsOn", nodes[0])
+        # the source document is untouched — the twin's key set is C1's property
+        self.assertEqual(manual_held(src)["retry"]["maxAttempts"], 2)
+
+    def test_edit_free_seed_switches_only_the_step_and_its_output_contract(self):
+        src = manual_twin()
+        res = m.c5e_retry_scratch_doc(src, "m4x-c6c-restore", policy=m.C6_RESTORE_POLICY,
+                                      seed_step=m.C5E_SEED_STEP,
+                                      kill_node=m.C6C_KILL_NODE)
+        self.assertEqual(res["missing"], [], res["missing"])
+        parsed = yaml.safe_load(res["doc"])
+        seed, kill = parsed["spec"]["nodes"]
+        self.assertEqual(seed["config"]["args"], [m.C5E_SEED_STEP],
+                         "the seed must run the twin's edit-free step or its boundary "
+                         "would read uncommitted and restore would be refused")
+        self.assertEqual(seed["outputs"], manual_plan(src)["outputs"],
+                         "the outputs schema is the one that step's stdout satisfies, "
+                         "copied — not one this arm invented")
+        self.assertEqual(kill["retry"], {"maxAttempts": 1,
+                                         "workspacePolicy": m.C6_RESTORE_POLICY})
+        self.assertEqual(kill["config"], manual_held(src)["config"])
+        self.assertEqual(res["doc"].count("workspacePolicy:"), 1)
+        self.assertEqual(res["policy"], m.C6_RESTORE_POLICY)
+
+    def test_declares_every_input_either_copy_reads(self):
+        res = m.c5e_retry_scratch_doc(manual_twin(), "m4x-c5e-retry")
+        self.assertTrue(res["inputs_declared"])
+        self.assertEqual(sorted(set(res["input_refs"])),
+                         ["hold_seconds", "leave_dirty", "repository"],
+                         "the held copy still reads inputs.leave_dirty (M4_LEAVE_DIRTY); "
+                         "an undeclared selection is the unknown_field failure class")
+        self.assertEqual(sorted(res["input_props"]),
+                         ["goal", "hold_seconds", "leave_dirty", "repository"])
+
+    def test_refuses_a_source_it_cannot_copy(self):
+        no_dirty = manual_twin()
+        del no_dirty["spec"]["inputs"]["properties"]["leave_dirty"]
+        res = m.c5e_retry_scratch_doc(no_dirty, "n")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("inputs.leave_dirty" in why for why in res["missing"]),
+                        res["missing"])
+        res = m.c5e_retry_scratch_doc(manual_twin(), "n", policy=m.C6_RESTORE_POLICY,
+                                      seed_step=m.C5E_SEED_STEP)
+        self.assertTrue(any("leave_dirty" in w for w in res["missing"])
+                        or res["inputs_declared"],
+                        "the restore arm declares the SAME bindings as the continue arm")
+        no_plan = manual_twin()
+        no_plan["spec"]["nodes"] = [n for n in no_plan["spec"]["nodes"]
+                                    if n.get("id") != m.C5E_SEED_STEP]
+        res = m.c5e_retry_scratch_doc(no_plan, "n", seed_step=m.C5E_SEED_STEP)
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("plan" in why for why in res["missing"]), res["missing"])
+        # a plan seed needs the twin's OWN outputs schema for the edit-free step
+        no_out = manual_twin()
+        del next(n for n in no_out["spec"]["nodes"]
+                 if n.get("id") == m.C5E_SEED_STEP)["outputs"]
+        res = m.c5e_retry_scratch_doc(no_out, "n", seed_step=m.C5E_SEED_STEP)
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("json_from_stdout" in why for why in res["missing"]),
+                        res["missing"])
+        res = m.c5e_retry_scratch_doc(None, "n")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("source document" in why for why in res["missing"]))
+        res = m.c5e_retry_scratch_doc(manual_twin(), "n", seed_step="review")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("third" in why for why in res["missing"]), res["missing"])
+
+    def test_a_held_node_that_no_longer_shows_the_shipped_budget_is_refused(self):
+        twin = manual_twin()
+        manual_held(twin)["retry"] = {"maxAttempts": 5}
+        res = m.c5e_retry_scratch_doc(twin, "n")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("maxAttempts: 2" in why for why in res["missing"]),
+                        "this arm measures the budget the DOCUMENT authors; a copy that "
+                        "no longer shows it changes two variables at once")
+
+
+class C5eManualRetryDocVerdictsTest(unittest.TestCase):
+    def test_a_clean_build_passes_every_honesty_row(self):
+        for policy, step in ((None, m.C5E_SEED_EDIT), (m.C6_RESTORE_POLICY, m.C5E_SEED_STEP)):
+            res = m.c5e_retry_scratch_doc(manual_twin(), "n", policy=policy, seed_step=step)
+            v = m.c5e_retry_doc_verdicts(res)
+            self.assertEqual(len(v), 5, [l for l, _o, _d in v])
+            self.assertTrue(all(ok for _l, ok, _d in v), [(l, d) for l, ok, d in v if not ok])
+
+    def test_each_row_fires_on_its_own_sabotage(self):
+        res = m.c5e_retry_scratch_doc(manual_twin(), "n")
+        no_seed = dict(res, applied=[a for a in res["applied"]
+                                     if not a.startswith("'" + m.C5E_SEED_NODE)])
+        self.assertIs(ok_of(m.c5e_retry_doc_verdicts(no_seed), "the seed node is a copy"),
+                      False)
+        no_kill = dict(res, applied=[a for a in res["applied"]
+                                     if not a.startswith("'" + m.C5E_KILL_NODE)])
+        self.assertIs(ok_of(m.c5e_retry_doc_verdicts(no_kill), "COPIED VERBATIM"), False)
+        # a mode appears in the document but was never declared (or the reverse)
+        extra = dict(res, doc=res["doc"] + "workspacePolicy: restore_checkpoint\n")
+        self.assertIs(ok_of(m.c5e_retry_doc_verdicts(extra), "ONE variable differs"), False)
+        doctored = []
+        for a in res["applied"]:
+            if a.startswith("retry blocks carried"):
+                a = ('retry blocks carried by the scratch: [{"id": "' + m.C5E_SEED_NODE
+                     + '", "retry": {"maxAttempts": 2, "workspacePolicy": '
+                     + '"restore_checkpoint"}, "kind": "process.exec", "args": '
+                     + '["implement"], "workspace": {"mode": "run_workspace"}}]')
+            doctored.append(a)
+        leaked = dict(res, applied=doctored)
+        self.assertIs(ok_of(m.c5e_retry_doc_verdicts(leaked), "ONE variable differs"), False)
+        undeclared = dict(res, inputs_declared=False, input_props=[])
+        self.assertIs(ok_of(m.c5e_retry_doc_verdicts(undeclared), "declared in spec.inputs"),
+                      False)
+
+
+class C5ePreconditionTest(unittest.TestCase):
+    """Both of route 31's doors, graded in RetryRun's order — and the pair of arms differs
+    ONLY at the second one, because runtime/retry.go asks a different question of the
+    inherited boundary in each mode."""
+
+    def ck(self, node, committed, head=HEAD, mpc=1):
+        return {"node": node, "volume_id": "repos-a", "worker": "worker-a",
+                "committed": committed, "mpc": mpc, "head": head}
+
+    def test_retriable_run_on_a_recorded_boundary_licenses_the_continue_post(self):
+        v, may = m.c5e_precondition_verdicts("failed", [self.ck("/boundary_seed", False)],
+                                             "/boundary_seed")
+        self.assertTrue(may)
+        self.assertTrue(all(ok for _l, ok, _d in v), v)
+
+    def test_restore_needs_the_boundary_COMMITTED_and_says_so(self):
+        v, may = m.c5e_precondition_verdicts(
+            "failed", [self.ck("/boundary_seed", False)], "/boundary_seed",
+            policy=m.C6_RESTORE_POLICY)
+        self.assertFalse(may, "an uncommitted boundary is C6d's 409, not an accepted "
+                              "restore — POSTing through it grades the refusal row")
+        self.assertIs(ok_of(v, "recorded COMMITTED"), False)
+
+    def test_restore_on_a_committed_boundary_licenses_the_post(self):
+        v, may = m.c5e_precondition_verdicts(
+            "interrupted", [self.ck("/boundary_seed", True, mpc=0)], "/boundary_seed",
+            policy=m.C6_RESTORE_POLICY)
+        self.assertTrue(may, v)
+
+    def test_engine_owned_running_run_GAPs_not_FAILs(self):
+        for st in ("running", "paused", "queued"):
+            v, may = m.c5e_precondition_verdicts(st, [self.ck("/boundary_seed", True)],
+                                                 "/boundary_seed")
+            self.assertFalse(may)
+            self.assertIsNone(ok_of(v, "route 31 RE-OPENS"),
+                              f"{st}: the ENGINE owns that retry (§ 7.1 C5b) — the arm "
+                              "has no subject, which is a GAP and not a product FAIL")
+            self.assertIn("running (retry armed)", detail_of(v, "route 31 RE-OPENS"))
+
+    def test_a_run_that_completed_contradicts_the_arms_premise(self):
+        v, may = m.c5e_precondition_verdicts("completed", [self.ck("/boundary_seed", True)],
+                                             "/boundary_seed")
+        self.assertFalse(may)
+        self.assertIs(ok_of(v, "route 31 RE-OPENS"), False)
+
+    def test_unreadable_ledger_and_missing_boundary_gap(self):
+        v, may = m.c5e_precondition_verdicts("", [self.ck("/boundary_seed", True)], "/x")
+        self.assertFalse(may)
+        self.assertIsNone(ok_of(v, "route 31 RE-OPENS"))
+        v, may = m.c5e_precondition_verdicts("failed", [], "/boundary_seed")
+        self.assertTrue(may, "runtime/retry.go:116-138 refuses a RESTORE on a missing "
+                             "boundary and asks NOTHING of continue_workspace — the gate "
+                             "keeps its 200 and loses its comparison, which is a GAP")
+        self.assertIsNone(ok_of(v, "RECORDED"))
+        v, may = m.c5e_precondition_verdicts("failed", [{"node": "/boundary_seed",
+                                                        "head": HEAD,
+                                                        "committed": False}],
+                                             "/boundary_seed")
+        self.assertTrue(may)
+        self.assertIs(ok_of(v, "RECORDED"), True,
+                      "continue_workspace asks nothing of the boundary's committed flag — "
+                      "it needs a recorded HEAD to carry, and this row has one (the same "
+                      "row reads FAIL for the restore arm, C6d's premise)")
+        for pol in (m.C5E_CONTINUE, m.C6_RESTORE_POLICY):
+            v, may = m.c5e_precondition_verdicts("failed", [{"node": "/other",
+                                                            "head": HEAD,
+                                                            "committed": True}],
+                                                 "/boundary_seed", policy=pol)
+            self.assertIsNone(ok_of(v, "RECORDED" if pol == m.C5E_CONTINUE else "COMMITTED"),
+                              "a boundary on some OTHER node is not the one this retry "
+                              "inherits (RetryPlan takes the newest row that is not the "
+                              "retried node's own)")
+        v, may = m.c5e_precondition_verdicts("cancelled", [], "/boundary_seed",
+                                             policy=m.C6_RESTORE_POLICY)
+        self.assertFalse(may, "restore without a recorded boundary is the refusal § 7.1 "
+                              "C6d names, so the arm does not ask and its rows GAP")
+        self.assertIsNone(ok_of(v, "COMMITTED"))
+
+
+class C5eManualRetryVerdictsTest(unittest.TestCase):
+    """§ 7.1 C5e's expectation list, graded on the run the MANUAL retry re-opened."""
+
+    def test_the_full_reading_passes_every_claim(self):
+        v = m.c5e_manual_retry_verdicts(manual_arm())
+        self.assertTrue(all(ok is True for _l, ok, _d in v),
+                        [(l, ok, d) for l, ok, d in v if ok is not True])
+        self.assertIn("C5e", v[0][0])
+
+    def test_the_same_algebra_labels_C6c(self):
+        a = manual_arm()
+        self.assertTrue(all("C6c" in l for l, _o, _d in m.c5e_manual_retry_verdicts(a,
+                                                                                    tag="C6c")))
+
+    def test_a_refusal_on_a_verified_retriable_run_is_a_FAIL(self):
+        v = m.c5e_manual_retry_verdicts(manual_arm(
+            status=409, body='{"type":"https://communication.dev/errors/run-not-retriable"}'))
+        self.assertIs(ok_of(v, "the UI's button posts exactly this"), False)
+        self.assertIn("RETRIABLE", detail_of(v, "the UI's button posts exactly this"))
+
+    def test_any_other_answer_is_a_FAIL(self):
+        for status in (500, 403, 404):
+            v = m.c5e_manual_retry_verdicts(manual_arm(status=status, body="oops"))
+            self.assertIs(ok_of(v, "the UI's button posts exactly this"), False)
+
+    def test_an_unposted_retry_GAPs_everything_it_could_not_measure(self):
+        v = m.c5e_manual_retry_verdicts(manual_arm(status=None, may_post=False))
+        self.assertIsNone(ok_of(v, "the UI's button posts exactly this"))
+        self.assertIn("never asked the route", detail_of(v, "posts exactly this"))
+        for needle in ("APPENDED", "retry_context from the LAST CHECKPOINT",
+                       "head_commit = $HEAD_BEFORE", "modified_path_count = $DIRTY_BEFORE",
+                       "gained NOTHING", "RE-OPENED"):
+            self.assertIsNone(ok_of(v, needle), needle)
+        # the ledger facts that DO stand on their own are still graded
+        self.assertIs(ok_of(v, "attempt 1 of the retried node"), True)
+
+    def test_a_boundary_that_disagrees_with_the_worktree_reading_is_a_FAIL(self):
+        off = [attempt(1, "interrupted", "interrupted"),
+               attempt(2, "queued", "-", ctx_json(1, "interrupted", "f" * 40, 1))]
+        v = m.c5e_manual_retry_verdicts(manual_arm(rows=off, head=HEAD))
+        self.assertIs(ok_of(v, "head_commit = $HEAD_BEFORE"), False)
+        v = m.c5e_manual_retry_verdicts(manual_arm(dirty=7))
+        self.assertIs(ok_of(v, "modified_path_count = $DIRTY_BEFORE"), False)
+        self.assertIn("DIRTY_BEFORE=7", detail_of(v, "modified_path_count = $DIRTY_BEFORE"))
+
+    def test_a_missing_carry_or_a_missing_context_GAPs_its_own_arm(self):
+        v = m.c5e_manual_retry_verdicts(manual_arm(head=""))
+        self.assertIsNone(ok_of(v, "head_commit = $HEAD_BEFORE"))
+        v = m.c5e_manual_retry_verdicts(manual_arm(dirty=None))
+        self.assertIsNone(ok_of(v, "modified_path_count = $DIRTY_BEFORE"))
+        no_ctx = m.c5e_manual_retry_verdicts(
+            manual_arm(rows=[attempt(1, "interrupted", "interrupted"),
+                             attempt(2, "queued", "-")]))
+        self.assertIs(ok_of(no_ctx, "retry_context from the LAST CHECKPOINT"), False,
+                      "route 31 says the retried attempt is TOLD the previous attempt's "
+                      "facts; an accepted retry that armed attempt 2 with NO context at "
+                      "all contradicts its own route row — that is a FAIL, not a gap")
+        self.assertIn("NULL", detail_of(no_ctx, "retry_context from the LAST CHECKPOINT"))
+        self.assertIsNone(ok_of(no_ctx, "head_commit = $HEAD_BEFORE"))
+        ragged = m.c5e_manual_retry_verdicts(
+            manual_arm(rows=[attempt(1, "interrupted", "interrupted"),
+                             attempt(2, "queued", "-", ctx='{"attempt": 1, "err')]))
+        self.assertIsNone(ok_of(ragged, "retry_context from the LAST CHECKPOINT"),
+                          "a context the driver could not parse is the READ failing, "
+                          "not the product refusing to write it")
+
+    def test_retry_work_that_touched_the_finished_node_is_a_FAIL(self):
+        v = m.c5e_manual_retry_verdicts(manual_arm(seed_ne=2))
+        self.assertIs(ok_of(v, "gained NOTHING"), False)
+        v = m.c5e_manual_retry_verdicts(manual_arm(seed_rows=[attempt(1, "succeeded", "-"),
+                                                             attempt(2, "queued", "-")]))
+        self.assertIs(ok_of(v, "gained NOTHING"), False)
+
+    def test_the_reopen_is_read_from_the_runs_row_not_the_post_code(self):
+        for fin, want in (("running", True), ("completed", True), ("failed", False),
+                          ("", None)):
+            v = m.c5e_manual_retry_verdicts(manual_arm(final_st=fin))
+            self.assertIs(ok_of(v, "RE-OPENED the failed run"), want, (fin, v))
+
+
+class C5eManualArmSequencingTest(unittest.TestCase):
+    """The arm's SHAPE is its correctness claim: route 31 answers the run-status door
+    first, so the retry is asked only after the ledger shows the run retriable, only
+    after the worker is back (the reopened attempt needs its volume's owner), and never
+    before the twin's own workspace reads have been taken."""
+
+    def test_c5_posts_the_manual_retry_only_on_a_retriable_run(self):
+        src = driver_src("c5")
+        ask = src.index('/retry", {"reason": "crash"}')
+        gate = src.index("run_retriable = c6_run_is_retriable(run_st)")
+        self.assertLess(gate, ask, "the POST must be gated on the ledger's run status")
+        self.assertIn("if run_retriable:", src[gate:ask],
+                      "the twin is engine-owned by § 7.1 C5b's sentence; POSTing at that "
+                      "door is what produced live20's 409 GAP")
+        self.assertLess(src.index("NOT asked"), ask + 400)
+
+    def test_the_arm_drives_the_run_to_retriable_before_it_asks(self):
+        src = driver_src("_c5e_kill_and_retry")
+        ask = src.index('/retry", {"reason": "crash"}')
+        self.assertLess(src.index("_c6d_wait_retriable("), ask,
+                        "route 31's run-status door fires first (_c6d_wait_retriable is "
+                        "the poll the C6d fix introduced — reused, not re-authored)")
+        self.assertLess(src.index("c5e_precondition_verdicts("), ask)
+        self.assertLess(src.index("compose start"), ask,
+                        "the killed worker comes back BEFORE the retry: the reopened "
+                        "attempt is pinned to the container that owns the workspace")
+        self.assertLess(src.index('/retry", {"reason": "crash"}'), src.index("watch_run("),
+                        "an accepted retry leaves live work behind unless the arm drains it")
+        self.assertIn("if may_post:", src[:ask], "a door that is not open stops the POST")
+
+    def test_the_arm_runs_after_the_twins_workspace_reads(self):
+        src = driver_src("c5")
+        self.assertLess(src.index("c5_emit(c5_retry_row_verdicts(rows"),
+                        src.index("arm = None if manual_status == 200 else c5e_retry_door_arm("),
+                        "the arm kills a worker; run first and the twin's workspace would "
+                        "be released under C5f's reads (a run reaches terminal during the "
+                        "arm's own hold)")
+
+    def test_the_published_document_resolves_before_the_lab_sees_it(self):
+        src = driver_src("c5e_retry_scratch_doc") + driver_src("c5e_retry_doc_verdicts")
+        self.assertIn('out["refs"] = c5e_scratch_ref_pairs(scratch)', src,
+                      "the census is taken off the ASSEMBLED document, not off a list of "
+                      "what this file believes it dropped")
+        self.assertIn('sp["nodes"] = [seed, kill]',
+                      driver_src("c5e_retry_scratch_doc"))
+        self.assertNotIn("json.loads(json.dumps(canonical))", driver_src("c5e_retry_scratch_doc"),
+                         "a deep copy of the twin drags spec.outputs/resultBindings — the "
+                         "bindings that made the first C5e/C6c draft a publish 409 "
+                         "(compile-proved: unknown_dependency@/spec/resultBindings/"
+                         "implementation_summary for the copied shape, valid=true for this)")
+        verdicts = driver_src("c5e_retry_doc_verdicts")
+        self.assertIn("unresolved", verdicts)
+        self.assertIn("unknown_dependency@/spec/resultBindings/", verdicts,
+                      "the row names the diagnostic the compiler actually answers, so a "
+                      "reader can match the arm's own check against the lab's refusal")
+
+    def test_the_scratch_is_copied_and_the_compiler_is_quoted_on_refusal(self):
+        src = driver_src("c5e_retry_door_arm")
+        self.assertIn("doc_revision_canonical(admin", src)
+        self.assertIn("c5e_retry_scratch_doc(", src)
+        self.assertIn("c5h_publish_report(pub)", src,
+                      "/validate answers 200 with valid:false — the GAP must quote the "
+                      "compiler, not a truncated repr")
+        self.assertIn("c5_emit(c5e_retry_doc_verdicts(res))", src)
+        self.assertIn("require_fault_hold(", src)
+        self.assertIn("with_hold(inputs, C_FAULT_HOLD_SECONDS)", src)
+        self.assertNotIn("with_dirty(", src,
+                         "leave_dirty stays at the twin's default: the seed's boundary "
+                         "state is chosen by which step it runs, not by a flag this arm "
+                         "would have baked in")
+
+    def test_the_twin_side_line_becomes_a_note_once_the_arm_graded_the_row(self):
+        v = m.c5_retry_api_verdicts(None, "", [attempt(), attempt(2, "queued", "-",
+                                                                  ctx_json())],
+                                    run_retriable=False, measured_elsewhere=True)
+        self.assertIs(v[0][1], m.C5_NOTE, "a NOTE, never a PASS and never a GAP")
+        self.assertIn("retriable scratch", v[0][2])
+        v = m.c5_retry_api_verdicts(None, "", [attempt(), attempt(2, "queued", "-",
+                                                                  ctx_json())],
+                                    run_retriable=False)
+        self.assertIsNone(v[0][1], "with no arm behind it the row stays a visible GAP")
+        self.assertIn("unmeasured", v[0][2])
+
+    def test_an_accepted_post_still_gradues_the_200_row(self):
+        v = m.c5_retry_api_verdicts(200, '{"run_id":"r"}', [attempt(2, "queued")],
+                                    run_retriable=True)
+        self.assertIs(ok_of(v, "posts exactly this"), True)
+
+
+class C5eNoteEmissionTest(unittest.TestCase):
+    def tearDown(self):
+        del m.FAILURES[:], m.GAPS[:], m.SKIPPED[:]
+
+    def test_a_note_is_printed_and_never_recorded_as_a_verdict(self):
+        m.c5_emit([("C5e POST /runs/{id}/retry — measured elsewhere", m.C5_NOTE, "see below")])
+        self.assertEqual(m.FAILURES, [])
+        self.assertEqual(m.GAPS, [])
+
+    def test_the_unposted_note_line_never_appears_in_the_c6_leg(self):
+        src = driver_src("c6")
+        self.assertNotIn("c5_retry_api_verdicts(", src,
+                         "C6's restore leg posted the same request and printed the answer "
+                         "under a C5e label (live20's second GAP); it grades its own door "
+                         "row now")
+
+
+
+
+class ManualArmDryRunTest(unittest.TestCase):
+    """EXECUTE c5e_retry_door_arm's live half offline with the lab mocked: the canned
+    ledger, a fake client and a recorded call order. The verdict algebra above proves the
+    reducer; this proves the SEQUENCE the reducer is argued from — that the arm kills,
+    waits for route 31's retriable state, brings the worker back, grades both doors and
+    only then posts — and that it survives a run that never turns retriable without ever
+    asking the route. Nothing here touches a socket, a container or Postgres."""
+
+    def setUp(self):
+        self.log = []
+        self.saved = {}
+        self.retriable = "failed"
+        self.seed, self.kill = m.C5E_SEED_NODE, m.C5E_KILL_NODE
+        self.ckpt_rows = [
+            f"ne-1@@/{self.seed}@@vol-a@@ws-1@@worker-a@@true@@0@@{HEAD}",
+            f"ne-2@@/{self.kill}@@vol-a@@ws-1@@worker-a@@false@@1@@{HEAD}",
+        ]
+        self.attempt_rows = {
+            f"/{self.kill}": [f"1\tinterrupted\tinterrupted\t-\t2026-02-20 10:00:00+00",
+                              f"2\tqueued\t-\t{ctx_json(1, 'interrupted', HEAD, 1)}"
+                              f"\t2026-02-20 10:04:00+00"],
+            f"/{self.seed}": ["1\tsucceeded\t-\t-\t2026-02-20 09:50:00+00"],
+        }
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(m, name, value)
+        self.saved.clear()
+        del m.FAILURES[:], m.GAPS[:]
+
+    def patch(self, name, value):
+        self.saved.setdefault(name, getattr(m, name))
+        setattr(m, name, value)
+
+    def fake_psql(self, sql, *a, **kw):
+        if "FROM runs WHERE id" in sql:
+            return f"{self.retriable}|node_execution_failed:/{self.kill}"
+        if "FROM run_checkpoints c" in sql:
+            return "\n".join(self.ckpt_rows)
+        if "a.attempt_number::text || chr(9)" in sql:
+            for key, rows in self.attempt_rows.items():
+                if f"'{key}'" in sql:
+                    return "\n".join(rows)
+            return ""
+        if "count(DISTINCT ne.id)" in sql:
+            return f"/{self.seed}|1|1\n/{self.kill}|1|2"
+        if "workspace_policies" in sql:
+            return json.dumps({f"/{self.kill}": m.C5E_CONTINUE}).replace("'", "''")
+        if "run.checkpoint_restored" in sql:
+            return ""
+        raise AssertionError(f"unmocked psql read: {sql[:90]}")
+
+    def run_arm(self, retriable="failed", post_status=200):
+        self.retriable = retriable
+        self.patch("psql", self.fake_psql)
+        self.patch("wait_live_past_gate", lambda *a, **kw: {
+            "id": "att-1", "worker": "worker-a", "key": "/" + self.kill})
+        self.patch("c4_worker_service", lambda w: "worker-a")
+        self.patch("c6_worktree_read", lambda rid, svc: (HEAD, "1"))
+        self.patch("wait_worker_row", lambda svc, t: True)
+        self.patch("C5_KILL_WAIT_S", 0)     # the dry run never waits out a lease
+        self.patch("watch_run", lambda *a, **kw: ("completed", None))
+        self.patch("run_status", lambda rid: self.retriable)
+        self.patch("hold_window", lambda s: 1)
+
+        def _run(cmd, *a, **kw):
+            self.log.append(("compose", cmd[-1]))
+            return 0, "mocked compose"
+
+        self.patch("run", _run)
+
+        def _wait(rid, cap=None):
+            self.log.append(("wait_retriable", self.retriable))
+            return self.retriable
+
+        self.patch("_c6d_wait_retriable", _wait)
+        arm_cls = m.Client
+
+        class Resp:
+            def __init__(self, status, text):
+                self.status, self.text = status, text
+                self.headers = {"Content-Type": "application/json"}
+
+            def json(self):
+                return json.loads(self.text)
+
+        class Fake:
+            def __init__(self, log, post_status):
+                self.log, self.post_status = log, post_status
+
+            def post(self, base, path, body=None):
+                self.log.append(("post", path))
+                if path.endswith("/retry"):
+                    return Resp(self.post_status, '{"run_id":"run-m"}'
+                                if self.post_status == 200 else
+                                '{"type":"https://communication.dev/'
+                                'errors/run-not-retriable"}')
+                return Resp(201, '{"run_id":"run-m"}')
+
+            def get(self, base, path):
+                return Resp(200, "{}")
+
+        self.patch("Client", arm_cls)
+        client = Fake(self.log, post_status)
+        out = m._c5e_kill_and_retry(client, {"project_id": "p"}, {}, "run-m", "C5e",
+                                    m.C5E_CONTINUE, m.C5E_SEED_EDIT, self.kill,
+                                    grade=m.c5e_manual_retry_verdicts)
+        return out, self.log
+
+    def capture(self, fn):
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            res = fn()
+        finally:
+            sys.stdout = old
+        return res, buf.getvalue()
+
+    def test_the_sequence_reaches_the_route_only_after_the_door_opens(self):
+        (out, printed), log = self.capture(lambda: self.run_arm()), None
+        out, log = out
+        self.assertIsNotNone(out)
+        kinds = [k for k in log]
+        self.assertEqual([k[0] for k in kinds][:2], ["compose", "wait_retriable"],
+                         f"the kill must precede the retriable poll: {kinds}")
+        self.assertIn(("compose", "worker-a"), log)
+        self.assertLess(index_of(log, "wait_retriable"), index_of(log, "post"),
+                        "the retry must not be asked before the run is retriable "
+                        "(1c190fe posted at the closed door)")
+        self.assertLess(index_of(log, "wait_retriable"), index_of(log, "post"))
+        # the worker is back up BEFORE the retry: the reopened attempt is pinned to the
+        # container that owns the workspace (ADR-0023 § 4's claim predicate)
+        self.assertLess(last_index_of(log, "compose", "worker-a"), index_of(log, "post"))
+        self.assertEqual(out["run_st"], "failed")
+        self.assertTrue(out["may_post"])
+        self.assertEqual(out["status"], 200)
+        self.assertEqual([r["attempt_number"] for r in out["rows"]], ["1", "2"])
+        self.assertEqual(out["final_st"], "completed", "the arm drained its own run")
+        self.assertIn("C5e POST /runs/{id}/retry -> 200", printed,
+                      "the arm grades ITSELF: the verdict lines land in the same evidence "
+                      "trail as the doors, the POST and the attempt rows")
+        self.assertEqual(m.FAILURES, [], printed[-400:])
+        self.assertEqual(m.GAPS, [], "the canned ledger satisfies every claim of the row: "
+                                     + "\n".join(m.GAPS))
+
+    def test_a_run_that_stays_running_is_never_asked(self):
+        # § 7.1 C5b's engine-owned state on a budget-2 run: the door stays shut, the arm
+        # must not knock, and the row's claims GAP rather than grade the wrong door.
+        (out, printed), _ = self.capture(lambda: self.run_arm(retriable="running")), None
+        out, log = out
+        self.assertIsNotNone(out)
+        self.assertFalse(out["may_post"])
+        self.assertIsNone(out["status"])
+        self.assertNotIn("post", [k[0] for k in log
+                                  if k[0] == "post" and k[1].endswith("/retry")])
+        self.assertIn("NOT posted", printed)
+        self.assertTrue(any("never asked the route" in g for g in m.GAPS), m.GAPS)
+        self.assertEqual(m.FAILURES, [], "an unaskable door is a GAP, never a FAIL")
+
+    def test_a_refusal_after_the_door_opened_is_a_failure_not_an_excuse(self):
+        (out, printed), _ = self.capture(
+            lambda: self.run_arm(retriable="failed", post_status=409)), None
+        out, log = out
+        self.assertEqual(out["status"], 409)
+        self.assertEqual([f for f in m.FAILURES if "posts exactly this" in f],
+                         m.FAILURES, "\n".join(m.FAILURES) + "\n" + printed[-600:])
+        self.assertIn("RETRIABLE", printed,
+                      "the FAIL's own reason must say WHY the door should have opened")
+        self.assertIn("RETRIABLE", m.FAILURES[0] + printed,
+                      "route 31 refused a run its own list admits — that is the product "
+                      "contradiction, not the soft GAP 1c190fe printed")
+
+
+def index_of(log, kind):
+    return next(i for i, k in enumerate(log) if k[0] == kind)
+
+
+def last_index_of(log, kind, needle):
+    hits = [i for i, k in enumerate(log) if k[0] == kind and needle in k]
+    return hits[-1]
+
+
+
+
+class C5eScratchReferenceTest(unittest.TestCase):
+    """The lab's first C5e/C6c pass never reached the kill: the draft was refused with
+    `validate errors [compiler/unknown_dependency@/spec/resultBindings/
+    implementation_summary, ...]` because the scratch kept the twin's run-output bindings
+    while dropping the until loop they bind. These are the checks that keep that shape
+    from coming back — built off the REAL seed document, both arms."""
+
+    def builds(self):
+        return (m.c5e_retry_scratch_doc(manual_twin(), "m4x-c5e-probe"),
+                m.c5e_retry_scratch_doc(manual_twin(), "m4x-c6c-probe",
+                                        policy=m.C6_RESTORE_POLICY,
+                                        seed_step=m.C5E_SEED_STEP,
+                                        kill_node=m.C6C_KILL_NODE))
+
+    def test_the_document_carries_no_binding_to_a_node_it_dropped(self):
+        for res in self.builds():
+            self.assertEqual(res["missing"], [], res["missing"])
+            parsed = yaml.safe_load(res["doc"])
+            self.assertEqual(sorted(parsed["spec"]), ["inputs", "nodes", "policies"],
+                             "spec.outputs and spec.resultBindings bind "
+                             "/build_until_verified; a scratch that copies the twin "
+                             "wholesale copies that claim too")
+            self.assertIsNone(parsed["spec"].get("resultBindings"))
+            ids = {n["id"] for n in parsed["spec"]["nodes"]}
+            self.assertEqual(ids, {m.C5E_SEED_NODE, res["kill_node"]})
+            self.assertEqual(res["node_ids"], [m.C5E_SEED_NODE, res["kill_node"]])
+
+    def test_every_reference_the_draft_makes_resolves_inside_it(self):
+        for res in self.builds():
+            self.assertTrue(res["refs"], "a scratch with NO edge at all would not run "
+                                         "the killed node after its boundary seed")
+            ids = set(res["node_ids"])
+            unresolved = [r for r in res["refs"] if r[1] not in ids]
+            self.assertEqual(unresolved, [], f"{res['policy']}: {res['refs']}")
+            self.assertIn((m.C5E_KILL_NODE, m.C5E_SEED_NODE),
+                          self.builds()[0]["refs"],
+                          "the edge that makes the seed the inherited boundary")
+            self.assertIs(ok_of(m.c5e_retry_doc_verdicts(res), "resolves to a node"), True)
+
+    def test_the_reference_census_catches_the_shape_the_compiler_refused(self):
+        # Negative control, on the exact bytes that died: put the twin's own bindings back.
+        twin = manual_twin()
+        bindings = twin["spec"].get("resultBindings")
+        self.assertTrue(bindings, "the seed twin binds its run outputs — that is the "
+                                 "shape that must be refused here, not in the lab")
+        for res in self.builds():
+            doctored = yaml.safe_load(res["doc"])
+            doctored["spec"]["resultBindings"] = json.loads(json.dumps(bindings))
+            refs = m.c5e_scratch_ref_pairs(doctored)
+            self.assertIn(("/spec", "build_until_verified"), refs, refs)
+            v = m.c5e_retry_doc_verdicts(dict(res, refs=refs))
+            self.assertIs(ok_of(v, "resolves to a node"), False,
+                          "the arm must name the dangling binding itself, not learn it "
+                          "from a 409 in the lab")
+            self.assertIn("build_until_verified", detail_of(v, "resolves to a node"))
+
+    def test_only_the_inputs_the_arm_posts_are_required(self):
+        # The scratch DECLARES leave_dirty (the held copy's M4_LEAVE_DIRTY binding reads
+        # it, and an undeclared selection is the unknown_field class) but must not REQUIRE
+        # it: the arm leaves the twin's default false in place, and a run POST missing a
+        # required input is refused before any node runs.
+        for res in self.builds():
+            parsed = yaml.safe_load(res["doc"])["spec"]["inputs"]
+            self.assertEqual(sorted(parsed["required"]), ["goal", "hold_seconds", "repository"],
+                             f"{res['policy']}: required={parsed['required']}")
+            self.assertIn("leave_dirty", parsed["properties"])
+            self.assertIs(res["inputs_declared"], True)
+
+    def test_the_census_reads_expressions_and_edges_alike(self):
+        doc = {"spec": {"nodes": [
+            {"id": "a", "config": {"prompt": "read ${{ nodes.gone.outputs.x }}"}},
+            {"id": "b", "dependsOn": ["a", "missing"]},
+        ], "outputs": {"x": "${{ nodes.also_gone.outputs.y }}"}}}
+        refs = m.c5e_scratch_ref_pairs(doc)
+        self.assertEqual(sorted(refs), sorted([("a", "gone"), ("b", "a"), ("b", "missing"),
+                                               ("/spec", "also_gone")]), refs)
+        self.assertEqual(m.c5e_scratch_ref_pairs(None), [])
+        self.assertEqual(m.c5e_scratch_ref_pairs({"spec": {}}), [])
 
 
 if __name__ == "__main__":

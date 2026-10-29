@@ -6,10 +6,17 @@ algebra, the durability-across-a-restart rule (including the GAP when the lab
 restarted nothing), the refusal-is-not-a-decision rule for C9b/C9c, THE central
 one — the CAS exactly-once verdict computed from two canned decide responses plus
 the gate's ledger row (PASS / FAIL / GAP) — the rejection-is-a-business-outcome
-rule and the deadline-arming rule. A green here means the VERDICT ALGEBRA is
+rule and the deadline-arming rule. Since gap-c9e-reject it also owns C9e's
+authored revision: c9e_rejection_doc (the twin's /plan + /approve plus ONE
+dependant guarded on nodes.approve.outputs.decision — § 7.1 C9e's "skipped
+dependants" is not producible on the seeded graph), c9e_doc_verdicts, the
+per-node skip algebra of c9e_graph_verdicts (skipped + condition_default + zero
+attempts + a dependency_skipped witness, never cancelled and never run) and the
+control flow of c9e_own_gate. A green here means the VERDICT ALGEBRA is
 right; it never substitutes for C9's live gates against a running control plane
 (12-test-strategy.md: authorization at decision time is only proven by really
-removing a maintainer and really POSTing /decide).
+removing a maintainer and really POSTing /decide, and C9e's guard is only proven
+by really rejecting a gate on a published revision).
 
 usage: python3 e2e/m4/test_c9_logic.py [-v]
 """
@@ -19,6 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
+import yamlmini as yaml  # noqa: E402 — stdlib YAML subset (CI's python3 has no PyYAML)
 
 AID = "01987a82-3333-7000-8000-abcdef012345"
 RUN = "01987a11-1111-7000-8000-abcdef012345"
@@ -229,28 +237,36 @@ class CasTest(unittest.TestCase):
 
 
 class RejectionTest(unittest.TestCase):
+    """c9_rejection_verdicts — the GATE half of § 7.1 C9e. The dependant half is
+    graded only against a graph that guards a node on the decision (guard_key), which
+    is what c9e_rejection_doc authors; on the § 7.0 twin the arm GAPs instead of
+    crediting /emit_items' fan-out skip with the approver's decision."""
     GATE = snap(state="decided", version="2", decision="rejected", decided_by=BOB,
                 node="succeeded", outcome="rejected")
     SKIPPED = [{"key": "/emit_items", "reason": "condition_default"},
                {"key": "/fan_out", "reason": "condition_default"}]
+    GUARDED = [{"key": "/ship", "reason": "condition_default"},
+               {"key": "/ship_evidence", "reason": "dependency_skipped"}]
 
     def test_a_business_rejection_passes(self):
-        v = m.c9_rejection_verdicts(self.GATE, "completed", "-", self.SKIPPED,
-                                    ["condition_default", "condition_default"])
+        v = m.c9_rejection_verdicts(self.GATE, "completed", "-", self.GUARDED,
+                                    ["condition_default", "dependency_skipped"],
+                                    guard_key="/ship")
         self.assertTrue(all(ok for _, ok, _ in v), v)
 
     def test_a_rejection_written_as_an_execution_failure_fails(self):
-        v = m.c9_rejection_verdicts(self.GATE | {"node_status": "failed", "node_outcome": "-",
-                                                "node_error_class": "approval_expired"},
+        v = m.c9_rejection_verdicts(self.GATE | {"node_status": "failed",
+                                                 "node_outcome": "-",
+                                                 "node_error_class": "approval_expired"},
                                     "failed", "node_execution_failed:/approve",
-                                    self.SKIPPED, ["condition_default"])
+                                    self.GUARDED, ["condition_default"], guard_key="/ship")
         self.assertFalse(ok_of(v, "succeeded with outcome='rejected'"))
         self.assertFalse(ok_of(v, "no execution error_class"))
 
     def test_a_dependant_skipped_for_another_reason_fails(self):
         v = m.c9_rejection_verdicts(self.GATE, "completed", "-",
-                                    [{"key": "/emit_items", "reason": "dependency_skipped"}],
-                                    ["dependency_skipped"])
+                                    [{"key": "/ship", "reason": "dependency_skipped"}],
+                                    ["dependency_skipped"], guard_key="/ship")
         self.assertFalse(ok_of(v, "condition_default"))
 
     def test_direct_dependant_carries_condition_default_and_transitive_one_the_skip(self):
@@ -258,36 +274,395 @@ class RejectionTest(unittest.TestCase):
         # everything downstream of a skipped parent is dependency_skipped.
         v = m.c9_rejection_verdicts(
             self.GATE, "completed", "-",
-            [{"key": "/emit_items", "reason": "condition_default"},
-             {"key": "/fan_out", "reason": "dependency_skipped"}],
-            ["condition_default", "dependency_skipped"])
+            [{"key": "/ship", "reason": "condition_default"},
+             {"key": "/ship_evidence", "reason": "dependency_skipped"}],
+            ["condition_default", "dependency_skipped"], guard_key="/ship")
         self.assertTrue(ok_of(v, "condition_default"), v)
 
-    def test_a_failed_dependant_instead_of_a_skipped_one_is_not_credited(self):
+    def test_a_guarded_node_skipped_for_something_else_than_its_when_fails(self):
         v = m.c9_rejection_verdicts(
             self.GATE, "completed", "-",
-            [{"key": "/emit_items", "reason": "condition_default"},
-             {"key": "/fan_out", "reason": "case_not_selected"}],
-            ["condition_default", "case_not_selected"])
+            [{"key": "/ship", "reason": "condition_default"},
+             {"key": "/ship_evidence", "reason": "case_not_selected"}],
+            ["condition_default", "case_not_selected"], guard_key="/ship")
+        self.assertFalse(ok_of(v, "condition_default"))
+
+    def test_the_fanout_pair_alone_is_never_credited_with_the_rejection(self):
+        # THE vacuity this revision closes: on the seeded twin these rows are true and
+        # say nothing about the decision, so the arm is a GAP, never a PASS.
+        v = m.c9_rejection_verdicts(self.GATE, "completed", "-", self.SKIPPED,
+                                    ["condition_default", "condition_default"])
+        gap_line = [d for label, ok, d in v if "BECAUSE of the rejection" in label]
+        self.assertEqual([None], [ok for label, ok, _ in v
+                                  if "BECAUSE of the rejection" in label], v)
+        self.assertIn("inputs.fanout", gap_line[0])
+
+    def test_a_guard_key_the_run_never_had_fails_instead_of_gapping(self):
+        # A revision this gate authored and published MUST show its guard in the ledger;
+        # a missing row is a product failure, while the twin fallback is the GAP above.
+        v = m.c9_rejection_verdicts(self.GATE, "completed", "-", self.SKIPPED,
+                                    ["condition_default"], guard_key="/ship")
         self.assertFalse(ok_of(v, "condition_default"))
 
     def test_no_skipped_rows_fails_the_graph_arm(self):
-        self.assertFalse(ok_of(m.c9_rejection_verdicts(self.GATE, "completed", "-", [], []),
+        self.assertFalse(ok_of(m.c9_rejection_verdicts(self.GATE, "completed", "-", [], [],
+                                                      guard_key="/ship"),
                               "condition_default"))
 
     def test_a_run_failed_by_the_approval_clock_fails(self):
-        v = m.c9_rejection_verdicts(self.GATE, "failed", "approval_expired", self.SKIPPED,
-                                    ["condition_default"])
+        v = m.c9_rejection_verdicts(self.GATE, "failed", "approval_expired", self.GUARDED,
+                                    ["condition_default"], guard_key="/ship")
         self.assertFalse(ok_of(v, "terminates on the graph's terms"))
 
     def test_a_run_that_never_terminated_fails(self):
         self.assertFalse(ok_of(m.c9_rejection_verdicts(self.GATE, "running", "-",
-                                                      self.SKIPPED, ["condition_default"]),
+                                                      self.GUARDED, ["condition_default"],
+                                                      guard_key="/ship"),
                               "terminates on the graph's terms"))
 
     def test_no_gate_row_gaps(self):
         self.assertIsNone(ok_of(m.c9_rejection_verdicts({}, "completed", "-", [], []),
                                "node row is readable"))
+
+
+class GuardedGraphTest(unittest.TestCase):
+    """c9e_graph_verdicts — the per-NODE half of § 7.1 C9e on the revision C9e
+    publishes: 'skipped, because my own when read the rejection' is a claim about
+    condition_default, about zero attempts and about the row NOT being cancelled, and
+    only the node ledger can say all three."""
+    ROWS = {"/plan": {"status": "succeeded", "reason": "-", "attempts": "1",
+                      "outcome": "-", "error_class": "-", "outputs_present": "t"},
+            "/approve": {"status": "succeeded", "reason": "-", "attempts": "0",
+                         "outcome": "rejected", "error_class": "-", "outputs_present": "t"},
+            "/ship": {"status": "skipped", "reason": "condition_default", "attempts": "0",
+                      "outcome": "-", "error_class": "-", "outputs_present": "f"},
+            "/ship_evidence": {"status": "skipped", "reason": "dependency_skipped",
+                               "attempts": "0", "outcome": "-", "error_class": "-",
+                               "outputs_present": "f"}}
+    RUN = {"status": "completed", "failed_cause": "-"}
+
+    def test_a_rejected_gate_skips_its_guarded_dependant(self):
+        v = m.c9e_graph_verdicts(self.ROWS, self.RUN)
+        self.assertTrue(all(ok for _, ok, _ in v), v)
+
+    def test_a_cancelled_dependant_is_not_a_business_outcome(self):
+        rows = {k: dict(v) for k, v in self.ROWS.items()}
+        rows["/ship"].update(status="cancelled", reason="-")
+        v = m.c9e_graph_verdicts(rows, self.RUN)
+        self.assertFalse(ok_of(v, "is SKIPPED"))
+        self.assertFalse(ok_of(v, "was CANCELLED or FAILED"))
+
+    def test_a_dependant_that_ran_is_not_a_skip(self):
+        rows = {k: dict(v) for k, v in self.ROWS.items()}
+        rows["/ship"].update(status="succeeded", reason="-", attempts="1")
+        v = m.c9e_graph_verdicts(rows, self.RUN)
+        self.assertFalse(ok_of(v, "is SKIPPED"))
+        self.assertFalse(ok_of(v, "NEVER RAN"))
+
+    def test_an_attempt_on_a_skipped_row_says_it_ran_anyway(self):
+        rows = {k: dict(v) for k, v in self.ROWS.items()}
+        rows["/ship"]["attempts"] = "2"
+        self.assertFalse(ok_of(m.c9e_graph_verdicts(rows, self.RUN), "NEVER RAN"))
+
+    def test_a_skipped_row_carrying_outputs_says_it_ran(self):
+        # status=skipped AND outputs written is not a skip the graph decided; the claim
+        # reads the row's own jsonb column rather than trusting the status word.
+        rows = {k: dict(v) for k, v in self.ROWS.items()}
+        rows["/ship"]["outputs_present"] = "t"
+        self.assertFalse(ok_of(m.c9e_graph_verdicts(rows, self.RUN), "NEVER RAN"))
+
+    def test_a_reason_that_is_not_the_nodes_own_condition_fails(self):
+        rows = {k: dict(v) for k, v in self.ROWS.items()}
+        rows["/ship"]["reason"] = "dependency_skipped"
+        self.assertFalse(ok_of(m.c9e_graph_verdicts(rows, self.RUN), "is SKIPPED"))
+
+    def test_the_downstream_witness_must_carry_the_other_reason(self):
+        rows = {k: dict(v) for k, v in self.ROWS.items()}
+        rows["/ship_evidence"]["reason"] = "condition_default"
+        self.assertFalse(ok_of(m.c9e_graph_verdicts(rows, self.RUN), "PROPAGATES"))
+
+    def test_a_missing_guard_row_fails_rather_than_gapping(self):
+        rows = {k: v for k, v in self.ROWS.items() if k != "/ship"}
+        v = m.c9e_graph_verdicts(rows, self.RUN)
+        self.assertFalse(ok_of(v, "is SKIPPED"))
+        self.assertFalse(ok_of(v, "NEVER RAN"))
+
+    def test_an_unreadable_ledger_gaps_and_never_passes(self):
+        v = m.c9e_graph_verdicts(None, self.RUN)
+        self.assertEqual([None], [ok for _l, ok, _d in v], v)
+
+    def test_a_run_the_rejection_failed_is_not_the_graphs_terms(self):
+        for run in ({"status": "failed", "failed_cause": "node_execution_failed:/ship"},
+                    {"status": "cancelled", "failed_cause": "run_cancelled"},
+                    {"status": "completed", "failed_cause": "approval_expired"}):
+            self.assertFalse(ok_of(m.c9e_graph_verdicts(self.ROWS, run),
+                                   "terminates on the graph's terms"), run)
+
+    def test_an_unreadable_runs_row_gaps_the_terminal_arm(self):
+        self.assertIsNone(ok_of(m.c9e_graph_verdicts(self.ROWS, None),
+                                "terminates on the graph's terms"))
+
+    def test_without_a_guarded_graph_the_arm_says_so_once_and_never_passes(self):
+        # The twin fallback: no guard node exists, so nothing may be verdicted on it.
+        # The CLAIM is GAPped by c9_rejection_verdicts; this line is the NOTE saying why,
+        # and C5_NOTE is never a PASS (c5_emit prints it as NOTE).
+        v = m.c9e_graph_verdicts(self.ROWS, self.RUN, guard_key=None)
+        self.assertEqual(1, len(v), v)
+        self.assertIs(m.C5_NOTE, v[0][1], v)
+        self.assertIn("inputs.fanout", v[0][2], v)
+
+
+class C9eGuardDocTest(unittest.TestCase):
+    """c9e_rejection_doc / c9e_doc_verdicts: the revision C9e rejects a gate on must be
+    provably the twin's pre-gate pair PLUS the decision guard, because a graph this file
+    invented would measure this file's opinion of § 5.3 instead of the engine's. The
+    splice runs on the same regenerated-4-space shape the live gate reads off
+    GET /revisions/{id} (test_c7_logic's RC3 rule)."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(m.REPO_DIR, "docs", "compatibility", "probes", "m4",
+                            "pipeline.yaml")
+        with open(path, encoding="utf-8") as f:
+            seed = f.read().split("\n---\n")[1]
+        cls.twin = yaml.safe_load(yaml.safe_dump(yaml.safe_load(seed), indent=4,
+                                                sort_keys=True, allow_unicode=True))
+        cls.sp = m.c9e_rejection_doc(cls.twin, "m4x-c9e-unit")
+
+    def _nodes(self):
+        return {n["id"]: n for n in yaml.safe_load(self.sp["doc"])["spec"]["nodes"]}
+
+    def test_the_document_is_the_pre_gate_pair_plus_the_guard(self):
+        self.assertEqual([], self.sp["missing"], str(self.sp["missing"]))
+        self.assertEqual(["/plan", "/approve", "/ship", "/ship_evidence"],
+                         self.sp["node_keys"])
+        self.assertEqual(["plan", "approve"], self.sp["kept"])
+        self.assertNotIn("fanout", self.sp["inputs_declared"],
+                         "the seed's when-guard source is NOT in this graph's inputs")
+        self.assertTrue(all(ok for _l, ok, _d in m.c9e_doc_verdicts(self.sp)),
+                        m.c9e_doc_verdicts(self.sp))
+
+    def test_the_twin_nodes_are_copied_verbatim(self):
+        got, want = self._nodes(), {n["id"]: n for n in self.twin["spec"]["nodes"]}
+        self.assertEqual(want["plan"], got["plan"], "/plan moved: the guard would be "
+                         "measured on a run that is not the twin's")
+        self.assertEqual(want["approve"]["config"], got["approve"]["config"],
+                         "the gate's summary/roles/deadline are the twin's verbatim")
+        self.assertEqual(["plan"], got["approve"]["dependsOn"],
+                         "dependsOn may only lose the nodes this revision dropped")
+        self.assertEqual(want["approve"]["retry"], got["approve"]["retry"])
+
+    def test_the_guard_is_the_bare_cel_the_engine_itself_writes(self):
+        # `$when` is a restricted-CEL string (schema $defs/celExpression: 'no ${{ }}
+        # delimiters'), the gate's outputs are `decision` (§ 5.3 / advancer closeGate),
+        # and 'approved' is the value a passed gate carries — all three read off the
+        # runtime's own fixture rather than paraphrased from this driver's prose.
+        fixture = os.path.join(m.REPO_DIR, "internal", "pipelines", "runtime", "testdata",
+                               "gate_sibling.yaml")
+        with open(fixture, encoding="utf-8") as f:
+            doc = yaml.safe_load("\n".join(l for l in f.read().splitlines()
+                                           if not l.lstrip().startswith("#")))
+        want = [n["when"] for n in doc["spec"]["nodes"] if n.get("when")][0]
+        self.assertEqual(want.replace("gate", "approve"), self.sp["guard_when"])
+        line = [l for l in self.sp["doc"].splitlines() if l.strip().startswith("when:")]
+        self.assertEqual(1, len(line), line)
+        self.assertEqual(f"when: {m.C9E_GUARD_WHEN}", line[0].strip(),
+                         "exactly ONE when in the graph, and it reads the decision")
+        self.assertNotIn("${{", line[0], "a `when` with delimiters is not a CEL guard")
+
+    def test_the_witness_behind_the_guard_has_no_condition_of_its_own(self):
+        got = self._nodes()
+        self.assertNotIn("when", got["ship_evidence"],
+                         "a guarded witness proves its own condition, not the cascade")
+        self.assertEqual(["ship"], got["ship_evidence"]["dependsOn"])
+        self.assertEqual(["approve"], got["ship"]["dependsOn"])
+
+    def test_nothing_else_from_the_seed_survives(self):
+        for node in m.C9E_FORBIDDEN_NODES:
+            self.assertNotIn(f"id: {node}", self.sp["doc"], node)
+        spec = yaml.safe_load(self.sp["doc"])["spec"]
+        self.assertNotIn("outputs", spec, "the twin's outputs bind /build_until_verified")
+        self.assertNotIn("resultBindings", spec)
+        self.assertEqual(self.twin["spec"]["policies"], spec["policies"],
+                         "policies ride along unchanged — the arm changes a graph, not a budget")
+
+    def test_the_declared_inputs_are_the_twin_s_own_schemas(self):
+        spec = yaml.safe_load(self.sp["doc"])["spec"]
+        seed_props = self.twin["spec"]["inputs"]["properties"]
+        self.assertEqual(sorted(set(self.sp["input_refs"]) | {"goal", "repository"}),
+                         sorted(spec["inputs"]["properties"]))
+        for name, schema in spec["inputs"]["properties"].items():
+            self.assertEqual(seed_props[name], schema, f"inputs.{name} was invented")
+        self.assertEqual(["goal", "repository"], spec["inputs"]["required"])
+
+    def test_the_splice_never_mutates_the_caller_s_document(self):
+        frozen = yaml.safe_load(yaml.safe_dump(self.twin))
+        m.c9e_rejection_doc(self.twin, "m4x-c9e-unit-2")
+        self.assertEqual(frozen, self.twin)
+
+    def test_a_document_that_is_not_the_twin_refuses_rather_than_inventing(self):
+        cases = {
+            "no pipeline": {"notes": "just notes"},
+            "no gate": {"apiVersion": "v", "kind": "Pipeline", "metadata": {"name": "x"},
+                        "spec": {"inputs": {}, "nodes": [{"id": "plan",
+                                                          "kind": "process.exec"}]}},
+            "two gates": {"apiVersion": "v", "kind": "Pipeline", "metadata": {"name": "x"},
+                          "spec": {"inputs": {}, "nodes": [
+                              {"id": "plan", "kind": "process.exec"},
+                              {"id": "approve", "kind": "human.approval"},
+                              {"id": "approve2", "kind": "human.approval"}]}},
+        }
+        for name, doc in cases.items():
+            sp = m.c9e_rejection_doc(doc, "m4x-c9e-junk")
+            self.assertIsNone(sp["doc"], name)
+            self.assertTrue(sp["missing"], name)
+            self.assertTrue(any(ok is False for _l, ok, _d in m.c9e_doc_verdicts(sp)),
+                            f"{name}: a refused splice must FAIL, not gap silently")
+
+    def test_a_gate_named_otherwise_refuses_because_the_guard_names_approve(self):
+        twin = yaml.safe_load(yaml.safe_dump(self.twin))
+        for n in twin["spec"]["nodes"]:
+            if n.get("kind") == "human.approval":
+                n["id"] = "sign_off"
+        sp = m.c9e_rejection_doc(twin, "m4x-c9e-renamed")
+        self.assertIsNone(sp["doc"])
+        self.assertTrue([x for x in sp["missing"] if "approve" in x], sp["missing"])
+
+    def test_an_input_the_twin_does_not_declare_refuses(self):
+        # C5h's 1c190fe shape, seen from the other side: a node that reads an input no
+        # schema declares is a compiler refusal, so the builder says so before posting.
+        twin = yaml.safe_load(yaml.safe_dump(self.twin))
+        for n in twin["spec"]["nodes"]:
+            if n.get("kind") == "human.approval":
+                n["config"]["summary"] = "${{ inputs.plan_of_the_week }}"
+        sp = m.c9e_rejection_doc(twin, "m4x-c9e-undeclared")
+        self.assertIsNone(sp["doc"])
+        self.assertTrue([x for x in sp["missing"] if "inputs.plan_of_the_week" in x],
+                        sp["missing"])
+
+    def test_no_report_at_all_is_a_gap_not_a_pass(self):
+        v = m.c9e_doc_verdicts({})
+        self.assertEqual([None], [ok for _l, ok, _d in v], v)
+
+
+class OwnGateArmTest(unittest.TestCase):
+    """c9e_own_gate is the call that replaces C9e's GAP: author -> publish -> run -> wait
+    at the gate, on a revision this gate published. Its API half is faked (unit layer —
+    the live lab proves the measurement, 12-test-strategy.md); what is proven here is the
+    CONTROL FLOW: the guard key is handed back only for a gate the gate's own revision
+    opened, every bail-out returns None (so the caller measures the business outcome on
+    the twin) AND prints its reason, and the scratch run never posts an input the
+    revision does not declare."""
+
+    FACTS = {"project_id": "p-1", "pipeline_id": "pl-1", "revision_id": "rev-1",
+             "inputs": {"goal": "ship", "repository": "app", "fanout": False,
+                        "hold_seconds": 5}}
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(m.REPO_DIR, "docs", "compatibility", "probes", "m4",
+                            "pipeline.yaml")
+        with open(path, encoding="utf-8") as f:
+            seed = f.read().split("\n---\n")[1]
+        cls.twin = yaml.safe_load(yaml.safe_dump(yaml.safe_load(seed), indent=4,
+                                                sort_keys=True, allow_unicode=True))
+
+    class Client:
+        who = "alice"
+
+    def drive(self, revision="rev-xyz", run_id="r-9", aid="01987a55-5555-7000-8000-"
+              "abcdef012345", canonical="twin"):
+        import contextlib
+        import io
+        posted, waited, dumped = [], [], []
+        src = {"twin": self.twin, "junk": {"notes": "not a pipeline"}}[canonical]
+        def fake_publish(admin, plid, tag, doc):
+            return ({"revision_id": revision, "vresp": {"valid": True}}
+                    if revision else None)
+
+        patches = {
+            "doc_revision_canonical": lambda client, rid: src,
+            "c7_publish": fake_publish,
+            "c9_f_post": lambda alice, pid, rev, inputs, idem, label: (
+                posted.append((rev, inputs)) or run_id),
+            "c9_wait_for_gate": lambda client, pid, rid, cap=900, exclude=(): (
+                waited.append((rid, cap, exclude)) or aid),
+            "dump_run_evidence": lambda client, rid: dumped.append(rid),
+            "run_status": lambda rid: "running",
+        }
+        orig, buf = {}, io.StringIO()
+        for name, fn in patches.items():
+            orig[name] = getattr(m, name)
+            setattr(m, name, fn)
+        try:
+            with contextlib.redirect_stdout(buf):
+                got = m.c9e_own_gate(self.Client(), object(), self.FACTS, {"aid-1"})
+        finally:
+            for name, fn in orig.items():
+                setattr(m, name, fn)
+        return got, buf.getvalue(), posted, waited, dumped
+
+    def test_the_authored_gate_comes_back_with_its_guard_key(self):
+        got, out, posted, waited, _dumped = self.drive()
+        self.assertEqual(("r-9", "/ship", "/ship_evidence"),
+                         (got[0], got[3], got[4]), out)
+        self.assertIn("C9e's own revision", got[2])
+        self.assertEqual(posted[0][0], "rev-xyz", "the run is C9e's revision, not the twin's")
+        self.assertEqual({"goal": "ship", "repository": "app", "hold_seconds": 5},
+                         posted[0][1], "fanout is dropped: this revision does not declare it")
+        self.assertEqual(waited[0][0], "r-9")
+        self.assertLess(waited[0][1], 900, "the scratch graph's waits are its own")
+        self.assertIn("PASS  C9e its own revision published", out)
+
+    def test_a_document_that_refuses_publishes_nothing(self):
+        got, out, posted, _waited, _d = self.drive(canonical="junk")
+        self.assertIsNone(got)
+        self.assertEqual([], posted)
+        self.assertIn("FAIL  C9e the scratch revision is the twin's pre-gate pair",
+                      out, "a refused splice FAILS loudly, it is not a silent skip")
+
+    def test_a_publish_refusal_gaps_with_the_compilers_words(self):
+        got, out, posted, _waited, _d = self.drive(revision="")
+        self.assertIsNone(got)
+        self.assertEqual([], posted, "no revision, no run")
+        self.assertIn("GAP   C9e its own revision published", out)
+
+    def test_a_gate_that_never_opened_dumps_evidence_and_owns_the_run(self):
+        # The run IS C9e's own revision's, so the arm hands it back (with no gate) rather
+        # than returning None and letting the caller post a SECOND run on top of it.
+        got, out, posted, _waited, dumped = self.drive(aid=None)
+        self.assertEqual("r-9", got[0])
+        self.assertIsNone(got[1], "no gate: the caller GAPs the rejection leg")
+        self.assertEqual("rev-xyz", posted[0][0], "the run WAS posted; the gate is what failed")
+        self.assertEqual(["r-9"], dumped, "the run that never waited is dumped, not dropped")
+        self.assertIn("C9e its own revision never opened a gate", out)
+
+
+class C9eRunInputsTest(unittest.TestCase):
+    """c9e_run_inputs: the scratch run posts the DECLARED slice of the twin's inputs.
+    The revision drops the nodes that read fanout/fanout_count, and the compiler
+    refuses an input its pipeline does not declare (C5h's 1c190fe refusal)."""
+
+    def test_only_declared_members_are_sent(self):
+        r = m.c9e_run_inputs({"goal": "g", "repository": "app", "fanout": False,
+                             "fanout_count": 25, "hold_seconds": 0},
+                            ["goal", "repository", "hold_seconds"], ["goal", "repository"])
+        self.assertEqual({"goal": "g", "repository": "app", "hold_seconds": 0}, r["inputs"])
+        self.assertEqual(["fanout", "fanout_count"], r["dropped"])
+        self.assertEqual([], r["missing"])
+
+    def test_a_missing_required_input_is_a_reason_not_a_default(self):
+        r = m.c9e_run_inputs({"repository": "app"}, ["goal", "repository"],
+                             ["goal", "repository"])
+        self.assertIsNone(r["inputs"])
+        self.assertEqual(["goal"], r["missing"])
+
+    def test_an_absent_manifest_block_reads_as_missing_not_as_empty(self):
+        for junk in (None, "goal", []):
+            r = m.c9e_run_inputs(junk, ["goal"], ["goal"])
+            self.assertIsNone(r["inputs"], junk)
+            self.assertEqual(["goal"], r["missing"], junk)
+
 
 
 class DeadlineTest(unittest.TestCase):
@@ -1109,7 +1484,7 @@ class WiredArmsTest(unittest.TestCase):
                     return resp
             return WiredArmsTest.Resp(404, {"type": "no-route"}, "no-route")
 
-    def drive(self, spent=0.0, arm_verdicts=None):
+    def drive(self, spent=0.0, arm_verdicts=None, own_gate=None, graph_rows=None):
         """`spent` is the wall clock C9a-C9e burn before the arms are reached: the
         fake clock jumps inside C9e's run-to-terminal wait, which is what the
         envelope is measured against in the real pass."""
@@ -1145,7 +1520,23 @@ class WiredArmsTest(unittest.TestCase):
                 return "10"
             if "count(a.turn_id)" in sql:
                 return "0|0"
+            if "node.execution_skipped" in sql and "ne.status = 'skipped'" in sql:
+                # C9e's skipped-row read, answered so the wiring test can tell the
+                # guard's PASS apart from a ledger that never spoke.
+                return ("/ship|condition_default\n/ship_evidence|dependency_skipped")
+            if "FROM runs WHERE id" in sql:
+                return "completed|-"
             return ""
+
+        def fake_acquire(alice, facts, used, label):
+            calls.append(("c9_acquire_gate", (alice, facts, used, label), {}))
+            return next(gates)
+
+        def fake_own_gate(alice, admin, facts, used):
+            """C9e's authored-revision arm: the recorder answers with `own_gate` (None =
+            'no revision could be published', which is the twin fallback)."""
+            calls.append(("c9e_own_gate", (alice, admin, facts, used), {}))
+            return own_gate
 
         patches = {
             "login": lambda c: {"id": f"u-{c.who}"},
@@ -1154,7 +1545,9 @@ class WiredArmsTest(unittest.TestCase):
             "wait_worker_row": lambda name, timeout=120: ("c-1", name),
             "c9_manifest_json": lambda: {},
             "c9_manifest_users": lambda obj: {},
-            "c9_acquire_gate": lambda alice, facts, used, label: next(gates),
+            "c9_acquire_gate": fake_acquire,
+            "c9e_own_gate": fake_own_gate,
+            "c9e_graph_rows": lambda run_id: dict(graph_rows or {}),
             "c9_gate_row": lambda aid: dict(zip(m.C9_SNAP_COLS, [
                 "pending", "1", "-", "-", "waiting", "-", "-", "0", "waiting_human"])),
             "c9_live_attempts": lambda run_id=None: "0",
@@ -1171,7 +1564,7 @@ class WiredArmsTest(unittest.TestCase):
             "c9_lab_write": lambda sql, why: (0, ""),
             "c9_restore_member": lambda *a, **kw: None,
             "c9_run_to_terminal": lambda run_id, cap, client, label: (
-                clock.update(now=clock["now"] + spent) or "rejected"),
+                clock.update(now=clock["now"] + spent) or "completed"),
             "dump_run_evidence": lambda client, run_id: None,
             "c9f_deadline_arms": rec("c9f_deadline_arms", "C9f armed"),
             "c9g_takeover": rec("c9g_takeover", "C9g paused"),
@@ -1199,6 +1592,12 @@ class WiredArmsTest(unittest.TestCase):
             for name, fn in orig.items():
                 setattr(m, name, fn)
         return calls, buf.getvalue()
+
+    @staticmethod
+    def _arms(calls):
+        """Only the two LATE arms the envelope bounds — the gate acquirers run earlier
+        and are recorded for the C9e wiring tests, not for the budget assertion."""
+        return [c[0] for c in calls if c[0] in ("c9f_deadline_arms", "c9g_takeover")]
 
     def test_c9_invokes_both_arms_with_the_clients_and_facts_it_has(self):
         calls, out = self.drive()
@@ -1228,9 +1627,58 @@ class WiredArmsTest(unittest.TestCase):
         self.assertIn("C9f armed", out)
         self.assertIn("C9g paused", out)
 
+    OWN = ("r-own", AID + "e", "C9e's own revision abc12345 (/plan + /approve + /ship)",
+           "/ship", "/ship_evidence")
+    GRAPH = {"/plan": {"status": "succeeded", "reason": "-", "attempts": "1",
+                       "outcome": "-", "error_class": "-", "outputs_present": "t"},
+             "/approve": {"status": "succeeded", "reason": "-", "attempts": "0",
+                          "outcome": "rejected", "error_class": "-", "outputs_present": "t"},
+             "/ship": {"status": "skipped", "reason": "condition_default", "attempts": "0",
+                       "outcome": "-", "error_class": "-", "outputs_present": "f"},
+             "/ship_evidence": {"status": "skipped", "reason": "dependency_skipped",
+                                "attempts": "0", "outcome": "-", "error_class": "-",
+                                "outputs_present": "f"}}
+
+    def test_a_started_run_is_never_piled_onto_a_second_one(self):
+        # c9e_acquire_gate falls back ONLY when no run existed to measure.
+        calls, out = self.drive(own_gate=("r-own", None, "its own run never opened", None,
+                                         None))
+        names = [c[0] for c in calls]
+        self.assertEqual(names.count("c9_acquire_gate"), 1,
+                         f"a second run behind a stalled one: {names}")
+        self.assertIn("GAP   C9e rejection is a business outcome", out)
+
+    def test_c9e_asks_for_its_own_revision_before_the_seed_twin(self):
+        # The GAP this wiring closes: C9e used to reject whatever gate the lab happened
+        # to hold, on a graph that guards nothing on the decision. It now asks the
+        # authored-revision arm FIRST and only falls back when that arm says it got
+        # nowhere — and the fallback is printed, not hidden.
+        calls, out = self.drive()
+        names = [c[0] for c in calls]
+        self.assertEqual(names.count("c9e_own_gate"), 1, out[-400:])
+        self.assertEqual(names.count("c9_acquire_gate"), 2,
+                         f"C9a takes one twin gate, C9e the fallback twin gate: {names}")
+        self.assertIn("GAP   C9e a dependant guarded on nodes.approve.outputs.decision",
+                      out, "the fallback must GAP the dependant arm, never PASS on the "
+                           "fan-out pair's rows")
+        self.assertIn("  NOTE  C9e its own revision carries the guarded dependant", out,
+                      "the missing precondition is said once; the CLAIM above is the GAP")
+
+    def test_the_authored_gate_replaces_the_twin_run_and_grades_the_guard(self):
+        calls, out = self.drive(own_gate=self.OWN, graph_rows=self.GRAPH)
+        names = [c[0] for c in calls]
+        self.assertEqual(names.count("c9_acquire_gate"), 1,
+                         f"only C9a should need the seed's twin: {names}")
+        self.assertNotIn("GAP   C9e a dependant guarded on nodes.approve.outputs.decision",
+                         out)
+        self.assertIn("PASS  C9e the dependant guarded on",
+                      out, "the guard's own row is the verdict now")
+        self.assertIn("PASS  C9e /ship NEVER RAN", out)
+        self.assertIn("PASS  C9e the skip PROPAGATES", out)
+
     def test_no_wall_clock_left_falls_back_without_truncating_the_arms(self):
         calls, out = self.drive(spent=m.C9_BUDGET_S - 60)
-        self.assertEqual(calls, [],
+        self.assertEqual(self._arms(calls), [],
                          "an arm that cannot fit the envelope is not started at all")
         self.assertIn("envelope is left", out)
         self.assertIn("GAP   C9f the three on_timeout arms", out)

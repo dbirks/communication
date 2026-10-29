@@ -6,7 +6,13 @@ Runs WITHOUT a stack (stdlib unittest only): the journal-window contiguity verdi
 succeeded-key verdicts from C14b's two SQL shapes, the SSE no-gap/no-duplicate
 verdicts over a canned reconnect, the never-both-down sampling verdicts, the
 advisory-lock handover verdict from per-replica acquire counts, the mid-roll
-approval's exactly-once verdict, and the final-state verdict.
+approval's exactly-once verdict, the final-state verdict, and C14c's
+precondition machinery: the per-replica env var / recreate-command construction
+(flag in the PROCESS env, never in argv), the off-replica arm verdicts, and the
+try/finally restore state, and WHICH compose files the recreate rides: the -f list is
+read from the RUNNING container's com.docker.compose.project.config_files label (a lab
+brought up with a fourth overlay, compose.real.yml, must be recreated WITH it), with the
+driver's own COMPOSE list only as a reported fallback.
 
 A green here means the VERDICT ALGEBRA is right. It never substitutes for C14's
 live roll — restarting api-a/api-b for real while a run advances, and reading the
@@ -15,6 +21,7 @@ mocked green is not done).
 
 usage: python3 e2e/m4/test_c14_logic.py [-v]
 """
+import json
 import os
 import sys
 import unittest
@@ -335,7 +342,7 @@ class D6AdvisoryLockProbe(unittest.TestCase):
                                                   {"api-a": 0, "api-b": 0}),
                              "advisory lock moves to a surviving replica"))
         self.assertIsNone(one(m.c14_off_replica_verdicts(
-            "api-a", "api-b", {"/x": 200}, (201, "r"), ["queued"], "running",
+            "api-a", "api-b", {"/x": 200}, (201, "r"), ["queued", "running"],
             {"api-a": 0, "api-b": 0}), "never claims the driver's advisory lock"))
 
     def test_compose_log_prefix_is_matched_tolerantly(self):
@@ -366,10 +373,77 @@ class D6AdvisoryLockProbe(unittest.TestCase):
                          m.c14_lock_lines(log, ("api-a", "api-ab")))
 
 
+class EngineFlagCommands(unittest.TestCase):
+    """C14c SETS UP its own precondition: it recreates ONLY api-a with
+    COMMUNICATION_PIPELINE_SCHEDULER_A=off (and restores it in a finally). The
+    command must stay project-pinned and the flag must travel in the PROCESS ENV,
+    never in argv; which -f files it rides is RecreateConfigFiles' business below."""
+
+    def test_env_var_is_per_replica(self):
+        self.assertEqual("COMMUNICATION_PIPELINE_SCHEDULER_A", m.c14_sched_env_var("api-a"))
+        self.assertEqual("COMMUNICATION_PIPELINE_SCHEDULER_B", m.c14_sched_env_var("api-b"))
+        self.assertIsNone(m.c14_sched_env_var("worker-a"))
+        self.assertIsNone(m.c14_sched_env_var(None))
+
+    def test_recreate_cmd_reuses_the_drivers_compose_files(self):
+        """FALLBACK shape (no -f list handed in): same -p communication-m4 + the same
+        three -f files the driver's restarts and rolls use — a bare `docker compose`
+        would read the wrong lab."""
+        cmd = m.c14_recreate_cmd("api-a")
+        n = len(m.COMPOSE)
+        self.assertEqual(list(m.COMPOSE), cmd[:n])
+        self.assertIn("-p", cmd)
+        self.assertIn(m.COMPOSE_PROJECT, cmd)
+        self.assertIn("-f", cmd)
+        self.assertIn("compose.m4.yml", cmd)
+        self.assertEqual(["up", "-d", "--no-deps", "--force-recreate", "api-a"], cmd[n:])
+
+    def test_the_flag_never_lands_in_argv(self):
+        """Env passed via the process env, not argv: no value and no variable name
+        may show up in the command (it would also fool § 7.0's bring-up reader)."""
+        cmd = m.c14_recreate_cmd("api-b")
+        self.assertEqual([], [a for a in cmd if "SCHEDULER" in a.upper()], str(cmd))
+        self.assertEqual([], [a for a in cmd if a in ("on", "off")], str(cmd))
+
+    def test_recreate_env_overrides_exactly_the_one_variable(self):
+        saved = dict(m.COMPOSE_ENV)
+        env = m.c14_recreate_env("api-a", "off")
+        self.assertEqual("off", env["COMMUNICATION_PIPELINE_SCHEDULER_A"])
+        self.assertEqual(saved.get("COMMUNICATION_PIPELINE_SCHEDULER_B"),
+                         env.get("COMMUNICATION_PIPELINE_SCHEDULER_B"),
+                         "api-b's flag is untouched by api-a's recreate")
+        self.assertEqual(saved["HOST_UID"], env["HOST_UID"], "the base env is inherited")
+        self.assertEqual(saved, m.COMPOSE_ENV, "COMPOSE_ENV itself is never mutated")
+
+    def test_a_service_with_no_flag_of_its_own_is_a_hard_error(self):
+        """Recreating worker-a with COMMUNICATION_PIPELINE_SCHEDULER_A in the env
+        would be a silent no-op — the construction refuses instead."""
+        with self.assertRaises(ValueError):
+            m.c14_recreate_env("worker-a", "off")
+        self.assertEqual("worker-a", m.c14_recreate_cmd("worker-a")[-1])
+
+
+class RestoreState(unittest.TestCase):
+    """The try/finally restore reports what it LEFT behind; unreadable is never a
+    silent 'on' — later gates must see the truth about the lab."""
+
+    def test_ready_replica_with_a_readable_log(self):
+        self.assertEqual("on", m.c14_restore_state({"api-a": "on"}, "api-a", True))
+        self.assertEqual("off", m.c14_restore_state({"api-a": "off"}, "api-a", True))
+
+    def test_not_ready_or_unreadable_is_unobservable(self):
+        self.assertEqual("unobservable", m.c14_restore_state({"api-a": "on"}, "api-a", False))
+        self.assertEqual("unobservable", m.c14_restore_state(None, "api-a", True))
+        self.assertEqual("unobservable", m.c14_restore_state({}, "api-a", True))
+
+
 class OffReplicaTest(unittest.TestCase):
-    """§ 7.1 C14c: one replica's engine is off, so a run posted there stays 'queued'
-    and the OTHER replica advances it. The arm's evidence is the off replica's own
-    startup line, the ledger status, and who ever acquired the driver's lock."""
+    """§ 7.1 C14c: the arm recreates ONE replica with its engine off and keeps BOTH
+    replicas up: the off one serves reads and never claims the driver's advisory
+    lock, the on one keeps advancing the run POSTed to the off one, and the
+    restore leaves the lab as it was found. (The OLD arm stopped the on replica and
+    demanded 'stays queued while alone'; § 7.1's comparison — off vs a replica that
+    KEEPS ADVANCING — is what the verdicts below now encode.)"""
 
     # Shaped exactly as `docker compose logs --no-color` prints it: the CONTAINER
     # instance name (service + `-<n>`) padded, then `|`.
@@ -417,10 +491,11 @@ class OffReplicaTest(unittest.TestCase):
         self.assertIsNone(m.c14_off_pair(None))
 
     def good(self, **kw):
-        args = dict(off="api-b", on="api-a",
-                    reads={"/api/v1/system/readiness": 200, "/api/v1/system/scheduler": 200},
-                    posted=(201, "r-1"), queued_seen=["queued", "queued"],
-                    picked_up="running", lock_marks={"api-a": 3, "api-b": 0})
+        args = dict(off="api-a", on="api-b",
+                    reads={"/api/v1/system/readiness": 200, "/api/v1/system/scheduler": 200,
+                           "/api/v1/runs/{id} (served by api-a mid-arm)": 200},
+                    posted=(201, "r-1"), advance=["queued", "running", "completed"],
+                    lock_marks={"api-a": 0, "api-b": 3}, restore=("api-a", "on"))
         args.update(kw)
         return m.c14_off_replica_verdicts(**args)
 
@@ -433,14 +508,21 @@ class OffReplicaTest(unittest.TestCase):
         vs = self.good(reads={"/api/v1/system/scheduler": 502})
         self.assertIs(False, one(vs, "serves READS"))
 
-    def test_a_run_left_queued_after_the_restore_is_a_fail(self):
-        self.assertIs(False, one(self.good(picked_up="queued"), "picks the run up"))
-        self.assertIsNone(one(self.good(picked_up=None), "picks the run up"))
+    def test_a_run_the_on_replica_never_advances_is_a_fail_not_a_gap(self):
+        """With the on replica's engine up the whole window, a run stuck at 'queued'
+        means NOTHING advanced it — that FAILs. No sample at all only GAPs."""
+        self.assertIs(False, one(self.good(advance=["queued"] * 4), "keeps advancing"))
+        self.assertIsNone(one(self.good(advance=[]), "keeps advancing"))
+        self.assertIsNone(one(self.good(advance=["", None]), "keeps advancing"))
 
-    def test_a_run_that_moved_while_only_off_was_up_is_a_fail(self):
-        vs = self.good(queued_seen=["queued", "running"])
-        self.assertIs(False, one(vs, "stays 'queued'"))
-        self.assertIsNone(one(self.good(queued_seen=[]), "stays 'queued'"))
+    def test_the_arm_carries_one_advance_claim_not_the_old_stays_queued_pair(self):
+        """The OLD arm stopped the on replica and demanded the run 'stay queued while
+        {off} is the only replica up' plus a post-restore 'picks it up'. § 7.1's
+        comparison is off vs a replica that KEEPS ADVANCING — one claim, both up."""
+        labels = [l for l, _o, _d in self.good()]
+        self.assertEqual(1, len([l for l in labels if "advanc" in l]), labels)
+        self.assertFalse([l for l in labels if "only replica up" in l], labels)
+        self.assertFalse([l for l in labels if "picks the run up" in l], labels)
 
     def test_zero_lock_marks_on_both_sides_is_blindness_not_a_pass(self):
         # docs/m4-live-findings.md D6: an unreadable/never-marked log GAPs the arm.
@@ -455,6 +537,201 @@ class OffReplicaTest(unittest.TestCase):
         self.assertIsNone(one(vs, "is accepted"))
         self.assertIs(False, one(self.good(posted=(403, None)), "is accepted"))
 
+    def test_restore_is_only_claimed_when_the_arm_recreated(self):
+        """A lab that came up with one replica off was measured as FOUND — the arm
+        recreated nothing, so it must not claim (or fail) a restore."""
+        labels = [l for l, _o, _d in self.good(restore=None)]
+        self.assertFalse([l for l in labels if "restore" in l], labels)
+
+    def test_restore_verdict_is_its_own_pure_claim(self):
+        """The gap path (precondition recreate ran, arm never measured) still owes
+        the evidence a restore verdict — c14_restore_verdicts is callable alone."""
+        self.assertEqual([], m.c14_restore_verdicts(None))
+        self.assertEqual([True], [ok for _l, ok, _d in
+                                  m.c14_restore_verdicts(("api-a", "on"))])
+        self.assertEqual([False], [ok for _l, ok, _d in
+                                   m.c14_restore_verdicts(("api-a", "off"))])
+        self.assertEqual([None], [ok for _l, ok, _d in
+                                  m.c14_restore_verdicts(("api-a", "unobservable"))])
+        rows = [l for l, _o, _d in self.good() if "C14c restore" in l]
+        self.assertEqual([m.c14_restore_verdicts(("api-a", "on"))[0][0]], rows)
+
+    def test_restore_rows_report_what_the_finally_left_behind(self):
+        self.assertIs(True, one(self.good(restore=("api-a", "on")), "C14c restore"))
+        # engine still off after the finally = the lab is crippled for later gates.
+        self.assertIs(False, one(self.good(restore=("api-a", "off")), "C14c restore"))
+        # readiness/logs unreadable is an unproven restore: GAP, never a silent PASS.
+        self.assertIsNone(one(self.good(restore=("api-a", "unobservable")), "C14c restore"))
+
+
+
+# The literal label docker records on the shared lab's api-a container today (a lab
+# brought up by lab_reset.sh, i.e. with the real-model-key overlay as a FOURTH file).
+_LAB_DIR = "/home/david/.cache/comm-lab"
+_LAB_FILES = [_LAB_DIR + "/" + f for f in
+              ("compose.yml", "compose.harness.yml", "compose.m4.yml", "compose.real.yml")]
+_LAB = ",".join(_LAB_FILES)
+
+
+class RecreateConfigFiles(unittest.TestCase):
+    """C14c recreates ONE replica of a lab it did NOT bring up. lab_reset.sh composes
+    a FOURTH file (compose.real.yml — the real model-key mounts) that the driver's own
+    COMPOSE list never names, so the recreate must ride the -f list docker recorded on
+    the running container (com.docker.compose.project.config_files) and its directory
+    (com.docker.compose.project.working_dir); COMPOSE's three files are only a
+    fallback, and a fallback is always said out loud in the evidence."""
+
+    LAB_DIR = _LAB_DIR
+    FILES = _LAB_FILES
+    LABEL = _LAB
+
+    def test_the_label_parses_into_the_ordered_f_args(self):
+        self.assertEqual(self.FILES, m.c14_compose_label_paths(self.LABEL))
+        cmd = m.c14_recreate_cmd("api-a", m.c14_compose_label_paths(self.LABEL))
+        self.assertEqual(["docker", "compose", "-p", m.COMPOSE_PROJECT], cmd[:4])
+        self.assertEqual(self.FILES, m.c14_compose_f_args(cmd))
+        self.assertEqual(["up", "-d", "--no-deps", "--force-recreate", "api-a"],
+                         cmd[4 + 2 * len(self.FILES):])
+
+    def test_the_lab_recreates_itself_with_its_own_four_files(self):
+        """The regression this gate existed to fix: a compose.real.yml lab recreated
+        from the driver's three files comes back WITHOUT the real model-key mounts.
+        With the label, the driver's relative files are nowhere in the command."""
+        cmd = m.c14_recreate_cmd("api-a", self.LABEL)      # raw label string works too
+        self.assertEqual(self.FILES, m.c14_compose_f_args(cmd))
+        for rel in m.c14_compose_f_args(m.COMPOSE):
+            self.assertNotIn(rel, cmd, f"{rel} would replace the lab's own file: {cmd}")
+        self.assertIn("compose.real.yml", " ".join(m.c14_compose_f_args(cmd)))
+
+    def test_the_flag_still_never_lands_in_argv(self):
+        cmd = m.c14_recreate_cmd("api-a", self.LABEL)
+        self.assertEqual([], [a for a in cmd if "SCHEDULER" in a.upper()], str(cmd))
+        self.assertEqual([], [a for a in cmd if a in ("on", "off")], str(cmd))
+
+    def test_a_json_list_label_is_accepted(self):
+        """`{{json ...}}` prints a JSON array; a path list is a path list."""
+        self.assertEqual(self.FILES, m.c14_compose_label_paths(json.dumps(self.FILES)))
+
+    def test_an_untrustworthy_label_is_empty_not_invented(self):
+        for raw in ("", "   ", None, 7, "<no value>", "[]", "null", "{}",
+                    '["/lab/a.yml"',           # unparsable JSON: never comma-split
+                    "[1, 2]",                  # not paths
+                    "[null]", ",, ,", "<no value>"):
+            self.assertEqual([], m.c14_compose_label_paths(raw), repr(raw))
+
+    def test_blank_and_repeated_entries_collapse_in_order(self):
+        self.assertEqual(["/lab/a.yml", "/lab/b.yml"],
+                         m.c14_compose_label_paths(" /lab/a.yml ,, <no value> ,"
+                                                   " /lab/b.yml,/lab/a.yml "))
+
+    def test_no_label_means_the_drivers_own_compose_files(self):
+        """The documented fallback: same command as before this fix, so a lab whose
+        label cannot be read is still recreated — and reported (below)."""
+        for files in (None, [], "", "<no value>", ["", "  "]):
+            self.assertEqual(list(m.COMPOSE) + ["up", "-d", "--no-deps",
+                                                "--force-recreate", "api-a"],
+                             m.c14_recreate_cmd("api-a", files), repr(files))
+            self.assertEqual("fallback", m.c14_recreate_plan("api-a", files)["source"])
+
+    def test_the_plan_carries_the_working_dir_only_with_label_files(self):
+        """The lab lives outside the repo; its compose files resolve their relative
+        contexts in the working_dir docker recorded. Without label files the driver
+        keeps running compose from REPO_DIR like every other lever."""
+        plan = m.c14_recreate_plan("api-a", self.LABEL, self.LAB_DIR)
+        self.assertEqual("label", plan["source"])
+        self.assertEqual(self.FILES, plan["files"])
+        self.assertEqual(self.LAB_DIR, plan["cwd"])
+        self.assertEqual(self.FILES, m.c14_compose_f_args(plan["cmd"]))
+        self.assertEqual(m.REPO_DIR, m.c14_recreate_plan("api-a", self.LABEL, "")["cwd"])
+        self.assertEqual(m.REPO_DIR, m.c14_recreate_plan("api-a", self.LABEL, "../lab")["cwd"])
+        self.assertEqual(m.REPO_DIR, m.c14_recreate_plan("api-a", "<no value>",
+                                                         self.LAB_DIR)["cwd"],
+                         "a working_dir without label files does not move the command")
+
+    def test_the_fallback_plan_says_so_in_the_evidence(self):
+        label_note = m.c14_recreate_source_note("api-a", m.c14_recreate_plan("api-a", self.LABEL,
+                                                                             self.LAB_DIR))
+        self.assertNotIn("WARNING", label_note)
+        self.assertIn("compose.real.yml", label_note)
+        self.assertIn(m.C14_CONFIG_FILES_LABEL, label_note)
+        self.assertIn("4 -f file(s)", label_note)
+        for plan in (m.c14_recreate_plan("api-a", "<no value>"), None):
+            note = m.c14_recreate_source_note("api-a", plan)
+            self.assertIn("WARNING", note)
+            self.assertIn("falls back", note)
+            self.assertIn("compose.real.yml", note)
+            self.assertEqual([], [f for f in m.c14_compose_f_args(m.COMPOSE)
+                                  if f != "compose.real.yml" and f not in note],
+                             "the note names every file the fallback actually rides")
+
+
+class ContainerLabelRead(unittest.TestCase):
+    """The READ behind the plan: only a container compose_container() has PROVEN to
+    report com.docker.compose.project=communication-m4 may supply the -f list, and the
+    project label is re-read beside the two paths so a stale reference cannot steer the
+    recreate at another stack. docker is stubbed — this class never touches a
+    container."""
+
+    LAB = _LAB
+    LAB_DIR = _LAB_DIR
+
+    def setUp(self):
+        self.saved = (m.compose_container, m.run)
+        self.calls = []
+
+    def tearDown(self):
+        m.compose_container, m.run = self.saved
+
+    def _stub(self, name, rc, out):
+        m.compose_container = lambda svc: name
+
+        def fake_run(cmd, **kw):
+            self.calls.append([str(a) for a in cmd])
+            return rc, out
+        m.run = fake_run
+
+    def test_an_unresolvable_service_reads_as_no_label(self):
+        self._stub("", 0, "")
+        self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"))
+        self.assertEqual([], self.calls, "no inspect without a proven container")
+
+    def test_the_proven_container_supplies_the_files(self):
+        self._stub("communication-m4-api-a-1", 0,
+                   f"{m.COMPOSE_PROJECT}|{self.LAB}|{self.LAB_DIR}")
+        files, wd = m.c14_container_compose_labels("api-a")
+        self.assertEqual(_LAB_FILES, files)
+        self.assertEqual(self.LAB_DIR, wd)
+        self.assertEqual(["communication-m4-api-a-1"], [c[-1] for c in self.calls])
+        plan = m.c14_recreate_plan("api-a", files, wd)
+        self.assertEqual("label", plan["source"])
+        self.assertEqual(self.LAB_DIR, plan["cwd"])
+
+    def test_a_container_from_another_project_never_steers_the_recreate(self):
+        for out in (f"communication-other|{self.LAB}|{self.LAB_DIR}", "|" + self.LAB + "|",
+                    "other-project|/elsewhere/compose.yml|/elsewhere"):
+            self._stub("communication-m4-api-a-1", 0, out)
+            self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"), out)
+
+    def test_a_failing_or_unreadable_inspect_is_the_reported_fallback(self):
+        self._stub("communication-m4-api-a-1", 1, "no such object")
+        self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"))
+        self._stub("communication-m4-api-a-1", 0, "")
+        self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"))
+        plan = m.c14_recreate_plan_for_service("api-a")
+        self.assertEqual("fallback", plan["source"])
+        self.assertEqual(list(m.COMPOSE) + ["up", "-d", "--no-deps", "--force-recreate",
+                                            "api-a"], plan["cmd"])
+
+    def test_a_docker_that_cannot_be_reached_never_crashes_the_recreate_path(self):
+        """An exception here would abort the gate BETWEEN recreating api-a off and the
+        finally that restores it — unreadable must degrade to the fallback."""
+        def boom(*a, **kw):
+            raise FileNotFoundError("docker not on PATH")
+        m.compose_container = boom
+        self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"))
+        self._stub("communication-m4-api-a-1", 0, f"{m.COMPOSE_PROJECT}|{self.LAB}|")
+        m.run = boom
+        self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"))
 
 
 if __name__ == "__main__":
