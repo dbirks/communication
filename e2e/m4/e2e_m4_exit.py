@@ -9445,11 +9445,13 @@ def c9f_expiry_verdicts(arm, snap, expired, run_row, failed_ev, cancel_ev):
 
 
 def c9f_rerequest_verdicts(snap_after_first, rerequested, rows_after_first,
-                           deadline_moved):
+                           deadline_moved, deadline_detail=""):
     """§ 7.1 C9f's middle arm, verbatim: 'on_timeout=expire re-requests EXACTLY ONCE
     (approval_requests.re_requested=t) and then fails'. These are the reads taken
     between the two deadlines: ONE re-request, the same row reused (version bumped,
-    new deadline), nothing expired-yet-decided, and the gate still pending."""
+    new deadline), nothing expired-yet-decided, and the gate still pending.
+    deadline_moved comes from c9_f_deadline_pair_moved (the row's own deadline_at
+    instants, both read from Postgres); deadline_detail shows them verbatim."""
     if not snap_after_first:
         return [("C9f on_timeout=expire: the gate re-requests EXACTLY ONCE "
                  "(re_requested=t) and keeps waiting", None,
@@ -9468,7 +9470,8 @@ def c9f_rerequest_verdicts(snap_after_first, rerequested, rows_after_first,
         ("C9f on_timeout=expire: the re-request moved the deadline forward (the "
          "approver is not failed for a second they were already granted)",
          None if deadline_moved is None else bool(deadline_moved),
-         f"deadline_moved={deadline_moved!r}"),
+         f"deadline_moved={deadline_moved!r}" + (f" — {deadline_detail}"
+                                                 if deadline_detail else "")),
         ("C9f on_timeout=expire: the gate is still pending and holds no attempt while "
          "re-requested",
          str(snap_after_first.get("state")) == "pending"
@@ -9477,6 +9480,27 @@ def c9f_rerequest_verdicts(snap_after_first, rerequested, rows_after_first,
          f"attempts={snap_after_first.get('attempts')!r}"),
     ]
     return out
+
+
+def c9_f_deadline_pair_moved(before, after, after_rr, after_state):
+    """Pure half of the expire arm's deadline pair. before/after are THIS row's own
+    deadline_at instants (extract(epoch FROM deadline_at) of the same row — one
+    Postgres clock on both sides, § 8's timing rule), so comparing the two stored
+    instants survives the minutes between the reads in a way seconds-LEFT sampled
+    at two arbitrary times does not. True only when BOTH instants were read, the
+    after side is provably the RE-REQUESTED window (the row still says pending +
+    re_requested=t — once the gate went final 'expired', Expire rewrote
+    deadline_at to the expiry instant and no later read can tell the two windows
+    apart), and the after instant is strictly later than the before instant.
+    None anywhere = unreadable or unattributable = GAP, never a guess."""
+    if before is None or after is None or after_rr is None:
+        return None
+    if not after_rr or str(after_state) != "pending":
+        return None
+    try:
+        return float(after) > float(before)
+    except (TypeError, ValueError):
+        return None
 
 
 # --- C9g's algebra: a human takes the wheel of a LIVE run conversation ----------
@@ -10073,6 +10097,21 @@ def c9f_deadline_arms(alice, admin, facts):
                 f"(status={run_status(run_id)!r}) — there is no deadline to expire")
             continue
         snap = c9_gate_row(aid)
+        # C9f expire's deadline pair, BEFORE side: the row's own deadline_at read
+        # the moment the gate opened. It is only the fresh ask while
+        # re_requested=false and state=pending — the first expiry is a full
+        # authored window away, so this read cannot race it; anything else seen
+        # here voids the pair (f_before=None ⇒ the arm GAPs, never guesses).
+        f_before = None
+        if arm == "expire":
+            before, before_rr, before_state = c9_f_deadline_pair(aid)
+            if before is None or before_rr is not False or before_state != "pending":
+                before = None
+            f_before = before
+            show(f"C9f expire the deadline BEFORE the re-request (authored "
+                 f"{C9F_DEADLINE_S}s window)",
+                 f"deadline_at(epoch)={before!r} re_requested={before_rr!r} "
+                 f"state={before_state!r}")
         show(f"C9f {arm} the gate's row WHILE the short deadline waits",
              json.dumps(snap) if snap else "(no row)")
         c5_emit(c9f_waited_verdicts(snap, c9_expired_rows(aid, run_id)))
@@ -10087,14 +10126,27 @@ def c9f_deadline_arms(alice, admin, facts):
         show(f"C9f {arm} the sibling's terminal rows while our gate held",
              f"ran={watch['ran']} held={watch['held']} polls={watch['ticks']}")
         window = C9F_EXPIRE_WAIT_S // 2 if arm == "expire" else C9F_ARM_WAIT_S
-        rows, first_left = c9_f_wait_expired(aid, run_id, window, label=arm)
+        rows, _ = c9_f_wait_expired(aid, run_id, window, label=arm)
         mid_snap = c9_gate_row(aid)
         if arm == "expire":
             # The reads BETWEEN the two deadlines: the same row re-requested, the
-            # window moved forward, the gate still pending and still holding nothing.
-            c5_emit(c9f_rerequest_verdicts(mid_snap,
-                                           c9_approval_body(alice, aid).get("re_requested"),
-                                           rows, c9_f_deadline_moved(aid, first_left)))
+            # window moved forward, the gate still pending and still holding
+            # nothing. The deadline pair is the row's OWN deadline_at instants:
+            # before was captured at gate-open, after is read here — this call
+            # site runs only once the re-request's approval.expired row is in
+            # the ledger, and that journal row commits in the SAME reconciler
+            # transaction as the deadline write, so the row already carries the
+            # new window. The route's deadline_at is shown next to it: the API
+            # and the table must tell the same story.
+            after, after_rr, after_state = c9_f_deadline_pair(aid)
+            body = c9_approval_body(alice, aid)
+            moved = c9_f_deadline_pair_moved(f_before, after, after_rr, after_state)
+            c5_emit(c9f_rerequest_verdicts(
+                mid_snap, body.get("re_requested"), rows, moved,
+                deadline_detail=(f"deadline_at(epoch) before={f_before!r} "
+                                 f"after={after!r} (row re_requested={after_rr!r} "
+                                 f"state={after_state!r}; route "
+                                 f"deadline_at={body.get('deadline_at')!r})")))
             rows, _ = c9_f_wait_expired(aid, run_id, C9F_EXPIRE_WAIT_S // 2, want=2,
                                         label=f"{arm} (second window)")
         c5_emit(c9f_expiry_verdicts(arm, c9_gate_row(aid), rows, c9_run_row(run_id),
@@ -10126,15 +10178,30 @@ def c9_approval_body(client, aid):
         return {}
 
 
-def c9_f_deadline_moved(aid, secs_left_before):
-    """Did the re-request hand the approver a NEW window? Compared on Postgres's
-    clock on both sides. None = either side unreadable (the arm GAPs)."""
-    now_left = c9_deadline_left(aid)
+def c9_f_deadline_pair(aid):
+    """(deadline_at as Postgres epoch seconds, re_requested, state) for THIS gate
+    in ONE read — the two sides of C9f's deadline pair are then the row's own
+    stored instants on one clock (§ 8's timing rule), read while the pair means
+    something: before at gate-open (fresh ask), after once the re-request's
+    approval.expired row is visible (the row write and that journal row commit
+    in the SAME reconciler transaction — advancer.go expireApprovals + the
+    store's UPDATE approval_requests SET deadline_at, re_requested). epoch None
+    = the read never answered (the arm GAPs)."""
     try:
-        before, after = float(secs_left_before), float(now_left)
-    except (TypeError, ValueError):
-        return None
-    return after > before - C9F_TICK_S and after > 0
+        row = psql(f"SELECT extract(epoch FROM deadline_at)::text || '|' || "
+                   f"re_requested::text || '|' || state FROM approval_requests "
+                   f"WHERE id = '{aid}'").strip()
+    except RuntimeError as e:
+        show("C9f deadline pair read", str(e)[:200])
+        return None, None, ""
+    parts = [p.strip() for p in row.split("|")]
+    if len(parts) != 3:
+        return None, None, ""
+    try:
+        epoch = float(parts[0])
+    except ValueError:
+        epoch = None
+    return epoch, truthy(parts[1]), parts[2]
 
 
 def c9_f_sibling(alice, facts, label):

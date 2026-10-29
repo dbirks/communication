@@ -644,6 +644,61 @@ class FRerequestTest(unittest.TestCase):
         self.assertTrue(ok_of(v, "still pending"), v)
 
 
+class FDeadlinePairTest(unittest.TestCase):
+    """The expire arm's deadline pair, measured as the row's OWN deadline_at
+    instants (before at gate-open, after once the re-request's journal row is
+    visible). The algebra is pure here; the live reads stay with the driver —
+    a green here never substitutes for the measured verdict (12-strategy)."""
+
+    ROWS = [{"on_timeout": "expire", "re_requested": "t"}]
+
+    def test_a_second_window_later_than_the_first_moved(self):
+        self.assertIs(m.c9_f_deadline_pair_moved(1000.0, 1060.5, True, "pending"), True)
+
+    def test_a_deadline_that_never_moved_is_measured_as_not_moved(self):
+        # Same instant on the row after the re-request as before it — the
+        # verdict FAILS; a re-request that moved nothing is the product bug
+        # this pair exists to catch, never a GAP.
+        self.assertIs(m.c9_f_deadline_pair_moved(1000.0, 1000.0, True, "pending"), False)
+
+    def test_a_deadline_moved_backwards_is_not_a_second_window(self):
+        self.assertIs(m.c9_f_deadline_pair_moved(1000.0, 999.5, True, "pending"), False)
+
+    def test_no_before_capture_gaps_rather_than_reading_zero(self):
+        self.assertIsNone(m.c9_f_deadline_pair_moved(None, 1060.0, True, "pending"))
+
+    def test_an_unreadable_after_instant_gaps(self):
+        self.assertIsNone(m.c9_f_deadline_pair_moved(1000.0, None, True, "pending"))
+
+    def test_an_after_read_before_the_re_request_landed_gaps(self):
+        # re_requested still false on the row: the move has not happened yet —
+        # there is nothing to compare, which is a GAP, not a FAIL.
+        self.assertIsNone(m.c9_f_deadline_pair_moved(1000.0, 1060.0, False, "pending"))
+
+    def test_an_after_read_after_the_final_expiry_gaps(self):
+        # Expire rewrites deadline_at to the expiry instant when the gate goes
+        # final 'expired'; such a read cannot be attributed to the re-request.
+        self.assertIsNone(m.c9_f_deadline_pair_moved(1000.0, 1120.0, True, "expired"))
+
+    def test_instants_read_as_psql_text_still_compare_as_instants(self):
+        self.assertIs(m.c9_f_deadline_pair_moved("1000.1", "1060.2", True, "pending"), True)
+
+    def test_the_measured_pair_flows_through_the_rerequest_verdict(self):
+        v = m.c9f_rerequest_verdicts(snap(), "t", self.ROWS, True,
+                                     deadline_detail="before=1.0 after=61.0")
+        self.assertTrue(ok_of(v, "moved the deadline"), v)
+        self.assertIn("before=1.0 after=61.0", detail_of(v, "moved the deadline"))
+
+    def test_an_unmeasured_pair_gaps_the_verdict(self):
+        v = m.c9f_rerequest_verdicts(snap(), "t", self.ROWS, None)
+        self.assertIsNone(ok_of(v, "moved the deadline"), v)
+
+    def test_a_pair_measured_as_unmoved_fails_the_verdict(self):
+        v = m.c9f_rerequest_verdicts(snap(), "t", self.ROWS, False,
+                                     deadline_detail="before=1.0 after=1.0")
+        self.assertFalse(ok_of(v, "moved the deadline"), v)
+
+
 class GTakeoverTest(unittest.TestCase):
     """§ 7.1 C9g's take-control half over canned rows/responses."""
     BOB = "01987a63-3333-7000-8000-abcdef012345"
