@@ -79,14 +79,21 @@ FAIL=""
 
 say()  { printf 'SEED %s\n' "$*"; }
 # loud <label> — the single failure funnel: prints the observation verbatim, stops.
+# The whole message goes to BOTH streams: stdout unchanged (the driver greps it),
+# stderr too, so the reason survives a caller that discards stdout (dfd7d71).
 loud() {
-    printf 'SEED FAIL %s\n' "$1"
-    [ -n "${LAST_NOTE:-}" ] && printf '      %s\n' "$LAST_NOTE"
-    if [ -n "${LAST_BODY_FILE:-}" ] && [ -s "${LAST_BODY_FILE}" ]; then
-        printf '      --- response body (problem detail) ---\n'
-        awk 1 "${LAST_BODY_FILE}" | sed 's/^/      /'
-        printf '      --- end body ---\n'
-    fi
+    local _msg
+    _msg="$(
+        printf 'SEED FAIL %s\n' "$1"
+        [ -n "${LAST_NOTE:-}" ] && printf '      %s\n' "$LAST_NOTE"
+        if [ -n "${LAST_BODY_FILE:-}" ] && [ -s "${LAST_BODY_FILE}" ]; then
+            printf '      --- response body (problem detail) ---\n'
+            awk 1 "${LAST_BODY_FILE}" | sed 's/^/      /'
+            printf '      --- end body ---\n'
+        fi
+    )"
+    printf '%s\n' "$_msg"
+    printf '%s\n' "$_msg" >&2
     exit 1
 }
 
@@ -538,12 +545,11 @@ say "readiness: both replicas 200"
 # The replicas answering is NOT sufficient: compose starts the `lb` (Caddy)
 # container LAST, so this guard waits until readiness answers 200 THROUGH the LB
 # before the first request (login() talks to $M4_URL through it) — bounded at 30s,
-# polling every 0.5s. HISTORY, honestly stated: this wait was added after a reseed
-# failure whose output was discarded, and the cause was NOT proven. Restarting `lb`
-# in situ and firing immediate requests produced 0 failures in 3+3 tries; the ~50ms
-# window in which a standalone Caddy container resets requests (curl rc=56) was
-# measured on a standalone container, not on this stack. So: a cheap guard against
-# an unconfirmed cause, not a documented workaround for a reproduced one.
+# polling every 0.5s. HISTORY: the dfd7d71 reseed failure is now pinned by timing
+# (driver log 68ms after "lab ready") to the seed's first four requests — the two
+# replica readiness checks, this LB login hop, and the mock IdP hop. All four are
+# guarded (replicas above, LB here, IdP below); loud() also writes to stderr, so a
+# failure can no longer be lost with stdout.
 lb_tries=0 lb_err=""
 lb_deadline=$((SECONDS + 30))
 while :; do
@@ -555,6 +561,28 @@ while :; do
     if [ "$SECONDS" -ge "$lb_deadline" ]; then
         LAST_NOTE="curl: $(printf '%s' "$lb_err" | m4_oneline) — last of $lb_tries attempts in 30s (stack down? § 7.0 compose up first)"
         loud "readiness: load balancer $M4_URL did not answer 200 on /api/v1/system/readiness within 30s"
+    fi
+    sleep 0.5
+done
+
+# Same shape for the mock IdP: the first login() follows /auth/login's redirect into
+# $M4_IDP (the browser issuer is $M4_IDP/default) with no readiness wait of its own,
+# and it was one of the four requests the dfd7d71 failure lands on. Wait until its
+# OIDC discovery document answers 200 — bounded at 30s (M4_SEED_IDP_WAIT_SECS), polling
+# every 0.5s.
+idp_tries=0 idp_err=""
+idp_wait_secs="${M4_SEED_IDP_WAIT_SECS:-30}"
+idp_url="$M4_IDP/default/.well-known/openid-configuration"
+idp_deadline=$((SECONDS + idp_wait_secs))
+while :; do
+    idp_tries=$((idp_tries + 1))
+    if idp_err="$(curl -fsS --max-time 5 "$idp_url" -o /dev/null 2>&1)"; then
+        say "readiness: identity provider 200 after $idp_tries tries"
+        break
+    fi
+    if [ "$SECONDS" -ge "$idp_deadline" ]; then
+        LAST_NOTE="curl: $(printf '%s' "$idp_err" | m4_oneline) — last of $idp_tries attempts in ${idp_wait_secs}s (mock IdP not up on $M4_IDP? § 7.0 compose up first)"
+        loud "readiness: identity provider $idp_url did not answer 200 within ${idp_wait_secs}s"
     fi
     sleep 0.5
 done

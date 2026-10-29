@@ -19,6 +19,9 @@ M4_URL="${M4_URL:-http://localhost:18091}"
 M4_API_A="${M4_API_A:-http://localhost:18092}"
 M4_API_B="${M4_API_B:-http://localhost:18093}"
 M4_COLLECTOR="${M4_COLLECTOR:-http://localhost:18099}"
+# The mock IdP as the BROWSER/seed sees it (compose.m4.yml COMMUNICATION_OIDC_BROWSER_ISSUER
+# is this base + /default); the seed polls its discovery document before its first login.
+M4_IDP="${M4_IDP:-http://localhost:18095}"
 M4_PROBE_ROOT_BASE="${M4_PROBE_ROOT_BASE:-$HOME/.cache/communication-lab/m4-probes}"
 M4_COMPOSE=(docker compose -p communication-m4 -f compose.yml -f compose.harness.yml -f compose.m4.yml)
 # The compose files are relative to the repository root:
