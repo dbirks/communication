@@ -19,13 +19,9 @@ import re
 import sys
 import unittest
 
-try:  # the YAML probes below need a parser; the verdict algebra does not
-    import yaml
-except ImportError:  # pragma: no cover - environment without PyYAML
-    yaml = None
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
+import yamlmini as yaml  # noqa: E402 — stdlib YAML subset (CI's python3 has no PyYAML)
 
 
 def one(rows, needle):
@@ -388,7 +384,6 @@ EXPORT_4SPACE = (
     "    nodes: []\n")
 
 
-@unittest.skipIf(yaml is None, "PyYAML is not installed in this environment")
 class C12ProbeDocumentsAreValidYaml(unittest.TestCase):
     """Every C12 probe must be VALID YAML carrying exactly ONE semantic problem. A
     document the loader itself refuses (loader/invalid_yaml) proves nothing about the
@@ -442,7 +437,6 @@ class C12ProbeDocumentsAreValidYaml(unittest.TestCase):
         self.assertEqual(m.C12_EXEC_BUDGET, wide["spec"]["policies"]["maxNodeExecutions"])
 
 
-@unittest.skipIf(yaml is None, "PyYAML is not installed in this environment")
 class C12dVariantIsContentBlind(unittest.TestCase):
     """C12d's variant changes BYTES only: re-parsing both documents must give the same
     value — on the seed's 2-space source AND on the server's 4-space canonical export,
@@ -556,7 +550,6 @@ class C12bOverCapItemsAreCompact(unittest.TestCase):
         self.assertIn("scope_cause=''", detail(bad, "1001 evaluated items"))
 
 
-@unittest.skipIf(yaml is None, "PyYAML is not installed in this environment")
 class C12cPinnedWordingWitness(unittest.TestCase):
     """live3/C12.out:100 — the witness greped approval_requests.summary for the RAW
     `Plan for ${{ inputs.goal }}` needle, but the summary is INTERPOLATED at gate

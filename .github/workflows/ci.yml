@@ -382,7 +382,7 @@ jobs:
   m4-gate-logic:
     name: m4-gate-logic
     runs-on: ubuntu-latest
-    # e2e/m4/test_c*_logic.py check the *verdict logic* of the M4 exit gates
+    # Every e2e/m4/test_*.py checks the *verdict logic* of the M4 exit gates
     # (docs/m4-contract.md § 7) offline: given recorded Postgres/API evidence,
     # does the gate decide pass/fail the way § 7 specifies? They are stdlib
     # unittest only — no stack, no agent, no network — so they run in seconds
@@ -393,16 +393,26 @@ jobs:
     # (12-test-strategy.md: a mocked green test is never evidence).
     # No actions/setup-python: nothing in this repository pins one, and the
     # runner's system python3 is enough for stdlib unittest, so this job adds no
-    # new dependency.
+    # new dependency. The YAML-aware tests parse through e2e/m4/yamlmini.py
+    # (stdlib subset) precisely because that python3 has no PyYAML, so nothing
+    # silently skips: a skipped test proves nothing, and a file whose unittest
+    # summary reports "skipped=" fails this job.
     steps:
       - uses: actions/checkout@v7
       # Syntax-check the driver first (the tests import it), then run every
-      # gate logic test; the first failure fails the job.
+      # pure-logic test; a non-zero exit or any reported skip fails the job.
       - name: gate logic tests
         run: |
           set -euo pipefail
           python3 -m py_compile e2e/m4/e2e_m4_exit.py
-          for t in e2e/m4/test_c*_logic.py; do python3 "$t" || exit 1; done
+          for t in e2e/m4/test_*.py; do
+            out=$(python3 "$t" 2>&1) || { echo "$out"; exit 1; }
+            echo "$out"
+            if printf '%s\n' "$out" | grep -q 'skipped='; then
+              echo "::error::$t reported skips — every logic test must run"
+              exit 1
+            fi
+          done
 
   image-main:
     name: image (main)

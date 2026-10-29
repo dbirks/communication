@@ -19,6 +19,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e_m4_exit as m  # noqa: E402 — import of the driver is the point
+import yamlmini as yaml  # noqa: E402 — stdlib YAML subset (CI's python3 has no PyYAML)
 
 HEX_A = "sha256:" + "a" * 64
 HEX_B = "sha256:" + "b" * 64
@@ -601,10 +602,6 @@ class C1eDeclaredInputsTest(unittest.TestCase):
 
     def test_the_count_comes_from_the_twins_own_document(self):
         """The expected set is the seed twin's declared inputs, not a constant."""
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("no PyYAML in this environment")
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
                             "docs", "compatibility", "probes", "m4", "pipeline.yaml")
         docs = [d for d in re.split(r"(?m)^---\s*$", open(path, encoding="utf-8").read())

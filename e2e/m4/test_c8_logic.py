@@ -20,6 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
+import yamlmini as yaml  # noqa: E402 — stdlib YAML subset (CI's python3 has no PyYAML)
 
 
 def hits(rows, needle):
@@ -377,7 +378,6 @@ class ChainLevelDocTest(unittest.TestCase):
     single invoke node swapped — the shape known to publish, not an invented one."""
 
     def test_chain_doc_shape_round_trips(self):
-        import yaml
         doc = m.c8_chain_doc("m4x-c8f-l2", "m4x-c8f-l3")
         self.assertIn("apiVersion: communication.dev/v1alpha1", doc)
         parsed = yaml.safe_load(doc)
@@ -649,7 +649,6 @@ class DriverQueryTest(unittest.TestCase):
         """The splice target was the yaml.Marshal'd GET /revisions/{id}/document (4-space
         node indentation) while C8_SELF_DOC_NODE is written at the seed's 2 spaces, so the
         draft died invalid_yaml before the compiler ever saw the self-invoke."""
-        import yaml
         doc = m.c13_doc("issue-implementation",
                         m.C8_SELF_DOC_NODE.replace("@@NAME@@", "issue-implementation"))
         self.assertIn("apiVersion: communication.dev/v1alpha1", doc,
