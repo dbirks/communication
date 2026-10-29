@@ -245,9 +245,14 @@ func TestAppendEventSerializesAppendsPerProject(t *testing.T) {
 // project that does not exist, so the journal cannot be walked by cursor.
 func TestVisibleEventsAfterHidesForeignProject(t *testing.T) {
 	store, orgID := prjFixture(t)
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	a, b, _, _ := prjUsers(t, store, orgID)
 	p := prjCreateProject(t, store, a, orgID, "Private", "private")
+
+	// Every read below is the journal's one-shot read, so every one of them is
+	// behind the gap-safety horizon until that horizon passes the row
+	// CreateProject appended (ADR-0014 §9).
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
 
 	if _, err := store.VisibleEventsAfter(ctx, Caller{UserID: b, OrganizationID: orgID}, p.ID, 0, 10); !errors.Is(err, ErrProjectNotFound) {
 		t.Errorf("non-member VisibleEventsAfter = %v, want ErrProjectNotFound", err)
@@ -391,10 +396,16 @@ func evtSummary(evs []events.Envelope) []int64 {
 // scope, and the resume cursor orders the multiplexed rows globally.
 func TestOrgEventsAfterRestrictsToVisibleProjects(t *testing.T) {
 	store, orgID := prjFixture(t)
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	a, b, otherOrgID, otherUser := prjUsers(t, store, orgID)
 	p1 := prjCreateProject(t, store, a, orgID, "One", "org-one")
 	p2 := prjCreateProject(t, store, b, orgID, "Two", "org-two")
+
+	// Same gate as every other read in this file: the multiplexed stream may not
+	// emit a row the watermark has not admitted yet, and each count below is
+	// asserted from one read.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p1.ID)
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p2.ID)
 
 	// a is a member of p1 only: p2's rows must be absent, not 404.
 	got, err := store.OrgEventsAfter(ctx, Caller{UserID: a, OrganizationID: orgID}, 0, 100)

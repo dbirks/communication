@@ -1188,7 +1188,7 @@ func TestMigrate0003PermissionDecisionShape(t *testing.T) {
 // global_seq order through the gap-safety filter the project stream uses, and
 // never leak into another conversation's stream (ADR-0016, ADR-0014 §9).
 func TestMigrate0003TranscriptJournal(t *testing.T) {
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	pool, err := Open(ctx, mustMigrate(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -1243,16 +1243,14 @@ func TestMigrate0003TranscriptJournal(t *testing.T) {
 	// transaction (another test in this binary, another `go test` run, a
 	// session in some other process) pins pg_snapshot_xmin below these
 	// commits, and the gate hides rows that are merely not-yet-admitted,
-	// not lost. A real reader of this stream polls it; so does this test.
-	// A fixed single read was the flake: "returned 2 rows, want 3" while
-	// somebody else held a transaction open. On timeout the report names
-	// the live watermark and the open transactions, so a real bug (rows
-	// that never become visible) stays diagnosable.
+	// not lost. A real reader of this stream polls it; so does this test,
+	// through waitJournalReadable — a fixed single read was the flake:
+	// "returned 2 rows, want 3" while somebody else held a transaction open.
+	// On timeout the report names the live watermark and the open
+	// transactions, so a real bug (rows that never become visible) stays
+	// diagnosable.
+	waitJournalReadable(t, pool, "e.conversation_id = $1::uuid AND e.global_seq > 0", first)
 	got := replay(first)
-	for deadline := time.Now().Add(10 * time.Second); len(got) < 3 && time.Now().Before(deadline); {
-		time.Sleep(50 * time.Millisecond)
-		got = replay(first)
-	}
 	if len(got) != 3 {
 		t.Fatalf("transcript replay returned %d rows (%v), want the 3 appended\n%s",
 			len(got), got, migOpenTransactionReport(ctx, pool))

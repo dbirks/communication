@@ -259,7 +259,7 @@ func TestProjectOrgAdminSeesEveryProjectAsMaintainer(t *testing.T) {
 
 func TestProjectRepositoriesAppendEventsInOrder(t *testing.T) {
 	store, orgID := prjFixture(t)
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	a, _, _, _ := prjUsers(t, store, orgID)
 	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
 	caller := Caller{UserID: a, OrganizationID: orgID}
@@ -286,6 +286,12 @@ func TestProjectRepositoriesAppendEventsInOrder(t *testing.T) {
 		t.Errorf("repository created_at = %v, want UTC", repos[0].CreatedAt)
 	}
 
+	// The journal read below happens exactly once, and the gap-safety filter of
+	// ADR-0014 §9 says a committed row is only readable after the cluster-wide
+	// watermark passes its transaction — a watermark any open write transaction
+	// in any other database of the cluster holds back. The SSE reader polls for
+	// that; a one-shot assertion has to wait for it explicitly.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
 	evs, err := store.EventsAfter(ctx, p.ID, 0, 0)
 	if err != nil {
 		t.Fatalf("EventsAfter: %v", err)
@@ -342,6 +348,7 @@ func TestProjectRepositoriesAppendEventsInOrder(t *testing.T) {
 		t.Errorf("EventsAfter(past end) = %v, %v; want empty", none, err)
 	}
 	other := prjCreateProject(t, store, a, orgID, "Others", "others")
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", other.ID)
 	if evs, err := store.EventsAfter(ctx, other.ID, 0, 0); err != nil || len(evs) != 1 || evs[0].Type != events.TypeProjectCreated {
 		t.Errorf("EventsAfter(other project) = %v, %v; want only that project's 1 event (no cross-project leak)", evs, err)
 	}
@@ -466,7 +473,7 @@ func TestProjectPutMemberGrantsVisibilityToContributor(t *testing.T) {
 
 func TestProjectEventsAfterTruncatesToLimit(t *testing.T) {
 	store, orgID := prjFixture(t)
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	a, _, _, _ := prjUsers(t, store, orgID)
 	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
 	caller := Caller{UserID: a, OrganizationID: orgID}
@@ -475,6 +482,9 @@ func TestProjectEventsAfterTruncatesToLimit(t *testing.T) {
 			t.Fatalf("AddRepository(%q): %v", name, err)
 		}
 	}
+	// Same one-shot read, same gate: the four rows this test just committed are
+	// readable as soon as the cluster watermark passes them.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
 	page, err := store.EventsAfter(ctx, p.ID, 0, 2)
 	if err != nil {
 		t.Fatalf("EventsAfter: %v", err)

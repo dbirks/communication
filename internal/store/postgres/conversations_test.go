@@ -826,7 +826,7 @@ func TestReturnControlByNonHolderIsRefused(t *testing.T) {
 func TestConversationTranscriptIsOrderedCompleteAndSharedWithTheProjectStream(t *testing.T) {
 	f := cnvSetup(t)
 	chat := f.cnvCreate(t, f.alice, "Two prompts", "first")
-	ctx := f.ctx()
+	ctx := journalCtx(t)
 
 	// Finish the first turn the way a worker would, then let the controller ask
 	// again: the transcript is the interleaving of human and agent rows, in the
@@ -852,6 +852,12 @@ func TestConversationTranscriptIsOrderedCompleteAndSharedWithTheProjectStream(t 
 	// A second conversation in the same project: its rows must not appear on this
 	// transcript, and must not shift its cursor.
 	other := f.cnvCreate(t, f.alice, "The other one", "unrelated")
+
+	// Both streams are read once, and the second read takes a snapshot of its
+	// own: unless the gap-safety horizon has passed every row this project has
+	// committed (ADR-0014 §9), the transcript can name a row the project stream
+	// never emitted and the subsequence property below is unverifiable.
+	waitJournalReadable(t, f.pool, "e.project_id = $1::uuid", f.project)
 
 	all, err := f.events.EventsAfter(ctx, f.project, 0, 500)
 	if err != nil {

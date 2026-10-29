@@ -103,7 +103,7 @@ func m4StreamSeqs(batch []events.Envelope) []int64 {
 // and a real LIMIT — plus the visibility rule that an unauthorized caller
 // gets api.ErrRunNotFound instead of a row or a peek.
 func TestM4APIStreamRunEventsAfter(t *testing.T) {
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	f := m4Setup(t)
 	member := m4StreamMember(t, ctx, f, "viewer")
 	runID := f.m4QueuedRun(t, ctx, "", 0)
@@ -116,6 +116,14 @@ func TestM4APIStreamRunEventsAfter(t *testing.T) {
 		events.TypeRunResumed, events.TypeRunWaitingHuman} {
 		seqs = append(seqs, m4StreamAppend(t, ctx, f.pool, runID, fmt.Sprintf("%s.%d", typ, i)))
 	}
+
+	// The four appends have committed; whether the reader may see them is a
+	// second question. The gap-safety clause of ADR-0014 §9 hides a committed
+	// row until the cluster-wide watermark passes its transaction, and that
+	// watermark is held back by an open write transaction in ANY database of
+	// the cluster — a sibling `go test -p 4` binary, for instance. The stream
+	// poller waits for a wake-up; this test reads once, so it waits here.
+	waitJournalReadable(t, f.pool, "e.run_id = $1::uuid", runID)
 
 	all, err := stream.RunEventsAfter(ctx, member, runID, 0, 100)
 	if err != nil {
@@ -216,7 +224,7 @@ func TestM4APIStreamRunEventsAfter(t *testing.T) {
 // the wake is followed by the row itself in the journal read (ADR-0014 § 6 —
 // the notification is only a hint, the re-query is the truth).
 func TestM4APIStreamWatchFiresAfterAppend(t *testing.T) {
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	url := mustMigrate(t)
 	pool, err := Open(ctx, url)
 	if err != nil {
@@ -255,6 +263,10 @@ func TestM4APIStreamWatchFiresAfterAppend(t *testing.T) {
 		t.Fatal("no wake-up after a run journal append; the run stream would fall back to polling forever")
 	}
 
+	// The notification proves the row committed, not that the gap-safety gate
+	// has admitted it: a foreign open transaction holds the watermark, and the
+	// re-query the handler would poll again in a moment would come back empty.
+	waitJournalReadable(t, pool, "e.global_seq = $1", seq)
 	batch, err := stream.RunEventsAfter(ctx, member, runID, seq-1, 10)
 	if err != nil {
 		t.Fatalf("RunEventsAfter after wake: %v", err)
