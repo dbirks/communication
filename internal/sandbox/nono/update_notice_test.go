@@ -58,8 +58,8 @@ case "$1 ${2:-}" in
   "audit show")
     notice
     echo '{"session_id":"'"$3"'","network_events":[` +
-		`{"decision":"allow","mode":"connect","target":"api.anthropic.com","port":443,"method":"CONNECT"},` +
-		`{"decision":"deny","mode":"connect","denial_category":"host_denied","target":"example.org","port":443,"reason":"host example.org:443 is not in the allowlist"}]}'
+	`{"decision":"allow","mode":"connect","target":"api.anthropic.com","port":443,"method":"CONNECT"},` +
+	`{"decision":"deny","mode":"connect","denial_category":"host_denied","target":"example.org","port":443,"reason":"host example.org:443 is not in the allowlist"}]}'
     exit 0 ;;
   "profile show")
     notice

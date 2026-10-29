@@ -98,9 +98,9 @@ func (l *Launcher) resolveBinary() (string, error) {
 //
 // nono 0.80.0 prints, to STDERR:
 //
-//	  update 0.81.0 available (current: 0.80.0)
-//	  $ cargo install nono-cli
-//	  https://github.com/always-further/nono/releases/tag/v0.81.0
+//	update 0.81.0 available (current: 0.80.0)
+//	$ cargo install nono-cli
+//	https://github.com/always-further/nono/releases/tag/v0.81.0
 //
 // The adapters no longer read it in the middle of a machine surface (see
 // nonoOutput), but a notice that never fires is still the cheaper bug, so every
