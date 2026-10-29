@@ -13,14 +13,15 @@ concurrency, so all of them must keep the default 0.
 
 A green here means the run bodies and the wait windows are right; it never
 substitutes for the live kill/freeze (12-test-strategy.md: a mocked green is not
-done). One exception to "by nobody else": W2 and W10 watch a page MID-LEASE, so they
-post their OWN short sampling hold (W2_HOLD_SECONDS) through the same helper — never
-the 45s fault window.
+done). One exception to "by nobody else": W2, W10 and W11 watch a page (or a gate
+release) MID-LEASE, so they post their OWN short sampling hold (W2_HOLD_SECONDS)
+through the same helper — never the 45s fault window.
 
 usage: python3 e2e/m4/test_hold_logic.py [-v]
 """
 import ast
 import os
+import re
 import sys
 import unittest
 
@@ -141,7 +142,7 @@ class FaultLegRunBodyTest(unittest.TestCase):
                     "hold_seconds", [k.arg for k in c.keywords],
                     f"{fn} posts the FAULT hold: C1's key/timing comparison, C7's "
                     "exhaustion and C8's in-flight concurrency are all graded against "
-                    "unhurried steps (W2's and W10's sampling hold is the short "
+                    "unhurried steps (W2's, W10's and W11's sampling hold is the short "
                     "W2_HOLD_SECONDS, pinned below)")
 
     def test_w5_and_w6_run_the_same_fault_sequence_so_they_hold_too(self):
@@ -160,16 +161,21 @@ class FaultLegRunBodyTest(unittest.TestCase):
         self.assertNotIn("hold_seconds=", w10_body,
                          "and never the 45s a freeze/kill window needs")
 
-    def test_w2_and_w10_hold_short_just_long_enough_to_be_sampled(self):
+    def test_w2_w10_and_w11_hold_short_just_long_enough_to_be_sampled(self):
         """live8/W2.out: `no attempt was sampled MID-LEASE … the twin's process.exec
-        attempts finish faster than the poll's 2s interval` — and two acceptance runs
-        later W10's gate-release verdict drifted GAP-then-PASS the same way (the
-        41↔42 GAP-count wobble). W2 and W10 watch pages, they kill nothing, so their
-        hold is the OWN sampling hold (W2_HOLD_SECONDS): long enough for the legs'
-        2s poll and one DOM sample to land inside the lease, short enough that none
-        of the legs' timings, ordering or iteration arms move — and the twin's two
-        until iterations (6 post-gate held steps ≈ 60-70s) still fit W10's 240s
-        settle loop and 300s wait_live_past_gate untouched."""
+        attempts finish faster than the poll's 2s interval` — two acceptance runs later
+        W10's gate-release verdict drifted GAP-then-PASS the same way (the 41↔42
+        GAP-count wobble, fixed in b69eec6), and accept/20261029-011645-9ff7f90 W11
+        GAPped on the SAME shared verdict for the SAME reason: its 25-item fan-out ran
+        the unheld twin, so every post-gate attempt closed inside the 2s poll.
+
+        W2, W10 and W11 watch, they kill nothing, so their hold is the OWN sampling
+        hold (W2_HOLD_SECONDS): long enough for the legs' 2s poll and one DOM sample to
+        land inside the lease, short enough that none of the legs' timings, ordering or
+        iteration arms move. W11 posts it through a leg-owned helper because
+        `c8_post_run` must keep C8's unheld body (C8b measures real in-flight
+        concurrency) — pinned below, together with the windows the held fan-out has to
+        still fit."""
         src = open(DRIVER, encoding="utf-8").read()
         bodies = {fn: ast.get_source_segment(src, next(
             n for n in tree().body
@@ -185,6 +191,72 @@ class FaultLegRunBodyTest(unittest.TestCase):
         self.assertLess(m.W2_HOLD_SECONDS, m.C_FAULT_HOLD_SECONDS,
                         "and shorter than the fault legs' hold")
         self.assertLessEqual(m.W2_HOLD_SECONDS, 600, "within the input's schema maximum")
+
+    def test_w11_posts_its_fanout_run_with_the_short_hold(self):
+        """W11 judges the SHARED `{tag} the gate released the run into real work` verdict,
+        so its run must be sampleable the same way W2's and W10's are — and it must not
+        borrow C8's unheld body, because holding C8's fan-out would be C8 measuring a
+        fixture instead of real in-flight concurrency."""
+        src = open(DRIVER, encoding="utf-8").read()
+        fns = {n.name: n for n in tree().body if isinstance(n, ast.FunctionDef)}
+        leg = ast.get_source_segment(src, fns["w11"])
+        self.assertIn("w11_post_fanout_run(client, seed, C8_ITEMS, W2_HOLD_SECONDS",
+                      leg, "W11's gate-release verdict samples a lease: its run must "
+                           "carry the short sampling hold, not ship at 0")
+        self.assertNotIn("hold_seconds=", leg,
+                         "and never the 45s a freeze/kill window needs")
+        helper = ast.get_source_segment(src, fns["w11_post_fanout_run"])
+        self.assertIn('with_hold(c8_inputs(mf(facts, "inputs"), count), hold_seconds)',
+                      helper, "the hold rides on C8's OWN input shape (fanout + "
+                              "fanout_count), or W11 would have no fan-out to tree")
+        self.assertNotIn("with_hold", ast.get_source_segment(src, fns["c8_post_run"]),
+                         "C8's posted body stays unheld — C8b measures real concurrency")
+        # Read the POSTED body, not just the prose: the fan-out is still armed and the
+        # hold on it is the 10s sampling window.
+        client = FakeClient()
+        orig, m.check = m.check, lambda *_a, **_k: True
+        try:
+            m.w11_post_fanout_run(client, dict(FACTS, assignment_id="a-1"), m.C8_ITEMS,
+                                  m.W2_HOLD_SECONDS, "idem-w11", "W11 child tree")
+        finally:
+            m.check = orig
+        inp = client.body["inputs"]
+        self.assertEqual(inp["hold_seconds"], m.W2_HOLD_SECONDS)
+        self.assertEqual(inp["fanout"], True, "W11's tree needs the fan-out armed")
+        self.assertEqual(inp["fanout_count"], m.C8_ITEMS)
+        self.assertEqual(client.body["assignment_id"], "a-1",
+                         "the leg runs the seed's ASSIGNMENT, never a re-pin")
+        self.assertNotIn("pipeline_revision_id", client.body)
+
+    def test_w11_windows_still_cover_the_held_fanout(self):
+        """The arithmetic the brief owes: the twin holds every process.exec step
+        W2_HOLD_SECONDS, its policy is maxConcurrentNodes 1 (so its steps serialize in
+        front of /fan_out), and `emit_items`/`fan_out`/the child carry no hold env at
+        all. So the held parent work in front of the first child row is /plan plus one
+        held step per until-body node per iteration, and the /tree window has to cover
+        today's 300 s PLUS that much. Derived from the probe's own document, not from a
+        comment: 4 M4_HOLD_SECONDS splices ⇒ 1 pre-gate (/plan) + 3 per iteration."""
+        doc = open(PROBE, encoding="utf-8").read().split("\n---\n")[1]
+        held = doc.count("M4_HOLD_SECONDS: ${{ string(inputs.hold_seconds) }}")
+        self.assertEqual(held, 4, "plan, implement, test and review all hold")
+        cap = int(re.search(r"maxIterations:\s*(\d+)", doc).group(1))
+        self.assertEqual(m.W11_HOLD_STEPS_MAX, 1 + (held - 1) * cap,
+                         "1 pre-gate /plan + the until cap's held body steps per iteration")
+        held_s = m.W11_HOLD_STEPS_MAX * m.W2_HOLD_SECONDS
+        self.assertEqual(held_s, 130)
+        self.assertGreaterEqual(m.W11_GATE_WINDOW_S, held_s,
+                                "the gate wait alone must outlast the held parent run")
+        self.assertGreaterEqual(m.W11_FANOUT_WINDOW_S, 300 + held_s,
+                                "the /tree window must keep today's 300s of drain "
+                                "headroom AND absorb the held parent steps in front of it")
+        src = open(DRIVER, encoding="utf-8").read()
+        leg = ast.get_source_segment(src, next(
+            n for n in tree().body if isinstance(n, ast.FunctionDef) and n.name == "w11"))
+        self.assertIn("wait_live_past_gate(client, project_id, run_id, W11_GATE_WINDOW_S",
+                      leg, "W11's gate wait must be the computed window, not a bare 300")
+        self.assertIn("w11_wait_fanout_children(client, run_id, C8_ITEMS, "
+                      "W11_FANOUT_WINDOW_S", leg,
+                      "W11's fan-out wait must be the computed window, not a bare 300")
 
 
 class HoldDiagnosisTest(unittest.TestCase):

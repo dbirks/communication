@@ -20190,6 +20190,65 @@ def w11_expand(session, already, cap=24, delay=1):
     return clicked, snaps
 
 
+# --- W11's own run: C8's fan-out, posted WITH the short sampling hold -------------
+#
+# Row W11's first verdict is the SHARED w_gate_release_verdict reading — "the gate
+# released the run into real work" — and a lease the poll caught is what proves it.
+# C8's fan-out runs the shipped twin, whose process.exec steps are printfs closing in
+# <1s, so that verdict was a coin flip: accept/20261029-011645-9ff7f90 W11 GAPped "no
+# attempt was sampled MID-LEASE (status now 'completed', 9 attempt(s) in the ledger) …
+# faster than the poll's 2s interval" while earlier passes PASSed. The fix is W10's
+# (b69eec6): post the run W11 judges through with_hold with the SHORT sampling hold,
+# W2_HOLD_SECONDS — long enough for the 2s poll to land inside a lease, nowhere near
+# the 45s a freeze/kill window needs, and W11 still kills nothing.
+#
+# W11 cannot take the hold out of `c8_post_run` itself: C8b measures REAL in-flight
+# concurrency and the probe README ("The seed pipeline" note 5) keeps that run's steps
+# at the schema default on purpose, so `c8_post_run` keeps its exact body and W11
+# owns its own POST the way C3's `c3_post_fanout_run` does. Only the twin's own steps
+# hold — `emit_items`, `fan_out` and the 25 `issue-implementation` children carry no
+# M4_HOLD_SECONDS env at all (same README), so the fan-out still drains at shipped speed.
+#
+# The windows, computed against the held run (the twin's policy is maxConcurrentNodes 1,
+# so its steps serialize in front of /fan_out):
+#   observed: /plan (1, PRE-gate) + TWO until iterations × implement/test/review (6)
+#             = 7 held steps × 10s = 70s;
+#   cap:      until.maxIterations is 4, so the most a twin run can ever book is
+#             1 + 4 × 3 = 13 held steps × 10s = 130s.
+#   * W11_GATE_WINDOW_S stays 300: the wait returns on the FIRST lease it catches (~2-4s
+#     after the POST), and even the 130s cap leaves it 2.3x headroom. C5's kill legs are
+#     the only reason to lengthen it and W11 kills nothing.
+#   * the /tree fan-out wait grows by the CAP, not the observation: every second of held
+#     parent work now sits in front of the first child row, so 300s of today's gate +
+#     25-child drain headroom + 13 × 10s = 430s. The wait breaks the moment the 25th
+#     child appears, so the longer window costs nothing on a healthy lab.
+#   * the three arms AFTER the fan-out key are page-bound, not run-bound, and are
+#     unchanged: the two DOM polls are 10 tries × 2s = 20s each (the /fan_out row and the
+#     attempt copy are on screen the moment the page renders them — the key was already
+#     waited out to 25 children), w11_expand is capped at 24 snapshots/clicks, and the
+#     leg's last `time.sleep(2)` is one repaint. A held run makes the tree richer, never
+#     later; the `finally` still cancels whatever is left, cascade and all (C8g).
+W11_HOLD_STEPS_MAX = 1 + 4 * 3      # /plan + until cap × (implement, test, review)
+W11_GATE_WINDOW_S = 300             # unchanged: 300s against the 130s held-run cap
+W11_FANOUT_WINDOW_S = 300 + W11_HOLD_STEPS_MAX * W2_HOLD_SECONDS   # 430 = 300 + 130
+
+
+def w11_post_fanout_run(client, facts, count, hold_seconds, idem, label):
+    """POST /projects/{p}/runs with the twin's ASSIGNMENT (never a re-pin),
+    fanout=true, fanout_count=count AND hold_seconds — `c8_post_run`'s body plus the
+    sampling hold, exactly the split `c3_post_fanout_run` made for the same reason:
+    C8's own posted body must stay unheld, and C8's run is not shareable."""
+    body = {"assignment_id": mf(facts, "assignment_id"),
+            "inputs": with_hold(c8_inputs(mf(facts, "inputs"), count), hold_seconds),
+            "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
+    if not check(f"{label}: POST runs (assignment + fanout_count={count} + "
+                 f"hold_seconds={hold_seconds}) -> 201",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None
+    return (r.json() or {}).get("run_id")
+
+
 def w11():
     """W11 — row § 7.2: "open a child-run tree (C8's 25 children) and one node
     execution's attempt list" → "the tree renders depth 1 children with their own
@@ -20202,7 +20261,10 @@ def w11():
     21656f6 (pipeline.invoke resolves its target by name and writes the one invocation
     row); live4/C8.out measured `/fan_out` CANCELLED with 0 invoke rows, and C8 itself
     says why the agent variant cannot be used unattended. The gate is decided with the
-    shared wait_live_past_gate/gate_then_live_action helpers like every other leg.
+    shared wait_live_past_gate/gate_then_live_action helpers like every other leg, and
+    the run is posted with W2/W10's SHORT sampling hold (`w11_post_fanout_run`) so that
+    shared gate-release verdict has a lease to sample; W11_HOLD_STEPS_MAX works out the
+    windows around a held run.
 
     The tree rows are opened by clicking the component's own `+` controls (the tree
     collapses every branch by default), and the attempt pane is reached by the URL the
@@ -20219,17 +20281,22 @@ def w11():
         gap("W11 all arms", "alice could not sign in — the fan-out run cannot be posted")
         return
     CTX["alice"] = client
-    run_id = c8_post_run(client, seed, C8_ITEMS,
-                         f"m4-exit-w11-{int(time.time())}", "W11 child tree")
+    run_id = w11_post_fanout_run(client, seed, C8_ITEMS, W2_HOLD_SECONDS,
+                                 f"m4-exit-w11-{int(time.time())}", "W11 child tree")
     if not run_id:
         gap("W11 all arms", "the 25-item fan-out run was not accepted — there is no tree to "
                            "open (the POST verdict is above)")
         return
     CTX["w11_run_id"] = run_id
-    live = wait_live_past_gate(client, project_id, run_id, 300, "W11")
-    # The same reading W2/W10 owe: the twin's process.exec steps close inside the poll's
-    # 2s window, so 'no lease seen' is a fixture speed, not a stuck run — and the tree
-    # arms below judge the ledger and the DOM, not this poll.
+    live = wait_live_past_gate(client, project_id, run_id, W11_GATE_WINDOW_S, "W11")
+    # The sampling hold on the POST above is what makes this shared reading decidable:
+    # at shipped speed every process.exec attempt closed inside the poll's 2s window, so
+    # 'the gate released the run into real work' PASSed or GAPped on the race (the
+    # W11_HOLD_STEPS_MAX block computes the windows around a 10s-held run). The poll
+    # stays untargeted exactly as W10's is since b69eec6 — the lease it catches is the
+    # twin's first held step, and the fan-out wait below still decides the gate itself on
+    # C1b's route. The verdict is unchanged; a step that never stays open long enough to
+    # be sampled is the fixture's speed, not the run's.
     c5_emit([w_gate_release_verdict(live, run_status(run_id), c1_attempt_count(run_id),
                                     tag="W11")])
     # --- the fan-out really happened: GET /runs/{id}/tree is the answer key ----
@@ -20237,7 +20304,8 @@ def w11():
     # 20261026-035125-77a1219 read it while the run was still opening children, then
     # graded a later DOM against that half-open answer and called 14 honest rows
     # 'invented'. Whatever the route reports the moment after the snapshot is the answer
-    # (below); if the fan-out never fills in inside 300 s the leg keeps today's
+    # (below); if the fan-out never fills in inside W11_FANOUT_WINDOW_S (430 s = today's
+    # 300 s + the 130 s of held parent steps computed above) the leg keeps today's
     # behaviour with what was read — the verdict says so rather than pretending.
     #
     # The gate is decided INSIDE that wait, not assumed from it: `--only W11` left both
@@ -20245,7 +20313,7 @@ def w11():
     # lease) then 'GAP the child-run tree arms — the /tree route holds no children', with
     # the run still waiting_human in postgres afterwards. /fan_out is behind the approval
     # gate, so W11 decides it on C1b's own route and says so in its own report.
-    children = w11_wait_fanout_children(client, run_id, C8_ITEMS, 300,
+    children = w11_wait_fanout_children(client, run_id, C8_ITEMS, W11_FANOUT_WINDOW_S,
                                         project_id=project_id)
     show(f"W11 GET /runs/{run_id}/tree",
          f"{len(children)} child row(s); depths={sorted({w11_child_view(c)['depth'] for c in children})}; "
