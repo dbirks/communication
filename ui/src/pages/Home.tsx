@@ -22,7 +22,7 @@ import { useAgentProfiles, useMe, useProjects } from "../api/queries";
 import { STATES } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { routes } from "../lib/routes";
-import { greeting } from "./Inbox";
+import { greeting } from "../lib/greeting";
 
 /** Run statuses each count-line segment counts (the board's columns). */
 const NEED_YOU = ["waiting_human", "paused"];

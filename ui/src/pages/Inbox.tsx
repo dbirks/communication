@@ -52,6 +52,7 @@ import type { Approval, ConversationSummary, Project, RunSummary } from "../api/
 import InboxCard from "../components/inbox/InboxCard";
 import { OriginBadge } from "../components/Conversations";
 import { formatAge, shortId, testidOf } from "../lib/format";
+import { greeting } from "../lib/greeting";
 import {
   useProjectAttention,
   attentionTitle,
@@ -195,15 +196,6 @@ export default function Inbox() {
       {running.length > 0 ? <RunningStrip items={running} slugs={slugs} /> : null}
     </div>
   );
-}
-
-/** "Good morning|afternoon|evening, <first name>" — the wall clock's, not the
- * server's (the wire carries no greeting). */
-export function greeting(now: Date, displayName: string | undefined | null): string {
-  const hour = now.getHours();
-  const part = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
-  const first = displayName?.trim().split(/\s+/)[0];
-  return `Good ${part}, ${first || "there"}`;
 }
 
 /**
