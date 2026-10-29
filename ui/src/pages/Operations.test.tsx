@@ -198,7 +198,7 @@ function ops4hRoutes(overrides: {
 }) {
   const scheduler: SchedulerStatus = {
     ...loaded,
-    ...(overrides.scheduler ?? {}),
+    ...overrides.scheduler,
   };
   const base: RouteStub[] = [
     { path: "/api/v1/me", body: meFixture },
