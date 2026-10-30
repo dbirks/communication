@@ -98,7 +98,7 @@ control; both API replicas restart and both members' transcripts are identical.
 | `E2E_COMPOSE_PROJECT`                            | `communication-e2e`                  | compose project used by the restart steps                                     |
 | `E2E_COMPOSE_FILES`                              | `compose.yml,e2e/compose.e2e.yml`    | `-f` layers the restart steps address (pass the harness layers for an M2 run) |
 | `E2E_TURN_TIMEOUT_MS`                            | `300000`                             | ceiling for one real agent turn                                               |
-| `E2E_PERMISSION_TIMEOUT_MS`                      | `180000`                             | ceiling for a permission request to appear / a controller change to land      |
+| `E2E_PERMISSION_TIMEOUT_MS`                      | `420000`                             | ceiling for a permission request to appear / a controller change to land      |
 
 Model output is not scriptable, so the prompts name the tool and the exact
 content ("use the Write tool to create `repos/hello-world/NOTES.md` containing

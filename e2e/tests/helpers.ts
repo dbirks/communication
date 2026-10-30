@@ -7,7 +7,13 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, type Locator, type Page } from "@playwright/test";
-import { AGENT_TURN_TIMEOUT_MS, COMPOSE_FILES, COMPOSE_PROJECT } from "./env.js";
+import {
+  AGENT_TURN_TIMEOUT_MS,
+  COMPOSE_FILES,
+  COMPOSE_PROJECT,
+  PERMISSION_TERMINAL_CONFIRM_MS,
+  PERMISSION_TIMEOUT_MS,
+} from "./env.js";
 
 /** Throwaway mock-IdP subjects used across the suite. */
 export const ADMIN_SUBJECT = "admin";
@@ -269,6 +275,112 @@ export function openPermissionCard(page: Page): Locator {
 }
 
 /**
+ * The turn statuses with no future for a permission request, read off the
+ * page's own words (`turnStatusText` in `ui/src/api/transcript.ts`:
+ * `completed (…)`, `cancelled (…)`, `failed (…)`, `stopped — outcome
+ * unknown`). A turn in one of these states can never raise the card, so a wait
+ * for the card must stop rather than sit out its budget.
+ */
+const TERMINAL_TURN_STATUS = /completed|cancelled|failed|stopped — outcome unknown/i;
+/** Statuses that prove the wait is watching a LIVE turn (not a stale chip). */
+const LIVE_TURN_STATUS = /idle|queued|starting|running/i;
+
+/** One locator's text, whitespace-flattened, or "" when it is not on the page. */
+async function flattenedText(target: Locator): Promise<string> {
+  const raw = await target.innerText().catch(() => "");
+  return (raw ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** The page's own description of the newest turn, or "" when it is not there. */
+async function readTurnStatus(page: Page): Promise<string> {
+  return flattenedText(page.getByTestId("turn-status").first());
+}
+
+/** The last transcript line, flattened and clipped — the failure's last fact. */
+async function readLastTranscriptLine(page: Page): Promise<string> {
+  const items = page.getByTestId("transcript-item");
+  const count = await items.count().catch(() => 0);
+  if (count === 0) return "(no transcript lines)";
+  const text = await flattenedText(items.nth(count - 1));
+  if (!text) return "(last transcript line empty)";
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+export interface OpenPermissionWaitOptions {
+  /** Ceiling for the card to appear; defaults to the permission budget. */
+  timeout?: number;
+  /** Extra sentence fragment named in the failure (e.g. the profile under test). */
+  context?: string;
+}
+
+/**
+ * Wait for exactly ONE permission card awaiting a decision, and fail FAST when
+ * it can no longer come.
+ *
+ * The budget ({@link PERMISSION_TIMEOUT_MS} in env.ts, evidence there for
+ * issue #28) is sized for a live agent that stalls an upstream tool-call stream
+ * for ~3 minutes and then retries — so it is minutes, not seconds. Waiting it
+ * out blindly would turn a dead turn into a multi-minute hang, so the wait also
+ * reads the page's own turn status while it polls: the moment a LIVE turn has
+ * been seen and it then reaches a terminal status (`completed`, `cancelled`,
+ * `failed`, `stopped`) with no card, the wait fails immediately with a message
+ * naming that turn status and the last transcript line, instead of sitting out
+ * the budget. The terminal read is confirmed for {@link
+ * PERMISSION_TERMINAL_CONFIRM_MS} only while no live turn has been observed
+ * yet, because the chip can still describe the PREVIOUS turn for a moment after
+ * a prompt is accepted (it reads `cancelled`/`completed` until the new turn's
+ * first event lands).
+ *
+ * Resolves to the open-card locator once exactly one card matches; on a timeout
+ * or a dead turn it throws (no assertion is softened: a card that never arrives
+ * still fails the journey).
+ */
+export async function waitForOpenPermission(
+  page: Page,
+  { timeout = PERMISSION_TIMEOUT_MS, context = "" }: OpenPermissionWaitOptions = {},
+): Promise<Locator> {
+  const pending = openPermissionCard(page);
+  const deadline = Date.now() + timeout;
+  let sawLiveTurn = false;
+  let terminalSince = 0;
+  let lastStatus = "";
+  let lastCount = 0;
+  const fail = async (reason: string): Promise<never> => {
+    const status = (lastStatus || (await readTurnStatus(page)) || "(no turn-status)").replace(
+      /\s+/g,
+      " ",
+    );
+    const line = await readLastTranscriptLine(page);
+    throw new Error(
+      `no single open permission card on ${page.url()} ${reason} ` +
+        `(cards awaiting a decision: ${lastCount}; turn status: "${status}"; ` +
+        `last transcript line: ${line})${context ? ` — ${context}` : ""}`,
+    );
+  };
+  for (;;) {
+    lastCount = await pending.count().catch(() => 0);
+    if (lastCount === 1) return pending;
+    lastStatus = await readTurnStatus(page);
+    if (LIVE_TURN_STATUS.test(lastStatus)) {
+      sawLiveTurn = true;
+      terminalSince = 0;
+    } else if (TERMINAL_TURN_STATUS.test(lastStatus)) {
+      if (sawLiveTurn) await fail("never appeared — the turn is over");
+      terminalSince = terminalSince === 0 ? Date.now() : terminalSince;
+      if (Date.now() - terminalSince >= PERMISSION_TERMINAL_CONFIRM_MS) {
+        await fail(
+          `stayed absent while the turn was already over for ${PERMISSION_TERMINAL_CONFIRM_MS}ms`,
+        );
+      }
+    } else {
+      terminalSince = 0;
+    }
+    if (Date.now() >= deadline) await fail(`within ${timeout}ms`);
+    await page.waitForTimeout(1_000);
+  }
+}
+
+/**
  * A handle to ONE specific permission card, captured while it is on screen.
  * The app stamps `data-permission-request-id` on the card's transcript row
  * (`ui/src/components/Transcript.tsx`); a page built before that markup falls
@@ -326,11 +438,10 @@ export function pinnedPermissionCard(page: Page, ref: PermissionCardRef): Locato
  */
 export async function allowOpenPermission(
   page: Page,
-  timeout = AGENT_TURN_TIMEOUT_MS,
+  timeout = PERMISSION_TIMEOUT_MS,
   expectedBy?: string,
 ): Promise<string> {
-  const pending = openPermissionCard(page);
-  await expect(pending).toHaveCount(1, { timeout });
+  const pending = await waitForOpenPermission(page, { timeout });
   const ref = await pinPermissionCard(page, pending.first());
   const yes = pending.getByRole("button", { name: "Yes", exact: true });
   const chosen = (await yes.count()) > 0 ? yes.first() : pending.getByTestId("permission-allow");

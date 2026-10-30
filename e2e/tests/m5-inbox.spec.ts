@@ -32,11 +32,14 @@
 // its decision current with no reload at all.
 //
 // Every wait is bounded. If no permission request appears within
-// E2E_INBOX_PERMISSION_TIMEOUT_MS (120s by default) the test fails saying
-// exactly that — it cannot pass vacuously, because every later step reads the
-// one request id the pending card exposed.
+// E2E_INBOX_PERMISSION_TIMEOUT_MS (the shared permission budget by default —
+// one stalled upstream tool call plus the agent's retry, see env.ts) the test
+// fails saying exactly that, naming the turn status and the last transcript
+// line; and it fails as soon as the turn has ended, without sitting that budget
+// out — it cannot pass vacuously, because every later step reads the one request
+// id the pending card exposed.
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
-import { BASE_URL } from "./env.js";
+import { BASE_URL, PERMISSION_TIMEOUT_MS } from "./env.js";
 import {
   allowOpenPermission,
   expectTurnStatus,
@@ -49,6 +52,7 @@ import {
   signIn,
   startConversation,
   testidOf,
+  waitForOpenPermission,
   type PermissionCardRef,
 } from "./helpers.js";
 
@@ -60,9 +64,13 @@ const ADMIN = { subject: "admin" };
 const ALICE = { subject: "alice", projectSlug: "m4-exit" };
 const BOB = { subject: "bob" };
 
-/** How long a real claude turn gets to raise its first permission prompt. */
+/**
+ * How long a real claude turn gets to raise its first permission prompt: one
+ * stalled upstream tool call plus the agent's retry of it (issue #28), not a
+ * nominal "the turn is being built" budget.
+ */
 const PERMISSION_REQUEST_TIMEOUT_MS = Number(
-  process.env.E2E_INBOX_PERMISSION_TIMEOUT_MS ?? 120_000,
+  process.env.E2E_INBOX_PERMISSION_TIMEOUT_MS ?? PERMISSION_TIMEOUT_MS,
 );
 /** The brief's bound for a pending prompt showing up on the other member. */
 const INBOX_TIMEOUT_MS = Number(process.env.E2E_INBOX_VISIBLE_TIMEOUT_MS ?? 60_000);
@@ -201,26 +209,16 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
         timeout: PERMISSION_REQUEST_TIMEOUT_MS,
       });
     });
-    await test.step("the turn asks a human within 120s, or the arm says so itself", async () => {
-      const pending = openPermissionCard(alice);
-      const asked = await pending
-        .first()
-        .waitFor({ state: "visible", timeout: PERMISSION_REQUEST_TIMEOUT_MS })
-        .then(() => true)
-        .catch(() => false);
-      if (!asked) {
-        const turn =
-          (await alice
-            .getByTestId("turn-status")
-            .textContent()
-            .catch(() => null)) ?? "?";
-        throw new Error(
-          `the agent never raised a permission request within ${PERMISSION_REQUEST_TIMEOUT_MS}ms ` +
-            `on profile ${PROFILE_NAME} (permission mode ask): turn-status reads "${turn.trim()}" ` +
-            `on ${conversationPath}. Nothing below can be checked without an observed pending ` +
-            `request — check the lab worker's agent turn (ask mode must reach a human).`,
-        );
-      }
+    await test.step("the turn asks a human within the permission budget, or the arm says so itself", async () => {
+      // Bounded AND self-announcing: the helper fails the moment the turn ends
+      // terminal with no card, naming the status and the last transcript line.
+      const pending = await waitForOpenPermission(alice, {
+        timeout: PERMISSION_REQUEST_TIMEOUT_MS,
+        context:
+          `the agent never raised a permission request on profile ${PROFILE_NAME} ` +
+          `(permission mode ask) on ${conversationPath} — check the lab worker's agent turn ` +
+          `(ask mode must reach a human)`,
+      });
       // The request is the one the prompt asked for: the journal names the file,
       // and the card is labelled as the permission request it is.
       const card = pending.first();
@@ -279,8 +277,9 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
       await expect(bob.getByTestId("conversation-title")).toHaveText(TITLE);
     });
     await test.step("the pending request is on the conversation page", async () => {
-      const card = openPermissionCard(bob);
-      await expect(card).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
+      // Same guarantee as alice's wait: bounded by INBOX_TIMEOUT_MS, and dead
+      // the moment the turn itself has ended with no card to mirror.
+      const card = await waitForOpenPermission(bob, { timeout: INBOX_TIMEOUT_MS });
       await expect(card.first()).toContainText("awaiting a decision");
       // Pin THIS card (by request id, positional on older markup) while it is
       // open, so the decision step below can follow the same card to decided

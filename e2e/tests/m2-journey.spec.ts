@@ -27,13 +27,13 @@ import {
   allowOpenPermission,
   expectTurnStatus,
   gotoApp,
-  openPermissionCard,
   restartComposeServices,
   sendPrompt,
   setMember,
   signIn,
   startConversation,
   takeControl,
+  waitForOpenPermission,
 } from "./helpers.js";
 
 // Throwaway mock-IdP identities with readable profiles (ADR-0012 §4: the app
@@ -55,8 +55,17 @@ const LONG_PROMPT =
   "sleep 5; done then say FINISHED.";
 const WRITE_PROMPT = `Use the Write tool to create repos/${REPO_NAME}/NOTES.md containing exactly: handoff ok`;
 
+// A permission card can take a whole upstream stall plus the agent's retry of
+// the stalled tool call to appear (issue #28 — see PERMISSION_TIMEOUT_MS in
+// env.ts), and a test then still has to decide that card and let the turn close.
+// The per-test ceiling is that chain; the waits themselves fail early when the
+// turn is over, so this budget is only ever paid to a live agent.
+const TEST_TIMEOUT_MS = Number(
+  process.env.E2E_M2_TEST_TIMEOUT_MS ?? PERMISSION_TIMEOUT_MS * 2 + AGENT_TURN_TIMEOUT_MS + 120_000,
+);
+
 test.describe("M2 shared conversation and control handoff", () => {
-  test.describe.configure({ mode: "serial", timeout: AGENT_TURN_TIMEOUT_MS });
+  test.describe.configure({ mode: "serial", timeout: TEST_TIMEOUT_MS });
   test.skip(
     !HARNESS_ENABLED,
     "Needs the harness stack with a real agent login — run with COMMUNICATION_E2E_HARNESS=1",
@@ -220,14 +229,12 @@ test.describe("M2 shared conversation and control handoff", () => {
 
   test("a permission request is actionable for alice and read-only for bob", async () => {
     await sendPrompt(alice, LONG_PROMPT);
-    const card = openPermissionCard(alice);
-    await expect(card).toHaveCount(1, { timeout: PERMISSION_TIMEOUT_MS });
+    const card = await waitForOpenPermission(alice, { timeout: PERMISSION_TIMEOUT_MS });
     await expect(card).toContainText("for i in 1 2 3 4 5 6 7 8 9 10");
     await expect(card.getByRole("button", { name: /yes|allow/i }).first()).toBeVisible();
 
     // The same card on bob's replica: visible, and explicitly not his to answer.
-    const bobCard = openPermissionCard(bob);
-    await expect(bobCard).toHaveCount(1, { timeout: PERMISSION_TIMEOUT_MS });
+    const bobCard = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
     await expect(bobCard.getByTestId("permission-readonly")).toContainText(ALICE.name);
     await expect(bobCard.getByRole("button")).toHaveCount(0);
 
@@ -259,8 +266,7 @@ test.describe("M2 shared conversation and control handoff", () => {
 
   test("bob prompts a file write, approves it, and the turn completes", async () => {
     await sendPrompt(bob, WRITE_PROMPT);
-    const card = openPermissionCard(bob);
-    await expect(card).toHaveCount(1, { timeout: PERMISSION_TIMEOUT_MS });
+    const card = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
     await expect(card.getByTestId("permission-readonly")).toHaveCount(0);
     const label = await allowOpenPermission(bob, undefined, BOB.name);
     await expectTurnStatus(bob, /completed/);
