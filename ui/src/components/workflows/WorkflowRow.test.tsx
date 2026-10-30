@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MoveToFolderDialog, WorkflowRow, stepChain } from "./WorkflowRow";
+import { UNFILED_FOLDER } from "../../api/pipelines";
 import type { Assignment, PipelineRevisionSummary, Project } from "../../api/types";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import { PIPELINE_TEMPLATES } from "../../lib/pipeline/templates";
@@ -199,7 +200,7 @@ describe("MoveToFolderDialog (ADR-0049 § 8)", () => {
   };
   const patchPath = `/api/v1/pipelines/${WIRE_PIPELINE_ID}`;
 
-  function mountDialog() {
+  function mountDialog(overrides: { folders?: string[] } = {}) {
     const { fetchMock, requests } = mockFetch([
       { path: patchPath, method: "PATCH", body: { ...wirePipeline, folder: "Delivery" } },
       {
@@ -215,7 +216,7 @@ describe("MoveToFolderDialog (ADR-0049 § 8)", () => {
         <MemoryRouter>
           <MoveToFolderDialog
             pipeline={folderRow}
-            folders={["Delivery", "Ops"]}
+            folders={overrides.folders ?? ["Delivery", "Ops"]}
             onClose={() => {}}
           />
         </MemoryRouter>
@@ -242,6 +243,38 @@ describe("MoveToFolderDialog (ADR-0049 § 8)", () => {
   it("sends `folder: null` when the input is left empty (Unfiled)", async () => {
     const { requests } = mountDialog();
     await screen.findByTestId("move-folder-input");
+    fireEvent.click(screen.getByTestId("move-folder-submit"));
+    await waitFor(() => {
+      expect(requestsTo(requests, patchPath, "PATCH")).toHaveLength(1);
+    });
+    const sent = JSON.parse(requestsTo(requests, patchPath, "PATCH")[0].body ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(sent).toEqual({ folder: null });
+  });
+
+  // #27: the index's folder list ends in the `Unfiled` GROUP label (the
+  // sidebar's and the filter's own sentinel). Handed to the dialog as an
+  // ordinary folder, it drew a second `Unfiled` chip that typed the word
+  // "Unfiled" into the field and filed the row in a folder NAMED Unfiled.
+  it("draws one Unfiled quick-pick when the caller's list carries the Unfiled group label", async () => {
+    mountDialog({ folders: ["Delivery", "Ops", UNFILED_FOLDER] });
+    const dialog = await screen.findByTestId("move-folder-dialog");
+    expect(within(dialog).getAllByTestId("move-folder-option-unfiled")).toHaveLength(1);
+    expect(
+      within(dialog)
+        .getAllByTestId(/^move-folder-option-/)
+        .map((chip) => chip.textContent),
+    ).toEqual(["Delivery", "Ops", "Unfiled"]);
+  });
+
+  it("the one Unfiled quick-pick unfiles: the write is `PATCH {folder:null}`, never the label", async () => {
+    const { requests } = mountDialog({ folders: ["Delivery", "Ops", UNFILED_FOLDER] });
+    const input = (await screen.findByTestId("move-folder-input")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Delivery" } });
+    fireEvent.click(screen.getByTestId("move-folder-option-unfiled"));
+    expect(input.value).toBe("");
     fireEvent.click(screen.getByTestId("move-folder-submit"));
     await waitFor(() => {
       expect(requestsTo(requests, patchPath, "PATCH")).toHaveLength(1);

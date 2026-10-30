@@ -220,9 +220,11 @@ export function LibraryPage() {
 
   const duplicate = useDuplicatePipeline(items.map((pipeline) => pipeline.slug));
 
-  // The dialog's folder picker and the move dialog's chips share the same
-  // names: the wire's distinct folder values (alphabetical). The filter
-  // `?folder=` param additionally names the Unfiled group.
+  // Both dialog folder pickers take the wire's distinct REAL folder values
+  // (alphabetical) — never the `Unfiled` sentinel, which is a group LABEL:
+  // `Move to folder…` owns the one Unfiled quick-pick and writes `null` (#27).
+  // `folderNames` keeps the label, because there a label IS a group: the
+  // `?folder=` filter the sidebar's folder links set.
   const realFolderNames = useMemo(() => distinctFolders(items), [items]);
   const folderNames = useMemo(() => {
     const names = [...realFolderNames];
@@ -575,7 +577,7 @@ export function LibraryPage() {
       {moveTarget ? (
         <MoveToFolderDialog
           pipeline={moveTarget}
-          folders={folderNames}
+          folders={realFolderNames}
           onClose={() => setMoveTarget(null)}
         />
       ) : null}

@@ -316,7 +316,10 @@ const DIALOG_FOCUSABLE =
 export interface MoveToFolderDialogProps {
   /** The row being moved; its current group starts the input. */
   pipeline: { id: string; slug: string; display_name: string; folder?: string | null };
-  /** The index's distinct existing folder names (the quick-pick chips). */
+  /** The index's distinct REAL folder names (the quick-pick chips). The
+   * dialog owns the one `Unfiled` quick-pick, so a caller that hands over the
+   * index's group labels gets the `Unfiled` sentinel dropped (#27) — a chip
+   * for it would file the row in a folder NAMED Unfiled instead of unfileing. */
   folders: string[];
   onClose: () => void;
 }
@@ -326,6 +329,10 @@ export function MoveToFolderDialog({ pipeline, folders, onClose }: MoveToFolderD
   const openerRef = useRef<Element | null>(null);
   const [value, setValue] = useState(pipeline.folder ?? "");
   const move = useMovePipelineFolder(pipeline.id);
+  // `Unfiled` is the index's GROUP LABEL for a `null` folder, never a folder
+  // the dialog offers (#27): the chip below is the one Unfiled quick-pick and
+  // it writes `null`. Anything else in the list is a real folder name.
+  const existingFolders = folders.filter((folder) => folder !== UNFILED_FOLDER);
 
   useLayoutEffect(() => {
     openerRef.current = document.activeElement;
@@ -392,7 +399,7 @@ export function MoveToFolderDialog({ pipeline, folders, onClose }: MoveToFolderD
           data-testid="move-folder-form"
         >
           <div className="flex flex-wrap gap-[6px]">
-            {folders.map((folder) => (
+            {existingFolders.map((folder) => (
               <Button
                 key={folder}
                 type="button"
