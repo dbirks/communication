@@ -17,5 +17,7 @@
   "threads-one-off-filter": "design 1g: the 'one-off only' default is dropped — the thread list now filters with the chips threads-filter-all ('all projects'), threads-filter-mine and threads-filter-runs ('from runs') over the search field threads-search (Threads Review handoff)",
   "studio-undo-mobile": "390 reflow: the phone header no longer duplicates undo/redo — the single studio-undo/studio-redo pair is visible at every width (ui/src/components/studio/StudioHeader.tsx)",
   "studio-redo-mobile": "390 reflow: the phone header no longer duplicates undo/redo — the single studio-undo/studio-redo pair is visible at every width (ui/src/components/studio/StudioHeader.tsx)",
-  "validate-panel-milestone-*": "copy-milestones: a W8 row no longer prints the internal build milestone the server names — the row's marker is validate-panel-deferred-* ('not available yet') and the server's own sentence stays as data-server-message on validate-panel-message-* (ui/src/components/m4/ValidatePanel.tsx)"
+  "validate-panel-milestone-*": "copy-milestones: a W8 row no longer prints the internal build milestone the server names — the row's marker is validate-panel-deferred-* ('not available yet') and the server's own sentence stays as data-server-message on validate-panel-message-* (ui/src/components/m4/ValidatePanel.tsx)",
+  "run-nav-collapse": "design run view (10): the run page has no runs list — the project's runs live on the project's Runs tab — so the inspector's left nav is the section rail alone and nothing collapses (ui/src/pages/RunInspector.tsx)",
+  "run-nav-expand": "design run view (10): the collapsed 2.25rem rail existed only to restore the runs list the run page no longer mounts; the section rail is always shown (ui/src/pages/RunInspector.tsx)"
 }

@@ -5,7 +5,7 @@
  * pane is linkable. Served by the fake fetch and the fake EventSource — the
  * same doubles that prove `/__m4-preview?source=live`.
  */
-import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FakeEventSource,
@@ -22,6 +22,7 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import { mountRunPage } from "../test/inspectorMount";
+import { routes as appRoutes } from "../lib/routes";
 import RunInspector, {
   attentionNodeId,
   diagnosticsLayoutFor,
@@ -161,8 +162,14 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(screen.getByTestId("run-tab-definition")).toBeTruthy();
     expect(screen.getByTestId("run-tab-execution")).toBeTruthy();
     expect(screen.getByTestId("run-tab-timeline")).toBeTruthy();
-    // The design's left column is the run list, with the open run raised.
-    expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
+    // The design's left column is the project's section rail, at `Runs` — the
+    // runs list is not on the run page (`10` has none; it lives on the
+    // project's Runs tab), so the rail is the way back to it.
+    const rail = await screen.findByRole("navigation", { name: "Project sections" });
+    const runsLink = within(rail).getByRole("link", { name: "Runs" });
+    expect(runsLink.getAttribute("href")).toBe(appRoutes.projectTab(wireProjectId, "runs"));
+    expect(screen.queryByTestId("runs-list")).toBeNull();
+    expect(screen.queryByTestId(`run-row-${WIRE_RUN_ID}`)).toBeNull();
   });
 
   it("4a: the stage strip rides above the tabs, on every tab", async () => {
@@ -170,7 +177,12 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     // hides behind a tab — so it answers before anyone clicks Execution.
     const { requests } = mountRun();
     await screen.findByTestId("run-stage-strip");
-    expect(screen.getByTestId("definition-graph")).toBeTruthy();
+    // The graph arrives with the pinned revision read, which is its own frame
+    // after the strip's first paint (the strip needs only the run's rows). The
+    // old synchronous read passed because the runs column's request kept the
+    // query queue busy through this tick; the strip's contract — it rides above
+    // the tabs on every tab — is unchanged.
+    expect(await screen.findByTestId("definition-graph")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("run-tab-timeline"));
     expect(screen.getByTestId("run-stage-strip")).toBeTruthy();
@@ -337,15 +349,16 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(inspector.getAttribute("data-full-width")).toBe(
       String(document.documentElement.clientWidth || window.innerWidth),
     );
-    expect(inspector.className).toContain("xl:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)");
+    // The rail is the 160px column every other project screen gives it, and it
+    // is always there: no runs column, so no collapse control and no 2.25rem
+    // shut variant of the template.
+    expect(inspector.className).toContain("xl:grid-cols-[10rem_minmax(0,1fr)");
     expect(screen.getByTestId("run-inspector-detail")).toBeTruthy();
-    // The runs column collapses to make room for the graph and stays restorable.
-    fireEvent.click(screen.getByTestId("run-nav-collapse"));
-    expect(screen.getByTestId("run-inspector").className).toContain(
-      "xl:grid-cols-[2.25rem_minmax(0,1fr)",
-    );
-    fireEvent.click(screen.getByTestId("run-nav-expand"));
-    expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
+    expect(screen.queryByTestId("run-nav-collapse")).toBeNull();
+    expect(screen.queryByTestId("run-nav-expand")).toBeNull();
+    // The rail's Runs link is how the reader gets back to the list.
+    const rail = screen.getByTestId("run-inspector-nav");
+    expect(within(rail).getByRole("link", { name: "Runs" })).toBeTruthy();
   });
 
   it("selects a node from the definition graph into the URL and the right pane", async () => {
@@ -1161,50 +1174,51 @@ describe("the diagnostics grid's columns", () => {
   // The widths this grid is read at: 1040 = the workbench `<main>` with the
   // dock collapsed at 1280, 593 = the same screen with the default 440px dock
   // open, 314 = the dock dragged to its 720px maximum, 390 = the phone. Plus
-  // the widths either side of each threshold, where a tier chosen one pixel
-  // early is the bug. Measured against the running page, not invented:
+  // the widths either side of each threshold (880 = rail 10rem + detail 26rem
+  // + pane 19rem; 460 = rail 10rem + a 300px pane), where a tier chosen one
+  // pixel early is the bug. Measured against the running page, not invented:
   // see the workbench-dock-grid report.
   const HOSTS = [
-    200, 313, 314, 358, 390, 480, 539, 540, 541, 593, 640, 700, 820, 959, 960, 961, 1040, 1280,
+    200, 313, 314, 358, 390, 459, 460, 461, 480, 593, 640, 700, 820, 879, 880, 881, 1040, 1280,
     1600,
   ];
 
-  for (const navOpen of [true, false]) {
-    it(`asks for no more than its host has${navOpen ? "" : " with the runs column collapsed"}`, () => {
-      for (const host of HOSTS) {
-        const layout = diagnosticsLayoutFor(host, navOpen);
-        expect(templateFloorPx(layout), `${host} → ${layout.grid}: floor`).toBeLessThanOrEqual(
-          host,
-        );
-        if (layout.tier !== "stacked") {
-          // The middle pane is the work surface; under ~19rem it is a caption.
-          expect(
-            templatePanePx(layout, host),
-            `${host} → ${layout.grid}: pane`,
-          ).toBeGreaterThanOrEqual(300);
-        }
+  it("asks for no more than its host has", () => {
+    for (const host of HOSTS) {
+      const layout = diagnosticsLayoutFor(host);
+      expect(templateFloorPx(layout), `${host} → ${layout.grid}: floor`).toBeLessThanOrEqual(host);
+      if (layout.tier !== "stacked") {
+        // The middle pane is the work surface; under ~19rem it is a caption.
+        expect(
+          templatePanePx(layout, host),
+          `${host} → ${layout.grid}: pane`,
+        ).toBeGreaterThanOrEqual(300);
       }
-    });
-  }
+    }
+  });
 
   it("keeps the run view's three panes exactly where the design has them", () => {
-    // 1280 with the dock closed is the drawn look, so it is still the drawn
-    // template: the same tracks the inspector's own route puts on at `xl:`.
-    expect(diagnosticsLayoutFor(1040, true).grid).toBe(
-      "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+    // 1280 with the dock closed is the drawn look, and it is the same template
+    // the inspector's own route puts on at `xl:`: the 160px section rail, a
+    // flexible middle, the node detail at the run view's drawn width. The
+    // 13–15rem the runs column took is gone, so the graph and the strip get it.
+    expect(diagnosticsLayoutFor(1040).grid).toBe(
+      "grid-cols-[10rem_minmax(0,1fr)_minmax(22.5rem,26rem)]",
     );
-    expect(diagnosticsLayoutFor(1040, true).tier).toBe("panes");
+    expect(diagnosticsLayoutFor(1040).tier).toBe("panes");
   });
 
   it("gives up one column at a time as the dock takes the room", () => {
-    expect(diagnosticsLayoutFor(593, true).tier).toBe("split"); // 1280, 440px dock open
-    expect(diagnosticsLayoutFor(314, true).tier).toBe("stacked"); // 1280, dock at its 720px max
-    expect(diagnosticsLayoutFor(390, true).tier).toBe("stacked"); // the phone's reflow
-    // The tiers read the host's width alone, so collapsing the runs column
-    // changes the template, never which tier is chosen: the phone still stacks
-    // with the rail collapsed, exactly as it did before the dock existed.
-    expect(diagnosticsLayoutFor(390, false).tier).toBe("stacked");
-    expect(diagnosticsLayoutFor(593, false).grid).toBe("grid-cols-[2.25rem_minmax(0,1fr)]");
+    expect(diagnosticsLayoutFor(593).tier).toBe("split"); // 1280, 440px dock open
+    expect(diagnosticsLayoutFor(314).tier).toBe("stacked"); // 1280, dock at its 720px max
+    expect(diagnosticsLayoutFor(390).tier).toBe("stacked"); // the phone's reflow
+    // The rail never collapses, so the templates it offers are the only ones:
+    // the dock-open split is the rail beside the panes, nothing narrower.
+    expect(diagnosticsLayoutFor(593).grid).toBe("grid-cols-[10rem_minmax(0,1fr)]");
+    expect(diagnosticsLayoutFor(460).tier).toBe("split");
+    expect(diagnosticsLayoutFor(459).tier).toBe("stacked");
+    expect(diagnosticsLayoutFor(880).tier).toBe("panes");
+    expect(diagnosticsLayoutFor(879).tier).toBe("split");
   });
 });
 
@@ -1252,20 +1266,21 @@ describe("the diagnostics grid hosted by the workbench", () => {
     mountEmbedded(593);
     const inspector = await screen.findByTestId("run-inspector");
     expect(inspector.getAttribute("data-diagnostics-tier")).toBe("split");
-    expect(inspector.className).toContain("grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)]");
+    expect(inspector.className).toContain("grid-cols-[10rem_minmax(0,1fr)]");
     expect(inspector.className).not.toContain("minmax(22.5rem,26rem)");
     expect(inspector.className).not.toContain("xl:");
-    // The node detail is the whole run of the row under the other two panes.
+    // The node detail is the whole run of the row under the rail and the panes.
     expect(screen.getByTestId("run-inspector-detail").className).toContain("col-span-2");
+    // And what sits in that first 160px column is the section rail, not a runs
+    // list: the run page has no runs column any more.
+    expect(within(screen.getByTestId("run-inspector-nav")).queryByTestId("runs-list")).toBeNull();
   });
 
   it("keeps all three panes when the dock is closed", async () => {
     mountEmbedded(1040);
     const inspector = await screen.findByTestId("run-inspector");
     expect(inspector.getAttribute("data-diagnostics-tier")).toBe("panes");
-    expect(inspector.className).toContain(
-      "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
-    );
+    expect(inspector.className).toContain("grid-cols-[10rem_minmax(0,1fr)_minmax(22.5rem,26rem)]");
     const detail = screen.getByTestId("run-inspector-detail");
     expect(detail.className).toContain("border-l");
     expect(detail.className).not.toContain("col-span-2");
@@ -1279,7 +1294,7 @@ describe("the diagnostics grid hosted by the workbench", () => {
     const detail = screen.getByTestId("run-inspector-detail");
     expect(detail.className).toContain("border-t");
     expect(detail.className).not.toContain("col-span-2");
-    // And the runs list is a top bar again, not a column with a right border.
+    // And the section rail is a top block again, not a column with a right border.
     expect(screen.getByTestId("run-inspector-nav").className).toContain("border-b");
   });
 
@@ -1295,7 +1310,7 @@ describe("the diagnostics grid hosted by the workbench", () => {
     expect(inspector.getAttribute("data-diagnostics-tier")).toBe("route");
     expect(inspector.className).toContain("grid-cols-1");
     expect(inspector.className).toContain(
-      "xl:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+      "xl:grid-cols-[10rem_minmax(0,1fr)_minmax(22.5rem,26rem)]",
     );
   });
 });

@@ -1,8 +1,13 @@
 /**
  * `/projects/:projectId/runs/:runId` — the run inspector as a real route, laid
- * out like the design's run view (references 3b/3d/4a): runs column on the
- * left, header + Definition | Execution | Timeline panes in the middle, the
- * selected node's detail on the right.
+ * out like the design's run view (references 3b/3d/4a): the project's section
+ * rail on the left, header + Definition | Execution | Timeline panes in the
+ * middle, the selected node's detail on the right.
+ *
+ * There is no runs list here. `10`'s run view has none: the project's runs live
+ * on the project's Runs tab, which is where `RunsListColumn` is mounted (see
+ * `ProjectRuns.tsx`). The rail above the pane is the way back to it, and the
+ * workbench header's `Project / Runs / run` breadcrumb is the other.
  *
  * Everything here is live: the same hooks the `/__m4-preview?source=live`
  * seam proved (`api/runs.ts`, `api/pipelines.ts`, `api/approvals.ts`,
@@ -76,13 +81,7 @@ import type {
   RunTreeRoot,
 } from "../lib/pipeline/contract";
 import type { EventActor, EventEnvelope, PipelineRevisionSummaryList } from "../api/types";
-import {
-  ProjectSectionNav,
-  RunStatusChip,
-  RunsListColumn,
-  shortDigest,
-  shortId,
-} from "./ProjectRuns";
+import { ProjectSectionNav, RunStatusChip, shortDigest, shortId } from "./ProjectRuns";
 import { routes } from "../lib/routes";
 import { NewRevisionNotice } from "../components/workbench/RunHeader";
 
@@ -96,22 +95,27 @@ const TABS: readonly { id: Tab; label: string }[] = [
 /* ------------------------------------------- the diagnostics grid's columns */
 
 /** Three panes sit side by side once their own ceilings fit with room for the
- * middle one: the runs column reads at 13–15rem, the node detail at 22.5–26rem
+ * middle one: the section rail is the 160px (10rem) every other project screen
+ * gives it (`Artifacts.tsx`, `ProjectConversations.tsx`; `ProjectTabs.tsx`
+ * calls it "the 160px `ProjectSectionNav` rail"), the node detail is 22.5–26rem
  * (the run view's drawn width) and a stage strip, a definition graph or a
- * branch grid under ~19rem is a caption rather than a work surface. 1040px —
- * the workbench `<main>` with its dock CLOSED at 1280 — clears it with 384px
- * left for the panes, which is the look the run view was drawn at, unchanged. */
-export const DIAGNOSTICS_PANES_MIN = 960;
-/** Two panes — the runs list beside the strip/graph/tree, the node detail
- * under them across the full width — need the runs column's 15rem ceiling plus
- * that same middle pane. 593px — the workbench `<main>` with the 440px dock
- * OPEN at 1280 — clears it and leaves the middle pane 353px, the width the
- * stage strip says it is drawn for. */
-export const DIAGNOSTICS_SPLIT_MIN = 540;
+ * branch grid under ~19rem is a caption rather than a work surface.
+ * 10rem + 26rem + 19rem = 160 + 416 + 304 = 880px; 1040px — the workbench
+ * `<main>` with its dock CLOSED at 1280 — clears it with 464px for the middle
+ * pane, 128px wider than the runs column ever left it. */
+export const DIAGNOSTICS_PANES_MIN = 880;
+/** Two panes — the rail beside the strip/graph/tree, the node detail under
+ * them across the full width — need the rail's 160px plus the narrowest middle
+ * surface worth working in (300px, the same floor the three-pane tier keeps).
+ * 460px; 593px — the workbench `<main>` with the 440px dock OPEN at 1280 —
+ * clears it and leaves the middle pane 433px, 133px more than the runs column
+ * took from it. */
+export const DIAGNOSTICS_SPLIT_MIN = 460;
 
-/** What the grid does at a measured width: all three panes across, the runs
- * column across with the detail below it, or one stacked column (the 390
- * reflow, which is also the answer when nothing has been measured yet). */
+/** What the grid does at a measured width: all three panes across, the node
+ * detail across the row under the rail and the panes, or one stacked column
+ * (the 390 reflow, which is also the answer when nothing has been measured
+ * yet). */
 export type DiagnosticsTier = "panes" | "split" | "stacked";
 
 export function diagnosticsTierFor(width: number): DiagnosticsTier {
@@ -120,25 +124,19 @@ export function diagnosticsTierFor(width: number): DiagnosticsTier {
   return "stacked";
 }
 
-/** How the runs list reads at each tier: the collapse control still reaches it,
- * so the collapsed rail is its own template rather than a hidden column.
+/** One template per tier — the rail is always there, so there is no collapsed
+ * variant of it any more.
  *
  * Every class here is written OUT in full, never built from pieces: Tailwind
- * scans the source as text, so an interpolated `grid-cols-[${nav}_${PANES}]`
+ * scans the source as text, so an interpolated `grid-cols-[${rail}_${PANES}]`
  * compiles to no rule at all and the grid silently falls back to one implicit
  * column per child — the failure this page is about, only harder to see. Each
  * template is `minmax` floors with an `fr` middle, so no tier can ask for more
  * than its host has and paint the difference under the workbench dock. */
-const LAYOUT: Record<DiagnosticsTier, { open: string; shut: string }> = {
-  panes: {
-    open: "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]",
-    shut: "grid-cols-[2.25rem_minmax(0,1fr)_minmax(22.5rem,26rem)]",
-  },
-  split: {
-    open: "grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)]",
-    shut: "grid-cols-[2.25rem_minmax(0,1fr)]",
-  },
-  stacked: { open: "grid-cols-1", shut: "grid-cols-1" },
+const LAYOUT: Record<DiagnosticsTier, string> = {
+  panes: "grid-cols-[10rem_minmax(0,1fr)_minmax(22.5rem,26rem)]",
+  split: "grid-cols-[10rem_minmax(0,1fr)]",
+  stacked: "grid-cols-1",
 };
 
 export interface DiagnosticsLayout {
@@ -146,15 +144,15 @@ export interface DiagnosticsLayout {
   tier: DiagnosticsTier;
   /** the grid element's own column classes (replaces the `xl:` template) */
   grid: string;
-  /** the runs column's separating border */
+  /** the section rail's separating border */
   nav: string;
   /** the node detail's placement and separating border */
   detail: string;
 }
 
-export function diagnosticsLayoutFor(width: number, navOpen: boolean): DiagnosticsLayout {
+export function diagnosticsLayoutFor(width: number): DiagnosticsLayout {
   const tier = diagnosticsTierFor(width);
-  const grid = navOpen ? LAYOUT[tier].open : LAYOUT[tier].shut;
+  const grid = LAYOUT[tier];
   if (tier === "panes")
     return { tier, grid, nav: "border-r border-line", detail: "border-l border-line" };
   if (tier === "split")
@@ -162,7 +160,7 @@ export function diagnosticsLayoutFor(width: number, navOpen: boolean): Diagnosti
       tier,
       grid,
       nav: "border-r border-line",
-      // The detail is the whole run of the row under the other two panes.
+      // The detail is the whole run of the row under the rail and the panes.
       detail: "col-span-2 border-t border-line",
     };
   return { tier, grid, nav: "border-b border-line", detail: "border-t border-line" };
@@ -201,7 +199,6 @@ export default function RunInspector({
   // (`diagnosticsLayoutFor`) instead of the viewport.
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [bleed, setBleed] = useState<{ offset: number; width: number } | null>(null);
-  const [navOpen, setNavOpen] = useState(true);
   /** Measure from the parent, never from the element itself: the parent's
    * content-box left is the child's static position and does not move when the
    * child's own negative margin does. */
@@ -433,9 +430,10 @@ export default function RunInspector({
 
   const run = projection.run;
   const slug = slugsById.get(run.pipeline_id) ?? run.pipeline_id;
-  // Runs column on the left (collapsible), the panes flexible in the middle —
-  // never less than about 60% of what is left — and the node's detail on the
-  // right at the 360–420px the run view is drawn at.
+  // Section rail on the left, the panes flexible in the middle, and the node's
+  // detail on the right at the 360–420px the run view is drawn at. There is no
+  // runs list and nothing to collapse it: the rail is the design's left column
+  // and the freed 13–15rem goes to the work surface.
   //
   // As its own route the page bleeds to the shell's whole content column, so
   // the viewport and the grid's width are the same number and `xl:` is honest.
@@ -444,11 +442,10 @@ export default function RunInspector({
   // read off the measured width (`diagnosticsLayoutFor`) instead of the
   // viewport — the one template the viewport offers is the wide one, and drawn
   // into 593px it put the node detail under the dock.
-  const paneLayout = embedded ? diagnosticsLayoutFor(bleed?.width ?? 0, navOpen) : null;
-  const tracks = navOpen
-    ? "xl:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)_minmax(22.5rem,26rem)]"
-    : "xl:grid-cols-[2.25rem_minmax(0,1fr)_minmax(22.5rem,26rem)]";
-  const columns = paneLayout ? paneLayout.grid : `grid-cols-1 ${tracks}`;
+  const paneLayout = embedded ? diagnosticsLayoutFor(bleed?.width ?? 0) : null;
+  const columns = paneLayout
+    ? paneLayout.grid
+    : "grid-cols-1 xl:grid-cols-[10rem_minmax(0,1fr)_minmax(22.5rem,26rem)]";
 
   return (
     <div
@@ -469,26 +466,12 @@ export default function RunInspector({
         className={`min-w-0 ${paneLayout ? paneLayout.nav : "border-b border-line xl:border-b-0 xl:border-r"}`}
         data-testid="run-inspector-nav"
       >
-        {navOpen ? (
-          <>
-            <div className="border-b border-line px-3 py-2">
-              <ProjectSectionNav projectId={scopedProjectId} active="runs" />
-            </div>
-            <RunsListColumn projectId={scopedProjectId} selectedRunId={runId} />
-          </>
-        ) : (
-          <div className="flex justify-center border-b border-line py-2">
-            <button
-              type="button"
-              data-testid="run-nav-expand"
-              aria-label="Show the runs list"
-              onClick={() => setNavOpen(true)}
-              className="grid h-[22px] w-[22px] place-items-center rounded-[2px] border border-line bg-surface font-mono text-[11px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-            >
-              {"\u203a"}
-            </button>
-          </div>
-        )}
+        {/* The way back to the project's runs, and to every other section of
+            the project — the same rail the Artifacts and Threads screens
+            mount, at the same 160px. */}
+        <div className="px-3 py-3">
+          <ProjectSectionNav projectId={scopedProjectId} active="runs" />
+        </div>
       </aside>
 
       <main className="min-w-0 px-4 py-3">
@@ -557,43 +540,30 @@ export default function RunInspector({
         </div>
 
         {/* Same width honesty as the header above: the tablist keeps its three
-            tabs on one line and the runs-column verb drops BELOW them when the
-            host is too narrow to hold both, instead of the row pushing its
-            right edge past the host (the workbench at its widest dock leaves
-            this column ~280px, where the verb stuck out by 5px). */}
-        <div className="flex flex-wrap items-center gap-1 py-3">
-          {/* The tablist holds only its tab children (axe aria-required-
-           * children); the collapse control sits beside it. */}
-          <div role="tablist" aria-label="Run views" className="flex gap-1">
-            {TABS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                aria-selected={tab === item.id}
-                data-testid={`run-tab-${item.id}`}
-                onClick={() => setTab(item.id)}
-                className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
-                  tab === item.id
-                    ? "border-ink bg-ink text-paper"
-                    : "border-line text-muted hover:border-line-strong hover:text-ink"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          {navOpen ? (
+            tabs on one line and drops to its own line when the host is too
+            narrow to hold them, instead of the row pushing its right edge past
+            the host. */}
+        {/* The tablist holds only its tab children (axe aria-required-children);
+            the runs-column collapse verb that sat beside it is gone with the
+            column, so the row is the tablist itself. */}
+        <div role="tablist" aria-label="Run views" className="flex flex-wrap gap-1 py-3">
+          {TABS.map((item) => (
             <button
+              key={item.id}
               type="button"
-              data-testid="run-nav-collapse"
-              aria-label="Hide the runs list"
-              onClick={() => setNavOpen(false)}
-              className="ml-auto self-center rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              role="tab"
+              aria-selected={tab === item.id}
+              data-testid={`run-tab-${item.id}`}
+              onClick={() => setTab(item.id)}
+              className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
+                tab === item.id
+                  ? "border-ink bg-ink text-paper"
+                  : "border-line text-muted hover:border-line-strong hover:text-ink"
+              }`}
             >
-              runs {"\u2039"}
+              {item.label}
             </button>
-          ) : null}
+          ))}
         </div>
 
         {tab === "definition" ? (
