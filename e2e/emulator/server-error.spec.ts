@@ -354,18 +354,27 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
     await expect(page.getByTestId("used-in"), "design 2a: the Used in panel renders").toBeVisible({
       timeout: 30_000,
     });
-    // A failed read is NOT a count (pass-2 review, 2a server-error at 390):
-    // the panel header asks with a `?`, the tab beside it drops its number the
-    // same way, and the STANDARD FAILED banner — the same Alert every other
-    // server-error state uses — says what broke.
+    // A failed read is NOT a count (pass-2 review at 390, and pass-7 review on
+    // the `?` the first fix left behind): the panel header says the bare
+    // `USED IN` with NO number, the tab beside it drops its count the same way,
+    // and the STANDARD FAILED banner — the same Alert every other server-error
+    // state uses — says what broke. A `?` would still be a value standing in a
+    // number's seat, so neither surface may print one.
     await expect(
       page.locator("#used-in-heading"),
-      "design 2a: the broken fan reads `USED IN ? REPOS`, never `USED IN 0 REPOS`",
-    ).toHaveText("USED IN ? REPOS", { timeout: 30_000 });
+      "design 2a: the broken fan reads `USED IN` with no count, never `USED IN 0 REPOS`",
+    ).toHaveText("USED IN", { timeout: 30_000 });
+    // The tab's badge is not rendered at all on a broken read — the tab says the
+    // plain word `Used in` — so the assertion is the ABSENCE of the count
+    // element, which is also what proves no `?` and no `0` came back.
     await expect(
       page.getByTestId("workflow-used-in-count"),
-      "design 2a: the tab carries `?` where a count would lie",
-    ).toHaveText("?", { timeout: 30_000 });
+      "design 2a: the tab carries no count element where a read would have to lie",
+    ).toHaveCount(0, { timeout: 30_000 });
+    await expect(
+      page.getByTestId("workflow-tab-used-in"),
+      "design 2a: the tab itself says `Used in`, with no number and no `?`",
+    ).toHaveText(/^Used in$/);
     const banner = page.getByTestId("used-in-error");
     await expect(
       banner,
@@ -531,9 +540,20 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1g: the thread column carries the loud banner",
     ).toBeVisible();
+    // Pass review 1g defect 5: hiding the thread column on a failed read left a
+    // BLANK pane beside the banner at 1280, and an empty screen reads as a
+    // broken app. The column's at-rest truth is still "No thread selected" —
+    // none is — so the failed read KEEPS the prompt, and the refusal stays the
+    // ONE loud banner in the list column above (asserted just here). Below `lg`
+    // the phone's path to a thread is tapping a row, so the column is
+    // allowlisted as the documented 390 collapse (reflow.ts).
     await expect(
       page.getByTestId("threads-no-selection"),
-      "design 1g: the failed read never reads as 'No thread selected'",
+      "design 1g: at 1280 the thread column keeps its honest at-rest prompt beside the banner",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.getByTestId("threads-no-selection").getByRole("alert"),
+      "design 1g: the refusal is said ONCE — the at-rest prompt draws no second banner",
     ).toHaveCount(0);
     await expect(
       page.getByTestId(/^thread-row-/),

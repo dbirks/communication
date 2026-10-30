@@ -102,6 +102,24 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
       `the /threads/<id> page header shows the conversation title "${conversation.title}" and its meta line`,
     );
 
+    // The rail is no longer an always-open column: WORKSPACE, ARTIFACTS and
+    // NEXT sit behind ONE disclosure under the transcript (design thread view),
+    // so the journey opens it before reading anything inside it. The summary
+    // names all three sections, which is the claim that the content moved
+    // behind the door rather than out of the page.
+    const context = page.getByTestId("thread-context-block");
+    await expect(context, "the thread's context block stands under the transcript").toBeVisible();
+    await expect(
+      page.getByTestId("thread-context-disclosure"),
+      "the disclosure names what it holds",
+    ).toContainText(/workspace, artifacts, next/i);
+    await context.locator("summary").click();
+    await expect(context).toHaveAttribute("open", "");
+    await expect(
+      page.getByTestId("thread-context-disclosure"),
+      "the rail is the disclosure's own content — nothing else prints it",
+    ).toBeVisible();
+
     // The rail: the artifacts section says the honest "not available yet"
     // (the API cannot list one thread's files) with its escape hatch.
     await expect(page.getByTestId("artifacts-rail")).toBeVisible();
@@ -118,6 +136,9 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
       "shell-p6-thread-rail",
       `the thread rail shows the honest artifacts note and the "Hand to a workflow…" follow-up ${isDisabled ? "disabled with its reason" : "offered"} (never fake state)`,
     );
+    // The rail stays OPEN from here: every assertion below (the hand-off note,
+    // the draft-PR card) reads content that lives inside it.
+    //
     // ADR-0045: the draft-PR entry is controller-only. If we are not the
     // controller yet, only the honest note is rendered — take control first
     // and the entry appears. The thread page's Take control button commits

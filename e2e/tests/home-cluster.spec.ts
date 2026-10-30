@@ -741,31 +741,54 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       });
     }
     await test.step("assign r1 to the project (Maintainer+ on the project)", async () => {
+      // Design 1b (project-1b-workflows): the tab is ONE panel of 2e rows; the
+      // inline assign form is gone and its one way in is the
+      // `+ use a library workflow` picker, whose single `Use` verb resolves the
+      // newest published revision and posts the whole-project pin.
       await gotoApp(page, `${projectPath}/pipelines`);
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
-      const open = page.getByTestId(`assign-open-${PLAN_SLUG}`);
-      const assignment = page.getByTestId(`pipeline-assignment-${PLAN_SLUG}`);
-      // The assign button and the pin chip are both rendered by the
-      // project-pipelines list once its fetch settles; settle on either
-      // branch's marker before deciding which one is present.
-      await expect(open.or(assignment).first()).toBeVisible({ timeout: 30_000 });
-      if (await open.isVisible().catch(() => false)) {
-        await open.click();
-        await expect(page.getByTestId(`assign-pinning-${PLAN_SLUG}`)).toContainText("r1", {
-          timeout: 30_000,
-        });
-        await page.getByTestId(`assign-confirm-${PLAN_SLUG}`).click();
-        await expect(page.getByTestId(`assign-form-${PLAN_SLUG}`)).toHaveCount(0, {
+      await expect(
+        page
+          .getByTestId("project-workflows-list")
+          .or(page.getByTestId("project-workflows-empty"))
+          .first(),
+      ).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId("project-workflow-library").click();
+      await expect(page.getByTestId("project-library-dialog")).toBeVisible();
+      const use = page.getByTestId(`project-library-use-${PLAN_SLUG}`);
+      const used = page.getByTestId(`project-library-used-${PLAN_SLUG}`);
+      // The picker names each workflow and its latest rN; one click resolves
+      // and posts, so the pin's revision is the newest published r1.
+      await expect(
+        page.getByTestId(`project-library-row-${PLAN_SLUG}`),
+      ).toContainText(/latest r1\b/, { timeout: 30_000 });
+      await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });
+      if (await use.isVisible().catch(() => false)) {
+        await use.click();
+        // The dialog closes only on the create's success — a refusal stays
+        // open with the reason inline (project-library-error).
+        await expect(page.getByTestId("project-library-dialog")).toHaveCount(0, {
           timeout: 30_000,
         });
       } else {
-        // One assignment per pipeline is the store's UNIQUE, so the assign
-        // button renders only while the assignment is absent: its absence plus
-        // the project's own pin chip is the already-assigned state (re-run).
-        await expect(assignment).toBeVisible({ timeout: 30_000 });
+        // One whole-project assignment per pipeline is the store's UNIQUE, so
+        // the picker prints `used in the project` instead of a `Use` button
+        // that could only ever 409 — the already-assigned state (re-run).
+        await expect(used).toBeVisible({ timeout: 30_000 });
+        await page.getByTestId("project-library-cancel").click();
         console.log(`already assigned to the project: ${PLAN_SLUG}`);
         evidence.push(`assignment (reused): ${PLAN_SLUG} r1 pinned to the project`);
       }
+      // Either way the panel itself now carries the workflow as a 2e row
+      // (name link to its page) pinned to r1 — the tab's whole revision story.
+      const planPipelineId = planPipelinePath.replace(/^\/(?:library|workflows)\//, "");
+      const pinnedRow = page
+        .locator('[data-testid^="project-workflow-row-"]')
+        .filter({ has: page.locator(`a[href$="${planPipelineId}"]`) });
+      await expect(pinnedRow).toBeVisible({ timeout: 30_000 });
+      await expect(
+        pinnedRow.locator('[data-testid^="project-workflow-revision-"]'),
+      ).toContainText(/\br1\b/, { timeout: 30_000 });
       assertNoRefusedWrites("step 3 — plan pipeline publish and assign");
       await shot(page, "home-04-assigned");
     });
@@ -964,7 +987,11 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     await test.step("New run: the revision's inputs (goal + the repository binding)", async () => {
       await gotoApp(page, `${projectPath}/runs`);
       await expect(page.getByTestId("project-runs")).toBeVisible({ timeout: UI_TIMEOUT_MS });
-      await page.getByTestId("runs-new").click({ timeout: UI_TIMEOUT_MS });
+      // Design 1b: the RUNS panel carries no "New run" button of its own — the
+      // header band's `Start run` is the page's one door, landing here with
+      // ?new=1 and opening the form above the list.
+      await page.getByTestId("project-start-run").click({ timeout: UI_TIMEOUT_MS });
+      await expect(page).toHaveURL(/[?&]new=1/, { timeout: UI_TIMEOUT_MS });
       await expect(page.getByTestId("new-run-form")).toBeVisible({ timeout: UI_TIMEOUT_MS });
       await selectByOptionText(page, "new-run-assignment", PLAN_SLUG);
       await page.getByTestId("new-run-input-goal").fill(GOAL, { timeout: UI_TIMEOUT_MS });
@@ -1204,31 +1231,48 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await shot(page, "home-10-claude-published");
     });
     await test.step("assign it and start a run on the repository binding", async () => {
+      // Same picker the plan pipeline used: the tab's one way in is
+      // `+ use a library workflow`; `Use` resolves r1 and posts.
       await gotoApp(page, `${projectPath}/pipelines`);
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
-      const open = page.getByTestId(`assign-open-${CLAUDE_SLUG}`);
-      const assignment = page.getByTestId(`pipeline-assignment-${CLAUDE_SLUG}`);
+      await expect(
+        page
+          .getByTestId("project-workflows-list")
+          .or(page.getByTestId("project-workflows-empty"))
+          .first(),
+      ).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId("project-workflow-library").click();
+      await expect(page.getByTestId("project-library-dialog")).toBeVisible();
+      const use = page.getByTestId(`project-library-use-${CLAUDE_SLUG}`);
+      const used = page.getByTestId(`project-library-used-${CLAUDE_SLUG}`);
+      await expect(
+        page.getByTestId(`project-library-row-${CLAUDE_SLUG}`),
+      ).toContainText(/latest r1\b/, { timeout: 30_000 });
       // Same assign/already-assigned race as the plan pipeline: settle on
       // either branch's marker before deciding which one is present.
-      await expect(open.or(assignment).first()).toBeVisible({ timeout: 30_000 });
-      if (await open.isVisible().catch(() => false)) {
-        await open.click();
-        await expect(page.getByTestId(`assign-pinning-${CLAUDE_SLUG}`)).toContainText("r1", {
-          timeout: 30_000,
-        });
-        await page.getByTestId(`assign-confirm-${CLAUDE_SLUG}`).click();
-        await expect(page.getByTestId(`assign-form-${CLAUDE_SLUG}`)).toHaveCount(0, {
+      await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });
+      if (await use.isVisible().catch(() => false)) {
+        await use.click();
+        await expect(page.getByTestId("project-library-dialog")).toHaveCount(0, {
           timeout: 30_000,
         });
       } else {
-        // Re-run: the assign button renders only while the UNIQUE assignment
-        // is absent; its absence plus the project's pin chip is assigned.
-        await expect(assignment).toBeVisible({ timeout: 30_000 });
+        // Re-run: the picker prints `used in the project` only while the
+        // UNIQUE whole-project assignment exists.
+        await expect(used).toBeVisible({ timeout: 30_000 });
+        await page.getByTestId("project-library-cancel").click();
         console.log(`already assigned to the project: ${CLAUDE_SLUG}`);
         evidence.push(`assignment (reused): ${CLAUDE_SLUG} r1 pinned to the project`);
       }
+      // The claude workflow's row answers on the panel — named by the slug it
+      // was created with — before the run form is opened for it.
+      const claudeRow = page
+        .locator('[data-testid^="project-workflow-row-"]')
+        .filter({ has: page.getByTestId(/^project-workflow-name-/) })
+        .filter({ hasText: CLAUDE_SLUG });
+      await expect(claudeRow).toBeVisible({ timeout: 30_000 });
       await gotoApp(page, `${projectPath}/runs`);
-      await page.getByTestId("runs-new").click();
+      await page.getByTestId("project-start-run").click();
       await expect(page.getByTestId("new-run-form")).toBeVisible();
       await selectByOptionText(page, "new-run-assignment", CLAUDE_SLUG);
       await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);

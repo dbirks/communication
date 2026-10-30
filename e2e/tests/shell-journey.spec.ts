@@ -740,8 +740,12 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await repinAssignment(page, state.projectId, state.pipeline.id, state.revisionDigest);
 
     // The project's new-run form (where the Board's “Start run” lands too).
+    // Design 1b: the RUNS panel carries no "New run" button of its own — the
+    // header band's `Start run` is the page's one door, landing here with
+    // ?new=1, which opens the form above the list.
     await gotoApp(page, `/p/${state.projectId}/runs`);
-    await page.getByTestId("runs-new").click();
+    await page.getByTestId("project-start-run").click();
+    await expect(page).toHaveURL(/[?&]new=1/);
     await expect(page.getByTestId("new-run-form")).toBeVisible();
     const select = page.getByTestId("new-run-assignment");
     await expect(select).toBeAttached();

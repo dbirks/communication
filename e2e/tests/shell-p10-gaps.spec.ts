@@ -389,6 +389,15 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
 
     await page.goto(`${BASE_URL}/threads/${conversation.id}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
+    // The rail is not an always-open column: ARTIFACTS sits behind the "Thread
+    // details" disclosure under the transcript (the same door
+    // shell-p6-threads.spec.ts opens), so the arm opens it before reading the
+    // section inside — asserting the rail without opening the door tests the
+    // summary's text, not the rail.
+    const context = page.getByTestId("thread-context-block");
+    await expect(context, "the thread's context block stands under the transcript").toBeVisible();
+    await context.locator("summary").click();
+    await expect(context).toHaveAttribute("open", "");
     await expect(page.getByTestId("artifacts-rail")).toBeVisible({ timeout: 30_000 });
     const rows = page.getByTestId("thread-artifact-row");
     await expect(rows).toHaveCount(Math.min(apiCount, 5));

@@ -583,10 +583,17 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // app's apiFetch does (from GET /api/v1/me).
     await repinAssignment(page, projectId, published.pipelineId as string, state.revisionDigest);
 
-    // The assignment's "when to run" block proves the row is live on the tab.
+    // Design project-1b-workflows: the Workflows tab is ONE panel of 2e rows
+    // — the assignment's old “when to run” block became the row's own
+    // STARTS WHEN box. The panel's row for this pipeline, with its
+    // STARTS WHEN box open (the 2e default), is what proves it is live here.
     await page.goto(`${projectPath}/pipelines`);
     await expect(page.getByTestId("project-pipelines")).toBeVisible();
-    await expect(page.getByTestId(`schedules-block-${state.pipelineSlug}`)).toBeVisible({
+    const assignedRow = page
+      .locator('[data-testid^="project-workflow-row-"]')
+      .filter({ has: page.locator(`a[href$="${published.pipelineId}"]`) });
+    await expect(assignedRow).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    await expect(assignedRow.locator('[data-testid^="project-workflow-starts-"]')).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
 
@@ -615,11 +622,15 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
       }
     }
 
-    // Start the run from the project's New run flow. The form defaults to its
-    // FIRST assignment, so the studio-pinned one must be picked explicitly —
-    // robustly, and proven by the goal input the deterministic revision shows.
+    // Start the run from the project's New run flow. Design 1b: the RUNS
+    // panel carries no "New run" button of its own — the header band's
+    // `Start run` is the page's one door, landing here with `?new=1`. The
+    // form defaults to its FIRST assignment, so the studio-pinned one must be
+    // picked explicitly — robustly, and proven by the goal input the
+    // deterministic revision shows.
     await page.goto(`${projectPath}/runs`);
-    await page.getByTestId("runs-new").click();
+    await page.getByTestId("project-start-run").click();
+    await expect(page).toHaveURL(/[?&]new=1/);
     await selectPipelineAssignment(page, state.pipelineSlug);
     await page.getByTestId("new-run-input-goal").fill(`issue2 acceptance ${STAMP}`);
     const repo = page.getByTestId("new-run-input-repository");
@@ -1147,8 +1158,10 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     expect(after, "the canvas's node count must not grow with run instances").toBe(before);
 
     // Terminal state: completed, or failed because of item 13 — either is
-    // acceptable; log which one the run reached.
-    await expectRunStatus(page, /completed|failed|cancelled|interrupted/i, TERMINAL_TIMEOUT_MS);
+    // acceptable; log which one the run reached. The header chip speaks the
+    // app's short state words (design run view § 1): completed reads `done`,
+    // cancelled and interrupted read `stopped` — never the wire token.
+    await expectRunStatus(page, /done|failed|stopped/i, TERMINAL_TIMEOUT_MS);
     const terminal = (await page.getByTestId("run-header-status").textContent()) ?? "";
     console.log(`WORKBENCH A6: run reached terminal state: ${terminal.trim()}`);
   });

@@ -1,11 +1,14 @@
 // The M6 screens of the M5 exit suite: `/profiles` (ADR-0030 — a launch
 // descriptor, its permission mode, and the APM skill-package pin with its
-// "How do I get this?" digest recipe) and the "When to run" block on
-// `/p/:id/pipelines` (ADR-0032 — a schedule belongs to a project
-// ASSIGNMENT and fires its pinned revision on a UTC cron cadence). There is no
-// `/schedules` route to visit: `ui/src/App.tsx` mounts `/profiles` and
-// `/p/:projectId/pipelines`, and the schedule UI lives beside the
-// assignment it owns (`WhenToRun` in `ui/src/pages/ProjectRunsPipelines.tsx`).
+// "How do I get this?" digest recipe) and the project's Workflows tab
+// (`/p/:id/pipelines`, design project-1b-workflows: ONE panel of 2e rows whose
+// STARTS WHEN box carries the ADR-0032 schedules — a schedule belongs to a
+// project ASSIGNMENT and fires its pinned revision on a UTC cron cadence,
+// authored through the shared 2c `TriggerDialog`). There is no `/schedules`
+// route to visit: `ui/src/App.tsx` mounts `/profiles` and
+// `/p/:projectId/pipelines`, and the schedule UI lives in the row's own
+// STARTS WHEN box (`ProjectWorkflowsPanel`, rows shared with
+// `components/workflows/RepoWorkflows`).
 //
 // It runs against the M4 lab by env override only, exactly like m5-journey and
 // m5-inbox — no second compose project:
@@ -36,11 +39,12 @@
 // the same organization sees the row because "role is not existence
 // information here". So this spec asserts the org-wide visibility positively
 // (erin reads the same row, with no write control) and proves the project
-// boundary where the domain really draws it: project A's assignment and its
-// schedules. Erin deep-linked to `/p/<A>/pipelines` gets the one
+// boundary where the domain really draws it: project A's assignments and their
+// triggers. Erin deep-linked to `/p/<A>/pipelines` gets the one
 // refusal sentence (`ProjectUnavailable`, ADR-0014 § 3) and zero
-// `schedules-block-*`, while alice's identical URL lists the assignment block
-// she can edit.
+// assignment rows (the panel's `project-workflow-row-*` and the STARTS WHEN
+// rows under them), while alice's identical URL lists the 2e rows whose
+// STARTS WHEN box she can edit.
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { gotoApp, openProjectBySlug, selectByOptionText, shot, signIn } from "./helpers.js";
@@ -71,8 +75,8 @@ const APM_DIGEST_SHORT = APM_DIGEST.slice(7, 19);
  * far-future half of the brief's "far-future or disabled" — no matter when the
  * suite runs, the next slot is months away, so a fire during the test is not a
  * race the assertion can lose. The parser in `internal/pipelines/schedule`
- * accepts it (5 fields, UTC) and it is not one of the form's three presets, so
- * what the row says is what was typed.
+ * accepts it (5 fields, UTC). The 2c dialog offers no cadence presets at all,
+ * so what the row says afterwards is what was typed.
  */
 const CRON_FAR_FUTURE = "0 0 1 1 *";
 /** Preferred assignment: the deterministic twin needs no model endpoint even in
@@ -98,8 +102,10 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
   let projectId = "";
   /** The profile this run created; empty when nothing was created. */
   let profileId = "";
-  /** The slug whose assignment got a schedule; empty when nothing was created. */
-  let scheduledSlug = "";
+  /** The `project-workflow-row-*` key whose assignment got a schedule; empty
+   * when nothing was created. The rows are keyed by the served assignment id
+   * (`testidOf(assignment.id)`), never by a guessed slug. */
+  let scheduledRowKey = "";
 
   test.beforeAll(async ({ browser }) => {
     adminContext = await browser.newContext();
@@ -116,7 +122,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
   // broken page reports the test that measured it, not this.
   test.afterAll(async () => {
     if (admin) await removePinQuietly(admin, profileId);
-    if (alice && scheduledSlug) await pauseScheduleQuietly(alice, projectPath, scheduledSlug);
+    if (alice && scheduledRowKey) await pauseScheduleQuietly(alice, projectPath, scheduledRowKey);
     for (const context of [adminContext, aliceContext, erinContext]) {
       if (context) await context.close();
     }
@@ -276,11 +282,14 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       await expect(erin.getByTestId("agents-new-open")).toHaveCount(0);
       await expect(erin.getByTestId(`agent-edit-${profileId}`)).toHaveCount(0);
       // Erin holds no membership row on project A (§ 7.2 W9), so every project
-      // surface answers the one refusal sentence (ADR-0014 § 3) — here with zero
-      // assignment blocks, and so zero schedules to leak.
+      // surface answers the one refusal sentence (ADR-0014 § 3). The surface
+      // that could leak is the Workflows panel's own rows — each 2e row and
+      // its STARTS WHEN box is where schedules live now — and she is served
+      // zero of each, so there is nothing to leak.
       await gotoApp(erin, `${projectPath}/pipelines`);
       await expect(erin.getByTestId("project-pipelines-not-found")).toBeVisible();
-      await expect(erin.locator('[data-testid^="schedules-block-"]')).toHaveCount(0);
+      await expect(erin.locator('[data-testid^="project-workflow-row-"]')).toHaveCount(0);
+      await expect(erin.locator('[data-testid^="project-workflow-starts-"]')).toHaveCount(0);
       await shot(erin, "m5-agents-04-erin-project-a-refused");
     });
   });
@@ -297,127 +306,202 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
   }
 
   test("schedules: a far-future cadence on an assignment, its clock, and its pause", async () => {
-    await test.step('the assignment\'s own "when to run" block, found by served test id', async () => {
+    // The schedule rows are the 2e rows of the panel's STARTS WHEN box
+    // (`repo-workflow-trigger-*`, exported from `components/workflows/
+    // RepoWorkflows`); they are keyed by the served schedule/trigger id, so
+    // the arm locates them inside its own row's box rather than by slug.
+    const boxOf = (key: string) => alice.getByTestId(`project-workflow-starts-${key}`);
+    /** The STARTS WHEN box's schedule rows: the shared 2e row for a cron is
+     * the one whose mono detail line is NOT the issue arm's reading. */
+    const scheduleRows = (key: string) =>
+      boxOf(key)
+        .locator('div[data-testid^="repo-workflow-trigger-"]')
+        .filter({ hasNotText: "checked every minute" });
+    await test.step("the panel's 2e rows, found by served test id", async () => {
       await gotoApp(alice, `${projectPath}/pipelines`);
       await expect(alice.getByTestId("project-pipelines")).toBeVisible();
-      // No hard-coded slug: read the blocks the server's assignments produced
-      // and keep the first one the lab is known to fire.
-      const blocks = alice.locator('[data-testid^="schedules-block-"]');
-      await expect(blocks.first()).toBeVisible({ timeout: 30_000 });
-      const testids = await blocks.evaluateAll((nodes) =>
-        nodes.map((node) => node.getAttribute("data-testid") ?? ""),
-      );
-      const slugs = testids.map((id) => id.replace(/^schedules-block-/, "")).filter(Boolean);
-      scheduledSlug = PREFERRED_SLUGS.find((slug) => slugs.includes(slug)) ?? slugs[0] ?? "";
-      expect(scheduledSlug.length).toBeGreaterThan(0);
-      // The Add control is maintainer-only (`canManage`), and alice holds the
-      // row's `my_role === "maintainer"` — the same predicate, served.
-      await expect(alice.getByTestId(`schedule-open-${scheduledSlug}`)).toBeVisible();
+      // No hard-coded id: read the rows the served assignments produced and
+      // keep the first one the lab is known to fire. A row names itself with
+      // the workflow's display name (the seed's equals its slug) once its
+      // definition read lands — `· loading` presses no choice.
+      const rows = alice.locator('[data-testid^="project-workflow-row-"]');
+      await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+      const nameByKey = new Map<string, string>();
+      await expect
+        .poll(
+          async () => {
+            nameByKey.clear();
+            for (const row of await rows.all()) {
+              const testid = (await row.getAttribute("data-testid")) ?? "";
+              const key = testid.replace(/^project-workflow-row-/, "");
+              const name = (
+                (await row
+                  .locator('[data-testid^="project-workflow-name-"]')
+                  .first()
+                  .textContent()) ?? ""
+              ).trim();
+              if (!name || name.includes("loading")) return 0;
+              nameByKey.set(key, name);
+            }
+            return nameByKey.size;
+          },
+          { timeout: 30_000 },
+        )
+        .toBeGreaterThan(0);
+      const keys = [...nameByKey.keys()];
+      scheduledRowKey =
+        keys.find((key) => PREFERRED_SLUGS.includes(nameByKey.get(key) ?? "")) ?? keys[0] ?? "";
+      expect(scheduledRowKey.length).toBeGreaterThan(0);
+      // The row opens on its STARTS WHEN box — the 2e expanded row is the
+      // default — and the + Add trigger verb is maintainer-only (`canManage`);
+      // alice holds the project's `my_role === "maintainer"` — same predicate, served.
+      await expect(boxOf(scheduledRowKey)).toBeVisible();
+      await expect(alice.getByTestId(`project-workflow-add-${scheduledRowKey}`)).toBeVisible();
     });
-    await test.step("a far-future yearly cadence is created through the form", async () => {
-      const before = await alice.getByTestId(`schedule-row-${scheduledSlug}`).count();
-      await alice.getByTestId(`schedule-open-${scheduledSlug}`).click();
-      const form = alice.getByTestId(`schedule-form-${scheduledSlug}`);
-      await expect(form).toBeVisible();
-      // NOT a preset: what the row says afterwards is what was typed, so the
-      // cadence cannot be the form's default echoing back.
-      await form.getByTestId(`schedule-cron-${scheduledSlug}`).fill(CRON_FAR_FUTURE);
+    await test.step("a far-future yearly cadence is created through the 2c dialog", async () => {
+      // The trigger reads must have landed before the count is worth +1'ing:
+      // a row still reading its triggers shows its loading line, not rows.
+      await expect(alice.getByTestId(`project-workflow-loading-${scheduledRowKey}`)).toHaveCount(
+        0,
+        { timeout: 30_000 },
+      );
+      const rows = scheduleRows(scheduledRowKey);
+      const before = await rows.count();
+      // The 2c dialog is repo-anchored by design. From a whole-project row of
+      // a multi-repository project the STARTS WHEN header asks which
+      // repository it speaks for (a one-repository project opens it directly);
+      // the repository the schedule fires is the dialog's own context line.
+      const repoChoice = boxOf(scheduledRowKey).getByTestId(
+        `project-workflow-repo-choice-${scheduledRowKey}`,
+      );
+      if (await repoChoice.count()) {
+        await selectByOptionText(
+          alice,
+          `project-workflow-repo-choice-${scheduledRowKey}`,
+          REPO_BINDING,
+        );
+      }
+      await alice.getByTestId(`project-workflow-add-${scheduledRowKey}`).click();
+      await expect(alice.getByTestId("trigger-dialog")).toBeVisible();
+      await expect(alice.getByTestId("trigger-dialog-context")).toContainText(REPO_BINDING, {
+        timeout: 30_000,
+      });
+      // NOT a preset echo: the dialog opens on the issue arm; the cadence
+      // lives on the schedule arm, and what the row says afterwards is what
+      // was typed (the dialog's reading line replaces the retired inline
+      // cron-preset buttons).
+      await alice.getByTestId("trigger-dialog-mode-schedule").click();
+      await alice.getByTestId("trigger-dialog-cron").fill(CRON_FAR_FUTURE);
+      await expect(alice.getByTestId("trigger-dialog-cron-words")).toHaveText(
+        /yearly on Jan 1 at 00:00 UTC/,
+      );
       // The schedule fires the assignment's pinned revision with THESE inputs
-      // (ADR-0032), so the form renders the revision's declared inputs — the
-      // same controls `NewRunForm` builds, shared on purpose.
-      const goal = form.getByTestId("new-run-input-goal");
+      // (ADR-0032), so the dialog renders the revision's declared inputs —
+      // the same controls `NewRunForm` builds, shared on purpose. A
+      // `repository`-typed input is NOT a control here (the dialog fixes the
+      // repository it opened for — named on its context line above) and rides
+      // in the inputs as that repository.
+      await expect(alice.getByTestId("trigger-dialog-run-gets")).toBeVisible({ timeout: 30_000 });
+      const goal = alice.getByTestId("new-run-input-goal");
       if (await goal.count()) {
         await goal.fill(GOAL);
       }
-      const repository = form.getByTestId("new-run-input-repository");
-      if (await repository.count()) {
-        await selectByOptionText(alice, "new-run-input-repository", REPO_BINDING);
-      }
-      await form.getByTestId(`schedule-confirm-${scheduledSlug}`).click();
-      // A create closes the form; a refusal keeps it open quoting the server's
-      // problem (invalid_cron, an input refusal, or `assignment_not_fireable`
-      // on an assignment that cannot run), which is the message worth having.
-      const added = await form
+      await alice.getByTestId("trigger-dialog-submit").click();
+      // A create closes the dialog; a refusal keeps it open quoting the
+      // server's problem (invalid_cron, an input refusal, or
+      // `assignment_not_fireable` on an assignment that cannot run), which is
+      // the message worth having.
+      const added = await alice
+        .getByTestId("trigger-dialog")
         .waitFor({ state: "detached", timeout: 30_000 })
         .then(() => true)
         .catch(() => false);
       if (!added) {
-        const refusal = await form
-          .getByTestId(`schedule-error-${scheduledSlug}`)
+        const refusal = await alice
+          .getByTestId("trigger-dialog-error")
           .textContent()
           .catch(() => null);
         throw new Error(
-          `POST /api/v1/projects/${projectId}/schedules did not land for ${scheduledSlug} ` +
-            `on ${CRON_FAR_FUTURE}: the form is still open` +
+          `POST /api/v1/projects/${projectId}/schedules did not land for ${scheduledRowKey} ` +
+            `on ${CRON_FAR_FUTURE}: the dialog is still open` +
             `${refusal ? ` quoting "${refusal.trim()}"` : " with no problem rendered"}.`,
         );
       }
       // The list refetched; our row is the newest (the route is oldest-first).
-      const row = alice.getByTestId(`schedule-row-${scheduledSlug}`).last();
-      await expect(row).toContainText(CRON_FAR_FUTURE, { timeout: 30_000 });
-      await expect(alice.getByTestId(`schedule-row-${scheduledSlug}`)).toHaveCount(before + 1);
-      await expect(row.getByTestId(`schedule-state-${scheduledSlug}`)).toHaveText("on");
+      await expect(rows).toHaveCount(before + 1, { timeout: 30_000 });
+      const row = rows.last();
+      // The row's own words for the cadence: the plain-English reading over
+      // the raw expression the author typed (the mono detail line).
+      await expect(row).toContainText(/yearly on Jan 1 at 00:00 UTC/, { timeout: 30_000 });
+      await expect(row.locator('[data-testid^="repo-workflow-trigger-detail-"]')).toContainText(
+        CRON_FAR_FUTURE,
+      );
+      await expect(
+        row.locator('[data-testid^="repo-workflow-trigger-enabled-"][data-testid$="-state"]'),
+      ).toHaveText("on");
       await shot(alice, "m5-schedules-01-created");
     });
     await test.step("the row answers the one question a schedule screen is for", async () => {
-      const row = alice.getByTestId(`schedule-row-${scheduledSlug}`).last();
+      const row = scheduleRows(scheduledRowKey).last();
       // "next 214d left" — a countdown, never "due now"/"passed": the whole
-      // point of a far-future slot is that nothing fires while this runs.
-      await expect(row.getByTestId(`schedule-next-${scheduledSlug}`)).toHaveText(
+      // point of a far-future slot is that nothing fires while this runs. The
+      // bookkeeping column (scheduleNextText) carries it, and with no
+      // `· last <id>` link beside it nothing has fired — the row's own words
+      // for the retired `never run` line.
+      await expect(row.locator('[data-testid^="repo-workflow-trigger-meta-"]')).toHaveText(
         /^next [0-9]+[smhd] left$/,
       );
-      await expect(row.getByTestId(`schedule-cron-words-${scheduledSlug}`)).toHaveText(
-        CRON_FAR_FUTURE,
-      );
-      // Nothing has fired: the row says so, in the page's own words.
-      await expect(row).toContainText(/never run/i);
     });
     await test.step("disabling it is served, not just clicked — and survives a reload", async () => {
       // ADR-0032 exposes no DELETE route, so the product's "take it off the
-      // clock" is the `enabled` flag; the arm therefore pauses EVERY schedule of
-      // the assignment — including one an earlier, harder-failed run left
+      // clock" is the 2e row's switch; the arm therefore pauses EVERY schedule
+      // of the assignment — including ones an earlier, harder-failed run left
       // enabled — and asserts none is left promising a fire. See DEVIATIONS.
-      const rows = alice.getByTestId(`schedule-row-${scheduledSlug}`);
+      const rows = scheduleRows(scheduledRowKey);
       const total = await rows.count();
       for (let index = 0; index < total; index++) {
-        const box = rows.nth(index).getByTestId(`schedule-enabled-${scheduledSlug}`);
+        const box = rows.nth(index).locator('input[data-testid^="repo-workflow-trigger-enabled-"]');
         if (await box.isChecked().catch(() => false)) await box.click();
       }
       const row = rows.last();
-      await expect(row.getByTestId(`schedule-state-${scheduledSlug}`)).toHaveText("paused", {
-        timeout: 30_000,
-      });
+      await expect(
+        row.locator('[data-testid^="repo-workflow-trigger-enabled-"][data-testid$="-state"]'),
+      ).toHaveText("paused", { timeout: 30_000 });
       // A paused row's `next_run_at` is a stale number, so the clock must stop
       // promising a fire (ADR-0032: re-enabling re-derives it from now). The
-      // Workflows tab now DROPS that column while the schedule is off — the
-      // toggle beside it already spells `on` / `paused`, and a row that said
-      // "paused · paused" stated one fact twice (pass-2 review). So the paused
-      // row says it once, and renders no clock at all.
-      await expect(row.getByTestId(`schedule-next-${scheduledSlug}`)).toHaveCount(0);
+      // shared 2e bookkeeping column says the state word where an enabled row
+      // says the countdown — so the paused row's meta cell reads `paused` and
+      // nothing in the row still promises a `next …`.
+      const meta = row.locator('[data-testid^="repo-workflow-trigger-meta-"]');
+      await expect(meta).toHaveText("paused");
       const pausedText = ((await row.textContent()) ?? "").toLowerCase();
       expect(
-        pausedText.split("paused").length - 1,
-        `a paused row says "paused" exactly once (row read: "${pausedText.trim()}")`,
-      ).toBe(1);
+        pausedText,
+        `a paused row promises no fire (row read: "${pausedText.trim()}")`,
+      ).not.toMatch(/next [0-9]/);
       // Read the served state back from a fresh navigation, not the client's
       // cache: the pause is the database's, not the page's.
       await gotoApp(alice, `${projectPath}/pipelines`);
-      const fresh = alice.getByTestId(`schedule-row-${scheduledSlug}`);
+      const fresh = scheduleRows(scheduledRowKey);
       await expect(fresh.first()).toBeVisible({ timeout: 30_000 });
       const remaining = await fresh.count();
       for (let index = 0; index < remaining; index++) {
         // Nothing this suite put on the clock is left promising a fire.
         await expect(
-          fresh.nth(index).getByTestId(`schedule-enabled-${scheduledSlug}`),
+          fresh.nth(index).locator('input[data-testid^="repo-workflow-trigger-enabled-"]'),
         ).not.toBeChecked({ timeout: 30_000 });
       }
-      await expect(fresh.last().getByTestId(`schedule-state-${scheduledSlug}`)).toHaveText(
+      await expect(
+        fresh
+          .last()
+          .locator('[data-testid^="repo-workflow-trigger-enabled-"][data-testid$="-state"]'),
+      ).toHaveText("paused");
+      // The served pause drops the countdown too — a fresh navigation reads
+      // the same contract the click produced, not a client-side flourish.
+      await expect(fresh.last().locator('[data-testid^="repo-workflow-trigger-meta-"]')).toHaveText(
         "paused",
       );
-      // The served pause drops the clock column too — a fresh navigation reads
-      // the same contract the click produced, not a client-side flourish.
-      await expect(fresh.last().getByTestId(`schedule-next-${scheduledSlug}`)).toHaveCount(0);
-      scheduledSlug = ""; // nothing is left on the clock for afterAll to pause
+      scheduledRowKey = ""; // nothing is left on the clock for afterAll to pause
       await shot(alice, "m5-schedules-02-paused");
     });
   });
@@ -436,14 +520,17 @@ async function removePinQuietly(page: Page, id: string): Promise<void> {
 }
 
 /** Best-effort: uncheck every schedule row of the assignment this run used. */
-async function pauseScheduleQuietly(page: Page, path: string, slug: string): Promise<void> {
-  if (!path || !slug) return;
+async function pauseScheduleQuietly(page: Page, path: string, rowKey: string): Promise<void> {
+  if (!path || !rowKey) return;
   try {
     await gotoApp(page, `${path}/pipelines`);
-    const rows = page.getByTestId(`schedule-row-${slug}`);
+    const rows = page
+      .getByTestId(`project-workflow-starts-${rowKey}`)
+      .locator('div[data-testid^="repo-workflow-trigger-"]')
+      .filter({ hasNotText: "checked every minute" });
     const total = await rows.count();
     for (let index = 0; index < total; index++) {
-      const box = rows.nth(index).getByTestId(`schedule-enabled-${slug}`);
+      const box = rows.nth(index).locator('input[data-testid^="repo-workflow-trigger-enabled-"]');
       if (await box.isChecked().catch(() => false)) await box.click({ timeout: 10_000 });
     }
   } catch {

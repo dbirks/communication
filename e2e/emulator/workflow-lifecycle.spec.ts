@@ -117,10 +117,9 @@ test.describe("workflow-lifecycle (admin authors)", () => {
       ).toHaveCount(0, { timeout: 30_000 });
       await page.getByTestId("studio-validate").click({ timeout: 20_000 });
       const verdict = page.getByTestId("studio-validate-verdict");
-      await expect(
-        verdict,
-        "design 1g: Validate reports a server verdict",
-      ).toBeVisible({ timeout: 30_000 });
+      await expect(verdict, "design 1g: Validate reports a server verdict").toBeVisible({
+        timeout: 30_000,
+      });
       await expect(verdict, "design 1g: the template + one prompt edit is valid").toContainText(
         /(^|[^a-z])valid/i,
         { timeout: 30_000 },
@@ -164,9 +163,7 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       const yaml = page.getByTestId("workflow-yaml-tab");
       await expect(yaml).toBeVisible({ timeout: 30_000 });
       const text = await yaml.innerText();
-      expect(text.length, "design 2d: the YAML tab renders the revision text").toBeGreaterThan(
-        200,
-      );
+      expect(text.length, "design 2d: the YAML tab renders the revision text").toBeGreaterThan(200);
       expect(text, "design 2d: the YAML is multi-line").toContain("\n");
       expect(
         text,
@@ -202,7 +199,9 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       // The read SUCCEEDED, so a zero is a true answer and the tab may carry
       // it (`Overview YAML Used in 0 History` is the design's tab row). What it
       // must never do is show `0` over a broken read — server-error.spec.ts
-      // proves the tab says `?` there instead.
+      // proves the tab and the panel header drop the count there entirely (no
+      // number, and no `?` standing where one would be, pass-7 review).
+
       await expect(
         page.getByTestId("workflow-used-in-count"),
         "design 1e/2a: a completed read lets the tab count honestly (`Used in 0`)",
@@ -233,10 +232,7 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
         "design 2a: the dialog shows where each project stands (read-only bookkeeping)",
       ).toBeVisible({ timeout: 30_000 });
       const m4Row = states.locator("li").filter({ hasText: "M4 Exit" });
-      await expect(
-        m4Row,
-        "design 2a: 'M4 Exit' is named there, with its pin line",
-      ).toHaveCount(1);
+      await expect(m4Row, "design 2a: 'M4 Exit' is named there, with its pin line").toHaveCount(1);
       await expect(
         m4Row.getByTestId(/^assign-project-pin-/),
         "design 2a: the state is honest words — 'not used yet' / 'pins r<n>'",
@@ -302,16 +298,18 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       await expect(dialog, "the dialog closes after the pin").toBeHidden({ timeout: 15_000 });
       await page.goto(`/workflows/${pipelineId}/used-in`);
       const list = page.getByTestId("used-in-list");
-      await expect(
-        list,
-        "design 2a: after pinning, the repo shows under Used in",
-      ).toContainText(/app/i, { timeout: 30_000 });
+      await expect(list, "design 2a: after pinning, the repo shows under Used in").toContainText(
+        /app/i,
+        { timeout: 30_000 },
+      );
       // The count the panel header and the tab carry is now the truth the read
-      // answered, and this workflow is pinned in exactly one repo.
+      // answered, and this workflow is pinned in exactly one repo — ONE repo,
+      // singular (pass-7 review: `USED IN 1 REPOS` was a grammar bug in a mono
+      // title bar, the same surface that must never print a `?` for a count).
       await expect(
         page.locator("#used-in-heading"),
-        "design 2a: the panel header counts the use it just made",
-      ).toHaveText("USED IN 1 REPOS", { timeout: 30_000 });
+        "design 2a: the panel header counts the use it just made, in the singular",
+      ).toHaveText("USED IN 1 REPO", { timeout: 30_000 });
       await expect(
         page.getByTestId("workflow-used-in-count"),
         "design 1e/2a: the tab carries the same count",

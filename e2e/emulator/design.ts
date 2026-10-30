@@ -479,10 +479,12 @@ const STUDIO_ERROR_HEADING: Landmark = {
 /** Used in (2a). */
 const USED_IN_PANEL: Landmark = {
   id: "used-in-panel",
-  // A failed read is NOT a count: the bar then says `USED IN ? REPOS` (pass-2
-  // review, 2a server-error), so the landmark admits either the number or the `?`.
-  desc: "the USED IN n REPOS panel (USED IN ? REPOS when a read broke)",
-  any: [{ testid: "used-in" }, { role: "heading", name: /^USED IN (\?|\d+) REPOS$/i }],
+  // A count only speaks when a read ANSWERED it (pass-7 review, 2a
+  // server-error): a failed or still-pending read says the bare `USED IN`
+  // beside the FAILED banner — the `?` the pass-2 review left there was still
+  // a value sitting in a number's seat — and one repository is one `REPO`.
+  desc: "the USED IN panel (a count only when a read answered it; `USED IN` alone when one broke)",
+  any: [{ testid: "used-in" }, { role: "heading", name: /^USED IN(\s+\d+\s+REPOS?)?$/i }],
 };
 const USED_IN_EMPTY: Landmark = {
   id: "used-in-empty",
@@ -937,21 +939,69 @@ const PROJECT_RUNS_BODY: Landmark = {
 const PROJECT_THREADS_PAGE: Landmark = {
   id: "project-threads-page",
   desc: "the project's Threads page",
-  any: [{ testid: "project-conversations" }, { testid: "project-conversations-title" }],
+  any: [{ testid: "project-conversations" }],
+};
+/** Design 1g (project-tabs-2 review): the Threads tab IS the shared 1g list pane
+ * filtered to the project — the project's own card list and its title-slugged
+ * row ids were retired with it, so the tab must draw the pane the `/threads`
+ * route draws, or the two screens diverged again. */
+const PROJECT_THREADS_PANE: Landmark = {
+  id: "project-threads-pane",
+  desc: "the shared 1g list pane (search, chips and rows) the tab mounts",
+  any: [
+    { testid: "threads-search" },
+    { testid: "threads-filters" },
+    { testid: "threads-list" },
+    { testid: "thread-row-*" },
+    { testid: "threads-list-empty" },
+    { testid: "threads-nomatch" },
+  ],
 };
 const PROJECT_WORKFLOWS_PAGE: Landmark = {
   id: "project-workflows-page",
+  // Design 1b (project-workflows-tab): the pass review of `project-1b-workflows`
+  // retired the tab's LIBRARY list, its inline assign shelf and its pinned-
+  // revision dump; what the tab owns is the one WORKFLOWS IN THIS PROJECT panel.
   desc: "the project's Workflows page",
-  any: [{ testid: "project-pipelines" }, { testid: "pipeline-assign-list" }],
+  any: [{ testid: "project-pipelines" }, { testid: "project-workflows" }],
 };
+/** The tab's ONE panel. Whether it holds rows or the honest absence is data
+ * (what the project pins), so the landmark names the panel itself — its title
+ * counts with a read answered and without one — and the two nothings it can
+ * answer with. The rows' STARTS WHEN boxes are asserted by the journey
+ * (emulator/projects.spec.ts) where the served pins are known: a landmark may
+ * insist a row HAS a box, never that the project has a row. */
 const PROJECT_WORKFLOWS_BODY: Landmark = {
   id: "project-workflows-body",
-  desc: "the panel that lists this project's workflows (or the honest line saying there are none)",
+  desc: "the ONE WORKFLOWS IN THIS PROJECT panel (its rows, or the honest line saying none)",
   any: [
-    { testid: "pipeline-library" },
-    { role: "heading", name: /^LIBRARY/i },
-    { testid: "pipelines-empty" },
+    { role: "heading", name: /^WORKFLOWS IN THIS PROJECT/i },
+    { testid: "project-workflows" },
+    { testid: "project-workflows-empty" },
   ],
+};
+/** 2e's trigger treatment, now across every repository of the project: a row
+ * opens on a STARTS WHEN box, and a workflow with nothing scheduled says
+ * `Never triggered` there rather than hiding the absence. */
+const PROJECT_WORKFLOWS_STARTS_WHEN: Landmark = {
+  id: "project-workflows-starts-when",
+  desc: "a workflow row's STARTS WHEN box (2e's trigger treatment, shared by the tab)",
+  any: [
+    { testid: "project-workflow-starts-*" },
+    { testid: "project-workflow-none-*" },
+    { text: /^STARTS WHEN$/i },
+    { text: /Never triggered/i },
+    // A project that uses NO workflow has no row and so no box: the tab's
+    // honest absence is the same design fact at the other end of the read
+    // (never a LIBRARY list standing in for it — that is what was retired).
+    { testid: "project-workflows-empty" },
+  ],
+};
+/** The tab's one way to bring a workflow in, since the inline assign shelf left. */
+const PROJECT_WORKFLOWS_LIBRARY: Landmark = {
+  id: "project-workflows-library",
+  desc: "the panel's '+ use a library workflow' control",
+  any: [{ testid: "project-workflow-library" }, { text: /\+ use (a library )?workflow/i }],
 };
 
 /** Threads (threads-1g). */
@@ -1026,6 +1076,18 @@ const THREAD_SEND: Landmark = {
   id: "thread-send",
   desc: "the composer's Send action",
   any: [{ testid: "composer-send" }, { role: "button", name: /^send$/i }],
+};
+/** Design thread view (10 / 1g): WORKSPACE, ARTIFACTS and NEXT are no longer a
+ * always-open rail beside the transcript — they sit behind one disclosure, so
+ * the claim is the door itself (its summary names all three sections). */
+const THREAD_CONTEXT_DISCLOSURE: Landmark = {
+  id: "thread-context-disclosure",
+  desc: "the 'Thread details — workspace, artifacts, next' disclosure holding the rail",
+  any: [
+    { testid: "thread-context-disclosure" },
+    { testid: "thread-context-block" },
+    { role: "button", name: /thread details/i },
+  ],
 };
 const THREADS_LIST_ERROR: Landmark = {
   id: "threads-list-error",
@@ -1339,9 +1401,18 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     PROJECT_PANEL_REPOS,
     PROJECT_PANEL_WORKFLOWS,
   ],
-  "project-1b runs": [PROJECT_RUNS_PAGE, PROJECT_RUNS_BODY],
-  "project-1b threads": [PROJECT_THREADS_PAGE],
-  "project-1b workflows": [PROJECT_WORKFLOWS_PAGE, PROJECT_WORKFLOWS_BODY],
+  // The RUNS panel carries no `New run` of its own any more (project-tabs-2
+  // review named the duplicate of the band's verb): the header band's
+  // `Start run` is the page's one door into the form, so it is a landmark of
+  // this screen — the door has to be on the page whose list it opens.
+  "project-1b runs": [PROJECT_RUNS_PAGE, PROJECT_RUNS_BODY, PROJECT_START_RUN],
+  "project-1b threads": [PROJECT_THREADS_PAGE, PROJECT_THREADS_PANE],
+  "project-1b workflows": [
+    PROJECT_WORKFLOWS_PAGE,
+    PROJECT_WORKFLOWS_BODY,
+    PROJECT_WORKFLOWS_LIBRARY,
+    PROJECT_WORKFLOWS_STARTS_WHEN,
+  ],
   "project-1b empty": [
     PROJECT_HEADING,
     PROJECT_NEW_THREAD,
@@ -1395,6 +1466,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     THREAD_TRANSCRIPT,
     THREAD_COMPOSER,
     THREAD_SEND,
+    THREAD_CONTEXT_DISCLOSURE,
   ],
   // A person who is not the controller sees the badge replaced by `Take
   // control` and the composer locked; the design's `Stop` is a live-turn
@@ -1406,6 +1478,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     THREAD_CONTROL,
     THREAD_TRANSCRIPT,
     THREAD_COMPOSER,
+    THREAD_CONTEXT_DISCLOSURE,
   ],
   "threads-1g took-control": [
     THREADS_HEADING,
@@ -1415,8 +1488,14 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     THREAD_TRANSCRIPT,
     THREAD_COMPOSER,
     THREAD_SEND,
+    THREAD_CONTEXT_DISCLOSURE,
   ],
   "threads-1g server-error": [THREADS_HEADING, THREADS_NEW, THREADS_LIST_ERROR],
+  // `run-gate` and `artifact` have no design render (see the header), so the
+  // run page's read-only graph needs no landmark entry of its own; the claim
+  // that the run page is not an editor lives in the specs: no `edge-add-*` /
+  // `add-after-*` affordance renders on /runs/:id (StudioCanvas renders the
+  // `+` affordances only on an editable canvas).
 };
 
 /**

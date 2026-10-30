@@ -64,9 +64,9 @@ const REJECT_GOAL = "Reject the scratch gate and settle the run as a business ou
 const PLAN_LINE = "Document add() with a docstring";
 const stamp = process.env.E2E_M5_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
 const SLUG = `m5-journey-${stamp}`;
-// Deliberately NOT `${SLUG}-gate`: the UI's test ids are keyed by slug
-// (`assign-open-<slug>`) and Playwright matches test ids by substring, so a
-// prefixed child would collide with the journey's own rows.
+// Deliberately NOT `${SLUG}-gate`: the library picker's rows are keyed by slug
+// (`project-library-use-<slug>`) and Playwright matches test ids by substring,
+// so a prefixed child would collide with the journey's own rows.
 const GATE_SLUG = `m5-gate-${stamp}`;
 // Same rule for the rejection twin: `m5-reject-` shares no prefix with any
 // other slug in this suite.
@@ -93,6 +93,64 @@ function attemptPane(page: Page, attemptNumber: number): Locator {
  * has none and the served panel is the whole record. */
 function dockAttemptTabs(page: Page): Locator {
   return page.locator('button[role="tab"][data-testid^="dock-attempt-"]');
+}
+
+/**
+ * Pin a library workflow to the project from its Workflows tab (design 1b,
+ * project-workflows-tab). The tab is ONE panel of 2e rows now: the inline
+ * per-pipeline assign form is retired, and `+ use a library workflow` opens the
+ * picker whose one `Use` verb posts the same whole-project pin. Returns the new
+ * assignment's id — the tab keys a row by `testidOf(assignment.id)` — and
+ * asserts that row's own `r1` chip, which is the tab's whole revision story now
+ * that the raw `pinned r1 · <digest> · id <uuid>` sentence is retired (no
+ * digest and no uuid prints on this page at all).
+ */
+async function pinWorkflowOnProject(
+  page: Page,
+  projectPath: string,
+  slug: string,
+): Promise<string> {
+  await gotoApp(page, `${projectPath}/pipelines`);
+  await expect(page.getByTestId("project-pipelines")).toBeVisible();
+  await page.getByTestId("project-workflow-library").click();
+  await expect(page.getByTestId("project-library-dialog")).toBeVisible();
+  await page.getByTestId("project-library-search").fill(slug);
+  const pinned = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/projects/") &&
+      response.url().includes("/assignments") &&
+      response.request().method() === "POST",
+    { timeout: 30_000 },
+  );
+  await page.getByTestId(`project-library-use-${slug}`).click();
+  const pinId = ((await (await pinned).json()) as { id?: string }).id ?? "";
+  expect(pinId, "the picker's `Use` posted the pin").toMatch(/^[0-9a-f-]{36}$/);
+  // Assigned: the picker closes over the pin it just posted.
+  await expect(page.getByTestId("project-library-dialog")).toHaveCount(0, { timeout: 30_000 });
+  const row = page.getByTestId(`project-workflow-row-${testidOf(pinId)}`);
+  await expect(row, "design 1b: the pinned workflow is a row of the one panel").toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(
+    row.getByTestId(`project-workflow-revision-${testidOf(pinId)}`),
+    "design 1b: the row's `r<N>` chip names the revision this project's runs pin",
+  ).toHaveText("r1", { timeout: 30_000 });
+  return pinId;
+}
+
+/**
+ * Open the New run form through the project header band's `Start run` (design
+ * 1b, project-tabs-2). The RUNS panel's own `New run` button was a duplicate of
+ * that verb and is retired; the band navigates to the Runs tab with `?new=1`,
+ * which opens `NewRunForm` above the list — and the URL is what keeps the claim
+ * honest, since reloading it still shows the form.
+ */
+async function openRunForm(page: Page, projectPath: string): Promise<void> {
+  await gotoApp(page, `${projectPath}/runs`);
+  await expect(page.getByTestId("project-runs")).toBeVisible();
+  await page.getByTestId("project-start-run").click();
+  await expect(page, "the one door is a URL, so a reload keeps the form").toHaveURL(/[?]new=1$/);
+  await expect(page.getByTestId("new-run-form")).toBeVisible();
 }
 
 /**
@@ -700,24 +758,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         // `01`: assignment.create is Maintainer+.
         await expect(deadEnd).toBeVisible();
         projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
-        await gotoApp(alice, `${projectPath}/pipelines`);
-        await expect(alice.getByTestId("project-pipelines")).toBeVisible();
-        await alice.getByTestId(`assign-open-${SLUG}`).click();
-        await expect(alice.getByTestId(`assign-pinning-${SLUG}`)).toContainText("r1", {
-          timeout: 30_000,
-        });
-        await alice.getByTestId(`assign-confirm-${SLUG}`).click();
-        // Assigned: the row leaves the assignable list and the project names
-        // the revision its runs are pinned to.
-        await expect(alice.getByTestId(`assign-form-${SLUG}`)).toHaveCount(0, {
-          timeout: 30_000,
-        });
-        await expect(alice.getByTestId("project-pipeline-pin")).toContainText(
-          "pinned revision r1",
-          {
-            timeout: 30_000,
-          },
-        );
+        // Design 1b (project-workflows-tab): the tab is ONE panel of 2e rows and
+        // the inline per-pipeline assign form is gone — the picker's one `Use`
+        // verb is the pin.
+        await pinWorkflowOnProject(alice, projectPath, SLUG);
         await gotoApp(alice, `${projectPath}/runs`);
         await shot(alice, "m5-03-assigned");
       }
@@ -728,10 +772,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("the New run form offers exactly the revision's spec.inputs", async () => {
       // Whichever identity pinned the assignment, the run belongs to the
       // project's maintainer — alice is the one the seed put there.
-      await gotoApp(alice, `${projectPath}/runs`);
-      await expect(alice.getByTestId("project-runs")).toBeVisible();
-      await alice.getByTestId("runs-new").click();
-      await expect(alice.getByTestId("new-run-form")).toBeVisible();
+      // Design 1b (project-tabs-2): the RUNS panel carries no `New run` of its
+      // own — the header band's `Start run` is the page's one door into the form.
+      await openRunForm(alice, projectPath);
       await selectByOptionText(alice, "new-run-assignment", SLUG);
       await alice.getByTestId("new-run-input-goal").fill(GOAL);
       // `repository` is a project binding name, offered as the project's own
@@ -750,8 +793,11 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   test("step 5 — the run stalls at its approval gate, and both screens say so", async () => {
     await test.step("the run reaches waiting_human on its own", async () => {
       // Two process.exec nodes first (a clone and a printed plan), then the
-      // gate: the wait is for the worker, not for a model.
-      await expectRunStatus(alice, /waiting human/, RUN_TIMEOUT_MS);
+      // gate: the wait is for the worker, not for a model. The chip's word is
+      // the app's SHORT_WORD for the wire's `waiting_human` — `need you`, the
+      // same word the Runs tab's chip and the stage strip print (the run page
+      // no longer spells `waiting_human` out).
+      await expectRunStatus(alice, /need you/, RUN_TIMEOUT_MS);
     });
     await test.step("the Inbox shows it under NEEDS YOUR DECISION", async () => {
       await gotoApp(alice, "/inbox");
@@ -772,6 +818,25 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // in the dock, which leads a `human.approval` with the gate card.
       await expect(canvasNode(alice, "approve")).toBeVisible({ timeout: 30_000 });
       await expect(alice.getByTestId("step-status-approve")).toBeVisible({ timeout: 30_000 });
+      // Design run view (10): the run page's graph is a READING surface. The
+      // authoring affordances the same canvas draws in the Studio — an edge's
+      // `+` (edge-add-*) and the terminal's `Add a step after` (add-after-*) —
+      // are rendered only on an editable canvas, so none of them may exist
+      // inside the workbench's graph frame. (The node itself stays clickable:
+      // selecting is reading, and the assertions below depend on it.)
+      const graphFrame = alice.locator('[data-testid="workbench-graph-frame"]');
+      await expect(
+        graphFrame,
+        "the node being read is drawn in the workbench's graph frame",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        graphFrame.locator('[data-testid^="edge-add-"]'),
+        "the run page's graph adds no edges",
+      ).toHaveCount(0);
+      await expect(
+        graphFrame.locator('[data-testid^="add-after-"]'),
+        "the run page's graph adds no steps",
+      ).toHaveCount(0);
       await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
@@ -1048,19 +1113,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
 
     await test.step("run it: the gate is the root node, so waiting_human needs no worker", async () => {
-      await gotoApp(alice, `${projectPath}/pipelines`);
-      await expect(alice.getByTestId("project-pipelines")).toBeVisible();
-      await alice.getByTestId(`assign-open-${GATE_SLUG}`).click();
-      await expect(alice.getByTestId(`assign-pinning-${GATE_SLUG}`)).toContainText("r1", {
-        timeout: 30_000,
-      });
-      await alice.getByTestId(`assign-confirm-${GATE_SLUG}`).click();
-      await expect(alice.getByTestId(`assign-form-${GATE_SLUG}`)).toHaveCount(0, {
-        timeout: 30_000,
-      });
-      await gotoApp(alice, `${projectPath}/runs`);
-      await alice.getByTestId("runs-new").click();
-      await expect(alice.getByTestId("new-run-form")).toBeVisible();
+      // Design 1b: the Workflows tab's one library picker is the pin, and the
+      // header band's `Start run` is the Runs tab's one door into the form.
+      await pinWorkflowOnProject(alice, projectPath, GATE_SLUG);
+      await openRunForm(alice, projectPath);
       await selectByOptionText(alice, "new-run-assignment", GATE_SLUG);
       await alice.getByTestId("new-run-input-goal").fill(GATE_GOAL);
       await alice.getByTestId("new-run-submit").click();
@@ -1069,8 +1125,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       gateRunId = gatePath.split("/").pop() ?? "";
       expect(gateRunId).toMatch(/^[0-9a-f-]{36}$/);
       // This wait starts the 60s clock, so it is the only budget the deadline
-      // itself needs.
-      await expectRunStatus(alice, /waiting human/, RUN_TIMEOUT_MS);
+      // itself needs. `need you` is the SHORT_WORD for the wire's
+      // `waiting_human` (one table with the Runs tab's chip).
+      await expectRunStatus(alice, /need you/, RUN_TIMEOUT_MS);
       await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
@@ -1096,7 +1153,12 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // reads the deadline, so expiry lands seconds after it, not a cadence away.
       await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
       await canvasNode(alice, "approve").click();
-      await expect(alice.getByTestId("approval-state")).toHaveText("expired", {
+      // The card's state chip is the app's SHORT_WORD (identity rule 06), so an
+      // expired gate wears `failed` — the wire's `expired` token is no longer
+      // spelled out in a chip. WHY it failed is the sentence beside it, which is
+      // the assertion that still distinguishes an expired gate from a refused
+      // one (and the chip alone never could).
+      await expect(alice.getByTestId("approval-state")).toHaveText("failed", {
         timeout: DECISION_TIMEOUT_MS,
       });
       await expect(alice.getByTestId("approval-expired-reason")).toContainText("deadline passed");
@@ -1158,7 +1220,8 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
 
     await test.step("the gate card is live again: the same ask, re-armed", async () => {
       await gotoApp(alice, gatePath);
-      await expectRunStatus(alice, /waiting human/, DECISION_TIMEOUT_MS);
+      // Back to the human, in the header chip's short word: `need you`.
+      await expectRunStatus(alice, /need you/, DECISION_TIMEOUT_MS);
       await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: DECISION_TIMEOUT_MS,
@@ -1187,7 +1250,8 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // Not just an unblocked gate: the node behind it RAN, so the decision is
       // what carried the run to `completed`. That attempt is worker work, so
       // the wait is the run's budget rather than the advancer's.
-      await expectRunStatus(alice, /completed/, RUN_TIMEOUT_MS);
+      // The chip's short word for the wire's `completed` is `done`.
+      await expectRunStatus(alice, /done/, RUN_TIMEOUT_MS);
       await canvasNode(alice, "after_gate").click();
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("after_gate", {
         timeout: DECISION_TIMEOUT_MS,
@@ -1268,19 +1332,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
 
     await test.step("a person rejects the gate from its card", async () => {
-      await gotoApp(alice, `${projectPath}/pipelines`);
-      await expect(alice.getByTestId("project-pipelines")).toBeVisible();
-      await alice.getByTestId(`assign-open-${REJECT_SLUG}`).click();
-      await expect(alice.getByTestId(`assign-pinning-${REJECT_SLUG}`)).toContainText("r1", {
-        timeout: 30_000,
-      });
-      await alice.getByTestId(`assign-confirm-${REJECT_SLUG}`).click();
-      await expect(alice.getByTestId(`assign-form-${REJECT_SLUG}`)).toHaveCount(0, {
-        timeout: 30_000,
-      });
-      await gotoApp(alice, `${projectPath}/runs`);
-      await alice.getByTestId("runs-new").click();
-      await expect(alice.getByTestId("new-run-form")).toBeVisible();
+      // Design 1b: the Workflows tab's one library picker is the pin, and the
+      // header band's `Start run` is the Runs tab's one door into the form.
+      await pinWorkflowOnProject(alice, projectPath, REJECT_SLUG);
+      await openRunForm(alice, projectPath);
       await selectByOptionText(alice, "new-run-assignment", REJECT_SLUG);
       await alice.getByTestId("new-run-input-goal").fill(REJECT_GOAL);
       await alice.getByTestId("new-run-submit").click();
@@ -1288,8 +1343,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       rejectPath = new URL(alice.url()).pathname;
       rejectRunId = rejectPath.split("/").pop() ?? "";
       expect(rejectRunId).toMatch(/^[0-9a-f-]{36}$/);
-      // The gate is the root node: waiting_human costs no worker turn.
-      await expectRunStatus(alice, /waiting human/, DECISION_TIMEOUT_MS);
+      // The gate is the root node: waiting_human costs no worker turn — and the
+      // header chip says that state as `need you`, the SHORT_WORD the whole app
+      // shares, never the wire's token spelled out.
+      await expectRunStatus(alice, /need you/, DECISION_TIMEOUT_MS);
       await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
@@ -1322,7 +1379,8 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("the gate row is a SUCCESS with outcome rejected; the guarded step never ran; the run completed", async () => {
       // Nothing here waits on a worker: the guarded node is skipped without
       // ever being scheduled, so this settles on the advancer's ticks.
-      await expectRunStatus(alice, /completed/, DECISION_TIMEOUT_MS);
+      // The chip's short word for the wire's `completed` is `done`.
+      await expectRunStatus(alice, /done/, DECISION_TIMEOUT_MS);
       const nodes = (await (
         await alice.request.get(`/api/v1/runs/${rejectRunId}/nodes`)
       ).json()) as {
@@ -1341,14 +1399,18 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       const guarded = nodes.node_executions.find((n) => n.node_instance_key === "/guarded");
       expect(guarded, "the guarded row exists").toBeTruthy();
       expect(guarded?.status, "a step that needed approval never ran").toBe("skipped");
-      // The workbench tells the same story on the canvas itself: the card
-      // closed as DECIDED (a lifecycle state — not `expired`, not `denied`)
-      // with the `rejected` decision on its decided chip.
+      // The workbench tells the same story on the canvas itself. The card's own
+      // chip is now the app's SHORT_WORD for the closed gate — `done`, because
+      // the execution succeeded — and the lifecycle difference the wire calls
+      // `decided` lives where the human reads it: inside the DECISION record, on
+      // its own `rejected` chip. (The old assertion read the wire token off the
+      // state chip, which is exactly the spelling the short-word table retired.)
       await canvasNode(alice, "approve").click();
-      await expect(alice.getByTestId("approval-state")).toHaveText("decided", {
+      await expect(alice.getByTestId("approval-state")).toHaveText("done", {
         timeout: 30_000,
       });
       await expect(alice.getByTestId("approval-decided")).toContainText("rejected");
+      await expect(alice.getByTestId("approval-decided")).not.toContainText(/expired|denied/i);
       await shot(alice, "m5-09-rejected-run-completed");
     });
 

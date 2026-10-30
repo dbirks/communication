@@ -148,7 +148,11 @@ const screens: Screen[] = [
     viewer: "alice",
     path: (lab) => `${lab.projectPath}/runs`,
     anchor: "project-runs",
-    why: "one row per run, with digests and elapsed times",
+    // Design 1b (project-tabs-2 pass 2): the row's second line is now
+    // `repository · elapsed` — the pinned digest moved to the run's own page, so
+    // no hex string stands where a name should be. The row is still the screen
+    // that proves a mono machine line fits 390px.
+    why: "one row per run, with its repository and elapsed time",
   },
   {
     label: "run page",
@@ -554,21 +558,23 @@ function measureDocument(page: Page): Promise<FitReport> {
 }
 
 /**
- * A conversation to open, found the way a user finds one: the project page's own
- * CONVERSATIONS rows. The arm opens a thread it created itself through the API
- * with no first prompt — the route makes `prompt` optional (`api/openapi.yaml`,
+ * A conversation to open, found the way a user finds one: a row of the project's
+ * Threads tab. The arm opens a thread it created itself through the API with no
+ * first prompt — the route makes `prompt` optional (`api/openapi.yaml`,
  * `ConversationCreate`), so nothing is queued, no worker claims a turn, and the
  * conversation page still renders its transcript, composer and session meta,
- * which is what this arm measures. The row is located BY TITLE (`m5-layout-…`, the
- * arm's own stamp) and clicked — never by list position: the lab accumulates
- * run-linked conversations, and a "From run" row's badge deep-links into the Run
- * Workbench, so an order-based first row stopped being a plain one-off thread the
- * moment other suites created run-linked conversations (m5-layout r2rerun2: the
- * click left /threads/).
+ * which is what this arm measures.
+ *
+ * Design 1b (project-tabs-2 review): the project's Threads tab IS the shared 1g
+ * list pane (its own card list, and the title-slugged row ids it keyed its rows
+ * by, went with it), so the row is `thread-row-<conversation id>`. It is located BY
+ * ID — the create's own answer — and clicked: the lab accumulates other suites'
+ * threads, so an order-based first row is not this arm's one-off thread (the
+ * m5-layout r2rerun2 failure was exactly that), and a title slug is no longer
+ * what the page keys a row by.
  */
 async function firstConversationPath(page: Page, projectPath: string): Promise<string> {
   const title = `m5-layout-${STAMP}`;
-  const rowTestid = `conversation-row-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   const csrf = await apiCsrf(page.request);
   // The thread is created in the SAME project the arm then opens — the
   // overview page it navigates to is `projectPath`, and "first project in
@@ -584,11 +590,18 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
     /^[0-9a-f-]{36}$/,
   );
   const profileId = await apiProfileId(page.request);
-  await apiCreateConversation(page.request, csrf, projectId, profileId, title);
+  const conversationId = await apiCreateConversation(
+    page.request,
+    csrf,
+    projectId,
+    profileId,
+    title,
+  );
   // Design 1b: the overview shows three recent threads and a `Threads` tab; the
-  // list itself — every row, with its search and filters — is the tab's page.
+  // list itself — every row, with its search and filters — is the tab's page,
+  // and since the project-tabs-2 review that page is the shared 1g pane.
   await gotoApp(page, `${projectPath.replace(/\/+$/, "")}/conversations`);
-  const row = page.getByTestId(rowTestid);
+  const row = page.getByTestId(`thread-row-${conversationId}`);
   await expect(row, `the created thread "${title}" must list its own row`).toBeVisible({
     timeout: LOADED_TIMEOUT_MS,
   });

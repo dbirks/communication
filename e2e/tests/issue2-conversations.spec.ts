@@ -23,7 +23,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { test, expect, type Locator, type Page } from "@playwright/test";
-import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
+import { AGENT_TURN_TIMEOUT_MS, BASE_URL } from "./env.js";
 import { checkA11y } from "./a11y.js";
 import {
   expectTurnStatus,
@@ -39,10 +39,12 @@ const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 const STAMP = process.env.E2E_ISSUE2_STAMP ?? Date.now().toString(36);
 const TITLE = `issue2 one-off ${STAMP}`;
 /**
- * The list row's own test id (`titleSlug` in ui/src/components/Conversations.tsx:
- * lowercased title with non-alphanumerics collapsed to "-").
+ * A thread row's own test id. Design 1g (project-tabs-2 review): the project's
+ * Threads tab IS the shared 1g list pane — its own card list, and the
+ * title-slugged row ids it keyed its rows by, were retired with it.
+ * One thread list, one row shape, everywhere: `thread-row-<conversation id>`.
  */
-const ROW_TESTID = `conversation-row-${TITLE.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+const rowTestid = (conversationId: string): string => `thread-row-${conversationId}`;
 /** A seeded lab profile that is a real claude-launcher agent. */
 const PROFILE = "m4-implementer";
 const PROMPT = "Reply with exactly the word: pong";
@@ -166,14 +168,29 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
 
     // Design 1g: the pane header shows only the title, the mono meta line and
     // the control pill — the "One-off thread" chip is gone with the "one-off
-    // only" default. What stays honest: a manual thread links to no run.
+    // only" default. What stays honest: a manual thread links to no run. The
+    // rail that would carry such a link is behind the thread's details
+    // disclosure now, so the disclosure is OPENED and the absence proved inside
+    // it — a closed door would make any absence assertion trivially true.
     expect(await page.getByTestId("conversation-manual-label").count()).toBe(0);
+    const a7Context = page.getByTestId("thread-context-block");
+    await expect(
+      a7Context.locator('[data-testid="part-of-run-link"]'),
+      "a manual thread has no PART OF panel to open",
+    ).toHaveCount(0);
+    await a7Context.locator("summary").click();
+    await expect(a7Context).toHaveAttribute("open", "");
+    await expect(
+      a7Context.locator('[data-testid="part-of-run-link"]'),
+      "with the details open, a manual thread still links to no run",
+    ).toHaveCount(0);
     expect(await page.getByTestId("part-of-run-link").count()).toBe(0);
     await checkA11y(page, "conversation page (A7)");
     await evidence(
       page,
       "conv-a7-manual-label",
-      `the /threads page header carries no "One-off thread" chip (design 1g drops it) and has no part-of-run-link or node reference`,
+      "the /threads page header carries no 'One-off thread' chip (design 1g drops it) and, with " +
+        "its Thread-details disclosure opened, no part-of-run-link or node reference",
     );
 
     // --- Entry 2: the global New menu opens the SAME dialog with a picker. ---
@@ -195,28 +212,50 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
 
-    // --- The thread list: searched, badged Manual, hidden by "From runs". ---
-    // Design 1b moved the list off the project overview onto its Threads tab, so
-    // the list is opened at its own route (the overview now shows three recent
-    // threads and a link here).
+    // --- The thread list: searched, listed as the project's own, and hidden
+    // by "from runs". ---
+    // Design 1b moved the list off the project overview onto its Threads tab;
+    // the project-tabs-2 review made that tab the SAME 1g pane `/threads` draws
+    // (search field, `all` / `mine` / `from runs` chips, id-keyed rows), so the
+    // thread this test just created is found there by its own id.
+    const conversationId = new URL(page.url()).pathname.split("/").pop() ?? "";
+    expect(conversationId, "the thread page names the conversation it opened").toMatch(
+      /^[0-9a-f-]{36}$/,
+    );
     await page.goto(`${projectUrl}/conversations`);
-    await page.getByTestId("conversation-search").fill("issue2 one-off");
-    const row = page.getByTestId(ROW_TESTID);
+    await expect(
+      page.getByTestId("threads-page"),
+      "design 1g: the Threads tab is the shared list pane",
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("threads-search").fill("issue2 one-off");
+    const row = page.getByTestId(rowTestid(conversationId));
     await expect(row).toBeVisible({ timeout: 15_000 });
-    await expect(row.getByTestId("conversation-origin-manual")).toContainText("Manual");
+    // The row says which project it belongs to (1g's mono `project · agent`
+    // line) — the row's own claim of scope, since the tab is filtered to it.
+    await expect(row).toContainText(PROJECT_NAME);
+    // The Manual badge is retired with the old card list, so the ORIGIN fact it
+    // printed is read from the wire the row came from (ADR-0043: the list
+    // carries `origin`), and the sentence "this thread was not opened by a run"
+    // is the SAME fact one assertion below: the `from runs` chip hides it.
+    const wire = await page.request.get(`${BASE_URL}/api/v1/conversations/${conversationId}`);
+    expect(wire.status(), "the thread read answers").toBe(200);
+    expect(
+      (await wire.json()) as { origin?: string },
+      "the thread this journey created is a manual one-off on the wire",
+    ).toMatchObject({ origin: "manual" });
     await checkA11y(page, "conversations list (A7)");
     await evidence(
       page,
       "conv-a7-list-manual",
-      `searching "issue2 one-off" lists the row with the Manual badge (conversation-origin-manual)`,
+      `searching "issue2 one-off" lists this thread's own row (thread-row-${conversationId}) in the project's 1g list pane, on a manual origin the wire confirms`,
     );
-    await page.getByTestId("conversation-filter-run").click();
+    await page.getByTestId("threads-filter-runs").click();
     await expect
       .poll(
         async () =>
           (await row.isVisible().catch(() => false)) ||
           (await page
-            .getByTestId("conversation-list-nomatch")
+            .getByTestId("threads-nomatch")
             .isVisible()
             .catch(() => false)),
         { timeout: 15_000 },
@@ -226,43 +265,48 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     await evidence(
       page,
       "conv-a7-filter-run-hides-manual",
-      'filtering the list to "From runs" hides the manual conversation',
+      "the `from runs` chip hides the manual conversation (threads-filter-runs → threads-nomatch)",
     );
   });
 
-  test("run-linked conversation: the badge deep-links into the Run Workbench", async ({ page }) => {
+  test("run-linked thread: the list finds it and its Thread details deep-link to the workbench", async ({
+    page,
+  }) => {
     test.setTimeout(300_000); // the workbench deep-link waits are WORKBENCH_TIMEOUT_MS each
     await signIn(page, "alice");
     const listUrl = await openProjectBySlug(page, PROJECT_SLUG);
-    // The list is the Threads tab, not a section of the overview (design 1b).
+    // Design 1b + the project-tabs-2 review: the project's Threads tab IS the
+    // shared 1g pane, filtered to the project. There is no second card list and
+    // no origin badge on it — the `from runs` chip is the way to a run-origin
+    // thread, and the thread's own PART OF panel is the deep link.
     await page.goto(`${listUrl}/conversations`);
+    await expect(
+      page.getByTestId("threads-page"),
+      "design 1g: the Threads tab is the shared list pane",
+    ).toBeVisible({ timeout: 15_000 });
 
-    // Find a run-linked conversation: the list filtered to "From runs". The
-    // M4 seed's exit runs and the workbench journeys create agent
-    // conversations; if none exists yet there is nothing to prove.
-    await page.getByTestId("conversation-filter-run").click();
+    // Find a run-linked conversation: the pane's `from runs` chip (ADR-0043's
+    // `origin` query on the project's own list route). The M4 seed's exit runs
+    // and the workbench journeys create agent conversations; if none exists yet
+    // there is nothing to prove.
+    await page.getByTestId("threads-filter-runs").click();
     await expect
       .poll(
         async () =>
           (await page
-            .getByTestId("conversation-list")
+            .getByTestId("threads-list")
             .isVisible()
             .catch(() => false)) ||
           (await page
-            .getByTestId("conversation-list-nomatch")
+            .getByTestId("threads-nomatch")
             .isVisible()
             .catch(() => false)),
         { timeout: 15_000 },
       )
       .toBe(true);
-    // The run-origin badge is a `role=link` span, not an <a>: the row itself is
-    // the anchor and a nested <a> is invalid HTML. Only badges backed by a
-    // stored run link are deep links, and their target lives in `title`, not
-    // `href`.
-    const badge = page.locator('[data-testid="conversation-origin-run"][role="link"]').first();
     if (
       await page
-        .getByTestId("conversation-list-nomatch")
+        .getByTestId("threads-nomatch")
         .isVisible()
         .catch(() => false)
     ) {
@@ -272,70 +316,85 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       );
       return;
     }
-    await expect(badge).toBeVisible({ timeout: 15_000 });
-    const badgeHref = (await badge.getAttribute("title")) ?? "";
-    // Route contract C1: the workbench deep link is the project-less
-    // `/runs/:runId` with the node as a query param.
-    expect(badgeHref).toMatch(/\/runs\/[0-9a-f-]{36}\?/);
-    expect(new URL(badgeHref, "http://x").searchParams.get("node")).not.toBeNull();
+    // The row is the thread: 1g keys it by the conversation's own id and the
+    // row anchor is the thread page (route contract C1).
+    const row = page.locator('[data-testid^="thread-row-"]').first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    const rowHref = (await row.getAttribute("href")) ?? "";
+    expect(rowHref).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
+    const conversationId = rowHref.split("/").pop() ?? "";
     await checkA11y(page, "conversations list (run-linked)");
+    // The deep link this journey will follow must be the wire's own `run_link`
+    // (ADR-0043) — the page may speak only from that, so it is read here and
+    // compared with the rendered href below (the retired list badge used to
+    // carry the same href in its `title`).
+    const wire = await page.request.get(`${BASE_URL}/api/v1/conversations/${conversationId}`);
+    expect(wire.status(), "the thread read answers").toBe(200);
+    const linked = (await wire.json()) as {
+      origin?: string;
+      run_link?: {
+        run_id?: string;
+        node_execution_id?: string;
+        node_id?: string | null;
+        attempt_number?: number;
+      } | null;
+    };
+    expect(linked.origin, "the `from runs` chip answered with a run-origin thread").toBe("run");
+    const runLink = linked.run_link ?? {};
+    expect(String(runLink.run_id ?? ""), "the wire carries the run link").toMatch(
+      /^[0-9a-f-]{36}$/,
+    );
+    expect(
+      runLink.node_id ?? "",
+      "the node execution stored a definition id (the deep link's `node` param)",
+    ).not.toBe("");
     await evidence(
       page,
       "conv-run-badge",
-      `a run-linked conversation row's "From run" badge is a deep link into the Run Workbench with a ?node= parameter (${badgeHref})`,
+      `the project's Threads tab (the 1g pane) filtered with \`from runs\` lists a run-origin thread row (thread-row-${conversationId}) whose wire row names the run_link the thread page must link to`,
     );
 
-    // --- Badge click: the workbench opens with that node selected. ---
-    // A real pointer click on the badge: its handler preventDefaults and
-    // stops the row anchor's default navigation, so the click itself takes
-    // the SPA deep link to the workbench instead of the row's conversation
-    // href. SPA navigation (react-router) fires no "load" event, so
-    // waitForURL would hang; toHaveURL polls the URL until the ?node= deep
-    // link lands.
-    await badge.click();
-    // SPA navigation (react-router) fires no "load" event, so waitForURL
-    // would hang; toHaveURL polls the URL until the ?node= deep
-    // link lands.
-    await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}\?node=/);
-    const selectedDef = nodeFromUrl(page);
-    expect(selectedDef, "the workbench URL keeps the source node").not.toBeNull();
-    await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
-    await expect(canvasNode(page, selectedDef!)).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
-    await expect(page.getByTestId("dock-conversation")).toBeVisible({
-      timeout: WORKBENCH_TIMEOUT_MS,
-    });
-
-    // --- From the conversation page, part-of-run-link goes to the SAME place. ---
-    await page.goBack();
-    await expect(page.getByTestId("conversation-filter-run")).toBeVisible({ timeout: 15_000 });
-    const badgeAgain = page.locator('[data-testid="conversation-origin-run"][role="link"]').first();
-    await expect(badgeAgain).toBeVisible({ timeout: 15_000 });
-    // The badge sits inside the row link: read the row's own href to open the
-    // conversation page without racing a click on the nested badge anchor.
-    const row = badgeAgain.locator(
-      'xpath=ancestor::*[starts-with(@data-testid, "conversation-row-")][1]',
-    );
-    const rowHref = (await row.getAttribute("href")) ?? "";
-    expect(rowHref).toMatch(/\/threads\/[0-9a-f-]{36}$/);
+    // --- The thread page: PART OF is behind the details disclosure now. ---
     await page.goto(rowHref);
+    await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 15_000 });
+    const context = page.getByTestId("thread-context-block");
+    await expect(
+      context,
+      "design thread view: the rail sits under the transcript behind one disclosure",
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      context.locator('[data-testid="part-of-run-link"]'),
+      "the rail is collapsed by default — the deep link is not on screen until it is opened",
+    ).toBeHidden();
+    await context.locator("summary").click();
+    await expect(context).toHaveAttribute("open", "");
     const partOfRun = page.getByTestId("part-of-run-link");
     await expect(partOfRun.first()).toBeVisible({ timeout: 15_000 });
     const linkHref = (await partOfRun.first().getAttribute("href")) ?? "";
-    expect(new URL(linkHref, "http://x").toString()).toBe(
-      new URL(badgeHref, "http://x").toString(),
-    );
+    const deep = new URL(linkHref, "http://x");
+    // Route contract C1: the workbench deep link is the project-less
+    // `/runs/:runId`, and its ADR-0043 params are the wire's own.
+    expect(deep.pathname, "the panel links the run the wire named").toBe(`/runs/${runLink.run_id}`);
+    expect(deep.searchParams.get("node")).toBe(String(runLink.node_id));
+    expect(deep.searchParams.get("instance")).toBe(String(runLink.node_execution_id ?? ""));
+    expect(deep.searchParams.get("attempt")).toBe(String(runLink.attempt_number ?? ""));
     await checkA11y(page, "run-linked conversation page");
     await evidence(
       page,
       "conv-run-conversation-page",
-      `the conversation page's part-of-run-link points at the same workbench deep link as the list badge (${linkHref})`,
+      `with the Thread details disclosure opened, the thread page's part-of-run-link is the workbench deep link the wire's run_link names (${linkHref})`,
     );
+
+    // --- Click it: the workbench opens with that node selected. ---
     await partOfRun.first().click();
+    // SPA navigation (react-router) fires no "load" event, so waitForURL
+    // would hang; toHaveURL polls the URL until the ?node= deep link lands.
     await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}\?node=/);
-    const selectedDef2 = nodeFromUrl(page);
-    expect(selectedDef2, "the workbench URL keeps the source node").not.toBeNull();
+    const selectedDef = nodeFromUrl(page);
+    expect(selectedDef, "the workbench URL keeps the source node").not.toBeNull();
+    expect(selectedDef, "and it is the node the wire named").toBe(runLink.node_id ?? "");
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
-    await expect(canvasNode(page, selectedDef2!)).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
+    await expect(canvasNode(page, selectedDef!)).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
     await expect(page.getByTestId("dock-conversation")).toBeVisible({
       timeout: WORKBENCH_TIMEOUT_MS,
     });

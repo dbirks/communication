@@ -317,18 +317,55 @@ test.describe("W3 start a run from a GitHub issue", () => {
       const projectId = projectPath.split("/").pop() ?? "";
       await ensureGitHubRepository(alice, projectId);
     });
-    await test.step("the project's pipelines page assigns r1", async () => {
+    await test.step("the project's Workflows tab uses r1 (the picker's one verb)", async () => {
+      // Design project-1b-workflows: the tab is ONE panel of 2e rows — the
+      // inline assign form is gone and the tab's one way in is the
+      // `+ use a library workflow` picker, whose single `Use` verb resolves
+      // the newest published revision and posts the whole-project pin.
       await gotoApp(alice, `${projectPath}/pipelines`);
       await expect(alice.getByTestId("project-pipelines")).toBeVisible();
-      await alice.getByTestId(`assign-open-${SLUG}`).click();
-      await expect(alice.getByTestId(`assign-pinning-${SLUG}`)).toContainText("r1", {
+      await expect(
+        alice
+          .getByTestId("project-workflows-list")
+          .or(alice.getByTestId("project-workflows-empty"))
+          .first(),
+      ).toBeVisible({ timeout: 30_000 });
+      await alice.getByTestId("project-workflow-library").click();
+      await expect(alice.getByTestId("project-library-dialog")).toBeVisible();
+      // The picker names the workflow with the revision it pins — the newest
+      // published, r1 (the reading that replaces the retired inline pin line).
+      await expect(alice.getByTestId(`project-library-row-${SLUG}`)).toContainText(/latest r1\b/, {
         timeout: 30_000,
       });
-      await alice.getByTestId(`assign-confirm-${SLUG}`).click();
-      // Assigned: the form leaves the assignable list.
-      await expect(alice.getByTestId(`assign-form-${SLUG}`)).toHaveCount(0, {
-        timeout: 30_000,
-      });
+      const use = alice.getByTestId(`project-library-use-${SLUG}`);
+      const used = alice.getByTestId(`project-library-used-${SLUG}`);
+      await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });
+      if (await use.isVisible().catch(() => false)) {
+        await use.click();
+        // The picker closes only on the create's success — a refusal stays
+        // open with the reason inline (project-library-error). This exit is
+        // the successor of the form leaving the assignable list.
+        await expect(alice.getByTestId("project-library-dialog")).toHaveCount(0, {
+          timeout: 30_000,
+        });
+      } else {
+        // One whole-project assignment per pipeline is the store's UNIQUE:
+        // the picker prints `used in the project` instead of a `Use` button
+        // that could only ever 409 (a re-run's already-assigned state).
+        await expect(used).toBeVisible({ timeout: 30_000 });
+        await alice.getByTestId("project-library-cancel").click();
+      }
+      // Assigned: the panel itself now carries the workflow as its own 2e
+      // row pinned to r1 — the `✓ rN` chip is the tab's whole revision story.
+      const pipelineId = pipelinePath.split("/").pop() ?? "";
+      const pinnedRow = alice
+        .locator('[data-testid^="project-workflow-row-"]')
+        .filter({ has: alice.locator(`a[href$="${pipelineId}"]`) });
+      await expect(pinnedRow).toBeVisible({ timeout: 30_000 });
+      await expect(pinnedRow.locator('[data-testid^="project-workflow-revision-"]')).toContainText(
+        /\br1\b/,
+        { timeout: 30_000 },
+      );
       await shot(alice, "m5w3-04-assigned");
     });
   });
@@ -340,7 +377,11 @@ test.describe("W3 start a run from a GitHub issue", () => {
     await test.step("the New run form offers exactly the revision's spec.inputs", async () => {
       await gotoApp(alice, `${projectPath}/runs`);
       await expect(alice.getByTestId("project-runs")).toBeVisible();
-      await alice.getByTestId("runs-new").click();
+      // Design 1b: the RUNS panel carries no "New run" button of its own —
+      // the header band's `Start run` is the page's one door, landing here
+      // with ?new=1 and opening the form above the list.
+      await alice.getByTestId("project-start-run").click();
+      await expect(alice).toHaveURL(/[?&]new=1/);
       await expect(alice.getByTestId("new-run-form")).toBeVisible();
       await selectByOptionText(alice, "new-run-assignment", SLUG);
       // The three declared inputs, one control each.

@@ -48,6 +48,14 @@ async function m4ExitId(page: Page): Promise<string> {
   return id;
 }
 
+/** The id of a project the pass created, read from the list the page reads. */
+async function projectBySlug(page: Page, slug: string): Promise<string> {
+  const items = await listJson(page, "projects");
+  const id = String(items.find((item) => item.slug === slug)?.id ?? "");
+  expect(id, `the pass's own project ${slug} is listed`).toMatch(/^[0-9a-f-]{36}$/);
+  return id;
+}
+
 /** A project-scoped list read through the page's own session. */
 async function listJson(page: Page, path: string): Promise<Record<string, unknown>[]> {
   const res = await page.request.get(`${EMU_BASE_URL}/api/v1/${path}`);
@@ -81,10 +89,15 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
         page.getByTestId("project-new-conversation"),
         "design 1b: the secondary verb is `New thread`",
       ).toHaveText("New thread");
+      // Design 1b (project-tabs-2 review): `Start run` is the RUNS tab's ONE
+      // door into the run form — the panel's own `New run` button was that verb
+      // duplicated, so it is retired and this link now carries `?new=1`, the
+      // state that opens `NewRunForm` above the list. The URL is the claim: a
+      // reloaded `/runs` is the plain list, a reloaded `/runs?new=1` is the form.
       await expect(
         page.getByTestId("project-start-run"),
-        "design 1b: the primary verb is `Start run`, and it goes to the Runs tab",
-      ).toHaveAttribute("href", `/p/${projectId}/runs`);
+        "design 1b: the primary verb is `Start run`, and it opens the Runs tab's form",
+      ).toHaveAttribute("href", `/p/${projectId}/runs?new=1`);
       await expect(
         page.getByTestId("project-attention"),
         "design 1b: what asks something of you leads the left column",
@@ -105,10 +118,7 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
         ).toContainText(/never started a workflow/i);
       } else {
         const panel = page.locator("#running-now");
-        await expect(
-          panel,
-          "design 1b: RUNNING NOW is its own panel",
-        ).toBeVisible();
+        await expect(panel, "design 1b: RUNNING NOW is its own panel").toBeVisible();
         await expect(
           panel,
           "design 1b: a project WITH runs never claims it has never started one",
@@ -120,10 +130,10 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
     // The tabs are ROUTES (design 1b): one click, one navigation, and the URL
     // stays the honest answer to "where am I". Each tab is opened FROM the
     // overview, because only the overview and the members page carry the band.
-    for (const [tab, route, landing] of [
-      ["runs", "/runs", "project-runs"],
-      ["threads", "/conversations", "project-conversations"],
-      ["workflows", "/pipelines", "project-pipelines"],
+    for (const [tab, route, landing, surface] of [
+      ["runs", "/runs", "project-runs", "runs-list"],
+      ["threads", "/conversations", "project-conversations", "threads-search"],
+      ["workflows", "/pipelines", "project-pipelines", "project-workflows"],
     ] as const) {
       await test.step(`project-1b — the ${tab} tab opens ${route}`, async () => {
         await page.goto(`/p/${projectId}`);
@@ -136,7 +146,67 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
           page.getByTestId(landing),
           `design 1b: the ${tab} tab lands on its own route, not a fragment of the overview`,
         ).toBeVisible({ timeout: 30_000 });
+        // The tab's own body, not just its frame: the Runs tab is the runs list,
+        // the Threads tab is the shared 1g pane (its card list is retired), and
+        // the Workflows tab is the ONE panel of 2e rows (its LIBRARY list is
+        // retired). A tab that navigated to an empty frame would pass the
+        // landing assertion and fail this one.
+        // Exact id, not the substring Playwright's getByTestId would match:
+        // `project-workflows` must be the panel itself, not its row list or its
+        // empty line.
+        await expect(
+          page.locator(`[data-testid="${surface}"]`).first(),
+          `design 1b: the ${tab} tab mounts its own body (${surface})`,
+        ).toBeVisible({ timeout: 30_000 });
+        if (tab === "workflows") {
+          // The tab is ONE panel of 2e-shaped rows (project-workflows-tab): it
+          // names itself, it offers the library picker as its only way in, and
+          // the legacy panels the pass review removed do NOT come back — the
+          // library list's own heading is the one that would return.
+          await expect(
+            page.locator("#project-workflows-page-heading"),
+            "design 1b: the panel is WORKFLOWS IN THIS PROJECT",
+          ).toContainText(/WORKFLOWS IN THIS PROJECT/i);
+          await expect(
+            page.getByTestId("project-workflow-library"),
+            "design 1b: `+ use a library workflow` is the maintainer's one way in",
+          ).toBeVisible();
+          await expect(
+            page.getByRole("heading", { name: /^LIBRARY$/i }),
+            "design 1b: the retired LIBRARY list is not on this tab",
+          ).toHaveCount(0);
+        }
+        if (tab === "threads") {
+          // The tab IS the 1g pane: search + the three chips, and NO origin
+          // badges (they belong to the retired card list; the thread page's own
+          // PART OF panel is where a run link is said).
+          await expect(
+            page.getByTestId("threads-filter-runs"),
+            "design 1g: the tab carries the `from runs` chip",
+          ).toBeVisible();
+          await expect(
+            page.locator('[data-testid^="conversation-origin-"]'),
+            "design 1g: origin badges are not drawn on this page",
+          ).toHaveCount(0);
+        }
+        // The screen is captured as the design draws it — the plain tab — before
+        // anything opens over it.
         await emu.screen("project-1b", tab);
+        if (tab === "runs") {
+          // The one door, walked: the band's verb lands here with `?new=1` and
+          // the run form stands above the list (design 1b, project-tabs-2 — the
+          // panel's own `New run` button was this verb duplicated).
+          await page.getByTestId("project-start-run").click();
+          await expect(page).toHaveURL(new RegExp(`/p/${projectId}/runs[?]new=1$`));
+          await expect(
+            page.getByTestId("new-run-form"),
+            "design 1b: `Start run` is the Runs tab's only way into the form",
+          ).toBeVisible({ timeout: 30_000 });
+          await expect(
+            page.getByTestId("runs-list"),
+            "design 1b: the form opens ABOVE the list, not instead of it",
+          ).toBeVisible();
+        }
       });
     }
 
@@ -163,10 +233,9 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
         page.getByTestId("project-attention-empty"),
         "design 1b: nothing needs attention is said, not drawn as an empty callout",
       ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId("recent-runs-empty"),
-        "design 1b: no runs yet",
-      ).toContainText(/no runs yet/i);
+      await expect(page.getByTestId("recent-runs-empty"), "design 1b: no runs yet").toContainText(
+        /no runs yet/i,
+      );
       await expect(
         page.getByTestId("project-threads-empty"),
         "design 1b: no threads yet",
@@ -180,6 +249,36 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
         "design 1b: no workflows assigned yet",
       ).toContainText(/no workflows are used in this project yet/i);
       await emu.screen("project-1b", "empty");
+    });
+
+    await test.step("project-1b — the empty project's Workflows tab is ONE panel", async () => {
+      // Design 1b (project-workflows-tab pass review): the tab used to gather a
+      // LIBRARY list, an inline assign shelf, a YAML dump and a definition graph
+      // around the project's own rows. All of that has its own surface now; what
+      // is left is ONE panel of 2e-shaped rows, whose honest absence is this
+      // project's line — not a list of everything the org has.
+      const empty = await projectBySlug(page, BARE_SLUG);
+      await page.goto(`/p/${empty}/pipelines`);
+      await expect(
+        page.getByTestId("project-pipelines"),
+        "design 1b: the Workflows tab renders for a project with nothing in it",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.locator("#project-workflows-page-heading"),
+        "design 1b: the one panel names itself WORKFLOWS IN THIS PROJECT",
+      ).toContainText(/WORKFLOWS IN THIS PROJECT/i);
+      await expect(
+        page.locator('[data-testid="project-workflows-empty"]'),
+        "design 1b: the absence is the panel's own honest line",
+      ).toContainText(/no workflows are used in this project yet/i);
+      await expect(
+        page.locator('[data-testid="project-workflows"]'),
+        "design 1b: the tab is ONE panel, not a library table plus rows",
+      ).toHaveCount(1);
+      await expect(
+        page.getByRole("heading", { name: /^LIBRARY$/i }),
+        "design 1b: the retired LIBRARY list did not come back on this tab",
+      ).toHaveCount(0);
     });
 
     await test.step("project-1b — a project the reader cannot open", async () => {
