@@ -111,3 +111,20 @@ describe("the sidebar replaces the app bar", () => {
     expect(screen.queryByTestId("ask-sidebar")).toBeNull();
   });
 });
+
+describe("the Ask box lives in the shell's header, never over the page", () => {
+  it("mounts the palette trigger in the phone top strip, not in a fixed layer", async () => {
+    renderApp({ path: "/inbox", routes: signedIn });
+    const box = await screen.findByTestId("ask-box", undefined, { timeout: READ_MS });
+    // The box renders inside the top strip, next to the drawer button — the one
+    // header the barless shell has. At desktop widths the strip is hidden and
+    // the sidebar's `Ask ⌘K` row is the trigger; either way the box cannot
+    // cover page content, which is what the pass-2 review saw it do on the run
+    // page (over the gate card's decision copy) and on Workflows (over the yaml).
+    const header = box.closest("header");
+    expect(header).toBeTruthy();
+    expect(header!.querySelector('[data-testid="sidebar-open"]')).toBeTruthy();
+    expect(box.closest('[class*="fixed"]')).toBeNull();
+    expect(box.closest("main")).toBeNull();
+  });
+});

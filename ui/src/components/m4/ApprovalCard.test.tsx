@@ -20,6 +20,9 @@ afterEach(cleanup);
  * that lets "now" move cannot assert on it. */
 const now = () => Date.parse("2026-07-31T14:44:02Z");
 
+/** A real-looking decider id: the pass-2 emulator wrote this shape verbatim. */
+const DECIDER_ID = "01a18c3e-5347-787b-86d3-6b8ae2d22c36";
+
 describe("a pending gate you can decide", () => {
   it("posts the decision with the row's CAS version and the comments", () => {
     const onDecide = vi.fn();
@@ -102,6 +105,44 @@ describe("a closed gate", () => {
       "needs an ADR first",
     );
     expect(screen.getByTestId("approval-state").textContent).toBe("decided");
+  });
+
+  // Design review pass 2 (`run-gate-completed-1280.png`): the record read
+  // `01a18c3e-5347-787b-86d3-6b8ae2d22c36 · 2026-10-30 09:59:32 UTC`. The gate
+  // card is where a team learns who said yes, so it says a name.
+  it("writes the decider's name from the caller's directory into the record", () => {
+    render(
+      <ApprovalCard
+        approval={{ ...rejectedApproval, decided_by: DECIDER_ID }}
+        canDecide={false}
+        now={now}
+        nameOf={(id) => (id === DECIDER_ID ? "Ada Lovelace" : id)}
+      />,
+    );
+    expect(screen.getByTestId("approval-decided-by").textContent).toBe("Ada Lovelace");
+    expect(screen.getByTestId("approval-decided").textContent).not.toContain("01a18c3e");
+    expect(screen.getByTestId("approval-decided").textContent).toContain("2026-07-31 14:02:19");
+  });
+
+  it("says someone (id) rather than a bare uuid when no directory was handed over", () => {
+    render(
+      <ApprovalCard approval={{ ...rejectedApproval, decided_by: DECIDER_ID }} canDecide={false} />,
+    );
+    // `names.ts`'s last resort: short enough to read, distinct between two
+    // strangers, and never the 36 characters the review saw.
+    expect(screen.getByTestId("approval-decided-by").textContent).toBe("someone (e2d22c36)");
+  });
+
+  it("reads a policy pseudo-id as the policy it is, not as a missing person", () => {
+    // ADR-0039: a decider can be `profile_policy:deny` — a mode, not a human.
+    render(
+      <ApprovalCard
+        approval={{ ...rejectedApproval, decided_by: "profile_policy:deny" }}
+        canDecide={false}
+        nameOf={() => "nobody"}
+      />,
+    );
+    expect(screen.getByTestId("approval-decided-by").textContent).toBe("the profile's deny policy");
   });
 
   it("shows an expired gate as a failure of the deadline, not a decision", () => {

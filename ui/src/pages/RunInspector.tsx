@@ -1233,6 +1233,13 @@ function RunNodeDetail({
     .map(viewApproval)
     .find((approval) => approval.node_execution_id === nodeId);
 
+  // The decision record names a person, and a uuid is not a name. The ids this
+  // gate puts in a sentence are handed to the directory so an id it cannot name
+  // is a lookup in progress rather than a permanent "someone" (`api/actors.ts`).
+  const deciderId = gate?.decided_by ?? null;
+  const actorIds = useMemo(() => (deciderId ? [deciderId] : []), [deciderId]);
+  const { nameOf } = useActorNames(projectId, actorIds);
+
   /** One copy of the gate card: a control-plane gate has no attempts, so both
    * the with-attempt and the no-attempt paths below render this same block. */
   const gateCard = gate ? (
@@ -1263,6 +1270,7 @@ function RunNodeDetail({
         )
       }
       headingId={`run-approval-heading-${gate.id}`}
+      nameOf={nameOf}
     />
   ) : null;
 

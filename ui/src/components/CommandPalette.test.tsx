@@ -378,3 +378,38 @@ describe("CommandPalette", () => {
     expect(within(await screen.findByRole("listbox")).getByText("Operations")).toBeTruthy();
   });
 });
+
+describe("where the trigger and the panel live (design review pass 2)", () => {
+  it("mounts the trigger in flow, so it can only ever sit in the header it is placed in", async () => {
+    mountPalette();
+    const box = screen.getByTestId("ask-box");
+    // A trigger is never a floating layer: the box rides inside its wrapper, and
+    // the wrapper carries no fixed/absolute position of its own. The pass-2
+    // review caught the shell parking the palette on a `fixed bottom-0 right-…`
+    // anchor, which drew the chip over the run page's gate card ("rejecting
+    // records the de…") and over the project Workflows tab's yaml.
+    expect(box.closest('[class*="fixed"]')).toBeNull();
+    expect(box.closest('[class*="absolute"]')).toBeNull();
+    // The box itself is a normal control hidden below `sm`, not an overlay.
+    expect(box.className).toContain("sm:flex");
+    expect(box.className).not.toMatch(/\b(fixed|absolute)\b/);
+  });
+
+  it("anchors the panel to the viewport and keeps it open for a press inside it", async () => {
+    mountPalette();
+    await act(async () => {
+      openPalette();
+    });
+    const dialog = await screen.findByRole("dialog");
+    // Portalled to the body: the shell hides the box at desktop widths, and a
+    // panel hung off a hidden box is a panel nobody can open.
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+    expect(dialog.className).toContain("fixed");
+    // A press inside the panel is a choice about a jump, not a dismissal.
+    fireEvent.mouseDown(screen.getByTestId("palette-input"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // A press outside still closes it.
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});

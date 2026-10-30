@@ -4,11 +4,20 @@
  *
  * The jump list lists only surfaces the user can already see — the app-shell
  * pages (home, inbox, board, threads, settings, plus every section), projects
- * and their sub-pages, library pipelines, recent runs, agent profiles. The Ask row no longer posts to the v1 broker: it hands the
- * question to the assistant popover (which carries it over and sends it) and
- * gets out of the way. ⌘K belongs to the popover; the palette opens from
- * `openPalette()` — the popover's ⌘K-while-open path and, on the phone,
- * the sidebar.
+ * and their sub-pages, library pipelines, recent runs, agent profiles. The Ask
+ * row no longer posts to the v1 broker: it hands the question to the assistant
+ * popover (which carries it over and sends it) and gets out of the way. ⌘K
+ * belongs to the popover; the palette opens from `openPalette()` — the popover's
+ * ⌘K-while-open path and, on the phone, the sidebar.
+ *
+ * **Where the trigger lives** (design review pass 2): the `Ask… Ctrl K` box is a
+ * header control. The shell mounts the palette inside its top strip, so the box
+ * can only ever sit in that strip; the shell's sidebar row (`Ask ⌘K`) and the
+ * saved `ask-float` preference are the other ways in. It used to ride a fixed
+ * bottom-right anchor, which drew it as a chip over the run page's gate card and
+ * over the Workflows tab's YAML — a trigger is not allowed to cover the thing
+ * the reader is reading. The panel itself is portalled to the body and anchored
+ * to the viewport, so it opens correctly wherever the box is hidden.
  */
 import {
   Fragment,
@@ -18,6 +27,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch } from "../api/client";
@@ -225,6 +235,8 @@ function usePaletteItems(): PaletteItem[] {
 export interface CommandPaletteProps {
   /** Section name in the box's context chip (design 6a: "inbox"). */
   context: string;
+  /** Classes for the box's own wrapper — the shell's header row sizes it. */
+  className?: string;
 }
 
 /** The popover's ⌘K-while-open path opens the jump palette this way. */
@@ -241,9 +253,10 @@ export function openPalette(): void {
  * mount of the shell. `Cmd/Ctrl+K` is bound on the window rather than on the
  * box, because below `sm` the box is hidden and the shortcut is not.
  */
-export default function CommandPalette({ context }: CommandPaletteProps) {
+export default function CommandPalette({ context, className = "" }: CommandPaletteProps) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
 
   const close = () => {
@@ -259,18 +272,22 @@ export default function CommandPalette({ context }: CommandPaletteProps) {
     return () => window.removeEventListener(PALETTE_OPEN_EVENT, onOpen);
   }, []);
 
-  // A press outside the box and the panel closes it.
+  // A press outside the box and the panel closes it. The panel is portalled out
+  // of this wrapper, so it is checked on its own — otherwise the first click on
+  // a jump row would read as "outside" and close the list before it fired.
   useEffect(() => {
     if (!open) return;
     const onMouseDown = (event: MouseEvent) => {
-      if (!wrap.current?.contains(event.target as Node)) close();
+      const target = event.target as Node;
+      if (wrap.current?.contains(target) || panel.current?.contains(target)) return;
+      close();
     };
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open]);
 
   return (
-    <div ref={wrap} className="relative flex min-w-0 items-center">
+    <div ref={wrap} className={`relative flex min-w-0 items-center ${className}`}>
       <button
         ref={trigger}
         type="button"
@@ -287,23 +304,29 @@ export default function CommandPalette({ context }: CommandPaletteProps) {
         <span className="truncate">Ask…</span>
         <span className="ml-auto shrink-0 tracking-[.04em]">Ctrl K</span>
       </button>
-      {open ? (
-        <>
-          <div
-            aria-hidden="true"
-            data-testid="palette-backdrop"
-            className="fixed inset-0 z-30 bg-ink/25"
-          />
-          <PalettePanel onClose={close} />
-        </>
-      ) : null}
+      {open
+        ? createPortal(
+            <div ref={panel} data-testid="palette-root">
+              <div
+                aria-hidden="true"
+                data-testid="palette-backdrop"
+                className="fixed inset-0 z-30 bg-ink/25"
+              />
+              <PalettePanel onClose={close} />
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
 
 /**
  * The panel owns its query and its caret, so every open starts empty and the
- * reads behind the list exist only while the list is on screen.
+ * reads behind the list exist only while the list is on screen. It is portalled
+ * to the body and anchored to the viewport rather than to the box: the shell
+ * hides the box at desktop widths (the sidebar's `Ask ⌘K` row is the trigger
+ * there), and a panel that hung off a hidden box would never be seen.
  */
 function PalettePanel({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
@@ -397,7 +420,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
       role="dialog"
       aria-modal="true"
       aria-label="Jump to"
-      className="absolute right-0 top-[calc(100%+8px)] z-40 w-[min(560px,calc(100vw-24px))] overflow-hidden rounded-[4px] border border-ink bg-surface shadow-raised"
+      className="fixed left-1/2 top-[12vh] z-40 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-[4px] border border-ink bg-surface shadow-raised"
     >
       <div className="border-b border-line px-[10px]">
         <input

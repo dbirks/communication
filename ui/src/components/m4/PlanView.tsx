@@ -19,11 +19,13 @@
  *
  * Nothing is dropped on the way. Keys this view does not know stay reachable in
  * a collapsed "other fields" block, a payload that is not JSON at all renders
- * as the text it is (whitespace preserved, clamped with "show all"), and a
+ * as the text it is (whitespace preserved, clamped with "show all", and read as
+ * markdown when markdown is what the agent wrote — `lib/markdown.tsx`), and a
  * value of the wrong shape (a `steps` object, a non-string `goal`) falls back
  * to the JSON block rather than disappearing.
  */
 import { useMemo, useState } from "react";
+import { MarkdownBody, looksLikeMarkdown } from "../../lib/markdown";
 
 /** Plain-text arm: lines shown before "show all". */
 const PLAIN_LINES = 12;
@@ -510,16 +512,23 @@ function RestBlock({
 }
 
 /**
- * The fallback arm: a payload that is not a JSON object is text, and text is
+ * The fallback arm: a payload that is not a JSON plan is text, and text is
  * what gets shown — whitespace preserved, clamped to a dozen lines with the
  * whole thing behind "show all". A gate that carries prose instead of a plan is
  * still decidable.
+ *
+ * When that text is markdown (which is what an agent writes: `## Step`,
+ * `**Files**`, back-ticked paths), it is *read* rather than printed — headings,
+ * lists, fences and emphasis become markup, with no new dependency
+ * (`lib/markdown.tsx`). Prose with no markers in it keeps the verbatim render it
+ * always had: whitespace preserved, nothing re-flowed.
  */
 function PlainText({ text, className }: { text: string; className: string }) {
   const [open, setOpen] = useState(false);
   const lines = text.split("\n");
   const tooLong = lines.length > PLAIN_LINES || text.length > PLAIN_LINES * CHARS_PER_LINE;
   const shown = open || !tooLong ? text : lines.slice(0, PLAIN_LINES).join("\n");
+  const markdown = looksLikeMarkdown(shown);
   return (
     <div className={className} data-testid="plan-view-plain">
       <div
@@ -528,7 +537,7 @@ function PlainText({ text, className }: { text: string; className: string }) {
         }`}
         data-testid="plan-plain-text"
       >
-        {shown}
+        {markdown ? <MarkdownBody text={shown} /> : shown}
       </div>
       {tooLong ? (
         <button

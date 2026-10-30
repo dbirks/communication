@@ -312,6 +312,49 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(screen.queryByTestId("attempt-status")).toBeNull();
   });
 
+  it("names the approver in a decided gate's record", async () => {
+    // The pass-2 review read the approver's uuid in the decision record on the
+    // completed run (`run-gate-completed-1280.png`). The pane resolves the id
+    // through the app's actor directory, the same lookup the transcript uses.
+    mountRun(`?node=${WIRE_NODE_APPROVE}`, [
+      { path: "/api/v1/users", body: { items: [meFixture] } },
+      {
+        path: `/api/v1/projects/${wireProjectId}/members`,
+        body: {
+          items: [
+            { user_id: meFixture.id, display_name: meFixture.display_name, role: "maintainer" },
+          ],
+        },
+      },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+      {
+        path: `/api/v1/projects/${wireProjectId}/approvals`,
+        body: {
+          ...wireApprovalList,
+          approvals: [
+            {
+              ...wireApproval,
+              node_execution_id: WIRE_NODE_APPROVE,
+              state: "decided",
+              decision: "approved",
+              decided_by: meFixture.id,
+              decided_at: "2026-10-30T09:59:32Z",
+              version: 2,
+            },
+          ],
+        },
+      },
+      {
+        path: `${RUN_PATH}/nodes/${WIRE_NODE_APPROVE}`,
+        body: { ...wireNodeDetail, attempts: [], checkpoint: null },
+      },
+    ]);
+
+    const decider = await screen.findByTestId("approval-decided-by");
+    expect(decider.textContent).toBe(meFixture.display_name);
+    expect(screen.getByTestId("approval-decided").textContent).not.toContain(meFixture.id);
+  });
+
   it("says so honestly for a loaded node with no attempts and no gate", async () => {
     mountRun(`?node=${WIRE_NODE_PLAN}`, [
       { path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: { ...wireNodeDetail, attempts: [] } },

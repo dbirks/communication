@@ -42,7 +42,8 @@ export interface ShellProps {
  * anywhere): mark, New/Ask, cross-project nav, the project tree or switcher
  * (a saved preference), the library, and the identity footer. Below `md`
  * (768px) the column is an off-canvas drawer opened from a slim top strip;
- * the content column then owns the full width.
+ * the content column then owns the full width, and that strip is the only
+ * place the palette's `Ask… Ctrl K` box may render (see `CommandPalette.tsx`).
  */
 export default function Shell({ children, fullBleed = false }: ShellProps) {
   const { prefs } = useLayoutPrefs();
@@ -87,7 +88,13 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
       </div>
 
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-        {/* Phone top strip: the 44px menu button and the mark. */}
+        {/* Phone top strip: the 44px menu button, the mark, and the Ask box.
+            The palette's trigger lives *here* and nowhere else: the pass-2
+            review caught the same box parked on a fixed bottom-right anchor,
+            drawing over the run page's gate card and the Workflows tab's YAML.
+            Below `sm` the box is hidden by its own rule (the drawer's `Ask ⌘K`
+            row is the trigger there), and at desktop widths the strip is, so
+            the sidebar row is — which is why the panel portals to the body. */}
         <header className="sticky top-0 z-20 flex h-11 items-center gap-2 border-b border-ink bg-surface px-2 md:hidden">
           <button
             ref={menuButton}
@@ -109,6 +116,7 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
           </button>
           <Mark size={22} />
           <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>
+          <CommandPalette context={sectionOf(location.pathname)} className="ml-auto shrink-0" />
         </header>
 
         <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
@@ -134,14 +142,6 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
           </div>
         </div>
       ) : null}
-
-      {/* The command palette's engine, anchored at the content's bottom-right
-          (the assistant popover's design position): its trigger box is hidden
-          — the sidebar's `Ask ⌘K` row (or the floating button) opens it — but
-          the global ⌘K listener and the panel stay mounted here. */}
-      <div className="fixed bottom-0 right-[248px] z-30 h-px w-px [&>button]:hidden">
-        <CommandPalette context={sectionOf(location.pathname)} />
-      </div>
 
       {/* The assistant popover's engine (ADR-0050): it owns ⌘K, the sidebar's
           `Ask ⌘K` row and the floating button all press it, and its state

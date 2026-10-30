@@ -145,6 +145,51 @@ describe("a payload that is not a plan", () => {
     render(<PlanView text='["a","b"]' />);
     expect(screen.getByTestId("plan-plain-text").textContent).toBe('["a","b"]');
   });
+
+  // Design review pass 2: the emulator's gate body arrived as markdown
+  // (`## Implementation Plan`, `**Confirm…**`, `./pytest.ini`) and the card
+  // printed the markers, so the reader parsed the markup instead of the plan.
+  it("reads a markdown plan body as markup, not as its markers", () => {
+    render(
+      <PlanView
+        text={
+          "## Implementation Plan — emu gate journey\n\n1. **Confirm repository binding**\n   - Files: `./README.md`, `./pytest.ini`\n"
+        }
+      />,
+    );
+    const plain = screen.getByTestId("plan-plain-text");
+    expect(plain.textContent).toContain("Implementation Plan — emu gate journey");
+    // No marker survives onto the screen.
+    expect(plain.textContent).not.toContain("##");
+    expect(plain.textContent).not.toContain("**");
+    expect(plain.textContent).not.toContain("`");
+    // …and it became real structure: a heading, an ordered list, a nested bullet.
+    expect(screen.getByTestId("markdown-heading").textContent).toBe(
+      "Implementation Plan — emu gate journey",
+    );
+    expect(screen.getByTestId("markdown-list-ordered")).toBeTruthy();
+    expect(screen.getByTestId("markdown-list").querySelector("code")?.textContent).toBe(
+      "./README.md",
+    );
+  });
+
+  it("keeps prose that carries no markdown markers verbatim", () => {
+    render(<PlanView text={"Ship it once the migration is reviewed."} />);
+    expect(screen.queryByTestId("markdown-heading")).toBeNull();
+    expect(screen.getByTestId("plan-plain-text").textContent).toBe(
+      "Ship it once the migration is reviewed.",
+    );
+  });
+
+  it("reads markdown past the clamp too, from the show-all arm", () => {
+    const long = ["# Plan", "", ...Array.from({ length: 20 }, (_, i) => `- step ${i + 1}`)].join(
+      "\n",
+    );
+    render(<PlanView text={long} />);
+    expect(screen.getAllByTestId("markdown-list-item").length).toBe(10);
+    fireEvent.click(screen.getByTestId("plan-plain-show-all"));
+    expect(screen.getAllByTestId("markdown-list-item").length).toBe(20);
+  });
 });
 
 describe("splitPlanText — a title glued to the document", () => {

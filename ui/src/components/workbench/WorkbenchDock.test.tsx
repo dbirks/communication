@@ -26,6 +26,7 @@ import { WorkbenchDock, type WorkbenchDockProps } from "./WorkbenchDock";
 import {
   WIRE_NODE_PLAN,
   WIRE_RUN_ID,
+  wireUserId,
   wireApproval,
   wireApprovalList,
   wireAttempt,
@@ -559,5 +560,98 @@ describe("WorkbenchDock", () => {
     expect(screen.getByTestId("dock-attempt-count").textContent).toBe("attempt 0 of 1");
     expect(screen.getByTestId("dock-no-attempt").textContent).toContain("no worker attempt");
     expect(screen.getByTestId("dock-child-run-link").textContent).toBe("Open child run");
+  });
+});
+
+/**
+ * The two gate defects the pass-2 design review caught on the emulator
+ * (`run-gate-completed-1280.png`): a succeeded gate whose dock line read
+ * `attempt 0 of 1`, and a decision record that wrote the approver's uuid where
+ * a reader expects a name.
+ */
+describe("a gate that finished", () => {
+  const gateId = "01987b26-0010-7000-8000-abcdef012345";
+  const decided = {
+    ...wireApproval,
+    node_execution_id: gateId,
+    state: "decided" as const,
+    decision: "approved" as const,
+    decided_by: wireUserId,
+    decided_at: "2026-10-30T09:59:32Z",
+    version: 2,
+  };
+  const directory: RouteStub[] = [
+    { path: "/api/v1/users", body: { items: [meFixture] } },
+    {
+      path: `/api/v1/projects/${wireProjectId}/members`,
+      body: {
+        items: [
+          { user_id: meFixture.id, display_name: meFixture.display_name, role: "maintainer" },
+        ],
+      },
+    },
+  ];
+
+  it("counts a control-plane gate's one pass as attempt 1 of 1", async () => {
+    renderDock(
+      row({
+        id: gateId,
+        node_id: "approve",
+        kind: "human.approval",
+        node_instance_key: "/approve",
+        status: "succeeded",
+        outcome: "approved",
+        waiting_reason: null,
+        attempt_count: 0,
+        attempt_limit: 1,
+      }),
+      [
+        ...directory,
+        { path: `${RUN_PATH}/nodes/${gateId}`, body: { ...wireNodeDetail, attempts: [] } },
+        {
+          path: `/api/v1/projects/${wireProjectId}/approvals`,
+          body: { ...wireApprovalList, approvals: [decided] },
+        },
+      ],
+    );
+
+    // The gate node has no worker attempt row: the engine decided it on the
+    // control plane. That is pass ONE of the node, not pass zero — `attempt 0
+    // of 1` on a node that succeeded read as a counter that had lost a pass.
+    expect(await screen.findByTestId("approval-decided")).toBeTruthy();
+    expect(screen.getByTestId("dock-instance-line").textContent).toBe("attempt 1 of 1");
+    // The honest zero stays where it belongs: a terminal row that died before
+    // any worker attempt (covered by the failed `pipeline.invoke` above).
+    expect(screen.getByTestId("dock-instance-line").textContent).not.toContain("attempt 0");
+  });
+
+  it("writes the approver's name into the decision record, not their uuid", async () => {
+    renderDock(
+      row({
+        id: gateId,
+        node_id: "approve",
+        kind: "human.approval",
+        node_instance_key: "/approve",
+        status: "succeeded",
+        outcome: "approved",
+        waiting_reason: null,
+        attempt_count: 0,
+        attempt_limit: 1,
+      }),
+      [
+        ...directory,
+        { path: `${RUN_PATH}/nodes/${gateId}`, body: { ...wireNodeDetail, attempts: [] } },
+        {
+          path: `/api/v1/projects/${wireProjectId}/approvals`,
+          body: { ...wireApprovalList, approvals: [decided] },
+        },
+      ],
+    );
+
+    const decider = await screen.findByTestId("approval-decided-by");
+    expect(decider.textContent).toBe(meFixture.display_name);
+    // `01a18c3e-5347-…` is what the review saw: a bare uuid is never a label
+    // (`api/names.ts`), on the gate card as nowhere else.
+    expect(screen.getByTestId("approval-decided").textContent).not.toContain(wireUserId);
   });
 });

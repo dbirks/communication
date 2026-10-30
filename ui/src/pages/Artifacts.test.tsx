@@ -14,6 +14,7 @@ import {
   projectFixture,
   requestsTo,
   turnId,
+  workerId,
   type RouteStub,
 } from "../test/fakes";
 import type { Artifact } from "../api/types";
@@ -345,5 +346,82 @@ describe("/artifacts/:artifactId", () => {
       "Only HTML artifacts preview",
     );
     expect(screen.queryByTestId("artifact-preview-open")).toBeNull();
+  });
+});
+
+/**
+ * The pass-2 design review's artifact page (`artifact-plan-md-1280.png`): the
+ * breadcrumb said the word "Project" where the reader is standing inside one
+ * called Widgets, the byline said `someone (4e7f968c)` for the worker that
+ * published the file, and `created` was a wall clock while every artifact row
+ * above it reads an age.
+ */
+describe("/artifacts/:id names the project, the publisher and the moment", () => {
+  const runId = "01987b24-0007-7000-8000-abcdef012345";
+  /** The published row the emulator served: worker provenance, no person. */
+  const published: Artifact = {
+    ...artifactFixture,
+    id: "01987a78-9994-7000-8000-abcdef012345",
+    name: "plan.md",
+    kind: "markdown",
+    media_type: "text/markdown",
+    sensitivity: "standard",
+    conversation_id: null,
+    turn_id: null,
+    run_id: runId,
+    worker_id: workerId,
+    // What the publish path really writes: the worker's own id, not the literal
+    // "worker" (`attempt_artifacts.go`), which the page used to call a stranger.
+    created_by: workerId,
+    created_at: new Date(Date.parse("2026-10-14T18:19:00Z")).toISOString(),
+    preview_url: null,
+  };
+  const publishedPath = `/api/v1/artifacts/${published.id}`;
+  const detail = { path: publishedPath, method: "GET" as const, body: published };
+
+  it("puts the project's name in the breadcrumb, not the word Project", async () => {
+    renderApp({ path: `/artifacts/${published.id}`, routes: routes([detail]) });
+    const crumb = await screen.findByTestId("artifact-breadcrumb-project");
+    // The generic word is only the arm the page holds while `GET /projects/{id}`
+    // is in flight; the name is what stays on screen.
+    await waitFor(() => expect(crumb.textContent).toBe(projectFixture.name));
+    expect(crumb.getAttribute("href")).toBe(`/p/${projectId}`);
+  });
+
+  it("names a worker-published artifact the run that published it", async () => {
+    renderApp({ path: `/artifacts/${published.id}`, routes: routes([detail]) });
+    const by = await screen.findByTestId("artifact-created-by");
+    // "someone (cdef2345)" was the defect: a worker is not a person the
+    // directory can name, and the row says what it was published for.
+    expect(by.textContent).toContain("the run");
+    expect(by.textContent).not.toContain("someone");
+    expect(by.textContent).not.toContain(workerId);
+  });
+
+  it("keeps a person's name for a person who uploaded it", async () => {
+    renderApp({
+      path: `/artifacts/${published.id}`,
+      routes: routes([
+        { path: publishedPath, method: "GET", body: { ...published, created_by: meFixture.id } },
+      ]),
+    });
+    expect((await screen.findByTestId("artifact-created-by")).textContent).toContain(
+      meFixture.display_name,
+    );
+  });
+
+  it("reads the moment as an age, with the exact stamp one hover away", async () => {
+    // A row created 5 minutes ago reads `5m ago`, the way `ArtifactRow` reads.
+    const fresh: Artifact = {
+      ...published,
+      created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    };
+    renderApp({
+      path: `/artifacts/${fresh.id}`,
+      routes: routes([{ path: publishedPath, method: "GET", body: fresh }]),
+    });
+    const created = await screen.findByTestId("artifact-created-at");
+    expect(created.textContent).toBe("5m ago");
+    expect(created.getAttribute("title")).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/);
   });
 });

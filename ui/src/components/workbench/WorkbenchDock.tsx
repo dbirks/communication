@@ -20,6 +20,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMe, useProject } from "../../api/queries";
+import { useActorNames } from "../../api/actors";
 import { useRunNode } from "../../api/runs";
 import {
   adoptApprovalConflict,
@@ -136,6 +137,13 @@ export function WorkbenchDock({
     (approvalsQuery.data?.approvals ?? [])
       .map(viewApproval)
       .find((approval) => approval.node_execution_id === executionId) ?? null;
+
+  // Who decided the gate, in words: the decision record's `decided_by` is a user
+  // id, and the dock hands it to the app's actor directory (the same lookup the
+  // transcript uses) so a person reads as a name.
+  const deciderId = gate?.decided_by ?? null;
+  const actorIds = useMemo(() => (deciderId ? [deciderId] : []), [deciderId]);
+  const { nameOf } = useActorNames(projectId, actorIds);
 
   // `pipeline.invoke` is a parent run's one-hop view of a whole child run —
   // the tree row keyed by this execution's own instance key names it.
@@ -314,6 +322,7 @@ export function WorkbenchDock({
             pending={decide.isPending}
             conflictError={conflict}
             onDecide={decideGate}
+            nameOf={nameOf}
             headingId={`workbench-approval-heading-${gate.id}`}
           />
         ) : (
@@ -364,10 +373,15 @@ function isFailure(status: string): boolean {
   return status === "failed" || status === "interrupted" || status === "cancelled";
 }
 
-/** A node execution that has finished and never opened an attempt (a
- * control-plane decision — a failed `pipeline.invoke` reads this way) still
- * owes the reader its attempt count: `attempt 0 of 1`, never "no attempts
- * yet" on a terminal row. */
+/** A node execution whose attempt rows are not on screen still owes the reader
+ * the pass it is on:
+ *   - a succeeded node with no attempt row ran on the control plane (a gate's
+ *     decision is its one and only pass), so the line names attempt 1, never
+ *     `attempt 0 of 1` on a node that finished — the pass-2 review caught that
+ *     on the emulator's approved gate;
+ *   - only a terminal row that died before any worker attempt (a failed
+ *     `pipeline.invoke` reads this way) gets the honest `attempt 0`, which the
+ *     failure block then explains (`dock-no-attempt`). */
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "interrupted", "skipped"]);
 
 function lineAttemptFor(
@@ -376,7 +390,10 @@ function lineAttemptFor(
   attemptCount: number,
 ): { attempt_number: number } | null {
   if (selected) return selected;
-  return attemptCount === 0 && TERMINAL_STATUSES.has(status) ? { attempt_number: 0 } : null;
+  // The node's own ledger stands in for the rows this pane is not showing.
+  if (attemptCount > 0) return { attempt_number: attemptCount };
+  if (status === "succeeded") return { attempt_number: 1 };
+  return TERMINAL_STATUSES.has(status) ? { attempt_number: 0 } : null;
 }
 
 function instanceLine(

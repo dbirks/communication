@@ -222,11 +222,22 @@ export interface ArtifactDetailProps {
   artifact: Artifact;
   /** Words for who created it; a worker id is not readable on its own. */
   createdByName: (createdBy: string) => string;
+  /**
+   * Words for *when* it was created. Defaults to the wall-clock stamp; a screen
+   * that lives beside the rest of the app passes the relative form the artifact
+   * rows already use (`3m ago`), and the stamp stays in the value's `title`.
+   */
+  createdLabel?: (artifact: Artifact) => string;
   currentOrigin?: string;
 }
 
 /** The artifact detail panel: metadata, download, preview (`/artifacts/:id`). */
-export function ArtifactDetail({ artifact, createdByName, currentOrigin }: ArtifactDetailProps) {
+export function ArtifactDetail({
+  artifact,
+  createdByName,
+  createdLabel = (row) => formatTime(row.created_at),
+  currentOrigin,
+}: ArtifactDetailProps) {
   const downloadBlocked = downloadBlockedReason(artifact.sensitivity);
   const state = stateOf(ARTIFACT_STATE[artifact.state]);
   const ready = artifact.state === "ready";
@@ -279,7 +290,11 @@ export function ArtifactDetail({ artifact, createdByName, currentOrigin }: Artif
             </div>
             <div className="flex gap-2">
               <dt className="text-muted">created</dt>
-              <dd>{formatTime(artifact.created_at)}</dd>
+              {/* Relative by default on the page that sits next to every other
+               * relative time; the exact stamp one hover away. */}
+              <dd title={formatTime(artifact.created_at)} data-testid="artifact-created-at">
+                {createdLabel(artifact)}
+              </dd>
             </div>
             <div className="flex gap-2">
               <dt className="text-muted">by</dt>

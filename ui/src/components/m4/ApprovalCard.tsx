@@ -21,6 +21,7 @@
  */
 import { useState } from "react";
 import type { ApprovalDecision, ApprovalDetail } from "../../lib/pipeline/contract";
+import { deciderLabel, fallbackName } from "../../api/actors";
 import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
 import { Field, Textarea } from "../ds/Field";
@@ -48,6 +49,15 @@ export interface ApprovalCardProps {
   now?: () => number;
   headingId?: string;
   className?: string;
+  /**
+   * Words for the person who decided, from the app's actor directory
+   * (`api/actors.ts` — the same lookup the transcript and the timeline use).
+   * A gate's `decided_by` is a user id, and a uuid is unreadable in a decision
+   * record: the pass-2 review read `01a18c3e-5347-…` where it should have read
+   * a name. A screen without a directory still says `someone (2d22c36)`, never
+   * a bare uuid (`names.ts`'s rule).
+   */
+  nameOf?: (userId: string) => string;
 }
 
 export function ApprovalCard({
@@ -59,6 +69,7 @@ export function ApprovalCard({
   now = Date.now,
   headingId = "approval-card-heading",
   className = "",
+  nameOf = fallbackName,
 }: ApprovalCardProps) {
   const [comments, setComments] = useState("");
   const state = stateOf(APPROVAL_STATE[approval.state]);
@@ -240,7 +251,16 @@ export function ApprovalCard({
               label={approval.decision ?? approval.state}
             />
             <span className="font-mono text-[11px] text-ink-2">
-              {approval.decided_by ? `${approval.decided_by} · ` : ""}
+              {approval.decided_by ? (
+                <>
+                  {/* The person, in words — and a policy pseudo-id (`profile_policy:deny`,
+                   * ADR-0039) is not a person, so `deciderLabel` reads it first. */}
+                  <span data-testid="approval-decided-by">
+                    {deciderLabel(approval.decided_by, nameOf)}
+                  </span>{" "}
+                  ·{" "}
+                </>
+              ) : null}
               {approval.decided_at ? formatTime(approval.decided_at) : "no timestamp served"}
             </span>
             {approval.state === "denied" ? (
