@@ -256,7 +256,11 @@ function TriggersDialogBody({
           <Field
             id="trigger-add-cron"
             label="cron (minute hour dom month dow, UTC)"
-            hint="the server validates the cadence; seconds, names and `? L W # H` are refused"
+            hint={
+              <span data-testid="trigger-add-cron-hint">
+                the server validates the cadence; seconds, names and ? L W # H are refused
+              </span>
+            }
           >
             <Input
               id="trigger-add-cron"

@@ -452,9 +452,18 @@ export function PipelinePage() {
                 {label}
                 {/* Only the Used-in count means something (shared page
                     pattern): the design's tab row is
-                    `Overview YAML Used in 2 History`. */}
+                    `Overview YAML Used in 2 History`. A failed read is NOT a
+                    count — the tab then carries `?` next to the `USED IN ?
+                    REPOS` header, because `Used in 0` over a broken fan says
+                    “nobody uses this” when the truth is “we could not tell”
+                    (pass-2 review, 2a server-error). */}
                 {key === "used-in" && !usedIn.loading ? (
-                  <span className="ml-[4px] font-mono text-[10.5px]">{` ${usedIn.groups.length}`}</span>
+                  <span
+                    className="ml-[4px] font-mono text-[10.5px]"
+                    data-testid="workflow-used-in-count"
+                  >
+                    {usedIn.error ? " ?" : ` ${usedIn.groups.length}`}
+                  </span>
                 ) : null}
               </Link>
             );

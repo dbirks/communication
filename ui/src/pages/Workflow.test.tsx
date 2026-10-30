@@ -758,6 +758,52 @@ describe("Use in a repo… (ADR-0060)", () => {
     expect(body.repository_id).toBeNull();
   });
 
+  it("chooses one way — a select, no per-row buttons — and names what was chosen", async () => {
+    // Pass-2 review, 2a “Use in a repo…”: the dialog offered the same choice
+    // twice (a `Use here` button on every project row AND a project select).
+    // It now follows the 1c dialog: one way to choose, Cancel then the primary
+    // verb on the right, and a title that reads what the reader picked.
+    mount(detail, [
+      {
+        path: `/api/v1/projects/${wireProjectId}/assignments`,
+        body: { assignments: [] },
+      },
+      { path: gadgetsAssignmentsPath, body: { assignments: [] } },
+    ]);
+    const dialog = await openDialog();
+    // The bookkeeping stays (an already-used project is named, not hidden),
+    // but it carries no second way to choose.
+    expect(within(dialog).getByTestId(`assign-project-state-${wireProjectId}`)).toBeTruthy();
+    expect(dialog.querySelector('[data-testid^="assign-pick-"]')).toBeNull();
+    expect(dialog.textContent).not.toContain("Use here");
+
+    // Footer: Cancel first, the primary verb last, both at the right edge.
+    const confirm = within(dialog).getByTestId("assign-confirm");
+    const cancel = within(dialog).getByTestId("assign-cancel");
+    expect(cancel.compareDocumentPosition(confirm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect((confirm.parentElement as HTMLElement).className).toContain("justify-end");
+
+    // The plain hint, not the wire's default and cap.
+    expect(dialog.textContent).not.toContain("wire default");
+    expect(dialog.textContent).toContain("how many runs of this workflow");
+
+    // The title follows the choice.
+    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe("Use in a repo…");
+    fireEvent.change(within(dialog).getByTestId("assign-project-select"), {
+      target: { value: wireProjectId },
+    });
+    const repoSelect = (await within(dialog).findByTestId(
+      "assign-repo-select",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(repoSelect.options.length).toBeGreaterThan(1), settled);
+    fireEvent.change(repoSelect, { target: { value: PAYMENTS_REPO_ID } });
+    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe("Use in payments");
+    fireEvent.change(repoSelect, { target: { value: "__whole__" } });
+    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe(
+      `Use in every repo of ${projectFixture.name}`,
+    );
+  });
+
   it("the store's `409` (that pair already exists) keeps the server's words inline", async () => {
     const createPath = `/api/v1/projects/${wireProjectId}/assignments`;
     mount(detail, [
@@ -804,6 +850,48 @@ describe("Use in a repo… (ADR-0060)", () => {
     const line = await screen.findByTestId("assign-no-maintainer");
     expect(line.textContent).toContain("You maintain no project");
     expect(screen.getByTestId("assign-projects-link").getAttribute("href")).toBe("/");
+  });
+  it("a failed read is never a count: no `Used in 0`, the FAILED banner instead", async () => {
+    // Pass-2 review, 2a server-error at 390: the tab read `Used in 0` and the
+    // panel `USED IN 0 REPOS` over a fan that had failed — a lost read stated
+    // as “nobody uses this”. The count goes `?` and the standard FAILED banner
+    // (the same `Alert` every other server-error screen uses) says what broke.
+    mount(`${detail}/used-in`, [
+      {
+        path: `/api/v1/projects/${wireProjectId}/assignments`,
+        status: 500,
+        body: { type: "x", title: "Assignments unavailable", status: 500 },
+      },
+      {
+        path: gadgetsAssignmentsPath,
+        status: 500,
+        body: { type: "x", title: "Assignments unavailable", status: 500 },
+      },
+    ]);
+    const panel = await screen.findByTestId("used-in");
+    const banner = await within(panel).findByTestId("used-in-error", undefined, settled);
+    expect(banner.getAttribute("role")).toBe("alert");
+    expect(banner.textContent).toContain("FAILED");
+    expect(banner.textContent).toContain("could not all be read");
+    // The header asks the question instead of answering it with a number.
+    expect(within(panel).getByRole("heading", { level: 2 }).textContent).toBe("USED IN ? REPOS");
+    expect(within(panel).queryByTestId("used-in-empty")).toBeNull();
+    const tab = screen.getByTestId("workflow-tab-used-in");
+    expect(tab.textContent).toBe("Used in ?");
+    expect(tab.textContent).not.toContain(" 0");
+  });
+
+  it("names the count it has: the rows the arrived pins showed", async () => {
+    mount(`${detail}/used-in`);
+    const panel = await screen.findByTestId("used-in");
+    await waitFor(
+      () =>
+        expect(within(panel).getByRole("heading", { level: 2 }).textContent).toBe(
+          "USED IN 2 REPOS",
+        ),
+      settled,
+    );
+    expect(screen.getByTestId("workflow-used-in-count").textContent).toBe(" 2");
   });
 });
 

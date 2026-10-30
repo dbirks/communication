@@ -463,7 +463,14 @@ describe("TriggerDialog — the 2c contract", () => {
       "true",
     );
     expect(screen.queryByTestId("trigger-dialog-labels")).toBeNull();
-    expect(screen.getByTestId("trigger-dialog-submit").textContent).toBe("Add schedule");
+    // One trigger kind-word in the primary verb (pass-2 review, 2c): the
+    // schedule arm says ADD TRIGGER like the issue arm does.
+    expect(screen.getByTestId("trigger-dialog-submit").textContent).toBe("Add trigger");
+    // The hint is plain words — no literal backticks around the tokens the
+    // server refuses.
+    expect(screen.getByTestId("trigger-dialog-cron-hint").textContent).toBe(
+      "the server validates the cadence; seconds, names and ? L W # H are refused",
+    );
     fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "* * * * *" } });
     expect(screen.getByTestId("trigger-dialog-cron-words").textContent).toBe("every minute");
   });

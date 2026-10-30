@@ -80,6 +80,32 @@ test.describe("workflow-lifecycle (admin authors)", () => {
       await emu.screen("1g", "inspector-edit");
     });
 
+    await test.step("1g — the studio speaks of a WORKFLOW, not a pipeline", async () => {
+      // Design 1g copy: the authoring surface is the workflow's YAML, so that
+      // is what its editor is named. The YAML view is the one place the studio
+      // spelled this object out, so the journey opens it, reads the name, and
+      // confirms the view toggle carried the edit across.
+      await page.getByTestId("studio-view-yaml").click({ timeout: 20_000 });
+      const editor = page.getByLabel("Workflow YAML");
+      await expect(
+        editor,
+        "design 1g: the studio's YAML editor is labelled 'Workflow YAML'",
+      ).toBeVisible({ timeout: 20_000 });
+      await expect(
+        page.getByLabel("Pipeline YAML"),
+        "design 1g: the old 'Pipeline YAML' label is gone",
+      ).toHaveCount(0);
+      expect(
+        await editor.inputValue(),
+        "design 1g: switching to the YAML view shows the bytes just edited",
+      ).toContain(`emu edit ${EMU_PASS_ID}`);
+      await page.getByTestId("studio-view-canvas").click({ timeout: 20_000 });
+      await expect(
+        page.getByTestId("studio-canvas"),
+        "design 1g: and the canvas comes back with its node",
+      ).toBeVisible({ timeout: 20_000 });
+    });
+
     await test.step("1g — Save, Validate, Publish", async () => {
       // The publish gate is `saved bytes + the server's valid verdict` on the
       // CURRENT revision (Studio.tsx): save first, then validate, then
@@ -149,6 +175,17 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       expect(text, "design 2d: the emu prompt edit is in the published YAML").toContain(
         `emu edit ${EMU_PASS_ID}`,
       );
+      // Design 2d copy (the 390 check): the export button reads the plain word
+      // `download` — the filename moved to its title/accessible name, where it
+      // can no longer be cut to `…-r1.ya…` on the bar.
+      await expect(
+        page.getByTestId("yaml-view-download"),
+        "design 2d: the export button's label is 'download'",
+      ).toHaveText("download", { timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: /^download .*\.yaml$/ }),
+        "design 2d: the button still names the file it writes, in its accessible name",
+      ).toBeVisible({ timeout: 30_000 });
       await emu.screen("2d", "yaml");
     });
 
@@ -162,6 +199,18 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
         empty,
         "design 2a: the empty line reads 'Not used in any repo yet'",
       ).toContainText(/Not used in any repo yet/i);
+      // The read SUCCEEDED, so a zero is a true answer and the tab may carry
+      // it (`Overview YAML Used in 0 History` is the design's tab row). What it
+      // must never do is show `0` over a broken read — server-error.spec.ts
+      // proves the tab says `?` there instead.
+      await expect(
+        page.getByTestId("workflow-used-in-count"),
+        "design 1e/2a: a completed read lets the tab count honestly (`Used in 0`)",
+      ).toHaveText("0", { timeout: 30_000 });
+      await expect(
+        page.getByTestId("workflow-tab-used-in"),
+        "design 1e: the tab row reads `Used in 0` when nothing uses the workflow",
+      ).toContainText(/Used in 0/);
       await emu.screen("2a", "used-in-empty");
     });
 
@@ -169,13 +218,71 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       await page.getByTestId("assign-open").click();
       const dialog = page.getByTestId("use-in-repo-dialog");
       await expect(dialog, "design: 'Use in a repo…' opens a dialog").toBeVisible();
-      await emu.screen("2a", "use-dialog");
+      const title = dialog.getByTestId("use-in-repo-title");
+      await expect(
+        title,
+        "design 2a: before anything is chosen the dialog is still the plain question",
+      ).toHaveText("Use in a repo…", { timeout: 20_000 });
+      // The projects list is READ-ONLY bookkeeping: it says where the workflow
+      // is already pinned and nothing else. The pass-2 review retired the
+      // per-row `Use here` button, so the project select below is the ONE way
+      // to choose — assert no row offers a second way.
+      const states = dialog.getByTestId("assign-project-states");
+      await expect(
+        states,
+        "design 2a: the dialog shows where each project stands (read-only bookkeeping)",
+      ).toBeVisible({ timeout: 30_000 });
+      const m4Row = states.locator("li").filter({ hasText: "M4 Exit" });
+      await expect(
+        m4Row,
+        "design 2a: 'M4 Exit' is named there, with its pin line",
+      ).toHaveCount(1);
+      await expect(
+        m4Row.getByTestId(/^assign-project-pin-/),
+        "design 2a: the state is honest words — 'not used yet' / 'pins r<n>'",
+      ).toContainText(/not used yet|pins r/i, { timeout: 30_000 });
+      await expect(
+        states.locator("button"),
+        "design 2a: that list is read-only — no `Use here` button anywhere; the project select is the ONE way to choose",
+      ).toHaveCount(0);
+      await expect(
+        dialog.getByTestId(/^assign-pick-/),
+        "design 2a: the retired per-row `assign-pick-*` affordance does not come back",
+      ).toHaveCount(0);
+      // Choose the project — the repo select appears — and record the dialog
+      // in the state a person actually acts on (design 2a's one project+repo
+      // select, not the empty question).
       const projectSelect = dialog.getByTestId("assign-project-select");
       await expect(projectSelect, "the dialog offers a project you maintain").toBeVisible();
       await projectSelect.selectOption({ label: "M4 Exit" }, { timeout: 20_000 });
       const repoSelect = dialog.getByTestId("assign-repo-select");
-      await expect(repoSelect).toBeVisible();
+      await expect(
+        repoSelect,
+        "design 2a: the project select reveals the repository select (the one way to name a repo)",
+      ).toBeVisible({ timeout: 30_000 });
+      await emu.screen("2a", "use-dialog");
       await repoSelect.selectOption({ label: "app" }, { timeout: 20_000 });
+      await expect(
+        title,
+        "design 2a (1c rule): once a repo is chosen the dialog is named for what it will do",
+      ).toHaveText("Use in app", { timeout: 20_000 });
+      // The 1c footer: Cancel first, the primary verb last, both on the right.
+      await expect
+        .poll(
+          async () =>
+            (
+              await dialog
+                .locator('[data-testid="assign-cancel"], [data-testid="assign-confirm"]')
+                .allInnerTexts()
+            )
+              .map((text) => text.trim())
+              .join(" | "),
+          {
+            message: "the dialog's footer reads Cancel then Confirm (in that order)",
+            timeout: 20_000,
+          },
+        )
+        .toBe("Cancel | Confirm");
       await dialog.getByTestId("assign-confirm").click({ timeout: 20_000 });
       // The success panel is transient — the dialog may close on its own.
       await Promise.race([
@@ -199,6 +306,16 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
         list,
         "design 2a: after pinning, the repo shows under Used in",
       ).toContainText(/app/i, { timeout: 30_000 });
+      // The count the panel header and the tab carry is now the truth the read
+      // answered, and this workflow is pinned in exactly one repo.
+      await expect(
+        page.locator("#used-in-heading"),
+        "design 2a: the panel header counts the use it just made",
+      ).toHaveText("USED IN 1 REPOS", { timeout: 30_000 });
+      await expect(
+        page.getByTestId("workflow-used-in-count"),
+        "design 1e/2a: the tab carries the same count",
+      ).toHaveText("1", { timeout: 30_000 });
       await emu.screen("2a", "used-in-assigned");
     });
   });

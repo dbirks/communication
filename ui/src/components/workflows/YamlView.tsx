@@ -3,8 +3,11 @@
  *
  * The panel renders the document as block style (via `lib/pipeline/blockYaml`)
  * with a line-number gutter, and header actions to copy or download the text.
- * It is read-only by decision: a published revision is immutable, edits go
- * through a draft. The Studio's authoring textarea is the only keystroke path.
+ * The export button is the plain word `download` with the file's name as its
+ * title (the 390px design check: the full `<slug>-r<n>.yaml` label was cut to
+ * `…-r1.ya…` on the bar). It is read-only by decision: a published revision is
+ * immutable, edits go through a draft. The Studio's authoring textarea is the
+ * only keystroke path.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toBlockYaml } from "../../lib/pipeline/blockYaml";
@@ -87,9 +90,11 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
             type="button"
             onClick={handleDownload}
             data-testid={`${testId}-download`}
-            className="h-[26px] max-w-[42vw] truncate px-[10px] font-mono text-[11px] md:max-w-none"
+            title={filename}
+            aria-label={`download ${filename}`}
+            className="h-[26px] px-[10px] font-mono text-[11px]"
           >
-            {filename}
+            download
           </Button>
         </span>
       }

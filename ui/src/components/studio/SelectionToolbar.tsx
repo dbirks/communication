@@ -77,20 +77,28 @@ export function SelectionToolbar({
   if (variant === "toolbar") {
     // Design 1g: a compact 30px mono strip with 26px secondary buttons — the
     // wrap function stays, the bar must not read as a second tool pane.
+    //
+    // Below md the strip WRAPS and grows instead of clipping: at 390px the
+    // fixed 30px row cut `Wrap in For each` in half and broke `1 step
+    // selected` across two lines inside a one-line box (the 390 reflow rule —
+    // the phone shows the 1280 controls, it does not chop them).
     return (
       <div
         role="toolbar"
         aria-label="Selection actions"
         data-testid={testids.box}
-        className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line bg-surface px-3"
+        className="flex min-h-[30px] shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-surface px-3 py-1 md:h-[30px] md:flex-nowrap md:py-0"
       >
-        <span className="font-mono text-[11px] text-muted" data-testid="selection-count">
+        <span
+          className="shrink-0 whitespace-nowrap font-mono text-[11px] text-muted"
+          data-testid="selection-count"
+        >
           {count} step{count === 1 ? "" : "s"} selected
         </span>
         <Button
           variant="secondary"
           compact
-          className="h-[26px]"
+          className="h-[26px] shrink-0"
           data-testid={testids.wrapUntil}
           disabled={!enabled}
           onClick={() => onWrap?.("until")}
@@ -100,7 +108,7 @@ export function SelectionToolbar({
         <Button
           variant="secondary"
           compact
-          className="h-[26px]"
+          className="h-[26px] shrink-0"
           data-testid={testids.wrapForEach}
           disabled={!enabled}
           onClick={() => onWrap?.("for_each")}
@@ -111,7 +119,7 @@ export function SelectionToolbar({
           <Button
             variant="ghost"
             compact
-            className="h-[26px]"
+            className="h-[26px] shrink-0"
             data-testid={testids.unwrap}
             onClick={() => onUnwrap?.(unwrapId)}
           >

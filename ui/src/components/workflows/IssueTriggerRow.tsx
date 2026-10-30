@@ -112,10 +112,10 @@ export function IssueTriggerRow({ group, trigger, onEdit }: IssueTriggerRowProps
         </p>
       ) : null}
       {group.canManage ? (
-        <label className="flex items-center gap-[6px] font-mono text-[11px] text-ink">
+        <label className="flex shrink-0 items-center gap-[6px] whitespace-nowrap font-mono text-[11px] text-ink">
           <input
             type="checkbox"
-            className="size-3 accent-accent"
+            className="h-3 w-3 shrink-0 grow-0 basis-3 accent-accent"
             checked={trigger.enabled}
             aria-label={`issue trigger ${trigger.id} enabled`}
             data-testid={`trigger-issue-enabled-${trigger.id}`}

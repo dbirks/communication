@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { parseGraph } from "../../lib/pipeline/graphDoc";
 import {
   centerOnBox,
+  chooseNodeMenuPlacement,
   clampViewportToGraph,
   computeFitViewport,
   computeTopFitViewport,
@@ -618,6 +619,61 @@ describe("centerOnBox", () => {
   it("refuses a zero pane and a non-finite box", () => {
     expect(centerOnBox({ x: 0, y: 0, width: 10, height: 10 }, 0, 600, 1)).toBeNull();
     expect(centerOnBox({ x: Number.NaN, y: 0, width: 10, height: 10 }, 1000, 600, 1)).toBeNull();
+  });
+});
+
+describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)", () => {
+  const step = { x: 95, y: 100, w: 200, h: 52 };
+  const menu = { w: 110, h: 58 };
+
+  it("sits right of the node, as 1g draws it, when the slot is clear", () => {
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others: [],
+      menu,
+      pane: { w: 1000, h: 700 },
+    });
+    expect(place.docked).toBe(false);
+    expect(place).toMatchObject({ x: 303, y: 100 });
+  });
+
+  it("drops below the node when the right slot lands on another step", () => {
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      // A wider neighbour crowds the right slot out.
+      others: [{ x: 300, y: 90, w: 120, h: 60 }],
+      menu,
+      pane: { w: 1000, h: 700 },
+    });
+    expect(place.docked).toBe(false);
+    expect(place).toMatchObject({ x: 95, y: 160 });
+  });
+
+  it("docks to its own strip when right AND below are crowded (the 390 chain)", () => {
+    // 390px: the pane fits one column of steps, so the slot right of the node
+    // is off-pane and the slot below it is the next step — `Duplicate` /
+    // `Delete ⌫` painted over `approve` in the pass-2 review.
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others: [{ x: 95, y: 160, w: 200, h: 52 }],
+      menu,
+      pane: { w: 390, h: 400 },
+    });
+    expect(place.docked).toBe(true);
+    expect(place.y).toBe(342);
+  });
+
+  it("keeps the plain right-hand position while the pane is unmeasured", () => {
+    // jsdom / a canvas that has not laid out: a 0×0 pane says nothing about
+    // where the menu fits, so it stays where the design puts it.
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others: [{ x: 95, y: 160, w: 200, h: 52 }],
+      menu,
+      pane: { w: 0, h: 0 },
+    });
+    expect(place.docked).toBe(false);
+    expect(place).toMatchObject({ x: 303, y: 100 });
   });
 });
 

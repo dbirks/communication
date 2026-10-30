@@ -31,22 +31,22 @@ export function StudioStatusBar({
   publishReason,
 }: StudioStatusBarProps) {
   return (
+    // 390 reflow (pass-2 review, 1g-studio): the strip is a fixed 30px row at
+    // md and above, and a WRAPPING strip below it — the short publish reason
+    // (“to publish: save, then validate”) used to truncate to
+    // “to publish: va…”, which is the one thing a status bar may never do.
     <div
-      className="flex h-[30px] shrink-0 items-center gap-[8px] overflow-hidden border-t border-line bg-surface px-4 font-mono text-[10.5px] text-faint md:gap-[12px]"
+      className="flex min-h-[30px] flex-wrap items-center gap-x-[8px] gap-y-[2px] border-t border-line bg-surface px-4 py-[5px] font-mono text-[10.5px] text-faint md:h-[30px] md:flex-nowrap md:gap-[12px] md:overflow-hidden md:py-0"
       data-testid="studio-status-bar"
     >
-      <span className="shrink-0 truncate" data-testid="studio-status-bar-summary">
+      <span className="shrink-0" data-testid="studio-status-bar-summary">
         {stepCount} {stepCount === 1 ? "step" : "steps"} · {dirty ? "unsaved changes" : "saved"}
       </span>
       {/* The strip carries count/state left, the validation verdict, the
           diff link and the short reason right at EVERY width (390 reflow:
-          nothing is display:none on the phone) — the long reason is the one
-          that truncates. e2e clicks `studio-diff` at desktop widths. */}
-      <span
-        className="shrink-0 truncate"
-        data-testid="studio-validation-chip"
-        title={validation ?? ""}
-      >
+          nothing is display:none on the phone, nothing truncates below md).
+          e2e clicks `studio-diff` at desktop widths. */}
+      <span className="shrink-0" data-testid="studio-validation-chip" title={validation ?? ""}>
         {validation ?? "not validated"}
       </span>
       <button
@@ -54,12 +54,14 @@ export function StudioStatusBar({
         onClick={onDiff}
         data-testid="studio-diff"
         title={diffLabel ?? "diff"}
-        className="shrink-0 truncate text-muted underline decoration-line underline-offset-2 hover:text-ink"
+        className="shrink-0 text-muted underline decoration-line underline-offset-2 hover:text-ink"
       >
         {diffLabel ?? "diff"}
       </button>
+      {/* The phone gives the reason a line of its own (right-aligned, full
+          width, never truncated); md keeps the design's right-hand slot. */}
       <span
-        className="ml-auto min-w-0 shrink truncate text-right"
+        className="w-full text-right md:ml-auto md:w-auto md:min-w-0 md:shrink md:truncate"
         data-testid="studio-publish-reason"
         title={publishReason ?? ""}
       >

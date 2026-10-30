@@ -610,27 +610,42 @@ function ToggleSwitch({
   testid: string;
   onChange: (next: boolean) => void;
 }) {
+  // The track is its OWN fixed 28×16 box inside the button. The phone's
+  // touch-target floor (styles/tokens.css, `main button{min-height:44px}`
+  // below 560px) used to stretch the button itself — and with it the
+  // rounded-full track — into a 28×44 vertical pill (pass-2 review,
+  // 2c-issue-trigger-saved / 2c-schedule-trigger-saved / 2e-triggers-paused
+  // at 390). Now the 44px box is the hit area and the track keeps its shape
+  // inside it, on one line with its `on` / `paused` label.
   return (
-    <span className="flex items-center gap-[6px]">
+    <span className="flex shrink-0 items-center gap-[6px] whitespace-nowrap">
       <button
         type="button"
         role="switch"
         aria-checked={checked}
         aria-label={checked ? "pause this trigger" : "turn this trigger on"}
         onClick={() => onChange(!checked)}
-        className={`relative h-4 w-7 shrink-0 rounded-full border transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
-          checked ? "border-accent-edge bg-accent" : "border-line-strong bg-fill"
-        }`}
+        className="flex shrink-0 items-center rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         data-testid={testid}
       >
         <span
           aria-hidden="true"
-          className={`absolute top-[2px] h-3 w-3 rounded-full bg-surface ${
-            checked ? "left-[14px]" : "left-[2px]"
+          className={`relative block h-[16px] w-[28px] shrink-0 grow-0 basis-[28px] rounded-full border transition-colors ${
+            checked ? "border-accent-edge bg-accent" : "border-line-strong bg-fill"
           }`}
-        />
+        >
+          <span
+            aria-hidden="true"
+            className={`absolute top-[2px] block h-3 w-3 shrink-0 rounded-full bg-surface ${
+              checked ? "left-[14px]" : "left-[2px]"
+            }`}
+          />
+        </span>
       </button>
-      <span className="font-mono text-[11px] text-ink" data-testid={`${testid}-state`}>
+      <span
+        className="shrink-0 whitespace-nowrap font-mono text-[11px] text-ink"
+        data-testid={`${testid}-state`}
+      >
         {checked ? "on" : "paused"}
       </span>
     </span>

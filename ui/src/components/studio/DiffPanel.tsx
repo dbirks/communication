@@ -270,7 +270,7 @@ export function DiffPanel({ baseDocument, text, className = "" }: DiffPanelProps
           {diff?.pipeline.length === 0 ? null : (
             <div>
               <div className="bg-fill px-[10px] py-[3px] font-mono text-[9.5px] font-semibold tracking-[.06em] text-muted uppercase">
-                Pipeline
+                Workflow
               </div>
               {(diff?.pipeline ?? []).map((change) => (
                 <FieldRow key={change.path} field={change} />

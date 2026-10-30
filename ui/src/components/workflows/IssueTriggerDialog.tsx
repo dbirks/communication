@@ -275,7 +275,7 @@ function IssueTriggerDialogBody({
           <Field
             id="trigger-add-issue-repository"
             label="repository"
-            hint="the server refuses anything that is not a GitHub remote (`422 not_a_github_repository`)"
+            hint="the server refuses anything that is not a GitHub remote (422 not_a_github_repository)"
           >
             <Select
               id="trigger-add-issue-repository"

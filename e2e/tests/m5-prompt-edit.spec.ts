@@ -317,6 +317,13 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       await expect(yaml).toBeVisible({ timeout: 30_000 });
       await expect(yaml).toContainText(SENTINEL);
       await expect(yaml).toContainText("agent.acp");
+      // Design 2d copy (the 390 check): the export button's label is the plain
+      // word `download` — the full `<slug>-r<n>.yaml` name moved to its title
+      // and accessible name, where it can no longer be cut to `…-r1.ya…`.
+      const download = admin.getByTestId("yaml-view-download");
+      await expect(download).toHaveText("download", { timeout: 30_000 });
+      await expect(download).toHaveAttribute("title", /-r1\.yaml$/);
+      await expect(admin.getByRole("button", { name: /^download .*\.yaml$/ })).toBeVisible();
       await shot(admin, "w4-05-revision-yaml");
     });
   });

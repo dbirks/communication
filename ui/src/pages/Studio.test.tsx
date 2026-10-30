@@ -320,6 +320,51 @@ spec:
     vi.unstubAllGlobals();
   });
 
+  it("lays the phone out as one scrolling document, palette and inspector included", async () => {
+    // The pass-2 review found the 390 studio (1g-studio, 1g-inspector-edit)
+    // clipped: a fixed-height root over an inner scroll box stopped the palette
+    // after `Approval`, kept the inspector below the fold, and truncated the
+    // status bar to `to publish: va…`. The phone now scrolls as a document.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(max-width: 767px)",
+      media: "",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }));
+    mount(studioPath, [
+      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+    ]);
+    const page = await screen.findByTestId("studio-page");
+    expect(page.getAttribute("data-phone")).toBe("true");
+    // No viewport-locked root and no inner scroll box: the DOCUMENT scrolls.
+    expect(page.className).not.toContain("overflow-hidden");
+    expect(page.className).not.toContain("h-screen");
+    const column = screen.getByTestId("studio-phone-column");
+    expect(column.className).not.toContain("overflow-y-auto");
+    // Palette and inspector are both in the column, in full — every step kind
+    // (not just the first four) and the selected node's form are reachable.
+    const palette = within(screen.getByTestId("studio-phone-palette-pane"));
+    expect(palette.getByTestId("studio-palette")).toBeTruthy();
+    expect(palette.getByTestId("palette-item-condition")).toBeTruthy();
+    expect(palette.getByTestId("palette-item-pipeline.invoke")).toBeTruthy();
+    expect(palette.getByTestId("palette-more-toggle")).toBeTruthy();
+    expect(
+      within(screen.getByTestId("studio-phone-inspector-pane")).getByTestId("insp-pipeline"),
+    ).toBeTruthy();
+    // The status bar wraps instead of truncating.
+    const bar = screen.getByTestId("studio-status-bar");
+    expect(bar.className).toContain("flex-wrap");
+    expect(bar.className).not.toMatch(/(^|\s)overflow-hidden(\s|$)/);
+    const reason = screen.getByTestId("studio-publish-reason");
+    expect(reason.className).toContain("w-full");
+    expect(reason.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    vi.unstubAllGlobals();
+  });
+
   it("keeps the page heading over a failed draft read", async () => {
     // Issue #23: the failed read used to render a BARE ProblemBanner — every
     // other server-error screen (the 1e workflow page above all) keeps the

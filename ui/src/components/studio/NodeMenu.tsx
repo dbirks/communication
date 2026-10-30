@@ -10,6 +10,15 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 export interface NodeMenuProps {
   x: number;
   y: number;
+  /**
+   * The pane has no clear spot for a floating menu (the 390px canvas is a dense
+   * top-to-bottom chain, so right AND below both land on another step). The
+   * menu then draws itself as a strip of its own UNDER the canvas viewport —
+   * same two actions, same keys, never over a step (design 1g reflow rule: the
+   * phone shows the 1280 content, it does not cover it). A docked menu ignores
+   * x/y; it flows.
+   */
+  docked?: boolean;
   nodeId: string;
   /** Duplicate the step; hidden (not rendered) when the page has none. */
   onDuplicate?: (id: string) => void;
@@ -22,7 +31,15 @@ const MENU_ITEMS = [
   { id: "delete", label: "Delete" },
 ] as const;
 
-export function NodeMenu({ x, y, nodeId, onDuplicate, onDelete, onClose }: NodeMenuProps) {
+export function NodeMenu({
+  x,
+  y,
+  docked = false,
+  nodeId,
+  onDuplicate,
+  onDelete,
+  onClose,
+}: NodeMenuProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([null, null]);
   const [active, setActive] = useState(0);
@@ -74,11 +91,21 @@ export function NodeMenu({ x, y, nodeId, onDuplicate, onDelete, onClose }: NodeM
     <div
       ref={listRef}
       data-testid="studio-node-menu"
+      data-docked={docked ? "true" : "false"}
       role="menu"
       tabIndex={-1}
       onKeyDown={onKeyDown}
-      className="absolute z-20 flex flex-col gap-[2px] rounded border border-ink bg-surface p-[3px] shadow-[2px_2px_0_var(--color-ink)] outline-none"
-      style={{ left: x, top: y }}
+      className={
+        docked
+          ? /* The docked strip is a FLOW row of the canvas column, not a thing
+               pinned over the pane: the 390 pane is a dense chain, so any
+               absolutely-placed box lands on a step. Here it takes its own
+               height under the viewport, exactly like the canvas' caption band,
+               and the two actions share one line. */
+            "flex shrink-0 flex-nowrap items-center gap-[6px] border-t border-line bg-surface p-[3px] outline-none"
+          : "absolute z-20 flex flex-col gap-[2px] rounded border border-ink bg-surface p-[3px] shadow-[2px_2px_0_var(--color-ink)] outline-none"
+      }
+      style={docked ? undefined : { left: x, top: y }}
     >
       {items.map((item, index) => (
         <button
@@ -93,8 +120,12 @@ export function NodeMenu({ x, y, nodeId, onDuplicate, onDelete, onClose }: NodeM
           onClick={onItemClick(index)}
           className={
             item.id === "delete"
-              ? "rounded-[3px] bg-st-failed-pale-body px-[8px] py-[3px] text-left text-[12.5px] text-st-failed-strong hover:bg-st-failed-pale-bar"
-              : "rounded-[3px] bg-surface px-[8px] py-[3px] text-left text-[12.5px] text-ink hover:bg-fill"
+              ? `rounded-[3px] bg-st-failed-pale-body px-[8px] py-[3px] text-left text-[12.5px] text-st-failed-strong hover:bg-st-failed-pale-bar ${
+                  docked ? "min-h-[44px] shrink-0" : ""
+                }`
+              : `rounded-[3px] bg-surface px-[8px] py-[3px] text-left text-[12.5px] text-ink hover:bg-fill ${
+                  docked ? "min-h-[44px] shrink-0" : ""
+                }`
           }
         >
           {item.id === "delete" ? (

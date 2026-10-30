@@ -469,8 +469,10 @@ const STUDIO_ERROR_HEADING: Landmark = {
 /** Used in (2a). */
 const USED_IN_PANEL: Landmark = {
   id: "used-in-panel",
-  desc: "the USED IN n REPOS panel",
-  any: [{ testid: "used-in" }, { role: "heading", name: /^USED IN \d+ REPOS$/i }],
+  // A failed read is NOT a count: the bar then says `USED IN ? REPOS` (pass-2
+  // review, 2a server-error), so the landmark admits either the number or the `?`.
+  desc: "the USED IN n REPOS panel (USED IN ? REPOS when a read broke)",
+  any: [{ testid: "used-in" }, { role: "heading", name: /^USED IN (\?|\d+) REPOS$/i }],
 };
 const USED_IN_EMPTY: Landmark = {
   id: "used-in-empty",
@@ -499,8 +501,12 @@ const USED_IN_FOOTNOTE: Landmark = {
 };
 const USED_IN_ERROR: Landmark = {
   id: "used-in-error",
-  desc: "the line saying the uses could not all be read",
-  any: [{ testid: "used-in-error" }, { role: "alert" }],
+  desc: "the FAILED banner saying the uses could not all be read",
+  any: [
+    { testid: "used-in-error" },
+    { role: "alert" },
+    { text: /could not all be read/i },
+  ],
 };
 /** The Use in a repo… dialog (2a's dialog beat). */
 const USE_DIALOG: Landmark = {
@@ -510,8 +516,11 @@ const USE_DIALOG: Landmark = {
 };
 const USE_DIALOG_TITLE: Landmark = {
   id: "use-dialog-title",
-  desc: "the dialog's 'Use in a repo…' title",
-  any: [{ role: "heading", name: /use in a repo/i }],
+  // The 1c rule (the title says what the verb will do): the plain question
+  // `Use in a repo…` until a repo is chosen, then `Use in <repo>` / `Use in
+  // every repo of <project>` — the same heading, whichever stage it is at.
+  desc: "the dialog's title (the question 'Use in a repo…', then the repo it names)",
+  any: [{ testid: "use-in-repo-title" }, { role: "heading", name: /^use in\b/i }],
 };
 const USE_FORM: Landmark = {
   id: "use-dialog-form",
@@ -525,8 +534,16 @@ const USE_PIN_LINE: Landmark = {
 };
 const USE_PROJECT: Landmark = {
   id: "use-dialog-project",
-  desc: "the project select",
+  desc: "the project select — the dialog's ONE way to choose a project",
   any: [{ testid: "assign-project-select" }, { role: "combobox", name: /project/i }],
+};
+/** The dialog's one repo choice (design 2a, pass-2 review): the per-row
+ * `Use here` button was retired, so the repository select the project select
+ * reveals is the only way to name a repo. */
+const USE_REPO: Landmark = {
+  id: "use-dialog-repo",
+  desc: "the repository select the chosen project reveals (one repo, or the whole project)",
+  any: [{ testid: "assign-repo-select" }, { role: "combobox", name: /repositor/i }],
 };
 const USE_CEILING: Landmark = {
   id: "use-dialog-ceiling",
@@ -608,9 +625,11 @@ const TRIG_CANCEL: Landmark = {
 const TRIG_SUBMIT: Landmark = {
   id: "trigger-submit",
   desc: "the dialog's 'Add trigger' action",
+  // One verb for both arms: the schedule dialog's primary button reads
+  // `Add trigger` too (was `Add schedule`), and the pending word is `Saving…`.
   any: [
     { testid: "trigger-dialog-submit" },
-    { role: "button", name: /^(add trigger|save trigger|updating…)$/i },
+    { role: "button", name: /^(add trigger|save trigger|saving…)$/i },
   ],
 };
 /** The YAML tab (2d). */
@@ -636,8 +655,11 @@ const YAML_COPY: Landmark = {
 };
 const YAML_DOWNLOAD: Landmark = {
   id: "yaml-download",
-  desc: "the download (filename) control",
-  any: [{ testid: "yaml-view-download" }, { role: "button", name: /download|\.yaml/i }],
+  // The 390px design check: the button's LABEL is the plain word `download`
+  // and the file's name is its title/accessible description — the old
+  // `<slug>-r<n>.yaml` label was cut to `…-r1.ya…` on the bar.
+  desc: "the 'download' control (the file's name is its title, not its label)",
+  any: [{ testid: "yaml-view-download" }, { role: "button", name: /^download\b/i }],
 };
 const YAML_LINES: Landmark = {
   id: "yaml-line-numbers",
@@ -1167,6 +1189,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     USED_IN_OPEN,
     USED_IN_FOOTNOTE,
   ],
+  // Captured with a project already chosen, because that is the state the
+  // design draws and the state the one-select dialog acts on: the project
+  // select plus the repository select it reveals (no per-row `Use here`).
   "2a use-dialog": [
     WF_TAB_USED_IN,
     USE_DIALOG,
@@ -1174,6 +1199,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     USE_FORM,
     USE_PIN_LINE,
     USE_PROJECT,
+    USE_REPO,
     USE_CEILING,
     USE_CONFIRM,
     USE_CANCEL,

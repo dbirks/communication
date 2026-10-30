@@ -95,7 +95,7 @@ function YamlEditor({
     <div className="flex h-full min-h-[16rem] flex-col gap-2 p-3">
       <textarea
         data-testid="studio-yaml"
-        aria-label="Pipeline YAML"
+        aria-label="Workflow YAML"
         value={text}
         onChange={(event) => onChange(event.target.value)}
         spellCheck={false}
@@ -692,10 +692,27 @@ export function StudioPage() {
 
   return (
     // Full-bleed route (App.tsx): the page owns the whole viewport — the
-    // studio's header, palette/canvas/inspector and status bar fill it
-    // (`h-screen`, no page scroll), so the sticky app chrome can never scroll
-    // over the canvas and intercept its controls.
-    <div className="flex h-screen flex-col overflow-hidden bg-paper" data-testid="studio-page">
+    // studio's header, palette/canvas/inspector and status bar fill it, so
+    // the sticky app chrome can never scroll over the canvas and intercept
+    // its controls.
+    //
+    // The phone (design 1g 390 reflow) is the ONE case that does not: a fixed
+    // `h-screen` + `overflow-hidden` root plus an inner scroll box clipped the
+    // column at the viewport, so the palette stopped after `Approval`, the
+    // inspector and the status bar lived below the fold, and a full-page
+    // capture could not even reach them (pass-2 review, 1g-studio /
+    // 1g-inspector-edit). Below 768px the page scrolls as a document instead:
+    // canvas, palette and inspector each get their full height in one column
+    // and everything is reachable.
+    <div
+      className={
+        phone
+          ? "flex min-h-[calc(100dvh-44px)] flex-col bg-paper"
+          : "flex h-screen flex-col overflow-hidden bg-paper"
+      }
+      data-testid="studio-page"
+      data-phone={phone ? "true" : "false"}
+    >
       <StudioHeader
         pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
         pipelineFolder={pipeline.data?.folder ?? null}
@@ -816,12 +833,12 @@ export function StudioPage() {
       ) : null}
 
       {phone ? (
-        /* Design 1g phone (390 reflow): the canvas runs full width, no side
-           scroll, and NOTHING is hidden behind a closed drawer — the
-           palette (Steps) and the inspector reflow below the canvas in one
-           scrolling column, so an open node's inspector is simply there. The
-           header's Steps / Inspect toggles jump to those panes. */
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        /* Design 1g phone (390 reflow): one scrolling document — canvas, then
+           the palette, then the inspector — and NOTHING hidden behind a closed
+           drawer, so every step of the palette and the selected node's form are
+           simply there. The header's Steps / Inspect toggles jump to those
+           panes; the panes never unmount. */
+        <div className="flex-1" data-testid="studio-phone-column">
           <SelectionToolbar
             variant="toolbar"
             selectedIds={selectedIds}

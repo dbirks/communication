@@ -346,8 +346,33 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
     await expect(page.getByTestId("used-in"), "design 2a: the Used in panel renders").toBeVisible({
       timeout: 30_000,
     });
+    // A failed read is NOT a count (pass-2 review, 2a server-error at 390):
+    // the panel header asks with a `?`, the tab beside it drops its number the
+    // same way, and the STANDARD FAILED banner — the same Alert every other
+    // server-error state uses — says what broke.
     await expect(
-      page.getByTestId("used-in-error"),
+      page.locator("#used-in-heading"),
+      "design 2a: the broken fan reads `USED IN ? REPOS`, never `USED IN 0 REPOS`",
+    ).toHaveText("USED IN ? REPOS", { timeout: 30_000 });
+    await expect(
+      page.getByTestId("workflow-used-in-count"),
+      "design 2a: the tab carries `?` where a count would lie",
+    ).toHaveText("?", { timeout: 30_000 });
+    const banner = page.getByTestId("used-in-error");
+    await expect(
+      banner,
+      "design 2a: the failure is the standard FAILED alert, not red mono text passing as data",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.getByRole("alert").filter({ hasText: /could not all be read/i }),
+      "design 2a: it is the FAILED banner (role=alert), the same one every other server-error state shows",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      banner,
+      "design 2a: the banner's bar reads FAILED and its body says what broke",
+    ).toContainText(/FAILED/i);
+    await expect(
+      banner,
       "design 2a: a failed assignments fan is stated, not counted as 'not used'",
     ).toContainText(/could not/i);
     await expect(

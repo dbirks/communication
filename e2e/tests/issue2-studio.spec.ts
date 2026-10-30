@@ -126,7 +126,12 @@ function countKind(document: string, kind: string): number {
 /** The Studio's own YAML textarea (the draft text exactly as the Studio holds it). */
 async function readYaml(page: Page): Promise<string> {
   await page.getByTestId("studio-view-yaml").click();
-  return page.getByTestId("studio-yaml").inputValue();
+  const editor = page.getByTestId("studio-yaml");
+  // Design 1g copy: the studio authors a WORKFLOW, so the surface that spells
+  // the object out is named `Workflow YAML` — the old `Pipeline YAML` label is
+  // retired and must not come back.
+  await expect(editor).toHaveAttribute("aria-label", "Workflow YAML");
+  return editor.inputValue();
 }
 
 /** `GET /api/v1/revisions/{digestOrId}/document?format=yaml` — a revision's canonical YAML. */

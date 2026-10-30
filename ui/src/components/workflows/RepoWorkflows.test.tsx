@@ -427,6 +427,43 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
     ).toEqual({ version: 3, enabled: false });
   });
 
+  it("keeps the switch a fixed 28×16 track on one line with its state word", async () => {
+    // The pass-2 review caught this at 390 (2c-issue-trigger-saved,
+    // 2c-schedule-trigger-saved, 2e-triggers-paused): the phone's 44px touch
+    // floor (styles/tokens.css `main button{min-height:44px}`) stretched the
+    // rounded-full TRACK into a tall blue oval. The hit area is the button,
+    // the track is its own fixed box inside it.
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule()] },
+      },
+    ]);
+
+    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    const switchButton = await screen.findByTestId(
+      `repo-workflow-trigger-enabled-${testidOf(SCHEDULE_ID)}`,
+    );
+    const track = switchButton.firstElementChild as HTMLElement;
+    expect(track.getAttribute("aria-hidden")).toBe("true");
+    expect(track.className).toContain("h-[16px]");
+    expect(track.className).toContain("w-[28px]");
+    expect(track.className).toContain("shrink-0");
+    // The hit area itself is never the pill — that is what made it stretch.
+    expect(switchButton.className).not.toContain("rounded-full");
+    // One line with its label: the row wraps nothing, and neither the switch
+    // nor the word may shrink away.
+    const line = switchButton.parentElement as HTMLElement;
+    expect(line.className).toContain("whitespace-nowrap");
+    expect(line.className).toContain("shrink-0");
+    const state = within(line).getByTestId(
+      `repo-workflow-trigger-enabled-${testidOf(SCHEDULE_ID)}-state`,
+    );
+    expect(state.className).toContain("shrink-0");
+    expect(state.textContent).toBe("on");
+  });
+
   it("edits a trigger by reopening the 2c dialog with its own values", async () => {
     mount([
       {
@@ -446,11 +483,12 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       "Feature development · Widgets / storefront",
     );
     expect((screen.getByTestId("trigger-dialog-cron") as HTMLInputElement).value).toBe("0 6 * * 1");
-    // Edit mode is the schedule segment pressed, and the save verb matches.
+    // Edit mode is the schedule segment pressed, and the save verb matches
+    // — one trigger kind word across both arms (pass-2 review, 2c).
     expect(screen.getByTestId("trigger-dialog-mode-schedule").getAttribute("aria-pressed")).toBe(
       "true",
     );
-    expect(screen.getByTestId("trigger-dialog-submit").textContent).toBe("Save schedule");
+    expect(screen.getByTestId("trigger-dialog-submit").textContent).toBe("Save trigger");
   });
 });
 

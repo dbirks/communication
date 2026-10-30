@@ -149,6 +149,9 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     );
     const confirm = page.getByTestId("trigger-dialog-submit");
     await expect(confirm).toBeEnabled({ timeout: 30_000 });
+    // Design 2c copy (pass-2 review): ONE verb for both arms — the schedule
+    // arm's primary button reads `Add trigger`, not `Add schedule`.
+    await expect(confirm).toHaveText("Add trigger");
     await confirm.click();
     const post = page.waitForResponse(
       (response) =>
@@ -416,6 +419,10 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await goal.fill(`P10 issue trigger ${STAMP}`);
     const confirm = page.getByTestId("trigger-dialog-submit");
     await expect(confirm).toBeEnabled({ timeout: 30_000 });
+    // Same verb on the issue arm (design 2c): one `Add trigger`, whichever arm
+    // the reader is on — the row it creates is named by the mode, not by a
+    // second primary label.
+    await expect(confirm).toHaveText("Add trigger");
     const post = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/projects/") &&

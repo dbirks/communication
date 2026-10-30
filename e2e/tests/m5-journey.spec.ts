@@ -649,8 +649,25 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         // whole-project semantics the old dialog carried implicitly.
         await assign.click();
         await expect(admin.getByTestId("use-in-repo-dialog")).toBeVisible();
+        // Design 2a (pass-2 review): the dialog is named for what it will do.
+        // It opens as the plain question; once the reader has chosen, its title
+        // names the pin. The project's own state line is read-only — the old
+        // per-row `Use here` button was a second way to do what the project
+        // select does, so it is gone.
+        const assignTitle = admin.getByTestId("use-in-repo-title");
+        await expect(assignTitle, "the dialog opens as the plain question").toHaveText(
+          "Use in a repo…",
+        );
         await selectByOptionText(admin, "assign-project-select", ALICE.projectName);
+        await expect(
+          admin.getByTestId("assign-project-states").locator("button"),
+          "the project-state rows are read-only — no `Use here` button anywhere (one way to choose)",
+        ).toHaveCount(0);
         await selectByOptionText(admin, "assign-repo-select", "whole project");
+        await expect(
+          assignTitle,
+          "whole-project choice: the title says which repos the pin covers",
+        ).toHaveText(`Use in every repo of ${ALICE.projectName}`);
         const created = admin.waitForResponse(
           (response) =>
             response.url().includes("/api/v1/projects/") &&

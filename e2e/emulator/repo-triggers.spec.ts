@@ -228,13 +228,44 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       await page.getByTestId("assign-open").click();
       const dialog = page.getByTestId("use-in-repo-dialog");
       await expect(dialog).toBeVisible();
-      // The deployed dialog picks the project with the row's `Use here`
-      // button, then the repository in the form below it.
-      const projectRow = dialog.locator("li").filter({ hasText: "M4 Exit" });
-      await projectRow.getByTestId(/^assign-pick-/).click({ timeout: 20_000 });
+      // Design 2a (pass-2 review): the dialog has exactly ONE way to choose —
+      // the project select, then the repository select it reveals. The per-row
+      // `Use here` button is retired; the same list stays read-only bookkeeping.
+      const title = dialog.getByTestId("use-in-repo-title");
+      await expect(
+        title,
+        "design 2a: the dialog opens as the plain question 'Use in a repo…'",
+      ).toHaveText("Use in a repo…", { timeout: 20_000 });
+      const m4State = dialog.getByTestId(`assign-project-state-${projectId}`);
+      await expect(
+        m4State,
+        "design 2a: the dialog names the project's current state (read-only)",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        m4State.getByTestId(`assign-project-pin-${projectId}`),
+        "design 2a: that state is honest words — this pass's workflow is new, so 'not used yet'",
+      ).toContainText(/not used yet/i, { timeout: 30_000 });
+      await expect(
+        dialog.getByTestId("assign-project-states").locator("button"),
+        "design 2a: no `Use here` button survives anywhere in that list — the select is the one way in",
+      ).toHaveCount(0);
+      await expect(
+        dialog.getByTestId(/^assign-pick-/),
+        "design 2a: the retired per-row `assign-pick-*` affordance does not come back",
+      ).toHaveCount(0);
       await dialog
-        .getByTestId("assign-repo-select")
-        .selectOption({ label: "app" }, { timeout: 20_000 });
+        .getByTestId("assign-project-select")
+        .selectOption({ label: "M4 Exit" }, { timeout: 20_000 });
+      const repoSelect = dialog.getByTestId("assign-repo-select");
+      await expect(
+        repoSelect,
+        "design 2a: the chosen project reveals the repository select",
+      ).toBeVisible({ timeout: 30_000 });
+      await repoSelect.selectOption({ label: "app" }, { timeout: 20_000 });
+      await expect(
+        title,
+        "design 2a: the dialog is named for the pin it is about to make (`Use in app`)",
+      ).toHaveText("Use in app", { timeout: 20_000 });
       await dialog.getByTestId("assign-confirm").click({ timeout: 20_000 });
       // The deployed dialog confirms and closes on its own; the durable
       // proof is the assignment the pin created (the rail refetches late,
@@ -288,6 +319,13 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       const dialog = page.getByTestId("trigger-dialog");
       await expect(dialog, "design 2c: '+ Add trigger' opens the trigger dialog").toBeVisible();
       await dialog.getByTestId("trigger-dialog-mode-schedule").click({ timeout: 15_000 });
+      // One verb for both arms (pass-2 review): even on the schedule arm the
+      // primary button reads `Add trigger` — it used to read `Add schedule`,
+      // which named the row rather than the thing the reader is adding.
+      await expect(
+        dialog.getByTestId("trigger-dialog-submit"),
+        "design 2c: the schedule arm's primary verb is `Add trigger`, not `Add schedule`",
+      ).toHaveText(/Add trigger/i, { timeout: 20_000 });
       await dialog.getByTestId("trigger-dialog-cron").fill(SCHEDULE_CRON);
       // THE RUN GETS: the template's required `goal` input must carry a
       // value for a schedule fire (no issue to borrow placeholders from).
@@ -420,6 +458,12 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       );
       await dialog.getByTestId("trigger-dialog-mode-issue").click({ timeout: 15_000 });
       await dialog.getByTestId("trigger-dialog-event").selectOption("labeled", { timeout: 15_000 });
+      // The same verb on the issue arm, and it stays `Save trigger` when the
+      // dialog reopens to EDIT an existing one (design 2c's one trigger verb).
+      await expect(
+        dialog.getByTestId("trigger-dialog-submit"),
+        "design 2c: the issue arm's primary verb is `Add trigger` too",
+      ).toHaveText(/Add trigger/i, { timeout: 20_000 });
       await dialog.getByTestId("trigger-dialog-labels").fill(EMU_LABEL);
       await dialog.getByTestId("trigger-dialog-labels").press("Enter");
       await expect(

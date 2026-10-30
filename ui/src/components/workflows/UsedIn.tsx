@@ -17,6 +17,7 @@
 import { Clock, Play } from "lucide-react";
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
+import { Alert } from "../ds/Alert";
 import { problemOf } from "../../api/client";
 import { usePatchAssignment, type Schedule } from "../../api/pipelines";
 import type { IssueTrigger } from "../../api/useIssueTriggers";
@@ -160,6 +161,12 @@ export function pinLabel(
  * The `USED IN n REPOS` panel: one row per repo pin, grid
  * `200px 120px 1fr 150px 56px` (stacking to one column below `md`, where the
  * fixed 686px of grid would otherwise scroll the page).
+ *
+ * A failed read is never a count: when one of the reads behind the list broke,
+ * the header says `USED IN ? REPOS` (the tab beside it drops its count the same
+ * way) and the standard FAILED banner — the same `Alert` every other server-
+ * error state uses — says what broke, instead of red mono text passing as a
+ * count of zero (pass-2 review, 2a server-error at 390).
  */
 export function UsedInPanel({
   pipelineId,
@@ -172,19 +179,22 @@ export function UsedInPanel({
 }: UsedInPanelProps) {
   return (
     <section className="space-y-[14px]" data-testid="used-in">
-      <Panel title={`USED IN ${groups.length} REPOS`} headingId="used-in-heading" headingLevel={2}>
+      <Panel
+        title={error ? "USED IN ? REPOS" : `USED IN ${groups.length} REPOS`}
+        headingId="used-in-heading"
+        headingLevel={2}
+      >
         {loading && groups.length === 0 ? (
           <p className="p-[10px] font-mono text-[11px] text-muted" data-testid="used-in-loading">
             checking which repos use this workflow…
           </p>
         ) : null}
         {error ? (
-          <p
-            className="p-[10px] font-mono text-[11px] text-st-failed-tag-fg"
-            data-testid="used-in-error"
-          >
-            The projects could not all be read — this list may be missing a use.
-          </p>
+          <div className="p-[10px]">
+            <Alert state="failed" label="FAILED" role="alert" testid="used-in-error">
+              The projects could not all be read — this list may be missing a use.
+            </Alert>
+          </div>
         ) : null}
         {groups.length === 0 && !loading && !error ? (
           <p className="p-[10px] text-[12.5px] text-muted" data-testid="used-in-empty">

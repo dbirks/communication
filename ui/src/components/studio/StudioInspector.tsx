@@ -114,7 +114,10 @@ function setDocValue(text: string, path: string[], value: unknown): OpResult {
   return { ok: true, text: doc.toString(), changed: [path.join("/")] };
 }
 
-/** Pipeline-level panel: shown when nothing is selected on the canvas. */
+/** The workflow's own metadata panel: shown when nothing is selected on the
+ * canvas. The product word is WORKFLOW (the design's 1g panel still read
+ * PIPELINE, and the API route, the YAML `kind:` and the test ids keep that
+ * internal name). */
 function PipelinePanel({
   readOnly,
   doc,
@@ -130,12 +133,12 @@ function PipelinePanel({
   return (
     <div className="space-y-[12px] p-[16px]" data-testid="insp-pipeline">
       <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-        Pipeline
+        Workflow
       </p>
       <Field
         id="pipeline-name"
         label="Name"
-        hint="read-only — the name is fixed when the pipeline is created"
+        hint="read-only — the name is fixed when the workflow is created"
       >
         <Input
           id="pipeline-name"

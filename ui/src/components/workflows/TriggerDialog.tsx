@@ -574,7 +574,11 @@ function TriggerDialogBody({
             <Field
               id="trigger-dialog-cron"
               label="CRON (MINUTE HOUR DOM MONTH DOW, UTC)"
-              hint="the server validates the cadence; seconds, names and `? L W # H` are refused"
+              hint={
+                <span data-testid="trigger-dialog-cron-hint">
+                  the server validates the cadence; seconds, names and ? L W # H are refused
+                </span>
+              }
             >
               <div className="flex flex-wrap items-center gap-[8px]">
                 <Input
@@ -696,15 +700,7 @@ function TriggerDialogBody({
               disabled={blocked}
               data-testid="trigger-dialog-submit"
             >
-              {busy
-                ? "Saving…"
-                : editing
-                  ? mode === "issue"
-                    ? "Save trigger"
-                    : "Save schedule"
-                  : mode === "issue"
-                    ? "Add trigger"
-                    : "Add schedule"}
+              {busy ? "Saving…" : editing ? "Save trigger" : "Add trigger"}
             </Button>
           </div>
         </form>

@@ -63,6 +63,17 @@ describe("YamlView", () => {
     await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
   });
 
+  it("names the export button `download`, with the file's name as its title", () => {
+    // The 390 design check: the button used to print the whole
+    // `<slug>-r<n>.yaml`, which the panel header cut in half.
+    render(<YamlView text={FLOW_TEXT} filename="plan-with-approval-r1.yaml" />);
+    const button = screen.getByTestId("yaml-view-download");
+    expect(button.textContent).toBe("download");
+    expect(button.getAttribute("title")).toBe("plan-with-approval-r1.yaml");
+    expect(button.getAttribute("aria-label")).toBe("download plan-with-approval-r1.yaml");
+    expect(button.className).not.toContain("truncate");
+  });
+
   it("downloads the block text as a blob url", () => {
     const createObjectURL = vi.fn(() => "blob:mock-url");
     const revokeObjectURL = vi.fn();

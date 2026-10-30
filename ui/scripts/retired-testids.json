@@ -1,4 +1,5 @@
 {
+  "assign-pick-*": "design 2a (pass-2 review): 'Use in a repo…' has ONE way to choose — the project select — so the per-row 'Use here' button is gone (the same list keeps its read-only 'storefront pins r2 (newest)' line); the choice is assign-project-select + assign-repo-select and the verb is assign-confirm",
   "studio-header-runs": "design 1g: Studio header drops the Runs/Assigned affordances (Workflows Review handoff)",
   "studio-header-assigned": "design 1g: Studio header drops the Runs/Assigned affordances (Workflows Review handoff)",
   "workflow-duplicate-*": "re-homed to RowMenu.testidFor() by the library-row-menu worker; ids still exist at runtime and are asserted by tests, but the static check only sees literal data-testid templates",
@@ -19,5 +20,9 @@
   "studio-redo-mobile": "390 reflow: the phone header no longer duplicates undo/redo — the single studio-undo/studio-redo pair is visible at every width (ui/src/components/studio/StudioHeader.tsx)",
   "validate-panel-milestone-*": "copy-milestones: a W8 row no longer prints the internal build milestone the server names — the row's marker is validate-panel-deferred-* ('not available yet') and the server's own sentence stays as data-server-message on validate-panel-message-* (ui/src/components/m4/ValidatePanel.tsx)",
   "run-nav-collapse": "design run view (10): the run page has no runs list — the project's runs live on the project's Runs tab — so the inspector's left nav is the section rail alone and nothing collapses (ui/src/pages/RunInspector.tsx)",
-  "run-nav-expand": "design run view (10): the collapsed 2.25rem rail existed only to restore the runs list the run page no longer mounts; the section rail is always shown (ui/src/pages/RunInspector.tsx)"
+  "run-nav-expand": "design run view (10): the collapsed 2.25rem rail existed only to restore the runs list the run page no longer mounts; the section rail is always shown (ui/src/pages/RunInspector.tsx)",
+  "project-conversations-title": "design 1b (project-tabs-frame): the Threads tab is the shared header band + tab row now — the project's name is the page's H1 and the THREADS panel's title bar names the section, so the old page-level 'Threads — <project>' headline is gone (e2e/emulator/design.ts accepts project-conversations as the page landmark)",
+  "project-page-loading": "design 1b (project-tabs-frame): still rendered at runtime — the overview's loading branch is now `ProjectFrame`'s, which builds the handle from the page's own testid (`${testid}-loading`), so the static scan cannot see the literal; Project.test.tsx still asserts the id",
+  "project-page-error": "design 1b (project-tabs-frame): same as project-page-loading — computed by ProjectFrame from the page testid, asserted by Project.test.tsx",
+  "project-page-not-found": "design 1b (project-tabs-frame): same as project-page-loading — the refusal branch's wrapper is computed by ProjectFrame; the refusal sentence itself keeps `project-not-found`"
 }

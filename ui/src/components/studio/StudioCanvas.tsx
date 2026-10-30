@@ -161,6 +161,64 @@ const DROP_EDGE_RADIUS_PX = 48;
  * (design 1g: a two-item menu, ~80–110px wide). */
 const MENU_WIDTH_PX = 110;
 
+/** The same menu's height (two 24px rows + the 3px pad + the 2px gap). */
+const MENU_HEIGHT_PX = 58;
+
+/** The design's gap between a step and its menu (1g: 8px). */
+const MENU_GAP_PX = 8;
+
+/** A box in PANE pixels. */
+export interface MenuBoxPx {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Where the selected step's menu goes (design 1g: right of the node, top-
+ * aligned). A menu that lands on ANOTHER step is the pass-2 390px defect —
+ * `Duplicate`/`Delete` painted over `approve` and the chain read as a mess —
+ * so a candidate is only taken when it sits inside the pane AND touches no
+ * other node: right first (the desktop design), then below the node (the
+ * pass-2 phone fallback), then DOCKED to the pane's bottom edge as its own
+ * strip, which is the only spot a narrow pane with a dense chain always has.
+ * An unmeasured pane (0×0 — jsdom, or a canvas that has not laid out yet)
+ * keeps the plain right-hand position rather than docking everything.
+ */
+export function chooseNodeMenuPlacement(input: {
+  /** The selected node (or the right-click point) in pane px. */
+  node: MenuBoxPx;
+  /** Every OTHER rendered node in pane px. */
+  others: MenuBoxPx[];
+  /** The menu's own size in px (it never scales with the zoom). */
+  menu: { w: number; h: number };
+  pane: { w: number; h: number };
+  gap?: number;
+}): MenuBoxPx & { docked: boolean } {
+  const gap = input.gap ?? MENU_GAP_PX;
+  const overlaps = (a: MenuBoxPx, b: MenuBoxPx) =>
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  const fits = (x: number, y: number) => {
+    const box: MenuBoxPx = { x, y, w: input.menu.w, h: input.menu.h };
+    if (box.x < 0 || box.y < 0) return false;
+    if (input.pane.w > 0 && box.x + box.w > input.pane.w - gap) return false;
+    if (input.pane.h > 0 && box.y + box.h > input.pane.h - gap) return false;
+    return !input.others.some((other) => overlaps(box, other));
+  };
+  const right = { x: input.node.x + input.node.w + gap, y: input.node.y };
+  if (fits(right.x, right.y)) return { ...right, w: input.menu.w, h: input.menu.h, docked: false };
+  const below = { x: input.node.x, y: input.node.y + input.node.h + gap };
+  if (fits(below.x, below.y)) return { ...below, w: input.menu.w, h: input.menu.h, docked: false };
+  return {
+    x: 0,
+    y: Math.max(0, input.pane.h - input.menu.h),
+    w: input.menu.w,
+    h: input.menu.h,
+    docked: true,
+  };
+}
+
 /* ------------------------------------------------------------------ the
  * viewport-fit guards.
  *
@@ -601,6 +659,8 @@ function CanvasInner({
     nodeId: string;
   } | null>(null);
   const [menuScreen, setMenuScreen] = useState<{ x: number; y: number } | null>(null);
+  /** The menu sits in the pane's bottom strip instead of over the graph. */
+  const [menuDocked, setMenuDocked] = useState(false);
   const menuFocusRef = useRef<HTMLElement | null>(null);
 
   const selectedMenuNodeId = useMemo(() => {
@@ -1015,16 +1075,47 @@ function CanvasInner({
     const zoom = t?.zoom ?? 1;
     const tx = t?.x ?? 0;
     const ty = t?.y ?? 0;
-    const right = { x: menu.fx * zoom + tx + 8, y: menu.fy * zoom + ty };
-    // Phone (design pass 2 #6): when the menu would be cut off at the pane's
-    // right edge, it sits BELOW the node instead, left-aligned to it, same
-    // 8px gap.
     const paneWidth = paneRef.current?.clientWidth ?? 0;
-    if (paneWidth > 0 && right.x + MENU_WIDTH_PX > paneWidth - 8) {
-      setMenuScreen({ x: menu.fLeft * zoom + tx, y: menu.fBottom * zoom + ty + 8 });
-      return;
-    }
-    setMenuScreen(right);
+    const paneHeight = paneRef.current?.clientHeight ?? 0;
+    // The selected node's box in pane px (a pointer menu has a zero-size box
+    // at the pointer, which is exactly what the placement wants).
+    const node: MenuBoxPx = {
+      x: menu.fLeft * zoom + tx,
+      y: menu.fy * zoom + ty,
+      w: Math.max(0, (menu.fx - menu.fLeft) * zoom),
+      h: Math.max(0, (menu.fBottom - menu.fy) * zoom),
+    };
+    // Every other STEP the reader can see, in the same px space — the boxes
+    // the menu may not paint over. Scope groups are excluded on purpose: a
+    // menu inside a scope's own body is the design, a menu over another
+    // step's card is the defect.
+    const selectedFlowId = baseRef.current.nodes.find(
+      (candidate) => (candidate.data as { nodeId?: string }).nodeId === menu.nodeId,
+    )?.id;
+    const others: MenuBoxPx[] = baseRef.current.nodes
+      .filter((candidate) => candidate.type === "step" && candidate.id !== selectedFlowId)
+      .map((candidate) => {
+        const box = nodeBoxesRef.current[candidate.id];
+        if (!box) return null;
+        const measured = nodesRef.current.find((entry) => entry.id === candidate.id)?.measured;
+        const w = measured?.width && measured.width > 0 ? measured.width : box.width;
+        const h = measured?.height && measured.height > 0 ? measured.height : box.height;
+        return {
+          x: box.x * zoom + tx,
+          y: box.y * zoom + ty,
+          w: w * zoom,
+          h: h * zoom,
+        };
+      })
+      .filter((box): box is MenuBoxPx => box !== null);
+    const place = chooseNodeMenuPlacement({
+      node,
+      others,
+      menu: { w: MENU_WIDTH_PX, h: MENU_HEIGHT_PX },
+      pane: { w: paneWidth, h: paneHeight },
+    });
+    setMenuDocked(place.docked);
+    setMenuScreen({ x: place.x, y: place.y });
   }, [menu, viewportEl]);
 
   useEffect(() => {
@@ -1386,7 +1477,7 @@ function CanvasInner({
             {refused}
           </div>
         )}
-        {menu && menuScreen !== null && (
+        {menu && !menuDocked && menuScreen !== null && (
           <NodeMenu
             x={menuScreen.x}
             y={menuScreen.y}
@@ -1397,6 +1488,23 @@ function CanvasInner({
           />
         )}
       </div>
+
+      {/* No clear spot in the pane (the 390px dense chain — every over-graph
+         position lands on another step): the selection menu becomes a strip of
+         its own under the viewport, beside the caption band. Same two actions,
+         same keys, and nothing of it paints over a step (pass-2 review,
+         1g-inspector-edit at 390: `Duplicate`/`Delete ⌫` sat on `approve`). */}
+      {menu && menuDocked ? (
+        <NodeMenu
+          x={0}
+          y={0}
+          docked
+          nodeId={menu.nodeId}
+          onDuplicate={onDuplicate}
+          onDelete={(ids) => onDelete?.(ids)}
+          onClose={closeMenu}
+        />
+      ) : null}
 
       {/* One reserved band under the canvas holds the design's bottom row: the
           caption (1g, bottom-left) and the − + fit group (1g canvas chrome,

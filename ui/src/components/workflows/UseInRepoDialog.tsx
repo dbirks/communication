@@ -262,8 +262,20 @@ function DialogBody({
 
   const nothingToAssign = open && listsLoaded && candidates.length === 0;
 
+  // The dialog is named for what it will do (the 1c rule: the title and the
+  // primary verb say the same thing): the repo it names once the reader has
+  // chosen one, the plain question until then.
+  const chosenProject = maintainerProjects.find((project) => project.id === projectId) ?? null;
+  const chosenRepo = offeredRepos.find((repo) => repo.id === repoId) ?? null;
+  const formTitle =
+    wholeProject && chosenProject
+      ? `Use in every repo of ${chosenProject.name}`
+      : chosenRepo
+        ? `Use in ${chosenRepo.name}`
+        : "Use in a repo…";
+
   return (
-    <Chrome onClose={onClose} headingId="assign-form-heading" title="Use in a repo…">
+    <Chrome onClose={onClose} headingId="assign-form-heading" title={formTitle}>
       <form className="flex flex-col gap-[10px]" data-testid="assign-form" onSubmit={submit}>
         <p className="font-mono text-[10.5px] text-muted" data-testid="assign-pin-line">
           {newestPublished
@@ -278,6 +290,11 @@ function DialogBody({
           <Spinner label="Checking which projects already use this workflow" />
         ) : null}
         {maintainerProjects.length > 0 ? (
+          /* Where this workflow is already pinned — the bookkeeping the
+             candidate list below cannot carry. It is READ-ONLY by design (the
+             pass-2 review, 2a “Use in a repo…”): the dialog has exactly ONE
+             way to choose, the project select; the old per-row `Use here`
+             button was a second, parallel way to do the same thing. */
           <ul
             className="divide-y divide-line border-y border-line"
             data-testid="assign-project-states"
@@ -285,7 +302,7 @@ function DialogBody({
             {states.map(({ project, loaded, pins }) => (
               <li
                 key={project.id}
-                className="flex flex-wrap items-center gap-[6px] px-[2px] py-[7px]"
+                className="flex flex-wrap items-baseline gap-[6px] px-[2px] py-[7px]"
                 data-testid={`assign-project-state-${project.id}`}
               >
                 <span className="text-[12.5px] font-semibold">{project.name}</span>
@@ -299,20 +316,6 @@ function DialogBody({
                       ? "not used yet"
                       : "checking…"}
                 </span>
-                {pins.length === 0 && loaded && candidates.some((c) => c.id === project.id) ? (
-                  <Button
-                    variant="secondary"
-                    compact
-                    data-testid={`assign-pick-${project.id}`}
-                    onClick={() => {
-                      setProjectId(project.id);
-                      setRepoId("");
-                      setWholeProject(false);
-                    }}
-                  >
-                    {projectId === project.id ? "picked — choose a repo below" : "Use here"}
-                  </Button>
-                ) : null}
               </li>
             ))}
           </ul>
@@ -397,7 +400,7 @@ function DialogBody({
           <Field
             id="assign-ceiling"
             label="max concurrent runs"
-            hint="1 is the wire default; the server caps it at 8"
+            hint="how many runs of this workflow may be in flight at once"
             className="w-[12rem]"
           >
             <Input
@@ -411,8 +414,13 @@ function DialogBody({
             />
           </Field>
         ) : null}
+        {/* The 1c footer pattern: Cancel first, the primary verb last, both
+            pushed to the right edge. */}
         {!nothingToAssign ? (
-          <div className="flex items-center gap-[8px]">
+          <div className="flex justify-end gap-[8px] border-t border-line pt-[10px]">
+            <Button variant="ghost" compact data-testid="assign-cancel" onClick={onClose}>
+              Cancel
+            </Button>
             <Button
               type="submit"
               variant="primary"
@@ -421,9 +429,6 @@ function DialogBody({
               data-testid="assign-confirm"
             >
               {create.isPending ? "Using…" : "Confirm"}
-            </Button>
-            <Button variant="ghost" compact data-testid="assign-cancel" onClick={onClose}>
-              Cancel
             </Button>
           </div>
         ) : null}
@@ -488,7 +493,13 @@ function Chrome({
         data-testid="use-in-repo-dialog"
       >
         <div className="flex items-baseline justify-between">
-          <span id={headingId} className="text-[13px] font-bold" role="heading" aria-level={2}>
+          <span
+            id={headingId}
+            role="heading"
+            aria-level={2}
+            className="text-[13px] font-bold"
+            data-testid="use-in-repo-title"
+          >
             {title}
           </span>
           <button
