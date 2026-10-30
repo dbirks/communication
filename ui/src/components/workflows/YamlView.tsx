@@ -75,7 +75,14 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
       headingLevel={2}
       className="flex flex-col"
       meta={
-        <span className="flex items-center gap-2">
+        // One line at any width (the Repositories `+ add` treatment, 390):
+        // below 560px the shell's phone floor (tokens.css `APP-SHELL-PHONE`)
+        // makes every `main button` 44px tall, and this bar grew to twice its
+        // siblings (53px against the other panels' 23px). The wrapper holds the
+        // bar's line box and clips the floor's growth, so `Copy · download` sit
+        // in the header exactly like every other panel's meta slot; the buttons
+        // stay real buttons and keep their names.
+        <span className="flex h-[14px] items-center gap-2 overflow-hidden min-[560px]:h-auto min-[560px]:overflow-visible">
           <Button
             variant="secondary"
             type="button"

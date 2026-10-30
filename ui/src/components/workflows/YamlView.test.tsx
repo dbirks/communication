@@ -74,6 +74,23 @@ describe("YamlView", () => {
     expect(button.className).not.toContain("truncate");
   });
 
+  it("keeps the header's Copy · download inside the bar's line box (390)", () => {
+    // Below 560px the shell's phone floor (tokens.css `APP-SHELL-PHONE`) makes
+    // every `main button` 44px tall; the bar holds one line by clipping that
+    // growth (the Repositories `+ add` treatment) instead of growing to 53px
+    // while every other panel's header stays 23px. The clip lives on a wrapper
+    // that both buttons share — at 560px and above it stops clipping.
+    render(<YamlView text={FLOW_TEXT} filename="plan-with-approval-r1.yaml" />);
+    const copy = screen.getByTestId("yaml-view-copy");
+    const download = screen.getByTestId("yaml-view-download");
+    const wrap = copy.parentElement as HTMLElement;
+    expect(wrap).toBe(download.parentElement);
+    expect(wrap.className).toContain("h-[14px]");
+    expect(wrap.className).toContain("overflow-hidden");
+    expect(wrap.className).toContain("min-[560px]:h-auto");
+    expect(wrap.className).toContain("min-[560px]:overflow-visible");
+  });
+
   it("downloads the block text as a blob url", () => {
     const createObjectURL = vi.fn(() => "blob:mock-url");
     const revokeObjectURL = vi.fn();

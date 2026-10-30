@@ -23,6 +23,7 @@ import type { Assignment, Repository } from "../api/types";
 import type { Schedule } from "../api/pipelines";
 import type { IssueTrigger } from "../api/useIssueTriggers";
 import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
+import { w8Validation } from "../test/fixtures/m4/w8Draft";
 import {
   WIRE_ASSIGNMENT_ID,
   WIRE_DRAFT_ID,
@@ -628,6 +629,81 @@ describe("YAML tab (2d)", () => {
   });
 });
 
+describe("YAML tab — the Validate panel (contract § 7.2 W8, re-homed here)", () => {
+  it("sits under the YAML block behind a disclosure that is closed by default", async () => {
+    mount(`${detail}/yaml`);
+    const view = await screen.findByTestId("yaml-view");
+    const disclosure = await screen.findByTestId("yaml-validate-disclosure");
+    expect(disclosure.textContent).toContain("Validate a YAML document");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    // Design 2d reads as designed: the disclosure follows the YAML panel.
+    expect(
+      view.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Closed means not mounted — none of the panel is in the tab order.
+    expect(screen.queryByTestId("validate-panel-input")).toBeNull();
+    expect(screen.queryByTestId("validate-panel-submit")).toBeNull();
+  });
+
+  it("one click opens it pinned to this workflow — no picker, and the button arms at once", async () => {
+    const validatePath = `/api/v1/drafts/${WIRE_DRAFT_ID}/validate`;
+    const { requests } = mount(`${detail}/yaml`, [
+      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
+      { path: validatePath, method: "POST", body: w8Validation },
+    ]);
+    await screen.findByTestId("yaml-view");
+    fireEvent.click(await screen.findByTestId("yaml-validate-disclosure"));
+    const input = (await screen.findByTestId("validate-panel-input")) as HTMLTextAreaElement;
+    const submit = screen.getByTestId("validate-panel-submit") as HTMLButtonElement;
+
+    // Pinned: the workflow is named as a read, and there is no picker to choose
+    // it with — the mount-time gap that left the button disabled on the old
+    // pipelines page (waiting on a library list) cannot recur here.
+    expect(screen.queryByRole("combobox", { name: "pipeline" })).toBeNull();
+    expect(screen.getByTestId("validate-panel-pipeline").textContent).toContain(
+      `${wirePipeline.display_name} · ${wirePipeline.slug}`,
+    );
+    expect(screen.getByTestId("validate-panel-pinned").textContent).toContain("pinned");
+    // The move keeps the honesty rules: still a textarea and a button, still
+    // not an editor, still a scratch draft behind the verdict.
+    expect(input.tagName).toBe("TEXTAREA");
+    expect(screen.getByTestId("validate-panel-not-editor").textContent).toContain("not an editor");
+    expect(screen.getByTestId("validate-panel-meta").textContent).toContain("no draft yet");
+    // The box starts as this workflow's own newest revision, so the button is
+    // live on open — nothing has to be picked first.
+    expect(input.value).toContain("apiVersion: communication.dev/v1alpha1");
+    expect(submit.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(screen.getAllByTestId(/^validate-panel-row-/)).toHaveLength(
+        w8Validation.errors.length,
+      ),
+    );
+    // The scratch draft was opened on THIS pipeline through the page's own id.
+    expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1);
+    expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1);
+    // The server's sources stay in their own groups, in the server's order.
+    const loader = screen.getByTestId("validate-panel-group-loader");
+    const schema = screen.getByTestId("validate-panel-group-schema");
+    expect(loader.compareDocumentPosition(schema) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("validate-panel-verdict").textContent).toContain("findings");
+  });
+
+  it("is not on the page for a caller without the library role, and not on the other tabs", async () => {
+    mount(`${detail}/yaml`, [{ path: "/api/v1/me", body: member }]);
+    await screen.findByTestId("yaml-view");
+    expect(screen.queryByTestId("yaml-validate-disclosure")).toBeNull();
+    expect(screen.queryByTestId("validate-panel-input")).toBeNull();
+    // The viewer still reads the YAML, and still gets the reason in words.
+    expect(screen.getByTestId("workflow-author-hint").textContent).toContain("library role");
+
+    mount(detail, [{ path: "/api/v1/me", body: admin }]);
+    await screen.findByTestId("pipeline-page");
+    expect(screen.queryByTestId("yaml-validate-disclosure")).toBeNull();
+  });
+});
+
 describe("History tab (1e)", () => {
   it("carries the REVISIONS and DRAFTS panels; a revision row opens its YAML", async () => {
     mount(`${detail}/history`);
@@ -905,8 +981,11 @@ describe("Use in a repo… (ADR-0060)", () => {
   it("a failed read is never a count: no `Used in 0`, the FAILED banner instead", async () => {
     // Pass-2 review, 2a server-error at 390: the tab read `Used in 0` and the
     // panel `USED IN 0 REPOS` over a fan that had failed — a lost read stated
-    // as “nobody uses this”. The count goes `?` and the standard FAILED banner
-    // (the same `Alert` every other server-error screen uses) says what broke.
+    // as “nobody uses this”. The standard FAILED banner (the same `Alert` every
+    // other server-error screen uses) says what broke. Pass-7 review took the
+    // interim answer back: a `?` in a number's seat is still a value the page
+    // never read, so the failed read shows NO count at all — the tab says
+    // `Used in`, the header says `USED IN`, and only the banner speaks.
     mount(`${detail}/used-in`, [
       {
         path: `/api/v1/projects/${wireProjectId}/assignments`,
@@ -924,12 +1003,12 @@ describe("Use in a repo… (ADR-0060)", () => {
     expect(banner.getAttribute("role")).toBe("alert");
     expect(banner.textContent).toContain("FAILED");
     expect(banner.textContent).toContain("could not all be read");
-    // The header asks the question instead of answering it with a number.
-    expect(within(panel).getByRole("heading", { level: 2 }).textContent).toBe("USED IN ? REPOS");
+    // The header says the section's name and nothing that looks like a count.
+    expect(within(panel).getByRole("heading", { level: 2 }).textContent).toBe("USED IN");
     expect(within(panel).queryByTestId("used-in-empty")).toBeNull();
     const tab = screen.getByTestId("workflow-tab-used-in");
-    expect(tab.textContent).toBe("Used in ?");
-    expect(tab.textContent).not.toContain(" 0");
+    expect(tab.textContent).toBe("Used in");
+    expect(screen.queryByTestId("workflow-used-in-count")).toBeNull();
   });
 
   it("names the count it has: the rows the arrived pins showed", async () => {

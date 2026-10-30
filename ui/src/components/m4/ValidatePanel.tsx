@@ -1,6 +1,11 @@
 /**
  * The "Validate" panel — `docs/m4-contract.md` § 7.2 row W8.
  *
+ * Where it lives: the workflow page's YAML tab (`/workflows/:id/yaml`), behind
+ * the collapsed `Validate a YAML document` disclosure — the row's own words,
+ * "the YAML viewer's 'Validate' panel". It mounts pinned to the workflow the
+ * page is about (`pinnedPipelineId`), and only for a caller who can author.
+ *
  * A textarea plus a button. It is deliberately **not** an editor: no syntax
  * highlighting, no autocomplete, no keybindings, no dirty-file semantics —
  * in-browser authoring is M5's scope and this panel must not pre-empt it. What
@@ -54,6 +59,17 @@ export interface ValidatePanelProps {
   canValidate: boolean;
   /** Text to seed the textarea with (a revision the page already has). */
   initialText?: string;
+  /**
+   * Pin the panel to ONE pipeline: the picker is replaced by a plain line that
+   * names the workflow the verdict will be produced against. The caller still
+   * passes that pipeline in `pipelines` (one option) so its `selectedOption`
+   * resolves and the button arms with the text alone — on the workflow page's
+   * YAML tab there is nothing to choose, because the page, the scratch draft
+   * and the verdict all belong to the workflow being read. The honesty rules
+   * are untouched: same `not an editor` note, same ordered sources, same
+   * redaction.
+   */
+  pinnedPipelineId?: string;
   headingId?: string;
   className?: string;
 }
@@ -69,10 +85,11 @@ export function ValidatePanel({
   pipelines,
   canValidate,
   initialText = "",
+  pinnedPipelineId,
   headingId = "validate-panel-heading",
   className = "",
 }: ValidatePanelProps) {
-  const [pipelineId, setPipelineId] = useState(pipelines[0]?.id ?? "");
+  const [pipelineId, setPipelineId] = useState(pinnedPipelineId ?? pipelines[0]?.id ?? "");
   const [text, setText] = useState(initialText);
   const [draft, setDraft] = useState<ScratchDraft | null>(null);
   /** Set when a write has landed and the validate call may now be made against
@@ -89,12 +106,17 @@ export function ValidatePanel({
   // screens read it from `usePipelines`), so the mount-time default above is
   // often empty and the Validate button would stay disabled until the reader
   // touched the select. Default to the first selectable pipeline whenever the
-  // current id names none — pasting YAML and clicking Validate must work.
+  // current id names none — pasting YAML and clicking Validate must work. A
+  // pinned pipeline wins outright: the id is the page's own, never a list's.
   useEffect(() => {
-    setPipelineId((current) =>
-      pipelines.some((pipeline) => pipeline.id === current) ? current : (pipelines[0]?.id ?? ""),
+    setPipelineId(
+      (current) =>
+        pinnedPipelineId ??
+        (pipelines.some((pipeline) => pipeline.id === current)
+          ? current
+          : (pipelines[0]?.id ?? "")),
     );
-  }, [pipelines]);
+  }, [pipelines, pinnedPipelineId]);
 
   const create = useCreateDraft(pipelineId);
   const put = usePutDraft(draft?.id ?? "");
@@ -167,7 +189,17 @@ export function ValidatePanel({
       headingLevel={2}
       state={result && !result.valid ? "failed" : undefined}
       meta={
-        <span className="font-mono text-[10px] font-normal" data-testid="validate-panel-meta">
+        // The bar holds one line at every width (design rule; the same reason
+        // the YAML viewer's `download` says just that word): a 390px column is
+        // ~331px inside the page padding, and this meta — `scratch draft
+        // <uuid> · v<n>` — is longer than the bar, so it cut the panel's own
+        // title to `VALIDATE YA…`. The fact is not lost: the body says
+        // `nothing validated yet` before the run and the verdict chip, the
+        // ordered findings and the marked YAML after it.
+        <span
+          className="hidden font-mono text-[10px] font-normal min-[560px]:inline"
+          data-testid="validate-panel-meta"
+        >
           {draft
             ? `scratch draft ${draft.id} · v${draft.version}`
             : "no draft yet — validating creates one"}
@@ -176,21 +208,41 @@ export function ValidatePanel({
       className={className}
     >
       <div className="space-y-[10px] p-[10px]">
-        <label className="flex items-center gap-[8px] text-[12.5px]">
-          <span className="font-mono text-[10.5px] text-muted">pipeline</span>
-          <select
-            value={pipelineId}
-            onChange={(event) => setPipelineId(event.target.value)}
-            className="h-[26px] rounded-[3px] border border-line bg-surface px-[6px] font-mono text-[11.5px]"
-            data-testid="validate-panel-pipeline"
-          >
-            {pipelines.map((pipeline) => (
-              <option key={pipeline.id} value={pipeline.id}>
-                {pipeline.displayName} · {pipeline.slug}
-              </option>
-            ))}
-          </select>
-        </label>
+        {pinnedPipelineId ? (
+          /* No picker on a pinned panel — the same fact, said as a read rather
+             than chosen as a value. The test id stays `validate-panel-pipeline`
+             (the e2e suite greps the panel's parts by that id). */
+          <p className="flex flex-wrap items-baseline gap-[8px] text-[12.5px]">
+            <span className="font-mono text-[10.5px] text-muted">pipeline</span>
+            <span className="font-mono text-[11.5px]" data-testid="validate-panel-pipeline">
+              {selectedOption
+                ? `${selectedOption.displayName} · ${selectedOption.slug}`
+                : pinnedPipelineId}
+            </span>
+            <span
+              className="font-mono text-[10.5px] text-faint"
+              data-testid="validate-panel-pinned"
+            >
+              pinned to this workflow — its scratch draft and its verdict
+            </span>
+          </p>
+        ) : (
+          <label className="flex items-center gap-[8px] text-[12.5px]">
+            <span className="font-mono text-[10.5px] text-muted">pipeline</span>
+            <select
+              value={pipelineId}
+              onChange={(event) => setPipelineId(event.target.value)}
+              className="h-[26px] rounded-[3px] border border-line bg-surface px-[6px] font-mono text-[11.5px]"
+              data-testid="validate-panel-pipeline"
+            >
+              {pipelines.map((pipeline) => (
+                <option key={pipeline.id} value={pipeline.id}>
+                  {pipeline.displayName} · {pipeline.slug}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <p className="font-mono text-[10.5px] text-faint" data-testid="validate-panel-not-editor">
           not an editor: paste YAML and validate it. In-browser authoring is not available yet —
           this box only turns text into the server&apos;s verdict through a scratch draft.

@@ -1,65 +1,39 @@
 /**
- * `/projects/:projectId/pipelines` as the place a project *gets* a pipeline.
- * The tests that matter: the assign control exists only for a maintainer, it
- * offers the newest published revision rather than a floating "latest", and
- * confirming posts the revision **id** route 18 demands (route 5's summary
- * carries no uuid — the digest is resolved through route 13 first).
+ * `/p/:projectId/pipelines` — the Workflows tab after the review rebuild.
+ *
+ * The tests that matter now: the tab is ONE panel of the project's workflow
+ * uses (no library list, no YAML dump, no definition graph, no validate note),
+ * no raw digest or uuid renders anywhere on it, the legacy address still
+ * arrives, a refused project still collapses to the one sentence — and the
+ * tab's one write, `+ use a library workflow`, still pins the newest
+ * published revision by **id** (resolved through route 13) as the whole-
+ * project use the store expects.
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { renderApp } from "../test/render";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { testidOf } from "../lib/format";
-import { renderApp } from "../test/render";
-import { shortId } from "../api/names";
 import type { Pipeline, PipelineRevision } from "../api/types";
-import type { Schedule } from "../api/pipelines";
-import { cronInWords, scheduleClock } from "./ProjectRunsPipelines";
 import {
   WIRE_ASSIGNMENT_ID,
   WIRE_CHILD_PIPELINE_ID,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
-  WIRE_RUN_ID,
   wireAssignmentList,
-  wireDraftSummaries,
   wirePipeline,
   wirePipelineList,
   wireProjectId,
   wireRevision,
-  wireRunList,
 } from "../test/fixtures/m4/wire";
 
 const ASSIGNMENTS_PATH = `/api/v1/projects/${wireProjectId}/assignments`;
-/** The row key of the one assignment the wire fixture serves. */
 const rowKey = testidOf(WIRE_ASSIGNMENT_ID);
-const ASSIGN_POST_PATH = ASSIGNMENTS_PATH;
-const SCHEDULES_PATH = `/api/v1/projects/${wireProjectId}/schedules`;
-const SCHEDULE_ID = "01987b22-0003-7000-8000-abcdef012345";
-const SCHEDULE_LAST_RUN_ID = "01987b22-0004-7000-8000-abcdef012345";
+const PINNED_DIGEST = wireAssignmentList.assignments[0].pinned_revision_digest;
 
-function wireSchedule(overrides: Partial<Schedule> = {}): Schedule {
-  return {
-    id: SCHEDULE_ID,
-    project_id: wireProjectId,
-    assignment_id: WIRE_ASSIGNMENT_ID,
-    cron_expr: "0 9 * * *",
-    inputs: { goal: "nightly sweep", repository: "app" },
-    enabled: true,
-    next_run_at: "2099-01-02T09:00:00Z",
-    last_run_at: "2026-06-18T09:00:00Z",
-    last_run_id: SCHEDULE_LAST_RUN_ID,
-    version: 4,
-    created_by: "01987b22-0005-7000-8000-abcdef012345",
-    created_at: "2026-06-01T09:00:00Z",
-    updated_at: "2026-06-18T09:00:00Z",
-    ...overrides,
-  };
-}
+/** `module-check` — the library pipeline this project has NOT used yet. */
 const CHILD_REVISION_ID = "01987b21-0001-7000-8000-abcdef012345";
 const CHILD_REVISION_DIGEST = `sha256:${"1a2b".repeat(32)}`;
-const CHILD_PREV_REVISION_DIGEST = `sha256:${"2b3c".repeat(32)}`;
-
-/** `module-check` — the library pipeline this project has NOT assigned yet. */
 const childPipeline: Pipeline = {
   ...wirePipeline,
   id: WIRE_CHILD_PIPELINE_ID,
@@ -74,16 +48,8 @@ const childPipeline: Pipeline = {
       revision_digest: CHILD_REVISION_DIGEST,
       status: "published",
     },
-    {
-      ...wirePipeline.revisions[0],
-      revision_number: 1,
-      version_label: "1.0.0",
-      revision_digest: CHILD_PREV_REVISION_DIGEST,
-      status: "published",
-    },
   ],
 };
-
 const childRevision: PipelineRevision = {
   ...wireRevision,
   id: CHILD_REVISION_ID,
@@ -98,16 +64,13 @@ function routes(role: "maintainer" | "viewer", extra: RouteStub[] = []): RouteSt
     ...extra,
     { path: "/api/v1/me", body: meFixture },
     { path: `/api/v1/projects/${wireProjectId}`, body: { ...projectFixture, my_role: role } },
+    { path: ASSIGNMENTS_PATH, body: wireAssignmentList },
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}`, body: wirePipeline },
-    { path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}/drafts`, body: wireDraftSummaries },
     { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}`, body: childPipeline },
-    { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}/drafts`, body: { drafts: [] } },
-    { path: ASSIGNMENTS_PATH, body: wireAssignmentList },
-    { path: SCHEDULES_PATH, body: { schedules: [] } },
-    // The trigger summary on a workflow row reads both trigger lists (ADR-0032
-    // schedules, ADR-0056 issue triggers); an unstubbed 404 would honestly say
-    // "triggers unavailable" instead of the hand-started answer these rows want.
+    { path: `/api/v1/revisions/${PINNED_DIGEST}`, body: wireRevision },
+    { path: `/api/v1/revisions/${CHILD_REVISION_DIGEST}`, body: childRevision },
+    { path: `/api/v1/projects/${wireProjectId}/schedules`, body: { schedules: [] } },
     { path: `/api/v1/projects/${wireProjectId}/issue-triggers`, body: { issue_triggers: [] } },
     {
       path: `/api/v1/projects/${wireProjectId}/repos`,
@@ -117,16 +80,13 @@ function routes(role: "maintainer" | "viewer", extra: RouteStub[] = []): RouteSt
             id: "01987b22-0002-7000-8000-abcdef012345",
             project_id: wireProjectId,
             name: "app",
-            git_url: "https://example.invalid/app.git",
+            git_url: "https://github.com/widgets/app.git",
             default_branch: "main",
             created_at: "2026-07-30T09:00:00Z",
           },
         ],
       },
     },
-    { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, body: wireRevision },
-    { path: `/api/v1/revisions/${CHILD_REVISION_DIGEST}`, body: childRevision },
-    { path: `/api/v1/projects/${wireProjectId}/runs`, body: wireRunList },
   ];
 }
 
@@ -137,129 +97,97 @@ function mount(role: "maintainer" | "viewer", extra: RouteStub[] = []) {
   });
 }
 
-describe("/p/:projectId/pipelines — assigning a library pipeline", () => {
+describe("/p/:projectId/pipelines — one panel, not a shelf of legacy ones", () => {
   it("keeps the legacy /projects/:id/pipelines address alive as a redirect", async () => {
     // The pre-move address still renders the same surface: App.tsx turns it
     // into a replace-navigate to the canonical /p/:id/pipelines.
-    renderApp({
-      path: `/projects/${wireProjectId}/pipelines`,
-      routes: routes("maintainer"),
-    });
-    await screen.findByTestId("pipeline-assign-list");
-    expect(screen.getByTestId("assign-open-module-check")).toBeTruthy();
+    renderApp({ path: `/projects/${wireProjectId}/pipelines`, routes: routes("maintainer") });
+    const row = await screen.findByTestId(`project-workflow-row-${rowKey}`);
+    expect(row.textContent).toContain("Feature development");
   });
 
-  it("offers a maintainer the assign control only for the unassigned pipeline", async () => {
+  it("mounts the 1b frame with this tab marked, and nothing else's furniture", async () => {
     mount("maintainer");
+    await screen.findByTestId(`project-workflow-row-${rowKey}`);
 
-    await screen.findByTestId("pipeline-name-module-check");
-    const list = screen.getByTestId("pipeline-assign-list");
-    expect(within(list).getByTestId("assign-open-module-check").textContent).toContain(
-      "Assign to this project",
-    );
-    // `feature-development` already has an assignment here, so it is not on offer.
-    expect(within(list).queryByTestId("assign-open-feature-development")).toBeNull();
-    // A viewer-only surface must not even show the control; this one does, and
-    // the pin line stays the server's truth until something is assigned — in
-    // short form, because a bare uuid is never a label. The pin line only
-    // shows the revision number once the pinned-revision read has landed, so
-    // await that state rather than the block's first paint.
-    const pin = await screen.findByText((text) => text.startsWith("pinned revision r7"));
-    expect(pin.textContent).toContain("pinned revision r7");
-    expect(pin.textContent).toContain(shortId(WIRE_REVISION_ID));
-    expect(pin.textContent).not.toContain(WIRE_REVISION_ID);
-  });
-
-  it("renders the 1b frame — band, tabs marked, no rail, no Pipelines headline", async () => {
-    mount("maintainer");
-
-    // The header band the overview draws, with THIS tab marked; the old page's
-    // own H1 ("Pipelines") and its left section rail are gone (design 1b).
     expect(await screen.findByTestId("project-header", undefined, { timeout: 5_000 })).toBeTruthy();
     expect(screen.getByTestId("project-name").textContent).toBe(projectFixture.name);
-    const tabs = within(screen.getByTestId("project-tabs"));
-    expect(tabs.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");
-    expect(tabs.getByTestId("project-tab-runs").getAttribute("aria-current")).toBeNull();
-    expect(screen.getAllByRole("navigation", { name: /project sections/i })).toHaveLength(1);
+    const tabs = screen.getByTestId("project-tabs");
+    expect(
+      tabs.querySelector(`[data-testid="project-tab-workflows"]`)?.getAttribute("aria-current"),
+    ).toBe("page");
+    // The old page's own H1 ("Pipelines") and its word are gone; the screen
+    // speaks the product's.
     expect(screen.queryByRole("heading", { name: /^Pipelines$/ })).toBeNull();
-    // The org's workflows are still reachable by name, and the panel that holds
-    // them is still titled "LIBRARY".
-    expect(screen.getByRole("heading", { name: /^LIBRARY/i })).toBeTruthy();
   });
 
-  it("lists the project's workflows as the design's rows, not raw state chips", async () => {
+  it("is ONE panel: no library list, no YAML dump, no definition graph, no validate note", async () => {
     mount("maintainer");
+    await screen.findByTestId(`project-workflow-row-${rowKey}`);
 
-    const row = await screen.findByTestId(/^project-workflow-row-/);
-    // slug · r<N> · what starts it · where it runs, with Edit on the right —
-    // the same row the overview's WORKFLOWS panel draws.
-    await waitFor(() =>
-      expect(within(row).getByTestId(`project-workflow-meta-${rowKey}`).textContent).toContain(
-        "r7",
-      ),
-    );
-    expect(row.textContent).toContain("feature-development");
-    expect(row.textContent).toContain("started by hand");
-    expect(within(row).getByTestId(`project-workflow-edit-${rowKey}`).getAttribute("href")).toBe(
+    const words = document.body.textContent ?? "";
+    expect(screen.queryByRole("heading", { name: /^LIBRARY/i })).toBeNull();
+    expect(words).not.toMatch(/in the library\b/);
+    expect(screen.queryByTestId("yaml-view")).toBeNull();
+    expect(words).not.toContain("YAML (READ-ONLY)");
+    expect(screen.queryByTestId("definition-graph")).toBeNull();
+    expect(words).not.toMatch(/nodes? · ·?\s*\d+ edges?/);
+    expect(words).not.toContain("VALIDATE YAML");
+    expect(words).not.toMatch(/when to run/i);
+    // The library is a click away, and the pinned document one row-name click
+    // beyond that: the workflow page owns both.
+    expect(screen.getByTestId(`project-workflow-name-${rowKey}`).getAttribute("href")).toBe(
       `/workflows/${WIRE_PIPELINE_ID}`,
     );
-    // The vocabulary is the product's: no uppercase state chip, no "R1" written
-    // as a bare token, and no page that calls them "Pipelines" (the route keeps
-    // its path; the screen does not keep its old word).
-    const words = document.body.textContent ?? "";
-    expect(screen.queryByRole("heading", { name: /pipelines/i })).toBeNull();
-    expect(words).not.toMatch(/\bMAX \d+ CONCURRENT\b/);
-    expect(words).not.toMatch(/\bR\d\b/);
   });
 
-  it("reports the project's assignment on the row, not a channel M4 has no word for", async () => {
+  it("says the revision as r7 — no digest, no uuid, no short-id fragment", async () => {
     mount("maintainer");
-
-    await screen.findByTestId("pipeline-name-module-check");
-    // `feature-development` is assigned here: the row says so, with the pin
-    // (r<N> + short digest) and the ceiling the server gave the assignment — in
-    // the sentence a person reads, not the three uppercase chips that clipped.
-    const assigned = screen.getByTestId("pipeline-assignment-feature-development").textContent;
-    expect(assigned).toContain("assigned");
-    expect(assigned).toContain("r7");
-    expect(assigned).toContain("3f2f3f2f3f2f");
-    expect(assigned).toContain("up to 1 run at a time");
-    expect(assigned).not.toMatch(/\bMAX \d+ CONCURRENT\b/);
-    // The claim that was wrong on screen: nothing says "no channel set" when
-    // the pipeline *is* assigned to this project.
-    expect(screen.queryAllByTestId(/pipeline-no-channel-/)).toHaveLength(0);
-    // `module-check` has no assignment: the honest absence, next to the Assign
-    // control that fixes it.
-    expect(screen.getByTestId("pipeline-no-assignment-module-check").textContent).toContain(
-      "not assigned to this project",
+    await screen.findByTestId(`project-workflow-row-${rowKey}`);
+    await waitFor(() =>
+      expect(screen.getByTestId(`project-workflow-revision-${rowKey}`).textContent).toBe("r7"),
     );
-    expect(screen.getByTestId("assign-open-module-check")).toBeTruthy();
+
+    const words = document.body.textContent ?? "";
+    expect(words).not.toContain(WIRE_REVISION_ID);
+    expect(words).not.toContain(WIRE_ASSIGNMENT_ID);
+    expect(words).not.toContain(PINNED_DIGEST);
+    expect(words).not.toMatch(/sha256:/);
+    // The pass review's exact offenders: `pinned r1 · 0a09bab23de4`,
+    // `id d778fa6d`, `newest run 300abcbf · …`.
+    expect(words).not.toMatch(/pinned [rt]?\d+ · [0-9a-f]{6,}/);
+    expect(words).not.toMatch(/\bid [0-9a-f]{6,}\b/);
+    expect(words).not.toMatch(/newest run [0-9a-f]{6,}/);
   });
 
-  it("gives the pinned document the panel's width, with no empty findings column", async () => {
-    mount("maintainer");
-
-    const layout = await screen.findByTestId("yaml-view-layout");
-    expect(layout.getAttribute("data-layout")).toBe("below");
-    // Nothing has been validated here, so the side pane that only apologized is
-    // gone rather than eating half the width.
-    expect(screen.queryByTestId("yaml-validation-none")).toBeNull();
-    expect(screen.getByTestId("yaml-view")).toBeTruthy();
-    // Ids stay short everywhere on this panel.
-    const newest = screen.getByTestId("project-pipeline-newest-run").textContent ?? "";
-    expect(newest).toContain(shortId(WIRE_RUN_ID));
-    expect(newest).not.toContain(WIRE_RUN_ID);
-  });
-
-  it("shows a viewer no assign control at all", async () => {
+  it("shows a viewer the rows with no writing affordances", async () => {
     mount("viewer");
-
-    await screen.findByTestId("pipeline-name-module-check");
-    expect(screen.queryByTestId("pipeline-assign-list")).toBeNull();
-    expect(screen.queryByTestId("assign-open-module-check")).toBeNull();
+    await screen.findByTestId(`project-workflow-row-${rowKey}`);
+    expect(screen.queryByTestId("project-workflow-library")).toBeNull();
+    expect(screen.queryByTestId(`project-workflow-add-${rowKey}`)).toBeNull();
+    expect(screen.queryByTestId("project-library-dialog")).toBeNull();
   });
 
-  it("confirms with the newest published revision id and refetches the assignments", async () => {
+  it("collapses to the one sentence when the project refuses the assignments read", async () => {
+    mount("viewer", [
+      {
+        path: ASSIGNMENTS_PATH,
+        status: 403,
+        body: { type: "about:blank", title: "Forbidden", status: 403, detail: "Nope." },
+      },
+    ]);
+
+    expect((await screen.findByTestId("project-pipelines-not-found")).textContent).toContain(
+      "Project not found or you do not have access",
+    );
+    // The shell is the leak: no rows, no library, no assign affordances.
+    expect(screen.queryAllByTestId(/project-workflow-row-/)).toHaveLength(0);
+    expect(screen.queryAllByTestId(/project-workflow-add-/)).toHaveLength(0);
+  });
+});
+
+describe("/p/:projectId/pipelines — + use a library workflow", () => {
+  it("pins the newest published revision as the whole-project use", async () => {
     const created = {
       ...wireAssignmentList.assignments[0],
       id: "01987b22-0001-7000-8000-abcdef012345",
@@ -269,37 +197,43 @@ describe("/p/:projectId/pipelines — assigning a library pipeline", () => {
       pinned_version_label: "2.0.0",
     };
     const { requests } = mount("maintainer", [
-      { path: ASSIGN_POST_PATH, method: "POST", status: 201, body: created },
+      { path: ASSIGNMENTS_PATH, method: "POST", status: 201, body: created },
     ]);
 
-    fireEvent.click(await screen.findByTestId("assign-open-module-check"));
-    // The id is resolved from the digest before anything is postable.
-    const confirm = await screen.findByTestId("assign-confirm-module-check");
-    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
-    // The form names r2, the newest published revision — not r1, not "latest".
-    expect(screen.getByTestId("assign-form-module-check").textContent).toContain("r2 · 2.0.0");
+    await screen.findByTestId(`project-workflow-row-${rowKey}`);
+    fireEvent.click(screen.getByTestId("project-workflow-library"));
+    await screen.findByTestId("project-library-dialog");
+    // The context names the scope in words, and the row names the pin.
+    expect(screen.getByTestId("project-library-context").textContent).toContain(
+      "every repository in the project",
+    );
+    expect(screen.getByTestId("project-library-row-feature-development").textContent).toContain(
+      "used in the project",
+    );
 
-    fireEvent.click(confirm);
-    await waitFor(() => expect(requestsTo(requests, ASSIGN_POST_PATH, "POST")).toHaveLength(1));
-    const body = JSON.parse(requestsTo(requests, ASSIGN_POST_PATH, "POST")[0].body ?? "{}");
+    fireEvent.click(await screen.findByTestId("project-library-use-module-check"));
+    await waitFor(() => expect(requestsTo(requests, ASSIGNMENTS_PATH, "POST")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, ASSIGNMENTS_PATH, "POST")[0].body ?? "{}");
+    // The pin is the resolved *id* route 18 demands, posted after route 13
+    // resolves the newest published digest; no repository member means the
+    // whole-project use (ADR-0060's `null`).
     expect(body).toEqual({
       pipeline_id: WIRE_CHILD_PIPELINE_ID,
       pinned_revision_id: CHILD_REVISION_ID,
       max_concurrent_runs: 1,
     });
-    expect(body.pinned_revision_id).toBe(CHILD_REVISION_ID);
-    // The newest digest is the one resolved — r2 was never looked at.
     expect(requestsTo(requests, `/api/v1/revisions/${CHILD_REVISION_DIGEST}`)).toHaveLength(1);
-    expect(requestsTo(requests, `/api/v1/revisions/${CHILD_PREV_REVISION_DIGEST}`)).toHaveLength(0);
-
-    // The list and `NewRunForm` read the same key: the invalidation refetches it.
-    await waitFor(() => expect(requestsTo(requests, ASSIGNMENTS_PATH)).toHaveLength(2));
+    // The list and the tab's rows read the same key: the invalidation refetches it.
+    await waitFor(() =>
+      expect(requestsTo(requests, ASSIGNMENTS_PATH).length).toBeGreaterThanOrEqual(2),
+    );
+    await waitFor(() => expect(screen.queryByTestId("project-library-dialog")).toBeNull());
   });
 
-  it("renders the server's 409 inline instead of pretending the pin took", async () => {
-    const { requests } = mount("maintainer", [
+  it("keeps the server's 409 inline instead of pretending the pin took", async () => {
+    mount("maintainer", [
       {
-        path: ASSIGN_POST_PATH,
+        path: ASSIGNMENTS_PATH,
         method: "POST",
         status: 409,
         body: {
@@ -311,303 +245,12 @@ describe("/p/:projectId/pipelines — assigning a library pipeline", () => {
       },
     ]);
 
-    fireEvent.click(await screen.findByTestId("assign-open-module-check"));
-    const confirm = await screen.findByTestId("assign-confirm-module-check");
-    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(confirm);
+    await screen.findByTestId(`project-workflow-row-${rowKey}`);
+    fireEvent.click(screen.getByTestId("project-workflow-library"));
+    fireEvent.click(await screen.findByTestId("project-library-use-module-check"));
 
-    const alert = await screen.findByTestId("assign-error-module-check");
+    const alert = await screen.findByTestId("project-library-error");
     expect(alert.textContent).toContain("already assigned");
-    // The form stays open on a refusal — the maintainer sees what the server said.
-    expect(screen.getByTestId("assign-form-module-check")).toBeTruthy();
-    expect(requestsTo(requests, ASSIGN_POST_PATH, "POST")).toHaveLength(1);
-  });
-});
-
-/* ------------------------------------------------ ADR-0032 "when to run" */
-
-describe("/p/:projectId/pipelines — when to run", () => {
-  it("pads the block to the row and offers the trigger verb", async () => {
-    mount("maintainer", [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } }]);
-
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    // The block used to bleed to the card edge (no horizontal padding), so the
-    // cron box and the Add control started at the panel border instead of the
-    // row's own inset (pass-2 review). 12px is that row's `px-[12px]`.
-    expect(block.className.split(/\s+/)).toContain("px-[12px]");
-    // The verb the rest of the product uses: a schedule is a TRIGGER, and the
-    // repository page calls the same action `Add trigger`.
-    const add = await screen.findByTestId("schedule-open-feature-development");
-    expect(add.textContent).toBe("Add trigger");
-  });
-
-  it("shows a viewer the cadence and the countdown, with no controls", async () => {
-    mount("viewer", [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } }]);
-
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    expect(block.textContent).toContain("0 9 * * *");
-    // The next fire reads as a countdown, not a raw timestamp.
-    expect(within(block).getByTestId("schedule-next-feature-development").textContent).toMatch(
-      /next \d+[a-z]+ left/,
-    );
-    expect(
-      within(block).getByTestId("schedule-last-run-feature-development").textContent,
-    ).toContain("last run");
-    expect(within(block).queryByTestId("schedule-enabled-feature-development")).toBeNull();
-    expect(within(block).queryByTestId("schedule-open-feature-development")).toBeNull();
-  });
-
-  it("toggles enabled through PATCH with the row's version", async () => {
-    const { requests } = mount("maintainer", [
-      { path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } },
-      {
-        path: `/api/v1/schedules/${SCHEDULE_ID}`,
-        method: "PATCH",
-        status: 200,
-        body: wireSchedule({ enabled: false, version: 5 }),
-      },
-    ]);
-
-    const toggle = await screen.findByTestId("schedule-enabled-feature-development");
-    fireEvent.click(toggle);
-    await waitFor(() =>
-      expect(requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")).toHaveLength(1),
-    );
-    const body = JSON.parse(
-      requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")[0].body ?? "{}",
-    );
-    expect(body).toEqual({ version: 4, enabled: false });
-  });
-
-  it("a maintainer with no schedules sees the honest absence and the Add control", async () => {
-    mount("maintainer");
-    // The absence line only exists once the schedules read has landed (the
-    // block itself paints while it is still in flight).
-    const none = await screen.findByTestId("schedules-none-feature-development");
-    expect(none.textContent).toContain("Never scheduled");
-    expect(screen.getByTestId("schedule-open-feature-development")).toBeTruthy();
-  });
-
-  it("adds a schedule with a preset cron and the revision's declared inputs", async () => {
-    const { requests } = mount("maintainer", [
-      { path: SCHEDULES_PATH, method: "POST", status: 201, body: wireSchedule() },
-    ]);
-
-    fireEvent.click(await screen.findByTestId("schedule-open-feature-development"));
-    // Presets: the three cadences ADR-0032 names; picking weekly Monday rewrites
-    // the text field — the cron stays plain text, editable either way.
-    fireEvent.click(screen.getByTestId("schedule-preset-0-9-star-star-1"));
-    expect(
-      (screen.getByTestId("schedule-cron-feature-development") as HTMLInputElement).value,
-    ).toBe("0 9 * * 1");
-    // The input fields are the ones NewRunForm builds from spec.inputs.
-    fireEvent.change(await screen.findByTestId("new-run-input-goal"), {
-      target: { value: "nightly sweep" },
-    });
-    fireEvent.change(screen.getByTestId("new-run-input-repository"), {
-      target: { value: "app" },
-    });
-    fireEvent.click(screen.getByTestId("schedule-confirm-feature-development"));
-
-    await waitFor(() => expect(requestsTo(requests, SCHEDULES_PATH, "POST")).toHaveLength(1));
-    const body = JSON.parse(requestsTo(requests, SCHEDULES_PATH, "POST")[0].body ?? "{}");
-    expect(body).toEqual({
-      assignment_id: WIRE_ASSIGNMENT_ID,
-      cron_expr: "0 9 * * 1",
-      inputs: {
-        goal: "nightly sweep",
-        repository: "app",
-        // Declared defaults are seeded into the form (same as NewRunForm) and
-        // ride as fixed inputs — the fire submits exactly what the form showed.
-        acceptance_criteria: "Tests pass, the plan is followed, and the reviewer approves.",
-      },
-      enabled: true,
-    });
-    await waitFor(() => expect(requestsTo(requests, SCHEDULES_PATH)).toHaveLength(2));
-  });
-
-  it("renders the server's invalid_cron 422 inline and keeps the form open", async () => {
-    mount("maintainer", [
-      {
-        path: SCHEDULES_PATH,
-        method: "POST",
-        status: 422,
-        body: {
-          type: "https://communication.dev/errors/invalid_cron",
-          title: "Validation Failed",
-          status: 422,
-          detail: "cron_expr must be a 5-field cron expression, UTC",
-          field: "cron_expr",
-        },
-      },
-    ]);
-
-    fireEvent.click(await screen.findByTestId("schedule-open-feature-development"));
-    fireEvent.change(await screen.findByTestId("schedule-cron-feature-development"), {
-      target: { value: "@daily" },
-    });
-    fireEvent.change(await screen.findByTestId("new-run-input-goal"), {
-      target: { value: "sweep" },
-    });
-    fireEvent.change(await screen.findByTestId("new-run-input-repository"), {
-      target: { value: "app" },
-    });
-    fireEvent.click(screen.getByTestId("schedule-confirm-feature-development"));
-
-    const alert = await screen.findByTestId("schedule-error-feature-development");
-    expect(alert.textContent).toContain("5-field cron");
-    expect(screen.getByTestId("schedule-form-feature-development")).toBeTruthy();
-  });
-});
-
-/* ------------------------------------------- schedule rows: paused, due now */
-
-describe("a schedule row says what the schedule is actually doing", () => {
-  const withSchedules = (role: "maintainer" | "viewer", overrides: Partial<Schedule> = {}) =>
-    mount(role, [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule(overrides)] } }]);
-
-  it("a paused schedule is shown paused ONCE: the box is unchecked and no stale 'next' is promised", async () => {
-    await withSchedules("maintainer", { enabled: false, next_run_at: "2026-06-19T09:00:00Z" });
-
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    // The row (and its toggle) renders only once the schedules read lands.
-    const toggle = await within(block).findByTestId("schedule-enabled-feature-development");
-    expect((toggle as HTMLInputElement).checked).toBe(false);
-    // "paused" is said ONCE — on the toggle's state word. It used to print here
-    // AND in the clock column (`scheduleClock` returned "paused"), so a paused
-    // row read "… paused … paused" on one line (pass-2 review).
-    expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe(
-      "paused",
-    );
-    expect((block.textContent?.match(/paused/g) ?? []).length).toBe(1);
-    // `next_run_at` keeps its last value while a schedule is off (ADR-0032 never
-    // backfills missed slots), so the clock column drops entirely rather than
-    // promising a countdown.
-    expect(within(block).queryByTestId("schedule-next-feature-development")).toBeNull();
-  });
-
-  it("an enabled schedule reads as on, and a slot already gone by is due now", async () => {
-    await withSchedules("maintainer", { next_run_at: "2020-01-02T09:00:00Z" });
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    const enabled = await within(block).findByTestId("schedule-enabled-feature-development");
-    expect((enabled as HTMLInputElement).checked).toBe(true);
-    expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe("on");
-    expect(within(block).getByTestId("schedule-next-feature-development").textContent).toBe(
-      "due now",
-    );
-  });
-
-  it("a viewer reads the same states without a control", async () => {
-    await withSchedules("viewer", { enabled: false });
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    expect(within(block).queryByTestId("schedule-enabled-feature-development")).toBeNull();
-    expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe(
-      "paused",
-    );
-  });
-
-  it("the three presets and every-minute speak in words; anything else stays verbatim", async () => {
-    await withSchedules("viewer", { cron_expr: "0 9 * * 1" });
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    expect(
-      within(block).getByTestId("schedule-cron-words-feature-development").textContent,
-    ).toContain("weekly Monday 09:00 UTC");
-    expect(block.textContent).toContain("0 9 * * 1"); // the expression is never hidden
-  });
-
-  it("cronInWords translates only the cadences the form offers", () => {
-    expect(cronInWords("0 * * * *")).toBe("hourly");
-    expect(cronInWords("0 9 * * *")).toBe("daily 09:00 UTC");
-    expect(cronInWords("  0 9 * * 1 ")).toBe("weekly Monday 09:00 UTC");
-    expect(cronInWords("* * * * *")).toBe("every minute");
-    // Anything else is shown exactly as written — no invented reading of it.
-    expect(cronInWords("*/15 8-17 * * 2-4")).toBe("*/15 8-17 * * 2-4");
-    expect(cronInWords("@daily")).toBe("@daily");
-  });
-
-  it("scheduleClock: paused beats a stale clock, a gone-by slot is due now", () => {
-    const now = Date.parse("2026-06-20T10:00:00Z");
-    expect(scheduleClock({ enabled: false, next_run_at: "2026-06-19T09:00:00Z" }, now)).toContain(
-      "paused",
-    );
-    expect(scheduleClock({ enabled: true, next_run_at: "2026-06-19T09:00:00Z" }, now)).toBe(
-      "due now",
-    );
-    expect(scheduleClock({ enabled: true, next_run_at: "2026-06-20T12:00:00Z" }, now)).toBe(
-      "next 2h left",
-    );
-  });
-});
-
-/**
- * M5 QA: erin is a member of one project only. `/pipelines` used to render the
- * whole shell for a project she cannot open — rail, library rows, "not
- * assigned to this project" chips — around a raw 500 banner, and the draft row
- * named its editor with an id fragment. Both are honesty bugs, not styling.
- */
-const UNKNOWN_EDITOR = "01987b22-0006-7000-8000-abcdef987654";
-
-describe("/p/:projectId/pipelines as a caller who cannot open the project", () => {
-  const problem = (status: number) => ({
-    type: "about:blank",
-    title: status === 403 ? "Forbidden" : "Not Found",
-    status,
-    detail: status === 403 ? "Nope." : "No such project.",
-  });
-
-  it("shows the project refusal instead of the shell on a 404", async () => {
-    mount("viewer", [
-      { path: `/api/v1/projects/${wireProjectId}`, status: 404, body: problem(404) },
-      { path: ASSIGNMENTS_PATH, status: 404, body: problem(404) },
-    ]);
-
-    expect((await screen.findByTestId("project-pipelines-not-found")).textContent).toContain(
-      "Project not found or you do not have access",
-    );
-    // The shell is the leak: none of it renders.
-    expect(screen.queryByTestId("project-pipelines")).toBeNull();
-    expect(screen.queryAllByTestId(/pipeline-no-assignment-/)).toHaveLength(0);
-    expect(screen.queryByText(/not assigned to this project/)).toBeNull();
-    expect(screen.queryByText(/no pipeline assignment is enabled/)).toBeNull();
-    expect(screen.queryByText(/Internal Server Error/)).toBeNull();
-  });
-
-  it("shows the same refusal when only the assignments read is refused", async () => {
-    mount("viewer", [{ path: ASSIGNMENTS_PATH, status: 403, body: problem(403) }]);
-
-    expect(await screen.findByTestId("project-pipelines-not-found")).toBeTruthy();
-    expect(screen.queryByTestId("pipeline-library-count")).toBeNull();
-  });
-
-  it("names an unknown draft editor in words, never an id fragment", async () => {
-    mount("viewer", [
-      {
-        path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}/drafts`,
-        body: {
-          drafts: [
-            {
-              id: "01987b22-0007-7000-8000-abcdef012345",
-              status: "valid",
-              version: 2,
-              updated_at: "2026-07-31T08:12:00Z",
-              edited_by: UNKNOWN_EDITOR,
-            },
-          ],
-        },
-      },
-    ]);
-
-    const cell = await screen.findByTestId("pipeline-validation-feature-development");
-    expect(cell.textContent).toContain("draft v2");
-    expect(cell.textContent).toContain("a member");
-    expect(cell.textContent).not.toContain(shortId(UNKNOWN_EDITOR));
-    expect(cell.textContent).not.toContain(UNKNOWN_EDITOR);
-  });
-
-  it("still names a draft editor the reader can resolve", async () => {
-    mount("viewer");
-
-    const cell = await screen.findByTestId("pipeline-validation-feature-development");
-    expect(cell.textContent).toContain("draft v12 · Ada Lovelace");
+    expect(screen.getByTestId("project-library-dialog")).toBeTruthy();
   });
 });

@@ -13,6 +13,12 @@
  *   /workflows/:pipelineId/used-in    every repo that uses it (2a)
  *   /workflows/:pipelineId/history    the REVISIONS and DRAFTS panels (1e)
  *
+ * The YAML tab is also the home of contract § 7.2 row W8's "Validate" panel
+ * (`components/m4/ValidatePanel`): the row's own words place it in "the YAML
+ * viewer's 'Validate' panel", so it sits under the YAML block behind one
+ * collapsed disclosure, pinned to this workflow and shown only to a caller with
+ * the library role (the `Edit workflow` check).
+ *
  * `Use in a repo…` pins the newest published revision to a repo (or the whole
  * project); `Edit workflow` is the one primary verb — it reopens the newest
  * open draft in the Studio, or creates a draft from the newest revision (the
@@ -42,6 +48,7 @@ import {
   useRevision,
 } from "../api/pipelines";
 import { hasLibraryRole, LIBRARY_AUTHORING_HINT } from "../lib/pipeline/authoring";
+import { ValidatePanel } from "../components/m4/ValidatePanel";
 import { BLANK_SKELETON_YAML, withMetadataName } from "../lib/pipeline/templates";
 import { routes, type WorkflowTab } from "../lib/routes";
 import { WorkflowHistoryTab } from "./workflow/HistoryTab";
@@ -480,16 +487,18 @@ export function PipelinePage() {
                 {/* Only the Used-in count means something (shared page
                     pattern): the design's tab row is
                     `Overview YAML Used in 2 History`. A failed read is NOT a
-                    count — the tab then carries `?` next to the `USED IN ?
-                    REPOS` header, because `Used in 0` over a broken fan says
+                    count and not a question mark either — the tab simply says
+                    `Used in`, because a `?` in a number's seat is still a value
+                    the page never read, and `Used in 0` over a broken fan says
                     “nobody uses this” when the truth is “we could not tell”
-                    (pass-2 review, 2a server-error). */}
-                {key === "used-in" && !usedIn.loading ? (
+                    (pass-2 + pass-7 reviews, 2a server-error). The FAILED banner
+                    in the panel says the thing in words. */}
+                {key === "used-in" && !usedIn.loading && !usedIn.error ? (
                   <span
                     className="ml-[4px] font-mono text-[10.5px]"
                     data-testid="workflow-used-in-count"
                   >
-                    {usedIn.error ? " ?" : ` ${usedIn.groups.length}`}
+                    {` ${usedIn.groups.length}`}
                   </span>
                 ) : null}
               </Link>
@@ -538,7 +547,23 @@ export function PipelinePage() {
       {tab !== "overview" ? (
         <div className="flex-1 px-[22px] py-[22px] md:px-[28px]">
           {tab === "yaml" ? (
-            <WorkflowYamlTab slug={pipeline.data?.slug ?? pipelineId} revisions={usedInRevisions} />
+            <div className="space-y-[10px]">
+              <WorkflowYamlTab
+                slug={pipeline.data?.slug ?? pipelineId}
+                revisions={usedInRevisions}
+              />
+              {/* W8’s home (contract § 7.2: “the YAML viewer’s ‘Validate’ panel”) —
+                  the authoring surface, so only a caller with the library role
+                  (the same check as `Edit workflow`) ever sees the line. */}
+              {canAuthor ? (
+                <YamlValidateDisclosure
+                  pipelineId={pipelineId}
+                  slug={pipeline.data?.slug ?? pipelineId}
+                  displayName={summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
+                  initialText={revision.data?.document_text ?? ""}
+                />
+              ) : null}
+            </div>
           ) : null}
           {tab === "used-in" ? (
             <div className="max-w-[980px]">
@@ -590,6 +615,69 @@ export function PipelinePage() {
         revisions={usedInRevisions}
         onAssigned={() => navigate(routes.workflowTab(pipelineId, "used-in"))}
       />
+    </div>
+  );
+}
+
+/**
+ * The YAML tab's `Validate a YAML document` disclosure — the panel contract
+ * § 7.2 row W8 names ("the YAML viewer's 'Validate' panel") in its new home.
+ *
+ * Design 2d is the YAML block alone, so the panel is collapsed by default and
+ * ONE click on this line opens it. Opening also mounts it: a hidden textarea,
+ * select-free form and button should not sit in the tab order of a page that
+ * shows none of them, and the panel only talks to the server when its own
+ * button is pressed, so nothing is asked while the line is closed.
+ *
+ * It is pinned to THIS workflow — one pipeline, no picker — so there is no
+ * library list to wait for and the Validate button arms the moment the box
+ * holds text. The box is seeded from the newest revision the page already has
+ * (what the old pipelines-page mount did); the tab's own revision picker does
+ * not re-seed it, because the box is where a person pastes the document they
+ * want the server to judge. The panel keeps its honesty rules: a textarea plus
+ * a button is not an editor, and in-browser authoring stays M5's.
+ *
+ * Only the caller who can author mounts it (the `Edit workflow` check, same
+ * predicate); the panel's own no-role refusal stays behind that as the honest
+ * fallback for any future caller that forgets to ask.
+ */
+function YamlValidateDisclosure({
+  pipelineId,
+  slug,
+  displayName,
+  initialText,
+}: {
+  pipelineId: string;
+  slug: string;
+  displayName: string;
+  initialText: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid="yaml-validate-disclosure-block">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? "yaml-validate-panel" : undefined}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-[6px] rounded-[3px] border border-line bg-surface px-[10px] py-[6px] text-left font-mono text-[11px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid="yaml-validate-disclosure"
+        title="paste YAML, get the server's verdict through a scratch draft of this workflow"
+      >
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+        Validate a YAML document
+      </button>
+      {open ? (
+        <div id="yaml-validate-panel" data-testid="yaml-validate-panel-open">
+          <ValidatePanel
+            pipelines={[{ id: pipelineId, slug, displayName }]}
+            canValidate
+            pinnedPipelineId={pipelineId}
+            initialText={initialText}
+            headingId="yaml-validate-heading"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

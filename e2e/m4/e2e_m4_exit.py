@@ -24120,10 +24120,14 @@ def w8_documents():
 
 
 def w8_pick_pipeline(session="m4w8"):
-    """Choose the panel's pipeline explicitly. ValidatePanel seeds
+    """Choose the panel's pipeline explicitly, for a panel that still offers a
+    picker. The YAML tab's mount pins the panel to the workflow the page is about
+    (`pinnedPipelineId`, ui/src/components/m4/ValidatePanel.tsx), so that page has
+    no combobox and this returns '' — it stays for a panel that answers the old
+    shape. Where a picker does exist: ValidatePanel seeds
     `useState(pipelines[0]?.id ?? "")` while the library list is still loading, so
-    `selectedOption` stays null and its own Button stays `disabled` — observed in the
-    lab as `TimeoutError … <button disabled … data-testid="validate-panel-submit">`
+    `selectedOption` stays null and its own Button stays `disabled` — observed in
+    the lab as `TimeoutError … <button disabled … data-testid="validate-panel-submit">`
     (label: "the panel's Validate button is enabled once the YAML is pasted").
     Returns the option label picked ('' = nothing picked)."""
     rc, snap = pw_snapshot(session=session)
@@ -24142,13 +24146,44 @@ def w8_pick_pipeline(session="m4w8"):
     return picked if pw("select", combo[0], picked, session=session)[0] == 0 else ""
 
 
+# The YAML tab's collapsed disclosure over the W8 panel (design 2d keeps the tab
+# to its YAML block, so the panel is one click away rather than on the page).
+W8_DISCLOSURE_TESTID = "yaml-validate-disclosure"
+W8_DISCLOSURE_LABEL = "Validate a YAML document"      # the button's accessible name
+W8_DISCLOSURE_JS = ("() => { const b = document.querySelector('[data-testid="
+                    + W8_DISCLOSURE_TESTID + "]');"
+                    " if (!b) return 'absent'; b.click(); return 'clicked'; }")
+
+
+def w8_open_disclosure(session="m4w8", tries=10, delay=2):
+    """Open the YAML tab's `Validate a YAML document` disclosure — the panel mounts
+    lazily behind it (closed by default so the 2d design reads as designed), so the
+    leg opens it the way an operator does: one click. The snapshot carries no
+    attributes (pw_snapshot_nodes), so the click is made against the element's own
+    testid (W8_DISCLOSURE_TESTID) through `eval`. (opened, detail) — 'clicked' is
+    the page's own answer that the disclosure existed."""
+    detail = "never polled"
+    for _ in range(tries):
+        rc, out = pw("eval", W8_DISCLOSURE_JS, session=session, timeout=60)
+        detail = f"rc={rc} {(out or '')[:120]}"
+        if rc == 0 and "clicked" in (out or ""):
+            return True, detail
+        time.sleep(delay)
+    return False, detail
+
+
 def w8_click_validate(session="m4w8"):
     """(clicked, ref, detail) — the panel's own button ("Validate (writes the
-draft)" / "Validate again"), matched by prefix so no nav item steals it."""
+    draft)" / "Validate again"), matched by prefix so no nav item steals it. The
+    YAML tab's disclosure is named `Validate a YAML document` and sits ABOVE the
+    panel in DOM order, so its name (and any other `Validate…` label that is not
+    the panel's button) is excluded by name — clicking it would close the panel."""
     rc, snap = pw_snapshot(session=session)
     btn = [n["ref"] for n in pw_snapshot_nodes(snap)
            if n["role"] == "button" and (n["name"] or n["text"]).strip().lower()
-           .startswith("validate") and n["ref"]]
+           .startswith("validate")
+           and W8_DISCLOSURE_LABEL.lower() not in (n["name"] or n["text"]).lower()
+           and n["ref"]]
     if not btn:
         return False, None, "no Validate button in the snapshot"
     rc2, out = pw("click", btn[0], session=session, timeout=60)
@@ -24160,14 +24195,17 @@ def w8():
     typos, pasted into the YAML viewer's "Validate" panel → "each error renders with
     instance_location on the document, source (loader/schema/compiler) and the hint;
     kind_not_implemented names the milestone (M5/M6); a secret-literal finding
-    renders redacted". The panel the row names is ValidatePanel, mounted on
-    /projects/:id/pipelines (ui/src/pages/ProjectRunsPipelines.tsx)."""
+    renders redacted". The panel the row names is ValidatePanel, mounted on the
+    workflow page's YAML TAB (design 2d, /workflows/:id/yaml —
+    ui/src/pages/Workflow.tsx) under its YAML block, behind the collapsed
+    `Validate a YAML document` disclosure and pinned to the pipeline these drafts
+    belong to."""
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
-        gap("W8 all arms", "no seed manifest (§ 7.0 seed has not run) — no project page to "
+        gap("W8 all arms", "no seed manifest (§ 7.0 seed has not run) — no workflow YAML tab to "
                            "carry the panel and no library role to validate a draft")
         return
-    project_id, pid_pipe = mf(facts, "project_id"), mf(facts, "pipeline_id", "agent")
+    pid_pipe = mf(facts, "pipeline_id", "agent")
     admin = CTX.get("admin") or Client("admin")
     if login(admin) is None:
         gap("W8 all arms", "admin (the library role the drafts belong to) could not sign in "
@@ -24180,24 +24218,30 @@ def w8():
         gap("W8 all arms", f"no probe document could be built from {SEED_PIPELINE_YAML} — "
                            "there is nothing to paste into the panel")
         return
-    if not pw_login("admin", f"/projects/{project_id}/pipelines", session="m4w8"):
+    yaml_tab = f"/workflows/{pid_pipe}/yaml"
+    if not pw_login("admin", yaml_tab, session="m4w8"):
         gap("W8 browser arms", "the mock IdP did not sign admin in, so the Validate panel "
                                "was never rendered")
         return
     try:
-        pw_goto(f"/projects/{project_id}/pipelines", session="m4w8")
+        pw_goto(yaml_tab, session="m4w8")
+        # The panel mounts lazily behind the YAML tab's collapsed disclosure (2d is
+        # the YAML block alone), so the leg opens it first — one click, by testid.
+        opened, odetail = w8_open_disclosure(session="m4w8")
         landed, nodes = pw_poll(lambda ns: "validate yaml" in w8_dom_text(ns).lower()
                                 and pw_refs(ns, role="textbox",
                                             name="Pipeline YAML to validate"),
                                 session="m4w8", tries=10, delay=2)
         shot = pw_shot("w8-panel", session="m4w8")
-        check('W8 the "Validate" panel the row names is on the pipelines page', landed,
+        check('W8 the "Validate" panel the row names is on the workflow YAML tab', landed,
+              f"disclosure {W8_DISCLOSURE_TESTID} opened={opened} ({odetail}); "
               f"VALIDATE YAML panel + its textarea seen={landed} "
               f"(ui/src/components/m4/ValidatePanel.tsx, mounted by "
-              f"/projects/:id/pipelines) [{shot}]")
+              f"/workflows/:pipelineId/yaml at {yaml_tab}) [{shot}]")
         if not landed:
-            gap("W8 paste arms", "the panel or its textarea never rendered — nothing was "
-                                 "pasted, so nothing can be said about how errors render")
+            gap("W8 paste arms", "the disclosure never opened or the panel or its textarea "
+                                 "never rendered — nothing was pasted, so nothing can be "
+                                 "said about how errors render")
             return
         for slug, tag, text in docs:
             if not text:

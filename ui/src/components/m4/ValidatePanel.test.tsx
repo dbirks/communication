@@ -257,6 +257,47 @@ describe("ValidatePanel (W8)", () => {
     );
   });
 
+  it("pinned to one workflow: no picker, the workflow named, the button live on mount", async () => {
+    // The YAML tab's mount (`pages/Workflow.tsx`) hands the panel this workflow
+    // and nothing else, so there is no select to wait on and nothing to pick.
+    const { requests, rerender: rerenderPanel } = renderPanel({
+      pinnedPipelineId: WIRE_PIPELINE_ID,
+    });
+    expect(screen.queryByRole("combobox", { name: "pipeline" })).toBeNull();
+    expect(screen.getByTestId("validate-panel-pipeline").textContent).toContain(
+      "Feature development · feature-development",
+    );
+    expect(screen.getByTestId("validate-panel-pinned").textContent).toContain("pinned");
+    // The honesty copy is the move's unchanged part.
+    expect(screen.getByTestId("validate-panel-not-editor").textContent).toContain("not an editor");
+    expect(screen.getByTestId("validate-panel-submit").hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(screen.getByTestId("validate-panel-submit"));
+    await waitFor(() => expect(requestsTo(requests, draftPath, "POST")).toHaveLength(1));
+    // A library list arriving later cannot move a pinned panel off its workflow.
+    rerenderPanel(
+      <ValidatePanel
+        pipelines={[
+          { id: WIRE_PIPELINE_ID, slug: "feature-development", displayName: "Feature development" },
+          {
+            id: "01987b20-1111-7000-8000-abcdef012345",
+            slug: "module-check",
+            displayName: "Module check",
+          },
+        ]}
+        canValidate
+        pinnedPipelineId={WIRE_PIPELINE_ID}
+        initialText={w8DraftYaml}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("validate-panel-pipeline").textContent).toContain(
+        "Feature development",
+      ),
+    );
+    expect(screen.getByTestId("validate-panel-pipeline").textContent).not.toContain("Module check");
+  });
+
   it("shows a member without the library role the reason, not a button that would 403", () => {
     renderPanel({ canValidate: false });
     expect(screen.getByTestId("validate-panel-needs-role").textContent).toContain("library role");

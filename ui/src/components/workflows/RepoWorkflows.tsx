@@ -535,8 +535,12 @@ function RepoWorkflowRow({
 }
 
 /** The collapsed row's trigger summary: icons + sentences, or the honest
- * "started by hand" when the assignment carries no trigger at all. */
-function TriggerSummary({
+ * "started by hand" when the assignment carries no trigger at all.
+ *
+ * Exported for the project's Workflows tab (`components/project/workflows/
+ * ProjectWorkflowsPanel`), whose rows share 2e's summary treatment verbatim —
+ * one control and one sentence set for the same intent on both pages. */
+export function TriggerSummary({
   schedules,
   issueTriggers,
   failed,
@@ -606,14 +610,16 @@ function scheduleSentence(schedule: Schedule): string {
 const TRIGGER_GRID =
   "grid grid-cols-1 items-center gap-x-[10px] gap-y-[4px] border-t border-line-soft px-3 py-[9px] min-[900px]:grid-cols-[18px_minmax(0,1fr)_160px_80px_40px]";
 
-interface RepoScheduleRowProps {
+export interface RepoScheduleRowProps {
   projectId: string;
   schedule: Schedule;
   canManage: boolean;
   onEdit: () => void;
 }
 
-function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: RepoScheduleRowProps) {
+/** Exported for the project's Workflows tab: the STARTS WHEN schedule row is
+ * 2e's, shared so the switch, the detail line and the PATCH live in one place. */
+export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: RepoScheduleRowProps) {
   const patch = usePatchSchedule(projectId);
   const inputs = Object.entries(schedule.inputs ?? {});
   return (
@@ -693,18 +699,21 @@ function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: RepoSchedul
   );
 }
 
-interface RepoIssueRowProps {
+export interface RepoIssueRowProps {
   projectId: string;
   /** The repository page's own repository — the watched repo when the
-   * repository list has not arrived yet (or never will, for a foreign id). */
-  thisRepository: Repository;
+   * repository list has not arrived yet (or never will, for a foreign id).
+   * Optional for the project's Workflows tab, which has no "own" repo: with
+   * it absent the row simply waits on the repository list like any foreign
+   * trigger does (a repository page always passes one, unchanged). */
+  thisRepository?: Repository;
   trigger: IssueTrigger;
   repositoryNames: RepositoryList | undefined;
   canManage: boolean;
   onEdit: () => void;
 }
 
-function RepoIssueRow({
+export function RepoIssueRow({
   projectId,
   thisRepository,
   trigger,
@@ -715,7 +724,7 @@ function RepoIssueRow({
   const patch = usePatchIssueTrigger(projectId);
   const watched =
     repositoryNames?.items.find((candidate) => candidate.id === trigger.repository_id) ??
-    (trigger.repository_id === thisRepository.id ? thisRepository : null);
+    (thisRepository && trigger.repository_id === thisRepository.id ? thisRepository : null);
   const repoRef = watched ? repoRefOf(watched) : "repository unavailable";
   return (
     <div className={TRIGGER_GRID} data-testid={`repo-workflow-trigger-${testidOf(trigger.id)}`}>
