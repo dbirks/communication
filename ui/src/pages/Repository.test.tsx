@@ -377,6 +377,118 @@ describe("/p/:projectId/:repo", () => {
     expect(row.textContent).not.toContain(workspace.id);
   });
 
+  it("shows the branch ref as one shortened quiet line with the real ref in its title", async () => {
+    // What the lab actually serves: a UUIDv7 branch that wrapped over two
+    // lines at 1280 and read as raw machinery (design 1e shows `run/
+    // 9c1e04f2/storefront` instead).
+    const uuidBranch = `${run.id}/communication`;
+    const runWorkspace = renderRunWorkRow(
+      { ...workspaceStatus, run_ref: uuidBranch },
+      runView,
+      uuidBranch,
+    );
+
+    const link = await screen.findByTestId(`repo-workspace-run-${runWorkspace.id}`);
+    // The uuid segment is shortened, the seen-suffix is kept, and the row is
+    // one line (the age wording is `formatAge`'s own, not asserted here).
+    await waitFor(() =>
+      expect(link.textContent).toMatch(/^5f6a7b8c\/communication · seen .+ ago$/),
+    );
+    // The reference is read exactly like the run it names: the row's own
+    // `Run #…` and this line print the same eight characters.
+    expect(screen.getByTestId(`repo-workspace-state-${runWorkspace.id}`).textContent).toContain(
+      "Run #5f6a7b8c",
+    );
+    expect(link.textContent).not.toContain(uuidBranch);
+    // Nothing is hidden: the full branch and the workspace id ride along as the
+    // link's `title`.
+    expect(link.getAttribute("title")).toBe(`${uuidBranch} · workspace ${runWorkspace.id}`);
+    // It is still the run's link, and it is quiet rather than shouty: muted
+    // mono, truncated, underlining only on hover/focus.
+    expect(link.getAttribute("href")).toBe(`/runs/${run.id}`);
+    expect(link.className).toContain("truncate");
+    expect(link.className).toContain("text-muted");
+    expect(link.className.split(/\s+/)).not.toContain("underline");
+    expect(link.className).toContain("hover:underline");
+  });
+
+  it("tells two sibling runs apart in the reference line", async () => {
+    // Both UUIDv7s were issued in the same millisecond bucket, so their heads
+    // are identical (`01a18abe`) — shortening the head made these two rows read
+    // as the same run. `shortId`'s tail rule is what separates them, and the
+    // owner line above already prints those same eight characters.
+    const left = "01a18abe-9e08-7206-a76a-ad1da1d71e29";
+    const right = "01a18abe-9db3-7ea5-9d33-51a2e72264a5";
+    const leftWorkspace: Workspace = {
+      ...workspace,
+      id: "01987a79-9999-7000-8000-abcdef012345",
+      run_id: left,
+      repos: [{ ...workspace.repos[0], run_ref: `${left}/communication` }],
+    };
+    const rightWorkspace: Workspace = {
+      ...workspace,
+      id: "01987a7a-aaaa-7000-8000-abcdef012345",
+      run_id: right,
+      repos: [{ ...workspace.repos[0], run_ref: `${right}/communication` }],
+    };
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: routes([
+        {
+          path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+          body: { workspaces: [leftWorkspace, rightWorkspace] },
+        },
+        {
+          path: `/api/v1/workspaces/${leftWorkspace.id}/repos/${repositoryId}/status`,
+          body: {
+            ...workspaceStatus,
+            workspace_id: leftWorkspace.id,
+            run_ref: `${left}/communication`,
+          },
+        },
+        {
+          path: `/api/v1/workspaces/${rightWorkspace.id}/repos/${repositoryId}/status`,
+          body: {
+            ...workspaceStatus,
+            workspace_id: rightWorkspace.id,
+            run_ref: `${right}/communication`,
+          },
+        },
+        { path: `/api/v1/runs/${left}`, body: runView },
+        { path: `/api/v1/runs/${right}`, body: runView },
+      ]),
+    });
+
+    const leftLink = await screen.findByTestId(`repo-workspace-run-${leftWorkspace.id}`);
+    const rightLink = await screen.findByTestId(`repo-workspace-run-${rightWorkspace.id}`);
+    expect(left.slice(0, 8)).toBe(right.slice(0, 8));
+    await waitFor(() =>
+      expect(leftLink.textContent).toMatch(/^a1d71e29\/communication · seen .+ ago$/),
+    );
+    await waitFor(() =>
+      expect(rightLink.textContent).toMatch(/^e72264a5\/communication · seen .+ ago$/),
+    );
+    // The two rows are visibly not the same row.
+    expect(leftLink.textContent).not.toBe(rightLink.textContent);
+    expect(screen.getByTestId(`repo-workspace-state-${leftWorkspace.id}`).textContent).toContain(
+      "Run #a1d71e29",
+    );
+    expect(screen.getByTestId(`repo-workspace-state-${rightWorkspace.id}`).textContent).toContain(
+      "Run #e72264a5",
+    );
+  });
+
+  it("leaves a named branch ref whole in the same quiet line", async () => {
+    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
+
+    const link = await screen.findByTestId(`repo-workspace-branch-${workspaceId}`);
+    // `run-9c1e04f2` is a name a person (or a seed) wrote, not a uuid: the
+    // shortening leaves it alone.
+    await waitFor(() =>
+      expect(link.textContent).toMatch(/^run-9c1e04f2\/communication · seen .+ ago$/),
+    );
+  });
+
   it("names the workspace's owning run and its state instead of showing a raw id", async () => {
     const runWorkspace: Workspace = {
       ...workspace,
@@ -408,12 +520,18 @@ describe("/p/:projectId/:repo", () => {
   });
 
   /** One run-work row: a run-scoped workspace, the worker's last recorded view
-   * of this repository as `repoStatus`, the run view as `runBody`. */
-  function renderRunWorkRow(repoStatus: WorkspaceRepoStatus, runBody: Run = runView): Workspace {
+   * of this repository as `repoStatus`, the run view as `runBody`, the branch
+   * the checkout holds as `branch`. */
+  function renderRunWorkRow(
+    repoStatus: WorkspaceRepoStatus,
+    runBody: Run = runView,
+    branch: string = workspace.repos[0].run_ref,
+  ): Workspace {
     const runWorkspace: Workspace = {
       ...workspace,
       id: "01987a78-8888-7000-8000-abcdef012345",
       run_id: run.id,
+      repos: [{ ...workspace.repos[0], run_ref: branch }],
     };
     renderApp({
       path: `/p/${projectFixture.id}/communication`,

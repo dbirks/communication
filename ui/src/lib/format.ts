@@ -75,6 +75,41 @@ export function shortId(id: string | null | undefined): string {
   return shortenId(id) || "—";
 }
 
+/** A uuid as a git-ref segment takes it: 8-4-4-4-12 hex. */
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A long hex object id with no dashes (a bare sha, a sha-ish workspace key). */
+const LONG_HEX_SEGMENT = /^[0-9a-f]{16,}$/i;
+
+/**
+ * A git ref, shortened for the one quiet line it lives on (design 1e/2e).
+ *
+ * A run's branch is `<run uuid>/<repo>` — 36 characters of uuid wrap the row
+ * over two lines and read as raw machinery. Each `/`-separated segment that is
+ * a uuid is cut by {@link shortId}'s rule — the *tail*, because a UUIDv7 head is
+ * a millisecond timestamp and every run seeded in the same minute shares it,
+ * which is what made two sibling rows read as the same `01a18abe/app`. Using
+ * the same rule the row's own `Run #…` already uses makes the two lines agree:
+ * `Run #a1d71e29` above `a1d71e29/app` is one run, visibly. A dashless sha (a
+ * commit-shaped segment) keeps `git`'s own reading — the head — because for a
+ * sha there is no timestamp head to distrust (see {@link shortCommit}). The
+ * real ref stays in the row's `title`, so nothing is lost. A segment a person
+ * named (`app`, `main`, `feature/login`) is left exactly as written — this
+ * shortens machine output, never a name.
+ */
+export function shortBranch(ref: string | null | undefined): string {
+  if (!ref) return "";
+  return ref
+    .split("/")
+    .map((segment) =>
+      UUID_SEGMENT.test(segment)
+        ? shortenId(segment)
+        : LONG_HEX_SEGMENT.test(segment)
+          ? segment.slice(0, 8)
+          : segment,
+    )
+    .join("/");
+}
+
 /**
  * A stable `data-testid` fragment for an id.
  *

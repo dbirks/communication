@@ -58,7 +58,7 @@ import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { Spinner, ProblemBanner } from "../components/Feedback";
 import { RUN_STATE, SHORT_WORD, STATES, WORKSPACE_STATE } from "../components/ds/states";
-import { formatAge, shortCommit, shortId, testidOf } from "../lib/format";
+import { formatAge, shortBranch, shortCommit, shortId, testidOf } from "../lib/format";
 import { routes } from "../lib/routes";
 import { elapsed } from "./ProjectRuns";
 import { NewRunForm } from "../components/m4/NewRunForm";
@@ -678,9 +678,15 @@ function RepoWorkRow({ workspace, repository }: { workspace: Workspace; reposito
       : "Workspace";
 
   // The branch ref, with the honest age of the worker's last recorded view.
+  // Its uuid segment is shortened by the same `shortId` rule the `Run #…` line
+  // above prints, so the two lines name the same run and sibling runs (whose
+  // UUIDv7 heads are identical) stay tellable apart; design 1e draws the result
+  // as `run/9c1e04f2/storefront`. The real branch and the workspace id both stay
+  // in the link's `title`, so the shortening hides nothing.
   const refText = status.data
-    ? `${branch} · seen ${formatAge(status.data.recorded_at)} ago`
-    : branch;
+    ? `${shortBranch(branch)} · seen ${formatAge(status.data.recorded_at)} ago`
+    : shortBranch(branch);
+  const refTitle = branch ? `${branch} · workspace ${workspace.id}` : workspace.id;
 
   return (
     <div
@@ -702,7 +708,7 @@ function RepoWorkRow({ workspace, repository }: { workspace: Workspace; reposito
         runId ? (
           <Link
             to={routes.run(runId)}
-            title={workspace.id}
+            title={refTitle}
             className={WORKSPACE_REF_CLASS}
             data-testid={`repo-workspace-run-${workspace.id}`}
           >
@@ -711,7 +717,7 @@ function RepoWorkRow({ workspace, repository }: { workspace: Workspace; reposito
         ) : conversationId ? (
           <Link
             to={routes.thread(conversationId)}
-            title={workspace.id}
+            title={refTitle}
             className={WORKSPACE_REF_CLASS}
             data-testid={`repo-workspace-thread-${workspace.id}`}
           >
@@ -720,7 +726,7 @@ function RepoWorkRow({ workspace, repository }: { workspace: Workspace; reposito
         ) : (
           <Link
             to={routes.project(workspace.project_id)}
-            title={workspace.id}
+            title={refTitle}
             className={WORKSPACE_REF_CLASS}
             data-testid={`repo-workspace-branch-${workspace.id}`}
           >
@@ -759,9 +765,12 @@ function repoChangeWords(status: WorkspaceRepoStatus | undefined, pending: boole
 }
 
 /** The mono ref link styling, shared by the three owner branches above (each
- * keeps its own literal `data-testid` — the test-id guard reads literals). */
+ * keeps its own literal `data-testid` — the test-id guard reads literals).
+ * Design 1e draws this third line as a quiet mono reference: muted, one line,
+ * truncated rather than wrapped, and not underlined at rest — the underline
+ * arrives on hover/focus, where the affordance has to be named. */
 const WORKSPACE_REF_CLASS =
-  "break-all font-mono text-[10.5px] text-accent-text underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+  "block min-w-0 truncate font-mono text-[10.5px] text-muted no-underline hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
 
 /** The run behind a workspace: its status, its own banner when it has one
  * (ADR-0064's served `title`), and the workflow name it falls back to. Null
