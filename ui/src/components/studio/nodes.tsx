@@ -153,7 +153,15 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         onClick={() => data.onSelect()}
         onKeyDown={pick}
         className={[
-          "flex h-full flex-col rounded-md border bg-surface px-2.5 text-left outline-none",
+          // `items-stretch!` outranks the app-shell phone band's unlayered
+          // `main [role="button"] { align-items: center }` (styles/tokens.css).
+          // That rule is right for a 44px control; inside a 200×52 step it
+          // shrinks every line to its content width and CENTRES it, which is
+          // how the 390 node card read as centred text whose second line hung
+          // past both edges of its own box. Stretch keeps each line the box's
+          // full width, so `truncate` has something to truncate against and
+          // the words stay left-aligned at every width.
+          "flex h-full flex-col items-stretch! rounded-md border bg-surface px-2.5 text-left outline-none",
           data.status ? "gap-[2px] py-1" : "gap-0.5 py-2",
           selected ? "border-accent shadow-[0_0_0_2px_var(--color-accent-ring)]" : "border-line",
           data.stale ? "opacity-70" : "",
@@ -182,10 +190,14 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
             <span className="min-w-0 truncate">{data.status.label}</span>
           </div>
         )}
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
           <span
-            className="truncate font-mono text-[11px] leading-none text-ink-2"
-            title={data.label}
+            className="min-w-0 truncate font-mono text-[11px] leading-none text-ink-2"
+            data-testid={`canvas-step-fact-${data.id}`}
+            // The full text the ellipsis stands for — glyph, kind word and the
+            // kind's own key fact (`◇ model · david-birks/qwen3-8-flash-next`),
+            // which at 390 never fits the 200px box.
+            title={secondLine}
           >
             {secondLine}
           </span>
@@ -202,7 +214,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
 
       {data.terminal && interactive && data.onAddAfter && (
         <div
-          className="absolute left-1/2 flex -translate-x-1/2 flex-col items-center"
+          className="group absolute left-1/2 flex -translate-x-1/2 flex-col items-center"
           style={{ top: "100%" }}
         >
           {/* Short dashed stub below the sink, on the node's vertical axis
@@ -216,7 +228,13 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
             type="button"
             data-testid={`add-after-${data.id}`}
             aria-label={`Add a step after ${data.id}`}
-            className="-mt-px flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2px] border-dashed border-line-strong bg-surface text-sm leading-none text-ink-2 hover:border-accent hover:text-accent hover:shadow-[0_0_0_2px_var(--color-accent-ring)]"
+            // A 44px target that DRAWS a 22px circle (the phone band's
+            // `min-height: 44px` stretched the circle itself into a tall pill,
+            // and the emulator's touch-target check measures the real box): the
+            // circle sits at the top of the button, on the stub's end exactly
+            // where it always sat, and the extra 22px of hit area falls into
+            // the empty band below it.
+            className="-mt-px grid h-[44px] w-[44px] place-items-start justify-center bg-transparent outline-none focus-visible:ring-2 focus-visible:ring-accent"
             // The "+" opens the picker and NOTHING else: without the
             // pointerdown guard the gesture reaches the node and the step
             // gets selected on the same click that opens the picker.
@@ -226,7 +244,12 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
               setPickerOpen(true);
             }}
           >
-            +
+            <span
+              aria-hidden
+              className="grid h-[22px] w-[22px] place-items-center rounded-full border-[2px] border-dashed border-line-strong bg-surface text-sm leading-none text-ink-2 group-hover:border-accent group-hover:text-accent"
+            >
+              +
+            </span>
           </button>
           {pickerOpen && (
             <div className="absolute left-1/2 top-full z-50 -translate-x-1/2">

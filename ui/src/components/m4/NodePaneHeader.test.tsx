@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { NodePaneHeader, placeCrumbOf } from "./NodePaneHeader";
+import { NodePaneHeader, nodeStateWord, placeCrumbOf } from "./NodePaneHeader";
 import type { NodeExecutionSummary } from "../../lib/pipeline/contract";
 
 function row(overrides: Partial<NodeExecutionSummary>): NodeExecutionSummary {
@@ -109,5 +109,59 @@ describe("NodePaneHeader", () => {
     );
     expect(screen.getByTestId("node-pane-crumb").textContent).toBe("plan");
     expect(screen.getByTestId("node-pane-crumb").textContent).not.toContain("attempt");
+  });
+
+  it("says the gate's state in the app's short word, never the wire token", () => {
+    // The pass-7 review read `WAITING` on the approve node's own header: the
+    // run page's status words all come from `SHORT_WORD`, so the same colour
+    // means the same word in the strip, the tree, the graph and this header.
+    render(
+      <NodePaneHeader
+        node={row({
+          node_id: "approve",
+          node_instance_key: "/approve",
+          kind: "human.approval",
+          status: "waiting",
+          waiting_reason: "approval",
+        })}
+      />,
+    );
+    expect(screen.getByTestId("node-pane-status").textContent).toBe("need you");
+    expect(screen.getByTestId("node-pane-status").textContent).not.toMatch(/waiting/i);
+  });
+
+  it("prints the instance key only where it says more than the crumb", () => {
+    // `/approve` under a crumb that already reads `approve` is the same fact
+    // twice — the gate pane printed it four times over (pass-7 review). A
+    // fanned row's key IS new information, so it stays.
+    const { unmount } = render(
+      <NodePaneHeader node={row({ node_id: "approve", node_instance_key: "/approve" })} />,
+    );
+    expect(screen.getByTestId("node-pane-crumb").textContent).toBe("approve");
+    expect(screen.queryByTestId("node-pane-key")).toBeNull();
+    unmount();
+
+    render(<NodePaneHeader node={fanOut[1]} nodes={fanOut} />);
+    expect(screen.getByTestId("node-pane-key").textContent).toBe("/verify_each[14]/check_module");
+  });
+});
+
+describe("nodeStateWord (the SHORT_WORD table, with the differences it would flatten)", () => {
+  it("uses the short words for the ordinary states", () => {
+    expect(nodeStateWord({ status: "running", outcome: null })).toBe("running");
+    expect(nodeStateWord({ status: "waiting", outcome: null })).toBe("need you");
+    expect(nodeStateWord({ status: "succeeded", outcome: "passed" })).toBe("done");
+    expect(nodeStateWord({ status: "failed", outcome: null })).toBe("failed");
+    expect(nodeStateWord({ status: "interrupted", outcome: null })).toBe("stopped");
+    expect(nodeStateWord({ status: "pending", outcome: null })).toBe("pending");
+  });
+
+  it("keeps the word that tells two same-coloured states apart", () => {
+    // `skipped` and `pending` share the queued set; `succeeded` with a failed
+    // check shares the done set with a clean pass.
+    expect(nodeStateWord({ status: "skipped", outcome: null })).toBe("skipped");
+    expect(nodeStateWord({ status: "succeeded", outcome: "failed_check" })).toBe(
+      "done \u00b7 failed_check",
+    );
   });
 });

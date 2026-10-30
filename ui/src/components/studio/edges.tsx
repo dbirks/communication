@@ -4,6 +4,10 @@
  * canvas's `onInsert(kind)`, which rewrites `A→B` into `A→NEW→B`. `error`
  * edges are dashed, labelled "on error", and never split (design doc §4 rule
  * 4 is a hard rejection, so they show no "+").
+ *
+ * On a read-only canvas (`readOnly`, the Run Workbench's Graph tab) the "+" is
+ * not drawn at all — a run projects a pinned revision and cannot take the
+ * insert. The edge and its route label stay.
  */
 import {
   BaseEdge,
@@ -49,8 +53,20 @@ export type ErrorEdgeRender = RoutedGeometry & {
   labelAnchor: { x: number; y: number } | null;
 };
 
-const addButton =
-  "pointer-events-auto absolute flex h-[22px] w-[22px] items-center justify-center rounded-full border border-line-strong bg-surface text-sm leading-none text-ink-2 shadow-sm hover:border-accent hover:text-accent hover:shadow-[0_0_0_2px_var(--color-accent-ring)]";
+/**
+ * The "+" is a 44px button wearing a 22px circle. The app-shell phone band
+ * (`styles/tokens.css`, `main button { min-height: 44px }`) and the emulator's
+ * own touch-target check (`e2e/emulator/reflow.ts`'s `findSmallTargets`, which
+ * measures the REAL box of every control) both want a 44px target; drawing the
+ * circle at 44px is what stretched it into the tall pill the pass-7 review
+ * caught at 390. So the target and the ink are separate elements: the button is
+ * the invisible 44px square, the circle inside it is the 22px the design draws
+ * at every width, and the hover ring moves to the circle.
+ */
+const addHit =
+  "pointer-events-auto absolute grid h-[44px] w-[44px] place-items-center rounded-full bg-transparent text-sm leading-none outline-none focus-visible:ring-2 focus-visible:ring-accent";
+const addCircle =
+  "grid h-[22px] w-[22px] place-items-center rounded-full border border-line-strong bg-surface text-ink-2 shadow-sm group-hover:border-accent group-hover:text-accent group-focus-within:border-accent group-focus-within:text-accent";
 
 /**
  * The path and its label point for one edge. When `toFlow` carried the
@@ -114,7 +130,12 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
           className="pointer-events-auto absolute group"
           style={{ left: midX, top: midY, transform: "translate(-50%, -50%)" }}
         >
-          {pickerOpen && (
+          {/* A read-only canvas (the Run Workbench's Graph tab projects a pinned
+              revision) has NO insert affordance: the "+" and its picker are the
+              editor's verbs, and drawing them on a screen that cannot take the
+              edit is a lie about the page. The route label below still prints —
+              it is a fact of the definition, not a verb. */}
+          {interactive && pickerOpen && (
             <div
               className="pointer-events-auto absolute"
               style={{ left: 0, top: 24, transform: "translate(-50%, -50%)" }}
@@ -129,29 +150,31 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               />
             </div>
           )}
-          <button
-            type="button"
-            className={addButton}
-            style={{
-              left: "50%",
-              top: "50%",
-              transform: "translate(-50%, -50%)",
-              width: 22,
-              height: 22,
-            }}
-            data-testid={`edge-add-${data.edge.from}-${data.edge.to}`}
-            aria-label={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
-            // The "+" opens the picker and NOTHING else: without the
-            // pointerdown guard the gesture bubbles to the node/pane and
-            // the hosting step gets selected on the same click.
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              setPickerOpen(true);
-            }}
-          >
-            +
-          </button>
+          {interactive && (
+            <button
+              type="button"
+              className={addHit}
+              style={{
+                left: "50%",
+                top: "50%",
+                transform: "translate(-50%, -50%)",
+              }}
+              data-testid={`edge-add-${data.edge.from}-${data.edge.to}`}
+              aria-label={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
+              // The "+" opens the picker and NOTHING else: without the
+              // pointerdown guard the gesture bubbles to the node/pane and
+              // the hosting step gets selected on the same click.
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setPickerOpen(true);
+              }}
+            >
+              <span aria-hidden className={addCircle}>
+                +
+              </span>
+            </button>
+          )}
           {/* Design 1g: the "insert step" word sits immediately right of the
               "+" — single-line mono, no bubble, no wrap — and is hidden
               until the "+" is hovered or focused. */}

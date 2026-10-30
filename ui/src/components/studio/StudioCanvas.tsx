@@ -167,6 +167,15 @@ const MENU_HEIGHT_PX = 58;
 /** The design's gap between a step and its menu (1g: 8px). */
 const MENU_GAP_PX = 8;
 
+/** The same two actions as ONE row (`Duplicate` · `Delete ⌫`) — the shape the
+ * menu takes when it has to live directly under its own node. Width: the two
+ * labels, their 8px padding each side and the 6px between them. Height: the
+ * 44px phone touch floor the app-shell band gives every button
+ * (`styles/tokens.css`) plus the menu's own 3px pad, so the box the placement
+ * math reserves is the box the phone actually draws. */
+export const MENU_COMPACT_W_PX = 168;
+export const MENU_COMPACT_H_PX = 50;
+
 /** A box in PANE pixels. */
 export interface MenuBoxPx {
   x: number;
@@ -180,9 +189,18 @@ export interface MenuBoxPx {
  * aligned). A menu that lands on ANOTHER step is the pass-2 390px defect —
  * `Duplicate`/`Delete` painted over `approve` and the chain read as a mess —
  * so a candidate is only taken when it sits inside the pane AND touches no
- * other node: right first (the desktop design), then below the node (the
- * pass-2 phone fallback), then DOCKED to the pane's bottom edge as its own
- * strip, which is the only spot a narrow pane with a dense chain always has.
+ * other node: right first (the desktop design), then below the node.
+ *
+ * When neither clears (the 390 chain: the pane is one step wide, so right
+ * misses the pane edge and below lands on the next step) the menu stays
+ * ANCHORED to its node as one compact row directly under it, clamped into the
+ * pane. It may overlap a neighbour there — that is the point: the menu belongs
+ * to the selected step, and a reader who cannot see which step it speaks to
+ * has lost more than a few pixels of overlap. The pass-2 answer, a strip
+ * docked to the pane's own bottom edge, detached the actions from the node
+ * they act on entirely (the pass-7 review read `1g inspector-edit` at 390 as a
+ * menu bar belonging to the canvas). Docking survives only for a pane too
+ * short to hold even the one-row menu.
  * An unmeasured pane (0×0 — jsdom, or a canvas that has not laid out yet)
  * keeps the plain right-hand position rather than docking everything.
  */
@@ -193,9 +211,11 @@ export function chooseNodeMenuPlacement(input: {
   others: MenuBoxPx[];
   /** The menu's own size in px (it never scales with the zoom). */
   menu: { w: number; h: number };
+  /** The one-row fallback's size; defaults to {@link MENU_COMPACT_W_PX}. */
+  compact?: { w: number; h: number };
   pane: { w: number; h: number };
   gap?: number;
-}): MenuBoxPx & { docked: boolean } {
+}): MenuBoxPx & { docked: boolean; compact: boolean } {
   const gap = input.gap ?? MENU_GAP_PX;
   const overlaps = (a: MenuBoxPx, b: MenuBoxPx) =>
     a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -206,17 +226,33 @@ export function chooseNodeMenuPlacement(input: {
     if (input.pane.h > 0 && box.y + box.h > input.pane.h - gap) return false;
     return !input.others.some((other) => overlaps(box, other));
   };
+  const placed = (x: number, y: number, compact: boolean): MenuBoxPx & { compact: boolean } => ({
+    x,
+    y,
+    w: compact ? (input.compact?.w ?? MENU_COMPACT_W_PX) : input.menu.w,
+    h: compact ? (input.compact?.h ?? MENU_COMPACT_H_PX) : input.menu.h,
+    compact,
+  });
   const right = { x: input.node.x + input.node.w + gap, y: input.node.y };
-  if (fits(right.x, right.y)) return { ...right, w: input.menu.w, h: input.menu.h, docked: false };
+  if (fits(right.x, right.y)) return { ...placed(right.x, right.y, false), docked: false };
   const below = { x: input.node.x, y: input.node.y + input.node.h + gap };
-  if (fits(below.x, below.y)) return { ...below, w: input.menu.w, h: input.menu.h, docked: false };
-  return {
-    x: 0,
-    y: Math.max(0, input.pane.h - input.menu.h),
-    w: input.menu.w,
-    h: input.menu.h,
-    docked: true,
-  };
+  if (fits(below.x, below.y)) return { ...placed(below.x, below.y, false), docked: false };
+  // Directly under the node, one row, clamped sideways and down so none of it
+  // leaves the pane.
+  const cw = input.compact?.w ?? MENU_COMPACT_W_PX;
+  const ch = input.compact?.h ?? MENU_COMPACT_H_PX;
+  if (input.pane.h >= ch + gap * 2) {
+    const maxLeft = Math.max(gap, input.pane.w - cw - gap);
+    return {
+      ...placed(
+        Math.min(Math.max(input.node.x, gap), maxLeft),
+        Math.min(input.node.y + input.node.h + gap, Math.max(gap, input.pane.h - ch - gap)),
+        true,
+      ),
+      docked: false,
+    };
+  }
+  return { ...placed(0, Math.max(0, input.pane.h - input.menu.h), false), docked: true };
 }
 
 /* ------------------------------------------------------------------ the
@@ -661,6 +697,8 @@ function CanvasInner({
   const [menuScreen, setMenuScreen] = useState<{ x: number; y: number } | null>(null);
   /** The menu sits in the pane's bottom strip instead of over the graph. */
   const [menuDocked, setMenuDocked] = useState(false);
+  /** The menu drew itself as one row anchored under its own node. */
+  const [menuCompact, setMenuCompact] = useState(false);
   const menuFocusRef = useRef<HTMLElement | null>(null);
 
   const selectedMenuNodeId = useMemo(() => {
@@ -1115,6 +1153,7 @@ function CanvasInner({
       pane: { w: paneWidth, h: paneHeight },
     });
     setMenuDocked(place.docked);
+    setMenuCompact(place.compact);
     setMenuScreen({ x: place.x, y: place.y });
   }, [menu, viewportEl]);
 
@@ -1444,7 +1483,7 @@ function CanvasInner({
               "YAML has errors — the canvas shows the last valid version; graph editing is paused."}
           </div>
         )}
-        {base.nodes.length === 0 && !stale && (
+        {base.nodes.length === 0 && !stale && !readOnly && (
           <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
             <button
               type="button"
@@ -1481,6 +1520,7 @@ function CanvasInner({
           <NodeMenu
             x={menuScreen.x}
             y={menuScreen.y}
+            compact={menuCompact}
             nodeId={menu.nodeId}
             onDuplicate={onDuplicate}
             onDelete={(ids) => onDelete?.(ids)}
@@ -1489,11 +1529,9 @@ function CanvasInner({
         )}
       </div>
 
-      {/* No clear spot in the pane (the 390px dense chain — every over-graph
-         position lands on another step): the selection menu becomes a strip of
-         its own under the viewport, beside the caption band. Same two actions,
-         same keys, and nothing of it paints over a step (pass-2 review,
-         1g-inspector-edit at 390: `Duplicate`/`Delete ⌫` sat on `approve`). */}
+      {/* The pane is too short to hold even the one-row menu (a canvas the
+       * dock has squeezed to a strip): only then do the actions leave the
+       * graph and take a flow row of their own under the viewport. */}
       {menu && menuDocked ? (
         <NodeMenu
           x={0}
@@ -1529,11 +1567,19 @@ function CanvasInner({
         className="flex shrink-0 flex-col-reverse items-stretch gap-y-[2px] px-[10px] pb-[6px] pt-[2px] max-[560px]:flex-row max-[560px]:flex-wrap max-[560px]:items-end max-[560px]:justify-between max-[560px]:gap-x-1"
         data-testid="canvas-chrome"
       >
+        {/* The caption is the EDITOR's rule for wiring a graph, so it belongs
+            to an editable canvas only: the Run Workbench's Graph tab (readOnly,
+            a pinned revision projected from a run) has no handles to leave the
+            bottom of, and a run reader who follows that advice would be trying
+            for a verb this page does not have. A read-only canvas gets the
+            honest one-liner instead, in the same band, same type. */}
         <span
           className="min-w-0 font-mono text-[10.5px] leading-[14px] text-faint max-[560px]:flex-1"
           data-testid="canvas-caption"
         >
-          always top to bottom · lines leave the bottom and enter the top
+          {readOnly
+            ? "read-only · the definition this run is pinned to"
+            : "always top to bottom · lines leave the bottom and enter the top"}
         </span>
         <div
           className="flex shrink-0 self-end overflow-hidden rounded-[3px] border border-line-strong bg-surface max-[560px]:self-auto"

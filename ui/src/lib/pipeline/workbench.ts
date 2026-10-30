@@ -15,7 +15,12 @@
  * every key is parsed with `runView.ts`'s helpers. `branches.ts` supplies the
  * for_each item roll-ups.
  */
-import { NODE_EXECUTION_STATE, STATES, type StateName } from "../../components/ds/states";
+import {
+  NODE_EXECUTION_STATE,
+  SHORT_WORD,
+  STATES,
+  type StateName,
+} from "../../components/ds/states";
 import { branchesOf } from "./branches";
 import { definitionKeyOf } from "./runView";
 import type { NodeExecutionSummary, RunTreeChild, RunTreeRoot } from "./contract";
@@ -34,7 +39,7 @@ export interface ScopeSelection {
 export interface Overlay {
   /** The shared state set (identity rule 06: state + word, never color alone). */
   state: StateName;
-  /** "running", "succeeded", "iteration 2 of 4", "25 items: …", "attempt 2 of 3 · …". */
+  /** "running", "done", "iteration 2 of 4", "25 items: …", "attempt 2 of 3 · …". */
   label: string;
   /** The node execution the dock opens for this box under the selection; null for
    * aggregates and for nodes that have not started. */
@@ -130,15 +135,18 @@ export function definitionIdOfKey(instanceKey: string): string {
   return leaf ? leaf.id : "";
 }
 
-/** The word the box carries for one row — the status itself where it reads
- * (a `skipped` node and a `queued` node are the same colour, different words);
- * `pending` has not started, `ready`/`leased` already read as running. */
+/** The word the box carries for one row: the state's OWN word from `SHORT_WORD`
+ * — the one table the header chip, the stage strip, the tree row and the dock
+ * print a colour with (identity rule 06). The box under a header saying `done`
+ * must not read `succeeded`, and a stopped node must not read `interrupted`
+ * where every other surface says `stopped`. Only the pairs one state set
+ * flattens keep a word of their own: a `skipped` node was never pending. The
+ * waiting reasons (`approval` / `child_run`) are not one of those pairs — the
+ * node header and the strip already say the state word alone for both, and the
+ * dock's gate card names the reason. */
 function wordFor(row: NodeExecutionSummary): string {
-  if (row.status === "pending") return "not started";
-  if (row.status === "waiting")
-    return row.waiting_reason === "approval" ? "waiting for approval" : "waiting";
-  if (row.status === "ready" || row.status === "leased") return "running";
-  return row.status;
+  if (row.status === "skipped") return "skipped";
+  return SHORT_WORD[stateOfRow(row)];
 }
 
 /** "attempt k of m · …" when the row is past its first attempt, else the word. */
@@ -228,7 +236,7 @@ function bodyOverlay(
     for (const row of candidates)
       counts.set(stateOfRow(row), (counts.get(stateOfRow(row)) ?? 0) + 1);
     const parts = PRECEDENCE.filter((state) => counts.has(state)).map(
-      (state) => `${counts.get(state)} ${STATES[state].glyph} ${STATES[state].word}`,
+      (state) => `${counts.get(state)} ${STATES[state].glyph} ${SHORT_WORD[state]}`,
     );
     const state =
       PRECEDENCE.find((candidate) => candidates.some((row) => stateOfRow(row) === candidate)) ??

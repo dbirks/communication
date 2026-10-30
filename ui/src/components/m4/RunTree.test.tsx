@@ -142,7 +142,10 @@ describe("buildRows", () => {
       const row = rows.find((item) => item.key === `run:${child.child_run_id}`)!;
       expect(row.detail.startsWith("child run ")).toBe(true);
       expect(row.detail).toContain(` · depth ${child.depth} · waits for ${child.wait_policy}`);
-      expect(row.status?.word).toBe(child.status);
+      expect(row.status?.word).toBe(runStatusWord(child.status));
+      // The chip carries the app's short word; the row's own sentence carries
+      // the token the route wrote, so nothing is paraphrased away.
+      expect(row.detail).toContain(`status ${child.status}`);
     }
   });
 
@@ -447,16 +450,19 @@ describe("every child run row carries its status word (W11)", () => {
     }
   });
 
-  it("prints a cancelled child as cancelled and a queued child as queued", () => {
+  it("prints a cancelled child as stopped and a queued child as pending", () => {
+    // The chip words come from `SHORT_WORD` (identity rule 06 — the same word
+    // the Runs tab, the stage strip and the graph node use for that colour),
+    // never the wire's token spelled out as “waiting human”.
     const tree = mixedTree();
     const rows = buildRows({ nodes: [], tree, expanded: new Set(), pageSize: 10 });
     const wordOf = (index: number) =>
       rows.find((row) => row.key === `run:${tree.children[index].child_run_id}`)!.status?.word;
-    expect(wordOf(0)).toBe("completed");
+    expect(wordOf(0)).toBe("done");
     expect(wordOf(1)).toBe("failed");
-    expect(wordOf(2)).toBe("cancelled");
-    expect(wordOf(3)).toBe("queued");
-    expect(wordOf(4)).toBe("waiting human");
+    expect(wordOf(2)).toBe("stopped");
+    expect(wordOf(3)).toBe("pending");
+    expect(wordOf(4)).toBe("need you");
     // `cancelled` is the interrupted set (stopped, outcome the run's own), never
     // a failure the pipeline did not have.
     const states = rows.filter((row) => row.key.startsWith("run:")).map((row) => row.status?.state);

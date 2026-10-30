@@ -362,7 +362,11 @@ describe(`/projects/:projectId/runs/:runId`, () => {
 
     const line = await screen.findByTestId("run-detail-no-attempts");
     expect(line.textContent).toContain("/plan");
-    expect(line.textContent).toContain("succeeded");
+    // The status is the app's own SHORT_WORD (`done`), not the wire's token —
+    // the pane's header chip above says `done` for the same colour (identity
+    // rule 06), and the run page prints no underscore enum anywhere.
+    expect(line.textContent).toContain("status done");
+    expect(line.textContent).not.toMatch(/succeeded|waiting_human|in_progress/);
     expect(screen.queryByTestId("run-detail-pending")).toBeNull();
   });
 
@@ -931,7 +935,11 @@ describe("the run header follows the stream", () => {
       { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
     ]);
     await screen.findByTestId("run-header-status");
-    expect(screen.getByTestId("run-header-status").textContent).toContain("waiting");
+    // The short-word table (`SHORT_WORD` in components/ds/states.ts): a run
+    // parked on a gate says the one word that says what it needs —
+    // `need you` — never the wire's `waiting_human` spelled out as
+    // “WAITING HUMAN” (handoff-projects README § 1 copy).
+    expect(screen.getByTestId("run-header-status").textContent).toBe("need you");
 
     act(() => {
       // The journal replays from the start on connect, so the park is folded

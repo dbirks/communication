@@ -679,16 +679,23 @@ export function instanceLabel(key: string): string {
 }
 
 /**
- * A run status as a word a person reads: the wire's own status with its
- * underscore for a space (`waiting_human` → `waiting human`), which is the
- * spelling `RunStatusChip` on the runs list uses — so a child run's chip on the
- * tree never reads differently from the same run's chip in a list.
+ * A child run's state in the app's SHORT_WORD — the same word the project's
+ * Runs tab prints for the same run (`RunStateChip`), the stage strip and the
+ * graph node use. The wire's own token is not lost: the row's identity sentence
+ * below the label carries it verbatim (`childRunStatusWord`), so the chip says
+ * what the state MEANS and the mono line says what the route SAID.
+ *
+ * It used to spell the token out (`waiting_human` → “waiting human”), which is
+ * the raw-enum reading `docs/design/handoff-projects/README.md` § 1 forbids.
  */
 export function runStatusWord(status: RunStatus | null | undefined): string {
-  const word = String(status ?? "")
-    .replaceAll("_", " ")
-    .trim();
-  return word || "no status reported";
+  if (!status) return "no status reported";
+  const state = RUN_STATE[status];
+  if (!state) {
+    const word = String(status).replaceAll("_", " ").trim();
+    return word || "no status reported";
+  }
+  return SHORT_WORD[stateOf(state)];
 }
 
 /**

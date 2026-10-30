@@ -27,7 +27,7 @@ import type {
 import { Panel } from "../ds/Panel";
 import { StatusChip } from "../ds/Row";
 import { Alert } from "../ds/Alert";
-import { ATTEMPT_STATE, stateOf } from "../ds/states";
+import { ATTEMPT_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import { formatTime, shortCommit, shortId } from "../../lib/format";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 
@@ -580,13 +580,31 @@ export function CheckpointBlock({
 
 /* -------------------------------------------------------------- wording */
 
-/** The literal status always travels beside the state set's word: a `skipped`
- * node and a `queued` node share a colour and must not share a label. */
+/** The attempt's state in the app's `SHORT_WORD` — the one table the header
+ * chip, the stage strip, the tree row, the graph node and the dock's box print
+ * a colour with (identity rule 06). A dead attempt's box must not read
+ * `succeeded`/`interrupted` where every other surface of the same run says
+ * `done`/`stopped`, and the wire's token is never printed on the page.
+ *
+ * Where one state set flattens two statuses the word carries the difference, in
+ * words: a failed attempt names its `error_class` (`failed · workspace lost`),
+ * spelled out rather than printed as the wire's underscore enum — the exact
+ * token stays on the `ERROR CLASS` row's chip, which is the surface that carries
+ * the contract's explanation of it. */
 export function attemptWord(attempt: Attempt): string {
-  if (attempt.status === "interrupted") return "interrupted";
-  if (attempt.status === "succeeded") return "succeeded";
-  if (attempt.status === "failed" && attempt.error_class) return `failed · ${attempt.error_class}`;
-  return attempt.status;
+  const state = stateOf(ATTEMPT_STATE[attempt.status]);
+  if (attempt.status === "failed" && attempt.error_class) {
+    return `${SHORT_WORD[state]} · ${errorClassWord(attempt.error_class)}`;
+  }
+  return SHORT_WORD[state];
+}
+
+/** The `error_class` enum in reading words: the same words the wire uses, with
+ * its separators spelled out (`invalid_output` → `invalid output`). No new
+ * vocabulary — the class keeps its name so the reader can match it against the
+ * `ERROR CLASS` chip and the contract's list. */
+export function errorClassWord(errorClass: string): string {
+  return errorClass.replaceAll("_", " ");
 }
 
 interface ContinuityCopy {

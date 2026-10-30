@@ -158,15 +158,29 @@ export function pinLabel(
 }
 
 /**
+ * The panel's own header. A count only speaks when a read ANSWERED it: a
+ * failed read shows the bare `USED IN` beside the FAILED banner, and a read
+ * still in flight shows it too — `USED IN 0 REPOS` over either is a number the
+ * page never earned (pass-7 review, 2a server-error: the tab said `Used in ?`
+ * and the header `USED IN ? REPOS`, and a `?` in a mono title bar reads as
+ * data). One repo is one repo: `USED IN 1 REPO`.
+ */
+export function usedInPanelTitle(count: number, loading: boolean, error: boolean): string {
+  if (error || (loading && count === 0)) return "USED IN";
+  return `USED IN ${count} REPO${count === 1 ? "" : "S"}`;
+}
+
+/**
  * The `USED IN n REPOS` panel: one row per repo pin, grid
  * `200px 120px 1fr 150px 56px` (stacking to one column below `md`, where the
  * fixed 686px of grid would otherwise scroll the page).
  *
  * A failed read is never a count: when one of the reads behind the list broke,
- * the header says `USED IN ? REPOS` (the tab beside it drops its count the same
- * way) and the standard FAILED banner — the same `Alert` every other server-
- * error state uses — says what broke, instead of red mono text passing as a
- * count of zero (pass-2 review, 2a server-error at 390).
+ * the header says `USED IN` with no number at all (the tab beside it drops its
+ * count the same way) and the standard FAILED banner — the same `Alert` every
+ * other server-error state uses — says what broke, instead of red mono text
+ * passing as a count of zero (pass-2 review, 2a server-error at 390; the `?`
+ * this replaced was still a value in a number's seat, pass-7 review).
  */
 export function UsedInPanel({
   pipelineId,
@@ -180,7 +194,7 @@ export function UsedInPanel({
   return (
     <section className="space-y-[14px]" data-testid="used-in">
       <Panel
-        title={error ? "USED IN ? REPOS" : `USED IN ${groups.length} REPOS`}
+        title={usedInPanelTitle(groups.length, loading, error)}
         headingId="used-in-heading"
         headingLevel={2}
       >

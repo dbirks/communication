@@ -250,8 +250,10 @@ describe("overlays", () => {
 
   it("resolves body nodes to the selected iteration", () => {
     const out = overlays(probeRun(), { "/build_until_verified": 1 });
-    expect(out.implement).toEqual({ state: "done", label: "succeeded", executionId: "ne-impl-1" });
-    expect(out.test).toEqual({ state: "done", label: "succeeded", executionId: "ne-test-1" });
+    // The box says the state's own word (`SHORT_WORD.done`), not the wire's
+    // `succeeded` — the header chip over the same run says **done** too.
+    expect(out.implement).toEqual({ state: "done", label: "done", executionId: "ne-impl-1" });
+    expect(out.test).toEqual({ state: "done", label: "done", executionId: "ne-test-1" });
   });
 
   it("labels a retrying body node with its attempt count", () => {
@@ -274,11 +276,11 @@ describe("overlays", () => {
     expect(out.review).toEqual({ state: "queued", label: "not started", executionId: null });
   });
 
-  it("shows a pending node as queued / not started", () => {
+  it("shows a pending node in the queued state's own word", () => {
     const out = overlays(probeRun(), {});
     expect(out.verdict).toEqual({
       state: "queued",
-      label: "not started",
+      label: "pending",
       executionId: "ne-verdict",
     });
   });
@@ -294,7 +296,7 @@ describe("overlays", () => {
 
   it("resolves a for_each item selection to that item's execution", () => {
     const out = overlays(probeRun(), { "/fan_out": 14 });
-    expect(out.child).toEqual({ state: "done", label: "succeeded", executionId: "ne-child-14" });
+    expect(out.child).toEqual({ state: "done", label: "done", executionId: "ne-child-14" });
     expect(out.fan_out).toEqual({
       state: "done",
       label: "item 14 of 25",
@@ -307,11 +309,14 @@ describe("overlays", () => {
     expect(out.fan_out).toEqual({ state: "failed", label: "25 items", executionId: "ne-fan" });
   });
 
-  it("labels the approval wait specifically", () => {
+  it("says the gate's wait in the state's own word — the header's word, not the reason", () => {
     const out = overlays(probeRun(), {});
+    // `waiting_human` reads **need you** in the header, the strip cell and the
+    // node header over this very gate; the box under them cannot read
+    // "waiting for approval" and keep identity rule 06 (`ds/states.ts`).
     expect(out.approve).toEqual({
       state: "waiting",
-      label: "waiting for approval",
+      label: "need you",
       executionId: "ne-approve",
     });
   });
@@ -330,14 +335,14 @@ describe("overlays", () => {
     expect(out.fan_out).toEqual({ state: "queued", label: "not started", executionId: null });
     expect(out.emit_items).toEqual({
       state: "queued",
-      label: "not started",
+      label: "pending",
       executionId: "ac-emit",
     });
     // The started work is untouched.
-    expect(out.plan).toEqual({ state: "done", label: "succeeded", executionId: "ac-plan" });
+    expect(out.plan).toEqual({ state: "done", label: "done", executionId: "ac-plan" });
     expect(out.approve).toEqual({
       state: "waiting",
-      label: "waiting for approval",
+      label: "need you",
       executionId: "ac-approve",
     });
   });
@@ -420,10 +425,10 @@ describe("overlays", () => {
     });
     // Selecting the nested for_each item resolves within the default iteration 2.
     const item = overlays(nested, { "/loop/fan": 1 });
-    expect(item.job).toEqual({ state: "done", label: "succeeded", executionId: "n-job-2a" });
+    expect(item.job).toEqual({ state: "done", label: "done", executionId: "n-job-2a" });
     // Selecting both scopes walks to iteration 1, item 2.
     const both = overlays(nested, { "/loop": 1, "/loop/fan": 2 });
-    expect(both.job).toEqual({ state: "done", label: "succeeded", executionId: "n-job-1b" });
+    expect(both.job).toEqual({ state: "done", label: "done", executionId: "n-job-1b" });
     expect(both.fan).toEqual({ state: "done", label: "item 2 of 2", executionId: "n-job-1b" });
   });
 });

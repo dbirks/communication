@@ -32,7 +32,7 @@ import { BranchGrid } from "../components/m4/BranchGrid";
 import { branchPlaceOf, branchesOf, findBranch } from "../lib/pipeline/branches";
 import { useActorNames } from "../api/actors";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
-import { NodePaneHeader } from "../components/m4/NodePaneHeader";
+import { NodePaneHeader, nodeStateWord } from "../components/m4/NodePaneHeader";
 import { RunStageStrip } from "../components/m4/RunStageStrip";
 import { RunTree } from "../components/m4/RunTree";
 import { usePipelineRevisions, usePipelines, useRevision } from "../api/pipelines";
@@ -81,7 +81,7 @@ import type {
   RunTreeRoot,
 } from "../lib/pipeline/contract";
 import type { EventActor, EventEnvelope, PipelineRevisionSummaryList } from "../api/types";
-import { ProjectSectionNav, RunStatusChip, shortDigest, shortId } from "./ProjectRuns";
+import { ProjectSectionNav, RunStateChip, shortDigest, shortId } from "./ProjectRuns";
 import { routes } from "../lib/routes";
 import { NewRevisionNotice } from "../components/workbench/RunHeader";
 
@@ -500,7 +500,7 @@ export default function RunInspector({
                 <h1 className="text-[19px] font-bold" data-testid="run-title">
                   Run #{shortId(run.id)}
                 </h1>
-                <RunStatusChip status={run.status} testid="run-header-status" />
+                <RunStateChip status={run.status} testid="run-header-status" />
                 {!run.placement.scheduled &&
                 run.placement.reason === "volume_affinity_unsatisfied" ? (
                   <span className="text-[11.5px] text-muted" data-testid="run-waiting-for-worker">
@@ -1315,8 +1315,12 @@ function RunNodeDetail({
         {gateCard}
         {gate ? null : (
           <p className="font-mono text-[11px] text-muted" data-testid="run-detail-no-attempts">
+            {/* The state in the app's own word (`nodeStateWord`, the `SHORT_WORD`
+                table) — the same word the header chip above, the strip, the tree
+                and the graph print that colour with (identity rule 06), never the
+                wire's token. */}
             No attempts yet for <code className="font-mono">{node.node_instance_key}</code> — status{" "}
-            {node.status}
+            {nodeStateWord(node)}
           </p>
         )}
       </div>

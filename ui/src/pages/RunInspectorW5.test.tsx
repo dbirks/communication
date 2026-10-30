@@ -186,9 +186,13 @@ describe("W5: the run page says an attempt was interrupted when its worker died"
       .map((node) => node.textContent ?? "")
       .filter((text) => /ATTEMPT \d/.test(text));
     expect(headings.join(" | ")).toMatch(/ATTEMPT 1.*ATTEMPT 2/);
+    // The chips print the app's `SHORT_WORD` (identity rule 06): a dead attempt
+    // reads **stopped**, the retry that answered it reads **done** — never the
+    // wire's `interrupted`/`succeeded` tokens. The contract's W5 sentence lives in
+    // the OUTCOME UNKNOWN note below, which still spells `interrupted`.
     expect(screen.getAllByTestId("attempt-status").map((chip) => chip.textContent)).toEqual([
-      "interrupted",
-      "succeeded",
+      "stopped",
+      "done",
     ]);
 
     // § 7.2 W5's exact wording, on the interrupted attempt.

@@ -222,8 +222,11 @@ describe("the Run Workbench", () => {
     // Clicking the loop's cell is clicking its node on the graph: the dock
     // follows to the scope's own execution.
     fireEvent.click(screen.getByTestId("workbench-step-cell-build_until_verified"));
-    const title = await screen.findByTestId("dock-title", undefined, { timeout: 5000 });
-    expect(title.textContent).toContain("/build_until_verified");
+    // The dock follows to the scope's own execution: its pane header carries the
+    // instance key (the dock title says only the kind — a path printed twice in
+    // one pane is one too many).
+    expect(await screen.findByTestId("node-pane-key")).toBeTruthy();
+    expect(screen.getByTestId("node-pane-key").textContent).toContain("/build_until_verified");
     expect(
       screen.getByTestId("workbench-step-cell-build_until_verified").getAttribute("aria-pressed"),
     ).toBe("true");
@@ -372,8 +375,10 @@ describe("the Run Workbench", () => {
         "bg-accent-wash",
       );
     });
-    // The dock still reads the node the reader picked.
-    expect(screen.getByTestId("dock-title").textContent).toContain("/plan");
+    // The dock still reads the node the reader picked — named by the pane
+    // header, while the title says the kind once.
+    expect(screen.getByTestId("dock-title").textContent).toBe("agent");
+    expect(screen.getByTestId("node-pane-crumb").textContent).toContain("plan");
   });
 
   it("renders the timeline for ?view=timeline", async () => {
@@ -596,7 +601,9 @@ describe("the run header follows the stream", () => {
     ]);
 
     const chip = await screen.findByTestId("run-header-status");
-    expect(chip.textContent).toContain("waiting human");
+    // `waiting_human` is the wire's token; the header says the app's word for
+    // that state — the same one the Runs tab, the strip and the graph boxes use.
+    expect(chip.textContent).toContain("need you");
 
     // The real journal tail for an approved gate (`01` row 5 + the decide
     // commit): the decision row, then the advancer's move
@@ -618,16 +625,16 @@ describe("the run header follows the stream", () => {
     await waitFor(() =>
       expect(screen.getByTestId("run-header-status").textContent).toContain("running"),
     );
-    expect(screen.getByTestId("run-header-status").textContent).not.toContain("queued");
+    expect(screen.getByTestId("run-header-status").textContent).not.toContain("pending");
   });
 
-  it("reads queued when a manual pause is cleared — the same frame type, the other park", async () => {
+  it("reads pending when a manual pause is cleared — the same frame type, the other park", async () => {
     mount("", [
       { path: RUN_PATH, body: { ...wireRun, status: "paused", paused_reason: "manual" } },
     ]);
 
     const chip = await screen.findByTestId("run-header-status");
-    expect(chip.textContent).toContain("paused");
+    expect(chip.textContent).toContain("need you");
 
     act(() => {
       FakeEventSource.last().emit(
@@ -636,7 +643,7 @@ describe("the run header follows the stream", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId("run-header-status").textContent).toContain("queued"),
+      expect(screen.getByTestId("run-header-status").textContent).toContain("pending"),
     );
   });
 
@@ -665,7 +672,7 @@ describe("the run header follows the stream", () => {
     await waitFor(() =>
       expect(screen.getByTestId("run-header-status").textContent).toContain("running"),
     );
-    expect(screen.getByTestId("run-header-status").textContent).not.toContain("queued");
+    expect(screen.getByTestId("run-header-status").textContent).not.toContain("pending");
   });
 });
 
@@ -705,19 +712,19 @@ describe("the dock draws the attempt the URL names", () => {
 
     const note = await screen.findByTestId("attempt-interrupted-note");
     expect(note.textContent).toContain("interrupted — the worker disappeared mid-node");
+    // The strip's words are the attempt chip's `SHORT_WORD` (`stopped`, `done`),
+    // not the wire's `interrupted`/`succeeded` tokens.
     expect((await screen.findByTestId("dock-attempt-1")).textContent).toContain(
-      "attempt 1 · interrupted",
+      "attempt 1 · stopped",
     );
-    expect(screen.getByTestId("dock-attempt-2").textContent).toContain("attempt 2 · succeeded");
+    expect(screen.getByTestId("dock-attempt-2").textContent).toContain("attempt 2 · done");
 
     // Drop the param and the page leads with the retry: the sentence is gone from
     // the pane, which is exactly why the arm aims at the dead attempt — and why the
-    // strip has to carry the word `interrupted` regardless.
+    // strip has to carry the word `stopped` regardless.
     cleanup();
     mount(`?node=${WIRE_NODE_IMPLEMENT}`, [attemptsRoute()]);
-    expect((await screen.findByTestId("dock-attempt-2")).textContent).toContain(
-      "attempt 2 · succeeded",
-    );
+    expect((await screen.findByTestId("dock-attempt-2")).textContent).toContain("attempt 2 · done");
     expect(screen.queryByTestId("attempt-interrupted-note")).toBeNull();
   });
 

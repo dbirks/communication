@@ -26,8 +26,8 @@ import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
 import { Field, Textarea } from "../ds/Field";
 import { StatusChip } from "../ds/Row";
-import { APPROVAL_STATE, stateOf } from "../ds/states";
-import { formatRemaining, formatTime } from "../../lib/format";
+import { APPROVAL_STATE, SHORT_WORD, stateOf } from "../ds/states";
+import { formatAge, formatRemaining, formatTime } from "../../lib/format";
 import { PlanView, splitPlanText } from "./PlanView";
 
 export interface ApprovalCardProps {
@@ -79,6 +79,20 @@ export function ApprovalCard({
   const open = approval.state === "pending";
   const deadline = new Date(approval.deadline_at).valueOf();
   const remainingMs = Number.isNaN(deadline) ? null : deadline - now();
+  const deadlineExact = formatTime(approval.deadline_at);
+  /** A closed gate's deadline, in the same relative words: it says whether the
+   * gate closed inside its own deadline or after it, and by how much — never a
+   * countdown to a deadline already behind (the copy rules refuse that
+   * optimistic render), never an ISO string. The exact instant is the `title`. */
+  const closedDeadlineWords = Number.isNaN(deadline)
+    ? deadlineExact
+    : deadline < now()
+      ? `passed ${formatAge(approval.deadline_at, now())} ago`
+      : approval.decided_at && Date.parse(approval.decided_at) < deadline
+        ? `closed with ${formatRemaining(approval.deadline_at, Date.parse(approval.decided_at))}`
+        : approval.state === "expired"
+          ? "the deadline passed"
+          : "closed before its deadline";
 
   return (
     <Panel
@@ -86,10 +100,16 @@ export function ApprovalCard({
       headingId={headingId}
       headingLevel={3}
       state={open && canDecide ? "waiting" : state === "failed" ? "failed" : undefined}
+      // An OPEN gate says the design's own call to action; a CLOSED one says its
+      // state in the app's SHORT_WORD (identity rule 06: the same word the strip,
+      // the tree, the graph node and the pane header use for that colour), never
+      // the wire's `decided` / `expired` / `cancelled` token. WHO decided and WHAT
+      // they said is the decision record below, which carries the difference the
+      // short word folds.
       meta={
         <StatusChip
           state={state}
-          label={open ? "needs your decision" : approval.state}
+          label={open ? "needs your decision" : SHORT_WORD[state]}
           labelProps={{ "data-testid": "approval-state" }}
         />
       }
@@ -122,14 +142,21 @@ export function ApprovalCard({
           </div>
           <div className="flex gap-2">
             <dt className="text-muted">deadline</dt>
-            <dd data-testid="approval-deadline">
-              {formatTime(approval.deadline_at)}
+            {/* The handoff's time rule (`docs/design/handoff-projects/README.md`
+                § 1 copy — “Times are relative; never show ISO strings”): the
+                one number a waiting gate is about is the time LEFT, so the
+                countdown is the visible text and the exact instant it counts
+                down to rides in the title. A closed gate has no countdown;
+                it says how far behind (or ahead of) the deadline it closed,
+                same title. */}
+            <dd data-testid="approval-deadline" title={deadlineExact}>
               {open && remainingMs !== null ? (
-                <span className="text-muted" data-testid="approval-countdown">
-                  {" "}
-                  · {formatRemaining(approval.deadline_at, now())}
+                <span data-testid="approval-countdown">
+                  {formatRemaining(approval.deadline_at, now())}
                 </span>
-              ) : null}
+              ) : (
+                <span>{closedDeadlineWords}</span>
+              )}
             </dd>
           </div>
           {approval.re_requested ? (

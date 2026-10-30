@@ -14,6 +14,14 @@
  * `run.created` / `run.started` frame in the journal buffer names the actor
  * (never a worker name — ADR-0016 § 8).
  *
+ * The title is the run's own sentence, spoken once and unframed: no typographic
+ * quotes around the goal (the h1 is already the page's only title — wrapping it
+ * turns the run's words into somebody's quotation), and the status chip is
+ * `RunStateChip`, the app's `SHORT_WORD` table, so the header says **need you**
+ * where the wire says `waiting_human` — the raw enum reading
+ * `docs/design/handoff-projects/README.md` § 1 forbids, and the word the Runs
+ * tab, the strip, the tree and the graph boxes already use for that colour.
+ *
  * Width honesty: the title/meta column is `grow` with a 20rem flex-basis FLOOR,
  * not `flex-1`'s zero basis, and the header wraps. A zero basis makes that
  * column whatever the actions column leaves, so its width was a property of
@@ -48,7 +56,7 @@ import { hasLibraryRole } from "../../lib/pipeline/authoring";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 import { formatAge, shortId } from "../../lib/format";
 import { RunActions } from "../../pages/RunInspector";
-import { RunStatusChip } from "../../pages/ProjectRuns";
+import { RunStateChip } from "../../pages/ProjectRuns";
 import type { NodeExecutionSummary, RunDetail } from "../../lib/pipeline/contract";
 import { Link, useNavigate } from "react-router";
 import { routes } from "../../lib/routes";
@@ -136,9 +144,9 @@ export function RunHeader({
         </nav>
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="truncate text-[19px] font-bold" data-testid="run-title">
-            {goal ? `“${goal}”` : (runTitle ?? `Run #${shortId(run.id)}`)}
+            {goal ?? runTitle ?? `Run #${shortId(run.id)}`}
           </h1>
-          <RunStatusChip status={run.status} testid="run-header-status" />
+          <RunStateChip status={run.status} testid="run-header-status" />
           <span className="font-mono text-[11px] text-faint" data-testid="run-stream-status">
             {streamStatus}
           </span>

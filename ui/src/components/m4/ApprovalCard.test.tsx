@@ -57,9 +57,14 @@ describe("a pending gate you can decide", () => {
   it("names the roles, the deadline and the consequence of the deadline", () => {
     render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     expect(screen.getByTestId("approval-roles").textContent).toBe("maintainer");
-    expect(screen.getByTestId("approval-deadline").textContent).toContain(
-      "2026-08-01 10:44:02 UTC",
-    );
+    // A waiting gate's deadline is ONE relative number — the time left — with
+    // the exact instant it counts down to in the title (pass-7 review, the gate
+    // showed `2026-08-01 10:44:02 UTC · 20h left`: an absolute stamp and a
+    // countdown for one fact, and the handoff's copy rule says times read
+    // relative). `docs/design/handoff-projects/README.md` § 1.
+    const deadline = screen.getByTestId("approval-deadline");
+    expect(deadline.textContent).toBe("20h left");
+    expect(deadline.getAttribute("title")).toBe("2026-08-01 10:44:02 UTC");
     expect(screen.getByTestId("approval-countdown").textContent).toContain("20h left");
     expect(screen.getByTestId("approval-on-timeout").textContent).toContain("fail the node");
   });
@@ -104,7 +109,13 @@ describe("a closed gate", () => {
     expect(screen.getByTestId("approval-decision-comments").textContent).toContain(
       "needs an ADR first",
     );
-    expect(screen.getByTestId("approval-state").textContent).toBe("decided");
+    // A closed gate's chip is the state in the app's short word, not the wire's
+    // `decided` token; WHO decided and WHAT they said is the record below.
+    expect(screen.getByTestId("approval-state").textContent).toBe("done");
+    // The deadline of a gate that closed INSIDE its deadline says so in the
+    // same relative words, measured from the decision — not a countdown, not a
+    // stamp.
+    expect(screen.getByTestId("approval-deadline").textContent).toBe("closed with 21h left");
   });
 
   // Design review pass 2 (`run-gate-completed-1280.png`): the record read
@@ -154,8 +165,13 @@ describe("a closed gate", () => {
       />,
     );
     // A closed gate shows no countdown: pretending to count to a passed
-    // deadline would be the optimistic render the copy rules refuse.
+    // deadline would be the optimistic render the copy rules refuse. It still
+    // says the deadline in relative words with the exact instant in the title.
     expect(screen.queryByTestId("approval-countdown")).toBeNull();
+    expect(screen.getByTestId("approval-deadline").textContent).toBe("the deadline passed");
+    expect(screen.getByTestId("approval-deadline").getAttribute("title")).toBe(
+      "2026-08-01 10:44:02 UTC",
+    );
     expect(screen.getByTestId("approval-expired-reason").textContent).toContain("deadline passed");
     expect(screen.queryByTestId("approval-decision-form")).toBeNull();
   });

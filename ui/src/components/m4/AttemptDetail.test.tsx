@@ -51,7 +51,7 @@ describe("an interrupted attempt (W5)", () => {
     expect(screen.getByTestId("attempt-interrupted-note").textContent).toContain(
       "may be repeated by the next attempt",
     );
-    expect(screen.getByTestId("attempt-status").textContent).toBe("interrupted");
+    expect(screen.getByTestId("attempt-status").textContent).toBe("stopped");
   });
 
   it("never claims a resumption", () => {
@@ -149,7 +149,7 @@ describe("a succeeded attempt with its boundary", () => {
         checkpoint={featureCheckpoints[0]}
       />,
     );
-    expect(screen.getByTestId("attempt-status").textContent).toBe("succeeded");
+    expect(screen.getByTestId("attempt-status").textContent).toBe("done");
     expect(screen.getByTestId("attempt-outputs").textContent).toContain(
       "Implemented the approved plan",
     );
@@ -166,11 +166,19 @@ describe("a succeeded attempt with its boundary", () => {
     expect(screen.getByTestId("attempt-checkpoint-volume").textContent).toBe("vol_01J8A");
   });
 
-  it("labels an attempt by its error class when it has one", () => {
-    expect(attemptWord(implementAttempts[0])).toBe("interrupted");
+  it("states the state in the app's own word, plus the error class when it has one", () => {
+    // Identity rule 06: the attempt chip prints the same SHORT_WORD as the
+    // strip, the tree, the graph and the dock for the same colour — the wire's
+    // token never reaches the page, and neither does its underscore spelling.
+    expect(attemptWord(implementAttempts[0])).toBe("stopped");
     expect(attemptWord({ ...implementAttempts[1], status: "failed", error_class: "timeout" })).toBe(
       "failed · timeout",
     );
+    expect(
+      attemptWord({ ...implementAttempts[1], status: "failed", error_class: "workspace_lost" }),
+    ).toBe("failed · workspace lost");
+    expect(attemptWord({ ...implementAttempts[1], status: "leased" })).toBe("running");
+    expect(attemptWord({ ...implementAttempts[1], status: "cancelled" })).toBe("stopped");
   });
 });
 

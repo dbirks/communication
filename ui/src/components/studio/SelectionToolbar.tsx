@@ -78,16 +78,20 @@ export function SelectionToolbar({
     // Design 1g: a compact 30px mono strip with 26px secondary buttons — the
     // wrap function stays, the bar must not read as a second tool pane.
     //
-    // Below md the strip WRAPS and grows instead of clipping: at 390px the
-    // fixed 30px row cut `Wrap in For each` in half and broke `1 step
-    // selected` across two lines inside a one-line box (the 390 reflow rule —
-    // the phone shows the 1280 controls, it does not chop them).
+    // It is ONE row at every width (pass-7 review, 1g-inspector-edit at 390:
+    // the wrapping strip stacked `Wrap in For each` under `1 step selected`,
+    // so the selection's actions read as two bars and ate another line of the
+    // phone's canvas). The row never breaks; when the actions are wider than
+    // the pane the strip scrolls sideways, which keeps both verbs reachable
+    // and keeps `1 step selected` on the same line as them. The phone band's
+    // 44px control floor grows the row's height (a `h-[30px]` would clip it),
+    // which is why the height is a floor and not a fixed size.
     return (
       <div
         role="toolbar"
         aria-label="Selection actions"
         data-testid={testids.box}
-        className="flex min-h-[30px] shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-surface px-3 py-1 md:h-[30px] md:flex-nowrap md:py-0"
+        className="flex min-h-[30px] shrink-0 flex-nowrap items-center gap-x-2 overflow-x-auto border-b border-line bg-surface px-3 py-1 md:h-[30px] md:py-0"
       >
         <span
           className="shrink-0 whitespace-nowrap font-mono text-[11px] text-muted"

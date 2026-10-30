@@ -4,7 +4,7 @@
  * the picker and calls onInsertOnEdge, readOnly strips the "+" affordances,
  * and a refused connect surfaces its reason without calling onConnect.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { parseGraph } from "../../lib/pipeline/graphDoc";
@@ -16,6 +16,7 @@ import {
   computeTopFitViewport,
   evaluateConnect,
   fitMinZoom,
+  MENU_COMPACT_W_PX,
   mirrorOwnedChanges,
   parseViewportTransform,
   PHONE_VIEWPORT_PX,
@@ -161,15 +162,74 @@ describe("StudioCanvas", () => {
     expect(kind).toBe("process.exec");
   });
 
-  it("shows the trailing + only on terminal steps, and never in read-only mode", () => {
+  it("shows the trailing + only on terminal steps, and never in read-only mode", async () => {
     const { unmount } = renderCanvas();
     expect(screen.getByTestId("add-after-check")).toBeTruthy();
     expect(screen.queryByTestId("add-after-plan")).toBeNull();
+    // An EDITABLE canvas draws the edge "+" — prove it before claiming its
+    // absence elsewhere means anything (a run's canvas is the same component
+    // with `readOnly`, and a missing-by-timing assertion proves nothing).
+    await screen.findByTestId("edge-add-plan-check");
 
     unmount();
-    renderCanvas({ readOnly: true });
+    const { container } = renderCanvas({ readOnly: true });
+    await screen.findByTestId("canvas-step-check");
+    // Edge bodies only paint once their nodes measure; wait for the layer.
+    await waitFor(() => expect(container.querySelector(".react-flow__edge")).toBeTruthy());
     expect(screen.queryByTestId("add-after-check")).toBeNull();
     expect(screen.queryByTestId("edge-add-plan-check")).toBeNull();
+  });
+
+  it("says read-only on a run's canvas instead of the editor's wiring hint", async () => {
+    const { unmount } = renderCanvas();
+    expect(screen.getByTestId("canvas-caption").textContent).toContain("always top to bottom");
+    unmount();
+    renderCanvas({ readOnly: true });
+    const caption = screen.getByTestId("canvas-caption");
+    expect(caption.textContent).not.toContain("always top to bottom");
+    expect(caption.textContent).toContain("read-only");
+    // The zoom band is not an editor affordance — a run's graph pans and fits.
+    expect(screen.getByTestId("canvas-controls")).toBeTruthy();
+  });
+
+  it("keeps a step's own text left-aligned, with the key fact truncated in the box", () => {
+    renderCanvas();
+    const card = document.querySelector<HTMLElement>(
+      "[data-testid='canvas-step-plan'] [role='button']",
+    );
+    expect(card).toBeTruthy();
+    // The app-shell phone band gives every `[role=button]` `align-items:
+    // center`; inside a step card that centres the words AND lets the second
+    // line grow past the box. The card opts out, so the text is left-aligned
+    // at every width and the lines truncate.
+    expect(card!.className).toContain("items-stretch!");
+    const fact = screen.getByTestId("canvas-step-fact-plan");
+    expect(fact.className).toContain("min-w-0");
+    expect(fact.className).toContain("truncate");
+    // The full text (kind word + key fact) travels in the title, never cut off.
+    expect(fact.getAttribute("title")).toBe(fact.textContent);
+    expect(fact.getAttribute("title")).toContain("\u00b7 m");
+  });
+
+  it("draws each insert + as a fixed 22px circle on a 44px target", async () => {
+    const { container } = renderCanvas();
+    const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
+    // The phone band's 44px floor used to stretch the CIRCLE itself into a tall
+    // pill (and the emulator measures the real box, so opting out is not an
+    // option): target and ink are separate elements — 44px button, 22px circle.
+    expect(add.className).toContain("h-[44px]");
+    expect(add.className).toContain("w-[44px]");
+    const circle = add.querySelector("span[aria-hidden='true']");
+    expect(circle?.className).toContain("h-[22px]");
+    expect(circle?.className).toContain("w-[22px]");
+    expect(circle?.className).toContain("rounded-full");
+    const after = (await screen.findByTestId("add-after-check")) as HTMLElement;
+    expect(after.className).toContain("h-[44px]");
+    // The terminal circle keeps its drawn size AND its seat on the stub: the
+    // extra hit area falls into the empty band under the sink.
+    const afterCircle = after.querySelector("span[aria-hidden='true']");
+    expect(afterCircle?.className).toContain("h-[22px]");
+    expect(container.querySelector("[data-testid='add-after-plan']")).toBeNull();
   });
 
   it("keeps the caption and the zoom/fit group in one flow band below the pane", () => {
@@ -345,7 +405,7 @@ spec:
     expect(add.style.left).toBe("50%");
     expect(add.style.top).toBe("50%");
     // The label layer sits exactly on the routed edge's midpoint, and the "+"
-    // is centred on it.
+    // (and the 44px target it sits inside) is centred on it.
     const flow = toFlow(fixtureModel, parse(fixtureYaml));
     const edge = flow.edges[0]!;
     const { x: midX, y: midY } = routeEdge(edge.sourceBox!, edge.targetBox!, edge.axis);
@@ -634,6 +694,7 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
       pane: { w: 1000, h: 700 },
     });
     expect(place.docked).toBe(false);
+    expect(place.compact).toBe(false);
     expect(place).toMatchObject({ x: 303, y: 100 });
   });
 
@@ -646,21 +707,51 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
       pane: { w: 1000, h: 700 },
     });
     expect(place.docked).toBe(false);
+    expect(place.compact).toBe(false);
     expect(place).toMatchObject({ x: 95, y: 160 });
   });
 
-  it("docks to its own strip when right AND below are crowded (the 390 chain)", () => {
+  it("anchors ONE ROW under its own node when right AND below are crowded (the 390 chain)", () => {
     // 390px: the pane fits one column of steps, so the slot right of the node
-    // is off-pane and the slot below it is the next step — `Duplicate` /
-    // `Delete ⌫` painted over `approve` in the pass-2 review.
+    // is off-pane and the slot below it is the next step. The pass-2 review
+    // docked the actions to the pane's bottom edge; the pass-7 review read
+    // that as a menu bar belonging to the CANVAS — the actions had to stay
+    // attached to the step they act on, so the menu takes one compact row
+    // directly under its node instead.
     const place = chooseNodeMenuPlacement({
       node: step,
       others: [{ x: 95, y: 160, w: 200, h: 52 }],
       menu,
       pane: { w: 390, h: 400 },
     });
+    expect(place.docked).toBe(false);
+    expect(place.compact).toBe(true);
+    expect(place).toMatchObject({ x: 95, y: 160 });
+  });
+
+  it("keeps the one-row menu inside the pane sideways and down", () => {
+    // A node hugging the pane's right edge / bottom edge: the row is pulled
+    // back inside rather than hanging off the canvas.
+    const place = chooseNodeMenuPlacement({
+      node: { x: 250, y: 380, w: 200, h: 52 },
+      others: [],
+      menu,
+      pane: { w: 390, h: 440 },
+    });
+    expect(place.compact).toBe(true);
+    expect(place.x).toBe(390 - MENU_COMPACT_W_PX - 8);
+    expect(place.y + place.h).toBeLessThanOrEqual(440 - 8);
+  });
+
+  it("docks to its own strip only when the pane cannot hold the row at all", () => {
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others: [],
+      menu,
+      pane: { w: 390, h: 40 },
+    });
     expect(place.docked).toBe(true);
-    expect(place.y).toBe(342);
+    expect(place.compact).toBe(false);
   });
 
   it("keeps the plain right-hand position while the pane is unmeasured", () => {

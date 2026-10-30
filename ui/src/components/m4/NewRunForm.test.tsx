@@ -64,10 +64,12 @@ function createResponse(status = 201, body: unknown = { run_id: NEW_RUN_ID, stat
   return { path: RUNS_PATH, method: "POST", status, body } satisfies RouteStub;
 }
 
-/** Open the New run panel on the project's runs page. */
+/** Open the New run form on the project's runs page (the band's `Start run`
+ *  is the one door now — it navigates with `?new=1`; the panel's own button is
+ *  gone per the 1b pass-2 review). */
 async function openForm(routes: RouteStub[] = []) {
   const mounted = renderApp({
-    path: `/projects/${wireProjectId}/runs`,
+    path: `/projects/${wireProjectId}/runs?new=1`,
     routes: [
       ...routes,
       { path: "/api/v1/me", body: meFixture },
@@ -81,7 +83,6 @@ async function openForm(routes: RouteStub[] = []) {
       createResponse(),
     ],
   });
-  fireEvent.click(await screen.findByTestId("runs-new"));
   await screen.findByTestId("new-run-form");
   return mounted;
 }

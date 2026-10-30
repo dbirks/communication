@@ -11,12 +11,18 @@ export interface NodeMenuProps {
   x: number;
   y: number;
   /**
-   * The pane has no clear spot for a floating menu (the 390px canvas is a dense
-   * top-to-bottom chain, so right AND below both land on another step). The
-   * menu then draws itself as a strip of its own UNDER the canvas viewport —
-   * same two actions, same keys, never over a step (design 1g reflow rule: the
-   * phone shows the 1280 content, it does not cover it). A docked menu ignores
-   * x/y; it flows.
+   * The pane has no clear spot beside or below the node at the menu's normal
+   * size (the 390px canvas is a dense top-to-bottom chain), so the two actions
+   * draw as ONE compact row anchored directly under their own step. It is still
+   * the step's menu — the pass-7 review's defect was exactly that the docked
+   * strip read as a bar of the canvas. It keeps its x/y; only its shape
+   * changes.
+   */
+  compact?: boolean;
+  /**
+   * The pane is too short to hold even the one-row menu: the menu then draws
+   * itself as a strip of its own UNDER the canvas viewport, in flow rather than
+   * over the graph. It ignores x/y; it flows.
    */
   docked?: boolean;
   nodeId: string;
@@ -34,6 +40,7 @@ const MENU_ITEMS = [
 export function NodeMenu({
   x,
   y,
+  compact = false,
   docked = false,
   nodeId,
   onDuplicate,
@@ -92,18 +99,22 @@ export function NodeMenu({
       ref={listRef}
       data-testid="studio-node-menu"
       data-docked={docked ? "true" : "false"}
+      data-compact={compact ? "true" : "false"}
       role="menu"
       tabIndex={-1}
       onKeyDown={onKeyDown}
       className={
         docked
           ? /* The docked strip is a FLOW row of the canvas column, not a thing
-               pinned over the pane: the 390 pane is a dense chain, so any
-               absolutely-placed box lands on a step. Here it takes its own
-               height under the viewport, exactly like the canvas' caption band,
-               and the two actions share one line. */
+               pinned over the pane: here it takes its own height under the
+               viewport, exactly like the canvas' caption band, and the two
+               actions share one line. */
             "flex shrink-0 flex-nowrap items-center gap-[6px] border-t border-line bg-surface p-[3px] outline-none"
-          : "absolute z-20 flex flex-col gap-[2px] rounded border border-ink bg-surface p-[3px] shadow-[2px_2px_0_var(--color-ink)] outline-none"
+          : /* One row (`compact`) or the 1g two-row menu; the same ink border +
+             hard shadow either way, so the menu still reads as the step's. */
+            `absolute z-20 flex flex-nowrap gap-[6px] rounded border border-ink bg-surface p-[3px] shadow-[2px_2px_0_var(--color-ink)] outline-none ${
+              compact ? "flex-row" : "flex-col gap-[2px]"
+            }`
       }
       style={docked ? undefined : { left: x, top: y }}
     >
@@ -120,11 +131,11 @@ export function NodeMenu({
           onClick={onItemClick(index)}
           className={
             item.id === "delete"
-              ? `rounded-[3px] bg-st-failed-pale-body px-[8px] py-[3px] text-left text-[12.5px] text-st-failed-strong hover:bg-st-failed-pale-bar ${
-                  docked ? "min-h-[44px] shrink-0" : ""
+              ? `whitespace-nowrap rounded-[3px] bg-st-failed-pale-body px-[8px] py-[3px] text-left text-[12.5px] text-st-failed-strong hover:bg-st-failed-pale-bar ${
+                  docked || compact ? "min-h-[44px] shrink-0" : ""
                 }`
-              : `rounded-[3px] bg-surface px-[8px] py-[3px] text-left text-[12.5px] text-ink hover:bg-fill ${
-                  docked ? "min-h-[44px] shrink-0" : ""
+              : `whitespace-nowrap rounded-[3px] bg-surface px-[8px] py-[3px] text-left text-[12.5px] text-ink hover:bg-fill ${
+                  docked || compact ? "min-h-[44px] shrink-0" : ""
                 }`
           }
         >

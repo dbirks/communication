@@ -39,6 +39,7 @@ import { kindWord } from "../../lib/pipeline/definition";
 import { iterationOf } from "../../lib/pipeline/runView";
 import { toRunEvent } from "../../lib/pipeline/runEvents";
 import { retryVerdict } from "../../pages/RunInspector";
+import { runStateWord } from "../../pages/ProjectRuns";
 import { childRunOf } from "../../lib/pipeline/workbench";
 import { routes } from "../../lib/routes";
 import type {
@@ -183,7 +184,6 @@ export function WorkbenchDock({
       <div className="space-y-[10px]">
         <DockTitle
           kindLabel={kindLabel}
-          key_={execution.node_instance_key}
           instanceLine={instanceLine(iteration, lineAttempt, attemptTotal)}
         />
         <p className="font-mono text-[11px] text-muted" data-testid="workbench-dock-pending">
@@ -247,7 +247,6 @@ export function WorkbenchDock({
       />
       <DockTitle
         kindLabel={kindLabel}
-        key_={execution.node_instance_key}
         instanceLine={instanceLine(iteration, lineAttempt, attemptTotal)}
       />
       {attempts.length > 1 ? (
@@ -291,7 +290,7 @@ export function WorkbenchDock({
         >
           <p className="font-mono text-[11px] text-ink-2" data-testid="dock-child-run-line">
             child run <code className="font-mono">{childRun.pipeline_slug}</code> ·{" "}
-            {childRun.status}
+            {runStateWord(childRun.status)}
           </p>
           <Link
             to={routes.run(childRun.child_run_id)}
@@ -408,19 +407,21 @@ function instanceLine(
   return parts.join(" · ");
 }
 
-function DockTitle({
-  kindLabel,
-  key_,
-  instanceLine: line,
-}: {
-  kindLabel: string;
-  key_: string;
-  instanceLine: string;
-}) {
+/**
+ * The dock's own title: the node's KIND in words, over the instance line.
+ *
+ * It used to print the instance key beside the kind (`gate /approve`). The
+ * pane header above already carries the node — its crumb is `node_id · place
+ * · attempt n`, and `NodePaneHeader` prints the key itself wherever the crumb
+ * does not say it — so the key line under the kind was the same path printed a
+ * second time. `docs/design/handoff-projects/README.md` § 1 counts a word
+ * spoken twice in one pane as a bug, so the kind line says the kind once.
+ */
+function DockTitle({ kindLabel, instanceLine: line }: { kindLabel: string; instanceLine: string }) {
   return (
     <div>
       <p className="text-[14px] font-bold" data-testid="dock-title">
-        {kindLabel} <span className="font-mono text-[11px] font-normal text-muted">{key_}</span>
+        {kindLabel}
       </p>
       <p className="font-mono text-[11px] text-muted" data-testid="dock-instance-line">
         {line}

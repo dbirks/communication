@@ -10,7 +10,7 @@
  * under that instance, in the same precedence the scope box uses.
  */
 import { useMemo, useState } from "react";
-import { NODE_EXECUTION_STATE, STATES, type StateName } from "../ds/states";
+import { NODE_EXECUTION_STATE, SHORT_WORD, STATES, type StateName } from "../ds/states";
 import type { NodeExecutionSummary } from "../../lib/pipeline/contract";
 
 /** One selectable instance of a scope, derived from the journal rows. */
@@ -20,7 +20,7 @@ export interface ScopeInstanceView {
   /** The instance key `/scope[2]`. */
   key: string;
   state: StateName;
-  /** The state set's word: "failed", "running", "done", … */
+  /** The state's own word from `SHORT_WORD`: "failed", "running", "done", … */
   label: string;
 }
 
@@ -63,7 +63,7 @@ export function scopeInstances(
     .sort((a, b) => a[0] - b[0])
     .map(([index, states]) => {
       const state = PRECEDENCE.find((candidate) => states.includes(candidate)) ?? "queued";
-      return { index, key: `${defKey}[${index}]`, state, label: STATES[state].word };
+      return { index, key: `${defKey}[${index}]`, state, label: SHORT_WORD[state] };
     });
 }
 
@@ -165,7 +165,7 @@ export function InstancePicker({
         {states.map((state) => (
           <span key={state} className="font-mono text-[10.5px] text-muted">
             {instances.filter((i) => i.state === state).length} {STATES[state].glyph}{" "}
-            {STATES[state].word}
+            {SHORT_WORD[state]}
           </span>
         ))}
         <label className="ml-auto flex items-center gap-1 font-mono text-[10.5px] text-muted">
@@ -181,7 +181,7 @@ export function InstancePicker({
             <option value="all">all</option>
             {states.map((state) => (
               <option key={state} value={state}>
-                {STATES[state].word}
+                {SHORT_WORD[state]}
               </option>
             ))}
           </select>

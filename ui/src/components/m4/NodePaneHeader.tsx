@@ -17,7 +17,7 @@
  * invention.
  */
 import { StatusChip } from "../ds/Row";
-import { NODE_EXECUTION_STATE } from "../ds/states";
+import { NODE_EXECUTION_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import type { NodeExecutionSummary } from "../../lib/pipeline/contract";
 
 export interface NodePaneHeaderProps {
@@ -48,13 +48,38 @@ export function placeCrumbOf(
   return `${label} ${index}`;
 }
 
+/**
+ * The node's state in the app's SHORT_WORD, not the wire token spelled out:
+ * `waiting` reads **need you** (identity rule 06 — the same word the stage
+ * strip, the tree row and the graph node use for the same colour) and
+ * `succeeded` reads **done**. Where two statuses share a state set the word
+ * carries the difference, so the two cases the short table would flatten keep
+ * their own word: a `skipped` node says `skipped` (it was never pending), and
+ * a node that ran and failed its check says what it ran into
+ * (`done · failed_check`) rather than a bare ✓.
+ */
+export function nodeStateWord(node: Pick<NodeExecutionSummary, "status" | "outcome">): string {
+  const state = stateOf(NODE_EXECUTION_STATE[node.status]);
+  if (node.status === "skipped") return "skipped";
+  if (node.status === "succeeded" && node.outcome && node.outcome !== "passed") {
+    return `${SHORT_WORD[state]} \u00b7 ${node.outcome}`;
+  }
+  return SHORT_WORD[state];
+}
+
+/** Does the instance key say more than the crumb already said? A node outside
+ * every scope has the key `/<node_id>` — the crumb's own word with a slash in
+ * front of it — so the key line there is a repeat, not an identity. */
+function instanceKeyAddsInfo(node: NodeExecutionSummary): boolean {
+  return node.node_instance_key !== `/${node.node_id}`;
+}
+
 export function NodePaneHeader({
   node,
   nodes = [],
   attemptNumber = null,
   className = "",
 }: NodePaneHeaderProps) {
-  const state = NODE_EXECUTION_STATE[node.status];
   const place = placeCrumbOf(node.node_instance_key, nodes);
   const attempt = attemptNumber !== null && attemptNumber >= 1 ? attemptNumber : null;
   const crumb = [node.node_id, place, attempt !== null ? `attempt ${attempt}` : null]
@@ -75,16 +100,26 @@ export function NodePaneHeader({
       </p>
       <div className="mt-[4px] flex items-center gap-2">
         <StatusChip
-          state={state}
-          label={node.status.replaceAll("_", " ")}
+          state={stateOf(NODE_EXECUTION_STATE[node.status])}
+          label={nodeStateWord(node)}
           labelProps={{ "data-testid": "node-pane-status", role: "status" }}
         />
-        <code
-          className="min-w-0 truncate font-mono text-[10.5px] text-faint"
-          data-testid="node-pane-key"
-        >
-          {node.node_instance_key}
-        </code>
+        {/* The instance key is the node's real identity, so it prints — but only
+            where it says MORE than the crumb above it. For a node outside every
+            scope `node_instance_key` is just `/<node_id>`, and the pass-7 review
+            counted the gate pane printing that same `/approve` four times over
+            (crumb, key line, dock title, gate card). One node line is the rule;
+            a fanned row's `/scope[2]/leaf` is kept, because the crumb's
+            `task 2` is not the same fact. */}
+        {instanceKeyAddsInfo(node) ? (
+          <code
+            className="min-w-0 truncate font-mono text-[10.5px] text-faint"
+            data-testid="node-pane-key"
+            title={node.node_instance_key}
+          >
+            {node.node_instance_key}
+          </code>
+        ) : null}
       </div>
     </div>
   );

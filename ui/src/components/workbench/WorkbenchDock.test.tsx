@@ -155,7 +155,10 @@ describe("WorkbenchDock", () => {
   it("says the agent has not started when the attempt holds no conversation", async () => {
     renderDock(row({}), [{ path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: wireNodeDetail }]);
     expect(await screen.findByTestId("dock-no-conversation")).toBeTruthy();
-    expect(screen.getByTestId("dock-title").textContent).toContain("/plan");
+    // The title says the KIND once; the node the reader picked is named by the
+    // pane header above it, not repeated as an instance key beside the kind.
+    expect(screen.getByTestId("dock-title").textContent).toBe("agent");
+    expect(screen.getByTestId("node-pane-crumb").textContent).toContain("plan");
   });
 
   it("rides the shared conversation when a takeover re-run is not stamped yet, and says the factory took the conversation back", async () => {
@@ -397,10 +400,12 @@ describe("WorkbenchDock", () => {
     // time and leads with the newest, so without the word on the tab a run whose
     // worker died mid-node reads like a clean single-attempt run the moment the
     // retry is drawn (§ 7.2 W5, `10` J7's honesty rule).
-    expect(screen.getByTestId("dock-attempt-1").textContent).toContain("attempt 1 · interrupted");
-    expect(screen.getByTestId("dock-attempt-2").textContent).toContain("attempt 2 · succeeded");
-    // The newest attempt leads: attempt 2's succeeded chip is what shows.
-    expect(screen.getByTestId("attempt-status").textContent).toBe("succeeded");
+    // The strip's words are the attempt chip's `SHORT_WORD`: `stopped` for the
+    // attempt whose worker died, `done` for the retry that answered it.
+    expect(screen.getByTestId("dock-attempt-1").textContent).toContain("attempt 1 · stopped");
+    expect(screen.getByTestId("dock-attempt-2").textContent).toContain("attempt 2 · done");
+    // The newest attempt leads: attempt 2's done chip is what shows.
+    expect(screen.getByTestId("attempt-status").textContent).toBe("done");
 
     fireEvent.click(screen.getByTestId("dock-attempt-1"));
     // The tab does not write its own state — it hands the pick to the URL.
@@ -414,7 +419,7 @@ describe("WorkbenchDock", () => {
       { attemptNumber: 1 },
     );
     await screen.findByTestId("dock-attempt-1");
-    expect(screen.getByTestId("attempt-status").textContent).toBe("interrupted");
+    expect(screen.getByTestId("attempt-status").textContent).toBe("stopped");
     // And the pane of the attempt that died says so in the contract's own words —
     // the sentence the § 7.2 W5 exit arm reads off the run page.
     expect((await screen.findByTestId("attempt-interrupted-note")).textContent).toContain(
