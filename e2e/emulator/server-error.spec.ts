@@ -243,21 +243,29 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
     armServerFailure(page, emu, /\/api\/v1\/pipelines$/);
     await page.goto("/workflows");
     const banner = page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first();
-    await expect(banner, "design 1c: the index behind the dialog states the failure").toBeVisible({
-      timeout: 30_000,
-    });
-    // The dialog is the same page's own surface: it opens over the failed
-    // read and the page keeps saying what broke (the identity read, which is
-    // what gates authoring, is not the one that failed).
-    await page.getByTestId("workflows-new-workflow").click({ timeout: 15_000 });
-    await expect(
-      page.getByTestId("new-workflow-dialog"),
-      "design 1c: the dialog renders",
-    ).toBeVisible();
     await expect(
       banner,
-      "design 1c: the failure banner stands behind the open dialog",
+      "design 1c: with the dialog still closed the index states the failure",
+    ).toBeVisible({
+      timeout: 30_000,
+    });
+    // The dialog is the same page's own surface, and it is the one thing the
+    // author is looking at: the list read's failure moves INSIDE it (a banner
+    // behind the overlay is a failure nobody can read), and the page's own
+    // banner steps aside rather than repeating it (design 1c review).
+    await page.getByTestId("workflows-new-workflow").click({ timeout: 15_000 });
+    const dialog = page.getByTestId("new-workflow-dialog");
+    await expect(dialog, "design 1c: the dialog renders").toBeVisible();
+    await expect(
+      dialog.getByTestId("new-workflow-list-failure"),
+      "design 1c: the list read's failure renders INSIDE the open dialog, not behind it",
     ).toBeVisible();
+    await expect(dialog.getByTestId("new-workflow-list-failure")).toContainText(PROBLEM_LINE);
+    await expect(
+      page.getByRole("alert").filter({ hasText: PROBLEM_LINE }),
+      "design 1c: exactly one failure is on screen, and it is the dialog's — the page does " +
+        "not leave a second banner behind the overlay",
+    ).toHaveCount(1);
     await expect(
       page.getByTestId("workflows-list"),
       "design 1c: still no invented rows",

@@ -90,6 +90,18 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
     reach: "threads-back",
     subtree: true,
   },
+  // The empty-selection column on `/threads` (ui/src/pages/Threads.tsx): it is
+  // `hidden … lg:flex`, so at 390 the page keeps ONLY the list — and the phone
+  // path to that column's content is opening a thread, which fills the screen.
+  // Same master-detail collapse as `thread-list-pane` above, mirrored: the
+  // reach is the list the phone does render (its rows are that one tap).
+  "threads-detail-column": {
+    reason:
+      "phone master-detail: /threads keeps the list column at 390; the empty 'No thread selected' " +
+      "column is desktop-only and its content is reached by opening a thread (full-screen)",
+    reach: "threads-page",
+    subtree: true,
+  },
   "workbench-dock-pane": {
     reason: "the node detail reflows below the graph at <1024px as the workbench-dock-panel sheet",
     reach: "workbench-dock-panel",

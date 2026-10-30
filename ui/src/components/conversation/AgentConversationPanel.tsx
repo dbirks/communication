@@ -33,7 +33,7 @@ import { TakeControlCard } from "../workbench/TakeControlCard";
 import { useConversationSession, type ConversationSession } from "./useConversationSession";
 import type { ConversationControl, ConversationTurn } from "../../api/types";
 import type { TranscriptItem } from "../../api/transcript";
-import { automationViaWords, submitterCopy } from "../../api/transcript";
+import { automationViaWords, submitterCopy, turnStatusText } from "../../api/transcript";
 
 /**
  * Copy for the controller badge — ownership is always written in words.
@@ -291,6 +291,7 @@ export function AgentConversationComposer({
     canRequestControl,
     turnInProgress,
     activeTurn,
+    transcript,
     nameOf,
     prompt,
     setPrompt,
@@ -352,8 +353,10 @@ export function AgentConversationComposer({
           className="text-[12.5px] text-muted"
           data-testid={ids.composerExplainer}
         >
-          A turn is already open (status: {activeTurn?.status}). Wait for it to finish, or press
-          Stop — a second prompt into the same turn is refused.
+          {/* The same words the thread header's status line uses — a raw wire
+              status like `leased` is not something a member reads. */}
+          A turn is already open ({turnStatusText(transcript.turns, activeTurn)}). Wait for it to
+          finish, or press Stop — a second prompt into the same turn is refused.
         </p>
       ) : null}
       {sendMessage.error ? (

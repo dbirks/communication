@@ -13,10 +13,37 @@
 // under docs/design/handoff-projects/png/.
 import { expect, test } from "./fixtures.js";
 import { EMU_ALICE_STATE, EMU_ADMIN_STATE, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
+import type { Locator, Page } from "@playwright/test";
 import path from "node:path";
 
 /** Escape a pass-scoped value before matching it as page text. */
 const reEscape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `FolderGroup`'s slug rule, mirrored for the header's testid. */
+const slugFolder = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "folder";
+
+/**
+ * The folder panel header for ONE named folder, addressed by its exact testid.
+ *
+ * `Unfiled` renders through the same group (design 1b, ADR-0049 § 8), so
+ * `[data-testid^="workflow-folder-header-"]` now matches TWO things whenever
+ * anything is unfiled — and the unfiled header is the one that survives every
+ * cleanup step. Prefix-matching a journey therefore risks asserting on the
+ * wrong panel; the slug is the UI's own (`FolderGroup` in
+ * ui/src/pages/Workflows.tsx: lowercase, non-alphanumerics collapse to `-`,
+ * no leading/trailing `-`), and the name is still matched as text so a slug
+ * that drifted fails loudly instead of quietly picking the unfiled group.
+ */
+const folderHeaderFor = (page: Page, folderName: string): Locator =>
+  page
+    // A CSS attribute selector, not `getByTestId`: the id is exact here, and
+    // the selector shape is the one design.ts's landmark matcher uses.
+    .locator(`[data-testid="workflow-folder-header-${slugFolder(folderName)}"]`)
+    .filter({ hasText: new RegExp(`^${reEscape(folderName)}`, "i") });
 
 /**
  * 1b — the /workflows index: H1 "Workflows", the starter cards, the list.
@@ -136,9 +163,10 @@ test.describe("workflows-index", () => {
 
       // The folder is a panel of its own, headed by its name and its count,
       // and the moved row is inside it — not in the unfiled list beside it.
-      const folderHeader = page
-        .locator('[data-testid^="workflow-folder-header-"]')
-        .filter({ hasText: new RegExp(reEscape(folderName), "i") });
+      // `Unfiled` is a group too, so its header shares the prefix; address this
+      // pass's own folder by its exact testid (`folderHeaderFor`), never by the
+      // prefix alone.
+      const folderHeader = folderHeaderFor(page, folderName);
       await expect(
         folderHeader,
         "design 1b: the folder renders as a panel whose header names it",
@@ -230,10 +258,8 @@ test.describe("workflows-index", () => {
           "rejected (see the api defect: PATCH /api/v1/pipelines/{id} -> 4xx)",
       ).toBeHidden({ timeout: 30_000 });
       await expect(
-        page
-          .locator('[data-testid^="workflow-folder-header-"]')
-          .filter({ hasText: new RegExp(reEscape(folderName), "i") }),
-        "the empty folder is gone — no panel, no stale group",
+        folderHeaderFor(page, folderName),
+        `the empty folder is gone — no panel, no stale group (${folderName})`,
       ).toHaveCount(0);
       await expect(
         page.getByTestId("workflow-unfiled-group").getByTestId(`workflow-row-${slug}`),

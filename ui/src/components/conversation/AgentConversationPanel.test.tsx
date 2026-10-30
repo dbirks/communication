@@ -142,6 +142,21 @@ describe("AgentConversationPanel (dock)", () => {
     expect(send.hasAttribute("disabled")).toBe(false);
   });
 
+  it("explains an open turn to the controller in plain words, not the wire status", async () => {
+    // The thread header already says "starting — a worker has the turn"; the
+    // composer used to print `(status: leased)` and left the member to decode it.
+    const leased: Conversation = {
+      ...conversationFixture,
+      active_turn: turnFixture({ id: turnId, status: "leased" }),
+    };
+    renderPanel(dock(), routes(leased));
+    const explainer = await screen.findByTestId("composer-explainer");
+    expect(explainer.textContent).toContain("A turn is already open");
+    expect(explainer.textContent).toContain("starting — a worker has the turn");
+    expect(explainer.textContent).not.toMatch(/status: leased/);
+    expect(screen.getByTestId<HTMLButtonElement>("composer-send").disabled).toBe(true);
+  });
+
   it("shows the non-controller the explainer instead of a live composer", async () => {
     renderPanel(dock(), routes(controlledByOther));
     const input = await screen.findByTestId("composer-input");

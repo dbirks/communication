@@ -36,8 +36,11 @@ export type LandmarkSpec =
    * A trailing `*` matches any testid that STARTS with the rest — the ids the
    * server names (`workflow-folder-header-delivery`, `workflow-row-<slug>`),
    * whose tail is data. Same selector shape the journeys use
-   * (`[data-testid^="workflow-folder-header-"]`). */
-  | { testid: string; current?: boolean }
+   * (`[data-testid^="workflow-folder-header-"]`). `except` drops named exact
+   * ids from that prefix, for the case where one sibling of the family is NOT
+   * the thing the design claims (a prefix that matches it too would let the
+   * landmark pass on that element alone). */
+  | { testid: string; current?: boolean; except?: string[] }
   /** An accessible role, optionally with a name regex (or an exact string) and
    * a heading level. */
   | { role: string; name?: RegExp | string; level?: number }
@@ -139,11 +142,18 @@ const INDEX_ROW_MENU: Landmark = {
  * right. The header's testid carries the folder's slug (`workflow-folder-
  * header-delivery`), so the id's tail is data and only its head is asserted;
  * the header's text (name + count) is what the `1b folders` journey step
- * asserts, on the folder this pass just filed a workflow into. */
+ * asserts, on the folder this pass just filed a workflow into.
+ *
+ * `Unfiled` is a group like any other (design 1b), so its header —
+ * `workflow-folder-header-unfiled` — shares this prefix. `except` cuts it out:
+ * the claim is about a FOLDER the server named, and a screen whose only group
+ * was Unfiled must not satisfy it. The pass's own folder is named in the
+ * journey step (`folderHeaderFor` in journeys.spec.ts), which addresses that
+ * header by its exact testid. */
 const INDEX_FOLDER_HEADER: Landmark = {
   id: "index-folder-header",
-  desc: "a folder panel's header — the group's name in caps and its count on the collapse toggle",
-  any: [{ testid: "workflow-folder-header-*" }],
+  desc: "a named folder panel's header — the group's name in caps and its count on the collapse toggle",
+  any: [{ testid: "workflow-folder-header-*", except: ["workflow-folder-header-unfiled"] }],
 };
 /** A workflow row drawn under a folder. The landmark matcher asks only whether
  * something renders (fixtures.ts `missingLandmarks` has no notion of
@@ -502,11 +512,7 @@ const USED_IN_FOOTNOTE: Landmark = {
 const USED_IN_ERROR: Landmark = {
   id: "used-in-error",
   desc: "the FAILED banner saying the uses could not all be read",
-  any: [
-    { testid: "used-in-error" },
-    { role: "alert" },
-    { text: /could not all be read/i },
-  ],
+  any: [{ testid: "used-in-error" }, { role: "alert" }, { text: /could not all be read/i }],
 };
 /** The Use in a repo… dialog (2a's dialog beat). */
 const USE_DIALOG: Landmark = {
@@ -1442,7 +1448,11 @@ function specLocator(scope: Locator, spec: LandmarkSpec): Locator {
     const attribute = spec.testid.endsWith("*")
       ? `[data-testid^="${ESCAPE(spec.testid.slice(0, -1))}"]`
       : `[data-testid="${value}"]`;
-    return scope.locator(`${attribute}${spec.current ? '[aria-current="page"]' : ""}`);
+    // `except` narrows the prefix: each excluded id is cut out of the match.
+    const excluded = (spec.except ?? [])
+      .map((testid) => `:not([data-testid="${ESCAPE(testid)}"])`)
+      .join("");
+    return scope.locator(`${attribute}${excluded}${spec.current ? '[aria-current="page"]' : ""}`);
   }
   if ("role" in spec) {
     return scope.getByRole(spec.role as Parameters<Locator["getByRole"]>[0], {
