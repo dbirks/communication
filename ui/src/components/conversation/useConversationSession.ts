@@ -13,7 +13,8 @@
  * ONCE and pass it down: `useConversationEvents` owns a real socket, so two
  * sessions for one conversation would open two streams.
  */
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useActorNames, mergeLookups, nameLookup, type NameHint } from "../../api/actors";
 import { humanIdsIn } from "../../api/names";
 import { useConversationEvents, type ConnectionState } from "../../api/events";
@@ -81,6 +82,7 @@ export function useConversationSession(
   conversationId: string,
   projectId: string,
 ): ConversationSession {
+  const queryClient = useQueryClient();
   const conversation = useConversation(conversationId);
   const me = useMe();
   const { events, status } = useConversationEvents(conversationId);
@@ -167,6 +169,25 @@ export function useConversationSession(
   // prompt anyway — one active turn per conversation, migration 00003).
   const described = describeTurn(transcript.turns, activeTurn);
   const turnInProgress = Boolean(described.active);
+
+  // Design 1g, pass review defect 1: a thread whose turn is open must sit
+  // under LIVE in the list pane beside this page too. That pane groups rows
+  // off the CROSS-project summary read (ADR-0047, the
+  // `["conversations", "cross-project", …]` cache) — the one conversation
+  // list `invalidateConversation` (api/events.ts, every SSE frame) does not
+  // name: it marks the detail row and the PROJECT's lists stale, never the
+  // shell-wide shelf. So the row for the thread opened HERE kept its
+  // page-load shape: a prompt sent on this page left the row under EARLIER
+  // (status still `idle`, `has_active_turn` still absent) until the pane
+  // remounted. The two facts that move that row's shelf are the open turn
+  // and the agent's first sentence (LIVE rows print its last line) — when
+  // either flips, the pane's shelf is recomputed. The prefix key covers
+  // every keyset page of the cross-project read.
+  const agentSpoken = transcript.items.some((item) => item.kind === "agent");
+  useEffect(() => {
+    if (!conversationId) return;
+    void queryClient.invalidateQueries({ queryKey: ["conversations", "cross-project"] });
+  }, [conversationId, turnInProgress, agentSpoken, queryClient]);
 
   const onSend = (event: FormEvent) => {
     event.preventDefault();

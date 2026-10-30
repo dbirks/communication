@@ -465,12 +465,25 @@ export default function ConversationPage({
     // legacy `/p/:id/conversations/:id` page keeps its full meta line).
     const turnSpec = STATES[stateOf(TURN_STATE[described.status])];
     const streamSpec = STATES[stateOf(STREAM_STATE[status])];
+    // The readout's glyph, when one is worth printing: `queued`'s handoff
+    // glyph is a bare `·` (a dot that passes for a separator — review defect
+    // 2), and "idle — no turn yet" is the ABSENCE of a turn, so nothing here
+    // earns a state glyph at all. The word is always printed either way
+    // (handoff rule 06: state is never carried by colour alone).
+    const turnHasGlyph = Boolean(described.record || described.active) && turnSpec.glyph !== "·";
     // The shared controls stack their badge over their buttons (rail
     // styling); the pane header wears them as one pill-then-buttons row,
-    // restyled from here because the component itself is shared.
+    // restyled from here because the component itself is shared. The row
+    // stays ONE line at the phone's 390px (pass review defect 4): the acts
+    // wear the pane's own mono skin so pill + Return + Stop fit side by side
+    // above the transcript, and only a copy too long for any row ("No
+    // controller — take control to drive" + its button) lets the flex wrap.
     const pillRow =
       "[&>div:first-child]:flex [&>div:first-child]:flex-wrap [&>div:first-child]:items-center " +
-      "[&>div:first-child]:justify-end [&>div:first-child]:gap-2 [&>div:first-child]:space-y-0! " +
+      "[&>div:first-child]:justify-end [&>div:first-child]:gap-[6px] [&>div:first-child]:space-y-0! " +
+      "[&>div:first-child>span:last-child]:shrink-0 " +
+      "[&>div:first-child>span:last-child>button]:px-[10px] " +
+      "[&>div:first-child>span:last-child>button]:font-mono [&>div:first-child>span:last-child>button]:text-[11px] " +
       "[&>div:not(:first-child)]:basis-full";
     const pillSkin = session.isController
       ? "[&>div:first-child>span:first-child]:h-[24px] " +
@@ -516,7 +529,7 @@ export default function ConversationPage({
                   the journey suites, and Stop (danger) appears only while a
                   turn runs. */}
               <div
-                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-end gap-2 lg:mt-0 lg:shrink-0`}
+                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-end gap-[6px] lg:mt-0 lg:shrink-0`}
               >
                 <AgentConversationControls
                   session={session}
@@ -529,12 +542,16 @@ export default function ConversationPage({
                 />
               </div>
             </div>
-            {/* The meta line is full width; the quiet state readout shares its
-                flow below `lg` (one line after the other, never a floated
-                narrow column) and sits at the line's right at `lg+`. */}
+            {/* The meta line is ONE line at every width (pass review defect 4:
+                at 1280 it wrapped mid-copy — "Claude / Code · 1s" — and at 390
+                the compact header promises one line, so the transcript gets
+                the screen): `truncate` keeps it one row, and the ellipsis is
+                the design's own intended truncation. The quiet state readout
+                shares its flow below `lg` (one line after the other) and sits
+                at the line's right at `lg+`. */}
             <div className="mt-[2px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
               <p
-                className="font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1"
+                className="truncate font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1"
                 data-testid="conversation-meta"
               >
                 <span>{repoLabel}</span>
@@ -575,36 +592,57 @@ export default function ConversationPage({
                   </>
                 ) : null}
               </p>
-              {/* The quiet state readout (1g): the turn is one short mono word
-                  with its glyph, and the stream is a glyph whose word appears
-                  only when the connection is not live — never a chip row. */}
+              {/* The quiet state readout (1g), pass review defect 2: no
+                  leading, trailing or empty dot-segments. It reads as the
+                  turn's word with its state glyph — the glyph hidden for
+                  `queued` (its handoff glyph is a bare `·`, indistinguishable
+                  from a separator, and it led "· idle — no turn yet") and for
+                  a thread that never had a turn ("idle — no turn yet" is the
+                  ABSENCE of a turn; nothing earns a state glyph). The stream
+                  adds a visible segment only when it is NOT live: a live
+                  stream has no word to print after a separator, and "word · •"
+                  was exactly the stray tail the review named — its `role=
+                  "status"` element stays for announcements, read-only. */}
               <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] lg:mt-0 lg:shrink-0">
-                <span aria-hidden="true" className={turnSpec.tagFg}>
-                  {turnSpec.glyph}
-                </span>
+                {turnHasGlyph ? (
+                  <span aria-hidden="true" className={turnSpec.tagFg}>
+                    {turnSpec.glyph}
+                  </span>
+                ) : null}
                 <span data-testid="turn-status" className="text-faint">
                   {turnStatus}
                 </span>
-                <span aria-hidden="true" className="px-1 text-faint">
-                  ·
-                </span>
-                <span data-testid="stream-status" role="status" className={streamSpec.tagFg}>
-                  <span aria-hidden="true">{streamSpec.glyph}</span>
-                  {status === "live" ? (
-                    <span className="sr-only">live</span>
-                  ) : (
-                    <span> {status}</span>
-                  )}
-                </span>
+                {status === "live" ? (
+                  <span data-testid="stream-status" role="status" className="sr-only">
+                    live
+                  </span>
+                ) : (
+                  <>
+                    <span aria-hidden="true" className="px-1 text-faint">
+                      ·
+                    </span>
+                    <span data-testid="stream-status" role="status" className={streamSpec.tagFg}>
+                      <span aria-hidden="true">{streamSpec.glyph}</span>
+                      <span> {status}</span>
+                    </span>
+                  </>
+                )}
               </span>
             </div>
           </header>
-          {/* The transcript column (max 720px) is the pane's only scroller;
-              the thread context (workspace, artifacts, next) rides at the
-              column's end, so it stays reachable without ever pushing the
-              composer off the bottom of the pane. */}
+          {/* The transcript column (max 720px) is the pane's only scroller.
+              Pass review defect 6: design 1g's thread view holds the
+              TRANSCRIPT alone — WORKSPACE / ARTIFACTS / NEXT are not inline
+              copy — so the thread context now rides the column's end behind
+              one collapsed disclosure line: the transcript matches 1g, the
+              context is a click away at every width, and every rail testid is
+              unchanged. (1280 shows it collapsed; an expanded proof is the
+              disclosure opened, never the default.) */}
           <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-6 lg:px-6">
-            <div className="w-full min-w-0 max-w-[720px] space-y-3" data-testid="conversation-main">
+            <div
+              className="w-full min-w-0 max-w-[720px] space-y-3 [&_li.ml-auto]:border-0 [&_li.ml-auto>span.font-semibold]:sr-only"
+              data-testid="conversation-main"
+            >
               {interrupted ? (
                 <Alert
                   state="interrupted"
@@ -631,9 +669,18 @@ export default function ConversationPage({
                 }
               />
             </div>
-            <div className="mt-4 min-w-0 max-w-[720px]" data-testid="thread-context-block">
-              {rail}
-            </div>
+            <details
+              className="mt-4 min-w-0 max-w-[720px] rounded-[3px] border border-line bg-surface"
+              data-testid="thread-context-block"
+            >
+              <summary
+                className="flex min-h-[44px] cursor-pointer items-center px-[10px] py-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted min-[560px]:min-h-[26px]"
+                data-testid="thread-context-disclosure"
+              >
+                Thread details — workspace, artifacts, next
+              </summary>
+              <div className="border-t border-line px-[10px] py-[10px]">{rail}</div>
+            </details>
           </div>
           {/* The composer pins to the bottom of the pane (1g): the last thing
               on the column, visible without scrolling at any width, the ink
