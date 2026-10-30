@@ -13889,6 +13889,7 @@ C10C_MAX_TOKENS = 200
 C10C_TIMEOUT = 240                      # node timeoutSeconds; the arm's wait cap is 300 s
 C10C_BASE_URL_ENV = "COMMUNICATION_MODEL_CHAT_BASE_URL"  # what the worker actually reads
 C10C_MODELS_ENV = "COMMUNICATION_MODEL_CHAT_MODELS"      # the model allowlist (not a secret)
+C10C_REAL_OVERLAY = "compose.real.yml"  # the ONLY layer in the repo that sets the worker endpoint
 C10C_REPLY = '{"approved": "yes", "evidence": 42}'
 C10C_CONTROL_NODE_ID = "chat_control"          # the same arm's VALID-reply control
 C10C_CONTROL_NODE_KEY = "/" + C10C_CONTROL_NODE_ID
@@ -14423,8 +14424,75 @@ def c10c_control_verdicts(ctrl):
     return v
 
 
+def c10c_endpoint_cause(files):
+    """The MEASURED cause of an unset worker endpoint, from the running worker
+    container's compose config_files label (read live by
+    c14_container_compose_labels — the same label C14 recreates from). The
+    endpoint is WORKER PROCESS ENV ONLY by design (internal/worker/
+    modelchat.go: 'Endpoint, model allowlist and API key are WORKER
+    configuration — never pipeline content'; cmd/communication/worker.go
+    newModelChat: 'a node that could name its own endpoint would be a node
+    that can exfiltrate a project's content anywhere' — config.provider is
+    parsed and used for nothing), and compose.real.yml is the only layer in
+    this repo that sets it. The driver's own COMPOSE -f list (:102) omits
+    that file, so a lab brought up by `--up` has NEVER had the env. Returns
+    (cause_or_None, file-names): None when the label cannot be read — an
+    unattributed unset is reported as unreadable, never blamed on a file the
+    container does not mention."""
+    files = [str(f).strip() for f in (files or []) if str(f).strip()]
+    files = [f for f in files if f not in C14_LABEL_MISSING]
+    if not files:
+        return None, []
+    names = [os.path.basename(f) for f in files]
+    if C10C_REAL_OVERLAY in names:
+        return (f"{C10C_REAL_OVERLAY} IS among the {len(files)} file(s) this worker "
+                f"container was composed from ({', '.join(names)}) yet "
+                f"{C10C_BASE_URL_ENV} reads unset in it — the env was resolved "
+                "empty at bring-up or the container was recreated without the "
+                "overlay taking effect", names)
+    return (f"the worker container was composed from [{', '.join(names)}] — "
+            f"{C10C_REAL_OVERLAY} (the only layer that sets "
+            f"{C10C_BASE_URL_ENV}) is not among them: this lab was brought up "
+            "WITHOUT the real-model overlay (the driver's own --up rides the "
+            f"COMPOSE -f list, exactly [{', '.join(os.path.basename(f) for f in c14_compose_f_args())}])", names)
+
+
+def c10c_precondition_cause():
+    """Read c10c_endpoint_cause off THIS project's running worker-a. Pure parsing
+    lives in c10c_endpoint_cause; this only aims docker at the container compose
+    created (c14_container_compose_labels answers ([], '') when nothing is
+    provable, which stays an unattributed GAP, never an invented cause)."""
+    files, _wd = c14_container_compose_labels(WORKER_A)
+    return c10c_endpoint_cause(files)
+
+
+def c10c_leg_requirements():
+    """Why this gate cannot author its way into the C10c leg, and the exact
+    change the lab needs — one line per file. A real LLM cannot be made to
+    reply MALFORMED on demand (c10c_arm_result GAPs a valid reply), so the
+    deterministic arm must answer from a tiny OpenAI-compatible fixture the
+    DRIVER runs; but the endpoint is the worker's PROCESS ENV by design (see
+    c10c_endpoint_cause's sources), so no scratch revision can aim the call
+    at the fixture. The gate NEVER edits compose files or restarts the lab to
+    get this — it reports it."""
+    return [
+        "compose.real.yml (NO edit — its own interpolation carries the change): bring "
+        "the lab up with COMMUNICATION_LLM_BASE_URL=http://172.17.0.1:<fixture-port>/v1 "
+        f"COMMUNICATION_LLM_MODEL={C10C_MODEL} LLMC_API_KEY=<any non-empty fixture "
+        "token> (its ${LLMC_API_KEY:?} has no _FILE form in the Go code) on the "
+        "4-file up",
+        "e2e/m4/e2e_m4_exit.py (needs NEW code, gated on the endpoint pointing at it): "
+        "a stdlib http.server serving POST <base>/chat/completions, bound to 0.0.0.0 on "
+        "a § 7.0-allowed host port — the worker reaches the host at the bridge-gateway "
+        "address the C11 collector already proves (compose.m4.yml publishes its 18099 "
+        "off-loopback for exactly this); it answers chat_control's prompt with "
+        f"{C10C_CONTROL_REPLY} and chat_review's with {C10C_REPLY}",
+        "compose.yml / compose.harness.yml / compose.m4.yml: NO change",
+    ]
+
+
 def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
-                      completed_seen=None, control=None):
+                      completed_seen=None, control=None, cause=None):
     """C10c — the SAME malformed reply through the model.chat variant fails
     identically: the guarantee is the boundary's, not the adapter's.
     chat_att: a model.chat reviewer attempt row {status,error_class,output_errors},
@@ -14440,7 +14508,11 @@ def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
     the SAME declarations succeeding on the valid reply (c10c_control_verdicts).
     completed_seen: True when a node.attempt.completed exists FOR that attempt,
     False when the events were read and none matched, None when unreadable —
-    the C10c attempt's completion events are measured, not omitted."""
+    the C10c attempt's completion events are measured, not omitted.
+    cause: the MEASURED lab-level reason the endpoint is unset (c10c_endpoint_
+    cause off the running container's config_files label) — it names, in the
+    GAP text, WHICH bring-up gap left the worker without an endpoint. It rides
+    the no-row GAP only; a measured attempt is graded on its own row."""
     if not chat_att:
         why = ("no model.chat node executed in this lab "
                f"({C10C_BASE_URL_ENV} configured={endpoint_configured}): "
@@ -14449,6 +14521,8 @@ def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
                "UNPROVEN here, not satisfied by the process.exec arm")
         if endpoint_configured is False:
             why += " (a lab with no provider endpoint cannot produce the reply at all)"
+        if cause:
+            why += "; measured cause: " + str(cause)
         if arm_note:
             why += "; " + arm_note
         out = [("C10c the same malformed reply via model.chat fails identically "
@@ -14787,7 +14861,12 @@ def c10_chat_precondition(run_id=None):
     """C10c's precondition, read honestly: did ANY model.chat node execute in this lab,
     and does the worker carry a provider endpoint? Only the set/unset spelling is
     printed — never a URL, never a key; the allowlist is not a secret and is echoed.
-    Returns (attempt_row, endpoint_configured)."""
+    When the endpoint is NOT set the GAP is attributed to the MEASURED lab reason
+    (c10c_precondition_cause reads the running worker-a's compose config_files label —
+    compose.real.yml, the only layer that sets the env, is absent from every lab this
+    driver's --up brings up) and the one-line-per-file change the leg needs is printed
+    (c10c_leg_requirements) — the gate reports it, never edits compose or restarts the
+    lab. Returns (attempt_row, endpoint_configured, measured_cause_or '')."""
     rows = psql_rows(c10_sql("SELECT kind || '@@' || status || '@@' || "
                              "COALESCE(error_class,'-') FROM node_executions "
                              "WHERE kind = 'model.chat' LIMIT 1", "model.chat kind probe"),
@@ -14798,10 +14877,20 @@ def c10_chat_precondition(run_id=None):
     show("C10c model.chat precondition probe",
          f"model.chat rows in the ledger={found} worker provider "
          f"endpoint={spell} allowlist={models if models is not None else 'unreadable'}")
+    cause = ""
+    if endpoint is not True:
+        cause, ev_files = c10c_precondition_cause()
+        show("C10c why the worker has no provider endpoint (the container's "
+             f"{C14_CONFIG_FILES_LABEL} label)",
+             cause or ("the label did not read — the unset stays unattributed, "
+                       "no file is blamed that the container does not name")
+             + (f" [files={', '.join(ev_files)}]" if ev_files else ""))
+        show("C10c what the leg needs to run (one line per file; this gate never "
+             "edits compose files or restarts the lab)", "\n    ".join(c10c_leg_requirements()))
     if not found:
-        return None, endpoint
+        return None, endpoint, cause
     att = c10_attempts(run_id or "", C10_REVIEW_KEY)
-    return (att[0] if att else None), endpoint
+    return (att[0] if att else None), endpoint, cause
 
 
 def c10c_envelope_outputs(schema):
@@ -15270,7 +15359,7 @@ def c10():
     # so that path keeps today's GAP. When the endpoint IS configured the gate-
     # owned scratch arm runs the malformed reply through a real model.chat node and
     # its attempt row replaces the "no model.chat node executed" path.
-    chat_att, endpoint = c10_chat_precondition(run_id)
+    chat_att, endpoint, cause = c10_chat_precondition(run_id)
     arm_note = None
     ctrl = None
     chat_run = run_id
@@ -15283,7 +15372,7 @@ def c10():
     # instance_location under /json), and the arm's CONTROL — the SAME
     # declarations with the valid reply — must have SUCCEEDED.
     c10_emit(c10_chat_verdicts(chat_att, endpoint_configured=endpoint,
-                               arm_note=arm_note,
+                               arm_note=arm_note, cause=cause,
                                completed_seen=c10_completed_for(
                                    chat_run, (chat_att or {}).get("id")),
                                control=ctrl))

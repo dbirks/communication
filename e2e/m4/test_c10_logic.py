@@ -781,5 +781,76 @@ class C10cControl(unittest.TestCase):
         self.assertIn("c10c_scratch_arm(alice, facts)", body)
 
 
+class C10cLabCause(unittest.TestCase):
+    """C10c's GAP must NAME the measured cause of an unset worker endpoint:
+    the running worker-a container's compose config_files label is read (the
+    same label C14 recreates from) and compose.real.yml — the ONLY layer in
+    the repo that sets COMMUNICATION_MODEL_CHAT_BASE_URL (the endpoint is
+    worker process env by design; a model.chat node can never choose its own
+    endpoint) — is looked for BY NAME among the files the container reports.
+    An unreadable label invents no cause; the gate never blames a file the
+    container does not mention."""
+
+    THREE = ["/lab/compose.yml", "/lab/compose.harness.yml", "/lab/compose.m4.yml"]
+    FOUR = THREE + ["/lab/compose.real.yml"]
+
+    def test_missing_overlay_is_named_as_the_cause(self):
+        cause, names = m.c10c_endpoint_cause(self.THREE)
+        self.assertIn("compose.real.yml", cause)
+        self.assertIn("not among", cause)
+        self.assertIn("--up", cause)  # the driver's own bring-up is the named gap
+        self.assertEqual(names, ["compose.yml", "compose.harness.yml", "compose.m4.yml"])
+
+    def test_unreadable_label_invents_no_cause(self):
+        for files in (None, [], ["", "  "], ["<no value>"], ["null"]):
+            cause, names = m.c10c_endpoint_cause(files)
+            self.assertIsNone(cause, repr(files))
+            self.assertEqual(names, [], repr(files))
+
+    def test_overlay_present_but_endpoint_unset_is_its_own_cause(self):
+        cause, names = m.c10c_endpoint_cause(self.FOUR)
+        self.assertIn("compose.real.yml", cause)
+        self.assertIn("IS among", cause)
+        self.assertIn("unset", cause)
+        self.assertNotIn("not among", cause)
+        self.assertEqual(names[-1], "compose.real.yml")
+
+    def test_the_gap_carries_the_measured_cause(self):
+        v = m.c10_chat_verdicts(None, endpoint_configured=False,
+                                cause="composed from [compose.yml] — "
+                                      "compose.real.yml is not among them")
+        self.assertIsNone(one(v, "model.chat fails identically"))
+        d = detail(v, "model.chat fails identically")
+        self.assertIn("measured cause", d)
+        self.assertIn("compose.real.yml", d)
+
+    def test_a_measured_attempt_row_never_wears_the_lab_cause(self):
+        v = m.c10_chat_verdicts(GOOD_ATT, cause="whatever the label said")
+        self.assertTrue(all("measured cause" not in d for _l, _o, d in v), str(v))
+
+    def test_the_leg_requirements_name_the_env_only_endpoint_and_the_fixture(self):
+        req = " | ".join(m.c10c_leg_requirements())
+        self.assertIn("COMMUNICATION_LLM_BASE_URL", req)
+        self.assertIn("COMMUNICATION_LLM_MODEL", req)
+        self.assertIn("LLMC_API_KEY", req)
+        self.assertIn("172.17.0.1", req)          # the bridge route C11 proves
+        self.assertIn("chat/completions", req)    # the fixture is OpenAI-shaped
+        self.assertIn(m.C10C_REPLY, req)          # malformed reply served on demand
+        self.assertIn(m.C10C_CONTROL_REPLY, req)  # and the valid control reply
+        self.assertIn("NO edit", req)             # compose.real.yml is NOT edited
+        self.assertIn("NO change", req)           # the other three files do not move
+
+    def test_the_gate_wires_the_cause(self):
+        full = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = full.split("def c10():")[1].split("def c11(")[0]
+        self.assertIn("chat_att, endpoint, cause = c10_chat_precondition(run_id)", body)
+        i = body.index("c10_chat_verdicts(")
+        self.assertIn("cause=cause", body[i:i + 400])
+        pre = full.split("def c10():")[0]
+        self.assertIn("c10c_precondition_cause", pre)
+        self.assertIn("c14_container_compose_labels(WORKER_A)", pre)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
