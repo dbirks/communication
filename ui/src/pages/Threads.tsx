@@ -41,8 +41,43 @@ export interface ThreadsViewProps {
  * 1280, collapsed at 390) is not reported as lost content.
  * On a server failure the list column itself carries the single loud banner
  * (`ThreadListPane ownsError`) so the error still reaches the phone; the thread
- * column does not repeat it (review: the failure was shown twice).
+ * column does not repeat it (review: the failure was shown twice). It keeps
+ * drawing its honest at-rest prompt though — pass review 1g defect 5: hiding
+ * the column on a failed read left a BLANK pane beside the banner at 1280, and
+ * an empty screen reads as a broken app; "No thread selected" is the true
+ * statement of that column either way (no thread is selected), and the one
+ * loud refusal still lives in the list.
  */
+/**
+ * The right-hand thread column of the 1g layout, at rest: the honest "no
+ * thread selected" prompt. `/threads` draws it beside its own list, and a
+ * project's Threads tab (design 1b) draws the SAME column beside the SAME
+ * pane filtered to the project — it is the identical at-rest state of the
+ * open-thread column, so it lives here once. The host hides the column only
+ * below `lg`, where the phone's path to a thread is tapping a row; a failed
+ * list read KEEPS it (pass review 1g defect 5: hiding it left a blank pane
+ * beside the banner at 1280 — the refusal stays the one loud banner in the
+ * list column, and this column's at-rest truth is still "no thread
+ * selected").
+ */
+export function ThreadsDetailColumn() {
+  return (
+    <div
+      className="hidden min-h-0 min-w-0 flex-1 flex-col bg-paper lg:flex"
+      data-testid="threads-detail-column"
+    >
+      <div className="flex flex-1 items-center justify-center p-8">
+        <div className="max-w-[380px] space-y-2 text-center" data-testid="threads-no-selection">
+          <h2 className="text-title-m font-semibold">No thread selected</h2>
+          <p className="text-[12.5px] text-muted">
+            Pick a thread on the left to read it here — or start one with New thread.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
   // The pane reads the same query key, so this is a second pair of eyes on
   // one round trip — the thread column needs only the read's state to stay
@@ -56,21 +91,7 @@ export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
       <div className="flex min-h-0 w-full flex-1 border-b border-line-strong bg-surface lg:w-[320px] lg:flex-none lg:border-b-0 lg:border-r">
         <ThreadListPane projectId={projectId} ownsError={list.isError} />
       </div>
-      {list.isError ? null : (
-        <div
-          className="hidden min-h-0 min-w-0 flex-1 flex-col bg-paper lg:flex"
-          data-testid="threads-detail-column"
-        >
-          <div className="flex flex-1 items-center justify-center p-8">
-            <div className="max-w-[380px] space-y-2 text-center" data-testid="threads-no-selection">
-              <h2 className="text-title-m font-semibold">No thread selected</h2>
-              <p className="text-[12.5px] text-muted">
-                Pick a thread on the left to read it here — or start one with New thread.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      <ThreadsDetailColumn />
     </div>
   );
 }

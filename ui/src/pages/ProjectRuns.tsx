@@ -7,17 +7,23 @@
  * run" — at 390 that pane was most of the screen and said nothing.
  *
  * Honesty rules this page obeys: since ADR-0064 the wire carries each run's own
- * `title` and repository, so a row shows them when the run has them and the
- * workflow slug from the library plus `#short-id` when it does not — never an
- * invented title. The row shows the pinned revision digest the server reports
- * and the wall clock it derives from `started_at`/`finished_at`, and its status
- * is the app's short state word (`SHORT_WORD`, one table with the run pages),
- * never the wire's `waiting_human` spelled out. "New run" opens `NewRunForm`,
- * whose fields are read off the pinned revision's `spec.inputs` — the page
- * never invents an input shape of its own.
+ * `title` and repository, so a row titles itself with that title when the run
+ * has one and with the workflow slug from the library when it does not — never
+ * an invented title, and never an upper-cased hex id standing in for a name
+ * (pass-2 review: `#30OABCBF` was the row's headline). The row's second line
+ * is the repository the server names and the wall clock it derives from
+ * `started_at`/`finished_at` — no unlabelled digest; the revision the run is
+ * pinned to is said on the run's own page. Its status is the app's short state
+ * word (`SHORT_WORD`, one table with the run pages), never the wire's
+ * `waiting_human` spelled out.
+ *
+ * Starting a run has ONE door — the header band's `Start run`, which lands
+ * here with `?new=1` and opens `NewRunForm` (whose fields are read off the
+ * pinned revision's `spec.inputs`). The panel used to carry its own "New run"
+ * button beside that verb; the review named the duplicate, so it is gone.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
@@ -70,9 +76,10 @@ export interface RunsListColumnProps {
 }
 
 /**
- * The runs list: panel bar, "New run", the filter lenses, the rows. Top-level
- * runs only — children belong to their parent's tree (`route 24`), and a list
- * that mixed them would read as independent work.
+ * The runs list: panel bar, the filter lenses, the rows. Top-level runs only —
+ * children belong to their parent's tree (`route 24`), and a list that mixed
+ * them would read as independent work. There is no "New run" button here: the
+ * band's `Start run` is the page's one door into the form (design 1b).
  *
  * It is a component rather than markup inside the route so the run page's
  * Diagnostics arm and the tests can mount it against one read.
@@ -89,7 +96,6 @@ export function RunsListColumn({
   // answered, and `null` (still loading / failed) presses no chip at all.
   const [picked, setPicked] = useState<RunsFilter | null>(null);
   const [latched, setLatched] = useState<RunsFilter | null>(null);
-  const [composing, setComposing] = useState(false);
 
   const slugs = useMemo(
     () =>
@@ -140,37 +146,8 @@ export function RunsListColumn({
       headingId="runs-column-heading"
       headingLevel={2}
       className={className}
-      meta={
-        <Button
-          variant="secondary"
-          compact
-          onClick={() => setComposing((current) => !current)}
-          aria-expanded={composing}
-          aria-controls="new-run-panel"
-          data-testid="runs-new"
-        >
-          New run
-        </Button>
-      }
     >
       <div className="space-y-[10px] p-[10px]">
-        {composing ? (
-          <div
-            id="new-run-panel"
-            className="rounded-[3px] border border-line-strong bg-paper p-[10px]"
-          >
-            <h3 id="new-run-panel-heading" className="text-[13px] font-semibold">
-              New run
-            </h3>
-            <div className="pt-[6px]">
-              <NewRunForm
-                projectId={projectId}
-                onCancel={() => setComposing(false)}
-                onCreated={() => setComposing(false)}
-              />
-            </div>
-          </div>
-        ) : null}
         <div className="flex flex-wrap gap-[6px]" role="group" aria-label="Filter runs">
           {(["attention", "active", "waiting", "all"] as const).map((name) => (
             <button
@@ -245,9 +222,11 @@ export function RunsListColumn({
 }
 
 /**
- * One run. Two truncating lines — the name and its state, then the machine
- * facts in mono — so the row survives 390: nothing here is a fixed-width chip
- * row that eats the title.
+ * One run. Two truncating lines — the readable title and its state, then
+ * `repo · age` in mono — so the row survives 390: nothing here is a
+ * fixed-width chip row that eats the title, and nothing is a hex string
+ * standing where a name should be. The run's own page carries the pinned
+ * digest, the `#short-id` handle and the failure cause in full.
  */
 function RunRow({
   run,
@@ -270,8 +249,11 @@ function RunRow({
     >
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 flex-wrap items-center gap-[6px]">
+          {/* ADR-0064: the run's own title when the wire serves one; the
+              workflow slug from the library when it does not. Never an
+              upper-cased id — an id is a handle, not a subject line. */}
           <span className="min-w-0 truncate text-[13px] font-semibold text-ink">
-            {run.title ?? `#${shortId(run.id)} ${slug}`}
+            {run.title ?? slug}
           </span>
           <RunStateChip status={run.status} />
           {run.parent_run_id ? (
@@ -279,10 +261,8 @@ function RunRow({
           ) : null}
         </span>
         <span className="block truncate font-mono text-[10.5px] text-muted">
-          {/* ADR-0064: the run's own repository when the server names one;
-              the digest and the clock are unchanged. */}
-          {shortDigest(run.revision_digest)}
-          {run.repository_name ? ` · ${run.repository_name}` : ""} · {elapsed(run)}
+          {run.repository_name ? `${run.repository_name} · ` : ""}
+          {elapsed(run)}
           {run.failed_cause ? ` · ${run.failed_cause}` : ""}
         </span>
       </span>
@@ -312,32 +292,11 @@ export function RunStateChip({
   );
 }
 
-/** The run's own status in the same short word, for a page with no chip. */
+/** The run's own status in the same short word, for a page with no chip — the
+ * mono line beside the child run's slug, the tree row, the header chip: one
+ * table (`SHORT_WORD`), never the wire's token spelled out as "waiting human". */
 export function runStateWord(status: RunStatus): string {
   return SHORT_WORD[stateOf(RUN_STATE[status])];
-}
-
-/**
- * The workbench's run-status chip. Its label is the wire's status in words
- * (`waiting_human` → "waiting human"), which is what the run page's own header
- * says; the project's Runs tab uses `RunStateChip`, which says the same state
- * in the app's short word.
- */
-export function RunStatusChip({
-  status,
-  testid = "run-status",
-}: {
-  status: RunStatus;
-  testid?: string;
-}) {
-  const state: StateName = RUN_STATE[status] ?? "info";
-  return (
-    <StatusChip
-      state={state}
-      label={status.replaceAll("_", " ")}
-      labelProps={{ "data-testid": testid, role: "status" }}
-    />
-  );
 }
 
 /** `#482`-style handle: the last eight characters of the run's id. */
@@ -390,7 +349,9 @@ export default function ProjectRuns() {
 }
 
 /**
- * The list and its footnote, in the frame's body column.
+ * The list, the one door into the form, and the footnote, in the frame's body
+ * column — at the full width of that column (the README: these bodies are not
+ * capped; the centred `56rem` column was the pass-2 defect).
  *
  * It is a component rather than markup in the route so that its `runs` read
  * mounts in the SAME commit as the header band's own reads: a page-level
@@ -400,9 +361,24 @@ export default function ProjectRuns() {
  * refusal: the list route answers the same 404/403 the project read does for a
  * caller it hides the project from, and a run column — or an empty-state
  * sentence — around a project she cannot open says more than the API did.
+ *
+ * `?new=1` — the state the band's `Start run` navigates with — opens the run
+ * form above the list; `Cancel` closes it and cleans the URL, so a reload of
+ * the plain tab does not press the form again.
  */
 export function RunsTabBody({ projectId }: { projectId: string }) {
   const runs = useProjectRuns(projectId);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const composing = searchParams.get("new") === "1";
+  const closeForm = () =>
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete("new");
+        return next;
+      },
+      { replace: true },
+    );
 
   if (projectAccessRefused(runs.error)) {
     return (
@@ -415,7 +391,15 @@ export function RunsTabBody({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[56rem] space-y-[10px]">
+    <div className="min-w-0 space-y-[10px]">
+      {composing ? (
+        // A raised card, not a titled panel: `NewRunForm` carries its own
+        // "New run" heading (`new-run-heading` is the form's accessible
+        // name), and a panel bar above it would say the same words twice.
+        <div className="rounded-[3px] border border-line-strong bg-surface p-[12px]">
+          <NewRunForm projectId={projectId} onCancel={closeForm} />
+        </div>
+      ) : null}
       <RunsListColumn projectId={projectId} />
       <p className="font-mono text-[10.5px] leading-[16px] text-faint">
         Every row opens its run — definition, steps and timeline. What a run of this project looks

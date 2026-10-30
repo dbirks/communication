@@ -196,7 +196,9 @@ describe("/p/:projectId — the header band and its tabs", () => {
     expect(screen.queryByText(/New conversation/i)).toBeNull();
     expect(screen.getByTestId("project-new-conversation").textContent).toBe("New thread");
     expect(screen.getByTestId("project-start-run").getAttribute("href")).toBe(
-      `/p/${projectId}/runs`,
+      // The band's `Start run` is the Runs tab's one door into the form — it
+      // navigates with `?new=1` (the panel's own "New run" button is gone).
+      `/p/${projectId}/runs?new=1`,
     );
   });
 
@@ -824,7 +826,7 @@ describe("/p/:projectId — the inventory column", () => {
     );
   });
 
-  it("prefers ADR-0065's served repository and draws the served last line on the row's one line", async () => {
+  it("prefers ADR-0065's served repository and draws the served last line — one line at md, stacked at 390", async () => {
     mounted([
       {
         path: conversationsPath,
@@ -851,19 +853,29 @@ describe("/p/:projectId — the inventory column", () => {
       `project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`,
     );
     expect(lastLine.textContent).toContain("Landed the checkpoint; waiting on review.");
-    // ONE line, like the design: glyph · title · last line · `repo · agent` ·
-    // age are all direct children of the row, each truncating with a full
-    // `title` tooltip — the pass-2 review found these three stacked as block
-    // lines so a full row wrapped to two/three lines at 1280.
-    const cells = Array.from(row.children).filter(
+    // ONE line at `md` and up, like the design: the two grouping wrappers
+    // dissolve into the row's five-column grid (`md:contents`), so glyph ·
+    // title · last line · `repo · agent` · age are still five cells, each
+    // text one truncating with a full `title` tooltip. Below `md` the same
+    // DOM stacks (title line, last line, meta) — at 390 one line truncated
+    // every cell to noise (this brief's pass-2 review), and at 1280 stacked
+    // block-lines read as paragraphs (the earlier pass-2 review); one DOM
+    // answers both. (Project.test.tsx adjusted by project-tabs-2 for the
+    // stacked-at-390 contract.)
+    const cells = Array.from(row.querySelectorAll(":scope > span > span")).filter(
       (cell) => !cell.className.includes("sr-only") && !cell.hasAttribute("aria-hidden"),
     );
     expect(cells).toHaveLength(4);
     // The three text cells truncate; the age is a short right-aligned token.
-    const [titleCell2, lastLineCell, metaCell, ageCell] = cells;
-    for (const cell of [titleCell2, lastLineCell, metaCell])
+    const [titleCellEl, ageCell, lastLineCell, metaCell] = cells;
+    for (const cell of [titleCellEl, lastLineCell, metaCell])
       expect(cell.className.split(/\s+/)).toContain("truncate");
     expect(ageCell.className.split(/\s+/)).toContain("shrink-0");
+    // The row stacks below `md` and grids from `md` up.
+    expect(row.className).toContain("flex-col");
+    expect(row.className).toContain("md:grid");
+    // The title is ink 600, not the link's blue (the review: title in ink).
+    expect(titleCellEl.className.split(/\s+/)).toContain("text-ink");
     // The title and the last line keep their whole text as a tooltip, so
     // truncating on screen never loses it.
     expect(lastLine.getAttribute("title")).toBe("Landed the checkpoint; waiting on review.");

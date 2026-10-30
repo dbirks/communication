@@ -12,6 +12,12 @@
  * repository on a run, so a callout names its run by the workflow slug the
  * library serves, its short id and the `failed_cause` the server reported —
  * never an invented sentence about what went wrong.
+ *
+ * Shape (pass-2 review, 390): the bar's mono meta truncates instead of
+ * wrapping against the label — `NEEDS YOUR DECISION` never sits on two lines
+ * against a long workflow name — and the buttons sit *under* the body on the
+ * phone, where side-by-side squeezed both. From `md` up the body and the
+ * actions share the row, as the design draws it.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
@@ -73,6 +79,17 @@ export function failedCauseInWords(cause: string | null | undefined): string {
     default:
       return `The run stopped: ${cause}`;
   }
+}
+
+/** The bar's right slot, in one line at any width: the workflow name ellipses
+ *  before the bar ever wraps a second line against `NEEDS YOUR DECISION`, and
+ *  the whole meta stays in the element's tooltip. */
+function BarMeta({ text }: { text: string }) {
+  return (
+    <span className="block max-w-[38vw] truncate text-right md:max-w-none" title={text}>
+      {text}
+    </span>
+  );
 }
 
 export interface NeedsYouProps {
@@ -189,8 +206,39 @@ function DecisionCallout({
       state="waiting"
       label="NEEDS YOUR DECISION"
       testid={`project-attention-decision-${key}`}
-      meta={meta}
-      action={
+      meta={<BarMeta text={meta} />}
+    >
+      {/* Body first, actions after: stacked on the phone (the review's 390
+          finding), side by side from `md` up (the design's inline actions). */}
+      <div className="flex flex-col gap-[8px] md:flex-row md:items-center md:gap-[10px]">
+        <div className="min-w-0 flex-1">
+          <p
+            className={`text-[13.5px] leading-[19px] font-medium ${ATTENTION_TITLE_CLAMP}`}
+            title={approval.summary}
+          >
+            {attentionTitle(approval.summary)}
+          </p>
+          <p className="mt-[6px] flex flex-wrap items-center gap-[6px] font-mono text-[10.5px] text-st-waiting-pale-fg">
+            <StatusChip
+              state="waiting"
+              label="approval"
+              className="h-[15px]"
+              labelProps={{ "data-testid": `project-attention-decision-status-${key}` }}
+            />
+            <span>
+              run #{shortId(approval.run_id)} · {approval.node_instance_key ?? "gate"}
+            </span>
+          </p>
+          {error ? (
+            <p
+              className="mt-[6px] font-mono text-[10.5px] text-st-failed-pale-fg"
+              role="alert"
+              data-testid={`project-attention-decision-error-${key}`}
+            >
+              × {error}
+            </p>
+          ) : null}
+        </div>
         <div className="flex shrink-0 flex-wrap items-center gap-[8px]">
           <Link
             to={routes.approval(approval.id)}
@@ -234,34 +282,7 @@ function DecisionCallout({
             </Button>
           )}
         </div>
-      }
-    >
-      <p
-        className={`text-[13.5px] leading-[19px] font-medium ${ATTENTION_TITLE_CLAMP}`}
-        title={approval.summary}
-      >
-        {attentionTitle(approval.summary)}
-      </p>
-      <p className="mt-[6px] flex flex-wrap items-center gap-[6px] font-mono text-[10.5px] text-st-waiting-pale-fg">
-        <StatusChip
-          state="waiting"
-          label="approval"
-          className="h-[15px]"
-          labelProps={{ "data-testid": `project-attention-decision-status-${key}` }}
-        />
-        <span>
-          run #{shortId(approval.run_id)} · {approval.node_instance_key ?? "gate"}
-        </span>
-      </p>
-      {error ? (
-        <p
-          className="mt-[6px] font-mono text-[10.5px] text-st-failed-pale-fg"
-          role="alert"
-          data-testid={`project-attention-decision-error-${key}`}
-        >
-          × {error}
-        </p>
-      ) : null}
+      </div>
     </Alert>
   );
 }
@@ -298,8 +319,34 @@ function StoppedRunCallout({
       label={SHORT_WORD[state].toUpperCase()}
       role="alert"
       testid={`project-attention-run-${key}`}
-      meta={meta}
-      action={
+      meta={<BarMeta text={meta} />}
+    >
+      {/* Same shape as the decision callout: body above actions on the phone,
+          inline from `md` up. */}
+      <div className="flex flex-col gap-[8px] md:flex-row md:items-center md:gap-[10px]">
+        <div className="min-w-0 flex-1">
+          <p className="text-[13.5px] leading-[19px] font-medium">
+            {failedCauseInWords(run.failed_cause)}
+          </p>
+          <p className="mt-[6px] flex flex-wrap items-center gap-[6px] font-mono text-[10.5px]">
+            <StatusChip
+              state={state}
+              label={SHORT_WORD[state]}
+              className="h-[15px]"
+              labelProps={{ "data-testid": `project-attention-run-status-${key}` }}
+            />
+            <span>run #{shortId(run.id)}</span>
+          </p>
+          {error ? (
+            <p
+              className="mt-[6px] font-mono text-[10.5px] text-st-failed-pale-fg"
+              role="alert"
+              data-testid={`project-attention-run-error-${key}`}
+            >
+              × {error}
+            </p>
+          ) : null}
+        </div>
         <div className="flex shrink-0 flex-wrap items-center gap-[8px]">
           <Link
             to={routes.run(run.id)}
@@ -352,29 +399,7 @@ function StoppedRunCallout({
             </Button>
           ) : null}
         </div>
-      }
-    >
-      <p className="text-[13.5px] leading-[19px] font-medium">
-        {failedCauseInWords(run.failed_cause)}
-      </p>
-      <p className="mt-[6px] flex flex-wrap items-center gap-[6px] font-mono text-[10.5px]">
-        <StatusChip
-          state={state}
-          label={SHORT_WORD[state]}
-          className="h-[15px]"
-          labelProps={{ "data-testid": `project-attention-run-status-${key}` }}
-        />
-        <span>run #{shortId(run.id)}</span>
-      </p>
-      {error ? (
-        <p
-          className="mt-[6px] font-mono text-[10.5px] text-st-failed-pale-fg"
-          role="alert"
-          data-testid={`project-attention-run-error-${key}`}
-        >
-          × {error}
-        </p>
-      ) : null}
+      </div>
     </Alert>
   );
 }

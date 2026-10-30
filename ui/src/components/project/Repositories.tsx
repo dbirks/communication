@@ -91,14 +91,24 @@ export function Repositories({ project }: RepositoriesProps) {
       headingLevel={2}
       meta={
         isMaintainer ? (
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-            data-testid="repo-add-toggle"
-          >
-            + add
-          </button>
+          // One line at any width (pass-2 review, 390): below 560px the
+          // shell's phone floor (tokens.css `APP-SHELL-PHONE`) makes every
+          // `main button` 44px tall, and this bar grew to twice its siblings
+          // (53px against 24px). The opener stays a real button — the wrapper
+          // holds the bar's line box and clips the floor's growth, so the
+          // visible, tappable `+ add` sits in the bar exactly like the
+          // sibling panels' header links, and the form it opens carries the
+          // 44px targets where the reader actually aims.
+          <span className="flex h-[14px] items-center overflow-hidden min-[560px]:h-auto min-[560px]:overflow-visible">
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              data-testid="repo-add-toggle"
+            >
+              + add
+            </button>
+          </span>
         ) : undefined
       }
     >

@@ -37,18 +37,19 @@ function mountRuns(runs?: unknown, extra: RouteStub[] = []) {
 }
 
 describe("/projects/:projectId/runs", () => {
-  it("lists top-level runs from the API with their slug, status and digest", async () => {
+  it("lists top-level runs from the API with a readable title and state", async () => {
     const { requests } = mountRuns({ runs: [...wireRunList.runs, childRun] });
 
     const list = await screen.findByTestId("runs-list");
     const row = await within(list).findByTestId(`run-row-${WIRE_RUN_ID}`);
-    // The row names the pipeline by its library slug: this row carries no
-    // `title` (a pre-ADR-0064 server or an unnamed run), so the fallback is
-    // drawn — never an invented subject line.
+    // The row titles itself with the workflow slug from the library: this row
+    // carries no `title` (a pre-ADR-0064 server or an unnamed run), and an id
+    // is never a subject line (pass-2 review: `#30OABCBF …` was).
     expect(row.textContent).toContain("feature-development");
     expect(within(row).getByTestId("run-status").textContent).toContain("running");
-    // The row carries the pinned digest, not an invented revision number.
-    expect(row.textContent).toContain("3f2f3f2f3f2f");
+    // No unlabelled hex digest on the row: the revision the run is pinned to
+    // is said on the run's own page, not as noise here.
+    expect(row.textContent).not.toContain("3f2f3f2f3f2f");
     expect(requestsTo(requests, RUNS_PATH)).toHaveLength(1);
 
     // A child run belongs to its parent's tree, never to this list.
@@ -66,9 +67,9 @@ describe("/projects/:projectId/runs", () => {
 
     const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
     expect(row.textContent).toContain("Add saved cards to checkout");
-    // The repository joins the mono line; the digest and the clock stay.
+    // The repository joins the mono line with the clock; the digest stays off.
     expect(row.textContent).toContain("widgets-core");
-    expect(row.textContent).toContain("3f2f3f2f3f2f");
+    expect(row.textContent).not.toContain("3f2f3f2f3f2f");
     // The titled row does not also print the slug headline — one name per row.
     expect(row.textContent).not.toContain("feature-development");
   });
@@ -168,7 +169,36 @@ describe("/projects/:projectId/runs", () => {
     mountRuns();
     const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
     expect(row.getAttribute("href")).toBe(`/runs/${WIRE_RUN_ID}`);
-    expect(row.textContent).toMatch(/#\w{8} feature-development/);
+    // The title is the workflow slug, not an upper-cased id-handle.
+    expect(row.textContent).toContain("feature-development");
+    expect(row.textContent).not.toMatch(/#\w{8}/);
+  });
+});
+
+/**
+ * One door into the form (pass-2 review): the RUNS panel dropped its own
+ * "New run" button — the header band's `Start run` navigates here with
+ * `?new=1`, which opens `NewRunForm` above the list.
+ */
+describe("the Runs tab opens its form through the band's Start run", () => {
+  it("presses no form on a plain visit — and the panel has no button of its own", async () => {
+    mountRuns();
+    expect(await screen.findByTestId("runs-list")).toBeTruthy();
+    // No panel button of its own any more…
+    expect(screen.queryByTestId("runs-new")).toBeNull();
+    // …and no form on a plain visit to the tab.
+    expect(screen.queryByTestId("new-run-form")).toBeNull();
+    // The band's verb carries the intent in the URL.
+    expect(screen.getByTestId("project-start-run").getAttribute("href")).toBe(
+      `/p/${wireProjectId}/runs?new=1`,
+    );
+  });
+
+  it("opens NewRunForm above the list at ?new=1, and Cancel cleans the URL", async () => {
+    renderApp({ path: `/projects/${wireProjectId}/runs?new=1`, routes: routes() });
+    expect(await screen.findByTestId("new-run-form", undefined, { timeout: 5_000 })).toBeTruthy();
+    fireEvent.click(screen.getByTestId("new-run-cancel"));
+    expect(screen.queryByTestId("new-run-form")).toBeNull();
   });
 });
 

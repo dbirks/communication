@@ -1,12 +1,18 @@
 /**
- * The project's Threads tab (Projects Review design 1b): the 1b header band and
- * tab row above the list, and the project's threads as the list rows the Threads
- * page draws — the review's finding was that this route still rendered the OLD
- * page (section rail, `CONVERSATIONS` panel, `profile:` / `controller:` /
- * `updated: <ISO>` lines, a `New conversation` button).
+ * The project's Threads tab (Projects Review design 1b, screen 1g): the 1b
+ * header band and tab row above the SAME 1g view `/threads` draws — the
+ * 320px list pane and the open-thread column — filtered to this project.
  *
- * `10-ui-design-handoff.md` J2 still holds: a member sees their conversations
- * and who is driving each one — in words now, not as wire field names.
+ * The pass-2 review's finding was that this route drew its own card list
+ * beside the band (`THREADS` panel, `all/manual/from runs` chips of its own,
+ * `conversation-row-*` rows): two thread lists, two row shapes, one product.
+ * It is now the shared pane (`components/threads/ThreadListPane`), so these
+ * assertions are the pane's ids at the project route — and the ADR-0043 wire
+ * contract the tab kept: the debounced title search and `from runs` travel to
+ * `GET /projects/{id}/conversations` as `q` and `origin`, server-side.
+ *
+ * `10-ui-design-handoff.md` J2: a member sees their threads and reads them in
+ * the app's words, not the wire's field names.
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -32,9 +38,8 @@ import type { ConversationSummary } from "../api/types";
  * admits the page, then project, then conversations) and the repaint each one
  * answers. `findBy*`/`waitFor` wait 1000 ms by default, which measures the
  * runner rather than the page: that row lands in ~143 ms idle but was measured
- * at 3.9 s with the CPU oversubscribed ~5x (22 cores, 66 spinners, a second
- * full suite running alongside) — the point where this file's first test flakes
- * in CI. Budgets at real boundaries, never retries.
+ * at 3.9 s with the CPU oversubscribed ~5x — the point where this file's first
+ * test flakes in CI. Budgets at real boundaries, never retries.
  */
 const READ_MS = 5_000;
 /** Every boundary one test can still be waiting on, summed, as its watchdog. */
@@ -49,6 +54,7 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
     me,
     ...extra,
     { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
+    { path: "/api/v1/projects", body: { items: [projectFixture] } },
     { path: projectPath, method: "GET", body: projectFixture },
     { path: `${projectPath}/repos`, method: "GET", body: { items: [] } },
     { path: `${projectPath}/members`, method: "GET", body: { items: [] } },
@@ -62,14 +68,13 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
 }
 
 /**
-/**
- * The tab list is the project's own; the search and the origin filter travel to
- * the list route (`q`, `origin` — ADR-0043), and a run-origin row keeps its
- * badge, which is the deep link into the Run Workbench. The rows are the 1g
- * list rows: the panel they replace was a separate card style, which is what
- * the pass-2 review asked to stop drawing.
+ * The tab is 1g at one project: the list pane carries the rows (the pane's
+ * `thread-row-*` ids — there is no second `conversation-row-*` card list),
+ * and beside it stands the thread column at rest. Search and `from runs` hit
+ * the list route as `q`/`origin` (ADR-0043); `mine` narrows client-side, the
+ * same chip `/threads` draws.
  */
-describe("/p/:projectId/conversations — the project's thread list", () => {
+describe("/p/:projectId/conversations — the 1g view, filtered to the project", () => {
   it(
     "renders the 1b frame: the header band, the tab row, Threads marked, no rail",
     async () => {
@@ -90,41 +95,37 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
       expect(
         within(tabs).getByTestId("project-tab-overview").getAttribute("aria-current"),
       ).toBeNull();
-      // ONE navigation: the old left `ProjectSectionNav` rail is gone, so the
-      // only "Project sections" landmark on the page is the header's tab row.
+      // ONE navigation: the only "Project sections" landmark on the page is
+      // the header's tab row.
       expect(screen.getAllByRole("navigation", { name: /project sections/i })).toHaveLength(1);
-      // No breadcrumb and no second page title of the old layout's shape.
-      expect(screen.queryByText(/\bM4\b.*\/\s*Threads/)).toBeNull();
+      // The band runs across the full-bleed route: no shell `max-w-5xl`
+      // column around it (the frame dropped its `-mx-4` pad-bleed when the
+      // route joined `App.tsx`'s full-bleed list).
+      expect(screen.getByTestId("project-conversations").className).not.toContain("-mx-4");
     },
     TEST_TIMEOUT,
   );
 
   it(
-    "lists each thread as a row: title, agent, relative age — no wire field names",
+    "lists each thread as a 1g pane row: title, agent, relative age — no wire field names",
     async () => {
       renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
 
-      // The row arrives when `GET .../conversations` answers — awaited inside
-      // that boundary's budget, not raced against it.
-      const row = await screen.findByTestId("conversation-row-refactor-billing", undefined, {
+      const row = await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
       });
+      // The row lives in the shared pane, inside the project's frame.
+      expect(row.closest('[data-testid="threads-page"]')).toBeTruthy();
       expect(row.textContent).toContain("Refactor billing");
-      // The list row carries only the profile id, so the UI resolves the name —
-      // and says the name alone, not `profile: <name>`.
+      // The summary names only the profile id, so the pane resolves the name.
       expect(row.textContent).toContain("Claude Code");
       expect(row.textContent).not.toContain("profile:");
-      // Who may answer the agent is still on the row, in a sentence rather than
-      // as `controller: <kind>`.
-      expect(row.textContent).toContain("Ada Lovelace is driving it");
       expect(row.textContent).not.toContain("controller:");
-      // The state rides the glyph + its word (identity rule 06), not the wire's
-      // `active` / `idle` value in uppercase.
-      expect(row.textContent).toContain("running");
+      // The state rides the glyph (identity rule 06); the wire's raw status is
+      // never spelled out.
       expect(row.textContent).not.toMatch(/\bACTIVE\b/);
       // The clock is relative, like every other age in the app.
       expect(row.textContent).not.toContain("2026-10-14T18:05:00Z");
-      expect(row.textContent).not.toContain("updated:");
       expect(row.textContent).toMatch(/\d+[smhd]/);
       expect(row.getAttribute("href")).toBe(`/threads/${conversationFixture.id}`);
     },
@@ -132,17 +133,29 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
   );
 
   it(
-    "starts a conversation with a profile from the directory and opens it",
+    "stands the open-thread column at rest beside the pane",
+    async () => {
+      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+
+      await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
+        timeout: READ_MS,
+      });
+      // The same at-rest prompt `/threads` draws — one product, one empty.
+      expect(screen.getByTestId("threads-detail-column")).toBeTruthy();
+      expect(screen.getByTestId("threads-no-selection").textContent).toContain(
+        "No thread selected",
+      );
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "starts a thread from the pane's own verb, with this project fixed",
     async () => {
       const { requests } = renderApp({
         path: `/p/${projectFixture.id}/conversations`,
         routes: routes([
-          {
-            path: conversationsPath,
-            method: "POST",
-            status: 201,
-            body: conversationFixture,
-          },
+          { path: conversationsPath, method: "POST", status: 201, body: conversationFixture },
           {
             path: `/api/v1/conversations/${conversationFixture.id}`,
             method: "GET",
@@ -151,12 +164,18 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
         ]),
       });
 
-      await screen.findByTestId("conversation-row-refactor-billing", undefined, {
+      await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
       });
-      // The create form is the shared dialog now: open it from the section button.
-      fireEvent.click(screen.getByTestId("conversations-new-open"));
-      await screen.findByTestId("new-conversation-dialog", undefined, { timeout: READ_MS });
+      fireEvent.click(screen.getByTestId("threads-new-open"));
+      const dialog = await screen.findByTestId("new-conversation-dialog", undefined, {
+        timeout: READ_MS,
+      });
+      // The project is FIXED (the pane is the project's view): the dialog
+      // names it instead of offering a picker.
+      const fixed = within(dialog).getByTestId("new-conversation-dialog-project");
+      expect(fixed.tagName).not.toBe("SELECT");
+      expect(fixed.textContent).toBe(projectFixture.name);
       fireEvent.change(screen.getByTestId("conversation-new-title"), {
         target: { value: "Tighten the query layer" },
       });
@@ -168,7 +187,7 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
       });
       fireEvent.click(screen.getByTestId("conversation-new-submit"));
 
-      // One round trip: the submit's `POST /conversations`.
+      // One round trip: the submit's `POST .../conversations`.
       await waitFor(
         () => {
           const [request] = requestsTo(requests, conversationsPath, "POST");
@@ -181,8 +200,8 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
         },
         { timeout: READ_MS },
       );
-      // Created conversations are the caller's to drive: the page shows it once
-      // the read answering the navigation lands — another round trip.
+      // Created threads are the caller's to drive: the navigation lands on the
+      // thread, where the controller is named.
       await waitFor(() => expect(screen.getByTestId("controller-badge")).toBeTruthy(), {
         timeout: READ_MS,
       });
@@ -191,90 +210,28 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
   );
 
   it(
-    "creates a conversation without a first prompt when the box is empty",
-    async () => {
-      const { requests } = renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
-        routes: routes([
-          { path: conversationsPath, method: "POST", status: 201, body: conversationFixture },
-        ]),
-      });
-
-      await screen.findByTestId("conversation-row-refactor-billing", undefined, {
-        timeout: READ_MS,
-      });
-      // The create form is the shared dialog now: open it from the section button.
-      fireEvent.click(screen.getByTestId("conversations-new-open"));
-      await screen.findByTestId("new-conversation-dialog", undefined, { timeout: READ_MS });
-      fireEvent.change(screen.getByTestId("conversation-new-title"), {
-        target: { value: "Plan" },
-      });
-      fireEvent.change(screen.getByTestId("conversation-new-profile"), {
-        target: { value: claudeProfile.id },
-      });
-      fireEvent.click(screen.getByTestId("conversation-new-submit"));
-
-      // One round trip: the submit's `POST /conversations`.
-      await waitFor(
-        () => {
-          const [request] = requestsTo(requests, conversationsPath, "POST");
-          expect(JSON.parse(request.body ?? "{}")).toEqual({
-            agent_profile_id: claudeProfile.id,
-            title: "Plan",
-          });
-        },
-        { timeout: READ_MS },
-      );
-    },
-    TEST_TIMEOUT,
-  );
-
-  it(
-    "explains why a viewer cannot start a conversation",
-    async () => {
-      renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
-        routes: routes([
-          {
-            path: projectPath,
-            method: "GET",
-            body: { ...projectFixture, my_role: "viewer" },
-          },
-        ]),
-      });
-
-      await screen.findByTestId("conversation-row-refactor-billing", undefined, {
-        timeout: READ_MS,
-      });
-      expect(screen.queryByTestId("conversation-new-title")).toBeNull();
-      expect(screen.queryByTestId("conversations-new-open")).toBeNull();
-      expect(
-        screen.getByText(/Only project contributors and maintainers can start a thread/),
-      ).toBeTruthy();
-    },
-    TEST_TIMEOUT,
-  );
-
-  it(
-    "says there are no conversations yet",
+    "says there are no threads yet",
     async () => {
       renderApp({
         path: `/p/${projectFixture.id}/conversations`,
         routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
       });
 
-      // The empty state is the same boundary as the row: one conversations read.
-      await screen.findByTestId("conversation-list-empty", undefined, { timeout: READ_MS });
+      // The empty state is the pane's own, said in 1g's words.
+      const empty = await screen.findByTestId("threads-list-empty", undefined, {
+        timeout: READ_MS,
+      });
+      expect(empty.textContent).toContain("No threads yet");
     },
     TEST_TIMEOUT,
   );
 
   it(
-    "still renders the list when the route is reached directly",
+    "still renders the pane when the route is reached directly",
     async () => {
       renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
 
-      await screen.findByTestId("conversation-row-refactor-billing", undefined, {
+      await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
       });
       // The header's tab row names the same route, in the canonical `/p/…` form
@@ -295,14 +252,11 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
  */
 describe("/projects/:projectId/conversations", () => {
   it(
-    "renders the project's conversation list at the literal list URL",
+    "renders the project's thread list at the literal list URL",
     async () => {
-      renderApp({
-        path: `/projects/${projectFixture.id}/conversations`,
-        routes: routes(),
-      });
+      renderApp({ path: `/projects/${projectFixture.id}/conversations`, routes: routes() });
 
-      const row = await screen.findByTestId("conversation-row-refactor-billing", undefined, {
+      const row = await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
       });
       expect(row.textContent).toContain("Refactor billing");
@@ -347,10 +301,10 @@ describe("/projects/:projectId/conversations", () => {
         timeout: READ_MS,
       });
       expect(refusal.textContent).toContain("Project not found or you do not have access");
-      // A shell around an unreadable project is the leak: no list, no form,
-      // and no "no conversations yet" confirming more than the API said.
+      // A shell around an unreadable project is the leak: no pane, no rows,
+      // and no "no threads yet" confirming more than the API said.
       expect(screen.queryByTestId("project-conversations")).toBeNull();
-      expect(screen.queryByTestId("conversation-list")).toBeNull();
+      expect(screen.queryByTestId("threads-list")).toBeNull();
       expect(screen.queryByTestId("conversation-new-title")).toBeNull();
       expect(screen.queryByText(/No conversations yet/)).toBeNull();
     },
@@ -372,7 +326,7 @@ describe("/projects/:projectId/conversations", () => {
           timeout: READ_MS,
         }),
       ).toBeTruthy();
-      expect(screen.queryByTestId("conversation-list")).toBeNull();
+      expect(screen.queryByTestId("threads-list")).toBeNull();
     },
     TEST_TIMEOUT,
   );
@@ -390,6 +344,8 @@ describe("/projects/:projectId/conversations", () => {
       // actually went wrong instead of claiming the project is unreachable.
       await screen.findByTestId("project-conversations", undefined, { timeout: READ_MS });
       expect(screen.queryByTestId("project-conversations-not-found")).toBeNull();
+      // The pane owns the loud banner here (the thread column says nothing
+      // twice): `ownsError`, the same split `/threads` makes.
       expect((await screen.findAllByRole("alert"))[0].textContent).toContain(
         "Internal Server Error",
       );
@@ -398,8 +354,164 @@ describe("/projects/:projectId/conversations", () => {
   );
 });
 
-/* ADR-0043: where a conversation was opened — manual vs run-linked rows,
- * the All/Manual/From-runs filter and the debounced title search. */
+/* ADR-0043: the tab's search and origin filter travel to the list route —
+ * the SAME server query the pane uses — and the chips are 1g's. */
+
+describe("the project pane's search and filters ride the list route (ADR-0043)", () => {
+  /** The route table strips query strings from recorded requests, so the wire
+   * itself is spied on for the `origin`/`q` params: capture every fetch
+   * target, then hand it to the mock the app mounted under. */
+  function watchFetchTargets(): string[] {
+    const seen: string[] = [];
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(String(input));
+      return inner(input, init);
+    });
+    return seen;
+  }
+
+  it(
+    "sends the `from runs` chip as origin=run",
+    async () => {
+      const { requests } = renderApp({
+        path: `/p/${projectFixture.id}/conversations`,
+        routes: routes(),
+      });
+      const seen = watchFetchTargets();
+      await screen.findByTestId("threads-filter-runs", undefined, { timeout: READ_MS });
+
+      fireEvent.click(screen.getByTestId("threads-filter-runs"));
+      await waitFor(
+        () => {
+          expect(seen).toContain(`${conversationsPath}?origin=run`);
+        },
+        { timeout: READ_MS },
+      );
+      // The unfiltered read stayed the default: no param on either side.
+      expect(requestsTo(requests, conversationsPath, "GET").length).toBeGreaterThan(0);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "debounces the search box and sends it as q",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+        // Let the mount's reads land while every clock is fake.
+        for (let i = 0; i < 5; i += 1) {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(100);
+          });
+        }
+        const seen = watchFetchTargets();
+        const search = screen.getByTestId("threads-search");
+
+        fireEvent.change(search, { target: { value: "Refactor" } });
+        // Before the debounce elapses no filtered read is issued.
+        expect(seen).not.toContain(`${conversationsPath}?q=Refactor`);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+        expect(seen).toContain(`${conversationsPath}?q=Refactor`);
+        // Flush the mocked answer so the filtered list can paint.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        // The mocked filtered list answers with the one matching row.
+        expect(screen.getByTestId(`thread-row-${conversationFixture.id}`)).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "says no threads match when the filter finds nothing on the page",
+    async () => {
+      renderApp({
+        path: `/p/${projectFixture.id}/conversations`,
+        routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
+      });
+      await screen.findByTestId("threads-filter-runs", undefined, { timeout: READ_MS });
+
+      fireEvent.click(screen.getByTestId("threads-filter-runs"));
+      const nomatch = await screen.findByTestId("threads-nomatch", undefined, {
+        timeout: READ_MS,
+      });
+      expect(nomatch.textContent).toContain("No threads match");
+      // The unfiltered "no threads yet" is a different state.
+      expect(screen.queryByTestId("threads-list-empty")).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "narrows to my threads client-side (no route names an author)",
+    async () => {
+      const someoneElses: ConversationSummary = {
+        ...conversationSummaryFixture,
+        id: "01987a64-3333-7000-8000-abcdef012347",
+        title: "Nightly triage",
+        created_by: "01987a10-9999-7000-8000-abcdef012399",
+        created_by_display_name: "Dana Observer",
+      };
+      renderApp({
+        path: `/p/${projectFixture.id}/conversations`,
+        routes: routes([
+          { path: conversationsPath, method: "GET", body: { items: [someoneElses] } },
+        ]),
+      });
+
+      expect(
+        await screen.findByTestId(`thread-row-${someoneElses.id}`, undefined, {
+          timeout: READ_MS,
+        }),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByTestId("threads-filter-mine"));
+      expect(await screen.findByTestId("threads-nomatch")).toBeTruthy();
+      expect(screen.queryByTestId(`thread-row-${someoneElses.id}`)).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "a viewer reads the band's honest limit and keeps the 1g pane",
+    async () => {
+      renderApp({
+        path: `/p/${projectFixture.id}/conversations`,
+        routes: routes([
+          {
+            path: projectPath,
+            method: "GET",
+            body: { ...projectFixture, my_role: "viewer" },
+          },
+        ]),
+      });
+
+      await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
+        timeout: READ_MS,
+      });
+      // The band says the reader cannot start work; the pane is the shared
+      // 1g view — it says the same thing at every project the reader is in,
+      // and a refused create is the dialog's own honest banner.
+      expect(screen.getByTestId("project-role-hint").textContent).toContain("read-only");
+      expect(screen.queryByTestId("project-new-conversation")).toBeNull();
+      expect(screen.queryByTestId("project-start-run")).toBeNull();
+      expect(screen.getByTestId("threads-filter-all").textContent).toBe("all");
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+/* Where a conversation was opened stays the row badge's job on the surfaces
+ * that draw it (the inbox, the workbench): the 1g pane says origin through the
+ * `from runs` chip, not a per-row badge. This harness pins the badge's own
+ * deep-link contract, which the shared `Row` must keep honouring. */
 
 const RUN_ID = "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c";
 const NODE_EXECUTION_ID = "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d";
@@ -421,36 +533,17 @@ const runLinkedSummary: ConversationSummary = {
   },
 };
 
-describe("the list says where each conversation was opened", () => {
-  /** The route table strips query strings from recorded requests, so the wire
-   * itself is spied on for the `origin`/`q` params: capture every fetch
-   * target, then hand it to the mock the app mounted under. */
-  function watchFetchTargets(): string[] {
-    const seen: string[] = [];
-    const inner = globalThis.fetch;
-    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-      seen.push(String(input));
-      return inner(input, init);
-    });
-    return seen;
-  }
+describe("the origin badge still deep-links a run-opened thread", () => {
+  it("badges a manual row and deep-links a run-linked row", () => {
+    render(
+      <MemoryRouter>
+        <Row to={`/threads/${runLinkedSummary.id}`} data-testid="conversation-row-badge-harness">
+          <OriginBadge conversation={runLinkedSummary} />
+        </Row>
+      </MemoryRouter>,
+    );
 
-  it("badges a manual row and deep-links a run-linked row into the workbench", async () => {
-    renderApp({
-      path: `/projects/${projectFixture.id}/conversations`,
-      routes: routes([
-        {
-          path: conversationsPath,
-          method: "GET",
-          body: { items: [conversationSummaryFixture, runLinkedSummary] },
-        },
-      ]),
-    });
-
-    expect(await screen.findByTestId("conversation-origin-manual")).toBeTruthy();
-    expect(screen.getByTestId("conversation-origin-manual").textContent).toBe("Manual");
-
-    const badge = await screen.findByTestId("conversation-origin-run");
+    const badge = screen.getByTestId("conversation-origin-run");
     expect(badge.textContent).toContain("From run · Ship billing · review");
     // The badge itself is the workbench deep link: node, instance and
     // attempt. It carries link semantics (role + title) rather than an
@@ -461,7 +554,7 @@ describe("the list says where each conversation was opened", () => {
     );
   });
 
-  it("a pointer click on the run badge navigates to the workbench, not the conversation", async () => {
+  it("a pointer click on the badge navigates to the workbench, not the conversation", () => {
     // The row itself is the anchor and the badge lives inside it: a click on
     // the badge must land on the workbench deep link, never on the row's own
     // conversation href. A `useLocation` probe reports where the router is.
@@ -491,94 +584,4 @@ describe("the list says where each conversation was opened", () => {
     // …and not the row's own conversation URL.
     expect(where.textContent).not.toContain(`/conversations/${runLinkedSummary.id}`);
   });
-
-  it(
-    "sends the All/Manual/From-runs filter as origin",
-    async () => {
-      const { requests } = renderApp({
-        path: `/projects/${projectFixture.id}/conversations`,
-        routes: routes(),
-      });
-      const seen = watchFetchTargets();
-      await screen.findByTestId("conversation-filter-run", undefined, { timeout: READ_MS });
-
-      fireEvent.click(screen.getByTestId("conversation-filter-run"));
-      await waitFor(
-        () => {
-          expect(seen).toContain(`${conversationsPath}?origin=run`);
-        },
-        { timeout: READ_MS },
-      );
-
-      fireEvent.click(screen.getByTestId("conversation-filter-manual"));
-      await waitFor(
-        () => {
-          expect(seen).toContain(`${conversationsPath}?origin=manual`);
-        },
-        { timeout: READ_MS },
-      );
-      // The unfiltered read stayed the default: no param on either side.
-      expect(requestsTo(requests, conversationsPath, "GET").length).toBeGreaterThan(0);
-    },
-    TEST_TIMEOUT,
-  );
-
-  it(
-    "debounces the search box and sends it as q",
-    async () => {
-      vi.useFakeTimers();
-      try {
-        renderApp({
-          path: `/projects/${projectFixture.id}/conversations`,
-          routes: routes(),
-        });
-        // Let the mount's reads land while every clock is fake.
-        for (let i = 0; i < 5; i += 1) {
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(100);
-          });
-        }
-        const seen = watchFetchTargets();
-        const search = screen.getByTestId("conversation-search");
-
-        fireEvent.change(search, { target: { value: "Refactor" } });
-        // Before the debounce elapses no filtered read is issued.
-        expect(seen).not.toContain(`${conversationsPath}?q=Refactor`);
-
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(250);
-        });
-        expect(seen).toContain(`${conversationsPath}?q=Refactor`);
-        // Flush the mocked answer so the filtered list can paint.
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(0);
-        });
-        // The mocked filtered list answers with the one matching row.
-        expect(screen.getByTestId("conversation-row-refactor-billing")).toBeTruthy();
-      } finally {
-        vi.useRealTimers();
-      }
-    },
-    TEST_TIMEOUT,
-  );
-
-  it(
-    "says no conversations match when the filter finds nothing",
-    async () => {
-      renderApp({
-        path: `/projects/${projectFixture.id}/conversations`,
-        routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
-      });
-      await screen.findByTestId("conversation-filter-run", undefined, { timeout: READ_MS });
-
-      fireEvent.click(screen.getByTestId("conversation-filter-run"));
-      const nomatch = await screen.findByTestId("conversation-list-nomatch", undefined, {
-        timeout: READ_MS,
-      });
-      expect(nomatch.textContent).toContain("No threads match");
-      // The unfiltered "no conversations yet" is a different state.
-      expect(screen.queryByTestId("conversation-list-empty")).toBeNull();
-    },
-    TEST_TIMEOUT,
-  );
 });

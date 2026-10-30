@@ -33,17 +33,6 @@ import type { ProjectTabKey } from "./ProjectTabs";
  *  `md`), the same inset the band itself carries. */
 export const PROJECT_FRAME_BODY = "flex-1 px-[22px] py-[22px] md:px-[28px]";
 
-/**
- * `Shell.tsx` gives a route that is not in `App.tsx`'s full-bleed list
- * `px-4 py-6` inside a centred `max-w-5xl` column. The 1b band must sit on the
- * content column's top edge and carry its own `22px 28px` inset, so a framed
- * page cancels exactly the shell's padding with the same values — the band then
- * measures the shell's own padding box, never past it, which is why this cannot
- * add a sideways scroll at any width. (The clean fix is one regex in `App.tsx`,
- * outside this brief; when these routes join the full-bleed list, drop this.)
- */
-const SHELL_PAD_BLEED = "-mx-4 -mt-6";
-
 export interface ProjectFrameProps {
   /** The `:projectId` from the route. */
   projectId: string;
@@ -57,12 +46,6 @@ export interface ProjectFrameProps {
   notFoundTestid?: string;
   /** The refusal/error heading's id; defaults to `{testid}-heading`. */
   headingId?: string;
-  /**
-   * False for a full-bleed route (`/p/:id`, `/p/:id/members`), which carries no
-   * shell padding to bleed into and whose unusable branches need the band's
-   * padding from `ProjectPageShell`. Default true: the shell already pads.
-   */
-  shellPadded?: boolean;
   /** Classes for the body column; defaults to the page inset. */
   bodyClassName?: string;
   /**
@@ -81,7 +64,6 @@ export function ProjectFrame({
   heading,
   notFoundTestid,
   headingId,
-  shellPadded = true,
   bodyClassName = PROJECT_FRAME_BODY,
   children,
 }: ProjectFrameProps) {
@@ -89,15 +71,12 @@ export function ProjectFrame({
   const [threadDialogOpen, setThreadDialogOpen] = useState(false);
   const openThread = () => setThreadDialogOpen(true);
 
-  // One column for every branch that mounts no band: on a shell-padded route
-  // it is a plain wrapped line (the shell already inset it), on a full-bleed
-  // route it is `ProjectPageShell` (the page carries the band's own padding).
-  const branch = (shellTestId: string, node: ReactNode) =>
-    shellPadded ? (
-      <div data-testid={shellTestId}>{node}</div>
-    ) : (
-      <ProjectPageShell testid={shellTestId}>{node}</ProjectPageShell>
-    );
+  // Every framed route is in `App.tsx`'s full-bleed list, so the shell gives
+  // the page the bare content column and a branch that mounts no band needs
+  // the band's own padding from `ProjectPageShell`.
+  const branch = (shellTestId: string, node: ReactNode) => (
+    <ProjectPageShell testid={shellTestId}>{node}</ProjectPageShell>
+  );
 
   if (project.isPending) {
     return branch(`${testid}-loading`, <Spinner label={`Loading ${heading.toLowerCase()}`} />);
@@ -131,10 +110,7 @@ export function ProjectFrame({
 
   const data = project.data;
   return (
-    <div
-      className={`flex min-h-full flex-col bg-paper ${shellPadded ? SHELL_PAD_BLEED : ""}`}
-      data-testid={testid}
-    >
+    <div className="flex min-h-full flex-col bg-paper" data-testid={testid}>
       <ProjectHeader project={data} active={active} onNewThread={openThread} />
       <div className={bodyClassName}>{children(data, openThread)}</div>
       <NewConversationDialog

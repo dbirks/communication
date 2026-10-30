@@ -158,11 +158,15 @@ export default function App() {
     // The project overview (Projects Review design 1b) is the shared page
     // pattern: a header band across the whole content column, `20px 28px` of
     // padding and tabs sitting on the band's bottom border — none of which
-    // survives inside a centred 64rem reading column. Only the overview page
-    // and the members/activity page that left with it: every other project tab
-    // keeps the shell's column until it is rebuilt to the same pattern.
+    // survives inside a centred 64rem reading column. The overview, the
+    // members/activity page, and the Runs, Threads and Workflows tabs that
+    // draw the same 1b frame are all full-bleed: one header band, one body
+    // width, whatever tab you land on (pass-2 review: the centred column
+    // shifted the band's title ~8px and capped the body below 1208px, while
+    // the README says these bodies are not capped).
     /^\/p\/[^/]+$/.test(pathname) ||
     /^\/p\/[^/]+\/members$/.test(pathname) ||
+    /^\/p\/[^/]+\/(runs|conversations|pipelines)$/.test(pathname) ||
     // Threads (Projects Review design 1g) is the same shared page pattern:
     // the 320px list pane plus the open thread own the whole content column
     // at full height — a centred 64rem column would squeeze the pane header

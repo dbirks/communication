@@ -12,12 +12,24 @@
  * lands the line says so. When the wire serves one, the row also carries
  * `last_agent_line` — never an invented line.
  *
- * ONE line per row, like the design: glyph · title · last line ·
+ * ONE line per row at `md` and up, like the design: glyph · title · last line ·
  * `repo · agent` · age, each truncating with an ellipsis and a full `title`
  * tooltip. It used to stack the title, the last line and the mono line as three
  * `block` lines, so a row that had all three wrapped to two/three lines at 1280
  * and the panel read as paragraphs, not the design's one-line rows (pass-2
- * review). A phone never sideways-scrolls for it: every cell truncates.
+ * review).
+ *
+ * Below `md` those five cells do not fit one line at all — the same review's
+ * second half: at 390 every cell had truncated to noise (`run 01a1… · app · m4…
+ * · 22s`). So the row stacks: the title line (glyph · title · age), then the
+ * agent's last line, then the mono `repo · agent` meta — the 1g list rows'
+ * order, in this panel's 12.5px rows. The title is ink 600, not the link's
+ * blue: it is the row's name, and the whole row is the link.
+ *
+ * One DOM serves both: a flex column at the phone widths, a five-column grid
+ * from `md` up (`md:contents` dissolves the two grouping wrappers into the
+ * grid), so no element is ever rendered twice for a test or a reader to find
+ * two of.
  */
 import { Link } from "react-router";
 import { useAgentProfiles, useConversations } from "../../api/queries";
@@ -125,37 +137,45 @@ export function RecentThreads({
               <li key={thread.id}>
                 <Link
                   to={routes.thread(thread.id)}
-                  className="flex min-h-[38px] items-center gap-[10px] px-[12px] py-[6px] hover:bg-accent-wash focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                  className="flex min-h-[38px] flex-col gap-[2px] px-[12px] py-[6px] hover:bg-accent-wash focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent md:grid md:grid-cols-[auto_minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto] md:items-center md:gap-x-[10px]"
                   data-testid={`project-thread-${testidOf(thread.id)}`}
                 >
-                  <span className="shrink-0 text-center font-mono text-[11px]" aria-hidden="true">
-                    {STATES[state].glyph}
-                  </span>
-                  <span className="sr-only">{STATES[state].word}</span>
-                  <span
-                    className="min-w-0 flex-1 truncate text-[12.5px] font-semibold"
-                    title={thread.title}
-                  >
-                    {thread.title}
-                  </span>
-                  {thread.last_agent_line ? (
-                    <span
-                      className="min-w-0 flex-[2] truncate text-[12.5px] text-muted"
-                      title={thread.last_agent_line}
-                      data-testid={`project-thread-last-line-${testidOf(thread.id)}`}
-                    >
-                      {thread.last_agent_line}
+                  {/* Phone: the title line. `md`: dissolved into the grid, so
+                      glyph, title and age are cells 1, 2 and 5. */}
+                  <span className="flex min-w-0 items-center gap-[10px] md:contents">
+                    <span className="shrink-0 text-center font-mono text-[11px]" aria-hidden="true">
+                      {STATES[state].glyph}
                     </span>
-                  ) : null}
-                  <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted">
-                    {threadMeta(
-                      repo,
-                      profiles.data?.items.find((p) => p.id === thread.agent_profile_id)?.name ??
-                        null,
-                    )}
+                    <span className="sr-only">{STATES[state].word}</span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-ink"
+                      title={thread.title}
+                    >
+                      {thread.title}
+                    </span>
+                    <span className="shrink-0 font-mono text-[10.5px] text-faint md:col-start-5">
+                      {formatAge(thread.updated_at)}
+                    </span>
                   </span>
-                  <span className="shrink-0 font-mono text-[10.5px] text-faint">
-                    {formatAge(thread.updated_at)}
+                  {/* Phone: the stacked lines under the title, indented clear
+                      of the glyph. `md`: cells 3 and 4 of the one line. */}
+                  <span className="flex min-w-0 flex-col gap-[2px] pl-[21px] md:contents md:pl-0">
+                    {thread.last_agent_line ? (
+                      <span
+                        className="min-w-0 truncate text-[12.5px] text-muted md:col-start-3"
+                        title={thread.last_agent_line}
+                        data-testid={`project-thread-last-line-${testidOf(thread.id)}`}
+                      >
+                        {thread.last_agent_line}
+                      </span>
+                    ) : null}
+                    <span className="min-w-0 truncate font-mono text-[10.5px] text-muted md:col-start-4">
+                      {threadMeta(
+                        repo,
+                        profiles.data?.items.find((p) => p.id === thread.agent_profile_id)?.name ??
+                          null,
+                      )}
+                    </span>
                   </span>
                 </Link>
               </li>

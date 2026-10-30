@@ -9,18 +9,21 @@
  * with no last line). Empty, error and populated states are each proven here;
  * `/threads/:id` selects its row in the pane.
  */
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { ConversationSummary, Project } from "../api/types";
+import type { Conversation, ConversationSummary, Project } from "../api/types";
 import { renderApp } from "../test/render";
 import {
   claudeProfile,
+  conversationEvent,
   conversationFixture,
   conversationId,
   conversationSummaryFixture,
+  FakeEventSource,
   meFixture,
   otherUserId,
   projectFixture,
+  turnFixture,
   type RouteStub,
 } from "../test/fakes";
 
@@ -221,9 +224,12 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0].textContent).toContain("could not be loaded");
     expect(await screen.findByTestId("threads-list-error")).toBeTruthy();
-    // The empty thread column never draws over a failed read — a refusal must
-    // not read as "No thread selected".
-    expect(screen.queryByTestId("threads-no-selection")).toBeNull();
+    // Pass review 1g defect 5: a failed read no longer BLANKS the thread
+    // column — a dead pane beside the banner read as a broken app. The
+    // column keeps its at-rest prompt (no thread is selected either way),
+    // and the refusal is still said exactly ONCE, in the list column.
+    expect(await screen.findByTestId("threads-no-selection")).toBeTruthy();
+    expect(await screen.findAllByRole("alert")).toHaveLength(1);
     expect(requests.some((request) => request.url === crossPath && request.method === "GET")).toBe(
       true,
     );
@@ -319,10 +325,147 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(main.contains(screen.getByTestId("transcript-empty"))).toBe(true);
     expect(main.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(context.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Pass review 1g defect 6: the transcript column holds the transcript
+    // ALONE (design 1g draws no WORKSPACE / ARTIFACTS / NEXT inline) — the
+    // thread context is a collapsed disclosure at its end, every rail testid
+    // still inside it and one click from the reader at every width.
+    expect(context.tagName).toBe("DETAILS");
+    expect((context as HTMLDetailsElement).open).toBe(false);
+    expect(screen.getByTestId("thread-context-disclosure").closest("details")).toBe(context);
+    expect(within(context).getByTestId("workspace-widget")).toBeTruthy();
     // The context (workspace, artifacts, next) stays reachable in the pane —
     // it just no longer sits under the composer.
     expect(within(context).getByTestId("artifacts-rail")).toBeTruthy();
     expect(within(context).getByTestId("hand-to-workflow")).toBeTruthy();
+  });
+
+  it("wears design 1g's transcript column: the 720px cap and the plain tint bubble", async () => {
+    // Pass review 1g defect 3: the user prompt is a plain tint bubble — the
+    // shared Transcript row (used by the run-attempt pane too, outside this
+    // brief) is restyled from the column that owns the 1g design: no border,
+    // and the inline "alice:" prefix is screen-reader text again, not the
+    // design's visible copy. The column is capped at 720px as drawn.
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    const main = await screen.findByTestId("conversation-main");
+    const tokens = main.className.split(/\s+/);
+    expect(tokens).toContain("max-w-[720px]");
+    expect(tokens).toContain("[&_li.ml-auto]:border-0");
+    expect(tokens).toContain("[&_li.ml-auto>span.font-semibold]:sr-only");
+  });
+
+  it("keeps the header one compact stack: no wrapped meta line, no stray separator dots", async () => {
+    // Pass review 1g defect 2 + 4: the meta line never wraps (at 1280 it
+    // broke mid-copy — "Claude / Code · 1s"; at 390 the compact header
+    // promises one line), and the status readout has no leading, trailing or
+    // empty dot-segments: at rest it read "· idle — no turn yet · •" — a
+    // queued `·` glyph, a separator over a wordless live-stream segment.
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    const meta = await screen.findByTestId("conversation-meta");
+    expect(meta.className.split(/\s+/)).toContain("truncate");
+
+    act(() => {
+      FakeEventSource.last().open();
+    });
+    const turnWord = await screen.findByTestId("turn-status");
+    expect(turnWord.textContent).toBe("idle — no turn yet");
+    const readout = turnWord.parentElement as HTMLElement;
+    expect(readout.textContent).not.toContain("·");
+    expect(readout.textContent).not.toContain("●");
+    // The stream state keeps its announced element even when nothing prints.
+    expect(screen.getByTestId("stream-status").textContent).toBe("live");
+  });
+
+  it("shows the turn's glyph without a separator while a live turn runs", async () => {
+    // "starting — a worker has the turn · •" was the second half of review
+    // defect 2: a separator dot into a live stream with no word. The turn's
+    // own glyph rides its word; the live stream adds no ink.
+    renderApp({
+      path: `/threads/${conversationId}`,
+      routes: paneRoutes([
+        {
+          path: `/api/v1/conversations/${conversationId}`,
+          method: "GET",
+          body: { ...conversationFixture, active_turn: turnFixture() },
+        },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().open();
+    });
+    const turnWord = await screen.findByTestId("turn-status");
+    expect(turnWord.textContent).toBe("running");
+    const readout = turnWord.parentElement as HTMLElement;
+    expect(readout.textContent).not.toContain("·");
+    expect(readout.textContent).toContain("●");
+  });
+
+  it("re-shelves the open thread under LIVE when its turn opens on this page", async () => {
+    // Pass review 1g defect 1: the pane beside the open thread groups rows
+    // off the cross-project summary read — the one conversation list the
+    // per-frame SSE invalidation does not reach, so the open thread's row
+    // kept its page-load shape and sat under EARLIER while its turn ran.
+    // The session recomputes that shelf when the open turn flips; the pane
+    // re-reads and re-shelves the row. The first page answer is the load-
+    // time truth (no turn yet); the second is the wire after the send.
+    const idleRow: ConversationSummary = {
+      ...conversationSummaryFixture,
+      status: "idle",
+      has_active_turn: false,
+    };
+    const openTurnRow: ConversationSummary = {
+      ...conversationSummaryFixture,
+      status: "idle",
+      has_active_turn: true,
+    };
+    const conversationWithTurn: Conversation = {
+      ...conversationFixture,
+      active_turn: turnFixture(),
+    };
+    renderApp({
+      path: `/threads/${conversationId}`,
+      routes: paneRoutes([
+        {
+          path: `/api/v1/conversations/${conversationId}`,
+          method: "GET",
+          body: (call: number) => (call === 1 ? conversationFixture : conversationWithTurn),
+        },
+        {
+          path: crossPath,
+          method: "GET",
+          body: (call: number) => ({
+            items: call === 1 ? [idleRow] : [openTurnRow],
+            next_cursor: null,
+          }),
+        },
+      ]),
+    });
+
+    // At load the wire said "no turn": the row sits under EARLIER.
+    const row = await screen.findByTestId(`thread-row-${conversationId}`);
+    expect(row.getAttribute("aria-current")).toBe("page");
+
+    // The prompt goes in and the turn opens: the stream says so, and the
+    // detail refetch brings `active_turn` — the pane's shelf is recomputed
+    // and the row lands under LIVE without a remount.
+    act(() => {
+      FakeEventSource.last().open();
+    });
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.message.user", {
+          submitted_by: meFixture.id,
+          text: "Hello from the pane",
+        }),
+      );
+      FakeEventSource.last().emit(conversationEvent("conversation.turn.started", {}));
+    });
+
+    const liveGroup = await waitFor(() => screen.getByTestId("threads-group-live"), {
+      timeout: 5000,
+    });
+    expect(liveGroup.contains(screen.getByTestId(`thread-row-${conversationId}`))).toBe(true);
+    expect(screen.queryByTestId("threads-group-earlier")).toBeNull();
   });
 
   it("wears the 1g header: title, mono meta, and only the pill and the acts on the right", async () => {
@@ -378,8 +521,9 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(controls?.parentElement).toBe(title.parentElement);
     expect(controls).not.toBe(title);
 
-    // The meta line is plain block flow below `lg` — no floated flex row
-    // squeezing the text into a narrow column; `lg:` restores the design.
+    // The meta line is one truncated row at every width (review 1g defects 2
+    // and 4) — plain block flow below `lg`, no floated narrow column; `lg:`
+    // restores the design's shape.
     const meta = screen.getByTestId("conversation-meta");
     const metaRow = (meta.parentElement as HTMLElement).className.split(/\s+/);
     expect(metaRow).not.toContain("flex");
@@ -388,7 +532,7 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(metaRow).toContain("lg:justify-between");
     expect(meta.className.split(/\s+/)).not.toContain("flex-1");
     // The readout flows after the meta line as one inline group, carrying
-    // the turn word and the stream glyph.
+    // the turn word and (only when it is not live) the stream state.
     const readout = screen.getByTestId("turn-status").parentElement as HTMLElement;
     expect(readout.tagName).toBe("SPAN");
     expect(readout.parentElement).toBe(meta.parentElement);

@@ -76,10 +76,12 @@ export function ProjectHeader({ project, active, onNewThread }: ProjectHeaderPro
             >
               New thread
             </Button>
-            {/* The run form lives on the Runs tab (`NewRunForm`), so this is the
-                same navigation the old header link performed. */}
+            {/* The run form lives on the Runs tab (`NewRunForm`) and has ONE
+                door: this verb navigates there with `?new=1`, which opens the
+                form over the list. The panel used to carry its own "New run"
+                button beside this link — the review named the duplicate. */}
             <Link
-              to={routes.projectTab(project.id, "runs")}
+              to={`${routes.projectTab(project.id, "runs")}?new=1`}
               className={`ds-btn ${VARIANT_CLASS.primary} inline-flex h-[30px] items-center rounded-[4px] px-[13px]`}
               data-testid="project-start-run"
             >

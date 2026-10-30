@@ -15,15 +15,24 @@
  * binding or the agent has not spoken (and absent from an older server), so
  * those rows honestly fall back to `project · agent` with no last line.
  *
- * Search and the chips filter the loaded page client-side (the cross-project
- * endpoint accepts no `q`/`origin` parameter — the project-scoped one does,
- * but this one path filters both honestly); the keyset "Next page" walk stays.
+ * Search and the chips: a project-filtered pane sends the debounced title
+ * search and `from runs` to the list route as `q`/`origin` (ADR-0043) — the
+ * SAME server query the project's tab count uses — and `mine` stays
+ * client-side, because no route parameter names an author. The cross-project
+ * endpoint accepts no `q`/`origin` parameter, so there every filter narrows
+ * the loaded page client-side. The keyset "Next page" walk stays.
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "../../api/client";
-import { useAgentProfiles, useConversations, useMe, useProjects } from "../../api/queries";
+import {
+  useAgentProfiles,
+  useConversations,
+  useMe,
+  useProjects,
+  type ConversationListFilters,
+} from "../../api/queries";
 import type { ConversationSummary } from "../../api/types";
 import type { components } from "../../api/schema";
 import NewConversationDialog from "../NewConversationDialog";
@@ -65,9 +74,13 @@ export interface ThreadListState {
   nextCursor: string | null;
 }
 
-export function useThreadList(projectId: string, cursor: string | null): ThreadListState {
+export function useThreadList(
+  projectId: string,
+  cursor: string | null,
+  filters: ConversationListFilters = {},
+): ThreadListState {
   const cross = useCrossProjectThreads(cursor, projectId.length === 0);
-  const scoped = useConversations(projectId);
+  const scoped = useConversations(projectId, filters);
   if (projectId.length > 0) {
     return {
       isPending: scoped.isPending,
@@ -274,7 +287,22 @@ export function ThreadListPane({
   const [chip, setChip] = useState<"all" | "mine" | "runs">("all");
   const [cursor, setCursor] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const list = useThreadList(projectId, cursor);
+  // The project-scoped route matches `q` server-side (ADR-0043); debounced so
+  // a title is not re-fetched per keystroke (the panel this pane replaced in
+  // the project's Threads tab did the same). The client-side filter below
+  // already narrows on each keystroke, so the debounce only hides a duplicate
+  // round trip, never a result.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  // Only the project-scoped read answers to the params; the cross-project
+  // endpoint does not, so the cross pane asks nothing it cannot serve.
+  const list = useThreadList(projectId, cursor, {
+    q: debouncedSearch.trim() ? debouncedSearch : undefined,
+    origin: chip === "runs" ? "run" : undefined,
+  });
   const me = useMe();
   const projects = useProjects();
   const profiles = useAgentProfiles();
@@ -388,7 +416,13 @@ export function ThreadListPane({
         ) : null}
         {list.loaded && !list.isError ? (
           rows.length === 0 ? (
-            list.items.length > 0 ? (
+            // Nothing on screen: the loaded page had rows (client-side
+            // filtering hid them), or this is the project route with an
+            // active filter — where the SERVER matched and answered empty,
+            // so "the unfiltered shelf is empty" is not something this read
+            // can still see (the unfiltered read lives in the tab's count,
+            // not here). Otherwise the caller really has no threads.
+            list.items.length > 0 || (projectId.length > 0 && (query !== "" || chip !== "all")) ? (
               <p
                 className="px-[14px] pt-[10px] text-[12.5px] text-muted"
                 data-testid="threads-nomatch"
@@ -453,7 +487,14 @@ export function ThreadListPane({
           )
         ) : null}
       </div>
-      <NewConversationDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+      {/* Filtered to one project, the pane's `New thread` opens the shared
+          dialog with that project already fixed — the same dialog the band's
+          own verb opens. */}
+      <NewConversationDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        projectId={projectId || undefined}
+      />
     </div>
   );
 }

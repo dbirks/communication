@@ -90,8 +90,8 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
   // (never dragging the page sideways — `overscroll-x-contain`) and two edge
   // fades appear on whichever side still has tabs hidden, so the phone strip
   // says "there is more" instead of cutting Artifacts/Settings off with no cue
-  // (pass-2 review). The active tab is also pulled into view on arrival, so a
-  // reader who deep-linked to Settings sees where they are.
+  // (pass-2 review). The active tab is held fully in view — see
+  // `pullActiveIntoView` for why once is not enough.
   const navRef = useRef<HTMLElement | null>(null);
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({
     left: false,
@@ -107,32 +107,47 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
     setFade({ left: x > 1, right: x < max - 1 });
   }, []);
 
+  // The active tab's promise, kept past the first paint: the counts trail the
+  // labels (the `threads 1`, `workflows 3` of design 1b), so a tab GROWS after
+  // its read lands, and a strip that had scrolled the tab exactly into view is
+  // cut again ("Workflov" at 390 — pass-2 review). Every re-layout therefore
+  // pulls the active tab back fully into view: on arrival, whenever a count
+  // arrives (the effects below), and whenever the strip or window resizes.
+  const pullActiveIntoView = useCallback(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const tab = nav.querySelector<HTMLElement>('[aria-current="page"]');
+    // Scrolls the nearest scrollable ancestor — this `overflow-x-auto` nav —
+    // not the page. Guarded because jsdom has no `scrollIntoView`.
+    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    measure();
+  }, [measure]);
+
   useEffect(() => {
     const nav = navRef.current;
     if (!nav) return;
     measure();
     nav.addEventListener("scroll", measure, { passive: true });
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => pullActiveIntoView()) : null;
     observer?.observe(nav);
-    window.addEventListener("resize", measure);
+    window.addEventListener("resize", pullActiveIntoView);
     return () => {
       nav.removeEventListener("scroll", measure);
       observer?.disconnect();
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("resize", pullActiveIntoView);
     };
-  }, [measure]);
+  }, [measure, pullActiveIntoView]);
 
   useEffect(() => {
     if (!active) return;
     // The active tab already marks itself with `aria-current="page"` — that is
     // the element to bring into view, and querying it by its own semantics
     // avoids rebuilding the test id as a dynamic string here.
-    const tab = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
-    // Scrolls the nearest scrollable ancestor — this `overflow-x-auto` nav — not
-    // the page. Guarded because jsdom has no `scrollIntoView`.
-    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    measure();
-  }, [active, measure]);
+    pullActiveIntoView();
+    // `active` on arrival, and again whenever a tab count lands and changes
+    // the strip's widths — the deep-link case and the late-count case alike.
+  }, [active, flags.needsYou, flags.threads, flags.workflows, pullActiveIntoView]);
 
   return (
     <div className="relative" data-testid="project-tabs-wrap">

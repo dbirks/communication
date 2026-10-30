@@ -45,7 +45,6 @@ export default function Project() {
       heading="Project"
       headingId="project-heading"
       notFoundTestid="project-not-found"
-      shellPadded={false}
       bodyClassName="grid flex-1 items-start gap-[20px] px-[22px] py-[22px] lg:grid-cols-[minmax(0,1fr)_300px] md:px-[28px]"
     >
       {(project, openNewThread) => {

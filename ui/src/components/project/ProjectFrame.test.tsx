@@ -98,8 +98,10 @@ describe("ProjectFrame", () => {
 
     expect(await screen.findByTestId("project-header")).toBeTruthy();
     expect(screen.getByTestId("project-name").textContent).toBe(projectFixture.name);
+    // The band's `Start run` is the Runs tab's one door into the form — it
+    // navigates with `?new=1`, which opens `NewRunForm` over the list.
     expect(screen.getByTestId("project-start-run").getAttribute("href")).toBe(
-      routes.projectTab(projectFixture.id, "runs"),
+      `${routes.projectTab(projectFixture.id, "runs")}?new=1`,
     );
     expect(await screen.findByTestId("tab-body")).toBeTruthy();
   });
@@ -115,15 +117,16 @@ describe("ProjectFrame", () => {
     );
   });
 
-  it("is the only navigation the page has, and bleeds the shell's own padding", async () => {
+  it("is the only navigation the page has, on the shell's full-bleed column", async () => {
     mount({ active: "threads" }, routes.projectTab(projectFixture.id, "conversations"));
 
     const shell = await screen.findByTestId("project-tab");
-    // The route is not in `App.tsx`'s full-bleed list, so the frame cancels the
-    // shell's `px-4 py-6` with the same values: the band measures the shell's
-    // padding box and never past it.
-    expect(shell.className).toContain("-mx-4");
-    expect(shell.className).toContain("-mt-6");
+    // Every project tab route is in `App.tsx`'s full-bleed list (the pass-2
+    // review: the centred `max-w-5xl` column shifted the band's title and
+    // capped the body), so the frame owns its inset outright — no negative
+    // margin bleeding into shell padding any more, and no sideways scroll.
+    expect(shell.className).not.toContain("-mx-4");
+    expect(shell.className).not.toContain("-mt-6");
     expect(within(shell).getAllByRole("navigation", { name: /project sections/i })).toHaveLength(1);
   });
 
