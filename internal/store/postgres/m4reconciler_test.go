@@ -9,10 +9,21 @@ package postgres
 // Pass 6 (the idempotency TTL) is pure SQL and lives only here.
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
+
+// The worker these two tests need comes from m4Worker rather than a hand-rolled
+// INSERT. Run ids are UUIDv7: the first 8 hex characters are the top 32 bits of
+// the millisecond clock, so they are THE SAME STRING for every run created
+// inside one 65.5-second window — and a `-count=N` repetition of this package
+// lands several of its passes in one window. workers.name is globally unique and
+// the seeded row was never cleaned up, so the next repetition in the same window
+// died with `duplicate key value violates unique constraint "workers_name_key"`:
+// three of six repetitions under `-count=6` failed, and which three failed
+// depends only on where the window boundary falls. m4Worker names the row on a
+// nanosecond token and unwinds the workspace pointer that pins it, so the row is
+// both unique and gone when the test is.
 
 // TestM4ReconcilerPass5LostWorkspaceInterruptsQueuedRun drives pass 5 the way
 // serve does: the driver's tick, no engine call from the test.
@@ -20,22 +31,16 @@ func TestM4ReconcilerPass5LostWorkspaceInterruptsQueuedRun(t *testing.T) {
 	f, rs, runID, _ := m4DriverRun(t)
 	ctx := testCtx(t)
 
-	workerName := fmt.Sprintf("m4-lost-worker-%s", runID[:8])
-	if _, err := f.pool.Exec(ctx, `
-		INSERT INTO workers (name, hostname, version, status, capacity)
-		VALUES ($1, 'lab', 'test', 'online', 1)`, workerName); err != nil {
-		t.Fatalf("seed worker: %v", err)
-	}
+	workerID := m4Worker(t, ctx, f.pool, "pass5-lost", 1)
 	// Lost 30 s ago: older than one driver tick, so the debounce has expired.
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO workspaces
 			(organization_id, project_id, scope_kind, run_id, worker_id,
 			 volume_id, root_path, state, ready_at, lost_at)
-		SELECT $1::uuid, $2::uuid, 'run', $3::uuid, w.id,
-		       $4, '/var/lib/communication/m4/lost', 'lost',
-		       now() - interval '1 hour', now() - interval '30 seconds'
-		FROM workers w WHERE w.name = $5`,
-		f.orgID, f.projectID, runID, m4Digest("m4-lost-volume"), workerName); err != nil {
+		VALUES ($1::uuid, $2::uuid, 'run', $3::uuid, $4::uuid,
+		        $5, '/var/lib/communication/m4/lost', 'lost',
+		        now() - interval '1 hour', now() - interval '30 seconds')`,
+		f.orgID, f.projectID, runID, workerID, m4Digest("m4-lost-volume")); err != nil {
 		t.Fatalf("seed lost workspace: %v", err)
 	}
 
@@ -93,21 +98,15 @@ func TestM4ReconcilerPass5FreshLossIsDebounced(t *testing.T) {
 	f, rs, runID, _ := m4DriverRun(t)
 	ctx := testCtx(t)
 
-	workerName := fmt.Sprintf("m4-fresh-worker-%s", runID[:8])
-	if _, err := f.pool.Exec(ctx, `
-		INSERT INTO workers (name, hostname, version, status, capacity)
-		VALUES ($1, 'lab', 'test', 'online', 1)`, workerName); err != nil {
-		t.Fatalf("seed worker: %v", err)
-	}
+	workerID := m4Worker(t, ctx, f.pool, "pass5-fresh", 1)
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO workspaces
 			(organization_id, project_id, scope_kind, run_id, worker_id,
 			 volume_id, root_path, state, ready_at, lost_at)
-		SELECT $1::uuid, $2::uuid, 'run', $3::uuid, w.id,
-		       $4, '/var/lib/communication/m4/fresh', 'lost',
-		       now() - interval '1 hour', now()
-		FROM workers w WHERE w.name = $5`,
-		f.orgID, f.projectID, runID, m4Digest("m4-fresh-volume"), workerName); err != nil {
+		VALUES ($1::uuid, $2::uuid, 'run', $3::uuid, $4::uuid,
+		        $5, '/var/lib/communication/m4/fresh', 'lost',
+		        now() - interval '1 hour', now())`,
+		f.orgID, f.projectID, runID, workerID, m4Digest("m4-fresh-volume")); err != nil {
 		t.Fatalf("seed fresh loss: %v", err)
 	}
 

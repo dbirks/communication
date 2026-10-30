@@ -40,12 +40,21 @@ func evtInsertJournalRow(ctx context.Context, tx pgx.Tx, orgID, projectID, event
 // must refuse to advance past N rather than skip it.
 func TestEventsAfterDeliversLateCommitterInOrder(t *testing.T) {
 	store, orgID := prjFixture(t)
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	a, _, _, _ := prjUsers(t, store, orgID)
 	p := prjCreateProject(t, store, a, orgID, "Gapless", "gapless")
 
 	// The project itself already appended project.created; everything below is
-	// measured against that cursor, so "nothing new" means nothing new.
+	// measured against that cursor, so "nothing new" means nothing new. That
+	// cursor row is read exactly once, so it goes through the horizon gate like
+	// every other one-shot journal read in this package: a committed row is only
+	// readable once the CLUSTER-wide watermark passes its transaction, and any
+	// open write transaction elsewhere (a sibling gap-safety test in this same
+	// binary, a sibling `go test` package) holds it back. Withholding the cursor
+	// row is not what this test measures — it measures the withholding of the
+	// *gap* below — and an unwaited read made the baseline come back empty
+	// ("baseline journal = [], <nil>") whenever another session pinned xmin.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
 	base, err := store.EventsAfter(ctx, p.ID, 0, 10)
 	if err != nil || len(base) != 1 {
 		t.Fatalf("baseline journal = %v, %v; want the project.created row", evtSummary(base), err)
@@ -102,19 +111,16 @@ func TestEventsAfterDeliversLateCommitterInOrder(t *testing.T) {
 		t.Fatalf("commit held tx: %v", err)
 	}
 
-	// One poll interval of the safe reader's snapshot: the withheld row is now
-	// determined and both rows must arrive in sequence order.
-	var delivered []events.Envelope
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		delivered, err = store.EventsAfter(ctx, p.ID, cursor, 10)
-		if err != nil {
-			t.Fatalf("EventsAfter after commit: %v", err)
-		}
-		if len(delivered) == 2 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	// The withheld row is now determined and both rows must arrive in sequence
+	// order. Waiting on the horizon itself rather than on a fixed 5 s of polls:
+	// closing the gap is what makes the two rows admissible, but admission also
+	// needs the watermark to pass both transactions, and an unrelated open write
+	// transaction can hold the watermark longer than any poll budget a test can
+	// honestly name. The assertion is the same one — both rows, in order.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
+	delivered, err := store.EventsAfter(ctx, p.ID, cursor, 10)
+	if err != nil {
+		t.Fatalf("EventsAfter after commit: %v", err)
 	}
 	if len(delivered) != 2 {
 		t.Fatalf("EventsAfter after commit = %v, want both seq %d and %d",
@@ -140,7 +146,7 @@ func TestEventsAfterDeliversLateCommitterInOrder(t *testing.T) {
 // so commit order cannot disagree with sequence order for that project.
 func TestAppendEventSerializesAppendsPerProject(t *testing.T) {
 	store, orgID := prjFixture(t)
-	ctx := testCtx(t)
+	ctx := journalCtx(t)
 	a, _, _, _ := prjUsers(t, store, orgID)
 	p := prjCreateProject(t, store, a, orgID, "Ordered", "ordered")
 
@@ -160,6 +166,14 @@ func TestAppendEventSerializesAppendsPerProject(t *testing.T) {
 		t.Fatalf("AppendEvent in held tx: %v", err)
 	}
 
+	// The cursor row is read once, so it waits for the cluster horizon like every
+	// other one-shot journal read here (see the note in
+	// TestEventsAfterDeliversLateCommitterInOrder). The held append above is
+	// still uncommitted, so the probe covers project.created alone — and that
+	// held transaction cannot pin the horizon behind it anyway, because the
+	// horizon only sits behind transactions still running, and the held one is
+	// the newest writer.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
 	base, err := store.EventsAfter(ctx, p.ID, 0, 10)
 	if err != nil || len(base) != 1 {
 		t.Fatalf("baseline journal = %v, %v; want the project.created row", evtSummary(base), err)
@@ -227,6 +241,9 @@ func TestAppendEventSerializesAppendsPerProject(t *testing.T) {
 			second.GlobalSeq, envFirst.GlobalSeq+1)
 	}
 
+	// Both appends are committed, so what stands between them and this one-shot
+	// read is the horizon — not luck.
+	waitJournalReadable(t, store.Pool, "e.project_id = $1::uuid", p.ID)
 	got, err := store.EventsAfter(ctx, p.ID, cursor, 10)
 	if err != nil {
 		t.Fatalf("EventsAfter: %v", err)

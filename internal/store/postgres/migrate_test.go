@@ -119,6 +119,22 @@ func migIsolateDatabase(ctx context.Context, sharedURL string) (*migTestDatabase
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
 		return nil, err
 	}
+	// This database belongs to this run alone, so it gets the same durability
+	// bargain the embedded cluster above already makes (`initdb --no-sync`,
+	// `-c fsync=off`): a commit returns without waiting for WAL to reach the
+	// platter. Nothing here asserts crash recovery — Postgres is never restarted
+	// under a test — while the suite is nothing BUT commits: 362 tests x a
+	// fixture and a cleanup each, every one of them serialized behind an fsync
+	// when the database is a scratch one inside the shared Docker instance.
+	// Measured on one box, `-count=1` went 213.8s -> 34.8s with this set, which
+	// is the difference between the binary fitting inside `go test`'s default
+	// 10-minute per-package deadline and a panic with a goroutine dump
+	// (`-count=3 -p 8` reached 641s without it). Best-effort: if the role that
+	// created the database may not alter it, the run continues at the old speed.
+	if _, err := admin.Exec(ctx, "ALTER DATABASE "+pgx.Identifier{name}.Sanitize()+
+		" SET synchronous_commit = off"); err != nil {
+		_, _ = os.Stderr.WriteString("postgres tests: could not set synchronous_commit=off on the scratch database\n" + err.Error() + "\n")
+	}
 	u, err := neturl.Parse(sharedURL)
 	if err != nil {
 		return nil, err
