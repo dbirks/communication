@@ -7,12 +7,14 @@
  * the diff against the newest published revision (`diff vs r<N>`, the old
  * header Diff button), and what publishing would say — a short reason in
  * words, never the long server sentence.
+ *
+ * What the strip does NOT say is `unsaved`: the header's draft chip is the one
+ * place that word appears (2026-10-30 review, 1g item 4 — it used to print here
+ * too, and once more beside the chip, three times over one draft).
  */
 interface StudioStatusBarProps {
   /** The parsed draft's step count (the graph's node list). */
   stepCount: number;
-  /** Unsaved local edits: the strip says so and the publish gate refuses. */
-  dirty: boolean;
   /** The draft's last server validation verdict in words; null = never validated. */
   validation: string | null;
   /** The diff affordance's label (e.g. `diff vs r3`); null = no revision yet. */
@@ -24,7 +26,6 @@ interface StudioStatusBarProps {
 
 export function StudioStatusBar({
   stepCount,
-  dirty,
   validation,
   diffLabel,
   onDiff,
@@ -40,7 +41,7 @@ export function StudioStatusBar({
       data-testid="studio-status-bar"
     >
       <span className="shrink-0" data-testid="studio-status-bar-summary">
-        {stepCount} {stepCount === 1 ? "step" : "steps"} · {dirty ? "unsaved changes" : "saved"}
+        {stepCount} {stepCount === 1 ? "step" : "steps"}
       </span>
       {/* The strip carries count/state left, the validation verdict, the
           diff link and the short reason right at EVERY width (390 reflow:

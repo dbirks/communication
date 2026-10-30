@@ -306,16 +306,39 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     expect(within(header).getByTestId("workflow-header-top").className).toContain("md:flex-row");
   });
 
-  it("with no description the header carries the library sentence instead", async () => {
+  it("with no description anywhere the header carries the library sentence instead", async () => {
     mount(detail, [
       {
         path: pipelinePath,
         body: { ...wirePipeline, folder: "Delivery", description: "" },
       },
+      // The OTHER place a workflow keeps its words: the document's own
+      // `metadata.description`. Blank here, so nothing is left to show.
+      {
+        path: `/api/v1/revisions/${NEW_DIGEST}`,
+        body: {
+          ...wireRevision,
+          canonical_document: {
+            ...(wireRevision.canonical_document as Record<string, unknown>),
+            metadata: { name: wirePipeline.slug },
+          },
+        },
+      },
     ]);
     const line = await screen.findByTestId("workflow-kind-line");
     expect(line.textContent).toBe(
       "Library workflow. It runs only in the repos that use it, and triggers are set up there.",
+    );
+  });
+
+  it("a workflow whose description lives in its document shows it under the title (1e)", async () => {
+    // The library ROW carries no words (a starter workflow, a YAML import — the
+    // sentence was written into the document), and the design's 1e subtitle is
+    // exactly that sentence: read it from the revision the page already draws.
+    mount(detail, [{ path: pipelinePath, body: { ...wirePipeline, description: "" } }]);
+    const line = await screen.findByTestId("workflow-kind-line");
+    expect(line.textContent).toBe(
+      "Plan, approve, implement, test, review, loop until verified, publish evidence.",
     );
   });
 
@@ -341,6 +364,34 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     );
     // Reading the uses is not authoring — the rail's use row is still shown.
     expect(await screen.findByTestId(`overview-used-in-${WIRE_ASSIGNMENT_ID}`)).toBeTruthy();
+    // 1e review item 1: the canvas caption pointed the reader at `Edit
+    // workflow`, a button this reader has no way to press. The caption keeps
+    // what is true for them — the revision it draws is read-only.
+    const caption = await screen.findByTestId("workflow-graph-caption");
+    expect(caption.textContent).toBe("read-only · r7");
+    expect(caption.textContent).not.toContain("Edit workflow");
+  });
+
+  it("says the draft canvas to an author and nothing about editing to a viewer", async () => {
+    // The never-published branch of the same rule (1e review item 1): the line
+    // in the empty canvas is allowed to name `Edit workflow` only when the
+    // reader has that button on the page.
+    mount(detail, [
+      { path: revisionsPath, body: { revisions: [] } },
+      { path: draftsPath, body: { drafts: [] } },
+    ]);
+    expect((await screen.findByTestId("overview-graph-empty")).textContent).toContain(
+      "Edit workflow opens a draft canvas",
+    );
+    cleanup();
+
+    mount(detail, [
+      { path: "/api/v1/me", body: member },
+      { path: revisionsPath, body: { revisions: [] } },
+      { path: draftsPath, body: { drafts: [] } },
+    ]);
+    const line = await screen.findByTestId("overview-graph-empty");
+    expect(line.textContent).toBe("never published — there is no revision to draw");
   });
 });
 

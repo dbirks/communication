@@ -39,6 +39,11 @@ export interface OverviewProps {
   actorName: (userId: string) => string;
   /** Opens the `Use in a repo…` dialog (the rail's assign shortcut). */
   onAssign: () => void;
+  /** Whether `Edit workflow` is on this page at all (`hasLibraryRole`). The
+   * canvas caption points at that button, so it says so only when the reader
+   * has one (2026-10-30 review, 1e item 1) — a viewer who cannot edit was
+   * being told to press a button that is not on the screen. */
+  canEdit: boolean;
 }
 
 /** The rail's INPUTS block: `spec.inputs` is a JSON Schema object (13
@@ -71,6 +76,7 @@ export function WorkflowOverview({
   openDraft,
   actorName,
   onAssign,
+  canEdit,
 }: OverviewProps) {
   return (
     <div
@@ -99,7 +105,11 @@ export function WorkflowOverview({
         {revision ? (
           <GraphCanvas
             document={revision.canonical_document as unknown as DefinitionDocument}
-            label={`read-only · r${revision.revision_number} · Edit workflow opens the canvas on your draft`}
+            label={
+              canEdit
+                ? `read-only · r${revision.revision_number} · Edit workflow opens the canvas on your draft`
+                : `read-only · r${revision.revision_number}`
+            }
           />
         ) : null}
         {!revisionLoading && !revision && !revisionError ? (
@@ -107,7 +117,8 @@ export function WorkflowOverview({
             className="p-[10px] font-mono text-[11px] text-muted"
             data-testid="overview-graph-empty"
           >
-            never published — there is no revision to draw; Edit workflow opens a draft canvas
+            never published — there is no revision to draw
+            {canEdit ? "; Edit workflow opens a draft canvas" : ""}
           </p>
         ) : null}
       </div>

@@ -130,7 +130,13 @@ export function StudioHeader({
   phoneToggles,
 }: StudioHeaderProps) {
   const versionText = savedVersion === null ? "" : ` V${savedVersion}`;
-  const chipText = `· DRAFT${versionText}${dirty ? " · UNSAVED" : ""}`;
+  // 2026-10-30 review (1g item 4): the draft chip is the ONE place the page
+  // says `unsaved` — the status bar used to repeat it (`4 steps · unsaved
+  // changes`) and the header carried a second bare `unsaved` beside the chip,
+  // so the same word printed three times over one draft. The design's chip
+  // reads `· draft v3 · unsaved`: the mark lives inside it, uppercase like the
+  // rest of the chip (CSS, so the accessible/DOM text stays the plain word).
+  const chipVersionText = `· DRAFT${versionText}`;
   // Pass 2 #6 at 390px the header is exactly two rows — row 1: title +
   // draft chip + undo/redo + the Steps/Inspect icon toggles; row 2: the
   // Canvas|YAML tabs + Validate/Save/Publish — and never wraps into three.
@@ -185,13 +191,16 @@ export function StudioHeader({
           className="min-w-0 truncate rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[10px]"
           data-testid="studio-draft-version"
         >
-          {chipText}
+          {chipVersionText}
+          {dirty ? (
+            <>
+              {" · "}
+              <span className="uppercase" data-testid="studio-dirty">
+                unsaved
+              </span>
+            </>
+          ) : null}
         </span>
-        {dirty ? (
-          <span className="font-mono text-[10px] text-muted" data-testid="studio-dirty">
-            unsaved
-          </span>
-        ) : null}
       </div>
       {/* Row-1 tail (phone): the Steps/Inspect pane toggles only — undo/redo
           is one pair for every width (the 390 reflow: no duplicated desktop

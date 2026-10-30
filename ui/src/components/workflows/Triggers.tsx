@@ -40,6 +40,7 @@ import { formatClock, formatRemaining } from "../../lib/format";
 import { routes } from "../../lib/routes";
 import { shortId } from "../../api/names";
 import { IssueTriggerRow } from "./IssueTriggerRow";
+import { ToggleSwitch } from "./ToggleSwitch";
 import { TriggersDialog } from "./TriggersDialog";
 import { IssueTriggerDialog } from "./IssueTriggerDialog";
 import type { IssueTrigger, IssueTriggerList } from "../../api/useIssueTriggers";
@@ -348,22 +349,18 @@ function ScheduleRow({
         <span className="font-mono text-[11px] text-faint">never run</span>
       )}
       {group.canManage ? (
-        <label className="flex shrink-0 items-center gap-[6px] whitespace-nowrap font-mono text-[11px] text-ink">
-          <input
-            type="checkbox"
-            className="h-3 w-3 shrink-0 grow-0 basis-3 accent-accent"
-            checked={schedule.enabled}
-            aria-label={`schedule ${schedule.id} enabled`}
-            data-testid={`trigger-enabled-${schedule.id}`}
-            onChange={(event) =>
-              patch.mutate({
-                scheduleId: schedule.id,
-                body: { version: schedule.version, enabled: event.target.checked },
-              })
-            }
-          />
-          <span data-testid={`trigger-state-${schedule.id}`}>{stateText}</span>
-        </label>
+        <ToggleSwitch
+          checked={schedule.enabled}
+          testid={`trigger-enabled-${schedule.id}`}
+          stateTestid={`trigger-state-${schedule.id}`}
+          label={`schedule ${schedule.id} enabled`}
+          onChange={(next) =>
+            patch.mutate({
+              scheduleId: schedule.id,
+              body: { version: schedule.version, enabled: next },
+            })
+          }
+        />
       ) : (
         <StatusChip
           state={schedule.enabled ? "info" : "interrupted"}

@@ -8,14 +8,17 @@
  * panel therefore lists the assignments that name THIS repository plus the
  * whole-project ones (`repository_id` null covers every repo of the project).
  *
- * Each row is collapsible (the handoff's SVG chevron `M3 4.5l3 3 3-3`):
+ * Each row is collapsible (the handoff's SVG chevron `M3 4.5l3 3 3-3`) and it
+ * starts OPEN — design 2e draws the STARTS WHEN box, so that is what the reader
+ * sees (2026-10-30 review, 2e item 7):
  * - collapsed: name · pinned-revision chip (`✓ r3`, the number the server's
  *   own revision summary carries) · trigger summary ("started by hand", or a
- *   Lucide icon + sentence per trigger) · 1e's `Edit` (the library workflow
- *   page) · `+ Add trigger` · `Run`, over the
- *   mono step chain of the PINNED revision (loop scopes shaded);
- * - expanded: the `STARTS WHEN` box (indented 34px, `bg-accent-wash` header
- *   strip in accent mono caps with `+ Add trigger` on the right), one grid row
+ *   Lucide icon + sentence per trigger) · `+ Add trigger` · `Run`, over the
+ *   mono step chain of the PINNED revision (loop scopes shaded). The workflow's
+ *   own name is the way to its library page: 2e draws no separate `Edit`;
+ * - open: the `STARTS WHEN` box (indented 34px, `bg-accent-wash` header
+ *   strip in accent mono caps carrying the row's ONE `+ Add trigger` on the
+ *   right), one grid row
  *   per trigger (`18px 1fr 160px 80px 40px`, stacking below 900px so 390px
  *   never scrolls sideways), and the closing line "Or start it by hand with
  *   Run, or from an issue below."
@@ -40,7 +43,7 @@ import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Clock, Play } from "lucide-react";
 import { Panel } from "../ds/Panel";
-import { Button, VARIANT_CLASS } from "../ds/Button";
+import { Button } from "../ds/Button";
 import { StatusChip } from "../ds/Row";
 import { Field, Input } from "../ds/Field";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
@@ -76,6 +79,7 @@ import { stepChain } from "./WorkflowRow";
 import { repoRefOf } from "./IssueTriggerRow";
 import { patchErrorText } from "./Triggers";
 import { GithubIcon, TriggerDialog, type TriggerEditing } from "./TriggerDialog";
+import { ToggleSwitch } from "./ToggleSwitch";
 
 export interface RepoWorkflowsProps {
   projectId: string;
@@ -107,6 +111,8 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
   const repositories = useRepositories(projectId);
 
   const canManage = project.my_role === "maintainer";
+  // Open by default (2e item 7): the trigger set is why the row is on this
+  // page. The chevron collapses it for a reader who wants the list short.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [runOpen, setRunOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -220,11 +226,13 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
               canManage={canManage}
               triggerReadsReady={triggerReadsReady}
               triggerReadsFailed={triggerReadsFailed}
-              open={expanded[row.assignment.id] ?? false}
+              open={expanded[row.assignment.id] ?? true}
               onToggle={() =>
                 setExpanded((current) => ({
                   ...current,
-                  [row.assignment.id]: !(current[row.assignment.id] ?? false),
+                  // `?? true` — the same default the row renders with (2e item
+                  // 7): the chevron on an open row CLOSES it.
+                  [row.assignment.id]: !(current[row.assignment.id] ?? true),
                 }))
               }
               onAddTrigger={() =>
@@ -427,7 +435,13 @@ function RepoWorkflowRow({
           </div>
         </div>
         <div className="flex items-center gap-2 min-[900px]:justify-end">
-          {canManage ? (
+          {/* 2026-10-30 review (2e items 6 + 8): one `+ Add trigger` per row,
+              in the STARTS WHEN header when the box is open (the design's
+              expanded row) and in the row's own actions only when it is closed
+              (the design's collapsed row) — the two never stand side by side.
+              `Edit` is gone: the workflow's name is the link to its library
+              page, and 2e draws only `+ Add trigger` and `Run` here. */}
+          {canManage && !open ? (
             <button
               type="button"
               onClick={onAddTrigger}
@@ -437,15 +451,6 @@ function RepoWorkflowRow({
               + Add trigger
             </button>
           ) : null}
-          {/* 1e: `Edit` opens the library workflow page (where it is used,
-              its revisions, its YAML); `Run` starts this repo's pinned use. */}
-          <Link
-            to={routes.workflow(assignment.pipeline_id)}
-            className={`ds-btn ${VARIANT_CLASS.secondaryPlain} ds-btn--compact`}
-            data-testid={`repo-workflow-edit-${key}`}
-          >
-            Edit
-          </Link>
           <Button
             variant="secondary"
             compact
@@ -464,12 +469,12 @@ function RepoWorkflowRow({
         >
           <div className="flex items-center gap-2 border-b border-accent-ring bg-accent-wash px-3 py-[6px] font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-accent-text">
             <span>STARTS WHEN</span>
-            {canManage ? (
+            {canManage && open ? (
               <button
                 type="button"
                 onClick={onAddTrigger}
                 className="ml-auto font-ui text-[12px] font-semibold normal-case tracking-normal text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                data-testid={`repo-workflow-add-box-${key}`}
+                data-testid={`repo-workflow-add-${key}`}
               >
                 + Add trigger
               </button>
@@ -600,57 +605,6 @@ function scheduleSentence(schedule: Schedule): string {
  * five cells stack, so a 390px viewport never scrolls sideways. */
 const TRIGGER_GRID =
   "grid grid-cols-1 items-center gap-x-[10px] gap-y-[4px] border-t border-line-soft px-3 py-[9px] min-[900px]:grid-cols-[18px_minmax(0,1fr)_160px_80px_40px]";
-
-function ToggleSwitch({
-  checked,
-  testid,
-  onChange,
-}: {
-  checked: boolean;
-  testid: string;
-  onChange: (next: boolean) => void;
-}) {
-  // The track is its OWN fixed 28×16 box inside the button. The phone's
-  // touch-target floor (styles/tokens.css, `main button{min-height:44px}`
-  // below 560px) used to stretch the button itself — and with it the
-  // rounded-full track — into a 28×44 vertical pill (pass-2 review,
-  // 2c-issue-trigger-saved / 2c-schedule-trigger-saved / 2e-triggers-paused
-  // at 390). Now the 44px box is the hit area and the track keeps its shape
-  // inside it, on one line with its `on` / `paused` label.
-  return (
-    <span className="flex shrink-0 items-center gap-[6px] whitespace-nowrap">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={checked ? "pause this trigger" : "turn this trigger on"}
-        onClick={() => onChange(!checked)}
-        className="flex shrink-0 items-center rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-        data-testid={testid}
-      >
-        <span
-          aria-hidden="true"
-          className={`relative block h-[16px] w-[28px] shrink-0 grow-0 basis-[28px] rounded-full border transition-colors ${
-            checked ? "border-accent-edge bg-accent" : "border-line-strong bg-fill"
-          }`}
-        >
-          <span
-            aria-hidden="true"
-            className={`absolute top-[2px] block h-3 w-3 shrink-0 rounded-full bg-surface ${
-              checked ? "left-[14px]" : "left-[2px]"
-            }`}
-          />
-        </span>
-      </button>
-      <span
-        className="shrink-0 whitespace-nowrap font-mono text-[11px] text-ink"
-        data-testid={`${testid}-state`}
-      >
-        {checked ? "on" : "paused"}
-      </span>
-    </span>
-  );
-}
 
 interface RepoScheduleRowProps {
   projectId: string;

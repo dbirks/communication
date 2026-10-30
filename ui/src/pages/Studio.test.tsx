@@ -155,6 +155,35 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect(within(header).getByTestId("studio-save")).toBeTruthy();
   });
 
+  it("says `unsaved` exactly once — in the draft chip, never the status bar (1g item 4)", async () => {
+    // The 2026-10-30 review's 1g item: the word used to print three times over
+    // one draft (in the chip, beside the chip, and in the strip). Design 1g
+    // puts the mark on the draft chip; the strip's own line stays `N steps`.
+    mount(studioPath, [
+      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+    ]);
+    const page = await screen.findByTestId("studio-page");
+    expect(screen.queryByTestId("studio-dirty")).toBeNull();
+    // A local edit is what makes a draft unsaved: type one character.
+    fireEvent.click(screen.getByTestId("studio-view-yaml"));
+    const editor = screen.getByTestId("studio-yaml") as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: editor.value + " " } });
+
+    const dirty = screen.getByTestId("studio-dirty");
+    expect(dirty.textContent).toBe("unsaved");
+    // It lives inside the chip — the header's one draft-state affordance.
+    expect(screen.getByTestId("studio-draft-version").contains(dirty)).toBe(true);
+    expect(screen.queryByText("unsaved", { exact: false })).toBeTruthy();
+    expect(page.textContent?.match(/unsaved/g)).toHaveLength(1);
+
+    const bar = screen.getByTestId("studio-status-bar");
+    expect(bar.textContent).not.toContain("unsaved");
+    expect(bar.textContent).not.toContain("saved");
+    expect(screen.getByTestId("studio-status-bar-summary").textContent).toMatch(/^\d+ steps?$/);
+    // The publish reason still says what is missing, in the strip's own words.
+    expect(screen.getByTestId("studio-publish-reason").textContent).toContain("save");
+  });
+
   it("replaces the old ?draft= URL shape through to the Studio route", async () => {
     mount(`/library/${WIRE_PIPELINE_ID}?draft=${WIRE_DRAFT_ID}`);
     expect(await screen.findByTestId("studio-page")).toBeTruthy();

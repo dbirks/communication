@@ -275,7 +275,7 @@ function IssueTriggerDialogBody({
           <Field
             id="trigger-add-issue-repository"
             label="repository"
-            hint="the server refuses anything that is not a GitHub remote (422 not_a_github_repository)"
+            hint="only a repository with a GitHub remote can start a run from its issues"
           >
             <Select
               id="trigger-add-issue-repository"
@@ -379,7 +379,8 @@ function IssueTriggerDialogBody({
               className="font-mono text-[10.5px] text-faint"
               data-testid="trigger-add-issue-label-hint"
             >
-              any-of: an issue fires when it carries one of these labels; empty means every issue
+              an issue with any one of these labels starts the run; leave it empty to watch every
+              issue
             </p>
           </div>
           {fields?.map((field) => (

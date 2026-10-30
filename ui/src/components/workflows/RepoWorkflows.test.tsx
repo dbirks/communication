@@ -1,7 +1,7 @@
 /**
- * `WORKFLOWS ON THIS REPO` (design 1e + 2e) against the fake fetch: the
- * collapsed row (name, pinned revision chip, trigger summary, step chain), the
- * expanded `STARTS WHEN` box (one row per trigger, switch, edit), the 2c
+ * `WORKFLOWS ON THIS REPO` (design 1e + 2e) against the fake fetch: the row
+ * (name, pinned revision chip, trigger summary, step chain, 2e's two actions),
+ * the `STARTS WHEN` box it opens with (one row per trigger, switch, edit), the 2c
  * dialog's two writes (issue trigger, schedule — with the server's `422
  * invalid_cron` kept inline), the ADR-0060 attachment rule (this repo's pins
  * plus the whole-project ones, never another repo's), the empty state, and the
@@ -154,15 +154,25 @@ function mount(overrides: RouteStub[] = [], project = projectFixture) {
   return { requests };
 }
 
-/** Open the 2c dialog from the row's own `+ Add trigger`. */
+/** Open the 2c dialog from the row's ONE `+ Add trigger`. */
 async function openDialogFromRow() {
   fireEvent.click(await screen.findByTestId(`repo-workflow-add-${assignmentKey}`));
   await screen.findByTestId("trigger-dialog");
 }
 
+/** The STARTS WHEN box 2e draws open; the chevron is the reader's way to shut
+ * it, and the tests that care about a COLLAPSED row use this. */
+async function collapseRow() {
+  const toggle = await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`);
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(screen.queryByTestId(`repo-workflow-starts-${assignmentKey}`)).toBeNull(),
+  );
+}
+
 afterEach(cleanup);
 
-describe("RepoWorkflows — the collapsed row (2e)", () => {
+describe("RepoWorkflows — the workflow row (2e)", () => {
   it("names the workflow, its pinned revision, the hand-started summary and the step chain", async () => {
     mount();
 
@@ -185,8 +195,31 @@ describe("RepoWorkflows — the collapsed row (2e)", () => {
     // A scope node folds to one shaded `loop:` cell — the document's own ids.
     expect(chain.textContent).toContain("loop:");
 
-    // Collapsed: the STARTS WHEN box only exists once the row is opened.
-    expect(screen.queryByTestId(`repo-workflow-starts-${assignmentKey}`)).toBeNull();
+    // 2e item 7 (2026-10-30 review): the STARTS WHEN box is drawn OPEN — the
+    // triggers are why the row exists, so they are not behind a click.
+    expect(screen.getByTestId(`repo-workflow-starts-${assignmentKey}`)).toBeTruthy();
+    // 2e item 6: and ONE `+ Add trigger`, in that box's header — not one there
+    // and one in the row's actions as well.
+    expect(screen.getAllByTestId(`repo-workflow-add-${assignmentKey}`)).toHaveLength(1);
+    expect(
+      screen
+        .getByTestId(`repo-workflow-starts-${assignmentKey}`)
+        .querySelector(`[data-testid="repo-workflow-add-${assignmentKey}"]`),
+    ).toBeTruthy();
+  });
+
+  it("collapses on the chevron and moves its ONE `+ Add trigger` into the row", async () => {
+    mount();
+    await screen.findByTestId(`repo-workflow-row-${assignmentKey}`);
+    await collapseRow();
+    // The collapsed row is 2e's first row: `+ Add trigger` over the step chain,
+    // with the affordance in the row because the box that usually carries it is
+    // gone. Still exactly one.
+    expect(screen.getByTestId(`repo-workflow-add-${assignmentKey}`).textContent).toBe(
+      "+ Add trigger",
+    );
+    expect(screen.getAllByTestId(`repo-workflow-add-${assignmentKey}`)).toHaveLength(1);
+    expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`).textContent).toBe("Run");
   });
 
   it("counts the workflows in the panel title and offers the library link to a maintainer", async () => {
@@ -274,21 +307,24 @@ describe("RepoWorkflows — the collapsed row (2e)", () => {
     expect(screen.queryByTestId(`repo-workflow-add-${assignmentKey}`)).toBeNull();
     // Run stays: starting a run is the contributor route, not a maintainer one.
     expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`)).toBeTruthy();
-    // 1e: `Edit` goes to the library workflow page; `Run` starts this use.
-    const edit = screen.getByTestId(`repo-workflow-edit-${assignmentKey}`);
-    expect(edit.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
   });
 
-  it("pairs the 1e `Edit` link with the pinned `Run`", async () => {
+  it("gives the row 2e's two actions, with the name as the way to the workflow", async () => {
+    // 2e item 8 (2026-10-30 review): the design's row actions are `+ Add
+    // trigger` and `Run` — no third `Edit` button linking to the page the
+    // workflow's own name already links to.
     mount();
-    const edit = await screen.findByTestId(`repo-workflow-edit-${assignmentKey}`);
-    expect(edit.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
-    expect(edit.textContent).toBe("Edit");
+    const name = await screen.findByText("Feature development");
+    expect(name.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    expect(screen.queryByTestId(`repo-workflow-edit-${assignmentKey}`)).toBeNull();
+    expect(screen.getByTestId(`repo-workflow-add-${assignmentKey}`).textContent).toBe(
+      "+ Add trigger",
+    );
     expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`).textContent).toBe("Run");
   });
 });
 
-describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
+describe("RepoWorkflows — the STARTS WHEN box (2e)", () => {
   it("shows one grid row per trigger with its sentence, detail line, bookkeeping and Edit", async () => {
     mount([
       {
@@ -303,7 +339,7 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       },
     ]);
 
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
     const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     expect(box.textContent).toContain("STARTS WHEN");
 
@@ -335,7 +371,7 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
 
   it("says never triggered when the workflow carries no trigger at all", async () => {
     mount();
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
     const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     expect(box.textContent).toContain("Never triggered");
     expect(box.textContent).toContain("started by a person");
@@ -352,7 +388,8 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       { path: `/api/v1/schedules/${SCHEDULE_ID}`, method: "PATCH", body: paused },
     ]);
 
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
+    await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     const toggle = await screen.findByTestId(
       `repo-workflow-trigger-enabled-${testidOf(SCHEDULE_ID)}`,
     );
@@ -386,7 +423,8 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       },
     ]);
 
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
+    await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     fireEvent.click(
       await screen.findByTestId(`repo-workflow-trigger-enabled-${testidOf(SCHEDULE_ID)}`),
     );
@@ -410,7 +448,8 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       },
     ]);
 
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
+    await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     fireEvent.click(
       await screen.findByTestId(`repo-workflow-trigger-enabled-${testidOf(ISSUE_TRIGGER_ID)}`),
     );
@@ -430,9 +469,11 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
   it("keeps the switch a fixed 28×16 track on one line with its state word", async () => {
     // The pass-2 review caught this at 390 (2c-issue-trigger-saved,
     // 2c-schedule-trigger-saved, 2e-triggers-paused): the phone's 44px touch
-    // floor (styles/tokens.css `main button{min-height:44px}`) stretched the
-    // rounded-full TRACK into a tall blue oval. The hit area is the button,
-    // the track is its own fixed box inside it.
+    // floor (styles/tokens.css) stretched the TRACK into a tall blue oval.
+    // `components/workflows/ToggleSwitch` is the shared answer — the same
+    // control every trigger row now uses — and its trick is that the floor
+    // grows `button`s and text inputs but EXEMPTS `input[type=checkbox]`, and
+    // grows the LABEL instead: the tap target gets bigger, the pill does not.
     mount([
       {
         path: `/api/v1/projects/${wireProjectId}/schedules`,
@@ -441,20 +482,26 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       },
     ]);
 
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
-    const switchButton = await screen.findByTestId(
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
+    await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    const track = await screen.findByTestId(
       `repo-workflow-trigger-enabled-${testidOf(SCHEDULE_ID)}`,
     );
-    const track = switchButton.firstElementChild as HTMLElement;
-    expect(track.getAttribute("aria-hidden")).toBe("true");
+    // The control IS the track: a checkbox (what the 44px rule exempts) wearing
+    // the switch role, in a fixed 28×16 box.
+    expect(track.tagName).toBe("INPUT");
+    expect(track.getAttribute("type")).toBe("checkbox");
+    expect(track.getAttribute("role")).toBe("switch");
+    expect(track.getAttribute("aria-checked")).toBe("true");
     expect(track.className).toContain("h-[16px]");
     expect(track.className).toContain("w-[28px]");
     expect(track.className).toContain("shrink-0");
-    // The hit area itself is never the pill — that is what made it stretch.
-    expect(switchButton.className).not.toContain("rounded-full");
-    // One line with its label: the row wraps nothing, and neither the switch
-    // nor the word may shrink away.
-    const line = switchButton.parentElement as HTMLElement;
+    expect(track.className).toContain("appearance-none");
+    // One line with its label: the row wraps nothing, the LABEL is the hit
+    // area (the stylesheet grows labels that hold a checkbox), and neither the
+    // switch nor the word may shrink away.
+    const line = track.parentElement as HTMLElement;
+    expect(line.tagName).toBe("LABEL");
     expect(line.className).toContain("whitespace-nowrap");
     expect(line.className).toContain("shrink-0");
     const state = within(line).getByTestId(
@@ -473,7 +520,8 @@ describe("RepoWorkflows — the expanded STARTS WHEN box (2e)", () => {
       },
     ]);
 
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
+    await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     fireEvent.click(
       await screen.findByTestId(`repo-workflow-trigger-edit-${testidOf(SCHEDULE_ID)}`),
     );
@@ -711,7 +759,7 @@ describe("RepoWorkflows — the trigger glyphs", () => {
         body: { issue_triggers: [wireIssueTrigger()] },
       },
     ]);
-    fireEvent.click(await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`));
+    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
     const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     expect(box.textContent).not.toContain("#");
     expect(box.textContent).not.toContain("◷");

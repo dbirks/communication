@@ -175,12 +175,34 @@ export function PipelinePage() {
   const selectedRevisionKey = revisionRows[0]?.id ?? null;
   const revision = useRevision(selectedRevisionKey ?? "");
 
+  // `metadata.description` of the revision the page draws — the document's own
+  // words, which is where a starter workflow or a YAML import carries its
+  // description when the library row left it blank. Read, never guessed: a
+  // document with no such member contributes nothing.
+  const documentDescription = useMemo(() => {
+    const metadata = (
+      revision.data?.canonical_document as { metadata?: unknown } | null | undefined
+    )?.metadata;
+    const value = (metadata as { description?: unknown } | null | undefined)?.description;
+    return typeof value === "string" ? value.trim() : "";
+  }, [revision.data]);
+
   // First `published` in newest-first order — the pin `Use in a repo…`
   // creates and the Used-in rows compare against for `· latest`.
   const newestPublished = revisionRows.find((row) => row.status === "published") ?? null;
   // The summary route carries no uuid (ADR-0021 § 5); the pin POST and the
   // re-pin PATCH need one, so the digest → id resolution rides route 13.
   const newestPublishedRevision = useRevision(newestPublished?.revision_digest ?? "");
+
+  // The description, from whichever of the two places the workflow carries it:
+  // the library row's own member, else the newest revision's document metadata
+  // (the design's 1e subtitle is the template's own sentence, which lives in
+  // the YAML). Nothing is invented: no source, no subtitle but the library
+  // sentence.
+  const workflowDescription =
+    (pipeline.data?.description ?? "").trim() !== ""
+      ? (pipeline.data?.description ?? "").trim()
+      : documentDescription;
 
   const usedIn = useUsedIn(pipelineId);
   const runs = usePipelineRuns(pipelineId);
@@ -366,12 +388,17 @@ export function PipelinePage() {
             </div>
             {/* One subtitle, two sources (2a/1e): the workflow's own
                 description when it has one (the design shows the description
-                — two lines max), the library sentence only when it does not. */}
+                — two lines max), the library sentence only when it does not.
+                A workflow carries its words in two places — the library row,
+                or the document's own `metadata.description` (what a YAML
+                import or a starter workflow writes) — and the review's 1e
+                item is exactly the second one: a workflow WITH a description
+                showed the generic sentence because only the row was read. */}
             <p
               className="line-clamp-2 max-w-[70ch] text-[13px] text-muted"
               data-testid="workflow-kind-line"
             >
-              {pipeline.data?.description ||
+              {workflowDescription ||
                 "Library workflow. It runs only in the repos that use it, and triggers are set up there."}
             </p>
             <p className="font-mono text-[11px] text-muted" data-testid="pipeline-header-meta">
@@ -500,6 +527,7 @@ export function PipelinePage() {
             runs={runs}
             openDraft={openDraft}
             actorName={actors.nameOf}
+            canEdit={canAuthor}
             onAssign={() => {
               setFailure(null);
               setUseDialogOpen(true);

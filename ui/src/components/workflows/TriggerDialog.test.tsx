@@ -466,10 +466,10 @@ describe("TriggerDialog — the 2c contract", () => {
     // One trigger kind-word in the primary verb (pass-2 review, 2c): the
     // schedule arm says ADD TRIGGER like the issue arm does.
     expect(screen.getByTestId("trigger-dialog-submit").textContent).toBe("Add trigger");
-    // The hint is plain words — no literal backticks around the tokens the
-    // server refuses.
+    // The hint is plain words about what the form wants — no grammar mnemonics,
+    // no list of the tokens the server refuses (2026-10-30 review, 2c item 5).
     expect(screen.getByTestId("trigger-dialog-cron-hint").textContent).toBe(
-      "the server validates the cadence; seconds, names and ? L W # H are refused",
+      "five times to run on: minute, hour, day of month, month, day of week",
     );
     fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "* * * * *" } });
     expect(screen.getByTestId("trigger-dialog-cron-words").textContent).toBe("every minute");
@@ -630,6 +630,62 @@ describe("TriggerDialog — the 2c contract", () => {
     await screen.findByTestId("trigger-dialog");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("TriggerDialog — a bound input reads in words (2c review item 5)", () => {
+  it("shows what fills the value instead of the placeholder bytes", async () => {
+    // The edited trigger carries `{{issue.title}}\n\n{{issue.body}}` — the
+    // bytes the fire renders. The author sees the sentence, not the template.
+    mount({ kind: "issue", trigger: wireIssueTrigger({ labels: ["plan"] }) });
+    // The bound line appears with the pinned revision's input list (the form is
+    // not drawn from bytes the server has not served yet).
+    await screen.findByText("the issue title and the issue body");
+    const goal = screen.getByTestId("new-run-input-goal");
+    expect(goal.getAttribute("data-bound")).toBe("issue");
+    expect(goal.textContent).toBe("the issue title and the issue body");
+    // No braces anywhere in the form the reader is looking at.
+    expect(screen.getByTestId("trigger-dialog-form").textContent).not.toContain("{{");
+    // The field's own description stays (it is the workflow's sentence, not an
+    // API note), and the way to type fixed words is offered in plain words.
+    expect(screen.getByTestId("trigger-dialog-raw-goal").textContent).toBe("write my own words");
+  });
+
+  it("gives the raw template back to whoever asks to write their own words", async () => {
+    mount({ kind: "issue", trigger: wireIssueTrigger({ labels: ["plan"] }) });
+    await screen.findByTestId("new-run-input-goal");
+    fireEvent.click(screen.getByTestId("trigger-dialog-raw-goal"));
+    // The control is now a real input holding the bytes the row carries.
+    const goal = screen.getByTestId("new-run-input-goal") as HTMLInputElement;
+    expect(goal.tagName).not.toBe("DIV");
+    expect(goal.value).toBe("{{issue.title}}\n\n{{issue.body}}");
+    // Replacing them replaces what the run gets, in the box and in the row.
+    fireEvent.change(goal, { target: { value: "Ship the Friday plan" } });
+    expect(screen.getByTestId("trigger-dialog-run-gets-goal").textContent).toBe(
+      "goal = “Ship the Friday plan”",
+    );
+  });
+
+  it("binds a fresh trigger the same way the quickfill is clicked", async () => {
+    mount();
+    fireEvent.click(await screen.findByTestId("trigger-dialog-quickfill-goal"));
+    const goal = await screen.findByTestId("new-run-input-goal");
+    expect(goal.textContent).toBe("the issue title and the issue body");
+    // The quickfill does not sit under a value that is already bound: clicking
+    // it twice would be a button that does nothing.
+    expect(screen.queryByTestId("trigger-dialog-quickfill-goal")).toBeNull();
+  });
+
+  it("shows the literal text on the schedule arm, which has no issue to fill it", async () => {
+    // A schedule carries what it says — `{{issue.title}}` there is literally
+    // what the run receives, so the box shows exactly that (2c review item 5
+    // is about the ISSUE arm, where the fire really does fill the value in).
+    mount({ kind: "issue", trigger: wireIssueTrigger({ labels: ["plan"] }) });
+    await screen.findByTestId("new-run-input-goal");
+    fireEvent.click(screen.getByTestId("trigger-dialog-mode-schedule"));
+    const goal = screen.getByTestId("new-run-input-goal") as HTMLTextAreaElement;
+    expect(goal.tagName).not.toBe("DIV");
+    expect(goal.value).toBe("{{issue.title}}\n\n{{issue.body}}");
   });
 });
 

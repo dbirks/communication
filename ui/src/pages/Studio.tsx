@@ -935,7 +935,6 @@ export function StudioPage() {
 
       <StudioStatusBar
         stepCount={model.nodes.length}
-        dirty={studio.dirty}
         validation={validationChip}
         diffLabel={newestSummary === null ? null : `diff vs r${newestSummary.revision_number}`}
         onDiff={() => setDiffOpen((open) => !open)}

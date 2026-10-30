@@ -31,6 +31,12 @@
  * only "Checked every minute": ADR-0061 adds per-repository GitHub
  * credentials, so nothing here claims public-repositories-only.
  *
+ * 2026-10-30 review (2c item 5): the author does not read their own form as the
+ * server's grammar. A text input whose value is only `{{issue.*}}` placeholders
+ * shows the WORDS the fire fills it with (`the issue title and the issue body`),
+ * with `write my own words` as the way back to the template bytes, and the hints
+ * describe what the form does — no `422` codes, no grammar mnemonics.
+ *
  * Accessible-modal contract (the ImportYamlDialog pattern): `role="dialog"`
  * + `aria-modal`, labelled by its own title, focus trapped while open, Escape
  * closes, focus returns to the opener.
@@ -38,7 +44,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Clock, createLucideIcon } from "lucide-react";
 import { Button } from "../ds/Button";
-import { Field, Input, Select } from "../ds/Field";
+import { Field, Input, Select, labelClass } from "../ds/Field";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import {
   defaultValuesOf,
@@ -146,6 +152,52 @@ function NumericIssueBindingLine({ name, value }: { name: string; value: InputVa
   );
 }
 
+/** A text input's value shown as the design words it: an issue-bound value is
+ * a fire-time template, and `{{issue.title}}` in a box is a note to the server,
+ * not a sentence to the author (2026-10-30 review, 2c item 5). The control keeps
+ * the field's own test id — in this arm it IS that field, in its bound state —
+ * and `write my own words` is the way back to the raw bytes. */
+function IssueWordsField({
+  field,
+  words,
+  onWriteOwnWords,
+}: {
+  field: RunInputField;
+  words: string;
+  onWriteOwnWords(): void;
+}) {
+  const id = `new-run-input-${field.name}`;
+  return (
+    <div className="space-y-1">
+      <span className={labelClass}>
+        {field.name}
+        {field.required ? " *" : ""}
+      </span>
+      <div
+        id={id}
+        data-testid={id}
+        data-bound="issue"
+        className="rounded-[3px] border border-line bg-paper px-[10px] py-1 font-mono text-[12.5px] text-ink"
+      >
+        {words}
+      </div>
+      {field.description ? (
+        <p className="font-mono text-[10.5px] text-faint" data-testid={`${id}-hint`}>
+          {field.description}
+        </p>
+      ) : null}
+      <button
+        type="button"
+        onClick={onWriteOwnWords}
+        className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid={`trigger-dialog-raw-${field.name}`}
+      >
+        write my own words
+      </button>
+    </div>
+  );
+}
+
 /** One `THE RUN GETS` line: how the value the trigger carries reads to a
  * person. Honest to what is stored — a template made only of placeholders is
  * named in words, anything else is shown quoted and trimmed. */
@@ -236,6 +288,12 @@ function TriggerDialogBody({
     editing?.kind === "schedule" ? editing.schedule.cron_expr : "0 9 * * *",
   );
   const [values, setValues] = useState<Record<string, InputValue>>({});
+  // Which text inputs the author has opened as RAW template text. A value made
+  // only of fire-time placeholders is shown in words, not as `{{issue.title}}`
+  // soup (2026-10-30 review, 2c item 5); this map is the way back to the bytes
+  // the row actually carries, and it is per-field because two inputs of one
+  // trigger can be in different states.
+  const [rawTemplates, setRawTemplates] = useState<Record<string, boolean>>({});
   const [showProblems, setShowProblems] = useState(false);
   // Which of the four writes the LAST submit attempted: the error line on
   // screen is that write's answer, never another arm's leftover.
@@ -565,18 +623,18 @@ function TriggerDialogBody({
                   className="font-mono text-[10.5px] text-faint"
                   data-testid="trigger-dialog-labels-hint"
                 >
-                  any-of: an issue fires when it carries one of these labels; empty means every
-                  issue
+                  an issue with any one of these labels starts the run; leave it empty to watch
+                  every issue
                 </p>
               </div>
             </>
           ) : (
             <Field
               id="trigger-dialog-cron"
-              label="CRON (MINUTE HOUR DOM MONTH DOW, UTC)"
+              label="RUNS AT (UTC)"
               hint={
                 <span data-testid="trigger-dialog-cron-hint">
-                  the server validates the cadence; seconds, names and ? L W # H are refused
+                  five times to run on: minute, hour, day of month, month, day of week
                 </span>
               }
             >
@@ -627,55 +685,79 @@ function TriggerDialogBody({
             </div>
           ) : null}
 
-          {editableFields?.map((field) => (
-            <div key={field.name} className="flex flex-col gap-1">
-              <InputFieldControl
-                field={field}
-                value={values[field.name]}
-                repositories={[repository.name]}
-                repositoriesLoading={false}
-                error={showProblems ? problems[field.name] : undefined}
-                onChange={(value) => setValues((current) => ({ ...current, [field.name]: value }))}
-              />
-              {mode === "issue" && (field.kind === "text" || field.kind === "textarea") ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setValues((current) => ({
-                      ...current,
-                      [field.name]: "{{issue.title}}\n\n{{issue.body}}",
-                    }))
-                  }
-                  className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  data-testid={`trigger-dialog-quickfill-${field.name}`}
-                >
-                  use issue title/body
-                </button>
-              ) : null}
-              {/* An integer input (the shipped `issue-to-pr` template's
-                  `issue_number`) is unfillable without this: the number control
-                  cannot type a placeholder, and the fire fills the value the
-                  row carries. */}
-              {mode === "issue" && (field.kind === "integer" || field.kind === "number") ? (
-                <>
+          {editableFields?.map((field) => {
+            // The issue arm reads a placeholder-only value in words; the
+            // schedule arm has no issue to fill anything, so the same bytes
+            // there ARE the literal text and stay in the box the author typed.
+            const stored = values[field.name];
+            const isTextKind = field.kind === "text" || field.kind === "textarea";
+            const words =
+              mode === "issue" && isTextKind
+                ? issueValueInWords(typeof stored === "string" ? stored : "")
+                : null;
+            const showRaw = words === null || rawTemplates[field.name] === true;
+            return (
+              <div key={field.name} className="flex flex-col gap-1">
+                {showRaw ? (
+                  <InputFieldControl
+                    field={field}
+                    value={stored}
+                    repositories={[repository.name]}
+                    repositoriesLoading={false}
+                    error={showProblems ? problems[field.name] : undefined}
+                    onChange={(value) =>
+                      setValues((current) => ({ ...current, [field.name]: value }))
+                    }
+                  />
+                ) : (
+                  <IssueWordsField
+                    field={field}
+                    words={words}
+                    onWriteOwnWords={() =>
+                      setRawTemplates((current) => ({ ...current, [field.name]: true }))
+                    }
+                  />
+                )}
+                {showRaw && mode === "issue" && isTextKind ? (
                   <button
                     type="button"
                     onClick={() =>
                       setValues((current) => ({
                         ...current,
-                        [field.name]: ISSUE_NUMBER_TOKEN,
+                        [field.name]: "{{issue.title}}\n\n{{issue.body}}",
                       }))
                     }
                     className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                     data-testid={`trigger-dialog-quickfill-${field.name}`}
                   >
-                    use issue number
+                    use issue title/body
                   </button>
-                  <NumericIssueBindingLine name={field.name} value={values[field.name]} />
-                </>
-              ) : null}
-            </div>
-          ))}
+                ) : null}
+                {/* An integer input (the shipped `issue-to-pr` template's
+                    `issue_number`) is unfillable without this: the number control
+                    cannot type a placeholder, and the fire fills the value the
+                    row carries. */}
+                {mode === "issue" && (field.kind === "integer" || field.kind === "number") ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setValues((current) => ({
+                          ...current,
+                          [field.name]: ISSUE_NUMBER_TOKEN,
+                        }))
+                      }
+                      className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                      data-testid={`trigger-dialog-quickfill-${field.name}`}
+                    >
+                      use issue number
+                    </button>
+                    <NumericIssueBindingLine name={field.name} value={values[field.name]} />
+                  </>
+                ) : null}
+              </div>
+            );
+          })}
 
           {mode === "issue" ? (
             <span className="font-mono text-[10.5px] text-faint" data-testid="trigger-dialog-note">

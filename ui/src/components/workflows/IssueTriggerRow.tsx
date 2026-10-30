@@ -14,6 +14,7 @@ import type { IssueTrigger } from "../../api/useIssueTriggers";
 import type { Repository } from "../../api/types";
 import type { TriggerGroup } from "./Triggers";
 import { patchErrorText } from "./Triggers";
+import { ToggleSwitch } from "./ToggleSwitch";
 
 /** `owner/repo` from a repository's git URL — the shape GitHub's issue
  * endpoints address (`https://github.com/<owner>/<repo>/issues/<N>`). A git URL
@@ -112,22 +113,18 @@ export function IssueTriggerRow({ group, trigger, onEdit }: IssueTriggerRowProps
         </p>
       ) : null}
       {group.canManage ? (
-        <label className="flex shrink-0 items-center gap-[6px] whitespace-nowrap font-mono text-[11px] text-ink">
-          <input
-            type="checkbox"
-            className="h-3 w-3 shrink-0 grow-0 basis-3 accent-accent"
-            checked={trigger.enabled}
-            aria-label={`issue trigger ${trigger.id} enabled`}
-            data-testid={`trigger-issue-enabled-${trigger.id}`}
-            onChange={(event) =>
-              patch.mutate({
-                issueTriggerId: trigger.id,
-                body: { version: trigger.version, enabled: event.target.checked },
-              })
-            }
-          />
-          <span data-testid={`trigger-issue-state-${trigger.id}`}>{stateText}</span>
-        </label>
+        <ToggleSwitch
+          checked={trigger.enabled}
+          testid={`trigger-issue-enabled-${trigger.id}`}
+          stateTestid={`trigger-issue-state-${trigger.id}`}
+          label={`issue trigger ${trigger.id} enabled`}
+          onChange={(next) =>
+            patch.mutate({
+              issueTriggerId: trigger.id,
+              body: { version: trigger.version, enabled: next },
+            })
+          }
+        />
       ) : (
         <StatusChip
           state={trigger.enabled ? "info" : "interrupted"}

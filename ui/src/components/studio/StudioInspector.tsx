@@ -796,6 +796,19 @@ export function StudioInspector({
   if (kind === "model.chat") {
     // The design's four-block form: MODEL, WHAT SHOULD IT DO?, and
     // TEMPERATURE / MAX TOKENS side by side; the rest behind the disclosure.
+    //
+    // MODEL stays a text field (2026-10-30 review, 1g item 3). 1g drew it as a
+    // select, and a select would be a lie here: nothing the app can read
+    // enumerates the models of a deployment. `GET /api/v1/agent-profiles`
+    // answers launch descriptors (name, `launcher_id`, permission mode, the
+    // APM pin — no model), `GET /api/v1/launchers` answers registration and the
+    // four capability cells, and the `model.chat` allowlist is WORKER
+    // configuration (ADR-0024: the operator, not the pipeline, decides where
+    // content goes and which model ids it serves) — there is no `/models` route
+    // in `api/openapi.yaml` to build choices from. A list invented from the
+    // draft's own strings or from a sample YAML would refuse the real model and
+    // bless the fake one, so the field takes what the author types and the
+    // server's validation answers for it.
     const modelField = fieldByPath.get("config.model");
     const temperature = fieldByPath.get("config.temperature");
     const maxTokens = fieldByPath.get("config.maxTokens");

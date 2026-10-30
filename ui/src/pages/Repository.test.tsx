@@ -187,13 +187,12 @@ describe("/p/:projectId/:repo", () => {
     expect(screen.getByTestId("repo-start-run").textContent).toBe("Start run");
 
     // WORKFLOWS ON THIS REPO (2e) sits in the left column and names the
-    // repository's pin, with 1e's `Edit` + `Run` buttons.
+    // repository's pin, with the design's two actions: `+ Add trigger` and
+    // `Run` (the workflow's name is the way to its library page).
     expect(await screen.findByTestId("repo-workflows")).toBeTruthy();
     const rowKey = repoAssignment.id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
     expect(await screen.findByTestId(`repo-workflow-row-${rowKey}`)).toBeTruthy();
-    expect(screen.getByTestId(`repo-workflow-edit-${rowKey}`).getAttribute("href")).toBe(
-      `/workflows/${WIRE_PIPELINE_ID}`,
-    );
+    expect(screen.getByTestId(`repo-workflow-add-${rowKey}`).textContent).toBe("+ Add trigger");
     expect(screen.getByTestId(`repo-workflow-run-${rowKey}`).textContent).toBe("Run");
 
     expect(await screen.findByTestId("repo-workspaces")).toBeTruthy();

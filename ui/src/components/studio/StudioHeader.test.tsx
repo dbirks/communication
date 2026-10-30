@@ -59,6 +59,10 @@ describe("StudioHeader", () => {
   });
 
   it("shows only the true parts of the draft chip: version and unsaved", () => {
+    // 2026-10-30 review (1g item 4): the chip is the ONE place `unsaved` is
+    // written — the status bar used to repeat it, and a bare second `unsaved`
+    // sat beside the chip. Both are gone; the mark lives inside the chip, where
+    // design 1g draws `· draft v3 · unsaved`.
     const base = props();
     const { rerender }: RenderResult = render(
       <MemoryRouter>
@@ -66,14 +70,22 @@ describe("StudioHeader", () => {
       </MemoryRouter>,
     );
     expect((screen.getByTestId("studio-draft-version") as HTMLElement).textContent).toBe(
-      "· DRAFT V3 · UNSAVED",
+      "· DRAFT V3 · unsaved",
     );
+    // The chip's own lettering is uppercase; the DOM text stays the plain word
+    // (the e2e suites assert `studio-dirty` = "unsaved"), CSS does the shaping.
+    expect(
+      (screen.getByTestId("studio-dirty") as HTMLElement).classList.contains("uppercase"),
+    ).toBe(true);
+    // One `unsaved` in the header, and the header is all that says it.
+    expect(screen.getAllByText("unsaved", { exact: true })).toHaveLength(1);
     rerender(
       <MemoryRouter>
         <StudioHeader {...base} savedVersion={null} dirty={false} />
       </MemoryRouter>,
     );
     expect((screen.getByTestId("studio-draft-version") as HTMLElement).textContent).toBe("· DRAFT");
+    expect(screen.queryByTestId("studio-dirty")).toBeNull();
     rerender(
       <MemoryRouter>
         <StudioHeader {...base} savedVersion={5} dirty={false} />
@@ -138,6 +150,10 @@ describe("StudioHeader", () => {
     renderHeader();
     expect(screen.getByTestId("studio-breadcrumb").className).not.toContain("hidden");
     expect(screen.getByTestId("studio-dirty").className).not.toContain("hidden");
+    // The mark is INSIDE the chip now, so the chip's box is what reflows.
+    expect(screen.getByTestId("studio-draft-version").parentElement?.className).not.toContain(
+      "hidden",
+    );
   });
 
   it("offers the Steps/Inspect drawer toggles only on phone (design 1g)", () => {
