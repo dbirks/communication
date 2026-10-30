@@ -1,17 +1,26 @@
 /**
- * `New workflow` START FROM subtitles (design 1c). A template tile advertises
- * the document's own step chain; the Blank tile advertises what the starter
- * is — “One agent step”, derived honestly from the skeleton's parse — not
- * the placeholder node id `first` the author is meant to rename (the
- * side-by-side against the design render caught the raw id on the tile).
+ * `New workflow` START FROM tiles and the dialog's own failure surface
+ * (design 1c). A tile advertises how many steps its starter puts on the
+ * canvas — `4 steps`, `One agent step` — counted from the document itself
+ * with the same parse the canvas draws with, never a hand-written number and
+ * never the skeleton's placeholder node id `first` the author is meant to
+ * rename. When the library read has failed, the FAILED banner renders INSIDE
+ * the dialog: the overlay covers the page, so a page-level banner would sit
+ * behind the very dialog whose folders it explains.
  */
-import { describe, expect, it } from "vitest";
-import { tileSubtitle } from "./NewWorkflowDialog";
+import { cleanup, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
+import { afterEach, describe, expect, it } from "vitest";
+import { NewWorkflowDialog, tileSubtitle } from "./NewWorkflowDialog";
+import { ApiError } from "../../api/client";
 import {
   BLANK_SKELETON_YAML,
   PIPELINE_TEMPLATES,
   templateById,
 } from "../../lib/pipeline/templates";
+
+afterEach(cleanup);
 
 describe("NewWorkflowDialog tileSubtitle", () => {
   it("the Blank tile says what it is — one step, not the skeleton's node id", () => {
@@ -22,23 +31,22 @@ describe("NewWorkflowDialog tileSubtitle", () => {
     expect(tileSubtitle(blank!)).not.toContain("first");
   });
 
-  it("template tiles keep the real step chain of their own document", () => {
-    expect(tileSubtitle(templateById("plan-with-approval")!)).toBe(
-      "survey › plan › approve › publish_plan",
-    );
-    expect(tileSubtitle(templateById("security-review")!)).toBe(
-      "scan › summarize › publish_report",
-    );
-    expect(tileSubtitle(templateById("issue-to-pr")!)).toContain("implement");
+  it("template tiles count their own document's steps, like the design", () => {
+    // The real samples' own node counts (the drift test keeps these bytes
+    // identical to docs/samples/home), so the tile cannot promise steps the
+    // canvas will not draw.
+    expect(tileSubtitle(templateById("plan-with-approval")!)).toBe("4 steps");
+    expect(tileSubtitle(templateById("security-review")!)).toBe("3 steps");
+    expect(tileSubtitle(templateById("issue-to-pr")!)).toBe("4 steps");
     for (const template of PIPELINE_TEMPLATES.filter((t) => t.id !== "blank")) {
-      expect(tileSubtitle(template)).not.toBe("One agent step");
+      expect(tileSubtitle(template)).toBe(`${template.stepCount} steps`);
+      // The chain is not the tile's line any more (it stays on the index's
+      // starter cards, where there is room for it).
+      expect(tileSubtitle(template)).not.toContain("›");
     }
   });
 
-  it("a step count other than one is still named honestly", () => {
-    // Same rule the Blank tile rides: the count comes from parsing the
-    // document, so a multi-node skeleton would read as its real size and an
-    // unparseable one shows nothing rather than an invention.
+  it("an unparseable document shows nothing rather than an invented count", () => {
     expect(
       tileSubtitle({
         ...templateById("blank")!,
@@ -53,5 +61,59 @@ describe("NewWorkflowDialog tileSubtitle", () => {
         stepCount: null,
       }),
     ).toBe("");
+  });
+});
+
+describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
+  function mount(options: { listError?: unknown } = {}) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NewWorkflowDialog
+            open
+            onClose={() => {}}
+            canCreate
+            folders={["Delivery"]}
+            listError={options.listError}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return screen.getByTestId("new-workflow-dialog");
+  }
+
+  it("each tile shows its own step count under its name", () => {
+    const dialog = mount();
+    const tile = (id: string) => screen.getByTestId(`new-workflow-template-${id}`).textContent;
+    expect(tile("blank")).toBe("BlankOne agent step");
+    expect(tile("plan-with-approval")).toContain("4 steps");
+    expect(tile("security-review")).toContain("3 steps");
+    expect(tile("issue-to-pr")).toContain("4 steps");
+    // Nothing invented: the number IS the document's node count.
+    for (const template of PIPELINE_TEMPLATES.filter((t) => t.id !== "blank")) {
+      expect(tile(template.id)).toContain(`${template.stepCount} steps`);
+    }
+    expect(dialog).toBeTruthy();
+  });
+
+  it("carries the library read's FAILED banner inside the dialog, not behind it", () => {
+    const error = new ApiError(
+      { type: "about:blank", title: "Internal Server Error", status: 500 },
+      { title: "Internal Server Error", status: 500 },
+    );
+    mount({ listError: error });
+    const banner = screen.getByTestId("new-workflow-list-failure");
+    // Inside the dialog's own box — the page behind the overlay shows nothing.
+    expect(screen.getByTestId("new-workflow-dialog").contains(banner)).toBe(true);
+    expect(banner.textContent).toContain("FAILED");
+    expect(banner.textContent).toContain("Internal Server Error");
+  });
+
+  it("draws no banner when the library read answered", () => {
+    mount();
+    expect(screen.queryByTestId("new-workflow-list-failure")).toBeNull();
   });
 });

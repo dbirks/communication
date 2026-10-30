@@ -383,7 +383,10 @@ function LibrarySection() {
   const profiles = useAgentProfiles();
   const { prefs, update } = useLayoutPrefs();
   const items = pipelines.data?.pipelines ?? [];
-  const workflows = items.length;
+  // The count is the list read's own rows — and there is no number at all
+  // while that read has not answered: a failed or in-flight read must not
+  // render `0`, which would read as "the library is empty" (design 1b review).
+  const workflows = pipelines.data?.pipelines.length;
   const profileCount = profiles.data?.items.length;
 
   const folderCounts = useMemo(() => {

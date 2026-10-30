@@ -13,8 +13,10 @@
  *   for the fan to settle.
  * - Folder groups (ADR-0049 § 8): each folder a panel whose header holds an
  *   SVG chevron, the name in mono caps and the group's own count; the rows
- *   keep the `220px 1fr 180px 120px` grid (`WorkflowRow`). Unfiled rows
- *   render below the folder panels without a header.
+ *   keep the name-free-width grid (`WorkflowRow`). Unfiled is a group like
+ *   any other, so it gets the same panel header (`UNFILED · n`) — the design
+ *   has no unfiled group to copy, and a headerless pile of rows read as rows
+ *   that had fallen out of the folders.
  *
  * The 1a inline `NEW PIPELINE` form and the bottom `STARTER WORKFLOWS`
  * panel are gone: creation lives in `NewWorkflowDialog` (1c), which runs
@@ -102,19 +104,23 @@ function FilterChip({
  * One folder group: a panel whose header holds the SVG chevron (the
  * handoff's `M3 4.5l3 3 3-3` path — it rotates to point right when the
  * group is collapsed), the folder name in mono caps, and the group's own
- * count. The header is the collapse toggle.
+ * count. The header is the collapse toggle. `Unfiled` is a group too, so it
+ * renders through this component with the same header.
  */
 function FolderGroup({
   name,
   count,
   open,
   onToggle,
+  testid,
   children,
 }: {
   name: string;
   count: number;
   open: boolean;
   onToggle: () => void;
+  /** The rows' own list id, kept so verification can name the group it checks. */
+  testid?: string;
   children: ReactNode;
 }) {
   const slug =
@@ -150,7 +156,11 @@ function FolderGroup({
         <span className="min-w-0 truncate">{name}</span>
         <span className="ml-auto shrink-0 font-normal text-faint">{count}</span>
       </button>
-      {open ? <ul className="px-3">{children}</ul> : null}
+      {open ? (
+        <ul className="px-3" data-testid={testid}>
+          {children}
+        </ul>
+      ) : null}
     </section>
   );
 }
@@ -323,7 +333,8 @@ export function LibraryPage() {
   });
 
   // The grouped view (ADR-0049 § 8): one panel per folder, Unfiled last —
-  // as the rows without a header, never a panel with one.
+  // with the same panel header the folder groups carry, because it is a group
+  // of rows like any other (design 1b review).
   const groups = realFolderNames
     .map((name) => ({
       name,
@@ -449,7 +460,7 @@ export function LibraryPage() {
         </p>
       ) : null}
       {pipelines.isPending ? <Spinner label="Loading the workflow library" /> : null}
-      {pipelines.isError ? (
+      {pipelines.isError && !newWorkflow.open ? (
         <ProblemBanner error={pipelines.error} fallback="The workflow library could not be read." />
       ) : null}
       {projects.isError ? (
@@ -472,7 +483,10 @@ export function LibraryPage() {
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search workflows"
             aria-label="Search workflows"
-            className="w-full min-[600px]:w-[240px]"
+            /* The design's search field is the toolbar's elastic element: it
+               takes the row's free space at desktop width (chips sit beside it)
+               and the whole line at phone width. */
+            className="min-[600px]:w-auto min-[600px]:min-w-[240px] min-[600px]:flex-1"
             data-testid="workflows-search"
           />
           <FilterChip
@@ -549,12 +563,20 @@ export function LibraryPage() {
               </FolderGroup>
             ))}
             {unfiledRows.length > 0 ? (
-              <ul
-                className="rounded-[3px] border border-line-strong bg-surface px-3"
-                data-testid="workflow-unfiled-group"
+              <FolderGroup
+                name={UNFILED_FOLDER}
+                count={unfiledRows.length}
+                open={collapsed[UNFILED_FOLDER] !== true}
+                onToggle={() =>
+                  setCollapsed((current) => ({
+                    ...current,
+                    [UNFILED_FOLDER]: current[UNFILED_FOLDER] !== true,
+                  }))
+                }
+                testid="workflow-unfiled-group"
               >
                 {unfiledRows.map(rowNode)}
-              </ul>
+              </FolderGroup>
             ) : null}
           </div>
         ) : (
@@ -573,6 +595,10 @@ export function LibraryPage() {
         canCreate={canAuthor}
         presetTemplateId={newWorkflow.preset}
         folders={realFolderNames}
+        /* The dialog is the one thing on screen when it is open, so the list
+           read's failure belongs inside it — a banner behind the overlay is a
+           failure the author cannot read. */
+        listError={pipelines.isError ? pipelines.error : undefined}
       />
       {moveTarget ? (
         <MoveToFolderDialog

@@ -20,11 +20,11 @@ import { useCreateDraft, useCreatePipeline, useUpdatePipeline } from "../../api/
 import { routes } from "../../lib/routes";
 import { Button } from "../ds/Button";
 import { Field, Input, Select } from "../ds/Field";
+import { ProblemBanner } from "../Feedback";
 import {
   PIPELINE_TEMPLATES,
   firstSentence,
   templateById,
-  templateChain,
   withMetadataName,
   type PipelineTemplate,
   type TemplateId,
@@ -57,23 +57,29 @@ export interface NewWorkflowDialogProps {
   presetTemplateId?: TemplateId | null;
   /** The index's distinct existing folder names (the dialog adds "No folder"). */
   folders?: readonly string[];
+  /** The workflow-list read's failure, when the index could not read it. The
+   * dialog owns the screen while it is open, so it carries that FAILED banner
+   * itself (design 1c review): a banner behind the overlay is a failure the
+   * author cannot read. The starter documents are bundled with the app, so a
+   * failed read costs the folder pick its folders, not the create. */
+  listError?: unknown;
 }
 
 /**
- * A START FROM tile's second line (design 1c). Template tiles show the
- * document's own step chain — the ids the canvas draws, never a hand-written
- * caption. The Blank tile has no chain worth reading: its skeleton's single
- * node id (`first`) is a placeholder the author is meant to rename, not a
- * feature, so the tile says what the starter IS — derived honestly from the
- * skeleton's own parse (one step → “One agent step”, matching the starter
- * card's words on the index; nothing shown when the skeleton does not
- * parse).
+ * A START FROM tile's second line (design 1c): how many steps the starter puts
+ * on the canvas — `One agent step` for Blank, `4 steps` for a template. The
+ * number is the document's own node count, parsed by the same `parseGraph` the
+ * canvas draws with (`stepCount`), so a tile cannot promise a step the Studio
+ * will not draw; a document that does not parse shows nothing rather than a
+ * count nobody observed. (The step CHAIN stays on the index's starter cards,
+ * where there is room for it.)
  */
 export function tileSubtitle(template: PipelineTemplate): string {
-  if (template.id !== "blank") return templateChain(template);
-  if (template.stepCount === 1) return "One agent step";
   if (template.stepCount === null) return "";
-  return `${template.stepCount} steps`;
+  // The design's words for the one-node skeleton; any other size is named by
+  // its own count rather than by a caption that could go stale.
+  if (template.id === "blank" && template.stepCount === 1) return "One agent step";
+  return `${template.stepCount} ${template.stepCount === 1 ? "step" : "steps"}`;
 }
 
 export function NewWorkflowDialog({
@@ -82,6 +88,7 @@ export function NewWorkflowDialog({
   canCreate,
   presetTemplateId,
   folders = [],
+  listError,
 }: NewWorkflowDialogProps) {
   if (!open) return null;
   return (
@@ -90,6 +97,7 @@ export function NewWorkflowDialog({
       canCreate={canCreate}
       presetTemplateId={presetTemplateId ?? null}
       folders={folders}
+      listError={listError}
     />
   );
 }
@@ -99,9 +107,10 @@ interface DialogBodyProps {
   canCreate: boolean;
   presetTemplateId: TemplateId | null;
   folders: readonly string[];
+  listError?: unknown;
 }
 
-function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBodyProps) {
+function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }: DialogBodyProps) {
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<Element | null>(null);
@@ -265,6 +274,17 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
           onSubmit={submit}
           data-testid="new-workflow-form"
         >
+          {/* The list read's FAILED banner belongs INSIDE the dialog: this
+              overlay covers the page, so the page's banner would sit behind it
+              (design 1c review). The starter itself still works — its document
+              ships with the app — so the sentence says what IS missing. */}
+          {listError ? (
+            <ProblemBanner
+              error={listError}
+              fallback="The workflow library could not be read — existing folders cannot be listed here."
+              testid="new-workflow-list-failure"
+            />
+          ) : null}
           <Field id="new-workflow-name" label="NAME">
             {/* The NAME field is a human sentence, not a machine value: the
                 important markers beat `fieldClass`'s font-mono/text-[12.5px],
@@ -344,16 +364,12 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
                       onChange={() => setTemplateId(option.id)}
                     />
                     <span className="text-[12.5px] font-semibold">{option.label}</span>
-                    {/* Second line (design 1c): the template tiles show the
-                        document's own step chain; the Blank tile names what
-                        it is, derived from the skeleton's own parse — see
-                        `tileSubtitle`. */}
+                    {/* Second line (design 1c): how many steps the starter puts
+                        on the canvas — `One agent step` for Blank, `N steps`
+                        for a template, counted from the document itself (see
+                        `tileSubtitle`). */}
                     {tileSubtitle(option) ? (
-                      <span
-                        className={`text-[11px] text-muted ${option.id === "blank" ? "" : "font-mono"}`}
-                      >
-                        {tileSubtitle(option)}
-                      </span>
+                      <span className="text-[11px] text-muted">{tileSubtitle(option)}</span>
                     ) : null}
                   </label>
                 );

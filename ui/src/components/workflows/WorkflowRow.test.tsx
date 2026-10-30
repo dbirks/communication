@@ -2,14 +2,16 @@
  * The Workflows index row (1b): the chip is the server's own summary, the
  * chain is the document's own node ids (scopes folded to one `loop: …` chip,
  * a draft-only row chaining from its newest open draft's own document), the
- * assignment cell never claims "unassigned" while a read is in flight, and
+ * assignment cell never claims "unassigned" while a read is in flight and
+ * otherwise reads `project · repo` off the assignment's own pin, the name
+ * column takes the free width instead of truncating long slugs at 220px, and
  * the row prints no draft line — `Edit` opens the workflow page.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MoveToFolderDialog, WorkflowRow, stepChain } from "./WorkflowRow";
+import { MoveToFolderDialog, WORKFLOW_ROW_GRID, WorkflowRow, stepChain } from "./WorkflowRow";
 import { UNFILED_FOLDER } from "../../api/pipelines";
 import type { Assignment, PipelineRevisionSummary, Project } from "../../api/types";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
@@ -106,8 +108,48 @@ describe("WorkflowRow", () => {
 
   it("names the assigned project, and the trigger is `manual` with no enabled cron", () => {
     mount();
-    expect(textOf(`workflow-assignments-${pipeline.slug}`)).toContain(project.name);
+    // A whole-project assignment (ADR-0060's null pin) still reads as the
+    // design's `project · repo` line — with the honest second half.
+    expect(textOf(`workflow-assignments-${pipeline.slug}`)).toContain(
+      `${project.name} · whole project`,
+    );
     expect(textOf(`workflow-trigger-${pipeline.slug}`)).toContain("manual");
+  });
+
+  // 1b review: the cell reads like the design — `project · repo` off the
+  // assignment's own repository pin, one line per assignment.
+  it("reads `project · repo` from the assignment's own repository pin", () => {
+    mount({
+      assigned: [{ project, assignment: { ...assignment, repository_name: "app" }, cron: null }],
+    });
+    expect(textOf(`workflow-assignments-${pipeline.slug}`)).toContain(`${project.name} · app`);
+  });
+
+  it("keeps two uses on two lines instead of joining them into one ambiguous path", () => {
+    mount({
+      assigned: [
+        { project, assignment: { ...assignment, repository_name: "app" }, cron: null },
+        { project: { ...project, name: "M4 Project B" }, assignment, cron: null },
+      ],
+    });
+    expect(textOf(`workflow-assignment-${pipeline.slug}-0`)).toBe(`${project.name} · app`);
+    expect(textOf(`workflow-assignment-${pipeline.slug}-1`)).toBe("M4 Project B · whole project");
+  });
+
+  it("gives the name column the free width and wraps it below the desktop breakpoint", () => {
+    mount();
+    const grid = screen
+      .getByTestId(`workflow-name-${pipeline.slug}`)
+      ?.closest("[class*='grid-cols-']");
+    // Design 1b's `220px 1fr 180px 120px` clipped long names to 220px while
+    // the chain column had slack; the name now gets a flexible column with a
+    // 220px floor.
+    expect(grid?.getAttribute("class") ?? "").toContain(WORKFLOW_ROW_GRID);
+    const name = screen.getByTestId(`workflow-name-${pipeline.slug}`);
+    const classes = (name.getAttribute("class") ?? "").split(/\s+/);
+    expect(classes).not.toContain("truncate"); // truncating at every width cut
+    expect(classes).toContain("min-[900px]:truncate"); // slugs mid-word on phones
+    expect(name.getAttribute("title")).toBe(pipeline.display_name || pipeline.slug);
   });
 
   it("renders `cron <expr>` when the owning project has an enabled schedule", () => {

@@ -279,6 +279,27 @@ describe("the sidebar workflow folders (ADR-0049 § 8)", () => {
     expect(scope.queryAllByTestId(/^sidebar-workflow-folder-/)).toHaveLength(0);
     expect(scope.getByTestId("sidebar-link-workflows").getAttribute("href")).toBe("/workflows");
   });
+
+  // 1b review: `0` is a fact about an EMPTY library, not about a read that
+  // failed — the row stays unnumbered until the list actually answers.
+  it("shows no Workflows number while the library read has failed", async () => {
+    renderApp({
+      path: "/",
+      routes: folderRoutes().map((stub) =>
+        stub.path === "/api/v1/pipelines" ? { ...stub, status: 500, body: undefined } : stub,
+      ),
+    });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const scope = within(sidebar);
+    // The other library read settling proves the failed one has been answered:
+    // Agent profiles shows its real 0, Workflows shows nothing.
+    await waitFor(
+      () => expect(scope.getByTestId("sidebar-link-profiles").textContent).toContain("0"),
+      { timeout: READ_MS },
+    );
+    expect(scope.getByTestId("sidebar-link-workflows").textContent).toBe("Workflows");
+    expect(scope.queryAllByTestId(/^sidebar-workflow-folder-/)).toHaveLength(0);
+  });
 });
 
 describe("the sidebar flags read off the same reduction as Inbox", () => {

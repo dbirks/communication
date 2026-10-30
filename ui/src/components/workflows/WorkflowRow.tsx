@@ -12,10 +12,14 @@
  *   the document's own child ids — nothing is named by the client. A
  *   draft-only row (no revision) derives the same chain from its newest
  *   open draft's own document text.
- * - Where used is the caller's own membership's assignments: `project ·
- *   repo` when ADR-0060 pins a repository, `project` alone for a
- *   whole-project assignment, or `Not used yet`. A project whose read failed
- *   never reads as "unassigned" — the cell shows `…` until the read settles.
+ * - Where used is the caller's own membership's assignments, in the design's
+ *   `project · repo` shape (1b, and the same words the Used-in tab uses for
+ *   the same fact): `M4 Exit · app` when ADR-0060 pins a repository,
+ *   `M4 Exit · whole project` when the assignment carries no repo pin, one
+ *   line per assignment — or `Not used yet` once the fan has settled with
+ *   nothing. The client never names a repository the assignment does not.
+ *   A project whose read failed never reads as "unassigned" — the cell shows
+ *   `…` until the read settles.
  * - The trigger is the owning project's enabled schedule's `cron <expr>`,
  *   or `manual`; GitHub-issue triggers do not exist yet and are never
  *   rendered. A row never prints a draft line: `Edit` opens the workflow
@@ -36,6 +40,17 @@ import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import { SCOPE_KINDS, kindWord, scopeBody } from "../../lib/pipeline/definition";
 import { parseGraph } from "../../lib/pipeline/graphDoc";
 import { routes } from "../../lib/routes";
+
+/**
+ * The row's desktop grid. Design 1b writes `220px 1fr 180px 120px`, but its
+ * own names are two words; the lab's are long slugs, and a fixed 220px name
+ * column truncated them mid-word while the chain column had room to spare.
+ * The name column therefore takes the free width with the design's 220px as
+ * its floor (`minmax(220px,1fr)`), the chain keeps the larger share and wraps,
+ * and the used-in/actions columns stay the design's 180px/120px.
+ */
+export const WORKFLOW_ROW_GRID =
+  "min-[900px]:grid-cols-[minmax(220px,1fr)_minmax(0,1.2fr)_180px_120px]";
 
 /** A chain cell: a plain step id, or a shaded `loop: …` scope chip. */
 export interface StepChainCell {
@@ -163,20 +178,27 @@ export function WorkflowRow({
     assigned.length === 0
       ? null
       : (assigned.map((row) => row.cron).find((cron) => cron !== null) ?? "manual");
-  const usedIn = assigned.map((row) =>
-    row.assignment.repository_name
-      ? `${row.project.name} · ${row.assignment.repository_name}`
-      : row.project.name,
+  // The design's `project · repo` line (1b). A whole-project assignment
+  // (ADR-0060's null pin) says `whole project` — the Used-in tab's own words
+  // for the same fact — rather than dropping the half that makes the line read
+  // as a place the workflow runs.
+  const usedIn = assigned.map(
+    (row) => `${row.project.name} · ${row.assignment.repository_name ?? "whole project"}`,
   );
 
   return (
     <li className="border-b border-line py-[8px]" data-testid={`workflow-row-${pipeline.slug}`}>
-      <div className="grid grid-cols-1 gap-y-[6px] gap-x-4 min-[900px]:grid-cols-[220px_1fr_180px_120px] min-[900px]:items-center">
-        {/* name + revision chip */}
+      <div
+        className={`grid grid-cols-1 gap-y-[6px] gap-x-4 ${WORKFLOW_ROW_GRID} min-[900px]:items-center`}
+      >
+        {/* name + revision chip: the name wraps below 900px (two lines of a
+            slug beat an ellipsis in the middle of a word) and only truncates
+            from there up, where the column has a fixed floor */}
         <div className="min-w-0 space-y-[4px]">
           <Link
             to={routes.workflow(pipeline.id)}
-            className="block truncate text-[13.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            title={pipeline.display_name || pipeline.slug}
+            className="block break-words text-[13.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-[900px]:truncate"
             data-testid={`workflow-name-${pipeline.slug}`}
           >
             {pipeline.display_name || pipeline.slug}
@@ -240,13 +262,25 @@ export function WorkflowRow({
               Not used yet
             </p>
           ) : (
-            <p
-              className="truncate text-[11.5px]"
+            <div
+              className="min-w-0 space-y-[2px]"
               title={usedIn.join(" · ")}
               data-testid={`workflow-assignments-${pipeline.slug}`}
             >
-              {usedIn.join(" · ") || "…"}
-            </p>
+              {usedIn.length === 0 ? (
+                <p className="text-[11.5px]">…</p>
+              ) : (
+                usedIn.map((where, index) => (
+                  <p
+                    key={`${where}-${index}`}
+                    className="break-words text-[11.5px]"
+                    data-testid={`workflow-assignment-${pipeline.slug}-${index}`}
+                  >
+                    {where}
+                  </p>
+                ))
+              )}
+            </div>
           )}
           {trigger === null && assignmentsResolved ? null : (
             <p

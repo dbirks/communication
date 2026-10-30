@@ -303,6 +303,47 @@ describe("/workflows — the index (3a)", () => {
     expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
   });
 
+  it("the search field is the toolbar's elastic element, not a fixed 240px box", async () => {
+    mount("/workflows");
+    await screen.findByTestId("workflows-list");
+    const classes = (screen.getByTestId("workflows-search").getAttribute("class") ?? "").split(
+      /\s+/,
+    );
+    // 1b review: the field fills the toolbar's free space at desktop width…
+    expect(classes).toContain("min-[600px]:flex-1");
+    expect(classes).toContain("min-[600px]:min-w-[240px]");
+    // …and the whole line below 600px, so the old fixed width is gone.
+    expect(classes).toContain("w-full");
+    expect(classes).not.toContain("min-[600px]:w-[240px]");
+  });
+
+  it("states a failed library read INSIDE the New workflow dialog, not behind it", async () => {
+    mount("/workflows", [
+      {
+        path: "/api/v1/pipelines",
+        status: 500,
+        body: {
+          type: "about:blank",
+          title: "Internal Server Error",
+          status: 500,
+          detail: "emulated failure",
+        },
+      },
+    ]);
+    // With the dialog closed the page carries the failure, as ever.
+    await screen.findByTestId("library-page");
+    await waitFor(() => expect(screen.getAllByRole("alert").length).toBeGreaterThan(0), settled);
+
+    await openNewWorkflow();
+    const dialog = await screen.findByTestId("new-workflow-dialog", undefined, settled);
+    const banner = within(dialog).getByTestId("new-workflow-list-failure");
+    expect(banner.textContent).toContain("FAILED");
+    expect(banner.textContent).toContain("Internal Server Error: emulated failure");
+    // Exactly one failure is on screen: the overlay owns the view, so the
+    // page-level banner steps aside rather than repeating behind it.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
   it("Duplicate: a new `<slug>-copy` pipeline with exactly one draft, landing on that draft", async () => {
     const copyDraft: Draft = {
       ...wireDraft("draft"),
@@ -600,17 +641,17 @@ describe("/workflows — the index (3a)", () => {
         .querySelector("input");
       expect(radio).not.toBeNull();
       expect((radio as HTMLInputElement).checked).toBe(true);
-      // Each card's second line is the template document's own chain — the
-      // ids the canvas draws, never a hand-written "n steps" caption.
+      // Each card's second line is its own step count (design 1c: “4 steps”)
+      // — counted from the document, not a hand-written caption. The step
+      // CHAIN is the index starter card's line, where there is room for it.
       expect(
         within(dialog).getByTestId("new-workflow-template-plan-with-approval").textContent,
-      ).toContain("survey › plan › approve › publish_plan");
+      ).toContain("4 steps");
       expect(
         within(dialog).getByTestId("new-workflow-template-security-review").textContent,
-      ).toContain("scan › summarize › publish_report");
-      // The Blank tile has no chain to show: its subtitle names what the
-      // starter IS (design 1c), derived from the skeleton's own parse — the
-      // placeholder node id is not a feature to advertise.
+      ).toContain("3 steps");
+      // The Blank tile keeps the design's words for its single step, and never
+      // advertises the skeleton's placeholder node id.
       expect(within(dialog).getByTestId("new-workflow-template-blank").textContent).toContain(
         "One agent step",
       );
@@ -732,29 +773,39 @@ const folderedList = {
 };
 
 describe("/workflows — folders (ADR-0049 § 8)", () => {
-  it("groups rows under collapsible folder headers; unfiled rows go headerless, counts from the API", async () => {
+  it("groups rows under collapsible folder headers; the unfiled group is a panel with its own header and count", async () => {
     mount("/workflows", [{ path: "/api/v1/pipelines", body: folderedList }]);
     const list = await screen.findByTestId("workflows-list");
     const headers = within(list).getAllByTestId(/^workflow-folder-header-/);
-    // The folder panel gets the header; the unfiled rows do not (design 1b).
+    // 1b review: `Unfiled` is a group like any other, so it gets the same
+    // panel header (`UNFILED · n`) rather than a headerless pile of rows.
     expect(headers.map((header) => header.getAttribute("data-testid"))).toEqual([
       "workflow-folder-header-delivery",
+      "workflow-folder-header-unfiled",
     ]);
     // Each header carries its group's own count — nothing invented.
     expect(headers[0].textContent).toContain("Delivery");
     expect(headers[0].textContent).toContain("1");
-    // The unfiled row lives in its own headerless group.
+    expect(headers[1].textContent).toContain("Unfiled");
+    expect(headers[1].textContent).toContain("1");
+    // The unfiled row lives in that group.
     expect(within(list).getByTestId("workflow-unfiled-group")).toBeTruthy();
     expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
 
-    // The collapse is real: the group's rows disappear and the button says so.
+    // The collapse is real for both groups: the rows disappear and the button
+    // says so.
     fireEvent.click(headers[0]);
     expect(headers[0].getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByTestId("workflow-row-feature-development")).toBeNull();
     expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+    fireEvent.click(headers[1]);
+    expect(headers[1].getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("workflow-row-module-check")).toBeNull();
     fireEvent.click(headers[0]);
+    fireEvent.click(headers[1]);
     await waitFor(() => {
       expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
+      expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
     });
   });
 
@@ -772,11 +823,18 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
     );
     cleanup();
 
-    // The Unfiled group is headerless — its rows live in their own group.
+    // The Unfiled group is a panel of its own — header, count, rows.
     mount("/workflows?folder=Unfiled", [{ path: "/api/v1/pipelines", body: folderedList }]);
     const unfiled = await screen.findByTestId("workflow-unfiled-group");
     expect(within(unfiled).getAllByTestId(/^workflow-row-/)).toHaveLength(1);
     expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+    expect(screen.getByTestId("workflow-folder-header-unfiled").textContent).toContain("1");
+    // A folder the list no longer carries filters nothing (the chip clears
+    // itself), so no empty Unfiled panel is drawn for it.
+    cleanup();
+    mount("/workflows?folder=Delivery", [{ path: "/api/v1/pipelines", body: folderedList }]);
+    await screen.findByTestId("workflows-list");
+    expect(screen.queryByTestId("workflow-folder-header-unfiled")).toBeNull();
   });
 
   it("Move to folder…: one PATCH of the row's folder, then the dialog closes", async () => {
