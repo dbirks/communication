@@ -1,4 +1,5 @@
-import { useActorNames } from "../api/actors";
+import { useMemo } from "react";
+import { useActorNames, humanIdsIn } from "../api/actors";
 import { useProjectEvents } from "../api/events";
 import type { EventEnvelope } from "../api/types";
 import { Panel } from "./ds/Panel";
@@ -40,7 +41,11 @@ export interface ActivityFeedProps {
  */
 export default function ActivityFeed({ projectId }: ActivityFeedProps) {
   const { events, status } = useProjectEvents(projectId);
-  const { actorLabel } = useActorNames(projectId);
+  // The feed names whoever acted, so whoever the journal mentions is a question
+  // the directory is asked — including a colleague who joined after the first
+  // read, whose row would otherwise read "by someone (abc12345)" forever.
+  const actorIds = useMemo(() => humanIdsIn(events), [events]);
+  const { actorLabel } = useActorNames(projectId, actorIds);
 
   return (
     <Panel

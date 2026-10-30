@@ -33,6 +33,68 @@ export function shortId(id: string): string {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(value) ? value.slice(-8) : value;
 }
 
+/**
+ * Payload members whose value is a user id that some feed renders as a name.
+ * The journal carries ids only (`09-api-events-data.md`), so these are the
+ * places a page can meet a person it was never told about by the row it is
+ * rendering. Keys are enumerated rather than pattern-matched: `decided_by` also
+ * carries policy pseudo-ids (`profile_policy:deny`, ADR-0039), which are not
+ * people and must never send the page looking for one.
+ */
+const USER_ID_FIELDS: readonly string[] = [
+  "submitted_by",
+  "requested_by",
+  "decided_by",
+  "edited_by",
+  "cleaned_by",
+  "controller_user_id",
+  "to_user_id",
+  "from_user_id",
+];
+
+/** A journal frame, taken structurally so this module stays import-free. */
+type JournalFrame = {
+  actor?: { kind?: string; id?: string | null } | undefined;
+  payload?: Record<string, unknown> | undefined;
+};
+
+/**
+ * Every human id a surface is about to put in a sentence — the journal actors
+ * of kind `human`, the ids the payloads carry, plus any id a row hands over
+ * directly (a controller, a turn's submitter). A page passes the result to
+ * `useActorNames`, which asks the directory about these ids whether or not the
+ * fetch that would have carried them landed; a person the fold is about to call
+ * "someone" is a lookup the UI owes the reader.
+ *
+ * Ids that are not people are filtered out: an actor of kind `agent`, `worker`,
+ * `system` or `integration` never enters the list, and neither does a policy
+ * pseudo-id (`profile_policy:deny`), `null` or the empty string — none of them
+ * is somebody the directory could name.
+ */
+export function humanIdsIn(
+  events: readonly JournalFrame[],
+  extraIds: readonly (string | null | undefined)[] = [],
+): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value !== "string") return;
+    const id = value.trim();
+    // A pseudo-id (`profile_policy:deny`, `system`) is not a person.
+    if (!id || id.includes(":") || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const event of events) {
+    if (event.actor?.kind === "human") add(event.actor.id);
+    const payload = event.payload;
+    if (!payload) continue;
+    for (const field of USER_ID_FIELDS) add(payload[field]);
+  }
+  for (const id of extraIds) add(id);
+  return ids;
+}
+
 /** A lookup built from names the caller has already read; later hints win. */
 export function nameLookup(hints: Iterable<NameHint>): NameLookup {
   const names = new Map<string, string>();

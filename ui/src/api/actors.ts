@@ -13,15 +13,22 @@
  * and an integration are kinds the journal records (`internal/events/events.go`
  * `ActorKind*`), and the id the control plane stores for `system` is the
  * literal string "system", which says nothing to a reader.
+ *
+ * The directory is a cache, so it can be wrong in the reader's face: an id it
+ * never resolved is a person the transcript calls "someone (abc12345)", and two
+ * viewers of one journal then disagree about who acted. `useActorNames` therefore
+ * treats an id it cannot name as an outstanding lookup and reads the directory
+ * again (bounded), rather than trusting one answer for the life of the page.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { ApiError } from "./client";
 import { useMe, useMembers, useUsers } from "./queries";
 import type { EventActor, EventActorKind } from "./types";
 import { nameLookup, resolveName, shortId } from "./names";
 import type { NameHint, NameLookup } from "./names";
 
 export type { NameHint, NameLookup } from "./names";
-export { fallbackName, mergeLookups, nameLookup, resolveName, shortId } from "./names";
+export { fallbackName, humanIdsIn, mergeLookups, nameLookup, resolveName, shortId } from "./names";
 
 /** Written-out label for each non-human actor kind. */
 const NON_HUMAN_LABELS: Record<EventActorKind, string> = {
@@ -73,17 +80,110 @@ export interface ActorNames {
   nameOf: (userId: string) => string;
   /** Words for an event actor of any kind. */
   actorLabel: (actor: EventActor) => string;
+  /**
+   * Human ids this hook was told about and the directory still cannot name.
+   * A surface shows "someone (abc12345)" for exactly these while it waits; the
+   * list is what makes that sentence a lookup in progress rather than a verdict.
+   */
+  unresolvedIds: readonly string[];
+}
+
+/** Repairs per outstanding debt before the page accepts the fallback it has. */
+export const DIRECTORY_REPAIR_ATTEMPTS = 3;
+/** Safety gap between repairs, for a settled directory read that changes no state. */
+export const DIRECTORY_REPAIR_TICK_MS = 2_000;
+
+/** The actor directory as the repair loop can see and poke it. */
+export interface DirectoryRepairTarget {
+  /** A directory fetch is in flight; asking again now would only duplicate it. */
+  busy: boolean;
+  /** Changes every time either directory read settles, so a failure is noticed as it lands. */
+  settled: string;
+  /** Reads the directory again. */
+  refetch: () => void;
+}
+
+/** The default for `useActorNames`' `actorIds`: a surface that names nobody extra. */
+const NO_ACTOR_IDS: readonly string[] = [];
+
+/**
+ * An answer that names a decision rather than a failure — `401` (signed out),
+ * `403` (not in this project), `404` (no such route). Asking again gets the same
+ * answer, so only a transport failure or a 5xx is a debt worth re-reading; the
+ * surface that showed it stays the one to explain it.
+ */
+function answeredInsteadOfFailed(error: unknown): boolean {
+  return error instanceof ApiError && error.status > 0 && error.status < 500;
+}
+
+/**
+ * An unknown actor id is evidence the directory is missing or stale, not proof
+ * that the person is a stranger. Two ways that happens, both seen in the lab:
+ * the read was lost (`GET /api/v1/users` and `GET …/members` answered nothing at
+ * all while both API replicas restarted behind a load balancer with no healthy
+ * upstream, one frame after every other request on the page succeeded), or the
+ * read predates the person (`members` answered before they were added, and a
+ * viewer who only watches receives no invalidation for them). So ask the
+ * directory again — as soon as a directory read has settled and the page still
+ * cannot name somebody, rather than after a back-off, because every moment spent
+ * "someone" is a moment the reader was told something false. Bounded per debt,
+ * so a genuinely unnamed person (a stranger on an old run) cannot turn a page
+ * into a poller.
+ */
+export function useDirectoryRepair(
+  debt: readonly string[],
+  directory: DirectoryRepairTarget,
+): void {
+  const key = debt.join("\n");
+  const current = useRef({ key, directory });
+  current.current = { key, directory };
+  const spent = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (key === "") return;
+    const attempt = (): boolean => {
+      const dir = current.current.directory;
+      if (dir.busy) return true; // the read in flight re-runs this effect when it settles
+      const owed = current.current.key.split("\n");
+      const spendable = owed.filter(
+        (name) => (spent.current.get(name) ?? 0) < DIRECTORY_REPAIR_ATTEMPTS,
+      );
+      if (spendable.length === 0) return false;
+      for (const name of spendable) {
+        spent.current.set(name, (spent.current.get(name) ?? 0) + 1);
+      }
+      dir.refetch();
+      return true;
+    };
+    if (!attempt()) return;
+    const timer = setInterval(() => {
+      if (!attempt()) clearInterval(timer);
+    }, DIRECTORY_REPAIR_TICK_MS);
+    return () => clearInterval(timer);
+  }, [key, directory.busy, directory.settled]);
 }
 
 /**
  * The names a page can resolve: the caller, the project's members, and the
  * organization directory. All three are shared cache entries, so a page that
  * already shows members pays no extra request.
+ *
+ * `actorIds` are the human ids the calling surface is about to put in a sentence
+ * (`humanIdsIn` collects them from journal frames and row hints). Passing them
+ * is what makes the directory self-healing: whoever is missing from it gets
+ * looked up again, so two viewers of one journal read one name for one person
+ * rather than one of them reading "someone (abc12345)" for the rest of the page.
  */
-export function useActorNames(projectId?: string): ActorNames {
+export function useActorNames(
+  projectId?: string,
+  actorIds: readonly string[] = NO_ACTOR_IDS,
+): ActorNames {
   const me = useMe();
-  const users = useUsers();
-  const members = useMembers(projectId ?? "");
+  // Fail fast rather than sit behind a retry back-off: this hook re-reads the
+  // directory the moment a name it needs is missing (below), so the recovery it
+  // performs is faster and starts sooner than the app-wide retry would allow.
+  const users = useUsers({ failFast: true });
+  const membersEnabled = Boolean(projectId);
+  const members = useMembers(projectId ?? "", { failFast: true });
 
   const lookup = useMemo<NameLookup>(() => {
     const hints: NameHint[] = [
@@ -97,12 +197,95 @@ export function useActorNames(projectId?: string): ActorNames {
     return nameLookup(hints);
   }, [me.data, users.data, members.data]);
 
+  const unresolvedIds = useMemo(
+    () => actorIds.filter((id) => lookup(id) === null),
+    [actorIds, lookup],
+  );
+
+  // A directory read that came back empty-handed is a debt even for the
+  // surfaces that name nobody explicitly: their actors would all read "someone"
+  // until somebody navigated again.
+  const failedReads = useMemo(() => {
+    const failed: string[] = [];
+    if (users.isError && users.data === undefined && !answeredInsteadOfFailed(users.error)) {
+      failed.push("users");
+    }
+    if (
+      membersEnabled &&
+      members.isError &&
+      members.data === undefined &&
+      !answeredInsteadOfFailed(members.error)
+    ) {
+      failed.push("members");
+    }
+    return failed;
+  }, [
+    users.isError,
+    users.data,
+    users.error,
+    membersEnabled,
+    members.isError,
+    members.data,
+    members.error,
+  ]);
+
+  // The other kind of empty-handed answer names a decision (`401` signed out,
+  // `403` not allowed to read the directory, `404`). Re-reading gets the same
+  // answer, so when every directory read this page may make has answered that
+  // way, the ids it cannot name are the honest limit of what it may say rather
+  // than a lookup to keep asking for.
+  const refused = useMemo(() => {
+    const answers: unknown[] = [];
+    if (users.isError && users.data === undefined) answers.push(users.error);
+    if (membersEnabled && members.isError && members.data === undefined) {
+      answers.push(members.error);
+    }
+    const reads = membersEnabled ? 2 : 1;
+    return answers.length === reads && answers.every(answeredInsteadOfFailed);
+  }, [
+    users.isError,
+    users.data,
+    users.error,
+    membersEnabled,
+    members.isError,
+    members.data,
+    members.error,
+  ]);
+
+  const debt = useMemo(
+    () => (refused ? [] : [...unresolvedIds, ...failedReads]),
+    [refused, unresolvedIds, failedReads],
+  );
+
+  const directory = useMemo<DirectoryRepairTarget>(
+    () => ({
+      busy: users.isFetching || (membersEnabled && members.isFetching),
+      settled: [
+        users.status,
+        users.fetchStatus,
+        users.dataUpdatedAt,
+        users.errorUpdatedAt,
+        membersEnabled ? members.status : "disabled",
+        membersEnabled ? members.fetchStatus : "disabled",
+        membersEnabled ? members.dataUpdatedAt : 0,
+        membersEnabled ? members.errorUpdatedAt : 0,
+      ].join(":"),
+      refetch: () => {
+        void users.refetch();
+        if (membersEnabled) void members.refetch();
+      },
+    }),
+    [users, members, membersEnabled],
+  );
+  useDirectoryRepair(debt, directory);
+
   return useMemo<ActorNames>(
     () => ({
       lookup,
       nameOf: (userId) => resolveName(userId, lookup),
       actorLabel: (actor) => actorName(actor, lookup),
+      unresolvedIds,
     }),
-    [lookup],
+    [lookup, unresolvedIds],
   );
 }

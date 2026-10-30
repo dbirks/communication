@@ -14,7 +14,8 @@
  * sessions for one conversation would open two streams.
  */
 import { useMemo, useState, type FormEvent } from "react";
-import { useActorNames, mergeLookups, nameLookup } from "../../api/actors";
+import { useActorNames, mergeLookups, nameLookup, type NameHint } from "../../api/actors";
+import { humanIdsIn } from "../../api/names";
 import { useConversationEvents, type ConnectionState } from "../../api/events";
 import {
   useConversation,
@@ -105,12 +106,13 @@ export function useConversationSession(
   const roleKnown = project.data !== undefined;
   const canRequestControl = roleKnown ? project.data.my_role !== "viewer" : true;
 
-  // Names come from the shared actor directory (me, users, members) merged
-  // with the hints this conversation row holds (creator, controller). The last
-  // resort is "someone (short-id)", never a bare uuid.
-  const actors = useActorNames(projectId);
-  const nameOf = useMemo(() => {
-    const local = nameLookup([
+  // Names come from the shared actor directory (me, users, members) merged with
+  // the hints this conversation row holds (creator, controller, the turn's
+  // submitter) — those three carry a server-resolved `display_name`, so they
+  // need no lookup at all. The last resort is "someone (short-id)", never a
+  // bare uuid.
+  const localHints = useMemo<NameHint[]>(
+    () => [
       ...(data?.created_by_display_name
         ? ([[data.created_by, data.created_by_display_name]] as const)
         : []),
@@ -122,10 +124,31 @@ export function useConversationSession(
       ...(activeTurn?.submitted_by_display_name
         ? ([[activeTurn.submitted_by, activeTurn.submitted_by_display_name]] as const)
         : []),
-    ]);
-    const merged = mergeLookups(local, actors.lookup);
+    ],
+    [data, activeTurn],
+  );
+  const localNames = useMemo(() => nameLookup(localHints), [localHints]);
+
+  // The ids the row cannot name itself are questions for the directory, and
+  // `useActorNames` keeps asking until it can answer them: the journal names
+  // people by id only, so a viewer whose directory request was lost mid-restart
+  // would otherwise read a colleague as "someone (abc12345)" for the rest of the
+  // page's life while a second viewer read their name (ADR-0016 §7 — one
+  // journal, one reading of it).
+  const actorIds = useMemo(
+    () =>
+      humanIdsIn(events, [
+        data && data.control.kind === "human" ? data.control.user_id : null,
+        data?.created_by,
+        activeTurn?.submitted_by,
+      ]).filter((id) => localNames(id) === null),
+    [events, localNames, data, activeTurn],
+  );
+  const actors = useActorNames(projectId, actorIds);
+  const nameOf = useMemo(() => {
+    const merged = mergeLookups(localNames, actors.lookup);
     return (userId: string) => merged(userId) ?? actors.nameOf(userId);
-  }, [actors, data, activeTurn]);
+  }, [actors, localNames]);
 
   // The one turn row the conversation read carries. It is the only source of
   // `submitted_via` on the wire, and the fold needs it stable — a fresh array

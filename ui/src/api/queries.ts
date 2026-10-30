@@ -130,10 +130,21 @@ export function useMe(options?: { enabled?: boolean }) {
   });
 }
 
-export function useUsers() {
+/**
+ * `failFast` is for the one consumer that has a better recovery policy than a
+ * back-off: the actor directory (`api/actors.ts`) re-reads the moment a name it
+ * needs is missing, and a query still "fetching" behind 1s/2s of retry delay
+ * holds that lookup up. Everyone else keeps the app-wide retry default.
+ */
+export interface DirectoryReadOptions {
+  failFast?: boolean;
+}
+
+export function useUsers(options: DirectoryReadOptions = {}) {
   return useQuery({
     queryKey: queryKeys.users,
     queryFn: () => apiFetch<UserList>("/api/v1/users"),
+    ...(options.failFast ? { retry: false } : {}),
   });
 }
 
@@ -208,11 +219,12 @@ export function usePatchRepository(projectId: string) {
   });
 }
 
-export function useMembers(projectId: string) {
+export function useMembers(projectId: string, options: DirectoryReadOptions = {}) {
   return useQuery({
     queryKey: queryKeys.members(projectId),
     queryFn: () => apiFetch<MemberList>(`/api/v1/projects/${projectId}/members`),
     enabled: projectId.length > 0,
+    ...(options.failFast ? { retry: false } : {}),
   });
 }
 

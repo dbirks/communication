@@ -104,7 +104,9 @@ describe("control events name the humans involved", () => {
     expect(lines.some((line) => line.includes("Control returned to Grace Hopper"))).toBe(true);
     // A person the directory does not know is "someone (ef012345)" — the uuid's
     // random tail, never its time prefix (which every id created nearby shares),
-    // never a bare uuid and never a guessed name.
+    // never a bare uuid and never a guessed name. The directory is asked about
+    // this id — the stubs answer, and answer without them — so the fallback
+    // stands after the bounded re-lookups of `api/actors.ts`.
     expect(lines.some((line) => line.includes("someone (ef012345)"))).toBe(true);
     expect(lines.some((line) => line.includes(stranger))).toBe(false);
   });

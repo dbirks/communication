@@ -28,12 +28,21 @@ export interface RouteStub {
   /** URL to match, ignoring any query string. */
   path: string;
   status?: number;
-  /** JSON body; omit for an empty 204 response. */
+  /** JSON body; omit for an empty 204 response. A function is called with the
+   * 1-based number of this route's request, for a directory whose first answer
+   * differs from its later ones. */
   body?: unknown;
   /** Extra response headers. */
   headers?: Record<string, string>;
   /** Shorthand for the `X-Communication-Replica` response header. */
   replica?: string;
+  /**
+   * Transient-failure simulator: the first `failures` calls to this route
+   * either reject the fetch outright — what the browser reports for a request
+   * in flight while a replica restarts (`net::ERR_NETWORK_CHANGED`) — or, with
+   * `status`, answer that problem status. Later calls get the stub's real body.
+   */
+  flaky?: { failures: number; status?: number };
 }
 
 export interface RecordedRequest {
@@ -62,6 +71,21 @@ export function mockFetch(
 ): { fetchMock: FetchMock; requests: RecordedRequest[] } {
   const defaultReplica = options.replica ?? "replica-a";
   const requests: RecordedRequest[] = [];
+  const stubAttempts = new Map<RouteStub, number>();
+  /** A problem+json answer carrying no useful body but a real status. */
+  const problemResponse = (status: number, path: string, replica: string): Response =>
+    new Response(
+      JSON.stringify({
+        type: "https://communication.dev/errors/unavailable",
+        title: "Service Unavailable",
+        status,
+        detail: `${path} is not answering right now`,
+      }),
+      {
+        status,
+        headers: { "content-type": "application/problem+json", [REPLICA_HEADER]: replica },
+      },
+    );
   const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = pathOf(input);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -87,6 +111,16 @@ export function mockFetch(
       );
     }
 
+    const seen = (stubAttempts.get(stub) ?? 0) + 1;
+    stubAttempts.set(stub, seen);
+    if (stub.flaky && seen <= stub.flaky.failures) {
+      if (stub.flaky.status === undefined) {
+        // No response at all: the fetch rejects, as a transport failure does.
+        throw new TypeError("Failed to fetch");
+      }
+      return problemResponse(stub.flaky.status, url, defaultReplica);
+    }
+
     const status = stub.status ?? 200;
     const problem = status >= 400;
     const headersOut: Record<string, string> = {
@@ -94,7 +128,9 @@ export function mockFetch(
       [REPLICA_HEADER]: stub.replica ?? defaultReplica,
       ...stub.headers,
     };
-    return new Response(stub.body === undefined ? null : JSON.stringify(stub.body), {
+    const sentBody =
+      typeof stub.body === "function" ? (stub.body as (n: number) => unknown)(seen) : stub.body;
+    return new Response(sentBody === undefined ? null : JSON.stringify(sentBody), {
       status,
       headers: headersOut,
     });
