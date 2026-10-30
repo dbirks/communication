@@ -119,13 +119,22 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const request = page.request;
     // ADR-0060/2e: triggers are authored where the workflow is USED — the
     // repository page's WORKFLOWS ON THIS REPO panel — never on the library
-    // page. Open that row and expand its STARTS WHEN box.
+    // page. Design 2e (995ba91): the row's STARTS WHEN box is OPEN by default,
+    // so the journey asserts that default instead of clicking the toggle —
+    // clicking it now COLLAPSES the row.
     const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
-    await page.getByTestId(`repo-workflow-toggle-${key}`).click();
+    await expect(page.getByTestId(`repo-workflow-toggle-${key}`)).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
     await expect(page.getByTestId(`repo-workflow-starts-${key}`)).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId(`repo-workflow-add-box-${key}`)).toBeVisible({ timeout: 30_000 });
+    // In an open row the `+ Add trigger` sits in the STARTS WHEN header under
+    // the same `repo-workflow-add-<key>` testid the collapsed row's action
+    // uses — the two never render side by side.
+    const addTrigger = page.getByTestId(`repo-workflow-add-${key}`);
+    await expect(addTrigger).toBeVisible({ timeout: 30_000 });
 
-    await page.getByTestId(`repo-workflow-add-box-${key}`).click();
+    await addTrigger.click();
     const dialog = page.getByTestId("trigger-dialog");
     await expect(dialog).toBeVisible({ timeout: 30_000 });
     // The dialog is opened FROM a repository row: no repo select — the
