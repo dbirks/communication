@@ -32,7 +32,11 @@ import type { Locator, Page } from "@playwright/test";
 /** How a landmark may address an element. */
 export type LandmarkSpec =
   /** `[data-testid=…]`; `current` additionally requires `aria-current="page"`,
-   * which is how this app marks the active tab (tabs are routes, not widgets). */
+   * which is how this app marks the active tab (tabs are routes, not widgets).
+   * A trailing `*` matches any testid that STARTS with the rest — the ids the
+   * server names (`workflow-folder-header-delivery`, `workflow-row-<slug>`),
+   * whose tail is data. Same selector shape the journeys use
+   * (`[data-testid^="workflow-folder-header-"]`). */
   | { testid: string; current?: boolean }
   /** An accessible role, optionally with a name regex (or an exact string) and
    * a heading level. */
@@ -129,6 +133,26 @@ const INDEX_ROW_MENU: Landmark = {
   id: "index-row-menu",
   desc: "a workflow row's '…' row-menu button",
   any: [{ role: "button", name: /^⋯$/ }, { text: /^⋯$/ }],
+};
+/** Design 1b: a folder is a PANEL, headed by its own collapse toggle — the
+ * SVG chevron, the group's name in mono caps, and the group's own count on the
+ * right. The header's testid carries the folder's slug (`workflow-folder-
+ * header-delivery`), so the id's tail is data and only its head is asserted;
+ * the header's text (name + count) is what the `1b folders` journey step
+ * asserts, on the folder this pass just filed a workflow into. */
+const INDEX_FOLDER_HEADER: Landmark = {
+  id: "index-folder-header",
+  desc: "a folder panel's header — the group's name in caps and its count on the collapse toggle",
+  any: [{ testid: "workflow-folder-header-*" }],
+};
+/** A workflow row drawn under a folder. The landmark matcher asks only whether
+ * something renders (fixtures.ts `missingLandmarks` has no notion of
+ * containment), so this proves the row is on the folder view; the journey step
+ * proves it sits INSIDE that folder's panel and not in the unfiled list. */
+const INDEX_FOLDER_ROW: Landmark = {
+  id: "index-folder-row",
+  desc: "a workflow row on the folder-panel view (design 1b files rows inside their folder)",
+  any: [{ testid: "workflow-row-*" }],
 };
 const INDEX_NO_MATCH: Landmark = {
   id: "index-no-match",
@@ -1004,6 +1028,24 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     INDEX_ROW_MENU,
   ],
   "1b no-match": [INDEX_HEADING, INDEX_NEW, INDEX_SEARCH, INDEX_NO_MATCH],
+  // The same index with a workflow filed into a folder (ADR-0049 § 8): every
+  // landmark the plain index claims, plus the panel structure design 1b draws
+  // — a header per folder (name in caps + its count) and the row inside it.
+  "1b folders": [
+    INDEX_HEADING,
+    INDEX_IMPORT,
+    INDEX_NEW,
+    INDEX_START_BLANK,
+    INDEX_STARTER_TEMPLATE,
+    INDEX_SEARCH,
+    INDEX_CHIP_ALL,
+    INDEX_CHIP_DRAFT,
+    INDEX_LIST,
+    INDEX_FOLDER_HEADER,
+    INDEX_FOLDER_ROW,
+    INDEX_ROW_EDIT,
+    INDEX_ROW_MENU,
+  ],
   "1b server-error": [INDEX_HEADING, INDEX_NEW, ERROR_PANEL],
 
   /* -------------------------------------------- 1c · the New workflow dialog */
@@ -1368,8 +1410,13 @@ function scopes(page: Page): Locator[] {
 
 function specLocator(scope: Locator, spec: LandmarkSpec): Locator {
   if ("testid" in spec) {
-    const attribute = `[data-testid="${ESCAPE(spec.testid)}"]${spec.current ? '[aria-current="page"]' : ""}`;
-    return scope.locator(attribute);
+    const value = ESCAPE(spec.testid);
+    // A trailing `*` is the prefix form: the slug-carrying testids the server
+    // names can only be addressed by the part the design owns.
+    const attribute = spec.testid.endsWith("*")
+      ? `[data-testid^="${ESCAPE(spec.testid.slice(0, -1))}"]`
+      : `[data-testid="${value}"]`;
+    return scope.locator(`${attribute}${spec.current ? '[aria-current="page"]' : ""}`);
   }
   if ("role" in spec) {
     return scope.getByRole(spec.role as Parameters<Locator["getByRole"]>[0], {
