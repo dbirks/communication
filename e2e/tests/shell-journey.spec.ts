@@ -1056,12 +1056,21 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       );
     console.log(`journey f: anchor ${anchor.anchor} → ${anchor.successor} (unguarded)`);
     const ask = `Add a human approval step named ${ASSISTANT_STEP_NAME} after ${anchor.anchor} in ${PIPELINE_SLUG}'s draft`;
-    await page.getByTestId("assistant-composer-input").fill(ask);
-    await page.getByTestId("assistant-send").click();
+    const composer = page.getByTestId("assistant-composer-input");
+    /** What the last turn carried: a retry re-sends those SAME words. */
+    let lastSend: { via: "composer" | "approval"; text: string } = { via: "composer", text: ask };
+    /** The journey's only ask path: type it in the composer, press Send. */
+    const sendThroughComposer = async (text: string): Promise<void> => {
+      await composer.fill(text);
+      await page.getByTestId("assistant-send").click();
+      lastSend = { via: "composer", text };
+    };
+    await sendThroughComposer(ask);
 
     // Follow the assistant's bounded loop, at most 3 assistant turns: the ask
-    // is turn 1 and every follow-up (a plain “make that change now”, a
-    // completion-cap nudge, an answered question, a retried approval) is the
+    // is turn 1 and every follow-up (a plain “make that change now”, the
+    // re-send of an ask whose turn failed, an answered question, a retried
+    // approval) is the
     // next turn. A question card is answered by clicking the model-written
     // option that best matches the ask (preferring the anchor's name) — and
     // the next user message must carry the option's label VERBATIM as plain
@@ -1074,32 +1083,60 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     // draft lacks the marker) gets ONE plain user follow-up — “Please make that
     // change now.” — a real user would.
     let followUps = 0;
-    let capRetried = false;
+    /** Error kinds already retried — assistant-lost-ask allows one each. */
+    const retriedErrors = new Set<string>();
     const deadline = Date.now() + AGENT_TURN_TIMEOUT_MS;
     for (;;) {
       const error = page.getByTestId("assistant-error");
       if (await error.isVisible().catch(() => false)) {
         const errorText = ((await error.textContent()) ?? "(no text)").trim();
-        // Model variance: a turn can end at its completion cap without
-        // landing the change. A user would simply say "continue" — bounded to
-        // ONE such follow-up, and it counts against the same 3-turn budget
-        // (never more than 3 assistant turns total).
-        if (!capRetried && /completion cap/i.test(errorText) && followUps < 3) {
-          capRetried = true;
+        // assistant-lost-ask (acceptance 30): a failed turn stores nothing
+        // (ADR-0034), so the UI puts the ask BACK in the composer and says the
+        // question was not sent. A user whose send failed sends the SAME words
+        // again — never a context-less “please continue” into a conversation
+        // that never received the ask. ONE retry per error kind, and it counts
+        // against the same 3-turn budget (never more than 3 follow-up assistant
+        // turns total).
+        const kind = /step limit|completion cap/i.test(errorText)
+          ? "step-limit"
+          : /isn't configured/i.test(errorText)
+            ? "not-configured"
+            : errorText.replace(/\d+/g, "#").slice(0, 120).toLowerCase();
+        if (!retriedErrors.has(kind) && followUps < 3) {
+          retriedErrors.add(kind);
           followUps += 1;
-          console.log(
-            `journey f: turn hit the completion cap — one plain follow-up (turn ${followUps}/3)`,
-          );
-          await page
-            .getByTestId("assistant-composer-input")
-            .fill("Please continue and make the change.");
-          await page.getByTestId("assistant-send").click();
+          if (lastSend.via === "approval") {
+            // A failed Retry stored nothing either, so its card is still
+            // pending — Retry again is the same action, not a new message.
+            const retry = page.getByTestId("assistant-approval-confirm");
+            await expect(
+              retry,
+              `a failed approval Retry leaves the card pending (error: ${errorText})`,
+            ).toBeVisible();
+            console.log(
+              `journey f: approval Retry failed (${kind}) — retried once (turn ${followUps}/3)`,
+            );
+            await retry.click();
+          } else {
+            // The composer holds the only copy of the ask left: assert the UI
+            // really returned it, then re-send it verbatim.
+            await expect
+              .poll(async () => (await composer.inputValue()).trim(), {
+                message: `a failed send must return the ask to the composer (error: ${errorText})`,
+                timeout: 15_000,
+              })
+              .toBe(lastSend.text.trim());
+            console.log(
+              `journey f: turn failed (${kind}) — the ask is back in the composer, sending it again (turn ${followUps}/3)`,
+            );
+            await page.getByTestId("assistant-send").click();
+          }
           // The retry is a NEW turn — bound the wait on its own completion.
           await waitForAssistantTurn(page);
           continue;
         }
         throw new Error(
-          `the assistant errored: ${errorText} — is the assistant tool loop (be-as-loop) / popover wiring (p7-wire) live in this lab?`,
+          `the assistant errored: ${errorText} — is the assistant tool loop (be-as-loop) / popover wiring (p7-wire) live in this lab? (no ${kind} retry left after ${followUps} follow-up turn(s))`,
         );
       }
       if (followUps >= 3)
@@ -1124,6 +1161,9 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         const best = idx >= 0 ? idx : 0;
         const label = labels[best];
         const userBefore = await page.getByTestId("assistant-msg-user").count();
+        // A failed answer-turn comes back as this same label in the composer
+        // (assistant-lost-ask), so the retry re-sends the label verbatim.
+        lastSend = { via: "composer", text: label };
         await options.nth(best).click();
         // The reply travels as a plain-text user message equal to the label, and
         // the answer turn lands that row only when it completes — so the wait is
@@ -1150,6 +1190,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
           .isVisible()
           .catch(() => false)
       ) {
+        lastSend = { via: "approval", text: "" };
         await page.getByTestId("assistant-approval-confirm").click(); // Retry
         // The Retry re-runs the turn — bound the wait on its own completion.
         await waitForAssistantTurn(page);
@@ -1168,19 +1209,21 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       // it found WITHOUT changing anything and without a question/approval
       // card. A real user would simply say “please make that change now”: send
       // ONE plain user follow-up.
-      const composer = page.getByTestId("assistant-composer-input");
       // The turn that produced this state has settled (no error / card above):
       // wait for the turn's own completion — the popover's in-flight indicator
       // clears / a new assistant message appears — before following up.
       await waitForAssistantTurn(page);
       // The turn may have landed while we waited; the draft is the gate.
       if ((await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0) break;
+      // assistant-lost-ask: the failure can surface only during that wait. The
+      // error branch above re-sends the SAME ask, so hand it over — a plain
+      // follow-up here would reach a conversation that never got the ask.
+      if (await error.isVisible().catch(() => false)) continue;
       followUps += 1;
       console.log(
         `journey f: turn ended without acting — one plain follow-up (turn ${followUps}/3)`,
       );
-      await composer.fill("Please make that change now.");
-      await page.getByTestId("assistant-send").click();
+      await sendThroughComposer("Please make that change now.");
       if (Date.now() > deadline)
         throw new Error(
           `no draft of ${PIPELINE_SLUG} carries ${ASSISTANT_STEP_NAME} after the ask — the assistant never landed the change (assistant tool loop be-as-loop?)`,

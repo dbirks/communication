@@ -15,8 +15,12 @@
  *
  * Failures are honest lines, not modals: a 503 `assistant_not_configured`
  * says so in one sentence, and nothing the server did not answer is shown.
+ * Because a failed turn stores nothing (ADR-0034), the line also says the
+ * question was not sent, and the person's words come back into the composer
+ * — the popover, the expanded view and the palette's carried-over question
+ * all behave the same way (assistant-lost-ask).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import AssistantPanel from "./AssistantPanel";
 import { sectionOf } from "../Shell";
@@ -26,6 +30,7 @@ import { assistantTransientErrorLine, problemOf } from "../../api/client";
 import {
   assistantContextOf,
   assistantNotConfigured,
+  degradedOf,
   useAssistantChanges,
   useAssistantConversations,
   useAssistantMessages,
@@ -35,6 +40,7 @@ import {
   useUndoAssistantChange,
 } from "../../api/assistant";
 import type { AssistantChange, AssistantMessage } from "./types";
+import type { ComposerRestore } from "./AssistantPanel";
 
 /** The palette's Ask row opens the popover (and carries its question). */
 const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
@@ -126,15 +132,36 @@ function contextLabelOf(pathname: string): string {
   return sectionOf(pathname);
 }
 
-/** One honest line for a failed turn (no modal; the panel stays usable). */
-function failureLine(error: unknown): string {
+/** The degraded causes that mean “the turn ran out of its step budget”. */
+const STEP_CAP_CAUSES: readonly string[] = ["model_call_cap_exceeded", "tool_cap_exceeded"];
+
+/**
+ * One honest line for a failed turn (no modal; the panel stays usable).
+ *
+ * assistant-lost-ask: a failed turn stores nothing (ADR-0034), so the line has
+ * to say what actually happened to the person's words — the ask was not sent
+ * and is back in the composer to send again. A step-limit turn is named by its
+ * cause rather than the server's internal cap phrasing. `failed="decision"`
+ * is an approval Retry/Not-now round-trip: the pending card stays put, so the
+ * line names the API's reason and says nothing about a lost question.
+ */
+function failureLine(error: unknown, failed: "question" | "decision" = "question"): string {
   if (assistantNotConfigured(error)) {
     return "The assistant isn't configured on this server — your question was not sent.";
   }
-  const transient = assistantTransientErrorLine(error);
-  if (transient) return transient;
+  if (failed === "question" && STEP_CAP_CAUSES.includes(degradedOf(error) ?? "")) {
+    return "The assistant hit its step limit before answering — nothing was saved; send again.";
+  }
   const problem = problemOf(error);
-  return problem.detail || problem.title;
+  const base =
+    assistantTransientErrorLine(error) ||
+    problem.detail ||
+    problem.title ||
+    "The assistant could not answer.";
+  if (failed === "decision") return base;
+  // A failed turn stores nothing (ADR-0034): say so plainly, and that the ask
+  // can go again — the composer holds it (assistant-lost-ask).
+  return `${base}${/[.!?]$/.test(base) ? "" : "."} Your question was not sent — send it again.`;
 }
 
 /**
@@ -193,6 +220,18 @@ export default function AssistantPopover() {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   /**
+   * assistant-lost-ask: an ask the composer never held (the palette carries
+   * its question straight to the POST) that failed to send — handed back to
+   * the panel's composer as a one-shot request, so the person's words survive
+   * the failure exactly like a typed ask does.
+   */
+  const [composerRestore, setComposerRestore] = useState<ComposerRestore | null>(null);
+  const restoreSeq = useRef(0);
+  const handBackToComposer = useCallback((text: string) => {
+    restoreSeq.current += 1;
+    setComposerRestore({ token: restoreSeq.current, text });
+  }, []);
+  /**
    * ui-newconv: the user pressed New conversation — the newest conversation
    * must NOT be re-adopted; the next send creates a fresh one and clears
    * the flag. The change chip resets automatically: it reads the
@@ -225,14 +264,21 @@ export default function AssistantPopover() {
     }
   }, [conversationId, messagesQuery.data, messages.length]);
 
-  /** One plain-text turn (composer, suggestion chip, a question's option
-   * label, or the palette's carried-over question). */
+  /**
+   * One plain-text turn (composer, suggestion chip, a question's option
+   * label, or the palette's carried-over question). Resolves `true` when the
+   * server took the turn and `false` when it did not — the panel puts a
+   * rejected composer ask back in the composer (assistant-lost-ask).
+   *
+   * `carriedOver` marks the palette's question, which never lived in the
+   * composer: on failure this container hands it back through `composerRestore`.
+   */
   const send = useCallback(
-    (text: string) => {
+    (text: string, carriedOver = false): Promise<boolean> => {
       const trimmed = text.trim();
-      if (trimmed.length === 0) return;
+      if (trimmed.length === 0) return Promise.resolve(false);
       setSendError(null);
-      void (async () => {
+      return (async () => {
         try {
           let id = conversationId;
           if (!id) {
@@ -246,12 +292,15 @@ export default function AssistantPopover() {
             body: { text: trimmed, context: assistantContextOf(location.pathname) },
           });
           setMessages((current) => [...current, ...result]);
+          return true;
         } catch (error) {
           setSendError(failureLine(error));
+          if (carriedOver) handBackToComposer(trimmed);
+          return false;
         }
       })();
     },
-    [conversationId, createConversation, post, location.pathname],
+    [conversationId, createConversation, handBackToComposer, post, location.pathname],
   );
 
   /** ui-newconv: `New conversation` — clear the panel; the next send
@@ -301,7 +350,7 @@ export default function AssistantPopover() {
     const onOpen = (event: Event) => {
       setOpen(true);
       const text = (event as CustomEvent<string | undefined>).detail;
-      if (typeof text === "string" && text.trim().length > 0) send(text);
+      if (typeof text === "string" && text.trim().length > 0) void send(text, true);
     };
     window.addEventListener(ASSISTANT_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(ASSISTANT_OPEN_EVENT, onOpen);
@@ -342,10 +391,21 @@ export default function AssistantPopover() {
         });
         setMessages((current) => [...current, ...result]);
       } catch (error) {
-        setSendError(failureLine(error));
+        setSendError(failureLine(error, "decision"));
       }
     })();
   };
+
+  /** The failure line, identical in both sizes (assistant-lost-ask): the
+   * expanded view showed no line at all, so a lost ask there was silent. */
+  const errorLine = sendError ? (
+    <p
+      data-testid="assistant-error"
+      className="m-0 max-w-full rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
+    >
+      × {sendError}
+    </p>
+  ) : null;
 
   const close = useCallback(() => setOpen(false), []);
   const shrink = useCallback(() => setExpanded(false), []);
@@ -371,6 +431,7 @@ export default function AssistantPopover() {
           className="fixed inset-0 z-40 flex flex-col bg-surface"
           data-testid="assistant-popover"
         >
+          {sendError ? <div className="px-[10px] pt-[8px]">{errorLine}</div> : null}
           <AssistantPanel
             variant="expanded"
             contextLabel={contextLabel}
@@ -381,8 +442,9 @@ export default function AssistantPopover() {
             onUndoChange={(changeId) => undoChange.mutate(changeId)}
             onUndoAll={() => conversationId && undoAll.mutate({ conversationId })}
             suggestions={SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS}
-            onSend={(text) => void send(text)}
-            onAnswerQuestion={(label) => void send(label)}
+            onSend={(text) => send(text)}
+            onAnswerQuestion={(label) => send(label)}
+            composerRestore={composerRestore}
             onConfirmApproval={(messageId) => answerApproval(messageId, true)}
             onDismissApproval={(messageId) => answerApproval(messageId, false)}
             onGo={(route) => navigate(route)}
@@ -401,14 +463,7 @@ export default function AssistantPopover() {
           className="fixed bottom-4 right-4 z-40 flex w-[min(400px,calc(100vw-32px))] flex-col items-end gap-[6px]"
           data-testid="assistant-popover"
         >
-          {sendError ? (
-            <p
-              data-testid="assistant-error"
-              className="m-0 max-w-full rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
-            >
-              × {sendError}
-            </p>
-          ) : null}
+          {sendError ? errorLine : null}
           <AssistantPanel
             variant="popover"
             contextLabel={contextLabel}
@@ -419,8 +474,9 @@ export default function AssistantPopover() {
             onUndoChange={(changeId) => undoChange.mutate(changeId)}
             onUndoAll={() => conversationId && undoAll.mutate({ conversationId })}
             suggestions={SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS}
-            onSend={(text) => void send(text)}
-            onAnswerQuestion={(label) => void send(label)}
+            onSend={(text) => send(text)}
+            onAnswerQuestion={(label) => send(label)}
+            composerRestore={composerRestore}
             onConfirmApproval={(messageId) => answerApproval(messageId, true)}
             onDismissApproval={(messageId) => answerApproval(messageId, false)}
             onGo={(route) => navigate(route)}

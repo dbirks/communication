@@ -26,6 +26,27 @@ import type { AssistantChange, AssistantMessage, TrustLevel } from "./types";
  * area with the conversation column centred at max 680px.
  */
 /**
+ * What an ask round-trip may report back (assistant-lost-ask): a send that
+ * the server never took (`false`, or a throw) must put the person's text back
+ * into the composer, because a failed turn stores nothing (ADR-0034). Any
+ * other return — `undefined`, `true`, a void sync call — counts as accepted
+ * and leaves the composer cleared. Sync callers that cannot report anything
+ * keep working unchanged.
+ */
+export type SendResult = boolean | void | Promise<boolean | void>;
+
+/**
+ * A one-shot request from the caller to put `text` back into the composer.
+ * `token` must change for the panel to apply it again (the palette's
+ * carried-over ask never lived in the draft, so only the caller can hand it
+ * back after a failed send).
+ */
+export interface ComposerRestore {
+  token: number;
+  text: string;
+}
+
+/**
  * One of the caller's recent conversations for the "Recent" menu — the
  * newest `last_message_at` first (up to 5), straight off the list API.
  */
@@ -57,9 +78,16 @@ export interface AssistantPanelProps {
    */
   suggestions?: string[];
   /** Send one plain-text message (composer, free text, suggestion chip). */
-  onSend: (text: string) => void;
+  onSend: (text: string) => SendResult;
   /** Answer a follow-up question with the option's label verbatim. */
-  onAnswerQuestion: (label: string) => void;
+  onAnswerQuestion: (label: string) => SendResult;
+  /**
+   * assistant-lost-ask: hand text back to the composer from outside it — the
+   * caller's carried-over ask (the palette) that failed to send. Applied once
+   * per `token`, and only while the composer is empty, so a draft the person
+   * has typed in the meantime is never clobbered.
+   */
+  composerRestore?: ComposerRestore | null;
   /** `Retry` on a pending approval_request (names the message id). */
   onConfirmApproval: (messageId: string) => void;
   /** `Not now` on a pending approval_request (names the message id). */
@@ -354,6 +382,7 @@ export function AssistantPanel({
   suggestions = [],
   onSend,
   onAnswerQuestion,
+  composerRestore = null,
   onConfirmApproval,
   onDismissApproval,
   onGo,
@@ -407,12 +436,53 @@ export function AssistantPanel({
     inputRef.current?.focus();
   };
 
-  const send = () => {
-    const text = draft.trim();
-    if (!text || busy) return;
-    onSend(text);
-    setDraft("");
-  };
+  /**
+   * assistant-lost-ask: put an unsent ask back where it can be sent again —
+   * but never over text the person has typed since.
+   */
+  const restoreDraft = useCallback((text: string) => {
+    setDraft((current) => (current.trim().length > 0 ? current : text));
+  }, []);
+
+  /** Report one round-trip back: `false`/throw means nothing was stored. */
+  const watchSend = useCallback(
+    (result: SendResult, text: string) => {
+      void Promise.resolve(result).then(
+        (accepted) => {
+          if (accepted === false) restoreDraft(text);
+        },
+        () => restoreDraft(text),
+      );
+    },
+    [restoreDraft],
+  );
+
+  /** The one send path: composer, Enter, and the suggestion chips. */
+  const submit = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || busy) return;
+      setDraft("");
+      watchSend(onSend(trimmed), trimmed);
+    },
+    [busy, onSend, watchSend],
+  );
+
+  const send = () => submit(draft);
+
+  const answerQuestion = useCallback(
+    (label: string) => watchSend(onAnswerQuestion(label), label),
+    [onAnswerQuestion, watchSend],
+  );
+
+  // A carried-over ask the caller lost (the palette's question): back into
+  // the composer, once per token.
+  const lastRestoreTokenRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!composerRestore || composerRestore.token === lastRestoreTokenRef.current) return;
+    lastRestoreTokenRef.current = composerRestore.token;
+    restoreDraft(composerRestore.text);
+  }, [composerRestore, restoreDraft]);
 
   const popover = variant === "popover";
 
@@ -517,11 +587,11 @@ export function AssistantPanel({
   const body = (
     <div data-testid="assistant-body" style={{ flex: "1 1 auto", overflowY: "auto", minHeight: 0 }}>
       {messages.length === 0 ? (
-        <EmptyState suggestions={suggestions.slice(0, 3)} onSuggestion={onSend} />
+        <EmptyState suggestions={suggestions.slice(0, 3)} onSuggestion={submit} />
       ) : (
         <MessageList
           messages={messages}
-          onAnswerQuestion={onAnswerQuestion}
+          onAnswerQuestion={answerQuestion}
           onFreeText={() => inputRef.current?.focus()}
           onConfirmApproval={onConfirmApproval}
           onDismissApproval={onDismissApproval}

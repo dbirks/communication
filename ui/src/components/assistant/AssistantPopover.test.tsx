@@ -451,3 +451,161 @@ describe("the ⌘K chord survives the studio footer hijack (p789-t5)", () => {
     }
   });
 });
+
+/**
+ * assistant-lost-ask (acceptance 30, journey f): a turn that fails stores
+ * NOTHING server-side (ADR-0034) — the lab's 503
+ * `{"degraded":"model_call_cap_exceeded"}` erased the person's ask from the
+ * screen and from history, so the next turn reached a model with no ask at all.
+ * The composer therefore takes the text back on a failed send, the line says
+ * the question was not sent and can be sent again (naming the step limit), and
+ * the same holds for the expanded view and for a question the command palette
+ * carried over without ever putting it in the composer.
+ */
+describe("a failed send never loses the ask (assistant-lost-ask)", () => {
+  const ASK = "Add a human approval step named journey_check after plan";
+
+  const capProblem = () =>
+    json(
+      {
+        type: "https://communication.dev/errors/assistant-degraded",
+        title: "Assistant unavailable",
+        status: 503,
+        detail: "the turn reached the 12 completion cap without an answer",
+        degraded: "model_call_cap_exceeded",
+      },
+      503,
+    );
+  const okTurn = () => json({ messages: [WIRE_USER], next_cursor: null });
+
+  /** Open the popover over a fresh conversation with `text` in the composer. */
+  async function armedComposer(stub: Stub, text: string) {
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-composer-input");
+    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: text } });
+    expect(input.value).toBe(text);
+    return { input, stub };
+  }
+
+  it("the step-limit line names the cause and says the ask can be sent again", async () => {
+    const { stub } = await armedComposer(stubFetch(capProblem), ASK);
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain("hit its step limit before answering");
+    expect(line.textContent).toContain("nothing was saved");
+    expect(line.textContent).toContain("send again");
+    // The server's internal cap phrasing is not shown as the whole story.
+    expect(line.textContent).not.toContain("12 completion cap");
+    expect(stub.posted).toHaveLength(1);
+  });
+
+  it("a failed send puts the ask back in the composer; Send again posts it", async () => {
+    const { stub, input } = await armedComposer(stubFetch([capProblem, okTurn]), ASK);
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await screen.findByTestId("assistant-error");
+    // The ask is where it was typed, and is sendable again.
+    await waitFor(() => expect(input.value).toBe(ASK));
+    expect((screen.getByTestId("assistant-send") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await waitFor(() => expect(stub.posted).toHaveLength(2));
+    // The retry is the ORIGINAL ask, verbatim, in the same conversation.
+    expect(JSON.parse(stub.posted[1].body).text).toBe(ASK);
+    expect(stub.posted[1].conversationId).toBe(stub.posted[0].conversationId);
+    // The retried turn landed: no error line, the transcript row, composer clear.
+    await waitFor(() => expect(screen.queryByTestId("assistant-error")).toBeNull());
+    await screen.findByTestId("assistant-msg-user");
+    await waitFor(() => expect(input.value).toBe(""));
+  });
+
+  it("a transient failure says the question was not sent and keeps the ask", async () => {
+    const { input } = await armedComposer(
+      stubFetch(() =>
+        json(
+          {
+            type: "https://communication.dev/errors/assistant-degraded",
+            title: "Assistant unavailable",
+            status: 503,
+            detail: "the model endpoint returned 503",
+            degraded: "model_timeout",
+          },
+          503,
+        ),
+      ),
+      ASK,
+    );
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain("Your question was not sent");
+    expect(line.textContent).toContain("send it again");
+    await waitFor(() => expect(input.value).toBe(ASK));
+  });
+
+  it("text already in the composer is never clobbered by a restored ask", async () => {
+    const stub = stubFetch(capProblem);
+    renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    // The person is mid-sentence when the palette's carried question fails:
+    // their own draft wins, the restored ask must not overwrite it.
+    fireEvent.change(input, { target: { value: "my new draft" } });
+    act(() => openAssistantPopover("carried question"));
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain("hit its step limit before answering");
+    expect(JSON.parse(stub.posted[0].body).text).toBe("carried question");
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((input as HTMLInputElement).value).toBe("my new draft");
+  });
+
+  it("the expanded view shows the failure line and keeps the ask too", async () => {
+    const { input } = await armedComposer(stubFetch([capProblem, okTurn]), ASK);
+    fireEvent.click(screen.getByTestId("assistant-expand"));
+    expect(screen.getByTestId("assistant-panel").dataset.variant).toBe("expanded");
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain("hit its step limit before answering");
+    await waitFor(() => expect(input.value).toBe(ASK));
+  });
+
+  it("a palette question that fails to send comes back into the composer", async () => {
+    const stub = stubFetch(capProblem);
+    renderPopover();
+    act(() => openAssistantPopover("why is run 4f2a stuck?"));
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toContain("hit its step limit before answering");
+    // The carried-over question never lived in the composer: it lands there
+    // on failure, so the person can read and re-send their own words.
+    await waitFor(() =>
+      expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).value).toBe(
+        "why is run 4f2a stuck?",
+      ),
+    );
+    expect(stub.posted).toHaveLength(1);
+    expect(JSON.parse(stub.posted[0].body).text).toBe("why is run 4f2a stuck?");
+  });
+
+  it("a failed approval Retry says nothing about a lost question", async () => {
+    stubFetch(() =>
+      json(
+        { title: "Conflict", status: 409, detail: "approval request is no longer pending" },
+        409,
+      ),
+    );
+    renderPopover();
+    act(() => openAssistantPopover());
+    fireEvent.change(await screen.findByTestId("assistant-composer-input"), {
+      target: { value: "a draft ask" },
+    });
+    fireEvent.click(await screen.findByTestId("assistant-approval-confirm"));
+    const line = await screen.findByTestId("assistant-error");
+    expect(line.textContent).toBe("× approval request is no longer pending");
+    // The composer still holds what the person typed — nothing was restored
+    // over it, and no sentence claims their question was lost.
+    expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).value).toBe(
+      "a draft ask",
+    );
+  });
+});

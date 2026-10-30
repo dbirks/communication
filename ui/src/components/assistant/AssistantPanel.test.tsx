@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AssistantPanel, {
   type AssistantPanelProps,
   type RecentConversation,
@@ -32,6 +32,32 @@ const userMessage = (text: string): AssistantMessage => ({
   payload: { kind: "user", text },
   created_at: "2026-10-20T10:00:00Z",
 });
+
+const questionMessage = (): AssistantMessage => ({
+  id: "m-q",
+  kind: "question",
+  payload: {
+    kind: "question",
+    prompt: "Stricter how? Pick one.",
+    options: [
+      { label: "Fail review on any auth finding", value: "fail_any" },
+      { label: "Add an OWASP checklist", value: "owasp" },
+    ],
+    allow_free_text: true,
+    answered_by: null,
+  },
+  created_at: "2026-10-20T10:00:10Z",
+});
+
+const composerValue = () =>
+  (screen.getByTestId("assistant-composer-input") as HTMLInputElement).value;
+
+/** Let pending send promises (and the draft restore they trigger) settle. */
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve();
+  });
+};
 
 describe("AssistantPanel (popover)", () => {
   it("is the 400px panel with the ASSISTANT header, trust pill, expand and esc hint", () => {
@@ -253,5 +279,128 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     expect(document.activeElement).toBe(items[1]);
     fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "Enter" });
     expect(onSwitch).toHaveBeenCalledWith("c2");
+  });
+});
+
+/**
+ * assistant-lost-ask (acceptance 30, journey f): a failed turn stores nothing
+ * server-side (ADR-0034), so a send that did not reach the model must put the
+ * person's words back where they can be sent again. The caller reports the
+ * round-trip by returning `false` (or throwing) from `onSend`/
+ * `onAnswerQuestion`; anything else counts as accepted.
+ */
+describe("a failed send puts the ask back (assistant-lost-ask)", () => {
+  it("restores the typed ask when the send reports failure", async () => {
+    const onSend = vi.fn(() => Promise.resolve(false));
+    renderPanel({ onSend, messages: [userMessage("earlier turn")] });
+    const input = screen.getByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: "  add a reviewer step  " } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    expect(onSend).toHaveBeenCalledWith("add a reviewer step");
+    // Back in the composer, trimmed, and ready to send again.
+    await waitFor(() => expect(composerValue()).toBe("add a reviewer step"));
+    expect((screen.getByTestId("assistant-send") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("restores the ask when the send throws (a network error mid-turn)", async () => {
+    const onSend = vi.fn(() => Promise.reject(new Error("network down")));
+    renderPanel({ onSend });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "why is the run stuck?" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await waitFor(() => expect(composerValue()).toBe("why is the run stuck?"));
+  });
+
+  it("restores the ask for a caller that reports failure synchronously", async () => {
+    const onSend = vi.fn(() => false);
+    renderPanel({ onSend });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "ask A" },
+    });
+    fireEvent.keyDown(screen.getByTestId("assistant-composer-input"), { key: "Enter" });
+    await flush();
+    expect(composerValue()).toBe("ask A");
+  });
+
+  it("keeps the composer clear when the send is accepted", async () => {
+    const onSend = vi.fn(() => Promise.resolve(true));
+    renderPanel({ onSend });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "ask A" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await flush();
+    await flush();
+    expect(composerValue()).toBe("");
+    expect((screen.getByTestId("assistant-send") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("never clobbers text typed after the failed send", async () => {
+    let reject: (ok: boolean) => void = () => undefined;
+    const onSend = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          reject = resolve;
+        }),
+    );
+    renderPanel({ onSend });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "the ask that failed" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    // The person starts a new question before the failure surfaces.
+    await act(async () => {
+      fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+        target: { value: "a different question" },
+      });
+    });
+    await act(async () => {
+      reject(false);
+    });
+    expect(composerValue()).toBe("a different question");
+  });
+
+  it("puts a failed suggestion chip's question in the composer", async () => {
+    const onSend = vi.fn(() => Promise.resolve(false));
+    renderPanel({ onSend, suggestions: ["What needs me right now?"] });
+    fireEvent.click(screen.getByTestId("assistant-suggest"));
+    await waitFor(() => expect(composerValue()).toBe("What needs me right now?"));
+  });
+
+  it("returns a failed question option's label to the composer", async () => {
+    const onAnswerQuestion = vi.fn(() => Promise.resolve(false));
+    renderPanel({ onAnswerQuestion, messages: [questionMessage()] });
+    fireEvent.click(screen.getAllByTestId("assistant-question-option")[0]);
+    await waitFor(() => expect(composerValue()).toBe("Fail review on any auth finding"));
+  });
+
+  it("applies an external restore request once per token, never over a draft", async () => {
+    const onSend = vi.fn(() => Promise.resolve(true));
+    const view = renderPanel({ onSend });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "typed over it" },
+    });
+    // Same token re-delivered: the panel has already consumed it.
+    view.rerender(
+      <AssistantPanel
+        variant="popover"
+        {...panelProps}
+        onSend={onSend}
+        composerRestore={{ token: 1, text: "carried ask" }}
+      />,
+    );
+    expect(composerValue()).toBe("typed over it");
+    // A fresh token hands the text back into an empty composer only.
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), { target: { value: "" } });
+    view.rerender(
+      <AssistantPanel
+        variant="popover"
+        {...panelProps}
+        onSend={onSend}
+        composerRestore={{ token: 2, text: "carried ask" }}
+      />,
+    );
+    expect(composerValue()).toBe("carried ask");
   });
 });
