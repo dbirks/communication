@@ -270,14 +270,18 @@ func ConformanceTests(t *testing.T, f Factory) {
 	})
 	// The dual-instance arm is parameterized on the factory: a store whose
 	// run-state lives only in one process cannot implement DualFactory's
-	// OpenPair honestly, and the in-memory reference simply skips.
-	t.Run("DualInstance_TwoStoresOneDatabase_Converge", func(t *testing.T) {
-		df, ok := f.(DualFactory)
-		if !ok {
-			t.Skip("factory provides one store instance only (runtime.Store seam has no cluster to split)")
-		}
-		dualInstanceTests(t, df)
-	})
+	// OpenPair honestly, so the arm is *registered* only for a factory that
+	// really has a second store over one database (runtime.Store seam has no
+	// cluster to split for the in-memory reference). It is not a t.Skip: a
+	// skip is an arm that looked like it ran and proved nothing, and the
+	// in-memory reference simply does not carry this arm at all — every
+	// subtest that is registered has to run (12-test-strategy: a mocked green
+	// test is never evidence; neither is a skipped one).
+	if df, ok := f.(DualFactory); ok {
+		t.Run("DualInstance_TwoStoresOneDatabase_Converge", func(t *testing.T) {
+			dualInstanceTests(t, df)
+		})
+	}
 }
 
 // snapshot is a deep copy of the journal for prefix assertions.

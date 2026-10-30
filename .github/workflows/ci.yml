@@ -28,6 +28,12 @@
 #                                             README.md — the build every
 #                                             docs/compatibility/SANDBOX.md row
 #                                             was observed against)
+#   apm                                     0.34.0 (go job: the real package-manager
+#                                             CLI the lab-gated APM resolve tests
+#                                             exec. Same pin and tarball sha256 as
+#                                             worker/Dockerfile's APM_SHA256 and the
+#                                             provenance line in
+#                                             docs/compatibility/APM.md)
 # Container images for the go job's integration services (12-test-strategy:
 # real Postgres/OIDC, never mocks):
 #   postgres                                18.6
@@ -61,6 +67,14 @@ jobs:
     # Integration tests (internal/store/postgres today, the OIDC login path as
     # it lands) skip unless these point at the services below, so CI runs them
     # for real rather than as mocks (12-test-strategy).
+    #
+    # Every remaining precondition lives on the `go test` step, not here: the
+    # pg_dump check needs this job's postgres service *container id* (the `job`
+    # context is not available in job-level env), the real-APM proofs need the
+    # CLI installed below plus COMMUNICATION_APM_REAL, and the S3 conformance
+    # suite needs the SeaweedFS speaker started above it. With all of them set
+    # nothing in `./...` has a reason to skip, and the gate after the test step
+    # fails the job if one does anyway.
     env:
       COMMUNICATION_TEST_DATABASE_URL: postgres://ci@localhost:5432/ci?sslmode=disable
       COMMUNICATION_TEST_OIDC_ISSUER: http://localhost:18091/default
@@ -131,13 +145,73 @@ jobs:
           printf '%s  %s/nono\n' "$binsum" "$bin" | sha256sum --strict --check -
           chmod 0755 "$bin/nono"
           echo "$bin" >> "$GITHUB_PATH"
+      # The two real-APM proofs — TestResolveRealLockDigest (internal/agent/apm)
+      # and TestAPMSandboxRealResolveUnderNono (internal/worker) — gate on
+      # COMMUNICATION_APM_REAL plus the pinned apm CLI on PATH, and answer with
+      # the lock digest that internal/agent/apm/stage.go's PinnedVersion and
+      # docs/compatibility/APM.md pin. This is worker/Dockerfile's `executionbin`
+      # apm leg verbatim: same release, same tarball digest, same
+      # `sha256sum --strict --check`. The release's own `.sha256` sidecar is
+      # fetched and checked as a second, independent witness (it arrives over the
+      # same channel as the tarball, so it verifies nothing alone — the pin above
+      # is the authority), and the version the binary reports is checked too, so
+      # a failing step names the layer that drifted. A mismatch fails loudly:
+      # digest-comparison evidence produced by a different apm build is not
+      # evidence about the pinned one.
+      #
+      # Two properties of the bundle decide *where* it may live:
+      #   * apm is a PyInstaller bundle — `apm` and `_internal/` are one unit and
+      #     the top-level directory is stripped on extraction, exactly as the
+      #     Dockerfile's /opt/apm is built. The directory goes on PATH; it is not
+      #     a single copied binary.
+      #   * it must not land under /tmp, /var/tmp or /dev/shm: the worker's
+      #     sandboxed resolve grants a *tool read* on the resolved apm directory,
+      #     and a grant inside the default-writable temp tree is refused rather
+      #     than silently widened (probe C-TMP1 — wsgit.CheckGrantPath, enforced
+      #     for tool reads by nono.BuildLaunchArgv; observed locally as "tool read
+      #     grant /tmp/... is not usable", which fails this proof outright).
+      #     $RUNNER_TEMP is /home/runner/work/_temp on a GitHub-hosted runner, so
+      #     it is a legitimate grant target; the worker test's own scratch comes
+      #     from $HOME/.cache/communication-lab (procExecScratch), also outside
+      #     the temp tree.
+      # The bundle needs glibc >= 2.38 (its bundled libpython3.12 — the same
+      # measured requirement that pushed worker/Dockerfile's base to trixie) and
+      # libffi.so.8 (its _ctypes extension dlopens it). Both hold on the
+      # ubuntu-24.04 line (verified in a bare ubuntu:24.04 container here: glibc
+      # 2.39, /usr/lib/x86_64-linux-gnu/libffi.so.8), and what the image
+      # ubuntu-latest points at *this run* is settled by the `apm --version` smoke
+      # below rather than by this comment: if the runner cannot execute the pinned
+      # build, the step fails loudly with that message instead of letting the two
+      # proofs below degrade into a skip.
+      - name: Install pinned apm (real APM resolve tests)
+        run: |
+          set -euo pipefail
+          ver=0.34.0
+          asset="apm-linux-x86_64.tar.gz"
+          apmsum=4487af55604b4fa6f4587f3ee6e833b44ce99c491f11069790e4e13e297cde8c
+          dl="$RUNNER_TEMP/apm-dl"; bin="$RUNNER_TEMP/apm-bin"
+          mkdir -p "$dl" "$bin"
+          curl -fsSL --retry 3 -o "$dl/$asset" \
+            "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}"
+          curl -fsSL --retry 3 -o "$dl/${asset}.sha256" \
+            "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}.sha256"
+          ( cd "$dl"
+            printf '%s  %s\n' "$apmsum" "$asset" | sha256sum --strict --check -
+            sha256sum --strict --check "$asset.sha256"
+            tar -xzf "$asset" -C "$bin" --strip-components=1 )
+          test -x "$bin/apm"; test -d "$bin/_internal"
+          chmod 0755 "$bin/apm"
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/apm" --version | grep -qF "version ${ver}"
+          "$bin/apm" --version
       # What this runner can actually enforce, on the record. The real-nono
       # tests skip with this same probe's verdict as their reason (see
       # requireRealNono in internal/sandbox/nono/selftest_test.go), so this is
       # the log line that distinguishes "enforcement was observed here" from
-      # "the runner cannot enforce and said so". Not a gate: a kernel without
-      # Landlock must not turn a green build red by contradicting the tests'
-      # own skip policy — it must be visible while it is being skipped.
+      # "the runner cannot enforce and said so". This step is not itself a gate
+      # (it prints and moves on); the no-skips gate on the go test step is what
+      # makes "cannot enforce" visible as a red job instead of a silent gap.
+      # Read this step's output first when that gate names a real-nono test.
       # What is *expected* is a Landlock ABI v6 runner: the ubuntu-24.04 image
       # line runs a 6.x azure kernel and Ubuntu builds `landlock` into its boot
       # LSM list (landlock.io lists Ubuntu and Azure Linux as enabled by default;
@@ -159,10 +233,6 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: go build
         run: go build ./...
-      # -p 1: several packages migrate the same database, so package test
-      # binaries must not run concurrently against it.
-      - name: go test -race
-        run: go test -race -p 1 ./...
       # S3 conformance (ADR-0020 D7 / objective 3): the artifacts package's
       # suite refuses to run against an S3 speaker that does not actually
       # verify SigV4 signatures (storeVerifiesSignatures precondition), because
@@ -174,7 +244,15 @@ jobs:
       # ephemeral container (AGENTS.md: no credentials in the repository).
       # Flags mirror the lab-verified container, which is also compose.yml's
       # optional `s3` profile.
-      - name: S3 conformance (SeaweedFS)
+      #
+      # The speaker comes up BEFORE the test step rather than driving its own
+      # run: with the endpoint and identity published to the job environment,
+      # TestS3ConformanceAgainstSeaweedFS executes inside the main pass, under
+      # the same -race -p 1 invocation as every other package. A separate
+      # `go test` for one named test was how a suite could go unrun (renamed,
+      # or never reached) while the step stayed green; the main pass runs what
+      # exists.
+      - name: Start SeaweedFS (the S3 speaker the conformance suite needs)
         run: |
           set -euo pipefail
           access="CI$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n' | tr 'a-f' 'A-F')"
@@ -191,11 +269,53 @@ jobs:
             curl -s -o /dev/null http://127.0.0.1:8333/ && break
             sleep 1
           done
-          COMMUNICATION_TEST_S3_ENDPOINT=http://127.0.0.1:8333 \
-          COMMUNICATION_TEST_S3_ACCESS_KEY="$access" \
-          COMMUNICATION_TEST_S3_SECRET_KEY="$secret" \
-          COMMUNICATION_TEST_S3_BUCKET=communication-artifacts-ci \
-            go test -race -p 1 -run 'TestS3ConformanceAgainstSeaweedFS' ./internal/artifacts/
+          curl -s -o /dev/null http://127.0.0.1:8333/ \
+            || { docker logs s3-conformance; exit 1; }
+          # Published to the job environment rather than passed to one command:
+          # the suite's precondition is env-shaped, and an unset variable is a
+          # skip (which the gate below refuses). Values written here are not
+          # echoed by the step, live only for this job, and name credentials on
+          # a container that is deleted by the teardown step.
+          {
+            echo 'COMMUNICATION_TEST_S3_ENDPOINT=http://127.0.0.1:8333'
+            echo "COMMUNICATION_TEST_S3_ACCESS_KEY=$access"
+            echo "COMMUNICATION_TEST_S3_SECRET_KEY=$secret"
+            echo 'COMMUNICATION_TEST_S3_BUCKET=communication-artifacts-ci'
+          } >> "$GITHUB_ENV"
+      # -p 1: several packages migrate the same database, so package test
+      # binaries must not run concurrently against it.
+      #
+      # -json and the gate under it: "no test is skipped" is only a rule if
+      # something enforces it. Every lab-gated suite in this tree skips on a
+      # missing precondition, and a skip in a green package exits 0 — so the
+      # verdicts are read from the event stream, not from the summary prose.
+      # With the services, the pinned binaries and the environment above all
+      # present, no test in ./... should skip; if one does, CI names it and
+      # fails instead of awarding a pass to an assertion that never ran
+      # (AGENTS.md, 12-test-strategy).
+      - name: go test -race
+        env:
+          # TestSecretStorePlaintextAbsentFromDatabaseDump dumps the whole
+          # database with the operator's own client (m3-contract § 1) — pg_dump
+          # is not on the runner, it is in the container that holds the
+          # database, which here is this job's postgres service.
+          COMMUNICATION_LAB_PG_CONTAINER: ${{ job.services.postgres.id }}
+          # The two proofs that compare a real apm lock digest against the
+          # pinned one (the CLI installed above must be the binary that runs).
+          COMMUNICATION_APM_REAL: '1'
+        run: |
+          set -euo pipefail
+          go test -race -p 1 -json ./... | tee go-test.json
+      # Any {"Action":"skip"} carrying a Test field is a test that registered
+      # and did not run: listed, annotated, and fatal. A skip event with no
+      # Test field is Go's per-package verdict for a package with no test files
+      # ("?  pkg [no test files]"), which describes the tree rather than an
+      # unrun assertion, so it is not a failure. An empty report, or one with
+      # no started test, fails too — nothing ran is not the same as everything
+      # passed. Stdlib-only python3, the same system interpreter the m4-gate-logic
+      # job already relies on; this step adds no dependency.
+      - name: Fail the build on any skipped test
+        run: python3 .github/scripts/check-go-test-skips.py go-test.json
       - name: stop SeaweedFS
         if: always()
         run: docker rm -f s3-conformance || true
