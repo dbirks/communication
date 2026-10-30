@@ -388,8 +388,17 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
         timeout: 30_000,
       });
       // A paused row's `next_run_at` is a stale number, so the clock must stop
-      // promising a fire (ADR-0032: re-enabling re-derives it from now).
-      await expect(row.getByTestId(`schedule-next-${scheduledSlug}`)).toHaveText("paused");
+      // promising a fire (ADR-0032: re-enabling re-derives it from now). The
+      // Workflows tab now DROPS that column while the schedule is off — the
+      // toggle beside it already spells `on` / `paused`, and a row that said
+      // "paused · paused" stated one fact twice (pass-2 review). So the paused
+      // row says it once, and renders no clock at all.
+      await expect(row.getByTestId(`schedule-next-${scheduledSlug}`)).toHaveCount(0);
+      const pausedText = ((await row.textContent()) ?? "").toLowerCase();
+      expect(
+        pausedText.split("paused").length - 1,
+        `a paused row says "paused" exactly once (row read: "${pausedText.trim()}")`,
+      ).toBe(1);
       // Read the served state back from a fresh navigation, not the client's
       // cache: the pause is the database's, not the page's.
       await gotoApp(alice, `${projectPath}/pipelines`);
@@ -405,6 +414,9 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       await expect(fresh.last().getByTestId(`schedule-state-${scheduledSlug}`)).toHaveText(
         "paused",
       );
+      // The served pause drops the clock column too — a fresh navigation reads
+      // the same contract the click produced, not a client-side flourish.
+      await expect(fresh.last().getByTestId(`schedule-next-${scheduledSlug}`)).toHaveCount(0);
       scheduledSlug = ""; // nothing is left on the clock for afterAll to pause
       await shot(alice, "m5-schedules-02-paused");
     });

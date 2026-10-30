@@ -824,7 +824,7 @@ describe("/p/:projectId — the inventory column", () => {
     );
   });
 
-  it("prefers ADR-0065's served repository and draws the served last line under the title", async () => {
+  it("prefers ADR-0065's served repository and draws the served last line on the row's one line", async () => {
     mounted([
       {
         path: conversationsPath,
@@ -847,10 +847,29 @@ describe("/p/:projectId — the inventory column", () => {
     // The served name wins over the workspace index's guess (`backend`).
     expect(row.textContent).toContain("communication · Claude Code");
     expect(row.textContent).not.toContain("backend");
-    expect(
-      screen.getByTestId(`project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`)
-        .textContent,
-    ).toContain("Landed the checkpoint; waiting on review.");
+    const lastLine = screen.getByTestId(
+      `project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`,
+    );
+    expect(lastLine.textContent).toContain("Landed the checkpoint; waiting on review.");
+    // ONE line, like the design: glyph · title · last line · `repo · agent` ·
+    // age are all direct children of the row, each truncating with a full
+    // `title` tooltip — the pass-2 review found these three stacked as block
+    // lines so a full row wrapped to two/three lines at 1280.
+    const cells = Array.from(row.children).filter(
+      (cell) => !cell.className.includes("sr-only") && !cell.hasAttribute("aria-hidden"),
+    );
+    expect(cells).toHaveLength(4);
+    // The three text cells truncate; the age is a short right-aligned token.
+    const [titleCell2, lastLineCell, metaCell, ageCell] = cells;
+    for (const cell of [titleCell2, lastLineCell, metaCell])
+      expect(cell.className.split(/\s+/)).toContain("truncate");
+    expect(ageCell.className.split(/\s+/)).toContain("shrink-0");
+    // The title and the last line keep their whole text as a tooltip, so
+    // truncating on screen never loses it.
+    expect(lastLine.getAttribute("title")).toBe("Landed the checkpoint; waiting on review.");
+    const titleCell = row.querySelector(".truncate.font-semibold") as HTMLElement | null;
+    expect(titleCell?.textContent).toBe(conversationSummaryFixture.title);
+    expect(titleCell?.getAttribute("title")).toBe(conversationSummaryFixture.title);
   });
 
   it("says the agent is unread rather than printing a profile id", async () => {

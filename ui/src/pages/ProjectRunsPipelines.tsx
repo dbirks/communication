@@ -74,6 +74,7 @@ import type {
   PipelineSummary,
 } from "../lib/pipeline/contract";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
+import { ToggleSwitch } from "../components/workflows/ToggleSwitch";
 import { routes } from "../lib/routes";
 
 /** One library workflow, with the two reads the list route does not carry. */
@@ -608,7 +609,7 @@ function WhenToRun({
   if (mine.length === 0 && !canManage) return null;
   return (
     <div
-      className="space-y-[6px] border-t border-line pt-2"
+      className="space-y-[6px] border-t border-line px-[12px] pt-2 pb-[8px]"
       data-testid={`schedules-block-${slug}`}
     >
       {/* The slug is not repeated here: this block sits directly under the row
@@ -644,12 +645,19 @@ function WhenToRun({
             >
               {cronInWords(schedule.cron_expr)}
             </span>
-            <span
-              className="font-mono text-[11px] text-faint"
-              data-testid={`schedule-next-${slug}`}
-            >
-              {scheduleClock(schedule)}
-            </span>
+            {/* The clock column says "paused" for a schedule that is off — but
+                the toggle beside it already spells `on` / `paused`. Printing
+                both said one fact twice on the row (pass-2 review), so the
+                countdown rides the clock only while the schedule is on; a
+                paused row says "paused" once, on the toggle. */}
+            {schedule.enabled ? (
+              <span
+                className="font-mono text-[11px] text-faint"
+                data-testid={`schedule-next-${slug}`}
+              >
+                {scheduleClock(schedule)}
+              </span>
+            ) : null}
             {schedule.last_run_id ? (
               <Link
                 to={routes.run(schedule.last_run_id)}
@@ -662,28 +670,24 @@ function WhenToRun({
               <span className="font-mono text-[11px] text-faint">never run</span>
             )}
             {canManage ? (
-              <label className="flex items-center gap-[6px] font-mono text-[11px] text-ink">
-                {/* The box is the schedule's `enabled` flag itself: checked means it
-                    is running to the clock, unchecked means it is paused. The word
-                    beside it is the same fact in the other direction, so the control
-                    can never read as "paused: ☐" over a schedule that is on. */}
-                <input
-                  type="checkbox"
-                  className="size-3 accent-accent"
-                  checked={schedule.enabled}
-                  aria-label={`schedule ${slug} enabled`}
-                  data-testid={`schedule-enabled-${slug}`}
-                  onChange={(event) =>
-                    patch.mutate({
-                      scheduleId: schedule.id,
-                      body: { version: schedule.version, enabled: event.target.checked },
-                    })
-                  }
-                />
-                <span data-testid={`schedule-state-${slug}`}>
-                  {schedule.enabled ? "on" : "paused"}
-                </span>
-              </label>
+              /* The pill IS the schedule's `enabled` flag: on means it runs to
+                 the clock, paused means it does not. The word beside the track
+                 is the same fact in words, so the row can never read
+                 “paused: ☐” over a schedule that is on — and the switch is the
+                 trigger switch of 2e, one control for one kind of intent
+                 (`components/workflows/ToggleSwitch`). */
+              <ToggleSwitch
+                checked={schedule.enabled}
+                testid={`schedule-enabled-${slug}`}
+                stateTestid={`schedule-state-${slug}`}
+                label={`schedule ${slug} enabled`}
+                onChange={(next) =>
+                  patch.mutate({
+                    scheduleId: schedule.id,
+                    body: { version: schedule.version, enabled: next },
+                  })
+                }
+              />
             ) : (
               /* A viewer has no toggle to read the state off, so the state is said. */
               <StatusChip
@@ -714,7 +718,7 @@ function WhenToRun({
             data-testid={`schedule-open-${slug}`}
             onClick={() => setAdding(true)}
           >
-            Add schedule
+            Add trigger
           </Button>
         )
       ) : null}

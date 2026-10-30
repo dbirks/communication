@@ -27,7 +27,7 @@ import { useAgentProfiles, useConversations, useMe, useProjects } from "../../ap
 import type { ConversationSummary } from "../../api/types";
 import type { components } from "../../api/schema";
 import NewConversationDialog from "../NewConversationDialog";
-import { Spinner } from "../Feedback";
+import { ProblemBanner, Spinner } from "../Feedback";
 import { Button } from "../ds/Button";
 import { Input } from "../ds/Field";
 import { CONVERSATION_STATE, STATES, stateOf, type StateName } from "../ds/states";
@@ -250,9 +250,26 @@ export interface ThreadListPaneProps {
   projectId?: string;
   /** The thread rendered in the pane beside this list, when one is. */
   selectedId?: string;
+  /**
+   * Whether this pane is the ONLY error surface for the failed read. When the
+   * pane sits alone (the `/threads` list column, which stays visible at every
+   * width), it owns a loud `role="alert"` banner — the one place the reader
+   * looks — and the host page must NOT draw a second one. When false the pane
+   * keeps only its quiet one-line note, deferring the loud banner to the host
+   * (a project's Threads tab, where the list IS the page). The loud banner and
+   * the quiet note share the `threads-list-error` test id, so a failed read is
+   * said ONCE regardless of who hosts the pane — pass-2 review found it said
+   * twice on `/threads` (a quiet line in the pane and a loud banner in the
+   * thread column).
+   */
+  ownsError?: boolean;
 }
 
-export function ThreadListPane({ projectId = "", selectedId = "" }: ThreadListPaneProps) {
+export function ThreadListPane({
+  projectId = "",
+  selectedId = "",
+  ownsError = false,
+}: ThreadListPaneProps) {
   const [search, setSearch] = useState("");
   const [chip, setChip] = useState<"all" | "mine" | "runs">("all");
   const [cursor, setCursor] = useState<string | null>(null);
@@ -345,16 +362,29 @@ export function ThreadListPane({ projectId = "", selectedId = "" }: ThreadListPa
           </div>
         ) : null}
         {list.isError ? (
-          // The pane stays quiet about roles: the page that hosts it owns the
-          // loud banner (ProblemBanner, role="alert"). Here the list says it
-          // could not read, in a line, and stops.
-          <p
-            className="px-[14px] pt-3 font-mono text-[11px] text-st-failed-tag-fg"
-            data-testid="threads-list-error"
-          >
-            <span aria-hidden="true">× </span>
-            the thread list could not be read
-          </p>
+          ownsError ? (
+            // Alone on the screen (the `/threads` list column, visible at every
+            // width): this pane IS the loud banner, so the failure stays
+            // reachable on a phone and the host draws no second one. Same test
+            // id as the quiet note it replaces.
+            <div className="p-[14px]" data-testid="threads-list-error">
+              <ProblemBanner
+                error={list.error}
+                fallback="The thread list could not be loaded — newer servers carry it; open threads from a project's Threads tab until then."
+              />
+            </div>
+          ) : (
+            // Hosted beside other content: stay quiet about roles, the host page
+            // owns the loud banner. Here the list says it could not read, in a
+            // line, and stops.
+            <p
+              className="px-[14px] pt-3 font-mono text-[11px] text-st-failed-tag-fg"
+              data-testid="threads-list-error"
+            >
+              <span aria-hidden="true">× </span>
+              the thread list could not be read
+            </p>
+          )
         ) : null}
         {list.loaded && !list.isError ? (
           rows.length === 0 ? (

@@ -327,6 +327,20 @@ describe("/p/:projectId/pipelines — assigning a library pipeline", () => {
 /* ------------------------------------------------ ADR-0032 "when to run" */
 
 describe("/p/:projectId/pipelines — when to run", () => {
+  it("pads the block to the row and offers the trigger verb", async () => {
+    mount("maintainer", [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } }]);
+
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    // The block used to bleed to the card edge (no horizontal padding), so the
+    // cron box and the Add control started at the panel border instead of the
+    // row's own inset (pass-2 review). 12px is that row's `px-[12px]`.
+    expect(block.className.split(/\s+/)).toContain("px-[12px]");
+    // The verb the rest of the product uses: a schedule is a TRIGGER, and the
+    // repository page calls the same action `Add trigger`.
+    const add = await screen.findByTestId("schedule-open-feature-development");
+    expect(add.textContent).toBe("Add trigger");
+  });
+
   it("shows a viewer the cadence and the countdown, with no controls", async () => {
     mount("viewer", [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } }]);
 
@@ -452,24 +466,24 @@ describe("a schedule row says what the schedule is actually doing", () => {
   const withSchedules = (role: "maintainer" | "viewer", overrides: Partial<Schedule> = {}) =>
     mount(role, [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule(overrides)] } }]);
 
-  it("a paused schedule is shown paused: the box is unchecked and no stale 'next' is promised", async () => {
+  it("a paused schedule is shown paused ONCE: the box is unchecked and no stale 'next' is promised", async () => {
     await withSchedules("maintainer", { enabled: false, next_run_at: "2026-06-19T09:00:00Z" });
 
     const block = await screen.findByTestId("schedules-block-feature-development");
     // The row (and its toggle) renders only once the schedules read lands.
     const toggle = await within(block).findByTestId("schedule-enabled-feature-development");
     expect((toggle as HTMLInputElement).checked).toBe(false);
+    // "paused" is said ONCE — on the toggle's state word. It used to print here
+    // AND in the clock column (`scheduleClock` returned "paused"), so a paused
+    // row read "… paused … paused" on one line (pass-2 review).
     expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe(
       "paused",
     );
+    expect((block.textContent?.match(/paused/g) ?? []).length).toBe(1);
     // `next_run_at` keeps its last value while a schedule is off (ADR-0032 never
-    // backfills missed slots), so the row must not read it as a countdown.
-    expect(within(block).getByTestId("schedule-next-feature-development").textContent).toBe(
-      "paused",
-    );
-    expect(within(block).getByTestId("schedule-next-feature-development").textContent).not.toMatch(
-      /passed|next /,
-    );
+    // backfills missed slots), so the clock column drops entirely rather than
+    // promising a countdown.
+    expect(within(block).queryByTestId("schedule-next-feature-development")).toBeNull();
   });
 
   it("an enabled schedule reads as on, and a slot already gone by is due now", async () => {

@@ -113,6 +113,14 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
 
     // At `/threads` no thread is open: the right column says so honestly.
     expect(await screen.findByTestId("threads-no-selection")).toBeTruthy();
+    // …but that empty column is DESKTOP-only: below `lg` the phone shows the
+    // list alone (the thread is one tap away, not a pane that draws empty under
+    // the list — pass-2 review, 390). jsdom runs no media query, so the contract
+    // is asserted on the classes that express it.
+    const detail = screen.getByTestId("threads-detail-column");
+    const cls = detail.className.split(/\s+/);
+    expect(cls).toContain("hidden");
+    expect(cls).toContain("lg:flex");
   });
 
   it("draws ADR-0065's repository and last agent line when the wire serves them", async () => {
@@ -199,14 +207,23 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     expect(document.querySelector("main")?.className).toContain("w-full");
   });
 
-  it("says honestly what a server without the endpoint can not list", async () => {
+  it("says honestly what a server without the endpoint can not list — ONCE", async () => {
     const { requests } = renderApp({
       path: "/threads",
       routes: [me, users, { path: "/api/v1/projects", method: "GET", body: { items: [] } }],
     });
-    const banner = await screen.findByRole("alert");
-    expect(banner.textContent).toContain("could not be loaded");
+    // One loud banner, in the list column that failed — the pass-2 review found
+    // the same refusal said twice (a quiet line in the pane and a loud banner in
+    // the thread column), and the second one reflowed to the foot of the phone
+    // page where nobody was looking. The failure is reachable at every width now
+    // because it lives where the reader already is.
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toContain("could not be loaded");
     expect(await screen.findByTestId("threads-list-error")).toBeTruthy();
+    // The empty thread column never draws over a failed read — a refusal must
+    // not read as "No thread selected".
+    expect(screen.queryByTestId("threads-no-selection")).toBeNull();
     expect(requests.some((request) => request.url === crossPath && request.method === "GET")).toBe(
       true,
     );

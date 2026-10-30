@@ -9,8 +9,15 @@
  * and a null (an unbound thread, or an older server) falls back to what the
  * project's workspaces say (`useProjectRepoIndex`). An agent profile id is
  * never printed as a uuid: the profile list is a separate read, so until it
- * lands the line says so. Under the title, a row shows `last_agent_line`
- * whenever the wire serves one — never an invented line.
+ * lands the line says so. When the wire serves one, the row also carries
+ * `last_agent_line` — never an invented line.
+ *
+ * ONE line per row, like the design: glyph · title · last line ·
+ * `repo · agent` · age, each truncating with an ellipsis and a full `title`
+ * tooltip. It used to stack the title, the last line and the mono line as three
+ * `block` lines, so a row that had all three wrapped to two/three lines at 1280
+ * and the panel read as paragraphs, not the design's one-line rows (pass-2
+ * review). A phone never sideways-scrolls for it: every cell truncates.
  */
 import { Link } from "react-router";
 import { useAgentProfiles, useConversations } from "../../api/queries";
@@ -125,28 +132,27 @@ export function RecentThreads({
                     {STATES[state].glyph}
                   </span>
                   <span className="sr-only">{STATES[state].word}</span>
-                  <span className="min-w-0 flex-1">
+                  <span
+                    className="min-w-0 flex-1 truncate text-[12.5px] font-semibold"
+                    title={thread.title}
+                  >
+                    {thread.title}
+                  </span>
+                  {thread.last_agent_line ? (
                     <span
-                      className="block truncate text-[12.5px] font-semibold"
-                      title={thread.title}
+                      className="min-w-0 flex-[2] truncate text-[12.5px] text-muted"
+                      title={thread.last_agent_line}
+                      data-testid={`project-thread-last-line-${testidOf(thread.id)}`}
                     >
-                      {thread.title}
+                      {thread.last_agent_line}
                     </span>
-                    {thread.last_agent_line ? (
-                      <span
-                        className="block truncate text-[12.5px] text-muted"
-                        data-testid={`project-thread-last-line-${testidOf(thread.id)}`}
-                      >
-                        {thread.last_agent_line}
-                      </span>
-                    ) : null}
-                    <span className="block truncate font-mono text-[10.5px] text-muted">
-                      {threadMeta(
-                        repo,
-                        profiles.data?.items.find((p) => p.id === thread.agent_profile_id)?.name ??
-                          null,
-                      )}
-                    </span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted">
+                    {threadMeta(
+                      repo,
+                      profiles.data?.items.find((p) => p.id === thread.agent_profile_id)?.name ??
+                        null,
+                    )}
                   </span>
                   <span className="shrink-0 font-mono text-[10.5px] text-faint">
                     {formatAge(thread.updated_at)}

@@ -19,6 +19,7 @@
  * the Runs count carries the waiting glyph + color when it is a count of things
  * that ask something of a person (identity rule 06: never color alone).
  */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { routes } from "../../lib/routes";
 
@@ -85,51 +86,123 @@ function Count({ value, urgent }: { value: number | null | undefined; urgent?: b
 }
 
 export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps) {
+  // At 390 the six tabs do not all fit the band. They scroll *inside* the strip
+  // (never dragging the page sideways — `overscroll-x-contain`) and two edge
+  // fades appear on whichever side still has tabs hidden, so the phone strip
+  // says "there is more" instead of cutting Artifacts/Settings off with no cue
+  // (pass-2 review). The active tab is also pulled into view on arrival, so a
+  // reader who deep-linked to Settings sees where they are.
+  const navRef = useRef<HTMLElement | null>(null);
+  const [fade, setFade] = useState<{ left: boolean; right: boolean }>({
+    left: false,
+    right: false,
+  });
+
+  const measure = useCallback(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const max = nav.scrollWidth - nav.clientWidth;
+    const x = nav.scrollLeft;
+    // A pixel of slop each side so the fade never flashes at a rounded edge.
+    setFade({ left: x > 1, right: x < max - 1 });
+  }, []);
+
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    measure();
+    nav.addEventListener("scroll", measure, { passive: true });
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(nav);
+    window.addEventListener("resize", measure);
+    return () => {
+      nav.removeEventListener("scroll", measure);
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure]);
+
+  useEffect(() => {
+    if (!active) return;
+    // The active tab already marks itself with `aria-current="page"` — that is
+    // the element to bring into view, and querying it by its own semantics
+    // avoids rebuilding the test id as a dynamic string here.
+    const tab = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
+    // Scrolls the nearest scrollable ancestor — this `overflow-x-auto` nav — not
+    // the page. Guarded because jsdom has no `scrollIntoView`.
+    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    measure();
+  }, [active, measure]);
+
   return (
-    <nav
-      aria-label="Project sections"
-      className="-mb-px flex gap-[4px] overflow-x-auto"
-      data-testid="project-tabs"
-    >
-      {PROJECT_TABS.map(({ key, label }) => {
-        const isActive = active === key;
-        // Only the urgent Runs count changes color, and only when it is
-        // non-zero; the plain counts print whatever the read served, zero
-        // included (an empty project's "0" is a fact, not a gap).
-        const count =
-          key === "runs"
-            ? { value: flags.needsYou ?? null, urgent: true }
-            : key === "threads"
-              ? { value: flags.threads ?? null, urgent: false }
-              : key === "workflows"
-                ? { value: flags.workflows ?? null, urgent: false }
-                : null;
-        return (
-          <Link
-            key={key}
-            to={projectTabHref(projectId, key)}
-            aria-current={isActive ? "page" : undefined}
-            className={`flex shrink-0 items-center gap-[6px] whitespace-nowrap rounded-t-[3px] border px-[12px] pt-[6px] pb-[7px] text-[13px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
-              isActive
-                ? "border-ink border-b-paper bg-paper font-semibold text-ink"
-                : "border-transparent text-muted"
-            }`}
-            data-testid={`project-tab-${key}`}
-          >
-            {label}
-            {count ? (
-              <>
-                <Count {...count} />
-                {/* The urgent count's glyph is decorative, so the count is
+    <div className="relative" data-testid="project-tabs-wrap">
+      <nav
+        ref={navRef}
+        aria-label="Project sections"
+        className="-mb-px flex min-w-0 gap-[4px] overflow-x-auto overscroll-x-contain"
+        data-testid="project-tabs"
+      >
+        {PROJECT_TABS.map(({ key, label }) => {
+          const isActive = active === key;
+          // Only the urgent Runs count changes color, and only when it is
+          // non-zero; the plain counts print whatever the read served, zero
+          // included (an empty project's "0" is a fact, not a gap).
+          const count =
+            key === "runs"
+              ? { value: flags.needsYou ?? null, urgent: true }
+              : key === "threads"
+                ? { value: flags.threads ?? null, urgent: false }
+                : key === "workflows"
+                  ? { value: flags.workflows ?? null, urgent: false }
+                  : null;
+          return (
+            <Link
+              key={key}
+              to={projectTabHref(projectId, key)}
+              aria-current={isActive ? "page" : undefined}
+              className={`flex shrink-0 items-center gap-[6px] whitespace-nowrap rounded-t-[3px] border px-[12px] pt-[6px] pb-[7px] text-[13px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                isActive
+                  ? "border-ink border-b-paper bg-paper font-semibold text-ink"
+                  : "border-transparent text-muted"
+              }`}
+              data-testid={`project-tab-${key}`}
+            >
+              {label}
+              {count ? (
+                <>
+                  <Count {...count} />
+                  {/* The urgent count's glyph is decorative, so the count is
                     spelled out for anyone not reading the color. */}
-                {count.urgent && (count.value ?? 0) > 0 ? (
-                  <span className="sr-only">{`${count.value} need you`}</span>
-                ) : null}
-              </>
-            ) : null}
-          </Link>
-        );
-      })}
-    </nav>
+                  {count.urgent && (count.value ?? 0) > 0 ? (
+                    <span className="sr-only">{`${count.value} need you`}</span>
+                  ) : null}
+                </>
+              ) : null}
+            </Link>
+          );
+        })}
+      </nav>
+      {/* The cue that the strip continues: a solid edge cap in the band's own
+          colour over the last few pixels, painted only while that side still
+          has a tab off-strip. It is `pointer-events-none` and `aria-hidden` —
+          the tab links are all in the accessibility tree either way — and it is
+          a decoration only, never a control. */}
+      {fade.left ? (
+        <span
+          aria-hidden="true"
+          data-testid="project-tabs-fade-left"
+          className="pointer-events-none absolute inset-y-0 left-0 w-[18px]"
+          style={{ background: "var(--color-surface)" }}
+        />
+      ) : null}
+      {fade.right ? (
+        <span
+          aria-hidden="true"
+          data-testid="project-tabs-fade-right"
+          className="pointer-events-none absolute inset-y-0 right-0 w-[18px]"
+          style={{ background: "var(--color-surface)" }}
+        />
+      ) : null}
+    </div>
   );
 }
