@@ -1,41 +1,58 @@
 /**
- * `/projects/:projectId/conversations` — the project's conversations as a
- * screen in its own right.
+ * `/p/:projectId/conversations` — the project's Threads tab (design 1b).
  *
- * Until now the list only existed as a section of the overview
- * (`/projects/:id#conversations`), so the literal URL a breadcrumb, an inbox
- * row, the assistant's route table (`internal/assistant/routes.go` admits
- * `/projects/{id}/conversations`) or a hand-typed address produces rendered the
- * app's "Not found" page. This is the same section the overview mounts, built
- * the way `/runs` and `/pipelines` are: the project read gates the screen, the
- * rail says where you are, and the panel is `components/Conversations.tsx`.
- *
- * The overview keeps its copy of the section, so the `#conversations` fragment
- * still lands on something real; the rail's canonical href is now the route.
+ * The route keeps its path (`conversations` is the API's noun, and the
+ * assistant's route table, breadcrumbs and permalinks name it) while the screen
+ * speaks the product's word: **Threads**. Until the 1b rebuild it was the old
+ * page — the left `ProjectSectionNav` rail, a breadcrumb, a "Threads — {project}"
+ * H1 of its own, and the `Conversations` panel, whose rows said `CONVERSATION`
+ * and `New conversation`, printed `profile:` and `controller:` beside an ISO
+ * timestamp, and clipped to `run 01…` at 390. Now it mounts `ProjectFrame`: the
+ * same header band and tab row the overview draws, with **Threads** marked as
+ * the tab you are on, and under it the project's thread list drawn in the rows
+ * the Threads page uses.
  */
-import { Link, useParams } from "react-router";
-import { useConversations, useProject } from "../api/queries";
-import Conversations from "../components/Conversations";
-import { ProblemBanner, Spinner } from "../components/Feedback";
-import ProjectSectionNav from "../components/ProjectSectionNav";
+import { useParams } from "react-router";
+import { useConversations } from "../api/queries";
+import type { Project } from "../api/types";
+import { ProjectFrame } from "../components/project/ProjectFrame";
+import { ProjectThreadList } from "../components/project/ProjectThreadList";
 import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
-import { routes } from "../lib/routes";
 
 export default function ProjectConversations() {
   const { projectId = "" } = useParams<{ projectId: string }>();
-  const project = useProject(projectId);
-  // The panel below reads the same query key, so this is a second pair of eyes
-  // on one round trip — the list route answers the same 404/403 the project
-  // read does, and the gate has to see it (`/runs` does the same with its runs
-  // read).
-  const list = useConversations(projectId);
+  return (
+    <ProjectFrame
+      projectId={projectId}
+      active="threads"
+      testid="project-conversations"
+      heading="Threads"
+    >
+      {(project, openNewThread) => <ThreadsTabBody project={project} onNewThread={openNewThread} />}
+    </ProjectFrame>
+  );
+}
 
-  if (project.isPending) return <Spinner label="Loading threads" />;
+/**
+ * The list in the frame's body column, as a component so its read mounts in the
+ * SAME commit as the header band's own (a page-level read would fire one commit
+ * earlier and the tab count would then re-fetch the same list), and so the
+ * refusal is decided where the read is: the list route answers the same
+ * 404/403 the project read does, and a panel saying "no threads yet" would
+ * confirm more than the API chose to say.
+ */
+export function ThreadsTabBody({
+  project,
+  onNewThread,
+}: {
+  project: Project;
+  onNewThread: () => void;
+}) {
+  // The unfiltered read — the same key the tab count and (until a filter is
+  // picked) the list itself use, so one round trip serves all three.
+  const list = useConversations(project.id);
 
-  // A non-member gets the one refusal every screen under `/projects/:id`
-  // gives: the project read answers 404, and a panel saying "no conversations
-  // yet" would confirm more than the API chose to say.
-  if (projectAccessRefused(project.error) || projectAccessRefused(list.error)) {
+  if (projectAccessRefused(list.error)) {
     return (
       <ProjectUnavailable
         heading="Threads"
@@ -45,48 +62,13 @@ export default function ProjectConversations() {
     );
   }
 
-  if (project.error || !project.data) {
-    return (
-      <section aria-labelledby="project-conversations-error-heading">
-        <h1 id="project-conversations-error-heading" className="text-title-l font-bold">
-          Threads
-        </h1>
-        <ProblemBanner error={project.error} fallback="The project could not be loaded." />
-      </section>
-    );
-  }
-
-  const data = project.data;
-
   return (
-    <div
-      className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]"
-      data-testid="project-conversations"
-    >
-      <ProjectSectionNav projectId={data.id} active="conversations" />
-      <div className="min-w-0 space-y-4">
-        <header className="space-y-1">
-          <p className="font-mono text-[11px] text-muted">
-            <Link to={routes.project(data.id)} className="text-accent-text hover:text-ink">
-              {data.name}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>Threads</span>
-          </p>
-          <h1
-            id="project-conversations-heading"
-            className="text-title-l font-bold"
-            data-testid="project-conversations-title"
-          >
-            Threads — {data.name}
-          </h1>
-          <p className="text-[12.5px] text-muted">
-            Your role: <span className="font-mono">{data.my_role}</span>. Only contributors and
-            maintainers can start one; anybody who can read the project can see the list.
-          </p>
-        </header>
-        <Conversations project={data} />
-      </div>
+    <div className="mx-auto w-full max-w-[56rem]">
+      <ProjectThreadList
+        project={project}
+        canStartThread={project.my_role === "maintainer" || project.my_role === "contributor"}
+        onNewThread={onNewThread}
+      />
     </div>
   );
 }

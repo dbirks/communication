@@ -20,7 +20,7 @@
  *   which is what it means; a pinned revision that no longer resolves prints
  *   its short digest, never a guessed revision number.
  */
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import {
@@ -30,6 +30,7 @@ import {
   usePipelines,
 } from "../../api/pipelines";
 import { useIssueTriggers } from "../../api/useIssueTriggers";
+import type { Assignment } from "../../api/types";
 import type { Project } from "../../api/types";
 import { Panel } from "../ds/Panel";
 import { StatusChip } from "../ds/Row";
@@ -41,6 +42,40 @@ import { testidOf } from "../../lib/format";
 
 export interface WorkflowsPanelProps {
   project: Project;
+  /**
+   * `panel` (default) is the overview's 300px inventory panel. `page` is the
+   * Workflows tab: the same rows, plus what the assignment itself says (the
+   * ceiling it carries, the pin in words) and whatever the page mounts under a
+   * row — its `When to run` schedules.
+   */
+  variant?: "panel" | "page";
+  /** `page` only: rendered under one row, with that row's assignment. */
+  renderDetails?: (assignment: Assignment) => ReactNode;
+  /**
+   * Digest → revision number, from a read the caller already has (the
+   * Workflows tab lists the library, whose rows carry their revisions). Given,
+   * the row prints `r<N>` at once instead of waiting on a read per pin.
+   */
+  revisionNumbers?: ReadonlyMap<string, number>;
+}
+
+/**
+ * The pin in the tab's own words: what it points at and how many runs it
+ * allows at once. The old row said `ASSIGNED · R1 A898… · MAX 3 CONCURRENT`
+ * — three uppercase chips in a 34px row that clipped at 390 (pass-2 review).
+ */
+export function assignmentWords(
+  assignment: Pick<Assignment, "enabled" | "max_concurrent_runs">,
+  revisionWords: string,
+  digest: string,
+): string {
+  const ceiling =
+    assignment.max_concurrent_runs === 1
+      ? "1 run at a time"
+      : `${assignment.max_concurrent_runs} runs at a time`;
+  return `assigned · pinned ${revisionWords} · ${digest} · up to ${ceiling}${
+    assignment.enabled ? "" : " · paused"
+  }`;
 }
 
 /** What starts one use of a workflow, in the few words that fit a mono line.
@@ -65,7 +100,13 @@ export function triggerWords(
   return parts.length > 0 ? parts.join(" · ") : "started by hand";
 }
 
-export function WorkflowsPanel({ project }: WorkflowsPanelProps) {
+export function WorkflowsPanel({
+  project,
+  variant = "panel",
+  renderDetails,
+  revisionNumbers,
+}: WorkflowsPanelProps) {
+  const page = variant === "page";
   const assignments = useAssignments(project.id);
   const pipelines = usePipelines();
   const schedules = useSchedules(project.id);
@@ -99,7 +140,10 @@ export function WorkflowsPanel({ project }: WorkflowsPanelProps) {
       headingId="project-workflows-heading"
       headingLevel={2}
       meta={
-        project.my_role === "maintainer" ? (
+        // The overview points at the tab that owns assigning; ON that tab the
+        // form is the panel below, so a link to this same page would be a
+        // button that does nothing.
+        project.my_role === "maintainer" && !page ? (
           <Link
             to={routes.projectTab(project.id, "pipelines")}
             className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
@@ -129,11 +173,25 @@ export function WorkflowsPanel({ project }: WorkflowsPanelProps) {
             <p className="text-[12.5px] text-muted" data-testid="project-workflows-empty">
               No workflows are used in this project yet.
             </p>
-            <p className="text-[12.5px] text-muted">
-              <Link to={routes.projectTab(project.id, "pipelines")} className="underline">
-                Assign one from the library ›
-              </Link>
-            </p>
+            {project.my_role === "maintainer" ? (
+              page ? (
+                <p className="text-[12.5px] text-muted">
+                  Nothing is pinned here, so no run of this project can start. Assign one from the
+                  library below.
+                </p>
+              ) : (
+                <p className="text-[12.5px] text-muted">
+                  <Link to={routes.projectTab(project.id, "pipelines")} className="underline">
+                    Assign one from the library ›
+                  </Link>
+                </p>
+              )
+            ) : (
+              <p className="text-[12.5px] text-muted">
+                A maintainer assigns a library workflow to a project; until then there is nothing to
+                run.
+              </p>
+            )}
           </div>
         ) : null}
         <ul className="divide-y divide-line-soft" data-testid="project-workflows">
@@ -148,56 +206,73 @@ export function WorkflowsPanel({ project }: WorkflowsPanelProps) {
               (trigger) => trigger.assignment_id === pin.id,
             );
             const where = pin.repository_name ?? "whole project";
-            const revisionWords = revision
-              ? `r${revision.revision_number}`
-              : revisionFan[index]?.isError
-                ? `@${shortDigest(pin.pinned_revision_digest)}`
-                : "· reading";
+            // A number the caller's own read knows beats the per-pin read; a
+            // digest nothing resolves is printed as a digest, never as a
+            // guessed revision.
+            const known = revisionNumbers?.get(pin.pinned_revision_digest) ?? null;
+            const revisionNumber = known ?? revision?.revision_number ?? null;
+            const revisionWords =
+              revisionNumber !== null
+                ? `r${revisionNumber}`
+                : revisionFan[index]?.isError
+                  ? `@${shortDigest(pin.pinned_revision_digest)}`
+                  : "· reading";
             return (
-              <li
-                key={pin.id}
-                className="flex items-center gap-[8px] px-[12px] py-[8px]"
-                data-testid={`project-workflow-row-${key}`}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-[6px]">
-                    <Link
-                      to={routes.workflow(pin.pipeline_id)}
-                      className="truncate text-[12.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                      title={workflow?.name}
-                      data-testid={`project-workflow-name-${key}`}
+              <li key={pin.id} data-testid={`project-workflow-row-${key}`}>
+                <div className="flex items-center gap-[8px] px-[12px] py-[8px]">
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-[6px]">
+                      <Link
+                        to={routes.workflow(pin.pipeline_id)}
+                        className="truncate text-[12.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        title={workflow?.name}
+                        data-testid={`project-workflow-name-${key}`}
+                      >
+                        {workflow?.slug ?? "· reading"}
+                      </Link>
+                      {pin.enabled ? null : (
+                        <StatusChip
+                          state="interrupted"
+                          label="paused"
+                          className="h-[15px]"
+                          labelProps={{
+                            "data-testid": `project-workflow-enabled-${key}`,
+                          }}
+                        />
+                      )}
+                    </span>
+                    <span
+                      className="block truncate font-mono text-[10.5px] text-muted"
+                      data-testid={`project-workflow-meta-${key}`}
                     >
-                      {workflow?.slug ?? "· reading"}
-                    </Link>
-                    {pin.enabled ? null : (
-                      <StatusChip
-                        state="interrupted"
-                        label="paused"
-                        className="h-[15px]"
-                        labelProps={{ "data-testid": `project-workflow-enabled-${key}` }}
-                      />
-                    )}
+                      {revisionWords} ·{" "}
+                      {triggersFailed
+                        ? "triggers unavailable"
+                        : triggersReady
+                          ? triggerWords(pinSchedules, pinIssueTriggers)
+                          : "· reading"}{" "}
+                      · {where}
+                    </span>
                   </span>
-                  <span
-                    className="block truncate font-mono text-[10.5px] text-muted"
-                    data-testid={`project-workflow-meta-${key}`}
+                  <Link
+                    to={routes.workflow(pin.pipeline_id)}
+                    className="shrink-0 text-[12px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    data-testid={`project-workflow-edit-${key}`}
                   >
-                    {revisionWords} ·{" "}
-                    {triggersFailed
-                      ? "triggers unavailable"
-                      : triggersReady
-                        ? triggerWords(pinSchedules, pinIssueTriggers)
-                        : "· reading"}{" "}
-                    · {where}
-                  </span>
-                </span>
-                <Link
-                  to={routes.workflow(pin.pipeline_id)}
-                  className="shrink-0 text-[12px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  data-testid={`project-workflow-edit-${key}`}
-                >
-                  Edit
-                </Link>
+                    Edit
+                  </Link>
+                </div>
+                {/* What the assignment itself says, in words — the Workflows
+                    tab's row, not the overview's 300px inventory panel. */}
+                {page ? (
+                  <p
+                    className="break-words px-[12px] pb-[8px] font-mono text-[10.5px] leading-[15px] text-faint"
+                    data-testid={`pipeline-assignment-${workflow?.slug ?? key}`}
+                  >
+                    {assignmentWords(pin, revisionWords, shortDigest(pin.pinned_revision_digest))}
+                  </p>
+                ) : null}
+                {page && renderDetails ? renderDetails(pin) : null}
               </li>
             );
           })}

@@ -1,17 +1,29 @@
 /**
- * `/projects/:projectId/pipelines` — the project's pipeline assignments and
- * the pinned revision's definition, as a real route. Same blocks the
- * `/__m4-preview?source=live` seam proved (`PipelineLibrary`, `YamlView`,
- * `DefinitionGraph`); the run list links here because a run's shape comes from
- * the assignment, not from anything this page invents.
+ * `/p/:projectId/pipelines` — the project's Workflows tab (design 1b).
  *
- * Editing, publishing and channel rollout stay out of scope: `canCreate={false}`
- * and no draft form. Assigning *is* in scope: a maintainer may pin an unassigned
- * library pipeline's newest published revision to this project (`§ 7.2` W2),
- * which is the only way a run becomes startable here. The other write allowed
- * here is `§ 7.2` W8's Validate panel — a textarea and a button that turn
- * pasted YAML into the server's verdict, for org admins (the library role)
- * only, and no editor.
+ * The route keeps its path (`pipelines` is what the API calls them) and the tab
+ * keeps the product's word. Until this rebuild it was the old Pipelines page:
+ * the left `ProjectSectionNav` rail, an H1 of its own, and a library table whose
+ * rows carried `ASSIGNED · R1 A898ACA99A9 · MAX 3 CONCURRENT` chips — accurate,
+ * and clipped in half at 390 (pass-2 review). Now it mounts `ProjectFrame` and
+ * says the same facts in rows the overview's WORKFLOWS panel already uses.
+ *
+ * What the tab still owns, because nowhere else does it:
+ * - the workflows this project *uses*, each with the revision it is pinned to,
+ *   what starts it, which repository it runs in, and the ceiling the assignment
+ *   carries (`WorkflowsPanel`, `variant="page"`);
+ * - ADR-0032's `When to run` block under each of those, since a schedule belongs
+ *   to the assignment and not to the library workflow;
+ * - the library's rows, with each one's newest published revision and the state
+ *   of anyone's draft, and W2's assign form — the only way a run becomes
+ *   startable here;
+ * - the pinned revision's regenerated document and its definition graph, which
+ *   is where a person checks what a run of this project will actually do;
+ * - `§ 7.2` W8's Validate panel, for the org admin (the library role) only.
+ *
+ * Editing, publishing and channel rollout stay out of scope: no draft form here,
+ * and no channel claim — `AssignmentCreate` has no channel member (channels are
+ * M6 rollout vocabulary).
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router";
@@ -22,13 +34,10 @@ import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
-import {
-  PipelineLibrary,
-  type PipelineAssignmentFacts,
-  type PipelineLibraryRow,
-} from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
 import { ValidatePanel } from "../components/m4/ValidatePanel";
+import { ProjectFrame } from "../components/project/ProjectFrame";
+import { WorkflowsPanel } from "../components/project/WorkflowsPanel";
 import { useProjectRuns } from "../api/runs";
 import {
   pipelineDraftsQueryOptions,
@@ -42,9 +51,11 @@ import {
   useSchedules,
   type Schedule,
 } from "../api/pipelines";
-import { useMe, useProject, useRepositories } from "../api/queries";
+import { useMe, useRepositories } from "../api/queries";
+import type { Project } from "../api/types";
 import { useActorNames } from "../api/actors";
 import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
+import { runStateWord } from "./ProjectRuns";
 import { viewDraftSummary, viewPipeline, viewPipelineSummary } from "../api/m4view";
 import { shortId } from "../api/names";
 import {
@@ -57,13 +68,50 @@ import {
 } from "../components/m4/NewRunForm";
 import { formatRemaining } from "../lib/format";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
-import type { PipelineRevisionSummary, PipelineSummary } from "../lib/pipeline/contract";
+import type {
+  PipelineDraftSummary,
+  PipelineRevisionSummary,
+  PipelineSummary,
+} from "../lib/pipeline/contract";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
-import { ProjectSectionNav } from "./ProjectRuns";
 import { routes } from "../lib/routes";
 
+/** One library workflow, with the two reads the list route does not carry. */
+interface LibraryRow {
+  pipeline: PipelineSummary & { description?: string };
+  latest: PipelineRevisionSummary | null;
+  revisions: PipelineRevisionSummary[];
+  drafts: PipelineDraftSummary[];
+}
+
+/**
+ * The Workflows tab: the frame, and under it the body this project owns.
+ *
+ * The body is a component rather than markup in the route so its reads mount in
+ * the SAME commit as the header band's own: the tab count and the rows below
+ * then share one `GET .../assignments` instead of asking twice.
+ */
 export default function ProjectPipelines() {
   const { projectId = "" } = useParams();
+  return (
+    <ProjectFrame
+      projectId={projectId}
+      active="workflows"
+      testid="project-pipelines"
+      heading="Workflows"
+    >
+      {(project) => <WorkflowsTabBody projectId={projectId} project={project} />}
+    </ProjectFrame>
+  );
+}
+
+export interface WorkflowsTabBodyProps {
+  projectId: string;
+  project: Project;
+}
+
+/** The tab's body: what it uses, what it could use, and what a run is pinned to. */
+export function WorkflowsTabBody({ projectId, project }: WorkflowsTabBodyProps) {
   const pipelines = usePipelines();
   const assignments = useAssignments(projectId);
   const runs = useProjectRuns(projectId);
@@ -77,7 +125,7 @@ export default function ProjectPipelines() {
   const definitions = useQueries({ queries: ids.map(pipelineQueryOptions) });
   const draftsList = useQueries({ queries: ids.map(pipelineDraftsQueryOptions) });
 
-  const rows: PipelineLibraryRow[] = [];
+  const rows: LibraryRow[] = [];
   definitions.forEach((entry, index) => {
     const definition = entry.data;
     if (!definition) return;
@@ -87,8 +135,6 @@ export default function ProjectPipelines() {
       latest: view.revisions[0] ?? null,
       revisions: view.revisions,
       drafts: (draftsList[index]?.data?.drafts ?? []).map(viewDraftSummary),
-      // `channels` is M6 rollout vocabulary; the M4 wire serves none.
-      channels: [],
     });
   });
 
@@ -96,10 +142,12 @@ export default function ProjectPipelines() {
     assignments.data?.assignments.find((assignment) => assignment.enabled)?.pinned_revision_id ??
     "";
   const revision = useRevision(pin);
-  const project = useProject(projectId);
   // Names for the library's draft rows, resolved through the reads the app
   // already has (the caller, this project's members, the org directory).
   const actors = useActorNames(projectId);
+  // One schedules read for the whole tab (ADR-0032): the workbench's "when to
+  // run" blocks are its rows, and each block gets the result passed down.
+  const schedules = useSchedules(projectId);
   // Revision numbers live on the pipeline read, not on the assignment (which
   // carries only a digest), so the digest → r<N> map is built from the rows.
   const revisionNumbers = new Map<string, number>();
@@ -109,28 +157,10 @@ export default function ProjectPipelines() {
         revisionNumbers.set(entry.revision_digest, entry.revision_number);
     });
   });
-  // The library cell for a project surface: its assignment to this project, not
-  // a channel M4 does not have (`AssignmentCreate` has no channel member).
-  function assignmentFor(pipelineId: string): PipelineAssignmentFacts | null {
-    const entry = (assignments.data?.assignments ?? []).find(
-      (candidate) => candidate.pipeline_id === pipelineId,
-    );
-    if (!entry) return null;
-    return {
-      revisionNumber: revisionNumbers.get(entry.pinned_revision_digest) ?? null,
-      revisionDigest: entry.pinned_revision_digest,
-      maxConcurrentRuns: entry.max_concurrent_runs,
-      enabled: entry.enabled,
-    };
-  }
-  // `01`: `assignment.create` is Maintainer+; an org admin with no explicit
-  // membership is *reported* as maintainer by the project read, so `my_role`
-  // alone is the whole gate — a viewer (or a read still in flight) sees nothing.
-  const canAssign = project.data?.my_role === "maintainer";
   const assignedPipelineIds = new Set(
     (assignments.data?.assignments ?? []).map((assignment) => assignment.pipeline_id),
   );
-  // A pipeline is assignable here when it has ever published (route 5's
+  // A workflow is assignable here when it has ever published (route 5's
   // summaries are newest-first, so the first `published` is the newest) and the
   // project has no assignment for it yet — one assignment per pipeline is the
   // store's UNIQUE, and the second POST is the 409 this form surfaces.
@@ -143,159 +173,233 @@ export default function ProjectPipelines() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const newestRun = runs.data?.runs?.[0] ?? null;
 
-  // A caller who cannot open the project gets the overview's sentence, not the
-  // project shell: the rail, the library rows and the "not assigned to this
-  // project" chips each confirm exactly what a 404 is written to withhold,
-  // and a raw problem banner is a server error wearing the page's clothes.
-  if (projectAccessRefused(project.error) || projectAccessRefused(assignments.error)) {
+  // The draft row's "who edited this" words. The fallback used to be `shortId`,
+  // which printed "draft v2 · 24625fe2" to a reader with no directory row
+  // for that person — an id fragment dressed as a name (M5 QA). When nobody
+  // can be named, this page names the gap in a word instead.
+  function draftNameOf(userId: string): string {
+    return actors.lookup(userId) ?? "a member";
+  }
+
+  // The assignments read is the tab's own. When it is refused, the rows, the
+  // library and the "not assigned to this project" lines would each confirm
+  // something this caller has not been shown, so the section says the project's
+  // one sentence instead.
+  if (projectAccessRefused(assignments.error)) {
     return (
       <ProjectUnavailable
-        heading="Pipelines"
+        heading="Workflows"
         headingId="project-pipelines-heading"
         testid="project-pipelines-not-found"
       />
     );
   }
 
-  // The draft cell's "who edited this" words. The component's own fallback is
-  // `shortId`, which printed "draft v2 · 24625fe2" to a reader with no
-  // directory row for that person — an id fragment dressed as a name (M5 QA).
-  // When nobody can be named, this page names the gap in a word instead.
-  function draftNameOf(userId: string): string {
-    return actors.lookup(userId) ?? "a member";
-  }
-
   return (
-    <div
-      className="grid min-h-full grid-cols-1 md:grid-cols-[minmax(14rem,17rem)_minmax(0,1fr)]"
-      data-testid="project-pipelines"
-    >
-      {/* 390 reflow: one column below `md` — the rail rides above the
-          content (two squeezed columns at 390 collapsed the panel titles to
-          zero width). Desktop keeps the rail beside it. */}
-      <aside className="border-b border-line px-3 py-2 md:border-b-0 md:border-r">
-        <ProjectSectionNav projectId={projectId} active="pipelines" />
-      </aside>
-      <div className="min-w-0 space-y-4 px-4 py-4">
-        <h1 className="text-[19px] font-bold" id="project-pipelines-heading">
-          Pipelines
-        </h1>
-        {pipelines.isPending ? <Spinner label="Loading pipelines" /> : null}
-        {pipelines.isError ? (
-          <ProblemBanner
-            error={pipelines.error}
-            fallback="The pipeline library could not be read."
+    <div className="space-y-[16px]">
+      <WorkflowsPanel
+        project={project}
+        variant="page"
+        revisionNumbers={revisionNumbers}
+        renderDetails={(assignment) => (
+          <WhenToRun
+            key={assignment.id}
+            projectId={projectId}
+            assignmentId={assignment.id}
+            pinnedRevisionId={assignment.pinned_revision_id}
+            slug={
+              rows.find((row) => row.pipeline.id === assignment.pipeline_id)?.pipeline.slug ??
+              shortId(assignment.id)
+            }
+            // The tab's OWN schedules read, handed down: a block that read them
+            // for itself would ask again the moment its row mounted.
+            read={{
+              items: schedules.data?.schedules,
+              pending: schedules.isPending,
+              error: schedules.error,
+            }}
+            // `01`: `assignment.create` is Maintainer+; an org admin with no
+            // explicit membership is *reported* as maintainer by the project
+            // read, so `my_role` alone is the whole gate — a viewer (or a
+            // read still in flight) sees no control.
+            canManage={project.my_role === "maintainer"}
           />
-        ) : null}
-        <Panel
-          title="LIBRARY"
-          headingId="project-pipeline-library-heading"
-          headingLevel={2}
-          meta={assignments.isError ? undefined : `${rows.length} definitions`}
-        >
-          <div className="space-y-[10px] p-[10px]">
-            {assignments.isError ? (
-              <ProblemBanner
-                error={assignments.error}
-                fallback="This project's assignments could not be read."
-              />
-            ) : null}
-            {pipelines.data && rows.length === 0 ? (
-              <p className="text-[12.5px] text-muted" data-testid="pipelines-empty">
-                No pipelines yet — the library is empty, so this project cannot run anything.
-              </p>
-            ) : null}
-            {rows.length > 0 ? (
-              <PipelineLibrary
-                rows={rows}
-                canCreate={false}
-                emptyCopy="nothing assigned to this project"
-                headingId="project-pipeline-rows-heading"
-                assignmentFor={assignmentFor}
-                nameOf={draftNameOf}
-              />
-            ) : null}
-            {/* ADR-0032 "when to run": one block per ASSIGNED pipeline row —
-                the schedule belongs to the assignment, so the block sits with
-                the assignment, not in a separate panel a viewer has to visit. */}
-            {(assignments.data?.assignments ?? []).map((assignment) => (
-              <WhenToRun
-                key={assignment.id}
-                projectId={projectId}
-                assignmentId={assignment.id}
-                pinnedRevisionId={assignment.pinned_revision_id}
-                slug={
-                  rows.find((row) => row.pipeline.id === assignment.pipeline_id)?.pipeline.slug ??
-                  shortId(assignment.pipeline_id)
-                }
-                canManage={canAssign}
-              />
-            ))}
-            {assignable.length > 0 && canAssign ? (
-              <div className="space-y-[6px]" data-testid="pipeline-assign-list">
-                {assignable.map(({ pipeline, newest }) => (
-                  <AssignPipelineRow
-                    key={pipeline.id}
-                    projectId={projectId}
-                    pipeline={pipeline}
-                    newest={newest}
-                  />
-                ))}
-              </div>
-            ) : null}
-            <p className="font-mono text-[11px] text-faint" data-testid="project-pipeline-pin">
-              {pin
-                ? `pinned revision ${
-                    revision.data
-                      ? `r${revision.data.revision_number} · ${shortDigest(revision.data.revision_digest)} · `
-                      : ""
-                  }id ${shortId(pin)} — runs of this project stay on it until a maintainer re-assigns`
-                : "no pipeline assignment is enabled for this project — there is nothing to run"}
+        )}
+      />
+
+      <Panel
+        title="LIBRARY"
+        headingId="project-pipeline-library-heading"
+        headingLevel={2}
+        meta={
+          <span className="flex items-center gap-[8px]">
+            <span className="font-mono text-[10.5px]" data-testid="pipeline-library-count">
+              {rows.length} in the library
+            </span>
+            <Link
+              to={routes.workflows()}
+              className="font-mono text-[10.5px] normal-case text-accent-text hover:underline"
+              data-testid="pipeline-library-index"
+            >
+              open the library ›
+            </Link>
+          </span>
+        }
+      >
+        <div className="space-y-[10px] p-[10px]">
+          {pipelines.isPending ? <Spinner label="Loading workflows" /> : null}
+          {pipelines.isError ? (
+            <ProblemBanner
+              error={pipelines.error}
+              fallback="The workflow library could not be read."
+            />
+          ) : null}
+          {pipelines.data && rows.length === 0 ? (
+            <p className="text-[12.5px] text-muted" data-testid="pipelines-empty">
+              No workflows yet — the library is empty, so this project cannot run anything.
             </p>
-            {newestRun ? (
-              <p
-                className="font-mono text-[11px] text-faint"
-                data-testid="project-pipeline-newest-run"
-              >
-                newest run {shortId(newestRun.id)} · {newestRun.status} ·{" "}
-                {shortDigest(newestRun.revision_digest)}
-              </p>
-            ) : null}
-          </div>
-        </Panel>
-        {revision.isError ? (
-          <ProblemBanner error={revision.error} fallback="The pinned revision could not be read." />
-        ) : null}
-        {revision.data ? (
-          <>
-            <YamlView
-              text={revision.data.document_text}
-              label={`r${revision.data.revision_number} · ${revision.data.version_label} · ${shortDigest(revision.data.revision_digest)} · regenerated canonical`}
-              headingId="project-pipeline-yaml-heading"
-              layout="below"
-            />
-            <DefinitionGraph
-              document={revision.data.canonical_document as unknown as DefinitionDocument}
-              label={`pinned r${revision.data.revision_number} · definition only, no run states`}
-              selectedKey={selectedKey}
-              onSelectKey={setSelectedKey}
-              headingId="project-pipeline-graph-heading"
-            />
-          </>
-        ) : null}
-        <ValidatePanel
-          pipelines={(pipelines.data?.pipelines ?? []).map((pipeline) => ({
-            id: pipeline.id,
-            slug: pipeline.slug,
-            displayName: pipeline.display_name,
-          }))}
-          canValidate={me.data?.is_org_admin === true}
-          initialText={revision.data?.document_text ?? ""}
-          headingId="project-pipeline-validate-heading"
-        />
-      </div>
+          ) : null}
+          {rows.length > 0 ? (
+            <ul className="divide-y divide-line-soft" data-testid="pipeline-library">
+              {rows.map(({ pipeline, latest, revisions, drafts }) => {
+                const assigned = assignedPipelineIds.has(pipeline.id);
+                const draft = drafts[0];
+                return (
+                  <li
+                    key={pipeline.id}
+                    className="flex flex-wrap items-start gap-x-[10px] gap-y-[2px] py-[6px]"
+                    data-testid={`pipeline-row-${pipeline.slug}`}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-[6px]">
+                        <Link
+                          to={routes.workflow(pipeline.id)}
+                          className="truncate text-[12.5px] font-semibold text-ink hover:underline"
+                          title={pipeline.display_name}
+                          data-testid={`pipeline-name-${pipeline.slug}`}
+                        >
+                          {pipeline.slug}
+                        </Link>
+                        {pipeline.archived ? <StatusChip state="info" label="archived" /> : null}
+                      </span>
+                      <span
+                        className="block truncate font-mono text-[10.5px] text-muted"
+                        data-testid={`pipeline-revision-count-${pipeline.slug}`}
+                      >
+                        {latest
+                          ? `newest r${latest.revision_number} · ${revisions.length === 1 ? "1 revision" : `${revisions.length} revisions`}`
+                          : `never published · ${pipeline.revision_count} revisions`}
+                        {assigned ? " · used in this project" : ""}
+                      </span>
+                      {draft ? (
+                        <span
+                          className="block truncate font-mono text-[10.5px] text-faint"
+                          data-testid={`pipeline-validation-${pipeline.slug}`}
+                        >
+                          draft v{draft.version} · {draftNameOf(draft.edited_by)} ·{" "}
+                          {draftWord(draft)}
+                        </span>
+                      ) : null}
+                      {!assigned ? (
+                        // Why no run of this workflow can start here, said
+                        // next to the control below that fixes it.
+                        <span
+                          className="block font-mono text-[10.5px] text-faint"
+                          data-testid={`pipeline-no-assignment-${pipeline.slug}`}
+                        >
+                          not assigned to this project
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          {assignable.length > 0 && project.my_role === "maintainer" ? (
+            <div className="space-y-[6px]" data-testid="pipeline-assign-list">
+              <span className="block font-mono text-[10px] font-semibold tracking-[.06em] text-muted">
+                ASSIGN A WORKFLOW TO THIS PROJECT
+              </span>
+              {assignable.map(({ pipeline, newest }) => (
+                <AssignPipelineRow
+                  key={pipeline.id}
+                  projectId={projectId}
+                  pipeline={pipeline}
+                  newest={newest}
+                />
+              ))}
+            </div>
+          ) : null}
+          <p className="font-mono text-[11px] text-faint" data-testid="project-pipeline-pin">
+            {pin
+              ? `pinned revision ${
+                  revision.data
+                    ? `r${revision.data.revision_number} · ${shortDigest(revision.data.revision_digest)} · `
+                    : ""
+                }id ${shortId(pin)} — runs of this project stay on it until a maintainer re-assigns`
+              : "no workflow is assigned and switched on here — there is nothing to run"}
+          </p>
+          {newestRun ? (
+            <p
+              className="font-mono text-[11px] text-faint"
+              data-testid="project-pipeline-newest-run"
+            >
+              newest run {shortId(newestRun.id)} · {runStateWord(newestRun.status)} ·{" "}
+              {shortDigest(newestRun.revision_digest)}
+            </p>
+          ) : null}
+        </div>
+      </Panel>
+
+      {revision.isError ? (
+        <ProblemBanner error={revision.error} fallback="The pinned revision could not be read." />
+      ) : null}
+      {revision.data ? (
+        <>
+          <YamlView
+            text={revision.data.document_text}
+            label={`r${revision.data.revision_number} · ${revision.data.version_label} · ${shortDigest(revision.data.revision_digest)} · regenerated canonical`}
+            headingId="project-pipeline-yaml-heading"
+            layout="below"
+          />
+          <DefinitionGraph
+            document={revision.data.canonical_document as unknown as DefinitionDocument}
+            label={`pinned r${revision.data.revision_number} · definition only, no run states`}
+            selectedKey={selectedKey}
+            onSelectKey={setSelectedKey}
+            headingId="project-pipeline-graph-heading"
+          />
+        </>
+      ) : null}
+      <ValidatePanel
+        pipelines={(pipelines.data?.pipelines ?? []).map((pipeline) => ({
+          id: pipeline.id,
+          slug: pipeline.slug,
+          displayName: pipeline.display_name,
+        }))}
+        canValidate={me.data?.is_org_admin === true}
+        initialText={revision.data?.document_text ?? ""}
+        headingId="project-pipeline-validate-heading"
+      />
     </div>
   );
+}
+
+/** What a draft's server-side status means, in the few words a row carries. */
+function draftWord(draft: PipelineDraftSummary): string {
+  switch (draft.status) {
+    case "invalid":
+      return "has findings";
+    case "valid":
+      return "validated";
+    case "validating":
+      return "validating";
+    case "published":
+      return "published";
+    default:
+      return "open";
+  }
 }
 
 /**
@@ -486,17 +590,19 @@ function WhenToRun({
   pinnedRevisionId,
   slug,
   canManage,
+  read,
 }: {
   projectId: string;
   assignmentId: string;
   pinnedRevisionId: string;
   slug: string;
   canManage: boolean;
+  /** The project's schedules, read once by the tab and passed down: a block
+   * that read them for itself would ask again the moment its row mounted,
+   * because the shared cache entry is stale by then (one GET per screen). */
+  read: { items: Schedule[] | undefined; pending: boolean; error: unknown };
 }) {
-  const schedules = useSchedules(projectId);
-  const mine = (schedules.data?.schedules ?? []).filter(
-    (schedule) => schedule.assignment_id === assignmentId,
-  );
+  const mine = (read.items ?? []).filter((schedule) => schedule.assignment_id === assignmentId);
   const patch = usePatchSchedule(projectId);
   const [adding, setAdding] = useState(false);
   if (mine.length === 0 && !canManage) return null;
@@ -505,16 +611,19 @@ function WhenToRun({
       className="space-y-[6px] border-t border-line pt-2"
       data-testid={`schedules-block-${slug}`}
     >
+      {/* The slug is not repeated here: this block sits directly under the row
+          that names the workflow, and at 390 the uppercase name wrapped to two
+          lines of its own before the first schedule appeared. */}
       <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-        when to run · {slug}
+        when to run
       </span>
-      {schedules.isPending ? <Spinner label="Loading schedules" /> : null}
-      {schedules.isError ? (
-        <ProblemBanner error={schedules.error} fallback="The schedules could not be read." />
+      {read.pending ? <Spinner label="Loading schedules" /> : null}
+      {read.error ? (
+        <ProblemBanner error={read.error} fallback="The schedules could not be read." />
       ) : null}
-      {mine.length === 0 && !schedules.isPending && !schedules.isError ? (
+      {mine.length === 0 && !read.pending && !read.error ? (
         <p className="text-[12.5px] text-muted" data-testid={`schedules-none-${slug}`}>
-          Never scheduled — every run of this pipeline was started by a person.
+          Never scheduled — every run of this workflow was started by a person.
         </p>
       ) : null}
       <ul className="space-y-[6px]">

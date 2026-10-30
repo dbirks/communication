@@ -1,29 +1,32 @@
 /**
- * `/projects/:projectId/runs` — the run list of the design's run view
- * (`communication-spec/10-ui-design-handoff.md`: run inspector; reference
- * 3d). The left column is the list; the run page reuses the very same column
- * so the list never disappears when a run opens.
+ * `/p/:projectId/runs` — the project's Runs tab, inside the 1b frame.
  *
- * Honesty rules this page obeys: since ADR-0064 the wire carries each run's
- * own `title` and repository, so a row shows them when the run has them and
- * the pipeline slug from the library plus `#short-id` when it does not — never
- * an invented title. The row also shows the pinned revision digest the server
- * reports and the elapsed wall clock it can derive from
- * `started_at`/`finished_at`. "New run" opens `NewRunForm`, whose fields are
- * read off the pinned revision's `spec.inputs` — the page never invents an
- * input shape of its own.
+ * The tab is the header band + tab row the overview draws (`ProjectFrame`), and
+ * under it one honest list. It used to draw the old left `ProjectSectionNav`
+ * rail beside a two-column grid whose right column was a large blank "Pick a
+ * run" — at 390 that pane was most of the screen and said nothing.
+ *
+ * Honesty rules this page obeys: since ADR-0064 the wire carries each run's own
+ * `title` and repository, so a row shows them when the run has them and the
+ * workflow slug from the library plus `#short-id` when it does not — never an
+ * invented title. The row shows the pinned revision digest the server reports
+ * and the wall clock it derives from `started_at`/`finished_at`, and its status
+ * is the app's short state word (`SHORT_WORD`, one table with the run pages),
+ * never the wire's `waiting_human` spelled out. "New run" opens `NewRunForm`,
+ * whose fields are read off the pinned revision's `spec.inputs` — the page
+ * never invents an input shape of its own.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
-import { Row, StatusChip } from "../components/ds/Row";
-import { RUN_STATE, type StateName } from "../components/ds/states";
+import { StatusChip } from "../components/ds/Row";
+import { RUN_STATE, SHORT_WORD, stateOf, type StateName } from "../components/ds/states";
 import { NewRunForm } from "../components/m4/NewRunForm";
 import { ProblemBanner, Spinner } from "../components/Feedback";
+import { ProjectFrame } from "../components/project/ProjectFrame";
 import { usePipelines } from "../api/pipelines";
 import { useProjectRuns } from "../api/runs";
-import { useProject } from "../api/queries";
 import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
 import type { RunSummary } from "../api/types";
 import type { RunStatus } from "../lib/pipeline/contract";
@@ -63,14 +66,22 @@ export interface RunsListColumnProps {
   projectId: string;
   /** The run whose page is open — its row is the raised one. */
   selectedRunId?: string | null;
+  className?: string;
 }
 
 /**
- * The 3d column: heading, "New run", the filter chips, the rows. Top-level
+ * The runs list: panel bar, "New run", the filter lenses, the rows. Top-level
  * runs only — children belong to their parent's tree (`route 24`), and a list
  * that mixed them would read as independent work.
+ *
+ * It is a component rather than markup inside the route so the run page's
+ * Diagnostics arm and the tests can mount it against one read.
  */
-export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColumnProps) {
+export function RunsListColumn({
+  projectId,
+  selectedRunId = null,
+  className = "",
+}: RunsListColumnProps) {
   const runs = useProjectRuns(projectId);
   const pipelines = usePipelines();
   // Three states, deliberately: `picked` is a human choice (it never moves
@@ -124,13 +135,15 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
   }, [runs.data, filter, selectedRunId]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2 border-r border-line px-3 py-3">
-      <div className="flex items-center justify-between gap-2">
-        <h1 className="text-[15px] font-bold" id="runs-column-heading">
-          Runs
-        </h1>
+    <Panel
+      title={runs.data ? `RUNS · ${counts.all}` : "RUNS"}
+      headingId="runs-column-heading"
+      headingLevel={2}
+      className={className}
+      meta={
         <Button
           variant="secondary"
+          compact
           onClick={() => setComposing((current) => !current)}
           aria-expanded={composing}
           aria-controls="new-run-panel"
@@ -138,54 +151,66 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
         >
           New run
         </Button>
-      </div>
-      {composing ? (
-        <Panel title="NEW RUN" headingId="new-run-panel-heading" className="shrink-0">
-          <div id="new-run-panel" className="p-[10px]">
-            <NewRunForm
-              projectId={projectId}
-              onCancel={() => setComposing(false)}
-              onCreated={() => setComposing(false)}
-            />
-          </div>
-        </Panel>
-      ) : null}
-      <div className="flex flex-wrap gap-[6px]" role="group" aria-label="Filter runs">
-        {(["attention", "active", "waiting", "all"] as const).map((name) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() => setPicked(name)}
-            aria-pressed={filter === name}
-            data-testid={`runs-filter-${name}`}
-            className={`rounded-[3px] border px-2 py-[3px] font-mono text-[11px] ${
-              filter === name
-                ? "border-ink bg-ink text-paper"
-                : "border-line text-muted hover:border-line-strong hover:text-ink"
-            }`}
+      }
+    >
+      <div className="space-y-[10px] p-[10px]">
+        {composing ? (
+          <div
+            id="new-run-panel"
+            className="rounded-[3px] border border-line-strong bg-paper p-[10px]"
           >
-            {name} {counts[name]}
-          </button>
-        ))}
+            <h3 id="new-run-panel-heading" className="text-[13px] font-semibold">
+              New run
+            </h3>
+            <div className="pt-[6px]">
+              <NewRunForm
+                projectId={projectId}
+                onCancel={() => setComposing(false)}
+                onCreated={() => setComposing(false)}
+              />
+            </div>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap gap-[6px]" role="group" aria-label="Filter runs">
+          {(["attention", "active", "waiting", "all"] as const).map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => setPicked(name)}
+              aria-pressed={filter === name}
+              data-testid={`runs-filter-${name}`}
+              className={`rounded-[3px] border px-2 py-[3px] font-mono text-[11px] ${
+                filter === name
+                  ? "border-ink bg-ink text-paper"
+                  : "border-line text-muted hover:border-line-strong hover:text-ink"
+              }`}
+            >
+              {name} {counts[name]}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="min-h-0 flex-1 space-y-[6px] overflow-y-auto" data-testid="runs-list">
+      <div className="min-h-0 border-t border-line" data-testid="runs-list">
         {/* A missing project id is a caller bug, not a state of the world:
             the read below is `enabled` on a non-empty id, so an empty one
             would stay `isPending` forever and press a permanent spinner for
             a request that never happens. Say so instead. */}
         {!projectId ? (
-          <p className="px-1 text-[12.5px] text-muted" data-testid="runs-no-project">
+          <p className="px-[10px] py-[10px] text-[12.5px] text-muted" data-testid="runs-no-project">
             This page has no project, so there is no run list to read — the list never asked, and
             never will.
           </p>
         ) : runs.isPending ? (
-          <Spinner label="Loading runs" />
+          <div className="px-[10px] py-[10px]">
+            <Spinner label="Loading runs" />
+          </div>
         ) : null}
         {runs.isError ? (
-          <div className="space-y-[6px]">
+          <div className="space-y-[6px] px-[10px] py-[10px]">
             <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
             <Button
               variant="secondary"
+              compact
               onClick={() => void runs.refetch()}
               data-testid="runs-retry"
             >
@@ -194,28 +219,36 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
           </div>
         ) : null}
         {runs.data && filter !== null && matched.length === 0 ? (
-          <p className="px-1 text-[12.5px] text-muted" data-testid="runs-empty">
+          <p className="px-[10px] py-[10px] text-[12.5px] text-muted" data-testid="runs-empty">
             {counts.all === 0
-              ? "No runs yet — this project has never started a pipeline."
+              ? "No runs yet — nothing has started a workflow in this project."
               : filter === "attention"
                 ? `Nothing needs attention${rows.length > 0 ? " (the open run is kept in the list)" : ""} — no run is waiting on a person or lying broken.`
                 : `No ${filter} runs${rows.length > 0 ? " — the open run is listed because its page is here." : "."}`}
           </p>
         ) : null}
-        {rows.map((run) => (
-          <RunRow
-            key={run.id}
-            run={run}
-            slug={slugs.get(run.pipeline_id) ?? run.pipeline_id}
-            selected={run.id === selectedRunId}
-            to={routes.run(run.id)}
-          />
-        ))}
+        <ul className="divide-y divide-line-soft">
+          {rows.map((run) => (
+            <li key={run.id}>
+              <RunRow
+                run={run}
+                slug={slugs.get(run.pipeline_id) ?? run.pipeline_id}
+                selected={run.id === selectedRunId}
+                to={routes.run(run.id)}
+              />
+            </li>
+          ))}
+        </ul>
       </div>
-    </div>
+    </Panel>
   );
 }
 
+/**
+ * One run. Two truncating lines — the name and its state, then the machine
+ * facts in mono — so the row survives 390: nothing here is a fixed-width chip
+ * row that eats the title.
+ */
 function RunRow({
   run,
   slug,
@@ -228,13 +261,22 @@ function RunRow({
   selected: boolean;
 }) {
   return (
-    <Row to={to} selected={selected} data-testid={`run-row-${run.id}`}>
+    <Link
+      to={to}
+      data-testid={`run-row-${run.id}`}
+      className={`flex min-w-0 items-start gap-[10px] px-[10px] py-[9px] hover:bg-accent-wash focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
+        selected ? "bg-accent-wash shadow-(--shadow-raised)" : ""
+      }`}
+    >
       <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-[6px]">
-          <span className="truncate text-[13px] font-semibold">
+        <span className="flex min-w-0 flex-wrap items-center gap-[6px]">
+          <span className="min-w-0 truncate text-[13px] font-semibold text-ink">
             {run.title ?? `#${shortId(run.id)} ${slug}`}
           </span>
-          <RunStatusChip status={run.status} />
+          <RunStateChip status={run.status} />
+          {run.parent_run_id ? (
+            <span className="shrink-0 font-mono text-[10.5px] text-muted">· child</span>
+          ) : null}
         </span>
         <span className="block truncate font-mono text-[10.5px] text-muted">
           {/* ADR-0064: the run's own repository when the server names one;
@@ -242,13 +284,45 @@ function RunRow({
           {shortDigest(run.revision_digest)}
           {run.repository_name ? ` · ${run.repository_name}` : ""} · {elapsed(run)}
           {run.failed_cause ? ` · ${run.failed_cause}` : ""}
-          {run.parent_run_id ? " · child" : ""}
         </span>
       </span>
-    </Row>
+    </Link>
   );
 }
 
+/**
+ * A run's state in the app's short word — the same table the overview's run
+ * rows and the stage strip print (`SHORT_WORD`), not the wire's status spelled
+ * out as "WAITING HUMAN".
+ */
+export function RunStateChip({
+  status,
+  testid = "run-status",
+}: {
+  status: RunStatus;
+  testid?: string;
+}) {
+  const state: StateName = stateOf(RUN_STATE[status]);
+  return (
+    <StatusChip
+      state={state}
+      label={SHORT_WORD[state]}
+      labelProps={{ "data-testid": testid, role: "status" }}
+    />
+  );
+}
+
+/** The run's own status in the same short word, for a page with no chip. */
+export function runStateWord(status: RunStatus): string {
+  return SHORT_WORD[stateOf(RUN_STATE[status])];
+}
+
+/**
+ * The workbench's run-status chip. Its label is the wire's status in words
+ * (`waiting_human` → "waiting human"), which is what the run page's own header
+ * says; the project's Runs tab uses `RunStateChip`, which says the same state
+ * in the app's short word.
+ */
 export function RunStatusChip({
   status,
   testid = "run-status",
@@ -294,26 +368,43 @@ export function elapsed(
 }
 
 /**
- * The project's section rail lives in `../components/ProjectSectionNav.tsx`
- * now that every screen under `/projects/:id` mounts the same one; this
- * re-export keeps the run pages' existing imports working.
+ * The project's section rail lives in `../components/ProjectSectionNav.tsx`;
+ * the run page (`RunInspector.tsx`) still mounts it, and this re-export keeps
+ * that import working. No project TAB mounts it any more — the header tab row
+ * replaced it (design 1b).
  */
 export { ProjectSectionNav } from "../components/ProjectSectionNav";
 
 /**
- * The route body: the list column plus the honest middle. The design's empty
- * centre is a pointer at the list, not a fake inspector.
+ * The route body: the list, inside the frame. There is no "Pick a run" pane —
+ * a row is a link to the run page, and an empty column pointing at the list
+ * people are already looking at is the shell artefact this replaces.
  */
 export default function ProjectRuns() {
   const { projectId = "" } = useParams();
-  const project = useProject(projectId);
+  return (
+    <ProjectFrame projectId={projectId} active="runs" testid="project-runs" heading="Runs">
+      {() => <RunsTabBody projectId={projectId} />}
+    </ProjectFrame>
+  );
+}
+
+/**
+ * The list and its footnote, in the frame's body column.
+ *
+ * It is a component rather than markup in the route so that its `runs` read
+ * mounts in the SAME commit as the header band's own reads: a page-level
+ * `useProjectRuns` would ask one commit earlier, the answer would be stale by
+ * the time the band arrived, and the page would fetch the project's runs twice
+ * (the header's attention read is the same query key). It also owns the
+ * refusal: the list route answers the same 404/403 the project read does for a
+ * caller it hides the project from, and a run column — or an empty-state
+ * sentence — around a project she cannot open says more than the API did.
+ */
+export function RunsTabBody({ projectId }: { projectId: string }) {
   const runs = useProjectRuns(projectId);
 
-  // A non-member (or a deleted project) gets the overview's sentence, not a
-  // run column around a project she cannot open: the list route answers the
-  // same 404 the project read does, and a shell that renders "no runs" would
-  // confirm more than the API chose to say.
-  if (projectAccessRefused(project.error) || projectAccessRefused(runs.error)) {
+  if (projectAccessRefused(runs.error)) {
     return (
       <ProjectUnavailable
         heading="Runs"
@@ -324,27 +415,19 @@ export default function ProjectRuns() {
   }
 
   return (
-    <div
-      className="grid min-h-full grid-cols-1 sm:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)]"
-      data-testid="project-runs"
-    >
+    <div className="mx-auto w-full max-w-[56rem] space-y-[10px]">
       <RunsListColumn projectId={projectId} />
-      <div className="px-6 py-8">
-        <h1 className="text-[19px] font-bold" id="project-runs-heading">
-          Runs
-        </h1>
-        <p className="mt-1 text-[13px] text-muted">
-          {runs.isPending
-            ? "Reading the project's runs…"
-            : "Pick a run to open its definition, execution tree and timeline."}
-        </p>
-        <p className="mt-4 font-mono text-[11px] text-faint">
-          <Link className="underline" to={routes.projectTab(projectId, "pipelines")}>
-            Pipelines
-          </Link>{" "}
-          decide what a run of this project looks like.
-        </p>
-      </div>
+      <p className="font-mono text-[10.5px] leading-[16px] text-faint">
+        Every row opens its run — definition, steps and timeline. What a run of this project looks
+        like comes from{" "}
+        <Link
+          to={routes.projectTab(projectId, "pipelines")}
+          className="text-accent-text hover:text-ink"
+        >
+          the workflows it uses
+        </Link>
+        .
+      </p>
     </div>
   );
 }

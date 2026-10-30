@@ -8,6 +8,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
+import { testidOf } from "../lib/format";
 import { renderApp } from "../test/render";
 import { shortId } from "../api/names";
 import type { Pipeline, PipelineRevision } from "../api/types";
@@ -29,6 +30,8 @@ import {
 } from "../test/fixtures/m4/wire";
 
 const ASSIGNMENTS_PATH = `/api/v1/projects/${wireProjectId}/assignments`;
+/** The row key of the one assignment the wire fixture serves. */
+const rowKey = testidOf(WIRE_ASSIGNMENT_ID);
 const ASSIGN_POST_PATH = ASSIGNMENTS_PATH;
 const SCHEDULES_PATH = `/api/v1/projects/${wireProjectId}/schedules`;
 const SCHEDULE_ID = "01987b22-0003-7000-8000-abcdef012345";
@@ -102,6 +105,10 @@ function routes(role: "maintainer" | "viewer", extra: RouteStub[] = []): RouteSt
     { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}/drafts`, body: { drafts: [] } },
     { path: ASSIGNMENTS_PATH, body: wireAssignmentList },
     { path: SCHEDULES_PATH, body: { schedules: [] } },
+    // The trigger summary on a workflow row reads both trigger lists (ADR-0032
+    // schedules, ADR-0056 issue triggers); an unstubbed 404 would honestly say
+    // "triggers unavailable" instead of the hand-started answer these rows want.
+    { path: `/api/v1/projects/${wireProjectId}/issue-triggers`, body: { issue_triggers: [] } },
     {
       path: `/api/v1/projects/${wireProjectId}/repos`,
       body: {
@@ -163,17 +170,61 @@ describe("/p/:projectId/pipelines — assigning a library pipeline", () => {
     expect(pin.textContent).not.toContain(WIRE_REVISION_ID);
   });
 
+  it("renders the 1b frame — band, tabs marked, no rail, no Pipelines headline", async () => {
+    mount("maintainer");
+
+    // The header band the overview draws, with THIS tab marked; the old page's
+    // own H1 ("Pipelines") and its left section rail are gone (design 1b).
+    expect(await screen.findByTestId("project-header", undefined, { timeout: 5_000 })).toBeTruthy();
+    expect(screen.getByTestId("project-name").textContent).toBe(projectFixture.name);
+    const tabs = within(screen.getByTestId("project-tabs"));
+    expect(tabs.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");
+    expect(tabs.getByTestId("project-tab-runs").getAttribute("aria-current")).toBeNull();
+    expect(screen.getAllByRole("navigation", { name: /project sections/i })).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: /^Pipelines$/ })).toBeNull();
+    // The org's workflows are still reachable by name, and the panel that holds
+    // them is still titled "LIBRARY".
+    expect(screen.getByRole("heading", { name: /^LIBRARY/i })).toBeTruthy();
+  });
+
+  it("lists the project's workflows as the design's rows, not raw state chips", async () => {
+    mount("maintainer");
+
+    const row = await screen.findByTestId(/^project-workflow-row-/);
+    // slug · r<N> · what starts it · where it runs, with Edit on the right —
+    // the same row the overview's WORKFLOWS panel draws.
+    await waitFor(() =>
+      expect(within(row).getByTestId(`project-workflow-meta-${rowKey}`).textContent).toContain(
+        "r7",
+      ),
+    );
+    expect(row.textContent).toContain("feature-development");
+    expect(row.textContent).toContain("started by hand");
+    expect(within(row).getByTestId(`project-workflow-edit-${rowKey}`).getAttribute("href")).toBe(
+      `/workflows/${WIRE_PIPELINE_ID}`,
+    );
+    // The vocabulary is the product's: no uppercase state chip, no "R1" written
+    // as a bare token, and no page that calls them "Pipelines" (the route keeps
+    // its path; the screen does not keep its old word).
+    const words = document.body.textContent ?? "";
+    expect(screen.queryByRole("heading", { name: /pipelines/i })).toBeNull();
+    expect(words).not.toMatch(/\bMAX \d+ CONCURRENT\b/);
+    expect(words).not.toMatch(/\bR\d\b/);
+  });
+
   it("reports the project's assignment on the row, not a channel M4 has no word for", async () => {
     mount("maintainer");
 
     await screen.findByTestId("pipeline-name-module-check");
-    // `feature-development` is assigned here: the cell says so, with the pin
-    // (r<N> + short digest) and the ceiling the server gave the assignment.
+    // `feature-development` is assigned here: the row says so, with the pin
+    // (r<N> + short digest) and the ceiling the server gave the assignment — in
+    // the sentence a person reads, not the three uppercase chips that clipped.
     const assigned = screen.getByTestId("pipeline-assignment-feature-development").textContent;
     expect(assigned).toContain("assigned");
     expect(assigned).toContain("r7");
     expect(assigned).toContain("3f2f3f2f3f2f");
-    expect(assigned).toContain("max 1 concurrent");
+    expect(assigned).toContain("up to 1 run at a time");
+    expect(assigned).not.toMatch(/\bMAX \d+ CONCURRENT\b/);
     // The claim that was wrong on screen: nothing says "no channel set" when
     // the pipeline *is* assigned to this project.
     expect(screen.queryAllByTestId(/pipeline-no-channel-/)).toHaveLength(0);

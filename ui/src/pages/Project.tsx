@@ -16,15 +16,9 @@
  * rather than drawn: see the notes in `RunningNow`, `Repositories` and
  * `RecentThreads`.
  */
-import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { useProject } from "../api/queries";
 import { useProjectEvents } from "../api/events";
-import NewConversationDialog from "../components/NewConversationDialog";
-import { ProblemBanner, Spinner } from "../components/Feedback";
-import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
-import { ProjectHeader } from "../components/project/ProjectHeader";
-import { ProjectPageShell } from "../components/project/ProjectPageShell";
+import { ProjectFrame } from "../components/project/ProjectFrame";
 import { NeedsYou } from "../components/project/NeedsYou";
 import { RecentThreads } from "../components/project/RecentThreads";
 import { Repositories } from "../components/project/Repositories";
@@ -43,104 +37,71 @@ export { gitRemote } from "../components/project/gitRemote";
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = projectId ?? "";
-  const project = useProject(id);
-  const [threadDialogOpen, setThreadDialogOpen] = useState(false);
-  // The project journal subscription stays on this page even though the visible
-  // event feed moved off it: `useProjectEvents` is what coalesces frames into one
-  // invalidation per window, so a gate decided in another tab (or a run that just
-  // broke) refreshes the counts and callouts here instead of sitting stale until
-  // a reload. The feed's list is what left; the subscription did not.
-  useProjectEvents(project.data?.id ?? "");
-
-  // The three unusable branches carry no header band, so each is wrapped in the
-  // page column that gives them the band's padding (`ProjectPageShell`): on this
-  // full-bleed route an unwrapped line sits flush against the sidebar.
-  if (project.isPending) {
-    return (
-      <ProjectPageShell testid="project-page-loading">
-        <Spinner label="Loading project" />
-      </ProjectPageShell>
-    );
-  }
-
-  // A project the reader cannot open is not a page that renders its name:
-  // `GET /projects/{id}` answers 404 to hide existence (ADR-0014 § 3), and every
-  // screen under it gives the same one sentence (`ProjectUnavailable`).
-  if (projectAccessRefused(project.error) || !project.data) {
-    if (project.error && !projectAccessRefused(project.error)) {
-      return (
-        <ProjectPageShell testid="project-page-error">
-          <section aria-labelledby="project-error-heading">
-            <h1 id="project-error-heading" className="text-title-l font-bold">
-              Project
-            </h1>
-            <ProblemBanner error={project.error} fallback="The project could not be loaded." />
-          </section>
-        </ProjectPageShell>
-      );
-    }
-    return (
-      <ProjectPageShell testid="project-page-not-found">
-        <ProjectUnavailable
-          heading="Project"
-          headingId="project-heading"
-          testid="project-not-found"
-        />
-      </ProjectPageShell>
-    );
-  }
-
-  const projectData = project.data;
-  const canStartWork =
-    projectData.my_role === "maintainer" || projectData.my_role === "contributor";
-
   return (
-    <div className="flex min-h-full flex-col bg-paper" data-testid="project-page">
-      <ProjectHeader
-        project={projectData}
-        active="overview"
-        onNewThread={() => setThreadDialogOpen(true)}
-      />
+    <ProjectFrame
+      projectId={id}
+      active="overview"
+      testid="project-page"
+      heading="Project"
+      headingId="project-heading"
+      notFoundTestid="project-not-found"
+      shellPadded={false}
+      bodyClassName="grid flex-1 items-start gap-[20px] px-[22px] py-[22px] lg:grid-cols-[minmax(0,1fr)_300px] md:px-[28px]"
+    >
+      {(project, openNewThread) => {
+        const canStartWork = project.my_role === "maintainer" || project.my_role === "contributor";
+        return (
+          <>
+            {/* The project journal subscription stays on this page even though
+                the visible event feed moved off it: `useProjectEvents` is what
+                coalesces frames into one invalidation per window, so a gate
+                decided in another tab (or a run that just broke) refreshes the
+                counts and callouts here instead of sitting stale until a
+                reload. The feed's list is what left; the subscription did not. */}
+            <ProjectJournal projectId={project.id} />
+            {/* ------------------------------------------------- what asks things */}
+            <div className="min-w-0 space-y-[16px]">
+              <NeedsYou project={project} />
+              <RunningNow project={project} />
+              <RecentThreads
+                project={project}
+                canStartThread={canStartWork}
+                onNewThread={openNewThread}
+              />
+            </div>
 
-      <div className="grid flex-1 items-start gap-[20px] px-[22px] py-[22px] lg:grid-cols-[minmax(0,1fr)_300px] md:px-[28px]">
-        {/* ------------------------------------------------- what asks things */}
-        <div className="min-w-0 space-y-[16px]">
-          <NeedsYou project={projectData} />
-          <RunningNow project={projectData} />
-          <RecentThreads
-            project={projectData}
-            canStartThread={canStartWork}
-            onNewThread={() => setThreadDialogOpen(true)}
-          />
-        </div>
-
-        {/* --------------------------------------------------- inventory */}
-        <div className="min-w-0 space-y-[16px]">
-          <Repositories project={projectData} />
-          <WorkflowsPanel project={projectData} />
-          <p
-            className="font-mono text-[10.5px] leading-[16px] text-faint"
-            data-testid="project-moved-off-note"
-          >
-            Members, workspaces and the event feed moved off this page:{" "}
-            <Link to={`${routes.project(projectData.id)}/members`} className="underline">
-              members &amp; activity
-            </Link>{" "}
-            ·{" "}
-            <Link to={routes.projectTab(projectData.id, "settings")} className="underline">
-              workspaces &amp; secrets
-            </Link>
-            .
-          </p>
-        </div>
-      </div>
-
-      <NewConversationDialog
-        open={threadDialogOpen}
-        onClose={() => setThreadDialogOpen(false)}
-        projectId={projectData.id}
-        project={projectData}
-      />
-    </div>
+            {/* --------------------------------------------------- inventory */}
+            <div className="min-w-0 space-y-[16px]">
+              <Repositories project={project} />
+              <WorkflowsPanel project={project} />
+              <p
+                className="font-mono text-[10.5px] leading-[16px] text-faint"
+                data-testid="project-moved-off-note"
+              >
+                Members, workspaces and the event feed moved off this page:{" "}
+                <Link to={`${routes.project(project.id)}/members`} className="underline">
+                  members &amp; activity
+                </Link>{" "}
+                ·{" "}
+                <Link to={routes.projectTab(project.id, "settings")} className="underline">
+                  workspaces &amp; secrets
+                </Link>
+                .
+              </p>
+            </div>
+          </>
+        );
+      }}
+    </ProjectFrame>
   );
+}
+
+/**
+ * The overview's live subscription, in a component of its own so the hook
+ * stays a hook: `useProjectEvents` is called from a real component that mounts
+ * only once the project read has answered, and returns nothing.
+ */
+function ProjectJournal({ projectId }: { projectId: string }) {
+  useProjectEvents(projectId);
+  return null;
 }

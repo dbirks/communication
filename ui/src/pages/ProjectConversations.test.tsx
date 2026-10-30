@@ -1,6 +1,12 @@
 /**
- * The project page's Conversations section (`10-ui-design-handoff.md` J2: a
- * member sees their conversations and who is driving each one).
+ * The project's Threads tab (Projects Review design 1b): the 1b header band and
+ * tab row above the list, and the project's threads as the list rows the Threads
+ * page draws — the review's finding was that this route still rendered the OLD
+ * page (section rail, `CONVERSATIONS` panel, `profile:` / `controller:` /
+ * `updated: <ISO>` lines, a `New conversation` button).
+ *
+ * `10-ui-design-handoff.md` J2 still holds: a member sees their conversations
+ * and who is driving each one — in words now, not as wire field names.
  */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -56,14 +62,45 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
 }
 
 /**
- * The project's thread list. Design 1b took the list off the overview — the
- * overview now shows three recent threads and a `Threads` tab — so these mount
- * the route that owns the list (`/p/:id/conversations`), which is the same
- * `components/Conversations.tsx` panel the overview used to carry.
+/**
+ * The tab list is the project's own; the search and the origin filter travel to
+ * the list route (`q`, `origin` — ADR-0043), and a run-origin row keeps its
+ * badge, which is the deep link into the Run Workbench. The rows are the 1g
+ * list rows: the panel they replace was a separate card style, which is what
+ * the pass-2 review asked to stop drawing.
  */
 describe("/p/:projectId/conversations — the project's thread list", () => {
   it(
-    "lists conversations with title, profile, status, controller and updated",
+    "renders the 1b frame: the header band, the tab row, Threads marked, no rail",
+    async () => {
+      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+
+      // The band is the overview's component, so the project's name is still
+      // the page's H1 and the two verbs are still there.
+      expect(
+        await screen.findByTestId("project-header", undefined, { timeout: READ_MS }),
+      ).toBeTruthy();
+      expect(screen.getByTestId("project-name").textContent).toBe(projectFixture.name);
+      expect(screen.getByTestId("project-new-conversation").textContent).toBe("New thread");
+      const tabs = screen.getByTestId("project-tabs");
+      expect(within(tabs).getByTestId("project-tab-threads").getAttribute("aria-current")).toBe(
+        "page",
+      );
+      // The tab that means this screen is marked; the one you came from is not.
+      expect(
+        within(tabs).getByTestId("project-tab-overview").getAttribute("aria-current"),
+      ).toBeNull();
+      // ONE navigation: the old left `ProjectSectionNav` rail is gone, so the
+      // only "Project sections" landmark on the page is the header's tab row.
+      expect(screen.getAllByRole("navigation", { name: /project sections/i })).toHaveLength(1);
+      // No breadcrumb and no second page title of the old layout's shape.
+      expect(screen.queryByText(/\bM4\b.*\/\s*Threads/)).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "lists each thread as a row: title, agent, relative age — no wire field names",
     async () => {
       renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
 
@@ -73,13 +110,22 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
         timeout: READ_MS,
       });
       expect(row.textContent).toContain("Refactor billing");
-      // The list row carries only the profile id, so the UI resolves the name.
-      expect(row.textContent).toContain("profile: Claude Code");
-      // STATUS-E: the status rides a glyph+word chip ("● active"; the word is
-      // the DOM text, CSS uppercases it visually only).
-      expect(row.textContent).toContain("●active");
-      expect(row.textContent).toContain("controller: Ada Lovelace");
-      expect(row.textContent).toContain("updated: 2026-10-14T18:05:00Z");
+      // The list row carries only the profile id, so the UI resolves the name —
+      // and says the name alone, not `profile: <name>`.
+      expect(row.textContent).toContain("Claude Code");
+      expect(row.textContent).not.toContain("profile:");
+      // Who may answer the agent is still on the row, in a sentence rather than
+      // as `controller: <kind>`.
+      expect(row.textContent).toContain("Ada Lovelace is driving it");
+      expect(row.textContent).not.toContain("controller:");
+      // The state rides the glyph + its word (identity rule 06), not the wire's
+      // `active` / `idle` value in uppercase.
+      expect(row.textContent).toContain("running");
+      expect(row.textContent).not.toMatch(/\bACTIVE\b/);
+      // The clock is relative, like every other age in the app.
+      expect(row.textContent).not.toContain("2026-10-14T18:05:00Z");
+      expect(row.textContent).not.toContain("updated:");
+      expect(row.textContent).toMatch(/\d+[smhd]/);
       expect(row.getAttribute("href")).toBe(`/threads/${conversationFixture.id}`);
     },
     TEST_TIMEOUT,
@@ -201,8 +247,9 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
         timeout: READ_MS,
       });
       expect(screen.queryByTestId("conversation-new-title")).toBeNull();
+      expect(screen.queryByTestId("conversations-new-open")).toBeNull();
       expect(
-        screen.getByText("Only project contributors and maintainers can start conversations."),
+        screen.getByText(/Only project contributors and maintainers can start a thread/),
       ).toBeTruthy();
     },
     TEST_TIMEOUT,
@@ -230,10 +277,10 @@ describe("/p/:projectId/conversations — the project's thread list", () => {
       await screen.findByTestId("conversation-row-refactor-billing", undefined, {
         timeout: READ_MS,
       });
-      // The rail on the list page names the same route the tab does, in the
-      // canonical `/p/…` form (no legacy `/projects/…` href is emitted).
-      const nav = screen.getByRole("navigation", { name: "Project sections" });
-      expect(within(nav).getByText("Threads").getAttribute("href")).toBe(
+      // The header's tab row names the same route, in the canonical `/p/…` form
+      // (no legacy `/projects/…` href is emitted).
+      const nav = screen.getByRole("navigation", { name: /project sections/i });
+      expect(within(nav).getByTestId("project-tab-threads").getAttribute("href")).toBe(
         `/p/${projectFixture.id}/conversations`,
       );
     },
@@ -260,14 +307,24 @@ describe("/projects/:projectId/conversations", () => {
       });
       expect(row.textContent).toContain("Refactor billing");
       expect(row.getAttribute("href")).toBe(`/threads/${conversationFixture.id}`);
-      // Not the app's "Not found" page any more, and the rail knows where it is.
+      // Not the app's "Not found" page any more, and the frame knows where it
+      // is: one navigation, the Threads tab marked as the page you are on.
       expect(screen.queryByText("That page does not exist.")).toBeNull();
-      const nav = screen.getByRole("navigation", { name: "Project sections" });
-      expect(within(nav).getByText("Threads").getAttribute("aria-current")).toBe("true");
-      // One canonical form: the rail's Threads item is the route itself.
-      expect(within(nav).getByText("Threads").getAttribute("href")).toBe(
+      expect(screen.getByTestId("project-header")).toBeTruthy();
+      const nav = screen.getByRole("navigation", { name: /project sections/i });
+      expect(within(nav).getByTestId("project-tab-threads").getAttribute("aria-current")).toBe(
+        "page",
+      );
+      // One canonical form: the tab's href is the route itself.
+      expect(within(nav).getByTestId("project-tab-threads").getAttribute("href")).toBe(
         `/p/${projectFixture.id}/conversations`,
       );
+      // The old page's vocabulary is gone from the screen (the ROUTE keeps the
+      // API's noun; the product's word is "thread").
+      const words = document.body.textContent ?? "";
+      expect(words).toMatch(/Threads/);
+      expect(words).not.toMatch(/conversations?/i);
+      expect(words).not.toMatch(/New conversation/i);
     },
     TEST_TIMEOUT,
   );
@@ -331,7 +388,7 @@ describe("/projects/:projectId/conversations", () => {
 
       // The screen is the reader's own project, so it stays up and says what
       // actually went wrong instead of claiming the project is unreachable.
-      await screen.findByTestId("project-conversations-title", undefined, { timeout: READ_MS });
+      await screen.findByTestId("project-conversations", undefined, { timeout: READ_MS });
       expect(screen.queryByTestId("project-conversations-not-found")).toBeNull();
       expect((await screen.findAllByRole("alert"))[0].textContent).toContain(
         "Internal Server Error",
@@ -518,7 +575,7 @@ describe("the list says where each conversation was opened", () => {
       const nomatch = await screen.findByTestId("conversation-list-nomatch", undefined, {
         timeout: READ_MS,
       });
-      expect(nomatch.textContent).toBe("No conversations match");
+      expect(nomatch.textContent).toContain("No threads match");
       // The unfiltered "no conversations yet" is a different state.
       expect(screen.queryByTestId("conversation-list-empty")).toBeNull();
     },

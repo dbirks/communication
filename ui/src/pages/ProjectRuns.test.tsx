@@ -120,18 +120,36 @@ describe("/projects/:projectId/runs", () => {
     expect((await screen.findByTestId("runs-empty")).textContent).toContain("No runs yet");
   });
 
-  it("stacks the list over the detail instead of starving it below sm", async () => {
-    // m5-layout live: at 390x844 the fixed 15–20rem rail took 320 of the 358px
-    // the page had, the detail column collapsed to 38px (less than its own
-    // `px-6`), and its "Pipelines" link hung past the viewport at right 423px.
-    // The two-column track is a `sm:` promise now; below it the list stacks over
-    // the detail, so neither column can be squeezed past the screen. Vitest
-    // cannot measure layout — the live spec is the proof; this is the class name
-    // that produced it.
+  it("renders the 1b frame — band, tabs marked, no rail, no blank detail pane", async () => {
+    // The page used to be a two-column grid whose right column was a large
+    // empty "Pick a run to open…" pane. m5-layout live: at 390x844 the fixed
+    // 15–20rem rail took 320 of the 358px the page had, that column collapsed
+    // to 38px, and its "Pipelines" link hung past the viewport at right 423px.
+    // Design 1b has one navigation in the header band, and a run row is a link
+    // to the run page — so there is no detail column to starve, and nothing on
+    // the phone is a blank pane.
     mountRuns({ runs: [] });
     const shell = await screen.findByTestId("project-runs");
-    expect(shell.className).toContain("grid-cols-1");
-    expect(shell.className).toContain("sm:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)]");
+    expect(shell.querySelector('[data-testid="project-header"]')).not.toBeNull();
+    const tabs = within(screen.getByTestId("project-tabs"));
+    expect(tabs.getByTestId("project-tab-runs").getAttribute("aria-current")).toBe("page");
+    expect(tabs.getByTestId("project-tab-overview").getAttribute("aria-current")).toBeNull();
+    // One navigation on the page: the old left section rail is gone.
+    expect(screen.getAllByRole("navigation", { name: /project sections/i })).toHaveLength(1);
+    // The honest empty state is the list's own, not a pointer at an inspector.
+    expect(await screen.findByTestId("runs-empty")).toBeTruthy();
+    expect(screen.queryByText(/Pick a run/)).toBeNull();
+    expect(screen.queryByText(/execution tree and timeline\./)).toBeNull();
+    expect(shell.textContent).not.toContain("Pipelines decide");
+  });
+
+  it("says the state in the app's short word, not the wire's status", async () => {
+    mountRuns({ runs: [{ ...wireRun, status: "waiting_human" }] });
+    const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
+    // `waiting_human` is the stage's "need you" here, as it is on the overview
+    // and the stage strip — one table (`SHORT_WORD`), never "WAITING HUMAN".
+    expect(within(row).getByTestId("run-status").textContent).toBe("need you");
+    expect(row.textContent).not.toContain("waiting human");
   });
 
   it("renders a 404 as a 404 rather than an empty list", async () => {
