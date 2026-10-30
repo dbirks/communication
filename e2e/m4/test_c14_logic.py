@@ -5,7 +5,10 @@ Runs WITHOUT a stack (stdlib unittest only): the journal-window contiguity verdi
 (no seq twice, no hole, no unmeasurable window), the terminal-event / duplicated-
 succeeded-key verdicts from C14b's two SQL shapes, the SSE no-gap/no-duplicate
 verdicts over a canned reconnect, the never-both-down sampling verdicts, the
-advisory-lock handover verdict from per-replica acquire counts, the mid-roll
+advisory-lock handover verdict from the POSTGRES probe (pg_locks ×
+pg_stat_activity.client_addr × docker container IPs: the generated SQL, the
+holder attribution, the handover windows and the verdicts) and the backed-up
+per-replica log-mark counting it replaced, the mid-roll
 approval's exactly-once verdict, the final-state verdict, and C14c's
 precondition machinery: the per-replica env var / recreate-command construction
 (flag in the PROCESS env, never in argv), the off-replica arm verdicts, and the
@@ -23,6 +26,7 @@ usage: python3 e2e/m4/test_c14_logic.py [-v]
 """
 import json
 import os
+import re
 import sys
 import unittest
 
@@ -241,7 +245,28 @@ class Words(unittest.TestCase):
         """The README rule: an unmeasurable arm is None (GAP), never True."""
         for rows in (m.c14_journal_verdicts([], []), m.c14_terminal_verdicts(None, None),
                      m.c14_sse_verdicts([], [], None, None), m.c14_roll_verdicts([]),
-                     m.c14_lock_verdicts(None, None), m.c14_approval_verdicts({}, None)):
+                     m.c14_lock_verdicts(None, None),
+                     m.c14_lock_pg_verdicts(None, None),
+                     m.c14_lock_pg_verdicts({"samples": 500, "held": 0, "by_replica": {},
+                                             "events": [], "simultaneous": [],
+                                             "unattributed": {}, "empty_addr": 0,
+                                             "other_key_samples": 0, "bases": [], "pids": {},
+                                             "addr_map": {}, "container": {}, "env": None,
+                                             "errors": [], "calls": 12, "backend": {},
+                                             "replica_backend_svcs": [], "holder_svcs": [],
+                                             "attribution": "none", "span_ms": None}, []),
+                     [m.c14_off_replica_lock_row("api-a", "api-b", None, None)],
+                     [m.c14_off_replica_lock_row("api-a", "api-b",
+                                                 {"samples": 3, "held": 0, "events": [],
+                                                  "by_replica": {}, "simultaneous": [],
+                                                  "unattributed": {}, "empty_addr": 0,
+                                                  "other_key_samples": 0, "bases": [],
+                                                  "pids": {}, "addr_map": {}, "container": {},
+                                                  "env": None, "errors": [], "calls": 1,
+                                                  "backend": {}, "replica_backend_svcs": [],
+                                                  "holder_svcs": [], "attribution": "backends",
+                                                  "span_ms": None}, None)],
+                     m.c14_approval_verdicts({}, None)):
             self.assertTrue(any(ok is None for _l, ok, _d in rows),
                             f"{rows} passes with nothing measured")
 
@@ -732,6 +757,831 @@ class ContainerLabelRead(unittest.TestCase):
         self._stub("communication-m4-api-a-1", 0, f"{m.COMPOSE_PROJECT}|{self.LAB}|")
         m.run = boom
         self.assertEqual(([], ""), m.c14_container_compose_labels("api-a"))
+
+
+# --- # C14's POSTGRES lock probe: tests for the SQL it generates, the holder ATTRIBUTION
+# (client_addr × docker container IP, application_name when one exists) and the verdicts the
+# samples produce — plus the live half with docker/psql stubbed.
+#
+# Why this exists at all: the serve-LOG probe above it (`Lock`, `LockBlindness`) is the backed-up
+# old path and it cannot see the thing it grades. noteLeadership
+# (internal/store/postgres/m4driver.go) prints the acquisition line once per not-held→held
+# transition per PROCESS and Tick releases the session lock every pass, so a handover across a
+# restart need not print anything (docs/m4-live-findings.md D6; the last acceptance read "no
+# acquisition line exists in the history the probe can read" / "api-b shows none either, so the
+# log probe is blind"). pg_locks (locktype='advisory', granted) on the driver's own key IS the
+# live holder — that is what these tests cover.
+#
+# The SQL text is checked for shape and for the read-only guarantee; the PARSE fixture is the
+# literal output of that script run against a real PostgreSQL 18.6 with a second connection
+# holding the driver's advisory lock (e2e's own probe, not a hand-typed impression). The
+# attribution tests are the point of the exercise: an unattributable backend must GAP with its
+# address named, never be guessed onto a replica. Nothing here touches a container.
+
+
+class LockProbeSql(unittest.TestCase):
+    def test_the_probe_key_is_the_driver_key_it_cannot_be_renamed_here(self):
+        """The one string that decides which advisory lock is 'the m4 driver's'. It is
+        m4driver.go's m4DriverAdvisoryLockKey, so if the Go side ever re-keys, this test is
+        the failure that says the probe is now measuring somebody else's lock."""
+        src = open(os.path.join(m.REPO_DIR, "internal", "store", "postgres",
+                                "m4driver.go"), encoding="utf-8").read()
+        go = re.search(r'm4DriverAdvisoryLockKey\s*=\s*"([^"]+)"', src)
+        self.assertIsNotNone(go, "m4DriverAdvisoryLockKey vanished from m4driver.go")
+        self.assertEqual(go.group(1), m.C14_M4_LOCK_KEY)
+
+    def test_the_key_halves_are_the_driver_own_hash_split_as_pg_locks_stores_it(self):
+        """pg_locks stores a 64-bit advisory key as classid = the high word and objid = the
+        low word; hashtextextended(key, 0) is exactly what m4DriverTryLock hashes."""
+        hi, lo = m.c14_lock_key_halves_sql()
+        self.assertEqual("(hashtextextended('communication/m4-reconciler', 0) "
+                         "& 4294967295::bigint)", lo)
+        self.assertEqual("((hashtextextended('communication/m4-reconciler', 0) >> 32) "
+                         "& 4294967295::bigint)", hi)
+        esc = m.c14_lock_key_halves_sql("don't")
+        self.assertIn("hashtextextended('don''t', 0)", esc[0])
+
+    def test_the_match_fragment_names_only_the_drivers_key(self):
+        """rcnAdvisoryLockKey / evtAppendLockPrefix / advancerLockPrefix all hold advisory
+        locks in the same database; matching those would attribute another subsystem's lock
+        to the driver (and make the off-replica claim pass on the reconciler's tick)."""
+        match = m.c14_lock_holder_match_sql()
+        self.assertIn("communication/m4-reconciler", match)
+        self.assertEqual([], [other for other in ("turn-lease", "journal", "advance", "evt",
+                                                  "rcn") if other in match], match)
+        self.assertIn("locktype", "l.locktype")     # the caller adds locktype/granted
+        self.assertIn("classid", match)
+        self.assertIn("objid", match)
+
+    def test_the_script_is_one_statement_per_line_and_read_only(self):
+        script = m.c14_lock_probe_script(samples=3, every_s=0.01)
+        lines = [l for l in script.splitlines() if l.strip()]
+        self.assertEqual(1 + 2 * 3 + 1, len(lines), script)     # env + (sample, sleep)*3 + be
+        for line in lines:
+            self.assertTrue(line.endswith(";"), line)
+            self.assertNotIn(";", line[:-1], "two statements on one line would share a "
+                                             "snapshot and stop sampling the live table")
+        joined = script.upper()
+        for write in (r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bTRUNCATE\b",
+                      r"\bCREATE\b", r"\bDROP\b", r"\bGRANT\b", r"\bREVOKE\b",
+                      r"\bALTER\b", r"\bSET\s+SESSION\s+AUTHORIZATION\b"):
+            self.assertIsNone(re.search(write, joined),
+                              f"{write} — the probe must not touch anything "
+                              "(l.granted is a column, not a privilege)")
+        for takes_lock in (r"PG_ADVISORY_LOCK", r"PG_TRY_ADVISORY_LOCK", r"PG_ADVISORY_UNLOCK",
+                           r"PG_ADVISORY_XACT_LOCK", r"FOR\s+UPDATE", r"PG_LOCK_ACQUIRE"):
+            self.assertIsNone(re.search(takes_lock, joined),
+                              "a probe that TAKES the lock moves the thing it measures")
+        self.assertIn("PG_SLEEP", joined)
+        self.assertIn("PG_LOCKS", joined)
+        self.assertIn("PG_STAT_ACTIVITY", joined)
+
+    def test_the_script_carries_the_key_once_and_the_sample_count_exactly(self):
+        script = m.c14_lock_probe_script(samples=5, every_s=0.02)
+        self.assertEqual(5, len([l for l in script.splitlines()
+                                 if l.startswith("SELECT json_build_array('s',")]))
+        self.assertEqual(5, script.count("SELECT pg_sleep(0.020);"))
+        self.assertEqual(1, len([l for l in script.splitlines()
+                                 if l.startswith("SELECT json_build_array('env'")]))
+        self.assertEqual(1, len([l for l in script.splitlines()
+                                 if l.startswith("SELECT json_build_array('be'")]))
+
+    def test_a_key_with_a_quote_is_escaped_not_an_injection(self):
+        script = m.c14_lock_probe_script(samples=1, key="it's a key")
+        self.assertIn("'it''s a key'", script)
+
+    def test_the_script_selects_the_identity_columns_attribution_needs(self):
+        script = m.c14_lock_probe_script(samples=1)
+        for col in ("application_name", "client_addr", "client_port", "backend_start",
+                    "objsubid", "l.pid", "usename", "datname"):
+            self.assertIn(col, script, f"{col} missing — attribution cannot be scored")
+
+    def test_sample_rate_and_count_are_clamped_not_infinite(self):
+        self.assertIn("SELECT pg_sleep(0.040);", m.c14_lock_probe_script(samples=1))
+        self.assertEqual(1, len([l for l in m.c14_lock_probe_script(samples=0).splitlines()
+                                 if "'s', 1," in l]))
+        self.assertIn("SELECT pg_sleep(5.000);", m.c14_lock_probe_script(samples=1, every_s=99))
+        self.assertIn("SELECT pg_sleep(0.000);", m.c14_lock_probe_script(samples=1, every_s=-1))
+
+
+class LockProbeParse(unittest.TestCase):
+    """The literal output of c14_lock_probe_script() run against a real PostgreSQL 18.6
+    while a second connection held pg_try_advisory_lock(hashtextextended('communication/m4-"
+    "reconciler',0)). The only hand-written part is the container-IP table (no docker here)."""
+
+    RAW = "\n".join([
+        '["env", "ci", "180006", "1608226700", "376037640"]',
+        '["s", 1, "1793314520000", null, ["4029004804:1453269123"]]',
+        '["s", 2, "1793314520057", [["127091", "", "172.18.0.4/32", "46050", "communication",'
+        ' "communication", "idle", "1793314518881", "1", "ExclusiveLock"]], '
+        '["4029004804:1453269123"]]',
+        '["s", 3, "1793314520114", null, null]',
+        'not a json line at all',
+        '["be", "communication", 3, ["172.18.0.1/32", "172.18.0.4/32", ""], ["", "pgstat"]',
+    ]) + "\n"
+
+    def test_env_and_backend_lines_parse(self):
+        p = m.c14_lock_parse_probe_output(self.RAW)
+        self.assertEqual({"database": "ci", "version": "180006",
+                          "key_hi": "1608226700", "key_lo": "376037640"}, p["env"],
+                         "the env line is the server's own answer, database and all")
+        self.assertIsNone(p["backends"],
+                          "the 'be' line is truncated mid-array: junk, never guessed at")
+        self.assertEqual(1, p["junk"], "the truncated 'be' line is junk, never a guess")
+
+    def test_a_whole_backend_line_is_the_attribution_diagnosis_input(self):
+        p = m.c14_lock_parse_probe_output(
+            '["be", "communication", 3, ["172.18.0.4/32", "172.18.0.5/32", ""], '
+            '["", "psql"]]\n')
+        self.assertEqual({"database": "communication", "count": 3,
+                          "addrs": ["172.18.0.4/32", "172.18.0.5/32", ""],
+                          "app_names": ["", "psql"]}, p["backends"])
+
+    def test_holder_rows_become_named_fields_and_empty_ones_stay_empty(self):
+        p = m.c14_lock_parse_probe_output(self.RAW)
+        self.assertEqual(3, len(p["samples"]))
+        self.assertEqual([], p["samples"][0]["holders"])
+        self.assertEqual(["4029004804:1453269123"], p["samples"][0]["other_keys"])
+        h = p["samples"][1]["holders"][0]
+        self.assertEqual("127091", h["pid"])
+        self.assertEqual("", h["application_name"],
+                         "pgx sends no application_name: this is the column that CANNOT "
+                         "identify a replica today, and the probe must say so")
+        self.assertEqual("172.18.0.4/32", h["client_addr"])
+        self.assertEqual("1793314518881", h["backend_start_ms"])
+        self.assertEqual("1", h["objsubid"])
+
+    def test_a_misshapen_holder_array_is_dropped_not_zipped_into_wrong_fields(self):
+        raw = '["s", 1, "1", [["only","three"]], null]\n'
+        self.assertEqual([], m.c14_lock_parse_probe_output(raw)["samples"][0]["holders"])
+
+    def test_empty_and_none_text_parse_as_nothing_rather_than_crashing(self):
+        for text in ("", None, "\n \n", "[", "[7]", '["s"]'):
+            p = m.c14_lock_parse_probe_output(text)
+            self.assertEqual([], p["samples"])
+            self.assertIsNone(p["env"])
+
+
+class LockAttribution(unittest.TestCase):
+    IP_MAP = {"api-a": {"container": "communication-m4-api-a-1", "ips": ["172.18.0.4"]},
+              "api-b": {"container": "communication-m4-api-b-1", "ips": ["172.18.0.5/16"]}}
+
+    def test_an_inet_and_a_bare_ip_are_the_same_address(self):
+        self.assertEqual("172.18.0.4", m.c14_lock_norm_addr("172.18.0.4/32"))
+        self.assertEqual("172.18.0.4", m.c14_lock_norm_addr(" 172.18.0.4 "))
+        self.assertEqual("::1", m.c14_lock_norm_addr("::1/128"))
+        for empty in ("", None, "NULL", "none", "<no value>", "-", "   "):
+            self.assertEqual("", m.c14_lock_norm_addr(empty), repr(empty))
+
+    def test_the_index_names_every_service_claiming_an_ip(self):
+        idx = m.c14_lock_ip_index(self.IP_MAP, ("api-a", "api-b"))
+        self.assertEqual(["api-a"], idx["172.18.0.4"])
+        self.assertEqual(["api-b"], idx["172.18.0.5"])
+        shared = m.c14_lock_ip_index({"api-a": {"ips": ["10.0.0.9"]},
+                                      "api-b": {"ips": ["10.0.0.9"]}}, ("api-a", "api-b"))
+        self.assertEqual(["api-a", "api-b"], shared["10.0.0.9"],
+                         "an ip two replicas report is an ambiguity, not a coin flip")
+
+    def test_a_label_names_a_replica_without_waking_a_prefix_sibling(self):
+        self.assertEqual("api-a", m.c14_lock_service_in_label("api-a"))
+        self.assertEqual("api-a", m.c14_lock_service_in_label("communication-m4-api-a-1"))
+        self.assertEqual("api-b", m.c14_lock_service_in_label("serve/api-b"))
+        self.assertIsNone(m.c14_lock_service_in_label("api-ab-1"))
+        self.assertIsNone(m.c14_lock_service_in_label(""))
+        self.assertIsNone(m.c14_lock_service_in_label(None))
+        self.assertIsNone(m.c14_lock_service_in_label("communication-m4-api-a-1-api-b-2"),
+                          "a label naming BOTH replicas is nobody's identity")
+
+    def test_a_holder_is_attributed_by_container_ip(self):
+        idx = m.c14_lock_ip_index(self.IP_MAP, ("api-a", "api-b"))
+        svc, basis, why = m.c14_attribute_holder({"client_addr": "172.18.0.4/32"}, idx)
+        self.assertEqual(("api-a", "ip"), (svc, basis))
+        self.assertEqual("", why)
+
+    def test_application_name_wins_when_serve_ever_sets_one(self):
+        idx = m.c14_lock_ip_index(self.IP_MAP, ("api-a", "api-b"))
+        svc, basis, _why = m.c14_attribute_holder({"application_name": "communication/m4-api-b",
+                                                   "client_addr": "172.18.0.4/32"}, idx)
+        self.assertEqual(("api-b", "name"), (svc, basis))
+
+    def test_an_unknown_address_is_refused_with_that_address_named(self):
+        """The lab-NAT case: every backend arrives as the gateway. Guessing 'probably api-a'
+        would be the exact failure this brief exists to remove."""
+        idx = m.c14_lock_ip_index(self.IP_MAP, ("api-a", "api-b"))
+        svc, basis, why = m.c14_attribute_holder({"client_addr": "172.17.0.1/32"}, idx)
+        self.assertIsNone(svc)
+        self.assertIsNone(basis)
+        self.assertIn("172.17.0.1", why)
+        self.assertIn("not an IP of any replica container", why)
+
+    def test_an_ambiguous_address_is_refused(self):
+        idx = m.c14_lock_ip_index({"api-a": {"ips": ["10.0.0.9"]},
+                                   "api-b": {"ips": ["10.0.0.9"]}}, ("api-a", "api-b"))
+        svc, _basis, why = m.c14_attribute_holder({"client_addr": "10.0.0.9"}, idx)
+        self.assertIsNone(svc)
+        self.assertIn("more than one replica", why)
+
+    def test_a_unix_socket_holder_is_refused_as_such(self):
+        svc, _basis, why = m.c14_attribute_holder({"client_addr": None}, {})
+        self.assertIsNone(svc)
+        self.assertIn("unix-socket", why)
+
+
+class LockSummarize(unittest.TestCase):
+    IP_MAP = {"api-a": {"container": "c-a", "ips": ["172.18.0.4"]},
+              "api-b": {"container": "c-b", "ips": ["172.18.0.5"]}}
+
+    def _state(self, samples, backends=None, addr_map=None):
+        return {"env": {"database": "communication"}, "samples": samples,
+                "backends": backends if backends is not None else
+                [{"database": "communication", "count": 3,
+                  "addrs": ["172.18.0.4/32", "172.18.0.5/32"], "app_names": [""]}],
+                "addr_map": addr_map if addr_map is not None else self.IP_MAP,
+                "errors": [], "calls": 1}
+
+    def _held(self, n, addr, ts=1000.0):
+        return {"n": n, "ts_ms": ts, "other_keys": [],
+                "holders": [{"pid": str(500 + n), "application_name": "",
+                             "client_addr": addr, "client_port": "1", "usename": "u",
+                             "datname": "d", "state": "idle", "backend_start_ms": "900",
+                             "objsubid": "1", "mode": "ExclusiveLock"}]}
+
+    def test_a_holder_on_a_container_ip_is_the_holders_basis(self):
+        obs = m.c14_lock_summarize(self._state([self._held(1, "172.18.0.5/32")]),
+                                   ("api-a", "api-b"))
+        self.assertEqual("holders", obs["attribution"])
+        self.assertEqual({"api-a": 0, "api-b": 1}, obs["by_replica"])
+        self.assertEqual(["ip"], obs["bases"])
+        self.assertEqual(1, obs["held"])
+
+    def test_no_holder_but_recognised_backend_addrs_still_proves_the_probe(self):
+        """The distinction the GAP reason needs: 'the attribution path works and nobody held
+        it' is not the same fact as 'the probe cannot tell replicas apart'."""
+        obs = m.c14_lock_summarize(self._state([]), ("api-a", "api-b"))
+        self.assertEqual("backends", obs["attribution"])
+        self.assertEqual(["api-a", "api-b"], obs["replica_backend_svcs"])
+        self.assertEqual(0, obs["held"])
+
+    def test_a_nat_where_every_backend_is_the_gateway_attributes_nothing(self):
+        obs = m.c14_lock_summarize(
+            self._state([self._held(1, "172.17.0.1/32")],
+                        backends=[{"database": "communication", "count": 2,
+                                   "addrs": ["172.17.0.1/32"], "app_names": [""]}],
+                        addr_map={"api-a": {"container": "c-a", "ips": ["172.17.0.1"]},
+                                  "api-b": {"container": "c-b", "ips": ["172.17.0.1"]}}),
+            ("api-a", "api-b"))
+        self.assertEqual("none", obs["attribution"])
+        self.assertEqual({"172.17.0.1": 1}, obs["unattributed"])
+
+    def test_two_replicas_holding_the_same_key_at_once_is_recorded(self):
+        both = {"n": 9, "ts_ms": 1000.0, "other_keys": [],
+                "holders": [self._held(1, "172.18.0.4/32")["holders"][0],
+                            dict(self._held(2, "172.18.0.5/32")["holders"][0], pid="999")]}
+        obs = m.c14_lock_summarize(self._state([both]), ("api-a", "api-b"))
+        self.assertEqual([9], obs["simultaneous"])
+        self.assertEqual({"api-a": 1, "api-b": 1}, obs["by_replica"])
+
+    def test_other_advisory_keys_are_counted_as_the_catalog_being_readable(self):
+        smp = self._held(1, "172.18.0.4/32")
+        smp["other_keys"] = ["4029004804:1453269123"]
+        obs = m.c14_lock_summarize(self._state([smp]), ("api-a", "api-b"))
+        self.assertEqual(1, obs["other_key_samples"])
+
+    def test_duty_note_reports_samples_and_rate_never_a_pass(self):
+        obs = m.c14_lock_summarize(self._state([self._held(1, "172.18.0.4/32", ts=1000),
+                                                self._held(2, "172.18.0.4/32", ts=2000)]),
+                                   ("api-a", "api-b"))
+        note = m.c14_lock_duty_note(obs)
+        self.assertIn("2 live pg_locks observation(s)", note)
+        self.assertIn("~2.0 Hz", note)
+        self.assertIn("2 found it granted", note)
+        self.assertIn("0 saw other advisory keys", note)
+        quiet = m.c14_lock_summarize(self._state([self._held(1, "172.18.0.4/32", ts=1000),
+                                                   {"n": 2, "ts_ms": 2000.0, "holders": [],
+                                                    "other_keys": ["9:9"]}]),
+                                     ("api-a", "api-b"))
+        self.assertIn("1 found it granted, 1 saw other advisory keys",
+                      m.c14_lock_duty_note(quiet))
+
+    def test_the_attribution_note_names_the_failed_address_and_the_go_one_liner(self):
+        obs = m.c14_lock_summarize(
+            self._state([self._held(1, "172.17.0.1/32")],
+                        backends=[{"database": "communication", "count": 2,
+                                   "addrs": ["172.17.0.1/32"], "app_names": [""]}],
+                        addr_map={"api-a": {"container": "c-a", "ips": ["172.18.0.4"]},
+                                  "api-b": {"container": "c-b", "ips": ["172.18.0.5"]}}),
+            ("api-a", "api-b"))
+        note = m.c14_lock_attribution_note(obs)
+        self.assertIn("CANNOT attribute a holder to a replica", note)
+        self.assertIn("172.17.0.1", note)
+        self.assertIn('application_name', note,
+                      "the report must say WHICH Go change would make this observable")
+        self.assertIn("internal/store/postgres/db.go", note)
+
+    def test_no_state_is_no_measurement(self):
+        obs = m.c14_lock_summarize(None, ("api-a", "api-b"))
+        self.assertEqual(0, obs["samples"])
+        self.assertEqual("none", obs["attribution"])
+        self.assertEqual({"api-a": 0, "api-b": 0}, obs["by_replica"])
+
+
+class LockHandover(unittest.TestCase):
+    def test_the_window_closes_at_the_first_sign_of_life_not_the_last_probe(self):
+        """t_back (the self-watcher saw it answer) precedes t_ready (the arm's readiness wait
+        returned). A holder after the replica was already answering again is not 'the lock
+        stayed with a dead replica', so the EARLIER evidence closes the window."""
+        w = m.c14_lock_roll_windows([{"svc": "api-a", "peer": "api-b", "t_restart": 100.0,
+                                      "t_gone": 100.4, "t_back": 105.0, "t_ready": 106.0}])[0]
+        self.assertEqual(100400, w["start_ms"], "the window is when it ACTUALLY went away")
+        self.assertEqual(105000, w["end_ms"])
+        self.assertEqual(100000, w["t_restart_ms"])
+        only_ready = m.c14_lock_roll_windows([{"svc": "api-a", "peer": "api-b",
+                                               "t_restart": 100.0, "t_gone": 100.4,
+                                               "t_ready": 106.0}])[0]
+        self.assertEqual(106000, only_ready["end_ms"], "with no self-watcher read, t_ready "
+                                                       "is the best return evidence there is")
+
+    def test_a_restart_that_never_looked_down_still_gets_a_grace_window(self):
+        w = m.c14_lock_roll_windows([{"svc": "api-a", "peer": "api-b", "t_restart": 100.0,
+                                      "t_ready": 103.0}])[0]
+        self.assertIsNone(w["t_gone_ms"])
+        self.assertEqual(100000 + int(m.C14_LOCK_PROBE_GRACE_S * 1000), w["start_ms"])
+        self.assertEqual(103000, w["end_ms"])
+
+    def test_a_step_with_no_clock_is_no_window(self):
+        self.assertEqual([], m.c14_lock_roll_windows([{"svc": "api-a"}, None]))
+        self.assertEqual([], m.c14_lock_roll_windows([]))
+
+    def _obs(self, events):
+        return {"events": events, "samples": 10, "held": len(events),
+                "by_replica": {}, "attribution": "holders"}
+
+    def test_a_peer_holder_inside_the_window_is_the_handover(self):
+        ev = [{"ts_ms": 100600, "n": 1, "replicas": ["api-b"],
+               "holders": [{"pid": "7", "service": "api-b", "basis": "ip",
+                            "backend_start_ms": "100500"}]}]
+        hand = m.c14_lock_handover(self._obs(ev), [{"svc": "api-a", "peer": "api-b",
+                                                    "t_restart": 100.0, "t_gone": 100.4,
+                                                    "t_ready": 106.0}])
+        self.assertEqual(1, len(hand["peer_hits"]))
+        self.assertEqual([], hand["own_hits"])
+        self.assertEqual([], hand["stale_in_window"])
+        rows = m.c14_lock_pg_verdicts(self._obs(ev), [{"svc": "api-a", "peer": "api-b",
+                                                      "t_restart": 100.0, "t_gone": 100.4,
+                                                      "t_ready": 106.0}])
+        self.assertIs(True, rows[2][1], rows[2][2])
+        self.assertIn("stayed up", rows[2][2])
+
+    def test_a_backend_that_predates_the_restart_did_not_move_anything(self):
+        """Postgres reaps a dead session's lock when it notices the client is gone; a holder
+        whose backend started BEFORE the roll is that lag, not a lock stuck on a corpse — and
+        certainly not a handover. It must GAP, never FAIL and never PASS."""
+        ev = [{"ts_ms": 100600, "n": 1, "replicas": ["api-a"],
+               "holders": [{"pid": "7", "service": "api-a", "basis": "ip",
+                            "backend_start_ms": "99000"}]}]
+        steps = [{"svc": "api-a", "peer": "api-b", "t_restart": 100.0, "t_gone": 100.4,
+                  "t_ready": 106.0}]
+        hand = m.c14_lock_handover(self._obs(ev), steps)
+        self.assertEqual([], hand["fresh_in_window"])
+        self.assertEqual(1, len(hand["stale_in_window"]))
+        rows = m.c14_lock_pg_verdicts(self._obs(ev), steps)
+        self.assertIsNone(rows[2][1])
+        self.assertIn("PRE-DATE the restart", rows[2][2])
+
+    def test_a_fresh_holder_that_is_the_down_replica_itself_fails(self):
+        ev = [{"ts_ms": 100600, "n": 1, "replicas": ["api-a"],
+               "holders": [{"pid": "7", "service": "api-a", "basis": "ip",
+                            "backend_start_ms": "100500"}]}]
+        steps = [{"svc": "api-a", "peer": "api-b", "t_restart": 100.0, "t_gone": 100.4,
+                  "t_ready": 106.0}]
+        rows = m.c14_lock_pg_verdicts(self._obs(ev), steps)
+        self.assertIs(False, rows[2][1])
+        self.assertIn("the replica that was DOWN", rows[2][2])
+
+    def test_a_holder_outside_every_window_proves_exclusivity_not_a_handover(self):
+        ev = [{"ts_ms": 90000, "n": 1, "replicas": ["api-b"],
+               "holders": [{"pid": "7", "service": "api-b", "basis": "ip",
+                            "backend_start_ms": "80000"}]}]
+        steps = [{"svc": "api-a", "peer": "api-b", "t_restart": 100.0, "t_gone": 100.4,
+                  "t_ready": 106.0}]
+        hand = m.c14_lock_handover(self._obs(ev), steps)
+        self.assertEqual(1, len(hand["outside"]))
+        rows = m.c14_lock_pg_verdicts(self._obs(ev), steps)
+        self.assertIsNone(rows[2][1], "no holder sampled in-window is unmeasured")
+        self.assertIn("NO sample caught", rows[2][2])
+
+    def test_an_unattributed_holder_cannot_be_a_hit_at_all(self):
+        ev = [{"ts_ms": 100600, "n": 1, "replicas": [],
+               "holders": [{"pid": "7", "service": None, "basis": None,
+                            "backend_start_ms": "100500"}]}]
+        hand = m.c14_lock_handover(self._obs(ev), [{"svc": "api-a", "peer": "api-b",
+                                                    "t_restart": 100.0, "t_gone": 100.4,
+                                                    "t_ready": 106.0}])
+        self.assertEqual([], hand["fresh_in_window"] + hand["stale_in_window"])
+
+
+class LockPgVerdicts(unittest.TestCase):
+    OBS = {"samples": 1200, "held": 4, "by_replica": {"api-a": 0, "api-b": 4},
+           "events": [{"ts_ms": 100600, "n": "c3s9", "replicas": ["api-b"],
+                       "holders": [{"pid": "77", "service": "api-b", "basis": "ip",
+                                    "backend_start_ms": "100500"}]}],
+           "simultaneous": [], "unattributed": {}, "empty_addr": 0,
+           "other_key_samples": 300, "bases": ["ip"], "pids": {"77": 4},
+           "addr_map": {"api-a": ["172.18.0.4"], "api-b": ["172.18.0.5"]},
+           "container": {"api-a": "c-a", "api-b": "c-b"}, "env": None, "errors": [],
+           "calls": 30, "backend": {"database": "communication", "count": 4,
+                                    "addrs": ["172.18.0.4", "172.18.0.5"],
+                                    "app_names": [""]},
+           "replica_backend_svcs": ["api-a", "api-b"], "holder_svcs": ["api-b"],
+           "attribution": "holders", "span_ms": 60000}
+    STEPS = [{"svc": "api-a", "peer": "api-b", "t_restart": 100.0, "t_gone": 100.4,
+              "t_ready": 106.0}]
+
+    def labels(self, rows):
+        return [l for l, _o, _d in rows]
+
+    def test_three_claims_and_the_log_mark_is_only_the_footnote(self):
+        rows = m.c14_lock_pg_verdicts(self.OBS, self.STEPS, ("api-a", "api-b"),
+                                       {"api-a": 0, "api-b": 0})
+        self.assertEqual(3, len(rows))
+        self.assertTrue(any("ATTRIBUTE" in l for l in self.labels(rows)))
+        self.assertTrue(any("at most ONE replica" in l for l in self.labels(rows)))
+        self.assertTrue(any("SURVIVING replica" in l for l in self.labels(rows)))
+        self.assertEqual([], [l for l in self.labels(rows)
+                              if "serve logs 'm4 driver acquired" in l],
+                         "the log mark must not be a graded label any more")
+
+    def test_the_clean_case_passes_on_the_pg_reading(self):
+        rows = m.c14_lock_pg_verdicts(self.OBS, self.STEPS, ("api-a", "api-b"))
+        self.assertEqual([True, True, True], [ok for _l, ok, _d in rows], rows)
+        self.assertIn("api-b", rows[2][2])
+
+    def test_no_probe_run_is_three_gaps_and_says_the_log_cannot_replace_it(self):
+        for obs in (None, "unreadable", 7):
+            rows = m.c14_lock_pg_verdicts(obs, self.STEPS, ("api-a", "api-b"), None)
+            self.assertEqual([None, None, None], [ok for _l, ok, _d in rows], rows)
+            self.assertTrue(all("pg_locks probe never ran" in d for _l, _o, d in rows), rows)
+
+    def test_a_blind_attribution_gaps_and_names_the_address_and_the_fix(self):
+        nat = dict(self.OBS, attribution="none", holder_svcs=[], by_replica={"api-a": 0,
+                                                                             "api-b": 0},
+                   unattributed={"172.17.0.1": 4}, replica_backend_svcs=[],
+                   backend=dict(self.OBS["backend"], addrs=["172.17.0.1"], count=2))
+        rows = m.c14_lock_pg_verdicts(nat, self.STEPS, ("api-a", "api-b"), {"api-a": 0,
+                                                                            "api-b": 0})
+        self.assertIsNone(rows[0][1], "an unattributable holder is a GAP, not a PASS")
+        self.assertIsNone(rows[1][1], "exclusivity was never observed either way")
+        self.assertIn("172.17.0.1", rows[0][2])
+        self.assertIn("application_name", rows[0][2],
+                      "the report must name the one-line Go change that would fix it")
+        self.assertIn("SURVIVING", self.labels(rows)[2])
+        self.assertIsNone(rows[2][1])
+
+    def test_recognised_backends_but_no_holder_passes_the_probe_and_gaps_the_rest(self):
+        quiet = dict(self.OBS, held=0, events=[], holder_svcs=[], attribution="backends",
+                     by_replica={"api-a": 0, "api-b": 0})
+        rows = m.c14_lock_pg_verdicts(quiet, self.STEPS, ("api-a", "api-b"))
+        self.assertEqual([True, None, None], [ok for _l, ok, _d in rows], rows)
+        self.assertIn("attribution path is live", rows[0][2])
+        self.assertIn("unmeasured", rows[2][2])
+
+    def test_two_replicas_holding_it_at_once_twice_is_the_product_bug(self):
+        both = dict(self.OBS, simultaneous=["c9s3", "c9s17"], by_replica={"api-a": 6,
+                                                                         "api-b": 4},
+                    holder_svcs=["api-a", "api-b"])
+        rows = m.c14_lock_pg_verdicts(both, self.STEPS, ("api-a", "api-b"))
+        self.assertIs(False, rows[1][1])
+        self.assertIn("product bug", rows[1][2])
+
+    def test_one_double_holder_sample_needs_a_second_before_it_accuses(self):
+        """pg_lock_status is not a snapshot of the whole table: a single reading that names
+        two holders can be a scan that straddled a release and the next acquire. GAP, and say
+        what would make it a FAIL."""
+        once = dict(self.OBS, simultaneous=["c9s3"], by_replica={"api-a": 6, "api-b": 4},
+                    holder_svcs=["api-a", "api-b"])
+        rows = m.c14_lock_pg_verdicts(once, self.STEPS, ("api-a", "api-b"))
+        self.assertIsNone(rows[1][1])
+        self.assertIn("SECOND such sample", rows[1][2])
+
+    def test_no_roll_windows_means_the_handover_was_never_measurable(self):
+        rows = m.c14_lock_pg_verdicts(self.OBS, [], ("api-a", "api-b"))
+        self.assertIsNone(rows[2][1])
+        self.assertIn("no restart windows", rows[2][2])
+        self.assertEqual([True, True], [ok for _l, ok, _d in rows[:2]])
+
+    def test_the_backup_log_reading_is_printed_and_named_as_the_backup(self):
+        rows = m.c14_lock_pg_verdicts(dict(self.OBS, held=0, events=[], holder_svcs=[],
+                                           attribution="backends",
+                                           by_replica={"api-a": 0, "api-b": 0}),
+                                      self.STEPS, ("api-a", "api-b"), {"api-a": 0, "api-b": 0})
+        d = rows[2][2]
+        self.assertIn("serve-log acquire marks in the window: {'api-a': 0, 'api-b': 0}", d)
+        self.assertIn("backup reading", d)
+        self.assertIsNone(rows[2][1], "0 log marks stay the blindness they always were (D6)")
+
+
+class LockOffReplicaPgRow(unittest.TestCase):
+    """C14c's 'the off replica never CLAIMS the lock' claim, and the precedence: the pg
+    reading decides; the log mark is consulted only when the probe never ran."""
+
+    OBS_ON = {"samples": 900, "held": 5, "by_replica": {"api-a": 0, "api-b": 5},
+              "events": [{"ts_ms": 1.0, "n": "c1s2", "replicas": ["api-b"],
+                          "holders": [{"pid": "9", "service": "api-b", "basis": "ip"}]}],
+              "simultaneous": [], "unattributed": {}, "empty_addr": 0,
+              "other_key_samples": 200, "bases": ["ip"], "pids": {}, "addr_map": {},
+              "container": {}, "env": None, "errors": [], "calls": 22,
+              "backend": {"database": "communication", "count": 4,
+                          "addrs": ["172.18.0.4", "172.18.0.5"], "app_names": [""]},
+              "replica_backend_svcs": ["api-a", "api-b"], "holder_svcs": ["api-b"],
+              "attribution": "holders", "span_ms": 1000}
+
+    def test_the_on_replica_holding_and_the_off_one_never_is_a_pass(self):
+        label, ok, why = m.c14_off_replica_lock_row("api-a", "api-b", self.OBS_ON,
+                                                    {"api-a": 0, "api-b": 0})
+        self.assertIn("api-a never claims", label)
+        self.assertIs(True, ok)
+        self.assertIn("holds the lock in none of them", why)
+        self.assertIn("900 live pg_locks observation", why)
+
+    def test_the_off_replica_caught_holding_is_the_product_bug(self):
+        off_holds = dict(self.OBS_ON, by_replica={"api-a": 3, "api-b": 5},
+                         holder_svcs=["api-a", "api-b"],
+                         events=[{"ts_ms": 1.0, "n": "c1s2", "replicas": ["api-a"],
+                                  "holders": [{"pid": "9", "service": "api-a",
+                                               "basis": "ip"}]}])
+        _label, ok, why = m.c14_off_replica_lock_row("api-a", "api-b", off_holds, None)
+        self.assertIs(False, ok)
+        self.assertIn("ticks the driver at all", why)
+
+    def test_an_off_holder_from_before_the_arm_is_a_linger_not_a_claim(self):
+        """C14c recreates api-a's process to turn its engine OFF; the OLD backend's session
+        lock can outlive the container until Postgres notices. A holder whose backend started
+        before the window opened cannot be the off replica claiming the lock — GAP, never
+        FAIL, and never a PASS either."""
+        lingering = dict(self.OBS_ON, by_replica={"api-a": 2, "api-b": 5},
+                         holder_svcs=["api-a", "api-b"],
+                         window=[1000.0, 9000.0],
+                         events=[{"ts_ms": 2000.0, "n": "c1s2", "replicas": ["api-a"],
+                                  "holders": [{"pid": "9", "service": "api-a", "basis": "ip",
+                                               "addr": "172.18.0.4",
+                                               "backend_start_ms": "900"}]}])
+        _label, ok, why = m.c14_off_replica_lock_row("api-a", "api-b", lingering, None)
+        self.assertIsNone(ok)
+        self.assertIn("PRE-DATES the arm", why)
+        # the SAME sample with a backend that started inside the window is the product bug
+        fresh = dict(lingering, window=[1000.0, 9000.0],
+                     events=[{"ts_ms": 2000000.0, "n": "c1s2", "replicas": ["api-a"],
+                              "holders": [{"pid": "9", "service": "api-a", "basis": "ip",
+                                           "addr": "172.18.0.4",
+                                           "backend_start_ms": "1000001"}]}])
+        self.assertIs(False, m.c14_off_replica_lock_row("api-a", "api-b", fresh, None)[1])
+        # and with no window at all (the probe recorded nothing) the holder still counts
+        self.assertIs(False, m.c14_off_replica_lock_row("api-a", "api-b",
+                                                        dict(lingering, window=None),
+                                                        None)[1])
+
+    def test_silence_with_no_attribution_is_a_gap_whatever_the_log_says(self):
+        quiet = dict(self.OBS_ON, attribution="none", holder_svcs=[],
+                     by_replica={"api-a": 0, "api-b": 0}, unattributed={"172.17.0.1": 2},
+                     events=[], held=0)
+        _label, ok, why = m.c14_off_replica_lock_row("api-a", "api-b", quiet,
+                                                     {"api-a": 0, "api-b": 9})
+        self.assertIsNone(ok)
+        self.assertIn("CANNOT attribute", why)
+
+    def test_no_probe_falls_back_to_the_log_and_keeps_its_blindness_rule(self):
+        self.assertIs(True, m.c14_off_replica_lock_row("api-a", "api-b", None,
+                                                       {"api-a": 0, "api-b": 3})[1])
+        self.assertIsNone(m.c14_off_replica_lock_row("api-a", "api-b", None,
+                                                     {"api-a": 0, "api-b": 0})[1])
+        self.assertIs(False, m.c14_off_replica_lock_row("api-a", "api-b", None,
+                                                        {"api-a": 2, "api-b": 1})[1])
+        self.assertIsNone(m.c14_off_replica_lock_row("api-a", "api-b", None, None)[1])
+        self.assertIn("backup", m.c14_off_replica_lock_row("api-a", "api-b", None,
+                                                           {"api-a": 0, "api-b": 3})[2])
+
+    def test_the_arm_passes_the_probe_through_and_the_pg_reading_wins(self):
+        """The log probe would have PASSED this arm (api-b ticked, api-a printed nothing);
+        the Postgres reading caught api-a holding the lock — the pg evidence decides."""
+        off_holds = dict(self.OBS_ON, by_replica={"api-a": 3, "api-b": 5},
+                         holder_svcs=["api-a", "api-b"],
+                         events=[{"ts_ms": 1.0, "n": "c1s2", "replicas": ["api-a"],
+                                  "holders": [{"pid": "9", "service": "api-a",
+                                               "basis": "ip"}]}])
+        rows = [r for r in c14_off_replica_verdicts_through(off_holds)]
+        self.assertIs(False, one(rows, "never claims the driver's advisory lock"))
+        self.assertEqual(5, len(rows), rows)
+
+    def test_the_arm_still_decides_from_the_log_when_the_probe_never_ran(self):
+        rows = c14_off_replica_verdicts_through(None)
+        self.assertIs(True, one(rows, "never claims the driver's advisory lock"))
+
+
+def c14_off_replica_verdicts_through(lock_obs):
+    """c14_off_replica_verdicts with everything else clean — so the only moving part is the
+    lock evidence."""
+    return m.c14_off_replica_verdicts(
+        off="api-a", on="api-b",
+        reads={"/api/v1/system/readiness": 200, "/api/v1/system/scheduler": 200},
+        posted=(201, "r-1"), advance=["queued", "running"],
+        lock_marks={"api-a": 0, "api-b": 3}, restore=("api-a", "on"), lock_obs=lock_obs)
+
+
+
+class LockProbeLiveStubbed(unittest.TestCase):
+    """The docker/psql half, with both stubbed: what the probe COMMANDS, what a failed read
+    becomes, and how a container's addresses get read. No container is touched here — the
+    literal Postgres proof is the run that produced LockProbeParse's fixture."""
+
+    def setUp(self):
+        self.saved = (m.run, m.compose_container)
+        self.calls = []
+
+    def tearDown(self):
+        m.run, m.compose_container = self.saved
+
+    def _run(self, rc, out):
+        def fake(cmd, **kw):
+            self.calls.append(([str(a) for a in cmd], kw))
+            return rc, out
+        m.run = fake
+
+    def test_a_probe_call_is_one_read_only_psql_on_this_projects_postgres(self):
+        self._run(0, "")
+        empty = m.c14_lock_probe_once(samples=2, every_s=0.001)
+        self.assertEqual([], empty["samples"],
+                         "rc=0 with no rows is a READABLE window that caught nothing (the "
+                         "lesson c14_lock_marks already learned from D6), not a failed read")
+        (cmd, kw), = self.calls
+        self.assertEqual(["docker", "compose", "-p", m.COMPOSE_PROJECT], cmd[:4])
+        self.assertIn("exec", cmd)
+        self.assertIn("-T", cmd)
+        self.assertEqual("postgres", cmd[cmd.index("exec") + 2], cmd)
+        psql_argv = cmd[cmd.index("psql"):]
+        self.assertEqual("-", psql_argv[psql_argv.index("-f") + 1],
+                         "the script goes in on STDIN (-f -), not in argv")
+        self.assertIn("-tA", psql_argv, "unaligned tuples-only output: what the parser reads")
+        self.assertIn("--no-psqlrc", psql_argv, "a host ~/.psqlrc must not steer the probe")
+        self.assertIn("ON_ERROR_STOP=1", " ".join(psql_argv),
+                      "a script that errors half-way must return rc!=0, not a short read")
+        self.assertIn("SELECT json_build_array('env'", kw["input"])
+        self.assertNotIn("SCHEDULER", " ".join(cmd), "no flag in argv (compose env's job)")
+        self.assertLess(kw["timeout"], 120, "a bounded read — a wedged psql must not hang "
+                                           "the roll")
+
+    def test_a_failed_read_is_none_not_zero_samples(self):
+        self._run(1, "psql: error: the server closed the connection")
+        self.assertIsNone(m.c14_lock_probe_once(samples=1, every_s=0.001))
+
+        def boom(cmd, **kw):
+            raise OSError("docker: no socket")
+        m.run = boom
+        self.assertIsNone(m.c14_lock_probe_once(samples=1, every_s=0.001))
+        self._run(0, '["s", 1, "1793314520000", null, null]\n')
+        self.assertEqual(1, len(m.c14_lock_probe_once(samples=1, every_s=0.001)["samples"]))
+
+    def test_a_raising_docker_is_none_not_an_exception(self):
+        """The probe runs in a thread next to the roll: an exception here would kill the
+        sampler and leave the arm with no evidence at all."""
+        def boom(cmd, **kw):
+            raise OSError("docker: no socket")
+        m.run = boom
+        self.assertIsNone(m.c14_lock_probe_once(samples=1, every_s=0.001))
+
+    def test_docker_inspect_addresses_reads_both_shapes_docker_prints(self):
+        user_defined = {"NetworkSettings": {"IPAddress": "",
+                                            "Networks": {"communication-m4_default":
+                                                         {"IPAddress": "172.18.0.4/16",
+                                                          "GlobalIPv6Address": ""}}}}
+        bridge = {"NetworkSettings": {"IPAddress": "172.17.0.4", "Networks": None}}
+        self.assertEqual(["172.18.0.4/16"], m.c14_inspect_addresses(user_defined))
+        self.assertEqual(["172.17.0.4"], m.c14_inspect_addresses(bridge))
+        for junk in (None, [], {}, "", {"NetworkSettings": None}):
+            self.assertEqual([], m.c14_inspect_addresses(junk), repr(junk))
+
+    def test_replica_addresses_resolve_the_container_first(self):
+        m.compose_container = lambda svc: f"{m.COMPOSE_PROJECT}-{svc}-1"
+        self._run(0, '[{"Name":"/communication-m4-api-a-1","NetworkSettings":'
+                     '{"Networks":{"communication-m4_default":{"IPAddress":"172.18.0.4"}}}}]')
+        table = m.c14_replica_addresses(("api-a",))
+        self.assertEqual({"api-a": {"container": "communication-m4-api-a-1",
+                                   "ips": ["172.18.0.4"]}}, table)
+        self.assertEqual([f"{m.COMPOSE_PROJECT}-api-a-1"], [c[-1] for c, _kw in self.calls])
+
+    def test_an_unresolvable_or_uninspectable_container_has_no_address(self):
+        m.compose_container = lambda svc: ""
+        self.assertEqual({"api-a": {"container": "", "ips": []}},
+                         m.c14_replica_addresses(("api-a",)) or {"api-a": {"container": "",
+                                                                           "ips": []}})
+        self.assertIsNone(m.c14_replica_addresses(("api-a",)), "no ips at all -> None")
+        m.compose_container = lambda svc: "communication-m4-api-a-1"
+        self._run(1, "no such object")
+        self.assertIsNone(m.c14_replica_addresses(("api-a",)))
+        self._run(0, "not json")
+        self.assertIsNone(m.c14_replica_addresses(("api-a",)))
+
+    def test_the_probe_threads_samples_in_and_stops_cleanly(self):
+        real = m.c14_lock_probe_once
+        out = {"env": {"database": "communication"}, "backends": None, "junk": 0,
+               "samples": [{"n": 1, "ts_ms": 1000.0, "other_keys": [],
+                            "holders": [{"pid": "7", "application_name": "",
+                                         "client_addr": "172.18.0.5/32", "client_port": "1",
+                                         "usename": "u", "datname": "d", "state": "idle",
+                                         "backend_start_ms": "900", "objsubid": "1",
+                                         "mode": "ExclusiveLock"}]}]}
+        reads = [{"__count__": 1}]
+
+        def fake_once(samples=None, every_s=None, key=None, timeout_s=None):
+            if reads and reads[0]["__count__"] <= 0:
+                return None
+            reads[0]["__count__"] -= 1
+            return dict(out, backends={"database": "communication", "count": 2,
+                                       "addrs": ["172.18.0.5/32"], "app_names": [""]})
+        m.c14_lock_probe_once = fake_once
+        m.c14_replica_addresses = lambda services: {"api-a": {"container": "c-a",
+                                                              "ips": ["172.18.0.4"]},
+                                                    "api-b": {"container": "c-b",
+                                                              "ips": ["172.18.0.5"]}}
+        try:
+            probe = C14LockProbe_for_test()
+            obs = probe.start().stop()
+        finally:
+            m.c14_lock_probe_once, m.c14_replica_addresses = real, m.c14_replica_addresses
+        self.assertEqual("holders", obs["attribution"])
+        self.assertGreater(obs["by_replica"]["api-b"], 0, obs)
+        self.assertEqual(0, obs["by_replica"]["api-a"])
+        self.assertGreaterEqual(obs["calls"], 1)
+
+    def test_a_postgres_that_stops_answering_is_recorded_and_the_arm_gaps(self):
+        real_once, real_addr = m.c14_lock_probe_once, m.c14_replica_addresses
+        m.c14_lock_probe_once = lambda *a, **kw: None
+        m.c14_replica_addresses = lambda services: {"api-a": {"container": "c-a",
+                                                              "ips": ["172.18.0.4"]}}
+        try:
+            obs = C14LockProbe_for_test(tag="C14b").start().stop()
+        finally:
+            m.c14_lock_probe_once, m.c14_replica_addresses = real_once, real_addr
+        self.assertEqual(0, obs["samples"])
+        self.assertTrue(obs["errors"], "every failed read must be reported")
+        rows = m.c14_lock_pg_verdicts(obs, [{"svc": "api-a", "peer": "api-b",
+                                             "t_restart": 1.0, "t_gone": 1.5, "t_ready": 9.0}])
+        self.assertEqual([None, None, None], [ok for _l, ok, _d in rows], rows)
+        self.assertIn("probe errors", rows[0][2])
+
+    def test_an_address_that_moved_during_the_window_is_reported_not_reassigned(self):
+        """C14c recreates api-a before it starts sampling, so api-a's ip can change inside a
+        window. Attribution must use the union and the drift must be visible."""
+        real_addr = m.c14_replica_addresses
+        m.c14_replica_addresses = lambda services: {"api-a": {"container": "c-a",
+                                                              "ips": ["172.18.0.9"]}}
+        try:
+            probe = C14LockProbe_for_test()
+            probe.addr_map = {"api-a": {"container": "c-a", "ips": ["172.18.0.4"]}}
+            obs = probe.summary()          # the end read happens here (patched -> .9)
+        finally:
+            m.c14_replica_addresses = real_addr
+        self.assertEqual(["172.18.0.4", "172.18.0.9"], obs["addr_map"]["api-a"],
+                         "attribution scores the union, so a holder is still named")
+        self.assertEqual({"api-a": {"start": ["172.18.0.4"], "end": ["172.18.0.9"]}},
+                         obs["addr_drift"],
+                         "and the reader can see the address moved under the window")
+
+    def test_the_roll_records_the_down_window_the_handover_is_judged_in(self):
+        """c14_roll_one must stamp t_restart / t_gone / t_ready, or the pg verdicts have no
+        window to place holders in."""
+        real = (m.run, m.Client, m.c14_wait_replica)
+        m.run = lambda cmd, **kw: (0, "restarted")
+        class Refused:
+            def get(self, base, path, timeout=None):
+                raise OSError("connection refused")
+        m.Client = lambda *a, **kw: Refused()
+        m.c14_wait_replica = lambda base, timeout=120: True
+        try:
+            step = {}
+            ok, ready = m.c14_roll_one("api-a", "http://localhost:18092",
+                                      "http://localhost:18093", [], step)
+        finally:
+            m.run, m.Client, m.c14_wait_replica = real
+        self.assertEqual((True, True), (ok, ready))
+        self.assertEqual("api-a", step["svc"])
+        self.assertTrue(step.get("t_restart") <= step.get("t_ready"), step)
+        rows = m.c14_lock_pg_verdicts({"samples": 1, "held": 0, "by_replica": {}, "events": [],
+                                       "simultaneous": [], "unattributed": {}, "empty_addr": 0,
+                                       "other_key_samples": 0, "bases": [], "pids": {},
+                                       "addr_map": {}, "container": {}, "env": None,
+                                       "errors": [], "calls": 1, "backend": {},
+                                       "replica_backend_svcs": [], "holder_svcs": [],
+                                       "attribution": "none", "span_ms": None}, [step])
+        windows = m.c14_lock_roll_windows([step])
+        self.assertEqual(1, len(windows), "the roll produced a window the probe can score")
+        self.assertTrue(all(ok is None for _l, ok, _d in rows),
+                        "with nothing sampled the arm GAPs — never a PASS by silence")
+
+
+def C14LockProbe_for_test(services=("api-a", "api-b"), tag="C14test"):
+    """A probe whose loop cannot spin: one sample per call and no sleep at all — the stubbed
+    c14_lock_probe_once returns instantly, so stop() must not have to wait for it."""
+    return m.C14LockProbe(services=services, samples=1, every_s=0.0, tag=tag)
 
 
 if __name__ == "__main__":

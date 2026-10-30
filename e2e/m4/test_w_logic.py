@@ -40,9 +40,13 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w10_new_type_verdicts,
     w10_resume_verdicts,
     w11_attempt_verdicts,
+    w11_attempt_tab_states,
     w11_child_view,
     w11_extra_frames_verdict,
     w11_internals_verdict,
+    w11_merge_internals,
+    w11_pair_rows,
+    w11_pair_sql,
     w11_pick_attempted_node,
     w11_rendered_children,
     w11_short_id,
@@ -55,7 +59,10 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w2_live_verdicts,
     w2_no_gap_verdict,
     w2_timeline_total,
+    w2_transcript_arm_verdict,
     w2_turn_arm_verdict,
+    w2_turn_run_rows,
+    w2_turn_run_sql,
     w2_visible_types,
     w_frame_surfaces,
     w_gate_release_verdict,
@@ -1032,6 +1039,190 @@ def test_w11_attempt_list_verdicts():
     assert one(w11_attempt_verdicts([], CANNED_TREE, "/plan"),
                "attempt 1 interrupted with retry_context") is None, "unreadable attempts"
     assert one(w11_attempt_verdicts(pair, "", "/x"), "says which attempt it is showing") is False
+
+
+def test_w11_pair_is_located_in_the_run_that_holds_it():
+    """§ 7.2 makes W11 read-mostly, so the row's pair is READ from the run that
+    holds it: the selection SQL names the ledger shape (interrupted #n plus a
+    later succeeded #m on the SAME node execution), asks the run C5 produced
+    first when its id is known, verifies it rather than trusting it, and keeps
+    the pair that actually carries a retry_context in front. The parser is the
+    other half: jsonb text can hold `|`, so the two contexts ride as one
+    marker-joined last field, and a ragged line is never a candidate."""
+    sql = w11_pair_sql("01a18991-67e4-7130-8256-a375f1fcd99d")
+    assert "a1.status = 'interrupted'" in sql, sql
+    assert "s.status = 'succeeded'" in sql and "s.attempt_number > a1.attempt_number" in sql
+    assert "s.node_execution_id = a1.node_execution_id" in sql
+    assert "a1.run_id = '01a18991-67e4-7130-8256-a375f1fcd99d'" in sql
+    assert "coalesce(a1.retry_context, s.retry_context) IS NOT NULL DESC" in sql
+    assert "run_id = ''" not in sql, "an empty preferred id must not open a filter"
+    plain = w11_pair_sql()
+    assert "a1.run_id =" not in plain and "a1.status = 'interrupted'" in plain
+    assert "'or 1=1" not in w11_pair_sql("x' or 1=1") and "x or 1=1" in w11_pair_sql("x' or 1=1"), \
+        "quote characters are stripped — the id names a row, never a statement"
+    lines = ("01a1-r|01a1-ne|/build_until_verified[1]/implement|1|2|01a1-proj|"
+             '{"attempt": 1, "error_class": "interrupted"}~@~-\n'
+             "r2|ne2|/plan|1|2|p2|-~@~-\n"
+             "psql: note something\n"
+             "short|row\n")
+    rows = w11_pair_rows(lines)
+    assert len(rows) == 2, rows
+    assert rows[0]["run_id"] == "01a1-r" and rows[0]["node_execution_id"] == "01a1-ne"
+    assert rows[0]["interrupted_attempt"] == "1" and rows[0]["succeeded_attempt"] == "2"
+    assert rows[0]["project_id"] == "01a1-proj"
+    assert rows[0]["retry_row_context"]["attempt"] == 1, rows[0]
+    assert rows[0]["interrupted_row_context"] == "-", "a coalesced NULL stays the literal -"
+    assert rows[1]["retry_row_context"] == "-" and rows[1]["interrupted_row_context"] == "-"
+    assert w11_pair_rows("") == [] and w11_pair_rows(None) == []
+    # the tab row W11 now reads off the dock, one entry per attempt, each naming
+    # its OWN state (WorkbenchDock.tsx: `attempt 1 · interrupted`)
+    tabs = w11_attempt_tab_states('- tab "attempt 1 · interrupted" [selected]\n'
+                                  '- tab "attempt 2 · succeeded"\n'
+                                  '- paragraph: iteration 1 · attempt 2 of 2\n')
+    assert tabs == {1: "interrupted", 2: "succeeded"}, tabs
+    assert w11_attempt_tab_states("attempt 2 of 2 — no tab word here") == {}
+    # needles merge across every run the leg rendered (the pair page included)
+    merged = w11_merge_internals(
+        [("worker id", ["worker_id"], ["aaa"]), ("fencing token", ["fencing_token"], ["7"])],
+        [("worker id", ["worker_id", "workerId"], ["aaa", "bbb"]),
+         ("lease expiry", ["lease_expires_at"], ["t"])])
+    assert merged == [("worker id", ["worker_id", "workerId"], ["aaa", "bbb"]),
+                      ("fencing token", ["fencing_token"], ["7"]),
+                      ("lease expiry", ["lease_expires_at"], ["t"])], merged
+    assert w11_merge_internals() == []
+
+
+def test_w11_attempt_pair_verdicts_read_the_lab_shape():
+    """The pair W11 now grades is the one C5's kill LEAVES BEHIND: attempt 1
+    interrupted with retry_context NULL (route 31 rides the facts on the RETRY),
+    attempt 2 succeeded carrying {attempt, error_class, head_commit,
+    modified_path_count} — no `mode` key. The dock's tablist is the attempt list;
+    both rows must be drawn, each with its state. A served `mode` the pane has
+    words for MUST be drawn (a missing copy is a FAIL); a mode-less context PASSes
+    the list and says, in the detail, that the pane has no words for it and the
+    printed ledger value is that half's evidence. With no pair the GAP names the
+    ledger reads that searched for it."""
+    lab_pair = [{"attempt_number": "1", "status": "interrupted", "retry_context": None},
+                {"attempt_number": "2", "status": "succeeded",
+                 "retry_context": {"attempt": 1, "error_class": "interrupted",
+                                   "head_commit": "26c9c31b3ac0c7d4", "modified_path_count": 0}}]
+    dock_dom = ('- tab "attempt 1 · interrupted" [selected]\n'
+                '- tab "attempt 2 · succeeded"\n'
+                "- paragraph: ATTEMPT 1\n"
+                "- text: interrupted \u2014 the worker disappeared mid-node. "
+                "Nothing was finished on its side\n")
+    v = w11_attempt_verdicts(lab_pair, dock_dom, "/build_until_verified[1]/implement")
+    assert one(v, "attempt 1 interrupted with retry_context") is True, v
+    d = one(v, "attempt 1 interrupted with retry_context", detail=True)
+    assert "head_commit" in d and "mode" in d and "route 31" in d, d
+    assert one(v, "says which attempt it is showing") is True, v
+    # a mode the pane has words for MUST be drawn
+    mode_pair = [dict(lab_pair[0], retry_context=None),
+                 {"attempt_number": "2", "status": "succeeded",
+                  "retry_context": {"mode": "continue_workspace", "attempt": 1}}]
+    silent = w11_attempt_verdicts(mode_pair, dock_dom, "/x")
+    assert one(silent, "attempt 1 interrupted with retry_context") is False, \
+        "retry_context.mode was served and the pane drew nothing for it"
+    spoken = w11_attempt_verdicts(
+        mode_pair, dock_dom + "- paragraph: what the next attempt inherits "
+                               "(continue_workspace)\n", "/x")
+    assert one(spoken, "attempt 1 interrupted with retry_context") is True, spoken
+    # pair statuses the ledger cannot even name a context for -> GAP, not PASS
+    bare = [{"attempt_number": "1", "status": "interrupted", "retry_context": None},
+            {"attempt_number": "2", "status": "succeeded", "retry_context": None}]
+    nogapctx = w11_attempt_verdicts(bare, dock_dom, "/x")
+    assert one(nogapctx, "attempt 1 interrupted with retry_context") is None, nogapctx
+    assert "NEITHER row" in one(nogapctx, "attempt 1 interrupted with retry_context",
+                                detail=True)
+    # no pair at all: the GAP names every ledger read the leg made
+    solo = [{"attempt_number": "1", "status": "succeeded", "retry_context": None}]
+    gap = w11_attempt_verdicts(solo, CANNED_TREE, "/plan",
+                               searched=["the run C5's kill ran inside (r1): 0 pair row(s)",
+                                         "every run in the lab: 0 pair row(s)"])
+    assert one(gap, "attempt 1 interrupted with retry_context") is None, gap
+    dg = one(gap, "attempt 1 interrupted with retry_context", detail=True)
+    assert "every run in the lab: 0 pair row(s)" in dg and "C5" in dg, dg
+    # and without the searched note the old sentence still owns the GAP
+    old = w11_attempt_verdicts(solo, CANNED_TREE, "/plan")
+    assert "C5" in one(old, "attempt 1 interrupted with retry_context", detail=True)
+    # tabs alone (pane of the retry only) still prove the LIST; the dead try's
+    # interrupted copy is part of the claim — a page without it is a FAIL
+    quiet = ('- tab "attempt 1 · interrupted"\n- tab "attempt 2 · succeeded"\n'
+             "- paragraph: ATTEMPT 2\n- text: succeeded\n")
+    assert one(w11_attempt_verdicts(lab_pair, quiet, "/x"),
+               "attempt 1 interrupted with retry_context") is True, \
+        "the tablist carries the pair and the interrupted word — the list claim"
+    missing = ("- paragraph: ATTEMPT 2\n- text: succeeded\n")
+    assert one(w11_attempt_verdicts(lab_pair, missing, "/x"),
+               "attempt 1 interrupted with retry_context") is False, \
+        "an attempt list that draws only the newest row is the row's failure, not the driver's"
+
+
+def test_w2_transcript_arm_is_located_in_the_run_that_journalled_it():
+    """The conversation.turn.* selection SQL joins attempts to their CONVERSATION's
+    journal rows (the turn writers stamp these conversation-scoped — C4e measured
+    it — so a run_id-only search would miss the rows the arm is about), prefers
+    the C4e run by id, and never lets the preferred id smuggle a quote into the
+    statement."""
+    sql = w2_turn_run_sql("01a18990-183f-7ab0-b8d6-5b2ef4565977")
+    assert "de.conversation_id = a.conversation_id" in sql
+    assert "de.type LIKE 'conversation.turn.%'" in sql
+    assert "a.run_id = '01a18990-183f-7ab0-b8d6-5b2ef4565977'" in sql
+    assert "conversation.message.agent" in sql, "the streamed-transcript count names C4E's set"
+    assert "a.run_id =" not in w2_turn_run_sql("")
+    assert "' or 1=1" not in w2_turn_run_sql("x' or 1=1")
+    rows = w2_turn_run_rows(
+        "r1|ne1|/build_until_verified[1]/implement|1|t1|p1|3|41\n"
+        "noise line\n"
+        "r2|ne2|/plan|1|-|p2|1|0\n")
+    assert len(rows) == 2 and rows[0]["transcript_rows"] == "41", rows
+    assert rows[1]["turn_id"] == "-", "a coalesced turn marker is still a reading"
+    assert w2_turn_run_rows("") == []
+
+
+def test_w2_transcript_arm_verdicts_grade_the_attempt_pane():
+    """The arm's truth table: no run found is a GAP naming every read; a journal
+    that spoke and a pane that drew transcript rows is the PASS the row was
+    waiting for; the pane answering 'No journal frames' against a speaking
+    journal is a FAIL; a pane that never answered at all is a GAP — unmeasured,
+    never clean. The chain verdict and the inline verdict both consume the
+    evidence, and the order claim keeps measuring only what the twin's own
+    timeline drew."""
+    run = {"run_id": "01a18990-agent-run", "node_execution_id": "ne1",
+           "node_instance_key": "/build_until_verified[1]/implement",
+           "attempt_number": "1", "turn_id": "t1", "project_id": "p1",
+           "turn_rows": "3", "transcript_rows": "41"}
+    no_run = w2_transcript_arm_verdict(None, None, ["the run C4e fenced (r1): 0 attempt row(s)",
+                                                    "every run in the lab: 0 attempt row(s)"])
+    assert no_run[0] is None and "every run in the lab: 0 attempt row(s)" in no_run[1], no_run
+    drawn = w2_transcript_arm_verdict(run, {"read": True, "surface": 1, "items": 9,
+                                            "stream": 1, "empty": 0, "shot": "s.png"}, [])
+    assert drawn[0] is True and "01a18990-agent-run" in drawn[1] and "transcript-item" in drawn[1], drawn
+    quiet = w2_transcript_arm_verdict(run, {"read": True, "surface": 1, "items": 0,
+                                            "stream": 1, "empty": 1, "shot": "s.png"}, [])
+    assert quiet[0] is False and "No journal frames" in quiet[1], quiet
+    assert w2_transcript_arm_verdict(run, None, ["x"])[0] is None
+    assert w2_transcript_arm_verdict(run, {"read": True, "surface": 0, "items": 0,
+                                           "stream": 0, "empty": 0, "shot": ""}, [])[0] is None
+    # the two emitters consume it; the chain's other links and the order claim
+    # keep measuring the twin exactly as before
+    arm = (True, "DREW ON THE ATTEMPT PANE")
+    vis = w2_visible_types(CANNED_TIMELINE, [t for _s, t in JOURNAL_W2])
+    chain = w2_chain_verdicts(vis, JOURNAL_W2, turn_evidence=arm)
+    assert one(chain, "renders conversation.turn.*") is True, chain
+    assert "DREW ON THE ATTEMPT PANE" in one(chain, "renders conversation.turn.*", detail=True)
+    assert one(chain, "renders run.created") is True and one(chain, "renders in order") is True
+    gap = one(w2_chain_verdicts(vis, JOURNAL_W2), "renders conversation.turn.*")
+    assert gap is None, "without evidence the old honest GAP stands"
+    inline = w2_turn_arm_verdict(JOURNAL_W2, turn_evidence=arm)
+    assert inline[1] is True and "DREW ON THE ATTEMPT PANE" in inline[2], inline
+    assert w2_turn_arm_verdict(JOURNAL_W2)[1] is None, "no evidence -> the GAP it was"
+    assert w2_turn_arm_verdict(JOURNAL_W2, turn_evidence=(None, "searched r1: 0 rows"))[1] is None
+    # a journal that DOES carry turn rows keeps its own wording (the Timeline tab
+    # still cannot draw them; only the twin's silence is replaced by evidence)
+    with_turns = w2_turn_arm_verdict(JOURNAL_W2 + [(10, "conversation.turn.started")],
+                                     turn_evidence=arm)
+    assert with_turns[1] is None and "outside" in with_turns[2], with_turns
 
 
 def test_w11_internals_stay_out_of_the_dom():
@@ -2022,6 +2213,10 @@ if __name__ == "__main__":
                test_w10_continuity_across_the_roll, test_w10_new_types_and_foreign_events,
                test_w11_short_id_is_the_uuid_tail_the_tree_prints, test_w11_tree_verdicts,
                test_w11_attempt_list_verdicts, test_w11_internals_stay_out_of_the_dom,
+               test_w11_pair_is_located_in_the_run_that_holds_it,
+               test_w11_attempt_pair_verdicts_read_the_lab_shape,
+               test_w2_transcript_arm_is_located_in_the_run_that_journalled_it,
+               test_w2_transcript_arm_verdicts_grade_the_attempt_pane,
                test_frames_are_rows_not_string_occurrences,
                test_gate_release_verdict_names_the_twin_speed_instead_of_blaming_the_ui,
                test_w11_opens_a_node_whose_attempt_list_has_rows,

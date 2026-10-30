@@ -4622,7 +4622,9 @@ def c4():
     if not run_id:
         c4e_agent_turn(facts, alice)
         return
-    CTX["c4_run"] = run_id
+    CTX["c4_run"] = run_id  # W-legs read this: C4's fenced twin run holds an
+    # interrupted attempt plus its succeeded replacement on the same node execution,
+    # and the W11 pair search asks this run first (verified by the ledger, never trusted)
     # The /approve gate is decided BEFORE the live-lease poll: the twin parks at
     # /approve ahead of the node that leases, so the old bare poll stared at
     # status='waiting_human' for its whole 300s and GAPped "no attempt … was ever
@@ -6577,7 +6579,8 @@ def c4e_agent_turn(facts=None, alice=None):
     run_id = post_c1_run(alice, agent, idem, "c4e-agent")
     if not run_id:
         return                      # post_c1_run already made its own FAIL line
-    CTX["c4e_run"] = run_id
+    CTX["c4e_run"] = run_id  # W2's transcript arm reads this: the conversation of
+    # this agent run journalled the conversation.turn.* rows the twin run never can
     window = hold_window(C4E_WINDOW_S)
     live = wait_live_past_gate(alice, mf(agent, "project_id"), run_id, window,
                               "C4e", target=C4E_TARGET_KEY)
@@ -6758,7 +6761,9 @@ def c5():
                          "c5", hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
         return
-    CTX["c5_run"] = run_id
+    CTX["c5_run"] = run_id  # W11's attempt-pair arm reads this: the run whose worker
+    # C5 kills mid-node is the run whose ledger holds `1 interrupted -> 2 succeeded`
+    # with the retry_context; the pair search asks it first, then the whole lab
 
     # C5a — decide the approval gate FIRST, then find a LIVE attempt and record the
     # boundary BEFORE the kill; without both, every claim below is an inference from
@@ -17989,7 +17994,9 @@ def c13():
 # 12 case 4 re-proven with the advancer as a WRITER: the roll now interrupts a
 # replica that may be mid-advance, so the verdicts are about the journal, not the
 # browser. Everything below the class is pure (offline-proved in
-# test_c14_logic.py); C14Stream/c14_roll_one/c14_wait_replica are the live half.
+# test_c14_logic.py); C14Stream/C14LockProbe/c14_roll_one/c14_wait_replica are the live half.
+# C14b/C14c's advisory-lock evidence is the POSTGRES probe further down (pg_locks ×
+# pg_stat_activity × docker container IPs); the serve-log mark above it is its backup.
 
 C14_LOCK_MARK = "m4 driver acquired the advisory lock"   # cmd/communication/serve.go
 C14_DUP_TYPES = ("node.attempt.retry_scheduled", "node.scope.iteration",
@@ -18150,7 +18157,11 @@ def c14_roll_verdicts(samples):
 
 
 def c14_lock_verdicts(before, after):
-    """D6 (docs/m4-live-findings.md): the advisory lock MOVING is only observable when
+    """The BACKED-UP log reading of the handover — c14_lock_pg_verdicts is what grades C14b
+    now, because it reads pg_locks itself instead of waiting for a log line. Kept so the
+    serve-log marks still get reported beside the Postgres evidence, and so D6's reasoning
+    stays executable rather than folklore.
+    D6 (docs/m4-live-findings.md): the advisory lock MOVING is only observable when
     the probe can see an acquisition line at all. noteLeadership
     (internal/store/postgres/m4driver.go:259-269) logs a not-held→held transition
     inside ONE process and the driver releases the session lock at the end of every
@@ -18255,6 +18266,825 @@ def c14_lock_marks(services=("api-a", "api-b"), since=None):
     if rc != 0:
         return None
     return c14_lock_lines(out, services)
+
+
+# --- C14b/C14c: the lock probe reads POSTGRES, not serve's log lines ---------------
+#
+# c14_lock_marks above is the BACKED-UP old path, and it is structurally blind.
+# noteLeadership (internal/store/postgres/m4driver.go) prints
+# "m4 driver acquired the advisory lock" once per not-held→held transition INSIDE one
+# process, and Tick releases the session lock at the end of every pass (m4DriverUnlock),
+# so a handover across a restart need not print anything at all — the last acceptance read
+# exactly that ("no acquisition line exists in the history the probe can read", "api-b
+# shows none either, so the log probe is blind"; docs/m4-live-findings.md D6).
+#
+# The lock's authority is Postgres, not the log. m4DriverTryLock takes a SESSION-scoped
+# pg_try_advisory_lock(hashtextextended('communication/m4-reconciler', 0)) on one of the
+# replica's pooled connections, so pg_locks (locktype='advisory', granted, that key) IS
+# whoever holds it right now — including holders that never logged a transition. A
+# backstop pass is short (a capped batch on a ~5 s tick), so the probe samples the catalog
+# hard (≈25 Hz, server-side pg_sleep between samples) across the whole roll / engine-off
+# window instead of watching a log for an event that is not emitted.
+#
+# Attribution: nothing in internal/ sets application_name — internal/store/postgres/db.go's
+# Open() puts only idle_in_transaction_session_timeout and statement_timeout in
+# RuntimeParams and pgx sends no application_name of its own — so every serve backend
+# reports application_name '' and that column cannot tell two replicas apart. What DOES
+# identify a replica is the connection's SOURCE ADDRESS: api-a/api-b reach the postgres
+# container directly over the compose network, so pg_stat_activity.client_addr is that
+# container's own IP, read from `docker inspect`. If the address does not resolve to
+# exactly one replica (every backend arrives as one NAT/gateway address, or the holder is
+# on a unix socket) the probe says THAT, precisely, and GAPs — it never guesses a replica.
+#
+# The probe is READ-ONLY: SELECTs over pg_locks/pg_stat_activity plus pg_sleep. It never
+# takes, tests or releases an advisory lock, so it cannot move the thing it measures.
+#
+# Two things about pg_locks were PROVEN against a live server (PostgreSQL 18.6, the lab's own
+# image tag) rather than assumed from docs, and both are pinned by test_c14_logic.py: an
+# advisory key's two halves are printed as the UNSIGNED 32-bit values (so hashtextextended's
+# sign is normalised away by masking both sides), and a SESSION-level advisory lock reports
+# objsubid=1 — filtering on the documented 0 would have matched nothing, so objsubid is
+# recorded as evidence and never used as a predicate.
+
+C14_M4_LOCK_KEY = "communication/m4-reconciler"   # m4driver.go m4DriverAdvisoryLockKey
+C14_LOCK_PROBE_SAMPLES = 40          # observations per psql call ≈ 1.6 s of lock state
+C14_LOCK_PROBE_EVERY_S = 0.04        # ≈25 Hz
+C14_LOCK_PROBE_GRACE_S = 1.0         # a restart's own teardown window is not "down" yet
+_C14_LOCK_HOLDER_FIELDS = ("pid", "application_name", "client_addr", "client_port",
+                           "usename", "datname", "state", "backend_start_ms",
+                           "objsubid", "mode")
+
+
+def _c14_sql_text(value):
+    """A SQL string literal (single quotes doubled). The lock key is the one string that
+    reaches the probe's SQL; it is never interpolated raw. Pure."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def c14_lock_key_halves_sql(key=C14_M4_LOCK_KEY):
+    """(high, low) 32-bit halves of hashtextextended(key, 0) as SQL EXPRESSIONS — the same
+    call m4DriverTryLock makes, split the way pg_locks stores an advisory key (classid =
+    high word, objid = low word). Both sides are masked to 32 bits so the comparison is
+    right whether the view prints a half signed or unsigned. Pure."""
+    k = _c14_sql_text(key)
+    return (f"((hashtextextended({k}, 0) >> 32) & 4294967295::bigint)",
+            f"(hashtextextended({k}, 0) & 4294967295::bigint)")
+
+
+def c14_lock_holder_match_sql(key=C14_M4_LOCK_KEY):
+    """The WHERE fragment that selects THE driver's key and nothing else: the reconciler
+    (rcnAdvisoryLockKey), the journal (evtAppendLockPrefix) and the advancer
+    (advancerLockPrefix) all hold advisory locks in this database, and a probe that matched
+    those would attribute somebody else's lock to the driver. Pure."""
+    hi, lo = c14_lock_key_halves_sql(key)
+    return (f"(l.classid::text::bigint & 4294967295::bigint) = {hi} "
+            f"AND (l.objid::text::bigint & 4294967295::bigint) = {lo}")
+
+
+def c14_lock_probe_script(samples=C14_LOCK_PROBE_SAMPLES, every_s=C14_LOCK_PROBE_EVERY_S,
+                          key=C14_M4_LOCK_KEY):
+    """One psql script = `samples` independent observations of the driver's advisory lock.
+    Each sample is its OWN statement (psql sends every line separately, so each one reads
+    the live lock table rather than one query's snapshot) with a server-side pg_sleep
+    between them; each emits one JSON line: the sample number, clock_timestamp (so the
+    sample instant is comparable with the roll's own wall clock), the holder backends
+    joined to pg_stat_activity, and the OTHER advisory keys granted at that instant. The
+    trailing 'be' line lists every client_addr / application_name connected to this
+    database — the read that says whether attribution is possible at all in a window where
+    nobody was caught holding. objsubid is RECORDED, never filtered: on the server this was
+    proven against (PostgreSQL 18.6) a session-level advisory lock reports objsubid=1, so a
+    filter on the documented 0 would match nothing. Pure (no docker, no psql)."""
+    n = max(1, int(samples or 1))
+    nap = max(0.0, min(float(every_s if every_s is not None
+                             else C14_LOCK_PROBE_EVERY_S), 5.0))
+    match = c14_lock_holder_match_sql(key)
+    hi, lo = c14_lock_key_halves_sql(key)
+    head = ("SELECT json_build_array('env', current_database(), "
+            f"current_setting('server_version_num'), {hi}::text, {lo}::text);")
+    holders = (
+        "COALESCE((SELECT json_agg(json_build_array("
+        "l.pid::text, COALESCE(a.application_name, ''), COALESCE(a.client_addr::text, ''), "
+        "COALESCE(a.client_port::text, ''), COALESCE(a.usename::text, ''), "
+        "COALESCE(a.datname::text, ''), COALESCE(a.state, ''), "
+        "COALESCE((extract(epoch FROM a.backend_start) * 1000)::bigint::text, ''), "
+        "COALESCE(l.objsubid::text, ''), COALESCE(l.mode::text, '')) ORDER BY l.pid) "
+        "FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
+        f"WHERE l.locktype = 'advisory' AND l.granted AND {match}), 'null'::json)")
+    others = (
+        "COALESCE((SELECT json_agg(DISTINCT (l.classid::text || ':' || l.objid::text)) "
+        "FROM pg_locks l WHERE l.locktype = 'advisory' AND l.granted AND "
+        f"NOT ({match})), 'null'::json)")
+    backends = (
+        "SELECT json_build_array('be', current_database(), "
+        "(SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()), "
+        "COALESCE((SELECT json_agg(DISTINCT COALESCE(client_addr::text, '')) "
+        "FROM pg_stat_activity WHERE datname = current_database()), 'null'::json), "
+        "COALESCE((SELECT json_agg(DISTINCT COALESCE(application_name, '')) "
+        "FROM pg_stat_activity WHERE datname = current_database()), 'null'::json));")
+    lines = [head]
+    for i in range(1, n + 1):
+        lines.append(f"SELECT json_build_array('s', {i}, "
+                     f"(extract(epoch FROM clock_timestamp()) * 1000)::bigint::text, "
+                     f"{holders}, {others});")
+        lines.append(f"SELECT pg_sleep({nap:.3f});")
+    lines.append(backends)
+    return "\n".join(lines) + "\n"
+
+
+def c14_lock_parse_probe_output(text):
+    """{env, samples, backends, junk} from one probe call's psql output. Anything that is
+    not a JSON line of a known shape counts as junk and is never guessed at; a call that
+    produced no samples parses to samples=[] (an unreadable call is the caller's None, not
+    an empty parse). Pure."""
+    out = {"env": None, "samples": [], "backends": None, "junk": 0}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            out["junk"] += 1
+            continue
+        if not isinstance(row, list) or not row:
+            out["junk"] += 1
+            continue
+        tag = row[0]
+        if tag == "env" and len(row) >= 5:
+            out["env"] = {"database": str(row[1]), "version": str(row[2]),
+                          "key_hi": str(row[3]), "key_lo": str(row[4])}
+        elif tag == "s" and len(row) >= 5:
+            try:
+                ts = float(row[2])
+            except (TypeError, ValueError):
+                ts = None
+            holders = [dict(zip(_C14_LOCK_HOLDER_FIELDS, h)) for h in (row[3] or [])
+                       if isinstance(h, list) and len(h) == len(_C14_LOCK_HOLDER_FIELDS)]
+            out["samples"].append({"n": row[1], "ts_ms": ts, "holders": holders,
+                                   "other_keys": [str(k) for k in (row[4] or [])]})
+        elif tag == "be" and len(row) >= 5:
+            out["backends"] = {"database": str(row[1]), "count": row[2],
+                               "addrs": [str(a) for a in (row[3] or [])],
+                               "app_names": [str(a) for a in (row[4] or [])]}
+        else:
+            out["junk"] += 1
+    return out
+
+
+def c14_lock_norm_addr(addr):
+    """pg_stat_activity prints client_addr as an inet ('172.18.0.4/32'); docker reports a
+    bare IP. Normalize to a bare lowercase address; ''/None/'NULL' (a unix-socket or
+    postmaster-local backend) normalize to ''. Pure."""
+    text = str(addr if addr is not None else "").strip()
+    if text.lower() in ("", "null", "none", "<no value>", "-"):
+        return ""
+    return text.split("/", 1)[0].strip().lower()
+
+
+def c14_lock_ip_index(addr_map, services=None):
+    """{bare ip: [services]} from {service: {"container":…, "ips": […]}}. An ip two
+    services both report stays in the index with BOTH named — that is an ambiguity the
+    attribution must refuse, not a coin flip. Pure."""
+    index = {}
+    for svc, ent in (addr_map or {}).items():
+        if services and svc not in tuple(services):
+            continue
+        ips = ent.get("ips") if isinstance(ent, dict) else ent
+        for ip in (ips or []):
+            bare = c14_lock_norm_addr(ip)
+            if bare:
+                index.setdefault(bare, []).append(str(svc))
+    return {ip: sorted(set(svcs)) for ip, svcs in index.items()}
+
+
+def c14_lock_service_in_label(text, services=("api-a", "api-b")):
+    """Which replica a free-text backend identity names, or None. `api-a` matches 'api-a',
+    'communication-m4-api-a-1' and a future application_name of 'serve/api-a'; it must NOT
+    match 'api-ab-1' or a bare 'a'. Only an unambiguous single hit counts. Pure — this is
+    the arm that would light up if serve ever set application_name."""
+    low = str(text if text is not None else "").strip().lower()
+    if not low:
+        return None
+    hits = []
+    for svc in services:
+        name = str(svc).strip().lower()
+        if not name:
+            continue
+        if low == name or re.search(
+                rf"(?:^|[-_.:/]){re.escape(name)}(?:[-_.:/]\d+)?(?:$|[-_.:/])", low):
+            hits.append(svc)
+    return hits[0] if len(hits) == 1 else None
+
+
+def c14_attribute_holder(holder, ip_index, services=("api-a", "api-b")):
+    """(service|None, basis|None, reason). A holder is attributed to a replica ONLY when
+    exactly one replica can be named for it: application_name (the 'name' basis — serve
+    sets none today, so that arm is dead until a Go change says otherwise) or the
+    client_addr × container-IP join (the 'ip' basis). Everything else returns None WITH the
+    reason the verdict must print, so an unattributable backend is reported precisely
+    instead of guessed. Pure."""
+    holder = holder or {}
+    svc = c14_lock_service_in_label(holder.get("application_name"), services)
+    if svc:
+        return svc, "name", ""
+    addr = c14_lock_norm_addr(holder.get("client_addr"))
+    if not addr:
+        return None, None, ("the holder backend reports no client_addr (a unix-socket or "
+                            "postmaster-local connection): no address to name a replica with")
+    matches = (ip_index or {}).get(addr) or []
+    if len(matches) == 1:
+        return matches[0], "ip", ""
+    if len(matches) > 1:
+        return None, None, (f"client_addr {addr} is reported by more than one replica "
+                            f"container {matches}: attributing it would be a guess")
+    return None, None, (f"client_addr {addr} is not an IP of any replica container "
+                        f"(the probe indexed {sorted(ip_index or {}) or 'nothing'})")
+
+
+def _c14_float(v):
+    """An epoch-ms reading as float; garbage and None read as None (never as 0 — a fake
+    1970 timestamp would silently classify every backend as 'stale'). Pure."""
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def c14_lock_summarize(probe_state, services=("api-a", "api-b")):
+    """The MEASUREMENT one probe run produced, shaped the way the verdicts want it:
+      samples            how many live observations of pg_locks were read (the duty)
+      held               how many of them found the driver's lock granted to somebody
+      by_replica         {service: samples in which THAT replica's backend held it}
+      events             the holder samples, attributed: {ts_ms, n, replicas, holders}
+      simultaneous       samples in which two attributed replicas held it at once
+      other_key_samples  samples that saw OTHER advisory keys granted — proof the catalog
+                         read works when the driver's own key reads empty
+      backend            the 'be' reads: client_addrs / application_names connected to the
+                         database, i.e. attribution proof that needs no holder at all
+      attribution        'holders' | 'backends' | 'none' — can a holder be put on a name?
+    Pure: it reads canned probe state, never docker or psql."""
+    state = probe_state if isinstance(probe_state, dict) else {}
+    samples = state.get("samples") or []
+    addr_map = state.get("addr_map") or {}
+    ip_index = c14_lock_ip_index(addr_map, services)
+    by_replica = {str(s): 0 for s in services}
+    events, unattributed, bases = [], {}, set()
+    simultaneous, empty_addr, other_keys, pids = [], 0, 0, {}
+    for smp in samples:
+        if smp.get("other_keys"):
+            other_keys += 1
+        reps, ev_holders = [], []
+        for h in smp.get("holders") or []:
+            svc, basis, why = c14_attribute_holder(h, ip_index, services)
+            if svc:
+                bases.add(basis)
+                if svc not in reps:
+                    reps.append(svc)
+            else:
+                key = c14_lock_norm_addr(h.get("client_addr")) or "<no client_addr>"
+                unattributed[key] = unattributed.get(key, 0) + 1
+                if key == "<no client_addr>":
+                    empty_addr += 1
+            pids[str(h.get("pid"))] = pids.get(str(h.get("pid")), 0) + 1
+            ev_holders.append({"pid": h.get("pid"), "service": svc, "basis": basis,
+                               "why": why, "addr": c14_lock_norm_addr(h.get("client_addr")),
+                               "app_name": str(h.get("application_name") or ""),
+                               "state": str(h.get("state") or ""),
+                               "objsubid": str(h.get("objsubid") or ""),
+                               "backend_start_ms": _c14_float(h.get("backend_start_ms"))})
+        if smp.get("holders"):
+            events.append({"n": smp.get("n"), "ts_ms": smp.get("ts_ms"),
+                           "replicas": reps, "holders": ev_holders})
+        for svc in reps:
+            by_replica[svc] = by_replica.get(svc, 0) + 1
+        if len(reps) > 1:
+            simultaneous.append(smp.get("n"))
+    backend_addrs, backend_apps, backend_count, database = set(), set(), 0, ""
+    for be in state.get("backends") or []:
+        database = database or str(be.get("database") or "")
+        backend_count = max(backend_count, _int(be.get("count")) or 0)
+        for addr in be.get("addrs") or []:
+            backend_addrs.add(c14_lock_norm_addr(addr))
+        for app in be.get("app_names") or []:
+            backend_apps.add(str(app))
+    replica_backend_svcs = sorted({svcs[0] for ip in backend_addrs - {""}
+                                   for svcs in [ip_index.get(ip) or []] if len(svcs) == 1})
+    holder_svcs = sorted(s for s, cnt in by_replica.items() if cnt)
+    attribution = ("holders" if holder_svcs
+                   else "backends" if replica_backend_svcs else "none")
+    stamps = [e["ts_ms"] for e in events if e.get("ts_ms")]
+    return {"services": [str(s) for s in services], "samples": len(samples),
+            "held": len(events), "by_replica": by_replica, "events": events,
+            "simultaneous": simultaneous, "unattributed": unattributed,
+            "empty_addr": empty_addr, "other_key_samples": other_keys,
+            "bases": sorted(bases), "pids": pids,
+            "addr_map": {s: sorted({c14_lock_norm_addr(ip)
+                                    for ip in ((e or {}).get("ips") or [])})
+                         for s, e in addr_map.items()},
+            "container": {s: str((e or {}).get("container") or "")
+                          for s, e in addr_map.items()},
+            "env": state.get("env"), "errors": list(state.get("errors") or []),
+            "calls": _int(state.get("calls")) or 0,
+            "backend": {"database": database, "count": backend_count,
+                        "addrs": sorted(a for a in backend_addrs if a),
+                        "app_names": sorted(backend_apps)},
+            "replica_backend_svcs": replica_backend_svcs, "holder_svcs": holder_svcs,
+            "attribution": attribution,
+            "span_ms": (max(stamps) - min(stamps)) if len(stamps) > 1 else None}
+
+
+def c14_lock_duty_note(obs):
+    """The one line of 'what the probe actually did' every C14 lock verdict carries: the
+    sample count, the rate it achieved, and whether OTHER advisory keys were visible in the
+    same read — which separates 'nobody held the driver's lock' from 'the read is blind'."""
+    obs = obs or {}
+    n = obs.get("samples") or 0
+    span = _c14_float(obs.get("span_ms"))
+    rate = f", ~{n * 1000.0 / span:.1f} Hz over the observed span" if n and span and span > 0 \
+        else ""
+    return (f"{n} live pg_locks observation(s) of the driver's key{rate}, "
+            f"{obs.get('held') or 0} found it granted, "
+            f"{obs.get('other_key_samples') or 0} saw other advisory keys "
+            "(journal/reconciler) granted in the same read")
+
+
+def c14_lock_attribution_note(obs):
+    """How a holder gets put on a replica, in the words the report needs — including the
+    exact reason it could NOT be done, so a blind arm names the cause rather than the
+    symptom. serve sends no application_name (db.go's Open sets only the two timeouts and
+    pgx sends none of its own), so 'ip' is the only live basis today; 'name' would light up
+    if a Go change set RuntimeParams["application_name"] per replica."""
+    obs = obs or {}
+    be = obs.get("backend") or {}
+    apps = [a for a in (be.get("app_names") or []) if a]
+    head = (f"basis={obs.get('attribution')}, application_names on this database="
+            f"{apps or ['(none — every backend sends none)']}, "
+            f"backend client_addrs={be.get('addrs') or '(none read)'}, "
+            f"container ips={obs.get('addr_map')}")
+    if obs.get("attribution") == "holders":
+        return f"holder(s) attributed by {obs.get('bases')} — {head}"
+    if obs.get("attribution") == "backends":
+        return (f"no holder was caught, but the replica containers' IPs DO appear among the "
+                f"backends of database {be.get('database')!r} "
+                f"({obs.get('replica_backend_svcs')}) — the attribution path is live; {head}")
+    return (f"CANNOT attribute a holder to a replica — unattributable holder backends: "
+            f"{obs.get('unattributed') or '(none)'}, "
+            f"{obs.get('empty_addr') or 0} holder backend(s) with no client_addr at all; "
+            f"{head}. serve gives Postgres no identity of its own: "
+            "internal/store/postgres/db.go's Open() sets only "
+            "idle_in_transaction_session_timeout/statement_timeout, so the one-line Go "
+            'change that would fix this is cfg.ConnConfig.RuntimeParams["application_name"]'
+            " = <per-replica id> there")
+
+
+def c14_lock_roll_windows(steps, services=("api-a", "api-b")):
+    """The windows a handover is judged in, from the roll's own clock. t_gone is when the
+    rolled replica FIRST failed its own readiness probe; a restart that never looked down
+    still gets a window (grace after the command) because 'compose restart' does stop the
+    container and the next readiness answer comes from the new process. Pure."""
+    out = []
+    for st in steps or []:
+        t_restart = _c14_float((st or {}).get("t_restart"))
+        if t_restart is None:
+            continue
+        t_gone = _c14_float(st.get("t_gone"))
+        # The window CLOSES at the EARLIEST evidence the replica answered again (the
+        # self-watcher's t_back, or the readiness confirmation if that is all there is): a
+        # holder sampled after it came back is not "the lock stayed with a dead replica",
+        # and grading one as such would FAIL the product for the probe's own lag.
+        t_back = _c14_float(st.get("t_back")) or _c14_float(st.get("t_ready"))
+        out.append({"svc": str(st.get("svc")), "peer": str(st.get("peer")),
+                    "t_restart_ms": int(t_restart * 1000),
+                    "t_gone_ms": int(t_gone * 1000) if t_gone is not None else None,
+                    "start_ms": int((t_gone if t_gone is not None
+                                     else t_restart + C14_LOCK_PROBE_GRACE_S) * 1000),
+                    "end_ms": int(t_back * 1000) if t_back is not None else None})
+    return out
+
+
+def c14_lock_handover(obs, steps, services=("api-a", "api-b")):
+    """Did the driver's advisory lock move to a SURVIVING replica? Read from the sampled
+    lock table, not from logs. Evidence the verdicts print:
+      fresh_in_window  holder samples taken while a replica was down whose backend STARTED
+                       AFTER that replica's restart was issued — the peer's backend, or the
+                       rolled replica's new one
+      stale_in_window  holder samples of a backend that predates the restart: Postgres has
+                       not noticed the rolled process died yet (a session lock lives in the
+                       backend and a killed container's TCP connection can stay half-open).
+                       Not a lock that failed to move, so it is counted separately and
+                       decides the verdict neither way.
+      peer_hits        fresh in-window samples held by a replica OTHER than the one rolled
+      own_hits         fresh in-window samples held by the rolled replica itself
+    Pure."""
+    windows = c14_lock_roll_windows(steps, services)
+    ev = {"windows": windows, "fresh_in_window": [], "stale_in_window": [],
+          "peer_hits": [], "own_hits": [], "outside": []}
+    for e in (obs or {}).get("events") or []:
+        ts = _c14_float(e.get("ts_ms"))
+        if ts is None:
+            continue
+        in_ms = int(ts)
+        win = next((w for w in windows if in_ms >= w["start_ms"]
+                    and (w["end_ms"] is None or in_ms <= w["end_ms"])), None)
+        if win is None:
+            ev["outside"].append({"ts_ms": in_ms, "n": e.get("n"),
+                                  "replicas": list(e.get("replicas") or [])})
+            continue
+        for h in e.get("holders") or []:
+            if not h.get("service"):
+                continue
+            bs = _c14_float(h.get("backend_start_ms"))
+            stale = bs is not None and bs < win["t_restart_ms"]
+            row = {"svc": win["svc"], "peer": win["peer"], "service": h["service"],
+                   "pid": h.get("pid"), "ts_ms": in_ms, "basis": h.get("basis")}
+            ev["stale_in_window" if stale else "fresh_in_window"].append(row)
+            if not stale:
+                ev["own_hits" if h["service"] == win["svc"] else "peer_hits"].append(row)
+    return ev
+
+
+def c14_lock_pg_verdicts(obs, steps=None, services=("api-a", "api-b"), log_marks=None):
+    """§ 7.1 C14b's three lock claims, measured from pg_locks × pg_stat_activity ×
+    container IPs (the probe above). The serve-LOG mark rides inside the evidence as the
+    backup reading it is, never as the verdict:
+      1. the probe can put a holder on a replica at all — if it cannot, that is said with
+         the address it saw, the container IPs it compared against, and the one-line Go
+         change that would make the identity readable;
+      2. at most ONE replica holds the driver's advisory lock at a time — the exclusivity
+         the lock exists for, and falsifiable: two attributed replicas in one sample FAILs;
+      3. the lock is held by a SURVIVING replica while a rolled replica is down.
+    Every unobservable path GAPs: silence never PASSes, and a backend Postgres has not
+    finished reaping never FAILs either. `log_marks` is the old probe's {service: count}.
+    Pure."""
+    marks = ("; serve-log acquire marks in the window: "
+             f"{log_marks if isinstance(log_marks, dict) else '(unreadable)'} (per-process "
+             "transition lines, released every tick — reported as the backup reading, "
+             "graded on the catalog instead)")
+    label_probe = ("C14b the lock probe can ATTRIBUTE a driver session to a replica "
+                   "(pg_locks × pg_stat_activity.client_addr × docker container IPs)")
+    label_excl = ("C14b at most ONE replica holds the m4 driver's advisory lock at a time "
+                  "(pg_locks: locktype='advisory' granted on the driver's key)")
+    label_move = ("C14b the m4 driver's advisory lock is held by a SURVIVING replica while "
+                  "the rolled replica is down (read from pg_locks, not from serve logs)")
+    if not isinstance(obs, dict):
+        why = ("the pg_locks probe never ran — this arm has no Postgres-side reading of the "
+               "lock, and the serve log cannot replace it (docs/m4-live-findings.md D6)")
+        return [(label_probe, None, why + marks), (label_excl, None, why + marks),
+                (label_move, None, why + marks)]
+    duty = c14_lock_duty_note(obs)
+    attrib = c14_lock_attribution_note(obs)
+    probe_ok = obs.get("attribution") in ("holders", "backends")
+    probe_row = (label_probe, True if probe_ok else None,
+                 f"{duty}; {attrib}"
+                 + (f"; holders seen by replica: {obs.get('by_replica')}"
+                    if obs.get("attribution") == "holders" else "")
+                 + (f"; probe errors: {obs.get('errors')}" if obs.get("errors") else ""))
+    if len(obs.get("simultaneous") or []) > 1:
+        excl_row = (label_excl, False,
+                    f"{duty}; samples {obs['simultaneous'][:5]} each show TWO replicas "
+                    f"holding the driver's key at once ({obs.get('by_replica')}) — the "
+                    "session lock is not excluding, which is a product bug, not a blind "
+                    "probe")
+    elif obs.get("simultaneous"):
+        # pg_lock_status walks the lock table partition by partition under a shared LWLock,
+        # so ONE sample that names two holders can be a scan that straddled a release and an
+        # acquire. It is evidence, but not yet enough to accuse the product.
+        excl_row = (label_excl, None,
+                    f"{duty}; sample {obs['simultaneous']} alone showed two replicas on the "
+                    f"driver's key ({obs.get('by_replica')}) — a single reading of a "
+                    "non-snapshot catalog scan cannot tell a double-holder from a release/"
+                    "acquire race, so the exclusivity claim is unmeasured; a SECOND such "
+                    "sample would FAIL it")
+    elif obs.get("holder_svcs"):
+        excl_row = (label_excl, True,
+                    f"{duty}; every holder sample named exactly one replica "
+                    f"({obs.get('by_replica')}), never two")
+    else:
+        excl_row = (label_excl, None,
+                    f"{duty}; no sample ever caught the lock granted, so exclusivity was "
+                    f"never observed either way; {attrib}")
+    hand = c14_lock_handover(obs, steps, services)
+    attributable = obs.get("attribution") == "holders"
+    if not attributable and (hand["peer_hits"] or hand["own_hits"] or hand["stale_in_window"]):
+        # Defensive: summarize only attributes holders it could name, so this combination
+        # cannot be produced by a real probe. If it ever appears, the evidence is
+        # self-contradictory and must not decide the arm in EITHER direction.
+        move_row = (label_move, None,
+                    f"the probe reports attribution={obs.get('attribution')} yet the "
+                    f"handover evidence names replicas — contradictory evidence, grading "
+                    f"neither way; {attrib}{marks}")
+    elif not attributable:
+        move_row = (label_move, None,
+                    f"{duty}; no holder in the window could be put on a replica at all "
+                    f"({attrib}) — whether the lock moved is unmeasured{marks}")
+    elif not steps:
+        move_row = (label_move, None,
+                    "the roll recorded no restart windows, so there is no 'while X was down' "
+                    f"interval to sample in; {duty}")
+    elif hand["peer_hits"]:
+        move_row = (label_move, True,
+                    f"{len(hand['peer_hits'])} sample(s) caught the lock HELD inside a roll "
+                    f"window by a replica that stayed up: {hand['peer_hits'][:3]} "
+                    f"(windows={hand['windows']}) — the lock moved to the survivor without "
+                    "ever printing a line")
+    elif hand["own_hits"]:
+        move_row = (label_move, False,
+                    f"{len(hand['own_hits'])} fresh holder sample(s) landed inside a roll "
+                    f"window and every one names the replica that was DOWN: "
+                    f"{hand['own_hits'][:3]} — the peer never took the lock while its peer "
+                    f"was stopped (windows={hand['windows']})")
+    elif hand["stale_in_window"]:
+        move_row = (label_move, None,
+                    f"only backends that PRE-DATE the restart held the lock inside the roll "
+                    f"windows ({hand['stale_in_window'][:3]}): Postgres had not reaped the "
+                    "rolled process's session yet. A session lock that outlives its client "
+                    "briefly is not a handover claim either way, and no fresh peer holder "
+                    f"was sampled in-window; {duty}")
+    else:
+        move_row = (label_move, None,
+                    f"{duty}; NO sample caught the driver's lock granted inside any roll "
+                    f"window (windows={hand['windows']}, holders anywhere="
+                    f"{obs.get('by_replica')}): a backstop pass is a capped batch on a ~5 s "
+                    "tick, so the held slice can be milliseconds and even a ~25 Hz sampler "
+                    "can miss all of them. An unobserved handover is unmeasured — never a "
+                    "PASS by silence, never a FAIL. § 7.1 C14b's safety proof stays the "
+                    "ledger verdicts (no duplicated seq, no duplicated succeeded key, "
+                    f"approval.decided once){marks}")
+    return [probe_row, excl_row, move_row]
+
+
+def c14_off_replica_lock_row(off, on, obs, lock_marks=None):
+    """C14c's 'the off replica NEVER CLAIMS the driver's advisory lock' claim, measured by
+    the same pg_locks probe (the log mark is the backup, used only when the probe never
+    ran): the off replica's own backend must be named in ZERO samples, and for that to mean
+    anything the probe must have (a) attributed holders at all and (b) caught the lock held
+    by somebody — usually the on replica, which is the positive control the old log probe
+    could never produce. An off-replica holder is the product bug this arm exists to catch;
+    every unobservable path GAPs. Pure."""
+    label = f"C14c {off} never claims the driver's advisory lock"
+    if isinstance(obs, dict):
+        duty = c14_lock_duty_note(obs)
+        arm_start = _c14_float((obs.get("window") or [None])[0])
+        arm_start_ms = int(arm_start * 1000) if arm_start else None
+        off_hits = (obs.get("by_replica") or {}).get(off, 0)
+        fresh, stale = [], []
+        for e in obs.get("events") or []:
+            if off not in (e.get("replicas") or []):
+                continue
+            for h in e.get("holders") or []:
+                if h.get("service") != off:
+                    continue
+                bs = _c14_float(h.get("backend_start_ms"))
+                # stale ONLY on positive evidence that the backend predates the arm; an
+                # unreadable backend_start never buys an amnesty for a real holder.
+                (stale if (bs is not None and arm_start_ms is not None
+                           and bs < arm_start_ms) else fresh).append(
+                    {"ts_ms": e.get("ts_ms"), "pid": h.get("pid"), "addr": h.get("addr"),
+                     "backend_start_ms": h.get("backend_start_ms")})
+        if fresh:
+            return (label, False,
+                    f"{duty}; {len(fresh)} sample(s) caught the driver's advisory lock held by "
+                    f"{off}'s OWN backend ({fresh[:3]}) — a replica with "
+                    f"COMMUNICATION_PIPELINE_SCHEDULER=off ticks the driver at all; "
+                    f"{c14_lock_attribution_note(obs)}")
+        if off_hits and stale:
+            return (label, None,
+                    f"{duty}; {off_hits} sample(s) showed {off}'s backend holding the lock, "
+                    f"but every one of them PRE-DATES the arm ({stale[:3]}): that is the "
+                    f"pre-recreate process's session Postgres had not reaped, not the "
+                    f"engine-off replica claiming the lock. No fresh {off} holder was sampled "
+                    f"— unmeasured, and the arm's restore below says what the lab was "
+                    f"left as; {c14_lock_attribution_note(obs)}")
+        if obs.get("attribution") != "holders":
+            return (label, None,
+                    f"{duty}; the probe could not attribute anything: "
+                    f"{c14_lock_attribution_note(obs)} — {off} holding nothing is unmeasured, "
+                    "never a PASS by silence")
+        return (label, True,
+                f"{duty}; every holder sample in the arm names a backend the probe could put "
+                f"on a replica ({obs.get('by_replica')}) and {off} — the one with its engine "
+                f"off — holds the lock in none of them, while {on} holds it in "
+                f"{(obs.get('by_replica') or {}).get(on, 0)}; "
+                f"{c14_lock_attribution_note(obs)}")
+    # No probe state at all (the Postgres read never ran or produced nothing): fall back to
+    # the backed-up log mark, with its blindness said out loud — D6's rule.
+    if not isinstance(lock_marks, dict):
+        return (label, None,
+                "neither the pg_locks probe nor the compose logs answer over the window — "
+                "the claim is unmeasured")
+    if (lock_marks.get(on, 0) or 0) == 0:
+        return (label, None,
+                f"acquire marks in window={lock_marks}: {on} shows none either, so the "
+                "log probe is blind — the zero says nothing about " + off +
+                " (and the pg_locks probe did not run)")
+    n = lock_marks.get(off, 0) or 0
+    return (label, n == 0,
+            f"acquire marks in window={lock_marks}"
+            + (f" — {on} ticked, {off} did not (backup log reading; the pg_locks probe "
+               "did not run)" if n == 0 else
+               " — a replica with the engine off ticked the driver"))
+
+
+# --- the probe's live half: docker addressing + one READ-ONLY psql call per window ----
+
+
+def c14_inspect_addresses(insp):
+    """Every IP one `docker inspect` payload records for a container: the flat
+    NetworkSettings.IPAddress (bridge), the per-network IPs (a user-defined compose network
+    puts the address THERE and leaves the flat one empty) and the IPv6 equivalents. A
+    container that reports none is reported as none — the probe never invents an address.
+    Pure."""
+    ips = []
+    if not isinstance(insp, dict):
+        return ips
+    ns = insp.get("NetworkSettings")
+    if isinstance(ns, dict):
+        for key in ("IPAddress", "GlobalIPv6Address"):
+            val = ns.get(key)
+            if val:
+                ips.append(str(val))
+        nets = ns.get("Networks")
+        if isinstance(nets, dict):
+            for cfg in nets.values():
+                if isinstance(cfg, dict):
+                    for key in ("IPAddress", "GlobalIPv6Address"):
+                        val = cfg.get(key)
+                        if val:
+                            ips.append(str(val))
+    return ips
+
+
+def c14_container_addresses(service):
+    """(container, [ips]) for one compose service of THIS project: compose_container()
+    resolves and project-proves the container first (never a guessed id, § 7.0), then raw
+    `docker inspect` names its addresses. ('', []) when docker cannot answer — which reads
+    as 'no address to attribute with', not as 'this replica holds nothing'."""
+    name = compose_container(service)
+    if not name:
+        return "", []
+    try:
+        rc, out = run(["docker", "inspect", name])
+    except Exception:  # noqa: BLE001 — an unreachable docker is an empty address set
+        return name, []
+    if rc != 0:
+        return name, []
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return name, []
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    return name, c14_inspect_addresses(payload)
+
+
+def c14_replica_addresses(services=("api-a", "api-b")):
+    """{service: {"container":…, "ips":[…]}} — the table the client_addr join is scored
+    against. None when docker named not a single address for any replica: attribution is
+    then impossible, and the verdict says so instead of pointing at a container it cannot
+    see. A service that resolves to nothing stays in the table with an empty list (visible,
+    not silently missing)."""
+    table = {}
+    for svc in services:
+        name, ips = c14_container_addresses(svc)
+        table[str(svc)] = {"container": name, "ips": sorted(set(ips))}
+    return table if any(ent["ips"] for ent in table.values()) else None
+
+
+def c14_lock_probe_once(samples=C14_LOCK_PROBE_SAMPLES, every_s=C14_LOCK_PROBE_EVERY_S,
+                        key=C14_M4_LOCK_KEY, timeout_s=None):
+    """ONE probe call: feed c14_lock_probe_script to psql inside this project's postgres
+    container (stdin, one statement per line, so every sample is its own statement and reads
+    the live lock table) and parse what came back. None when the READ failed (rc != 0 or the
+    invocation raised): a failed read is never recorded as 'zero holders'. The SQL is SELECT
+    plus pg_sleep only (§ 7.0: the SQL here is read-only evidence)."""
+    script = c14_lock_probe_script(samples, every_s, key)
+    budget = int(timeout_s or max(20.0, float(samples or 1) * float(every_s or 0.0) + 30.0))
+    cmd = COMPOSE + ["exec", "-T", "postgres", "psql", "-U", "communication", "-d",
+                     "communication", "-tA", "--no-psqlrc", "-v", "ON_ERROR_STOP=1",
+                     "-f", "-"]
+    try:
+        rc, out = run(cmd, input=script, timeout=budget)
+    except Exception:  # noqa: BLE001 — a probe that cannot read is a GAP, not a crash
+        return None
+    if rc != 0:
+        return None
+    return c14_lock_parse_probe_output(out)
+
+
+class C14LockProbe:
+    """The C14b / C14c advisory-lock sampler: a background thread that reads pg_locks ×
+    pg_stat_activity ~25 times a second for as long as the arm runs, and attributes every
+    holder it sees to a replica by that backend's client_addr.
+
+    It addresses the replicas once at start (`docker inspect` through compose_container) and
+    re-reads them at stop, so an address that changed during the window — C14c recreates
+    api-a before it starts — is REPORTED and attribution scores against the union of both
+    tables, never against a silently re-assigned one.
+
+    Nothing here mutates the lab: no advisory lock is taken, tested or released (that would
+    move the thing being measured), no row is written, and a postgres that stops answering
+    backs the loop off to 1 Hz instead of hammering it. Every failure lands in self.errors
+    and surfaces as a GAP in the verdict — never as a zero that reads like an observation.
+    """
+
+    def __init__(self, services=("api-a", "api-b"), samples=C14_LOCK_PROBE_SAMPLES,
+                 every_s=C14_LOCK_PROBE_EVERY_S, tag="C14"):
+        self.services = tuple(str(s) for s in services)
+        self.samples = samples
+        self.every_s = every_s
+        self.tag = tag
+        self.addr_map = None            # resolved at start
+        self.addr_map_end = None        # resolved at stop
+        self.env = None
+        self.calls = 0
+        self.errors = []
+        self.holder_samples = []        # every observation, empty ones included (the duty)
+        self.backend_reads = []         # the 'be' lines: addrs/appnames on this database
+        self.started = None
+        self.finished = None
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self.addr_map = c14_replica_addresses(self.services)
+        self.started = time.time()
+        if self.addr_map is None:
+            self.errors.append(f"{self.tag} lock probe: `docker inspect` named no address for "
+                               "any of " + ", ".join(self.services) +
+                               " — a holder's client_addr has nothing to match against")
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name=f"{self.tag}-lock-probe")
+        self._thread.start()
+        return self
+
+    def _loop(self):
+        while not self._stop.is_set():
+            parsed = c14_lock_probe_once(self.samples, self.every_s)
+            self.calls += 1
+            if parsed is None:
+                self.errors.append(f"{self.tag} lock probe: psql call {self.calls} did not "
+                                   "answer (docker compose exec -T postgres psql -f -)")
+                time.sleep(1.0)        # a postgres that will not answer is not sampled harder
+                continue
+            if parsed.get("env") and self.env is None:
+                self.env = parsed["env"]
+            if parsed.get("backends"):
+                self.backend_reads.append(parsed["backends"])
+            for smp in parsed.get("samples") or []:
+                self.holder_samples.append({"n": f"c{self.calls}s{smp.get('n')}",
+                                            "ts_ms": smp.get("ts_ms"),
+                                            "holders": smp.get("holders") or [],
+                                            "other_keys": smp.get("other_keys") or []})
+            if parsed.get("junk"):
+                self.errors.append(f"{self.tag} lock probe: {parsed['junk']} unparsable line(s)"
+                                   f" in psql call {self.calls}")
+
+    def merged_addr_map(self):
+        """(start ∪ end per service, services whose ips moved). The union keeps a holder
+        attributable after its container was recreated; the drift is what the evidence
+        prints so the reader knows the table moved under the window."""
+        base, end = self.addr_map or {}, self.addr_map_end or {}
+        merged, drift = {}, {}
+        for svc in sorted(set(base) | set(end)):
+            ips = sorted({ip for tbl in (base, end)
+                          for ip in (tbl.get(svc) or {}).get("ips") or []})
+            merged[svc] = {"container": (end.get(svc) or base.get(svc) or {}).get("container",
+                                                                                 ""),
+                           "ips": ips}
+            first = sorted(set((base.get(svc) or {}).get("ips") or []))
+            last = sorted(set((end.get(svc) or {}).get("ips") or []))
+            if first and last and first != last:
+                drift[svc] = {"start": first, "end": last}
+        return merged, drift
+
+    def summary(self):
+        """The measurement, as c14_lock_pg_verdicts wants it (pure c14_lock_summarize over
+        what this thread actually read)."""
+        if self.addr_map_end is None:
+            self.addr_map_end = c14_replica_addresses(self.services)
+            if self.addr_map_end is None and self.addr_map:
+                self.errors.append(f"{self.tag} lock probe: the post-window `docker inspect` "
+                                   "read failed — attribution scored the start-window "
+                                   "addresses only")
+        merged, drift = self.merged_addr_map()
+        obs = c14_lock_summarize({"env": self.env, "samples": list(self.holder_samples),
+                                  "backends": list(self.backend_reads),
+                                  "addr_map": merged, "errors": list(self.errors),
+                                  "calls": self.calls}, self.services)
+        obs["window"] = [self.started, self.finished]
+        obs["addr_drift"] = drift
+        return obs
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=90)
+            if self._thread.is_alive():
+                self.errors.append(f"{self.tag} lock probe: the sampler thread was still "
+                                   "inside a psql call when the arm ended — the sample list "
+                                   "is short by whatever it never returned")
+        self.finished = time.time()
+        return self.summary()
 
 
 # § 7.1 C14c: "COMMUNICATION_PIPELINE_SCHEDULER=off on a fresh replica: that replica
@@ -18519,7 +19349,8 @@ def c14_restore_verdicts(restore):
              "— the restore is unproven, not unseen")]
 
 
-def c14_off_replica_verdicts(off, on, reads, posted, advance, lock_marks, restore=None):
+def c14_off_replica_verdicts(off, on, reads, posted, advance, lock_marks, restore=None,
+                            lock_obs=None):
     """C14c's claims from what the arm OBSERVED (BOTH replicas stay up — the arm flips
     the flag by recreating one replica; it never stops anything):
       reads      {path: status} answered by the off replica (it must serve reads,
@@ -18529,7 +19360,12 @@ def c14_off_replica_verdicts(off, on, reads, posted, advance, lock_marks, restor
                  replica's engine running the whole time, 'the on replica keeps
                  advancing runs' is this list leaving 'queued'; 'the off replica
                  advances NOTHING' is carried by the advisory-lock claim below;
-      lock_marks {service: acquire-count} over the arm's window (None = logs unreadable);
+      lock_marks {service: acquire-count} over the arm's window (None = logs unreadable) —
+                 the BACKED-UP log probe, consulted only when lock_obs is absent;
+      lock_obs   the C14LockProbe summary (pg_locks samples attributed through
+                 pg_stat_activity.client_addr × container IPs). When it is a dict it DECIDES
+                 the lock claim; when it is None the claim falls back to lock_marks and says
+                 in the evidence that the Postgres probe did not run;
       restore    None when the lab itself supplied the off replica (the arm recreated
                  nothing), else (service, 'on'|'off'|'unobservable') — the engine state
                  the try/finally restore left for every later gate.
@@ -18562,23 +19398,10 @@ def c14_off_replica_verdicts(off, on, reads, posted, advance, lock_marks, restor
                     + (f" — left 'queued' as {moved[-1]!r} while {off} never touched the driver"
                        if moved else
                        " — stayed 'queued' the whole window: NOTHING advanced the run")))
-    label = f"C14c {off} never claims the driver's advisory lock"
-    if not isinstance(lock_marks, dict):
-        out.append((label, None,
-                    "compose logs unreadable over the window — the claim is unmeasured"))
-    elif lock_marks.get(on, 0) == 0:
-        # docs/m4-live-findings.md D6: with NO acquire mark on either replica the probe is
-        # blind (the mark is per-process and released every tick), which proves nothing
-        # about the off one — GAP, never a PASS by silence.
-        out.append((label, None,
-                    f"acquire marks in window={lock_marks}: {on} shows none either, so the "
-                    "log probe is blind — the zero says nothing about " + off))
-    else:
-        n = lock_marks.get(off, 0)
-        out.append((label, n == 0,
-                    f"acquire marks in window={lock_marks}"
-                    + (f" — {on} ticked, {off} did not" if n == 0 else
-                       " — a replica with the engine off ticked the driver")))
+    # The lock claim is measured in POSTGRES (C14LockProbe: pg_locks × pg_stat_activity ×
+    # container IPs); the serve-log acquire mark is the backed-up fallback and is only
+    # consulted when that probe never produced a reading — see c14_off_replica_lock_row.
+    out.append(c14_off_replica_lock_row(off, on, lock_obs, lock_marks))
     out.extend(c14_restore_verdicts(restore))
     return out
 
@@ -18688,6 +19511,7 @@ def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
                  f"states={states if states is not None else '(logs unreadable)'}")
     reads, posted, advance, marks, run_id = {}, None, [], None, None
     restore, off_name, on_name = None, None, None
+    lock_obs, lock_probe = None, None
     try:
         if pair is None:
             gap("C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica",
@@ -18711,8 +19535,18 @@ def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
                     show(f"C14c GET {path} on {off_name}", str(e)[:140])
             show(f"C14c reads answered by {off_name} with its engine off ({off_base})",
                  json.dumps(reads))
-            # The window starts here: the lock-mark read below is bounded to it (D6).
+            # The window starts here: the lock-mark read below is bounded to it (D6), and so
+            # is the pg_locks sampler that actually grades the "never claims" claim.
             since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            lock_probe = C14LockProbe(services=services, tag="C14c").start()
+            show("C14c advisory-lock probe started on pg_locks (READ-ONLY: SELECT + pg_sleep, "
+                 f"no lock taken by the probe itself) for {off_name} vs {on_name}",
+                 "replica addresses="
+                 + (json.dumps(lock_probe.addr_map, sort_keys=True)
+                    if lock_probe.addr_map is not None else
+                    "(docker inspect named NO address for any replica — the probe cannot put a "
+                    "holder on a replica and will GAP instead of guessing)")
+                 + f"; engine states as found: {states}")
             rev = mf(facts, "revision_id", "twin") or mf(facts, "revision_id", "agent")
             body = {"pipeline_revision_id": rev,
                     "inputs": mf(facts, "inputs", "twin", default={}) or {},
@@ -18745,14 +19579,28 @@ def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
                 show("C14c the run's ledger statuses over the arm window",
                      json.dumps(advance) if advance else "(no readable status)")
             marks = c14_lock_marks(services, since=since)
-            show(f"C14c driver lock marks in the window (compose logs --since {since})",
+            show(f"C14c driver lock marks in the window (compose logs --since {since}) — the "
+                 "BACKED-UP reading, reported not graded",
                  f"{marks if marks is not None else '(unreadable)'}")
     finally:
+        if lock_probe is not None:
+            lock_obs = lock_probe.stop()
+            show("C14c advisory-lock probe result (pg_locks × pg_stat_activity × container IPs)",
+                 "samples=" + str((lock_obs or {}).get("samples")) + " held="
+                 + str((lock_obs or {}).get("held")) + " by_replica="
+                 + json.dumps((lock_obs or {}).get("by_replica"), sort_keys=True)
+                 + " other_key_samples=" + str((lock_obs or {}).get("other_key_samples"))
+                 + " pids=" + json.dumps((lock_obs or {}).get("pids"), sort_keys=True)
+                 + " env=" + json.dumps((lock_obs or {}).get("env"), sort_keys=True)
+                 + "\n    " + c14_lock_attribution_note(lock_obs)
+                 + ("\n    addresses that moved during the window: "
+                    + json.dumps(lock_obs.get("addr_drift"), sort_keys=True)
+                    if (lock_obs or {}).get("addr_drift") else ""))
         if recreated:
             restore = (recreated, c14_restore_engine_on(recreated, bases[recreated], plan=plan))
     if pair is not None:
         c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, posted, advance, marks,
-                                         restore=restore))
+                                         restore=restore, lock_obs=lock_obs))
         gap("C14c the flag off EVERYWHERE leaves M2/M3 intact",
             "this arm measured ONE replica off against one that kept advancing; the second "
             "half of § 7.1 C14c (ADR-0023 Migration/rollback) needs a separate bring-up "
@@ -18870,11 +19718,22 @@ class C14Stream:
                     if self.project_id and f["project_id"] not in (self.project_id, "None", "")])
 
 
-def c14_roll_one(svc, base, peer, samples):
+def c14_roll_one(svc, base, peer, samples, roll_step=None):
     """Restart ONE replica by compose service name and SAMPLE the lb and the peer
     replica while it is down — the never-both-down rule is measured during the restart,
-    not after it. Returns (rc_ok, came_back_ready)."""
+    not after it. Returns (rc_ok, came_back_ready).
+
+    roll_step (optional dict) is the advisory-lock handover's clock: the lock probe reads
+    pg_locks with SERVER timestamps, so the arm has to say when this replica actually went
+    away and came back in the same clock. t_restart is when the command was issued, t_gone
+    the first time this replica's OWN readiness endpoint stopped answering (a second watcher
+    polls it — the samples list above deliberately never touches the replica being rolled,
+    because a refused connection there is expected and would pollute the never-both-down
+    claim), t_ready when it answered again."""
     stop = threading.Event()
+    step = roll_step if isinstance(roll_step, dict) else {}
+    step.setdefault("svc", svc)
+    step.setdefault("peer", peer)
 
     def watch():
         probe = Client("probe")
@@ -18887,12 +19746,33 @@ def c14_roll_one(svc, base, peer, samples):
                 samples.append((svc, lbl, bool(ok)))
             time.sleep(0.5)
 
+    def watch_self():
+        """When is THIS replica not serving? Only its own endpoint answers that (the lb
+        would serve the peer and hide the roll — same reason c14_wait_replica exists)."""
+        probe = Client("probe-self")
+        while not stop.is_set():
+            try:
+                ok = probe.get(base, "/api/v1/system/readiness", timeout=2).status == 200
+            except Exception:  # noqa: BLE001 — refused is exactly what is being timed
+                ok = False
+            now = time.time()
+            if not ok and step.get("t_gone") is None:
+                step["t_gone"] = now
+            elif ok and step.get("t_gone") is not None and step.get("t_back") is None:
+                step["t_back"] = now
+            time.sleep(0.25)
+
     th = threading.Thread(target=watch, daemon=True)
     th.start()
+    th2 = threading.Thread(target=watch_self, daemon=True)
+    th2.start()
     try:
+        step["t_restart"] = time.time()
         rc, out = run(COMPOSE + ["restart", svc])
         show(f"compose -p communication-m4 restart {svc} (rc={rc})", out[-200:])
         ready = c14_wait_replica(base)      # the roll is one-at-a-time ONLY if we wait
+        step["t_ready"] = time.time()
+        step["ready"] = bool(ready)
         probe = Client("probe")
         for lbl, url in (("lb", LB), ("other", peer)):
             try:
@@ -18903,6 +19783,7 @@ def c14_roll_one(svc, base, peer, samples):
     finally:
         stop.set()
         th.join(timeout=5)
+        th2.join(timeout=5)
     return rc == 0, ready
 
 
@@ -18955,24 +19836,44 @@ def c14():
     show("C14 live run", f"run={run_id} source={src} gate={aid or '(none)'} "
                           f"status={run_status(run_id)!r}")
     seq0 = _int(c9_journal_seq())
-    # D6: both lock snapshots read the SAME bounded window (`--since <gate start ISO>`),
-    # so the comparison is about the roll and not about an unbounded lab history.
+    # D6: the serve LOG cannot witness a handover (the mark is one per-process not-held→held
+    # transition and the lock is released every tick), so it is only the BACKED-UP reading
+    # reported here; the measurement is the pg_locks sampler below, which reads the lock
+    # table itself and attributes the holder through pg_stat_activity × container IPs.
     marks_since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     marks0 = c14_lock_marks(since=marks_since)
-    show("C14b advisory-lock snapshot (compose logs --since <gate start> api-a api-b)",
+    show("C14b advisory-lock BACKUP reading (compose logs --since <gate start> api-a api-b)",
          f"since={marks_since} counts={marks0 if marks0 is not None else '(unreadable)'} "
-         "— a 0 before-count GAPs the arm: the mark is logged per-process and released "
-         "every tick, so its absence proves the probe is blind, not that the lock held "
-         "(docs/m4-live-findings.md D6)")
+         "— reported, not graded: a 0 here is the mark's blindness (docs/m4-live-findings.md "
+         "D6), not evidence about the lock")
+    probe = C14LockProbe(services=tuple(s for s, _b in C14_ROLL), tag="C14b").start()
+    show("C14b advisory-lock probe (pg_locks locktype='advisory' granted, READ-ONLY)",
+         f"{C14_LOCK_PROBE_SAMPLES} samples every {C14_LOCK_PROBE_EVERY_S}s per psql call, "
+         "for the whole roll; replica addresses="
+         + (json.dumps(probe.addr_map, sort_keys=True) if probe.addr_map is not None else
+            "(docker inspect named NO address for any replica — the probe cannot attribute "
+            "a holder and says so instead of guessing)")
+         + "; the probe takes NO advisory lock and writes NO row")
     stream = C14Stream(alice, run_id, pid, seq0).start()
     samples, rolled, decided = [], [], None
+    steps = []
+    lock_obs = None
     status = ""
     try:
         # ---- C14a: one replica at a time, readiness proven before the next one goes ----
         for i, (name, base) in enumerate(C14_ROLL):
             peer = C14_ROLL[1 - i][1]
-            ok, ready = c14_roll_one(name, base, peer, samples)
+            step = {"svc": name, "peer": peer}
+            ok, ready = c14_roll_one(name, base, peer, samples, step)
+            steps.append(step)
             rolled.append(name)
+            show(f"C14b roll window recorded for {name} (the lock probe's clock)",
+                 " | ".join(f"{k}={_d:.3f}"
+                            for k, _d in (("t_restart", step.get("t_restart")),
+                                          ("t_gone", step.get("t_gone")),
+                                          ("t_back", step.get("t_back")),
+                                          ("t_ready", step.get("t_ready")))
+                            if _d is not None) or "no timestamps")
             check(f"C14a {name} restarted and is ready on {base} again "
                   f"(the peer on {peer} stayed up throughout)", ok and ready,
                   f"rc_ok={ok} ready={ready} — the next replica only goes once this one is back")
@@ -18991,6 +19892,29 @@ def c14():
                                         "M4 exit C14a — decided while the replicas rolled")
                     show("C14a POST /approvals/{id}/decide MID-ROLL", f"{decided['status']} "
                          f"{str(decided['body'])[:160]}")
+
+        # The handover is judged INSIDE the roll windows, so the sampler stops here: a
+        # ~25 Hz loop over the 900 s the run may take to finish would buy 20 000 more empty
+        # observations and no evidence.
+        lock_obs = probe.stop()
+        show("C14b advisory-lock probe result (pg_locks × pg_stat_activity × docker "
+             "container IPs)",
+             "samples=" + str((lock_obs or {}).get("samples")) + " held="
+             + str((lock_obs or {}).get("held")) + " by_replica="
+             + json.dumps((lock_obs or {}).get("by_replica"), sort_keys=True)
+             + " other_key_samples=" + str((lock_obs or {}).get("other_key_samples"))
+             + " pids=" + json.dumps((lock_obs or {}).get("pids"), sort_keys=True)
+             + " env=" + json.dumps((lock_obs or {}).get("env"), sort_keys=True)
+             + "\n    " + c14_lock_attribution_note(lock_obs)
+             + "\n    holder events: "
+             + json.dumps([{"ts_ms": e.get("ts_ms"), "replicas": e.get("replicas"),
+                            "holders": [{k: h.get(k) for k in ("pid", "service", "addr",
+                                                               "basis", "state", "objsubid")}
+                                        for h in e.get("holders") or []]}
+                           for e in (lock_obs or {}).get("events") or []][:20])
+             + ("\n    addresses that moved during the window: "
+                + json.dumps(lock_obs.get("addr_drift"), sort_keys=True)
+                if (lock_obs or {}).get("addr_drift") else ""))
 
         # ---- the run finishes on the rolled replicas; the stream stays subscribed ----
         deadline = time.time() + 900
@@ -19012,6 +19936,8 @@ def c14():
             check(f"restore: {name} answers readiness on {base} again", c14_wait_replica(base, 30),
                   "the stack is left as found, with both replicas serving")
         stream.stop()
+        if lock_obs is None:         # the roll died mid-way: harvest what was sampled
+            lock_obs = probe.stop()
 
     # ---- C14a/C14b verdicts, all from the LEDGER + what the stream actually got ----
     run_slice, window = [], []
@@ -19046,7 +19972,13 @@ def c14():
          json.dumps(counts) if counts else "(unreadable)")
     c5_emit(c14_terminal_verdicts(counts, dup_keys))
     c5_emit(c14_roll_verdicts(samples))
-    c5_emit(c14_lock_verdicts(marks0, c14_lock_marks(since=marks_since)))
+    marks1 = c14_lock_marks(since=marks_since)
+    show("C14b advisory-lock BACKUP reading after the roll (compose logs --since "
+         + str(marks_since) + ")",
+         f"before={marks0} after={marks1} — reported as the backup; the graded evidence is "
+         "the pg_locks probe result printed above")
+    c5_emit(c14_lock_pg_verdicts(lock_obs, steps,
+                                 services=tuple(s for s, _b in C14_ROLL), log_marks=marks1))
     c5_emit(c14_sse_verdicts([f["seq"] for f in stream.frames], run_slice,
                              stream.reconnects, stream.foreign()))
     if decided:
@@ -19068,7 +20000,8 @@ def c14():
               f"last observed status={status!r} (tree + journal dumped above)")
     c5_emit(c14_state_verdicts(status))
     gap("C14b the two-replica race is NOT forced", "the roll hands the driver's advisory lock "
-        "over (the verdicts above observe it) and the loser's advance is measured against the "
+        "over (the pg_locks probe above reads the handover, or says precisely why it could "
+        "not) and the loser's advance is measured against the "
         "ledger — but no lab lever holds a lock open across a restart to make BOTH replicas "
         "advance the same run in one instant. § 7.1 C14b's own words: the row locks are the "
         "safety argument and the advisory lock is an optimization; the no-duplicate verdicts "
@@ -20133,12 +21066,20 @@ def w2_live_verdicts(samples):
     return [(label, True, detail)]
 
 
-def w2_chain_verdicts(visible, journal_types):
+def w2_chain_verdicts(visible, journal_types, turn_evidence=None):
     """The row's literal chain, `run.created` -> `node.attempt.started` ->
     `conversation.turn.*` -> `run.checkpoint_saved`: one verdict per type (does the
     page draw it at all), plus the ordered-subsequence claim over the types the run
     really produced. The journal decides which types were ever available; C1h's
-    reading (an ORDERED SUBSEQUENCE, not an exact set) is reused here for the DOM."""
+    reading (an ORDERED SUBSEQUENCE, not an exact set) is reused here for the DOM.
+
+    `turn_evidence` is the `conversation.turn.*` link graded on the run that really
+    journalled turn rows (this leg's twin is process.exec and owns no ACP turn —
+    C4a's finding): a (ok, detail) pair computed by w2_transcript_arm_verdict from
+    the ledger read and the attempt pane's DOM. With it the link is MEASURED, not
+    wished away; without it the old honest GAP stands. The order claim never takes
+    the substituted link — the twin's timeline never drew a conversation frame,
+    and an order across two runs would be the driver's fiction."""
     out, order = [], []
     seen = set()
     for _seq, t in journal_types or []:
@@ -20152,9 +21093,15 @@ def w2_chain_verdicts(visible, journal_types):
         drawn = [t for t in rendered if w_type_matches(t, pattern)]
         label = f"W2 the run page renders {pattern}"
         if not journalled:
-            out.append((label, None, f"the run's journal holds no {pattern} row at all "
-                                     f"(it wrote {len(order)} distinct type(s)) — there is "
-                                     "nothing for the page to draw"))
+            if pattern == "conversation.turn.*" and turn_evidence is not None:
+                out.append((label, turn_evidence[0],
+                            "this run (the deterministic twin) journalled no "
+                            "conversation.turn.* row; the link is graded on the run "
+                            "that really produced them — " + turn_evidence[1]))
+            else:
+                out.append((label, None, f"the run's journal holds no {pattern} row at all "
+                                         f"(it wrote {len(order)} distinct type(s)) — there is "
+                                         "nothing for the page to draw"))
         elif not drawn:
             out.append((label, False, f"the journal wrote {len(journalled)} {pattern} row(s) "
                                       "and the rendered page names none of them"))
@@ -20181,15 +21128,18 @@ def w2_chain_verdicts(visible, journal_types):
     return out
 
 
-def w2_turn_arm_verdict(journal_types):
+def w2_turn_arm_verdict(journal_types, turn_evidence=None):
     """The row's third link — `conversation.turn.*`, "the transcript of the agent
     node, inline, from M2's stream". The run W2 watches is the DETERMINISTIC TWIN
     the task fixes, whose attempts are process.exec (C4 measured the same thing: a
     process.exec node owns no ACP turn), and even an agent run's transcript does not
     reach THIS panel: `toRunEvent` returns null for every type outside
     M4_RUN_EVENT_TYPES, so the Timeline tab cannot draw a conversation frame by
-    construction. The arm is therefore unmeasurable here and says so — never a PASS
-    by absence, and never a FAIL blamed on the fixture."""
+    construction. What the arm CAN measure is the surface the product itself draws
+    the transcript on — the attempt pane — and `turn_evidence` (see
+    w2_chain_verdicts) is that measurement, taken on a run that really journalled
+    conversation.turn.* rows. Without it the arm unmeasures and says so — never a
+    PASS by absence, and never a FAIL blamed on the fixture."""
     label = "W2 conversation.turn.* renders inline (the transcript arm)"
     turns = [t for _s, t in journal_types or []
              if w_type_matches(t, "conversation.turn.*")]
@@ -20197,6 +21147,10 @@ def w2_turn_arm_verdict(journal_types):
         return (label, None, "the run's journal is unreadable — whether a turn ever existed "
                              "to render is unknown")
     if not turns:
+        if turn_evidence is not None:
+            return (label, turn_evidence[0],
+                    "graded on the run that journalled conversation.turn.* rows, not on this "
+                    "process.exec twin (which owns no ACP turn): " + turn_evidence[1])
         return (label, None, "this run journalled no conversation.turn.* row: its attempts are "
                              "process.exec (the deterministic twin), which owns no ACP turn — "
                              "C4a's identical finding, restated for the browser. The arm also "
@@ -20208,6 +21162,106 @@ def w2_turn_arm_verdict(journal_types):
                          "Timeline tab cannot show them by construction (outside "
                          "M4_RUN_EVENT_TYPES, toRunEvent -> null) and the inline transcript "
                          "arm belongs to the attempt pane, not this row's panel")
+
+
+def w2_turn_run_sql(preferred_run_id=""):
+    """The ledger read behind the transcript arm: an attempt whose CONVERSATION
+    journalled at least one `conversation.turn.*` row. The join is by
+    `attempts.conversation_id = domain_events.conversation_id`, not by run_id:
+    the turn writers (trnAppendTx / the reconciler's lease arm) stamp these rows
+    conversation-scoped — C4e measured exactly that (§ 7.1 C4e's `turn_id` maps
+    to the journal's conversation scope) — so a run_id-only search would miss
+    the very rows the arm renders. Pure: it spells the SQL and strips quotes
+    from the preferred id; the caller reads the ledger and reports."""
+    pref = str(preferred_run_id or "").strip().replace("'", "")
+    where = ("WHERE a.conversation_id IS NOT NULL AND EXISTS (SELECT 1 FROM domain_events de "
+             "WHERE de.conversation_id = a.conversation_id "
+             "AND de.type LIKE 'conversation.turn.%') ")
+    if pref:
+        where += f"AND a.run_id = '{pref}' "
+    return ("SELECT a.run_id || '|' || a.node_execution_id || '|' || ne.node_instance_key "
+            "|| '|' || a.attempt_number::text || '|' || coalesce(a.turn_id::text, '-') "
+            "|| '|' || r.project_id || '|' || (SELECT count(*) FROM domain_events de "
+            "WHERE de.conversation_id = a.conversation_id "
+            "AND de.type LIKE 'conversation.turn.%')::text || '|' || (SELECT count(*) "
+            "FROM domain_events de WHERE de.conversation_id = a.conversation_id "
+            f"AND de.type IN ({c4e_transcript_type_in()}))::text "
+            "FROM attempts a JOIN runs r ON r.id = a.run_id "
+            "JOIN node_executions ne ON ne.id = a.node_execution_id "
+            + where + "ORDER BY a.created_at DESC LIMIT 5")
+
+
+def w2_turn_run_rows(text):
+    """Parse `w2_turn_run_sql`'s `-tA` output into candidate dicts (all values stay
+    strings — the counts are evidence lines and verdict detail, never arithmetic)."""
+    keys = ("run_id", "node_execution_id", "node_instance_key", "attempt_number",
+            "turn_id", "project_id", "turn_rows", "transcript_rows")
+    out = []
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) == len(keys) and all(p != "" for p in parts):
+            out.append(dict(zip(keys, parts)))
+    return out
+
+
+def w2_find_turn_run(preferred_run_id=""):
+    """The run whose transcript arm W2 may read: the agent run C4e fenced (its id
+    rides CTX when C4 ran in this driver process — W2 spends no new Claude turn),
+    verified by the ledger, else the lab's newest attempt whose conversation
+    journalled conversation.turn.* rows. Returns (pick | None, [reads + results])
+    — the GAP names every read."""
+    wanted = str(preferred_run_id or "").strip()
+    passes = ([(f"the run C4e fenced its real turn inside ({wanted})", wanted)]
+              if wanted else []) + [("every run in the lab whose conversation journalled "
+                                     "a conversation.turn.* row", "")]
+    searched = []
+    for note, pref in passes:
+        try:
+            rows = w2_turn_run_rows(psql(w2_turn_run_sql(pref)))
+        except RuntimeError as e:
+            searched.append(note + f": psql unreadable ({str(e)[:120]})")
+            continue
+        searched.append(note + f": {len(rows)} attempt row(s)")
+        if rows:
+            return rows[0], searched
+    return None, searched
+
+
+def w2_transcript_arm_verdict(turn_run, pane, searched):
+    """(ok, detail) for the row's `conversation.turn.*` link, judged on the run
+    that really journalled the rows: the LEDGER says the turn spoke
+    (`turn_run.turn_rows`), the PANE (w2_turn_pane_reading's testid counts on the
+    attempt surface where the transcript lives — the Timeline tab drops
+    conversation.* by construction) says the page drew it. No run found is a GAP
+    naming every read; a journal that spoke while the pane drew its empty-copy is
+    a FAIL; a pane that never mounted is a GAP — unmeasured, never clean."""
+    if not turn_run:
+        return (None, "no run in this lab journalled a conversation.turn.* row for the page "
+                      "to draw — searched: " + "; ".join(searched or ["(no search was made)"]))
+    head = (f"run {turn_run['run_id']} ({turn_run['node_instance_key']} attempt "
+            f"{turn_run['attempt_number']}, turn {turn_run['turn_id']}): its conversation "
+            f"journalled {turn_run['turn_rows']} conversation.turn.* row(s) and "
+            f"{turn_run['transcript_rows']} streamed transcript row(s); ")
+    if not pane or not pane.get("read"):
+        return (None, head + "the attempt pane never read back (no testid counts came from the "
+                             "browser) — whether the page draws the transcript is unmeasured, "
+                             "not clean; searched: " + "; ".join(searched or []))
+    surface = _int(pane.get("surface")) + _int(pane.get("stream"))
+    items = _int(pane.get("items"))
+    empty = _int(pane.get("empty"))
+    tail = (f"the pane drew conversation-surface={_int(pane.get('surface'))} "
+            f"work-stream={_int(pane.get('stream'))} transcript rows={items} "
+            f"empty-copy={empty} [{pane.get('shot') or 'no screenshot'}]")
+    if items >= 1 and surface >= 1:
+        return (True, head + "the attempt pane draws the turn's transcript INLINE on the run "
+                            "page (Transcript's own transcript-item rows inside the dock's "
+                            "conversation surface) — " + tail)
+    if items >= 1:
+        return (True, head + f"the pane drew {items} transcript row(s) inline — " + tail)
+    if empty:
+        return (False, head + "the pane says 'No journal frames' while the journal speaks — "
+                              + tail)
+    return (None, head + "the pane mounted no conversation surface at all — " + tail)
 
 
 def w2_no_gap_verdict(visible, journal_types, dom_text, tag="W2"):
@@ -20759,16 +21813,27 @@ def w11_tree_verdicts(children, dom_text, prior_children=None):
     return out
 
 
-def w11_attempt_verdicts(attempts, dom_text, node_key=""):
-    """Row W11's second half: "the attempt list shows attempt 1 `interrupted` with
-    `retry_context` and attempt 2 `succeeded`".
+def w11_attempt_verdicts(attempts, dom_text, node_key="", searched=None):
+    """Row W11's second half: "the attempt list shows attempt 1 `interrupted`
+    with `retry_context` and attempt 2 `succeeded`".
 
-    `attempts` is the ledger/API's own rows for the node execution opened (the answer
-    key); the pair only exists if a worker really died holding attempt 1, which is
-    C5's product and this leg kills nothing — so no pair is a GAP naming that, never
-    a PASS. With a real pair the DOM is held to the row: attempt 1's number, its
-    `interrupted` word and its retry_context copy ("what the next attempt inherits
-    (<mode>)", AttemptDetail.tsx) must all be on screen."""
+    `attempts` is the ledger/API's own rows for the node execution opened (the
+    answer key) and the pair is read from the run that HOLDS it — C5's kill, not
+    this leg's (which kills nothing, § 7.2 read-mostly). `searched` names the
+    ledger reads that looked for the pair; with no pair anywhere the GAP reports
+    them, never a PASS and never a FAIL blamed on a death this leg may not cause.
+
+    The DOM half is row W11's OWN surface: the workbench dock's attempt tablist,
+    where every tab names its state (`attempt 1 · interrupted`,
+    WorkbenchDock.tsx). Both rows of the pair must be on screen; the dead try's
+    pane owes W5's interrupted sentence; and `retry_context` is graded to the
+    shape the server actually serves — the pane keys its continuity copy on
+    `retry_context.mode` (AttemptDetail.tsx `continuityCopy` returns null
+    without one), while route 31 persists `{attempt, error_class, head_commit,
+    modified_path_count}`. A mode the pane has words for MUST be drawn (a
+    missing copy is a FAIL); a context with no mode PASSes the list and says,
+    in the open, that the pane has nothing to draw and the ledger value shown
+    is the evidence."""
     out = []
     rows = [a for a in (attempts or []) if isinstance(a, dict)]
     body = " ".join((dom_text or "").split())
@@ -20784,30 +21849,72 @@ def w11_attempt_verdicts(attempts, dom_text, node_key=""):
         out.append((label, None, f"the attempt rows for {node_key or 'the node'} did not "
                                  "read back — there is nothing to compare the pane against"))
     elif not pair:
-        out.append((label, None,
-                    f"{node_key or 'the node'} holds "
-                    + str([f"#{a.get('attempt_number')} {a.get('status')}" for a in rows])
-                    + "; the row's pair needs an attempt INTERRUPTED mid-node, which is what "
-                      "C5's `compose kill worker-a` produces — this leg performs no kill "
-                      "(§ 7.2 makes W-legs read-mostly), so the pair was never available"))
+        why = (f"{node_key or 'the node'} holds "
+               + str([f"#{a.get('attempt_number')} {a.get('status')}" for a in rows])
+               + "; the row's pair needs an attempt INTERRUPTED mid-node, which is what "
+                 "C5's `compose kill worker-a` produces — this leg performs no kill "
+                 "(§ 7.2 makes W-legs read-mostly), so it reads the pair from the ledger")
+        why += (": " + "; ".join(searched)) if searched else ", and the pair was never available"
+        out.append((label, None, why))
     else:
         first = int(pair[0].get("attempt_number") or 1)
-        mode = ""
-        rc = pair[0].get("retry_context")
-        if isinstance(rc, dict):
-            mode = str(rc.get("mode") or "")
-        shown = (f"attempt {first}" in lowered and "interrupted" in lowered
-                 and "what the next attempt inherits" in lowered)
-        out.append((label, shown,
-                    f"ledger: #{first} interrupted (retry_context.mode={mode or 'unset'!r}), "
-                    + str([f"#{a.get('attempt_number')} {a.get('status')}" for a in rows])
-                    + f"; DOM names attempt {first}={f'attempt {first}' in lowered}, "
-                      "says 'interrupted'=" + str("interrupted" in lowered)
-                      + ", shows the retry_context copy="
-                      + str("what the next attempt inherits" in lowered)
-                      + " — the pane opens on ONE attempt (RunInspector.tsx takes "
-                        "attempts.at(-1)), so an earlier attempt's row is not on screen "
-                        "at all unless the newest attempt carries it"))
+        later = sorted((int(s.get("attempt_number") or 0) for s in succeeded
+                        if int(s.get("attempt_number") or 0) > first))
+        second = later[0] if later else 0
+
+        def clean_ctx(v):
+            if isinstance(v, dict):
+                return v or None
+            s = str(v or "").strip()
+            return s if s and s != "-" else None
+        dead_ctx = clean_ctx(pair[0].get("retry_context"))
+        retry_row = next((s for s in rows if int(s.get("attempt_number") or 0) == second), {})
+        retry_ctx = clean_ctx(retry_row.get("retry_context"))
+        # Route 31 rides the context on the RETRY ("the retried attempt is TOLD
+        # the previous attempt's facts"); a fixture that stamped the dead row is
+        # honoured too — the pair's context is whichever row of the pair carries it.
+        ctx = retry_ctx or dead_ctx
+        ctx_at = "succeeded" if retry_ctx else ("interrupted" if dead_ctx else "none")
+        mode = str(ctx.get("mode") or "") if isinstance(ctx, dict) else ""
+        tabs = w11_attempt_tab_states(dom_text)
+        dead_on = (tabs.get(first) == "interrupted"
+                   or (f"attempt {first}" in lowered and "interrupted" in lowered))
+        retry_on = (tabs.get(second) == "succeeded"
+                    or (f"attempt {second}" in lowered and "succeeded" in lowered))
+        ctx_copy = "what the next attempt inherits" in lowered
+        died_said = "interrupted" in lowered
+        ledger_says = (f"ledger: #{first} interrupted -> #{second} succeeded; retry_context on "
+                       f"the {ctx_at} row = "
+                       + (json.dumps(ctx, sort_keys=True)[:180] if isinstance(ctx, dict) and ctx
+                          else repr(ctx)[:180]))
+        dom_says = (f"; DOM: attempt {first} read as {tabs.get(first) or ('named' if f'attempt {first}' in lowered else 'ABSENT')}, "
+                    f"attempt {second} read as {tabs.get(second) or ('named' if f'attempt {second}' in lowered else 'ABSENT')}, "
+                    f"interrupted copy={died_said}, continuity copy={ctx_copy}")
+        if not tabs:
+            dom_says += (" — the dock's attempt tablist was not read, and the pane "
+                         "opens on ONE attempt (RunInspector.tsx takes attempts.at(-1)), "
+                         "so an earlier attempt's row is not on screen at all unless the "
+                         "newest attempt carries it")
+        if not ctx:
+            ok, tail = None, ("; NEITHER row of the pair carries a retry_context — the "
+                              "row's 'with retry_context' has nothing in the ledger to be "
+                              "drawn from (route 31 writes it on every retry this lab knows)")
+        elif mode and not ctx_copy:
+            ok, tail = False, (f"; retry_context.mode={mode!r} is served and the pane's copy "
+                               "is keyed on it (AttemptDetail.tsx continuityCopy), yet "
+                               "'what the next attempt inherits' is not on screen")
+        elif not mode:
+            ok = bool(dead_on and retry_on and died_said)
+            tail = ("; the stored retry_context carries no `mode` key (route 31's shape: "
+                    "attempt/error_class/head_commit/modified_path_count), and the pane's "
+                    "'what the next attempt inherits' copy is keyed on retry_context.mode "
+                    "(AttemptDetail.tsx) — so the pane has no words for this context and "
+                    "the ledger value above is that half's evidence; the DOM half graded "
+                    "here is the attempt LIST showing both rows and the dead try's pane")
+        else:
+            ok = bool(dead_on and retry_on and died_said and ctx_copy)
+            tail = "; the context copy is drawn because the server served a mode for it"
+        out.append((label, ok, ledger_says + dom_says + tail))
     newest = max((int(a.get("attempt_number") or 0) for a in rows), default=0)
     if rows:
         label = "W11 the node pane says which attempt it is showing"
@@ -20963,6 +22070,54 @@ def w1():
     pw("close", session="m4w1")
 
 
+def w2_turn_pane_reading(turn_run, session="m4w2", tries=10, delay=2):
+    """Open the attempt pane of the run whose conversation journalled the turn
+    (§ 7.2 read-mostly: a goto, two GETs and a render — no kill, no restart), and
+    COUNT the surfaces the product draws the transcript with. The counts are read
+    by data-testid because an accessibility snapshot names a chat row by its
+    CONTENT, never by its surface: the workbench dock mounts the conversation as
+    `dock-conversation`/`dock-work-stream` (WorkbenchDock.tsx AgentDock), the
+    Diagnostics attempt pane as `attempt-agent-work`/`attempt-work-stream`
+    (AttemptDetail.tsx AttemptAgentWork), every message/tool row as
+    `transcript-item` (Transcript.tsx), and the honest 'nothing streamed yet' line
+    as `dock-work-empty`/`attempt-work-empty`. Returns None when the page never
+    answers with counts at all (the arm's verdict then GAPs); never raises."""
+    if not turn_run:
+        return None
+    url = (f"/projects/{turn_run['project_id']}/runs/{turn_run['run_id']}?tab=execution"
+           f"&node={turn_run['node_execution_id']}&attempt={turn_run['attempt_number']}")
+    pw_goto(url, session=session)
+    pw_poll(lambda ns: "attempt" in w8_dom_text(ns).lower(), session=session, tries=8, delay=2)
+    js = ("() => ["
+          "document.querySelectorAll('[data-testid=dock-conversation],[data-testid=attempt-agent-work]').length, "
+          "document.querySelectorAll('[data-testid=transcript-item]').length, "
+          "document.querySelectorAll('[data-testid=dock-work-stream],[data-testid=attempt-work-stream]').length, "
+          "document.querySelectorAll('[data-testid=dock-work-empty],[data-testid=attempt-work-empty]').length"
+          "].join('|')")
+    counts = None
+    for _ in range(tries):
+        rc, out = pw("eval", js, session=session, timeout=60)
+        m = re.search(r"(\d+)\|(\d+)\|(\d+)\|(\d+)", out or "")
+        if rc == 0 and m:
+            counts = [int(g) for g in m.groups()]
+            if counts[0] or counts[1] or counts[2] or counts[3]:
+                break        # a surface, a transcript row, or the empty copy: the pane spoke
+        time.sleep(delay)
+    shot = pw_shot("w2-transcript-pane", session=session)
+    if not counts:
+        show("W2 the attempt pane of the run that journalled conversation.turn.*",
+             f"no testid counts read back for run {turn_run['run_id']} [{shot}]")
+        return None
+    pane = {"read": True, "surface": counts[0], "items": counts[1],
+            "stream": counts[2], "empty": counts[3], "shot": shot}
+    show("W2 the attempt pane of the run that journalled conversation.turn.*",
+         f"run {turn_run['run_id']} ?node={turn_run['node_execution_id']}"
+         f"&attempt={turn_run['attempt_number']}: surface={pane['surface']} "
+         f"transcript rows={pane['items']} work-stream={pane['stream']} "
+         f"empty-copy={pane['empty']} [{shot}]")
+    return pane
+
+
 def w2():
     """W2 — row § 7.2: "watch the run page while it executes" → "`run.created` →
     `node.attempt.started` → `conversation.turn.*` (the transcript of the agent node,
@@ -20980,7 +22135,15 @@ def w2():
     The page is opened straight on `?tab=timeline` (RunInspector reads the tab from the
     URL, so no click is needed and the tab switch is not a reload), and it is SAMPLED,
     never reloaded: the document's own `performance.timeOrigin` is the witness that the
-    rows that appeared between samples arrived over the stream."""
+    rows that appeared between samples arrived over the stream.
+
+    The row's `conversation.turn.*` link is NOT measurable on this twin (process.exec
+    owns no ACP turn, and the Timeline tab drops conversation.* by construction —
+    ADR-0014 § 8), so after the sampling is done the leg opens the run that really
+    journalled turn rows (C4e's, or the lab's newest — see w2_find_turn_run) in this
+    same session and grades the transcript on the surface the product draws it, the
+    attempt pane. That navigation happens AFTER the last live sample, so the no-reload
+    witness above judges only the samples it can speak for."""
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
         gap("W2 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no twin "
@@ -21061,8 +22224,6 @@ def w2():
                 "list has no answer key to be judged against")
             return
         c5_emit(w2_live_verdicts(samples))
-        c5_emit(w2_chain_verdicts(final["types"], journal))
-        c5_emit([w2_turn_arm_verdict(journal)])
         c5_emit([w2_no_gap_verdict(final["types"], journal, final["dom"])])
         c5_emit([w11_extra_frames_verdict(final["types"], journal, tag="W2",
                                           tally=final["total"])])
@@ -21086,6 +22247,28 @@ def w2():
              f"read on {strip['landed_by']}; cells named build_until_verified="
              f"{[pw_text(n)[:70] for n in w_strip_cells(strip['nodes'])][:3]}"
              f"; strip ready={strip['ready']} [{shot_mid}]")
+        # --- the row's third link, on the run that really journalled it -----------
+        # conversation.turn.* is not something THIS run can draw (its attempts are
+        # process.exec; the Timeline tab drops conversation.* by construction —
+        # ADR-0014 § 8) and the arm does not get to stay a fixture GAP: C4 already
+        # drove a real agent turn whose conversation journalled the rows, and the
+        # product draws that transcript on the ATTEMPT PANE. The leg locates the
+        # run via psql (C4e's, when this process ran C4 — its id rides CTX — else
+        # the lab's newest), opens it in this same session, and reads the pane's
+        # surfaces. Read-mostly: a goto and a render; no kill, no restart, no turn
+        # spent. With no such run the honest GAP names every read it made.
+        turn_run, turn_searched = w2_find_turn_run(
+            str(CTX.get("c4e_run") or CTX.get("c4_run") or ""))
+        show("W2 the run whose conversation journalled conversation.turn.* (psql)",
+             (f"run {turn_run['run_id']} {turn_run['node_instance_key']} attempt "
+              f"{turn_run['attempt_number']} (turn {turn_run['turn_id']}): "
+              f"{turn_run['turn_rows']} turn row(s), {turn_run['transcript_rows']} streamed "
+              f"transcript row(s); searched " + "; ".join(turn_searched))
+             if turn_run else "(no such run) — searched " + "; ".join(turn_searched))
+        pane = w2_turn_pane_reading(turn_run) if turn_run else None
+        turn_arm = w2_transcript_arm_verdict(turn_run, pane, turn_searched)
+        c5_emit(w2_chain_verdicts(final["types"], journal, turn_evidence=turn_arm))
+        c5_emit([w2_turn_arm_verdict(journal, turn_evidence=turn_arm)])
     finally:
         if run_status(run_id) not in C14_TERMINAL:
             try:
@@ -23412,6 +24595,156 @@ def w11_attempts_ledger(node_execution_id):
     return out
 
 
+def w11_pair_sql(preferred_run_id=""):
+    """The ledger read for row W11's pair: an INTERRUPTED attempt on a node
+    execution plus a LATER succeeded attempt on the SAME execution — the shape
+    C5's `compose kill worker-a` produces (and C4's fence and W5's kill too).
+
+    § 7.2 makes the W legs read-mostly, so row W11 cannot manufacture the pair
+    by killing anything; it READS it from the run that holds it. Ordering is the
+    row's own need: a pair whose retry_context is actually carried (route 31:
+    "the retried attempt is TOLD the previous attempt's facts as retry_context")
+    outranks a bare status pair, and the freshest death outranks an old one.
+    Pure: it only spells the SQL; the caller runs it and says what was searched.
+    Quote characters are stripped from the preferred id — it names a row, never
+    a statement."""
+    pref = str(preferred_run_id or "").strip().replace("'", "")
+    where = "WHERE a1.status = 'interrupted' "
+    if pref:
+        where += f"AND a1.run_id = '{pref}' "
+    return ("SELECT a1.run_id || '|' || a1.node_execution_id || '|' || ne.node_instance_key "
+            "|| '|' || a1.attempt_number::text || '|' || s.attempt_number::text || '|' "
+            "|| r.project_id || '|' || coalesce(s.retry_context::text, '-') || '~@~' || "
+            "coalesce(a1.retry_context::text, '-') "
+            "FROM attempts a1 JOIN attempts s ON s.node_execution_id = a1.node_execution_id "
+            "AND s.status = 'succeeded' AND s.attempt_number > a1.attempt_number "
+            "JOIN node_executions ne ON ne.id = a1.node_execution_id "
+            "JOIN runs r ON r.id = a1.run_id "
+            + where +
+            "ORDER BY coalesce(a1.retry_context, s.retry_context) IS NOT NULL DESC, "
+            "a1.finished_at DESC NULLS LAST LIMIT 5")
+
+
+def w11_pair_rows(text):
+    """Parse `w11_pair_sql`'s `-tA` output into candidate dicts. The two
+    retry_context blobs travel last, joined by `~@~` (jsonb text can hold `|`),
+    and are split from the RIGHT: a context the split cannot read stays the raw
+    string it is — a row whose context is unparseable is still a row that
+    existed, and the verdict says what it saw."""
+    out = []
+    for line in (text or "").splitlines():
+        parts = line.split("|", 6)
+        if len(parts) != 7:
+            continue
+        blob = parts[6]
+        head, sep, tail = blob.rpartition("~@~")
+        # The query always serves BOTH contexts around the marker; a line without
+        # it is foreign or ragged — keep it verbatim as the retry-row context and
+        # say the dead row's is unreadable, never invent one.
+        ctx_s, ctx_i = (head, tail) if sep else (blob, "-")
+
+        def ctx(v):
+            v = v.strip()
+            try:
+                return json.loads(v) if v.startswith("{") else v
+            except ValueError:
+                return v
+        row = {"run_id": parts[0].strip(), "node_execution_id": parts[1].strip(),
+               "node_instance_key": parts[2].strip(),
+               "interrupted_attempt": parts[3].strip(), "succeeded_attempt": parts[4].strip(),
+               "project_id": parts[5].strip(),
+               "retry_row_context": ctx(ctx_s), "interrupted_row_context": ctx(ctx_i)}
+        if all(row[k] for k in ("run_id", "node_execution_id", "interrupted_attempt",
+                                "succeeded_attempt", "project_id")):
+            out.append(row)
+    return out
+
+
+def w11_find_pair_run(preferred_run_id=""):
+    """Locate the run that holds row W11's pair, via psql. Preference is the
+    brief's: the run C5 killed its worker inside (recorded in CTX when C5 ran
+    in this driver process) is asked FIRST — and only verified, never trusted;
+    a preferred run that holds no pair is reported as searched and the whole
+    lab is asked next. Returns (pick | None, [every read made, with its result])
+    — the notes are what the honest GAP names."""
+    wanted = str(preferred_run_id or "").strip()
+    passes = ([(f"the run C5's kill ran inside ({wanted})", wanted)] if wanted else []) + \
+            [("every run in the lab", "")]
+    searched = []
+    for note, pref in passes:
+        try:
+            rows = w11_pair_rows(psql(w11_pair_sql(pref)))
+        except RuntimeError as e:
+            searched.append(note + f": psql unreadable ({str(e)[:120]})")
+            continue
+        searched.append(note + f": {len(rows)} pair row(s)")
+        if rows:
+            return rows[0], searched
+    return None, searched
+
+
+_ATTEMPT_TAB = re.compile(r"attempt (\d+) · ([a-z][a-z_]*)")
+
+
+def w11_attempt_tab_states(dom_text):
+    """{attempt_number: state word} off the workbench dock's own attempt TABS.
+    The dock draws ONE attempt at a time but names every tab with its own state
+    (`attempt 1 · interrupted`, WorkbenchDock.tsx + AttemptDetail.attemptWord),
+    and that tablist IS row W11's 'attempt list': the pair is on screen together
+    because the tabs carry their states. Pure."""
+    body = " ".join((dom_text or "").split()).lower()
+    out = {}
+    for m in _ATTEMPT_TAB.finditer(body):
+        out.setdefault(int(m.group(1)), m.group(2))
+    return out
+
+
+def w11_merge_internals(*fact_lists):
+    """Merge `w11_internals_facts` reads across every run a leg rendered: one row
+    per category, field spellings and ledger values unioned in first-seen order.
+    W11 now also renders the pair run's page, and THAT run's real worker_id or
+    lease value is a needle too — a leak is a leak wherever the page drew it. Pure."""
+    out, seen = [], {}
+    for facts in fact_lists:
+        for category, words, values in facts or []:
+            row = seen.get(category)
+            if row is None:
+                row = seen[category] = [category, [], []]
+                out.append(row)
+            for w in words or []:
+                if w not in row[1]:
+                    row[1].append(w)
+            for v in values or []:
+                if v not in row[2]:
+                    row[2].append(v)
+    return [(c, w, v) for c, w, v in out]
+
+
+def w11_pair_panes(pair, session="m4w11"):
+    """Open the pair run's node pane TWICE in this leg's own session — on the
+    dead try (`?attempt=<n>`, the pane that says 'interrupted — the worker
+    disappeared mid-node') and on the retry that answered it (where a served
+    retry_context.mode would draw 'what the next attempt inherits') — and hand
+    back the joined DOM. Read-mostly by construction: two GETs, two renders, no
+    kill, no restart, no write."""
+    base = (f"/projects/{pair['project_id']}/runs/{pair['run_id']}?tab=execution"
+            f"&node={pair['node_execution_id']}")
+    dom, shots = [], []
+    pw_goto(base + f"&attempt={pair['interrupted_attempt']}", session=session)
+    dead, _n = pw_poll(lambda ns: w_norm(W5_INTERRUPTED_COPY) in w_norm(w8_dom_text(ns)),
+                       session=session, tries=15, delay=2)
+    rc, raw = pw_snapshot(session=session)
+    dom.append(w8_dom_text(pw_snapshot_nodes(raw), raw))
+    shots.append(pw_shot("w11-pair-dead", session=session))
+    pw_goto(base + f"&attempt={pair['succeeded_attempt']}", session=session)
+    retry, _n = pw_poll(lambda ns: "succeeded" in w8_dom_text(ns).lower(),
+                        session=session, tries=15, delay=2)
+    rc, raw = pw_snapshot(session=session)
+    dom.append(w8_dom_text(pw_snapshot_nodes(raw), raw))
+    shots.append(pw_shot("w11-pair-retry", session=session))
+    return {"dom": "\n".join(dom), "dead": dead, "retry": retry, "shots": shots}
+
+
 def w11_internals_facts(run_id):
     """Everything row W11 says must appear NOWHERE in the DOM, read from the LEDGER so
     the needles are this run's real values and not invented words:
@@ -23604,7 +24937,17 @@ def w11():
 
     The tree rows are opened by clicking the component's own `+` controls (the tree
     collapses every branch by default), and the attempt pane is reached by the URL the
-    page itself documents — `?node=<nodeExecutionId>`."""
+    page itself documents — `?node=<nodeExecutionId>` (plus `?attempt=<n>`, which is
+    how W5 opens a dead try's pane). The attempt LIST half of the row names a PAIR —
+    attempt 1 interrupted (with its retry context) and attempt 2 succeeded — and § 7.2
+    keeps this leg read-mostly: it kills nothing, so it does not manufacture the pair,
+    it READS it. `w11_find_pair_run` locates, via psql, a node execution of a lab run
+    whose ledger holds exactly that pair — preferring the run C5's `compose kill
+    worker-a` ran inside (its id rides CTX["c5_run"] when C5 ran in this process) and
+    falling back to a whole-lab search — and the leg opens THAT run's panes (the dead
+    try's, then the retry's) and grades the attempt list there. With no such run the
+    arm keeps the honest GAP, naming every read it made; the own-run pane reading (any
+    execution with rows in its list) stays as the fallback surface."""
     facts = CTX.get("manifest") or load_manifest_facts()
     seed = c8_seed_facts()
     if not facts or not seed:
@@ -23702,80 +25045,123 @@ def w11():
         c5_emit(w11_tree_verdicts(children_after or children, tree_dom,
                                   prior_children=children if children_after else None))
 
-        # --- one node execution's attempt list, on the page's own ?node= route ----
-        nodes_r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")
-        api_nodes = [n for n in ((nodes_r.json() or {}).get("node_executions") or [])
-                     if isinstance(n, dict)] if nodes_r.status == 200 else []
-        interrupted_ne = ""
-        try:
-            interrupted_ne = psql(f"SELECT node_execution_id::text FROM attempts WHERE "
-                                  f"run_id = '{run_id}' AND status = 'interrupted' "
-                                  "ORDER BY attempt_number LIMIT 1").strip()
-        except RuntimeError as e:  # the choice below GAPs on its own if this is unreadable
-            show("W11 interrupted-attempt read (psql)", str(e)[:200])
-        # The row names a PAIR (attempt 1 interrupted with retry_context, attempt 2
-        # succeeded), so an execution that was actually interrupted is opened first; when
-        # this run has none, the honest choice is any execution that owns AT LEAST ONE
-        # attempt — `pipeline.invoke` rows own none (live6/W11 opened one and the attempt
-        # arm could only GAP on an empty read), and § 7.2's row is about a list with rows
-        # in it. The pair's absence is still reported as the GAP it is: this leg kills no
-        # worker, so no attempt is ever interrupted mid-node.
-        want = w11_pick_attempted_node(api_nodes, interrupted_ne)
-        show(f"W11 GET /runs/{run_id}/nodes -> {nodes_r.status}",
-             f"{len(api_nodes)} row(s); the attempt list is opened for "
-             f"{(want or {}).get('node_instance_key')!r} "
-             f"(attempt_count={(want or {}).get('attempt_count')})")
-        if not want or not want.get("id"):
-            gap("W11 the attempt-list arms",
-                f"no node execution of run {run_id} can be opened (GET /runs/{run_id}/nodes "
-                f"-> {nodes_r.status}) — the row's 'one node execution's attempt list' has "
-                "nothing to name")
-        else:
-            key, node_id = str(want.get("node_instance_key") or ""), str(want["id"])
-            det = client.get(LB, f"/api/v1/runs/{run_id}/nodes/{node_id}")
-            api_attempts = [a for a in ((det.json() or {}).get("attempts") or [])
-                            if isinstance(a, dict)] if det.status == 200 else []
-            show(f"W11 GET /runs/{run_id}/nodes/{node_id} -> {det.status}",
+        # --- one node execution's attempt list: the PAIR is read from the run ----
+        # that holds it (§ 7.2 keeps this leg read-mostly — it kills nothing, so
+        # the pair C5's `compose kill worker-a` produced is the evidence, located
+        # via psql and opened in this session; with no such run anywhere the arm
+        # GAPs and names every read it made).
+        pair, pair_searched = w11_find_pair_run(str(CTX.get("c5_run") or ""))
+        show("W11 the run holding the row's attempt pair (psql)",
+             (f"run {pair['run_id']} {pair['node_instance_key']}: attempt "
+              f"{pair['interrupted_attempt']} interrupted -> attempt "
+              f"{pair['succeeded_attempt']} succeeded; searched " + "; ".join(pair_searched))
+             if pair else "(no pair anywhere) — searched " + "; ".join(pair_searched))
+        internals_runs = [run_id]
+        if pair:
+            pane = w11_pair_panes(pair)
+            dom_all.append(pane["dom"])
+            check("W11 the node pane opens on the node execution asked for",
+                  pane["dead"] and pane["retry"],
+                  f"run {pair['run_id']} ?node={pair['node_execution_id']}: the dead try's "
+                  f"pane drawn={pane['dead']}, the retry's pane drawn={pane['retry']} "
+                  f"[{pane['shots'][0]}] [{pane['shots'][1]}]")
+            det = client.get(LB, f"/api/v1/runs/{pair['run_id']}/nodes/{pair['node_execution_id']}")
+            pair_attempts = [a for a in ((det.json() or {}).get("attempts") or [])
+                             if isinstance(a, dict)] if det.status == 200 else []
+            show(f"W11 GET /runs/{pair['run_id']}/nodes/{pair['node_execution_id']} -> {det.status}",
                  str([f"#{a.get('attempt_number')} {a.get('status')} "
-                      f"retry_context={a.get('retry_context')}" for a in api_attempts])[:400])
-            if not api_attempts:
-                # The route came back without the rows the pane is supposed to render:
-                # read them where they are authoritative so the arm judges the PAGE
-                # against the ledger instead of GAPing on an empty body.
-                ledger = w11_attempts_ledger(node_id)
+                      f"retry_context={a.get('retry_context')}" for a in pair_attempts])[:400])
+            if not pair_attempts:
+                ledger = w11_attempts_ledger(pair["node_execution_id"])
                 show("W11 the attempt rows the route did not carry (ledger read)",
                      str([(a["attempt_number"], a["status"],
                            str(a["retry_context"])[:40]) for a in (ledger or [])])[:400]
                      + ("" if ledger is not None else " | ledger unreadable"))
                 if ledger:
-                    api_attempts = ledger
-            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution&node={node_id}",
-                    session="m4w11")
-            shown, n_nodes = pw_poll(lambda ns: "attempt" in w8_dom_text(ns).lower(),
-                                    session="m4w11", tries=10, delay=2)
-            n_raw = pw_snapshot(session="m4w11")[1]
-            node_dom = w8_dom_text(n_nodes, n_raw)
-            dom_all.append(node_dom)
-            shot2 = pw_shot("w11-attempt-pane", session="m4w11")
-            check("W11 the node pane opens on the node execution asked for", shown,
-                  f"?node={node_id} ({key}) rendered attempt copy={shown} [{shot2}]")
-            c5_emit(w11_attempt_verdicts(api_attempts, node_dom, key))
-            # ADR-0016 § 8 re-asserted against the NEW routes: the row's claim is about
-            # the DOM, and the route bodies are shown next to it so a reader can see the
-            # values that were searched for are the ones the ledger really holds.
-            internals = w11_internals_facts(run_id)
-            route_bodies = nodes_r.text + (det.text or "")
-            leaked_fields = [f for f in ("fencing_token", "lease_expires_at", "worker_id")
-                             if f in route_bodies]
-            show("W11 what the routes were asked to keep out of the DOM (ledger values)",
-                 str([(c, len(v)) for c, _w, v in internals])
-                 + "; route bodies carry the field names: "
-                 + (str(leaked_fields) if leaked_fields else "none"))
-            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=timeline", session="m4w11")
-            time.sleep(2)
-            t_raw = pw_snapshot(session="m4w11")[1]
-            dom_all.append(w8_dom_text(pw_snapshot_nodes(t_raw), t_raw))
-            c5_emit(w11_internals_verdict("\n".join(dom_all), internals))
+                    pair_attempts = ledger
+            c5_emit(w11_attempt_verdicts(pair_attempts, pane["dom"],
+                                         str(pair["node_instance_key"]),
+                                         searched=pair_searched))
+            internals_runs.append(str(pair["run_id"]))
+            route_bodies = det.text or ""
+            nodes_r = None
+        else:
+            # No pair to read: the honest fallback keeps today's shape — any
+            # execution that owns AT LEAST ONE attempt is opened (a
+            # `pipeline.invoke` row owns none: live6/W11 opened one and the arm
+            # could only GAP on an empty read), and the pair verdict GAPs naming
+            # the searches above rather than pretending.
+            nodes_r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")
+            api_nodes = [n for n in ((nodes_r.json() or {}).get("node_executions") or [])
+                         if isinstance(n, dict)] if nodes_r.status == 200 else []
+            interrupted_ne = ""
+            try:
+                interrupted_ne = psql(f"SELECT node_execution_id::text FROM attempts WHERE "
+                                      f"run_id = '{run_id}' AND status = 'interrupted' "
+                                      "ORDER BY attempt_number LIMIT 1").strip()
+            except RuntimeError as e:  # the choice below GAPs on its own if this is unreadable
+                show("W11 interrupted-attempt read (psql)", str(e)[:200])
+            want = w11_pick_attempted_node(api_nodes, interrupted_ne)
+            show(f"W11 GET /runs/{run_id}/nodes -> {nodes_r.status}",
+                 f"{len(api_nodes)} row(s); the attempt list is opened for "
+                 f"{(want or {}).get('node_instance_key')!r} "
+                 f"(attempt_count={(want or {}).get('attempt_count')})")
+            if not want or not want.get("id"):
+                gap("W11 the attempt-list arms",
+                    f"no node execution of run {run_id} can be opened (GET /runs/{run_id}/nodes "
+                    f"-> {nodes_r.status}) — the row's 'one node execution's attempt list' has "
+                    "nothing to name")
+                route_bodies = nodes_r.text
+            else:
+                key, node_id = str(want.get("node_instance_key") or ""), str(want["id"])
+                det = client.get(LB, f"/api/v1/runs/{run_id}/nodes/{node_id}")
+                api_attempts = [a for a in ((det.json() or {}).get("attempts") or [])
+                                if isinstance(a, dict)] if det.status == 200 else []
+                show(f"W11 GET /runs/{run_id}/nodes/{node_id} -> {det.status}",
+                     str([f"#{a.get('attempt_number')} {a.get('status')} "
+                          f"retry_context={a.get('retry_context')}" for a in api_attempts])[:400])
+                if not api_attempts:
+                    # The route came back without the rows the pane is supposed to render:
+                    # read them where they are authoritative so the arm judges the PAGE
+                    # against the ledger instead of GAPing on an empty body.
+                    ledger = w11_attempts_ledger(node_id)
+                    show("W11 the attempt rows the route did not carry (ledger read)",
+                         str([(a["attempt_number"], a["status"],
+                               str(a["retry_context"])[:40]) for a in (ledger or [])])[:400]
+                         + ("" if ledger is not None else " | ledger unreadable"))
+                    if ledger:
+                        api_attempts = ledger
+                pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution&node={node_id}",
+                        session="m4w11")
+                shown, n_nodes = pw_poll(lambda ns: "attempt" in w8_dom_text(ns).lower(),
+                                        session="m4w11", tries=10, delay=2)
+                n_raw = pw_snapshot(session="m4w11")[1]
+                node_dom = w8_dom_text(n_nodes, n_raw)
+                dom_all.append(node_dom)
+                shot2 = pw_shot("w11-attempt-pane", session="m4w11")
+                check("W11 the node pane opens on the node execution asked for", shown,
+                      f"?node={node_id} ({key}) rendered attempt copy={shown} [{shot2}]")
+                c5_emit(w11_attempt_verdicts(api_attempts, node_dom, key,
+                                             searched=pair_searched))
+                route_bodies = nodes_r.text + (det.text or "")
+        # ADR-0016 § 8 re-asserted against the NEW routes: the row's claim is about
+        # the DOM, and the route bodies are shown next to it so a reader can see the
+        # values that were searched for are the ones the ledger really holds. Every
+        # run this leg rendered contributes its needles: the pair run's worker_id is
+        # as much a leak candidate on its own page as this run's is on this one.
+        internals = w11_merge_internals(*[w11_internals_facts(r) for r in internals_runs])
+        leaked_fields = [f for f in ("fencing_token", "lease_expires_at", "worker_id")
+                         if f in route_bodies]
+        show("W11 what the routes were asked to keep out of the DOM (ledger values)",
+             str([(c, len(v)) for c, _w, v in internals])
+             + f"; runs contributing needles: {internals_runs}"
+             + "; route bodies carry the field names: "
+             + (str(leaked_fields) if leaked_fields else "none"))
+        pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=timeline", session="m4w11")
+        time.sleep(2)
+        t_raw = pw_snapshot(session="m4w11")[1]
+        dom_all.append(w8_dom_text(pw_snapshot_nodes(t_raw), t_raw))
+        c5_emit(w11_internals_verdict("\n".join(dom_all), internals))
     finally:
         if run_status(run_id) not in C14_TERMINAL:
             try:
