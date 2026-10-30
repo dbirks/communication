@@ -414,15 +414,30 @@ type plPipelineCreateBody struct {
 	Description string `json:"description,omitempty"`
 }
 
+// optionalField records whether a JSON member was present on the wire and
+// its raw bytes. A pointer member cannot do this: encoding/json sets a
+// pointer to nil for a JSON null, collapsing null into "absent" (issue #26,
+// ADR-0049 § 8's folder patch needs all three states apart).
+type optionalField struct {
+	Present bool
+	Raw     json.RawMessage
+}
+
+func (o *optionalField) UnmarshalJSON(data []byte) error {
+	o.Present = true
+	o.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
 // plPipelineUpdateBody is PipelineUpdate: pointer members distinguish
-// "absent" from "set to empty/false"; folder is a raw message so JSON
+// "absent" from "set to empty/false"; folder is an optionalField so JSON
 // null (clear) is distinguishable from absent (untouched); minProperties 1
 // is checked below.
 type plPipelineUpdateBody struct {
-	DisplayName *string          `json:"display_name,omitempty"`
-	Description *string          `json:"description,omitempty"`
-	Archived    *bool            `json:"archived,omitempty"`
-	Folder      *json.RawMessage `json:"folder,omitempty"`
+	DisplayName *string       `json:"display_name,omitempty"`
+	Description *string       `json:"description,omitempty"`
+	Archived    *bool         `json:"archived,omitempty"`
+	Folder      optionalField `json:"folder"`
 }
 
 // plDraftCreateBody is DraftCreate: exactly one member, enforced here
@@ -535,17 +550,17 @@ func (h *plHandlers) updatePipeline(w http.ResponseWriter, r *http.Request) {
 		h.badRequest(w, r, err)
 		return
 	}
-	if body.DisplayName == nil && body.Description == nil && body.Archived == nil && body.Folder == nil {
+	if body.DisplayName == nil && body.Description == nil && body.Archived == nil && !body.Folder.Present {
 		plInvalid(w, "at least one of display_name, description, archived or folder is required.")
 		return
 	}
 	var folder FolderPatch
-	if body.Folder != nil {
-		if string(*body.Folder) == "null" {
+	if body.Folder.Present {
+		if strings.TrimSpace(string(body.Folder.Raw)) == "null" {
 			folder.Clear = true
 		} else {
 			var s string
-			if err := json.Unmarshal(*body.Folder, &s); err != nil {
+			if err := json.Unmarshal(body.Folder.Raw, &s); err != nil {
 				plInvalid(w, "folder must be a string or null (null clears it).")
 				return
 			}

@@ -93,7 +93,14 @@ type m4Pipelines struct {
 	resolveRes *RevisionView // what GetRevision answers (nil = not found)
 	resolveErr error
 
-	updateOut    PipelineView
+	updateOut PipelineView
+	// applyUpdate makes UpdatePipeline also move GetPipeline's answer, so a
+	// re-read reflects the patch (issue #26 folder tests); it stays false for
+	// every pre-existing fake use.
+	applyUpdate bool
+	// lastUpdate is the PipelineUpdateInput of the most recent
+	// UpdatePipeline call, nil if none happened.
+	lastUpdate   *PipelineUpdateInput
 	replaceOut   DraftView
 	replaceErr   error
 	recordedVal  DraftValidationRecord
@@ -128,8 +135,26 @@ func (f *m4Pipelines) UpdatePipeline(_ context.Context, _ Caller, _ string, in P
 	if out.ID == "" {
 		return PipelineView{}, ErrPipelineNotFound
 	}
+	inCopy := in
+	f.lastUpdate = &inCopy
 	if in.Archived != nil {
 		out.Archived = *in.Archived
+	}
+	if in.DisplayName != nil {
+		out.DisplayName = *in.DisplayName
+	}
+	if in.Description != nil {
+		out.Description = *in.Description
+	}
+	switch {
+	case in.Folder.Clear:
+		out.Folder = nil
+	case in.Folder.Set:
+		value := in.Folder.Value
+		out.Folder = &value
+	}
+	if f.applyUpdate {
+		f.pipeline = out
 	}
 	return out, nil
 }
