@@ -28,7 +28,8 @@ export interface OverlapHit {
   a: string;
   /** The second element's label. */
   b: string;
-  /** The intersection on each axis in CSS px (both are > the 4px floor). */
+  /** The largest fragment-pair intersection on each axis in CSS px (both are
+   * > the 4px floor). */
   dx: number;
   dy: number;
 }
@@ -281,24 +282,36 @@ export function findClippedText(): ClipHit[] {
  *   element carrying its OWN text, or a control (button/link/input/…). Layout
  *   wrappers are never candidates: they legitimately stack on each other, and
  *   a wrapper collision is reported by the text/controls inside it;
- * • a pair is a defect when the two rendered boxes intersect by MORE THAN 4px
- *   on BOTH axes — under that it is antialiasing, a hairline border or an
- *   intentional 1–2px optical overlap, not two things printed over each other;
- * • unless one box contains the other (±1px): a label inside its field, a
- *   heading inside its card and a badge inside its tile are the design;
+ * • a pair is a defect when some FRAGMENT of one and some fragment of the other
+ *   intersect by MORE THAN 4px on BOTH axes — under that it is antialiasing, a
+ *   hairline border or an intentional 1–2px optical overlap, not two things
+ *   printed over each other;
+ * • unless one candidate's whole box contains the other's, or that fragment
+ *   pair contains one another (±1px): a label inside its field, a heading
+ *   inside its card and a badge inside its tile are the design;
  * • both must be PAINTED: a zero box, display:none/visibility:hidden/opacity:0,
  *   `.sr-only`/clip-path'd text, and anything an `overflow: hidden|clip|auto|
  *   scroll` ancestor clips away are not visible, so they cannot collide. The
  *   clip walk is what keeps a React Flow node parked outside its pane — which
  *   has a real, large box — from pairing with another off-pane node;
- * • a text candidate's box is the box that gets INKED: its layout rect unioned
- *   with the Range rects of its direct text nodes, then cropped by its own
- *   overflow. `getBoundingClientRect` alone is the box LAYOUT gave the element
- *   and misses a `whitespace-nowrap` line that paints past it (how the canvas
- *   caption ran under the − + fit group at 1280 with clean boxes), while
- *   cropping by the element's own overflow keeps an honest ellipsis label —
- *   the design's own truncation, owned by the clip check — from claiming to
- *   collide with its neighbour;
+ * • a text candidate is measured by the boxes that get INKED, and compared
+ *   FRAGMENT BY FRAGMENT. When it has one box that box is its layout rect
+ *   unioned with the Range rects of its direct text nodes: `getBoundingClientRect`
+ *   alone is the box LAYOUT gave the element and misses a `whitespace-nowrap`
+ *   line that paints past it (how the canvas caption ran under the − + fit
+ *   group at 1280 with clean boxes). A `display: inline` run must NEVER be
+ *   collapsed to that union: an inline run has no one box, it breaks at every
+ *   line it wraps across, so the union paints a rectangle across BOTH lines and
+ *   the two neighbouring wrapped runs of one paragraph then "collide" — the
+ *   `span × span` / `code × span` hits the run-gate and 2e screens reported at
+ *   1280 and 390 through acceptance pass 32 (351×17px) while every screenshot
+ *   showed the plan's inline runs wrapped in clean lines. An inline candidate
+ *   is therefore its `getClientRects()` line fragments plus its text Range
+ *   rects, and a hit needs one fragment of each side to meet the two-axis rule.
+ *   Every fragment is cropped by its own and every ancestor's overflow, as
+ *   before, which is also what keeps an honest ellipsis label — the design's
+ *   own truncation, owned by the clip check — from claiming to collide with its
+ *   neighbour;
  * • SVG is ignored outright (React Flow's edges, its labels and every
  *   decorative icon are SVG; the arrow layer legitimately crosses nodes);
  * • an element inside a control is not a second candidate (the `−` glyph
@@ -355,38 +368,48 @@ export function findOverlaps(): OverlapHit[] {
     return rect;
   };
   type Box = { l: number; t: number; r: number; b: number };
-  type Candidate = Box & { el: Element; label: string; layer: Element | null };
+  type Candidate = {
+    el: Element;
+    label: string;
+    layer: Element | null;
+    /** The union of `fragments` — the candidate's whole box (containment rule). */
+    full: Box;
+    /** The painted fragments, one per line an inline run breaks across. */
+    fragments: Box[];
+  };
   const union = (a: Box, b: Box): Box => ({
     l: Math.min(a.l, b.l),
     t: Math.min(a.t, b.t),
     r: Math.max(a.r, b.r),
     b: Math.max(a.b, b.b),
   });
-  // The painted box of an element's OWN text. `getBoundingClientRect` is the
-  // box LAYOUT gave the element; nowrap / absolutely-positioned text PAINTS
-  // past it — that is how the canvas caption's single line ran under the
-  // − + fit group at 1280 while its own box stopped short of it. A Range
-  // reports the glyphs' real line boxes.
-  const textInk = (el: Element): Box | null => {
+  // Every line box an element's OWN text is INKED on — one per line for a
+  // wrapped inline run, and for nowrap / absolutely-positioned text the rect
+  // where the ink actually goes (that is how the canvas caption's single line
+  // ran under the − + fit group at 1280 while its own box stopped short of it).
+  // A Range reports the glyphs' real line boxes; `getBoundingClientRect` only
+  // ever reports the box LAYOUT gave the element.
+  const boxOf = (r: DOMRect): Box => ({ l: r.left, t: r.top, r: r.right, b: r.bottom });
+  const textInkRects = (el: Element): Box[] => {
     const range = document.createRange();
-    let ink: Box | null = null;
+    const rects: Box[] = [];
     for (const node of Array.from(el.childNodes)) {
       if (node.nodeType !== 3 || !(node.textContent ?? "").trim()) continue;
       range.selectNode(node);
       for (const r of Array.from(range.getClientRects())) {
         if (r.width <= 0 || r.height <= 0) continue;
-        ink =
-          ink === null
-            ? { l: r.left, t: r.top, r: r.right, b: r.bottom }
-            : {
-                l: Math.min(ink.l, r.left),
-                t: Math.min(ink.t, r.top),
-                r: Math.max(ink.r, r.right),
-                b: Math.max(ink.b, r.bottom),
-              };
+        rects.push(boxOf(r));
       }
     }
-    return ink;
+    return rects;
+  };
+  // Which elements LAYOUT breaks across lines. `inline` (and `inline-table`) is
+  // inline-level AND breakable, so it generates one box per line fragment;
+  // `inline-block` / `inline-flex` are inline-level but ATOMIC — they get one
+  // box and keep the single-box rule (their whole rect is what paints).
+  const breaksAcrossLines = (el: Element): boolean => {
+    const display = window.getComputedStyle(el).display;
+    return display === "inline" || display === "inline-table";
   };
   // The part of `box` the browser actually paints: the element's own overflow
   // and every clipping/clipping-or-scrolling ancestor crops it, React Flow's
@@ -447,11 +470,22 @@ export function findOverlaps(): OverlapHit[] {
     // button is not a second element colliding with the button.
     const owner = el.closest(CONTROL);
     if (owner !== null && owner !== el) continue;
-    const layout = { l: rect.left, t: rect.top, r: rect.right, b: rect.bottom };
-    const ink = text === "" ? null : textInk(el);
-    const paintedBox = clipped(el, ink === null ? layout : union(layout, ink));
-    if (paintedBox.r - paintedBox.l <= 0 || paintedBox.b - paintedBox.t <= 0) continue;
-    boxes.push({ el, label: label(el, text), layer: overlayRoot(el), ...paintedBox });
+    const layout = boxOf(rect);
+    const inkRects = text === "" ? [] : textInkRects(el);
+    const raw = breaksAcrossLines(el)
+      ? [...Array.from(el.getClientRects()).map(boxOf), ...inkRects]
+      : [inkRects.length === 0 ? layout : inkRects.reduce(union, layout)];
+    const fragments = raw
+      .map((box) => clipped(el, box))
+      .filter((box) => box.r - box.l > 0 && box.b - box.t > 0);
+    if (fragments.length === 0) continue;
+    boxes.push({
+      el,
+      label: label(el, text),
+      layer: overlayRoot(el),
+      full: fragments.reduce(union),
+      fragments,
+    });
   }
   const hits: OverlapHit[] = [];
   const contains = (a: Box, b: Box): boolean =>
@@ -466,10 +500,26 @@ export function findOverlaps(): OverlapHit[] {
       if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
       // A floating overlay only collides with itself.
       if (a.layer !== b.layer) continue;
-      const dx = Math.min(a.r, b.r) - Math.max(a.l, b.l);
-      const dy = Math.min(a.b, b.b) - Math.max(a.t, b.t);
-      if (dx <= MIN_OVERLAP_PX || dy <= MIN_OVERLAP_PX) continue;
-      if (contains(a, b) || contains(b, a)) continue;
+      // One candidate's whole box holding the other's is the design (a heading
+      // inside its card), fragments included: a wrapped run's line fragment that
+      // sits wholly inside its neighbour's fragment is the same case at line
+      // scale — a badge's own line parked inside a longer line's box.
+      if (contains(a.full, b.full) || contains(b.full, a.full)) continue;
+      let dx = 0;
+      let dy = 0;
+      for (const fa of a.fragments) {
+        for (const fb of b.fragments) {
+          const x = Math.min(fa.r, fb.r) - Math.max(fa.l, fb.l);
+          const y = Math.min(fa.b, fb.b) - Math.max(fa.t, fb.t);
+          if (x <= MIN_OVERLAP_PX || y <= MIN_OVERLAP_PX) continue;
+          if (contains(fa, fb) || contains(fb, fa)) continue;
+          if (x * y > dx * dy) {
+            dx = x;
+            dy = y;
+          }
+        }
+      }
+      if (dx <= 0 || dy <= 0) continue;
       hits.push({ a: a.label, b: b.label, dx: Math.round(dx), dy: Math.round(dy) });
     }
   }

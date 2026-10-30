@@ -89,6 +89,51 @@ describe("parseInline", () => {
     ]);
   });
 
+  it("reads *emphasis* and _emphasis_, including a run that opens on punctuation", () => {
+    // The shape the design review caught printing its own asterisks: an
+    // italicised parenthetical inside a plan line.
+    expect(parseInline("Approved *(read-only — no edits)* by design")).toEqual([
+      { kind: "text", text: "Approved " },
+      { kind: "italic", text: "(read-only — no edits)" },
+      { kind: "text", text: " by design" },
+    ]);
+    expect(parseInline("note _(see the plan)_ here")).toEqual([
+      { kind: "text", text: "note " },
+      { kind: "italic", text: "(see the plan)" },
+      { kind: "text", text: " here" },
+    ]);
+    expect(parseInline("_ship it_")).toEqual([{ kind: "italic", text: "ship it" }]);
+    // Strong still wins, and a code span still keeps its markers literal.
+    expect(parseInline("**bold** and `*not italic*`")).toEqual([
+      { kind: "strong", text: "bold" },
+      { kind: "text", text: " and " },
+      { kind: "code", text: "*not italic*" },
+    ]);
+  });
+
+  it("keeps emphasis markers that are not emphasis", () => {
+    // Multiplication, footnote-ish markers and intra-word underscores stay text.
+    expect(parseInline("2 * 3 * 4")).toEqual([{ kind: "text", text: "2 * 3 * 4" }]);
+    expect(parseInline("see note* and price* now")).toEqual([
+      { kind: "text", text: "see note* and price* now" },
+    ]);
+    expect(parseInline("run_pytest_now_ and *quoted")).toEqual([
+      { kind: "text", text: "run_pytest_now_ and *quoted" },
+    ]);
+    // A run that DOES close is markup, and its markers go with it — exactly as
+    // markdown renders `*(b*` (the second `*` closes the first).
+    expect(parseInline("a *(b* c)")).toEqual([
+      { kind: "text", text: "a " },
+      { kind: "italic", text: "(b" },
+      { kind: "text", text: " c)" },
+    ]);
+    // Every character survives, in order, when the markers never pair up.
+    const joined = parseInline("a *(b c **d_) e")
+      .map((run) => run.text)
+      .join("");
+    expect(joined).toBe("a *(b c **d_) e");
+  });
+
   it("treats a marker that opens nothing as the text it is", () => {
     expect(parseInline("2 * 3 = 6")).toEqual([{ kind: "text", text: "2 * 3 = 6" }]);
     expect(parseInline("a ` lone backtick")).toEqual([{ kind: "text", text: "a ` lone backtick" }]);
@@ -137,6 +182,21 @@ describe("<MarkdownBody>", () => {
   it("renders no anchor for a link whose target is not http(s)", () => {
     render(<MarkdownBody text={"[danger](javascript:alert(1))"} />);
     expect(screen.getByText("danger").tagName).toBe("SPAN");
+  });
+
+  it("draws emphasis as italic, not as asterisks", () => {
+    render(
+      <MarkdownBody
+        text={"## Plan *(read-only — no edits)*\n\nShip `_next_` and *(maybe)* both."}
+      />,
+    );
+    expect(screen.getByTestId("markdown-heading").textContent).toBe("Plan (read-only — no edits)");
+    expect(Array.from(document.querySelectorAll("em")).map((node) => node.textContent)).toEqual([
+      "(read-only — no edits)",
+      "(maybe)",
+    ]);
+    // The underscore run inside the code span stays the author's own text.
+    expect(document.querySelector("code")?.textContent).toBe("_next_");
   });
 
   it("renders nothing for an empty body", () => {

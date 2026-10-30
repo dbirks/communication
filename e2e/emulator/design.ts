@@ -715,14 +715,15 @@ const REPO_ADD_TRIGGER: Landmark = {
   desc: "a workflow row's '+ Add trigger' action",
   any: [{ role: "button", name: /\+ add trigger$/i }, { text: /^\+ (Add trigger|use workflow)/i }],
 };
-const REPO_ROW_EDIT: Landmark = {
-  id: "repo-row-edit",
-  desc: "a workflow row's 'Edit' action",
-  any: [
-    { role: "button", name: /^Edit$/ },
-    { role: "link", name: /^Edit$/ },
-  ],
-};
+// No `Edit` landmark on a WORKFLOWS ON THIS REPO row: 2e.png
+// (docs/design/handoff-workflows/png/2e.png) draws a workflow row with
+// `+ Add trigger` and `Run` and nothing else — see REPO_ADD_TRIGGER /
+// REPO_ROW_RUN. `Edit` is the TRIGGER rows' verb, inside the row's STARTS WHEN
+// box (2e.png's `An issue is labeled plan … on Edit` /
+// `Every Monday at 06:00 UTC … on Edit` lines), which is REPO_TRIGGER_EDIT
+// below. The design handoff's prose (README §2) says a row's buttons are
+// “`Edit` (secondary-plain) and `Run`”, but the render the review badges are
+// cut from does not, and the render is what a screen is matched against.
 const REPO_ROW_RUN: Landmark = {
   id: "repo-row-run",
   desc: "a workflow row's 'Run' action",
@@ -1273,6 +1274,12 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2d server-error": [WF_TABS, WF_TAB_YAML_ACTIVE, YAML_FRAME, YAML_ERROR],
 
   /* ------------------------------------------------- 2e · the repo page */
+  // A workflow row's verbs are `+ Add trigger` and `Run` — 2e.png has no `Edit`
+  // on a workflow row (its `Edit` lives on the trigger rows under STARTS WHEN,
+  // asserted by REPO_TRIGGER_EDIT on `2c *-trigger-saved` and
+  // `2e triggers-paused`). Acceptance 32 filed this as a defect on every pass
+  // (`design landmark missing: a workflow row's 'Edit' action`) while 2e-repo's
+  // screenshots matched the render: the landmark was the bug, not the page.
   "2e repo": [
     REPO_PAGE,
     REPO_HEADING,
@@ -1281,7 +1288,6 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     REPO_WORKFLOWS_PANEL,
     REPO_LIBRARY_LINK,
     REPO_ADD_TRIGGER,
-    REPO_ROW_EDIT,
     REPO_ROW_RUN,
   ],
   "2e repo-empty": [

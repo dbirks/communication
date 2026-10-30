@@ -23,14 +23,14 @@
  * - anything else is a paragraph; blank lines separate blocks.
  *
  * Inline: `` `code` `` becomes mono, `**strong**`/`__strong__` become bold,
- * `[label](url)` becomes a link — and only an `http(s)` link: a `javascript:`
- * or `file:` target is reduced to its label, because this text is agent output
- * and a click is not a place to re-discover that.
+ * `*emphasis*`/`_emphasis_` become italic, `[label](url)` becomes a link — and
+ * only an `http(s)` link: a `javascript:` or `file:` target is reduced to its
+ * label, because this text is agent output and a click is not a place to
+ * re-discover that.
  *
  * What is left out stays readable rather than pretty: tables keep their pipe
- * rows as paragraph text, a single `*star*` stays a star (emphasis is not what
- * a plan writes), and a marker with nothing to close it is text — which is what
- * markdown itself renders for it.
+ * rows as paragraph text, and a marker with nothing to close it is text — which
+ * is what markdown itself renders for it.
  *
  * Nothing here is a security boundary. Untrusted HTML is previewed in a
  * sandboxed frame on another origin (`ADR-0020`, `components/Artifacts.tsx`);
@@ -47,9 +47,9 @@ export type MarkdownBlock =
   | { kind: "list"; ordered: boolean; depth: number; items: string[] }
   | { kind: "rule" };
 
-/** An inline span: plain text, code, strong, or a link with a resolved href. */
+/** An inline span: plain text, code, strong, emphasis, or a link with a resolved href. */
 export type MarkdownInline =
-  | { kind: "text" | "code" | "strong"; text: string }
+  | { kind: "text" | "code" | "strong" | "italic"; text: string }
   | { kind: "link"; text: string; href: string | null };
 
 /** A scheme a link may point at; everything else loses its target. */
@@ -159,25 +159,60 @@ function indentDepth(indent: string): number {
 
 /**
  * Inline markup as spans. Code spans win (a `**` inside `` `…` `` is literal),
- * then strong, then links; what does not parse is text, with no markers left
- * behind for a `javascript:` target.
+ * then strong, then emphasis, then links; what does not parse is text, with no
+ * markers left behind for a `javascript:` target.
  */
 const CODE_SPAN = /^`([^`]*)`/;
 const STRONG = /^(\*\*|__)([^\r\n]+?)\1/;
+/** `*emphasis*` / `_emphasis_` — one marker, its run closed on the same line. */
+const EMPHASIS = /^([*_])([^\r\n]+?)\1/;
 /** A link target: no spaces, with one level of nested parens (`alert(1)`). */
 const LINK = /^\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))*)(?:\s+"[^"]*")?\)/;
 /** Where the next markup marker starts, in the text after position 0. */
-const NEXT_MARKER = /`|\*\*|__|\[/;
+const NEXT_MARKER = /`|\*|_|\[/;
+/** A letter or digit — what makes `_…_` an underscore INSIDE a word. */
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+/**
+ * Whether the `marker` run really wraps `content` in emphasis — CommonMark's
+ * flanking rule in the two parts that matter here:
+ *
+ * - the run may not open onto whitespace or onto another of itself (`* …*`,
+ *   `**unclosed`) and may not close on whitespace, or `2 * 3 * 4` and a stray
+ *   pair of markers start eating prose;
+ * - a `*` run closes whatever follows it, but `_` is the intra-word marker in
+ *   `snake_case_names`, so an underscore run counts only when neither neighbour
+ *   is a letter or digit. `_(read-only)_` after a space is emphasis; the
+ *   underscores of `run_pytest_now_` are typography.
+ *
+ * Punctuation at either END of the content is fine — that is the shape a plan
+ * writes constantly: `*(read-only — no edits)*`.
+ */
+function isEmphasis(
+  marker: string,
+  content: string,
+  before: string,
+  after: string | undefined,
+): boolean {
+  if (content === "" || content[0] === marker) return false;
+  if (/^\s|\s$/.test(content)) return false;
+  if (marker === "*") return true;
+  return !(WORD_CHAR.test(before) || (after !== undefined && WORD_CHAR.test(after)));
+}
 
 /**
  * Inline markup as spans: `` `code` `` is mono, `**strong**`/`__strong__` is
- * bold, `[label](url)` is a link — and only an `http(s)` link keeps its
- * target. A marker that does not open anything (`2 * 3`, a lone backtick) is
- * text, exactly as markdown itself renders it.
+ * bold, `*emphasis*`/`_emphasis_` is italic, `[label](url)` is a link — and only
+ * an `http(s)` link keeps its target. A marker that does not open anything
+ * (`2 * 3`, a lone backtick, an intra-word `_`) is text, exactly as markdown
+ * itself renders it.
  */
 export function parseInline(text: string): MarkdownInline[] {
+  const source = text ?? "";
   const out: MarkdownInline[] = [];
-  let input = text ?? "";
+  let input = source;
+  /** How much of `source` is consumed — how to ask what came BEFORE this run. */
+  let offset = 0;
   let buffer = "";
   const flush = (): void => {
     if (buffer !== "") {
@@ -185,19 +220,23 @@ export function parseInline(text: string): MarkdownInline[] {
       buffer = "";
     }
   };
+  const take = (count: number): void => {
+    input = input.slice(count);
+    offset += count;
+  };
   while (input !== "") {
     const code = CODE_SPAN.exec(input);
     if (code) {
       flush();
       out.push({ kind: "code", text: code[1] });
-      input = input.slice(code[0].length);
+      take(code[0].length);
       continue;
     }
     const strong = STRONG.exec(input);
     if (strong) {
       flush();
       out.push({ kind: "strong", text: strong[2] });
-      input = input.slice(strong[0].length);
+      take(strong[0].length);
       continue;
     }
     const link = LINK.exec(input);
@@ -205,7 +244,22 @@ export function parseInline(text: string): MarkdownInline[] {
       flush();
       const target = link[2];
       out.push({ kind: "link", text: link[1], href: SAFE_LINK.test(target) ? target : null });
-      input = input.slice(link[0].length);
+      take(link[0].length);
+      continue;
+    }
+    const emphasis = EMPHASIS.exec(input);
+    if (
+      emphasis !== null &&
+      isEmphasis(
+        emphasis[1],
+        emphasis[2],
+        offset === 0 ? "" : source[offset - 1],
+        input[emphasis[0].length],
+      )
+    ) {
+      flush();
+      out.push({ kind: "italic", text: emphasis[2] });
+      take(emphasis[0].length);
       continue;
     }
     // No span starts here: take the text up to the next marker (or all of it),
@@ -214,7 +268,7 @@ export function parseInline(text: string): MarkdownInline[] {
     const next = after < 0 ? input.length : after + 1;
     const advance = next <= 0 ? 1 : next;
     buffer += input.slice(0, advance);
-    input = input.slice(advance);
+    take(advance);
   }
   flush();
   return out;
@@ -254,7 +308,7 @@ export function looksLikeMarkdown(text: string): boolean {
   return INLINE_CODE.test(source) || INLINE_STRONG.test(source) || INLINE_LINK.test(source);
 }
 
-/** Render inline markdown to React nodes (text, `<code>`, `<strong>`, `<a>`). */
+/** Render inline markdown to React nodes (text, `<code>`, `<strong>`, `<em>`, `<a>`). */
 export function renderInline(text: string): ReactNode[] {
   return parseInline(text).map((run, index) => {
     if (run.kind === "code") {
@@ -269,6 +323,13 @@ export function renderInline(text: string): ReactNode[] {
         <strong key={index} className="font-semibold">
           {run.text}
         </strong>
+      );
+    }
+    if (run.kind === "italic") {
+      return (
+        <em key={index} className="italic">
+          {run.text}
+        </em>
       );
     }
     if (run.kind === "link") {

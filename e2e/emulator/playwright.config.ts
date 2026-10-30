@@ -35,11 +35,19 @@ export default defineConfig({
     // Signs in once per pass and saves the storage states the journeys load.
     { name: "setup", testMatch: "setup.spec.ts" },
     {
+      name: "reflow",
+      // The harness's own unit tests (reflow-overlap.spec.ts): fixtures built
+      // with `page.setContent`, so they need NO lab and no signed-in state —
+      // hence no `setup` dependency, and they pass on a machine with no stack.
+      testMatch: /reflow-.*\.spec\.ts/,
+    },
+    {
       name: "journeys",
-      // Every journey spec except the setup one (one shared lab: serial,
-      // one worker, no retries — see the header).
+      // Every journey spec except the setup one and the no-lab reflow specs
+      // (which run in their own project). One shared lab: serial, one worker,
+      // no retries — see the header.
       testMatch: /.*\.spec\.ts/,
-      testIgnore: "setup.spec.ts",
+      testIgnore: [/setup\.spec\.ts/, /reflow-.*\.spec\.ts/],
       dependencies: ["setup"],
     },
   ],

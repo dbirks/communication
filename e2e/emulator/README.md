@@ -144,17 +144,26 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   children — a wrapper's box legitimately spills around the label inside it)
   and a **control** (button / `[role=button]` / `[role=tab]` / link / input /
   select / textarea / summary / slider / contenteditable — wrapper or not).
-  A pair is a defect when the two boxes intersect by **more than 4px on BOTH
-  axes** and **neither box contains the other** (±1px slack: a label inside
-  its field, a heading inside its card, a badge inside its tile are the
-  design). Each box is the box that gets PAINTED: an element's own
-  `getBoundingClientRect` unioned with the Range rects of its direct text
-  (a `whitespace-nowrap` line paints past its layout box — that is exactly
-  how the caption ran under the zoom group at 1280 while its box stopped
-  short of it), then cropped by its own and every ancestor's
-  `overflow: hidden|clip|auto|scroll`, because a collision the browser clips
-  away is not visible (this is also what stops a React Flow node parked
-  off-pane pairing with another one).
+  A pair is a defect when **some fragment of one and some fragment of the other
+  intersect by more than 4px on BOTH axes** and **neither candidate contains the
+  other** (±1px slack: a label inside its field, a heading inside its card, a
+  badge inside its tile are the design). A box is the box that gets PAINTED:
+  for an element with one box, its own `getBoundingClientRect` unioned with the
+  Range rects of its direct text (a `whitespace-nowrap` line paints past its
+  layout box — that is exactly how the caption ran under the zoom group at 1280
+  while its box stopped short of it); for a **`display: inline` run, its
+  `getClientRects()` line fragments** plus those Range rects, compared
+  fragment-by-fragment. The distinction is what acceptance 32 was missing: the
+  markdown reader renders a plan as adjacent inline `<span>`/`<code>` runs, and
+  collapsing a run that wraps across two lines into the UNION of its fragments
+  covers both lines, so two neighbouring wrapped runs of one paragraph
+  "intersected" (the `span × span` / `code × span` hits on `run-gate waiting`,
+  `run-gate completed` and `2e schedule-run-approved`, 351×17px) on screenshots
+  that show them neatly stacked. `inline-block`/`inline-flex` are atomic — one
+  box, so they keep the union rule. Every box and every fragment is then cropped
+  by its own and every ancestor's `overflow: hidden|clip|auto|scroll`, because a
+  collision the browser clips away is not visible (this is also what stops a
+  React Flow node parked off-pane pairing with another one).
   Filters beyond that, each because the alternative is a false positive:
   `aria-hidden` and `.sr-only` / `clip-path` copy (it renders no visible
   text); `opacity: 0` and zero-box elements; **SVG** (React Flow's edges and
@@ -169,6 +178,15 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   floating fit group sitting on the step cards, and the Studio inspector's
   model-prompt textarea bleeding over the pinned `Ask to change this
   draft…` row at 1280.
+  The checker is itself tested, with no lab and no app: `reflow-overlap.spec.ts`
+  hands it `page.setContent` fixtures (adjacent inline runs that wrap → no hit;
+  an absolutely positioned span printed over a line → hit) in its own
+  `reflow` Playwright project, which has no `setup` dependency:
+
+  ```bash
+  pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts \
+    emulator/reflow-overlap.spec.ts
+  ```
 
 Like sidescroll today, every violation is a RECORDED defect (one aggregated
 defect per kind per screen, so fingerprints stay stable) — never a throw —
@@ -237,7 +255,9 @@ prompt field and advanced disclosure on the inspector-edit beat), the
 line or its rows' pinned revision and `Open ›` with the footnote; the 2c
 dialog's START IT WHEN segments, its arm's fields, THE RUN GETS and both
 verbs — and, for the saved arms, the STARTS WHEN row with its switch and
-`Edit` on the repo page; the 2d tab with its revision select, Copy, download
+`Edit` on the repo page (2e.png puts `Edit` on the TRIGGER rows under
+STARTS WHEN, never on a workflow row — whose verbs are `+ Add trigger` and
+`Run`); the 2d tab with its revision select, Copy, download
 and line-numbered text; the 2e/repo-1e page verbs, WORKFLOWS ON THIS REPO
 with its library link, the row verbs, the STARTS WHEN box, and (Projects
 Review) OPEN ISSUES, WORK IN THIS REPO and RECENT RUNS; the project overview's
