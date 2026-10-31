@@ -1093,7 +1093,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await shot(page, "home-06-gate");
     }
     await test.step("the run completes and every node succeeded", async () => {
-      await expectRunStatus(page, /completed/, RUN_TIMEOUT_MS);
+      await expectRunStatus(page, /done/, RUN_TIMEOUT_MS);
       const run = await getJson<RunView>(context, `/api/v1/runs/${planRunId}`);
       expect(run.status, "the run's served status").toBe("completed");
       // Both digests: the pinned revision's and the compiled plan's.
