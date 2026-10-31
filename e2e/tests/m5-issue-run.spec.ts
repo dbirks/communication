@@ -334,9 +334,12 @@ test.describe("W3 start a run from a GitHub issue", () => {
       await expect(alice.getByTestId("project-library-dialog")).toBeVisible();
       // The picker names the workflow with the revision it pins — the newest
       // published, r1 (the reading that replaces the retired inline pin line).
-      await expect(alice.getByTestId(`project-library-row-${SLUG}`)).toContainText(/latest r1\b/, {
-        timeout: 30_000,
-      });
+      await expect(alice.getByTestId(`project-library-row-${SLUG}`)).toContainText(
+        /latest r1(?!\d)/,
+        {
+          timeout: 30_000,
+        },
+      );
       const use = alice.getByTestId(`project-library-use-${SLUG}`);
       const used = alice.getByTestId(`project-library-used-${SLUG}`);
       await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });

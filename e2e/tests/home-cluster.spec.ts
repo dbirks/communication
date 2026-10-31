@@ -761,7 +761,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       // and posts, so the pin's revision is the newest published r1.
       await expect(
         page.getByTestId(`project-library-row-${PLAN_SLUG}`),
-      ).toContainText(/latest r1\b/, { timeout: 30_000 });
+      ).toContainText(/latest r1(?!\d)/, { timeout: 30_000 });
       await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });
       if (await use.isVisible().catch(() => false)) {
         await use.click();
@@ -1247,7 +1247,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       const used = page.getByTestId(`project-library-used-${CLAUDE_SLUG}`);
       await expect(
         page.getByTestId(`project-library-row-${CLAUDE_SLUG}`),
-      ).toContainText(/latest r1\b/, { timeout: 30_000 });
+      ).toContainText(/latest r1(?!\d)/, { timeout: 30_000 });
       // Same assign/already-assigned race as the plan pipeline: settle on
       // either branch's marker before deciding which one is present.
       await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });

@@ -34,8 +34,16 @@ const STAMP = Date.now().toString(36);
 interface ScheduleRow {
   id: string;
   project_id: string;
+  assignment_id: string;
   cron_expr: string;
   enabled: boolean;
+}
+
+/** One issue trigger of GET /api/v1/projects/{projectId}/issue-triggers — the
+ * only field this spec reads beyond the id. */
+interface IssueTriggerRow {
+  id: string;
+  assignment_id: string;
 }
 
 /** GET /api/v1/projects/{projectId}/schedules — the list the Triggers
@@ -72,7 +80,13 @@ async function apiPost(
 async function openRepoWorkflowRow(
   page: Page,
   slug: string,
-): Promise<{ projectId: string; repoName: string; key: string; pipelineId: string }> {
+): Promise<{
+  projectId: string;
+  repoName: string;
+  key: string;
+  assignmentId: string;
+  pipelineId: string;
+}> {
   const projectPath = await openProjectBySlug(page, "m4-exit");
   const projectId = projectPath.split("/").pop() ?? "";
   expect(projectId, "the opened project answers with its uuid").toMatch(/^[0-9a-f-]{36}$/);
@@ -103,7 +117,74 @@ async function openRepoWorkflowRow(
   await expect(page.getByTestId(`repo-workflow-name-${key}`)).toContainText(slug, {
     timeout: 30_000,
   });
-  return { projectId, repoName, key, pipelineId: pipeline.id };
+  return { projectId, repoName, key, assignmentId: assignment?.id ?? "", pipelineId: pipeline.id };
+}
+
+/** How many triggers the server serves for ONE assignment. The repo panel
+ * opens a row exactly when this is non-zero (design 2e, reflow-390 item 4), so
+ * the journey derives the row's default from the API instead of assuming the
+ * seeded workflow never kept a trigger from an earlier pass. */
+async function apiTriggerCount(
+  request: APIRequestContext,
+  projectId: string,
+  assignmentId: string,
+): Promise<number> {
+  const [schedulesRes, issuesRes] = await Promise.all([
+    request.get(`${BASE_URL}/api/v1/projects/${projectId}/schedules`),
+    request.get(`${BASE_URL}/api/v1/projects/${projectId}/issue-triggers`),
+  ]);
+  expect(schedulesRes.status(), `GET schedules -> ${schedulesRes.status()}`).toBe(200);
+  expect(issuesRes.status(), `GET issue-triggers -> ${issuesRes.status()}`).toBe(200);
+  const schedules = (await schedulesRes.json()) as { schedules?: ScheduleRow[] };
+  const issues = (await issuesRes.json()) as { issue_triggers?: IssueTriggerRow[] };
+  return (
+    (schedules.schedules ?? []).filter((row) => row.assignment_id === assignmentId).length +
+    (issues.issue_triggers ?? []).filter((row) => row.assignment_id === assignmentId).length
+  );
+}
+
+/**
+ * Assert a repo workflow row's STARTS WHEN default and OPEN it.
+ *
+ * Design 2e (reflow-390 item 4, this round's UI change): a row with NO
+ * triggers starts COLLAPSED — the always-open box used to stack a “Never
+ * triggered” rectangle down the whole panel — while a row that has triggers
+ * still opens on its box. So the journey can no longer read the box as if it
+ * were open by default: it checks the chevron against the served trigger
+ * count, closes an already-open row, then opens the row with the same
+ * `repo-workflow-toggle-<key>` chevron and asserts the box appears. A
+ * background refetch can re-render the panel mid-click (the emulator learned
+ * this), so opening is a bounded loop rather than one click.
+ */
+async function openRowStartsBox(page: Page, key: string, triggerCount: number): Promise<void> {
+  const toggle = page.getByTestId(`repo-workflow-toggle-${key}`);
+  const starts = page.getByTestId(`repo-workflow-starts-${key}`);
+  // The default follows the trigger reads, which land after the row paints.
+  await expect
+    .poll(async () => (await toggle.getAttribute("aria-expanded")) === "true", {
+      message: `design 2e: a row with ${triggerCount} trigger(s) settles on its own default`,
+      timeout: 30_000,
+    })
+    .toBe(triggerCount > 0);
+  if (triggerCount > 0) {
+    // Hand the journey the collapsed row every trigger-less use starts on.
+    await toggle.click({ timeout: 15_000 });
+    await expect(starts, "the chevron closes an open row").toBeHidden({ timeout: 30_000 });
+  } else {
+    await expect(
+      starts,
+      "design 2e: a workflow with no triggers keeps its STARTS WHEN box closed",
+    ).toBeHidden({ timeout: 30_000 });
+  }
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if ((await toggle.getAttribute("aria-expanded")) === "true") break;
+    await toggle.click({ timeout: 15_000 }).catch(() => undefined);
+    await page.waitForTimeout(400);
+  }
+  await expect(toggle).toHaveAttribute("aria-expanded", "true", { timeout: 30_000 });
+  await expect(starts, "the row's chevron opens its STARTS WHEN box").toBeVisible({
+    timeout: 30_000,
+  });
 }
 
 test.describe("shell p10 gaps — workflow triggers, repository page, usage, thread artifacts", () => {
@@ -119,15 +200,18 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const request = page.request;
     // ADR-0060/2e: triggers are authored where the workflow is USED — the
     // repository page's WORKFLOWS ON THIS REPO panel — never on the library
-    // page. Design 2e (995ba91): the row's STARTS WHEN box is OPEN by default,
-    // so the journey asserts that default instead of clicking the toggle —
-    // clicking it now COLLAPSES the row.
-    const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
-    await expect(page.getByTestId(`repo-workflow-toggle-${key}`)).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
-    await expect(page.getByTestId(`repo-workflow-starts-${key}`)).toBeVisible({ timeout: 30_000 });
+    // page. Design 2e (reflow-390 item 4): a row with NO triggers now starts
+    // COLLAPSED, so the journey asserts the default the served triggers imply
+    // and OPENS the row with its own chevron instead of reading the box as if
+    // it were open by default.
+    const {
+      projectId: labProjectId,
+      repoName,
+      key,
+      assignmentId,
+    } = await openRepoWorkflowRow(page, "feature-development");
+    const triggerCount = await apiTriggerCount(request, labProjectId, assignmentId);
+    await openRowStartsBox(page, key, triggerCount);
     // In an open row the `+ Add trigger` sits in the STARTS WHEN header under
     // the same `repo-workflow-add-<key>` testid the collapsed row's action
     // uses — the two never render side by side.
@@ -419,8 +503,20 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     // Same move as the schedule arm (ADR-0060/2e): the issue trigger is
     // added from the repository page's row, where the repository is fixed —
     // the lab's one repository is a file:// remote, so this is exactly the
-    // surface that must answer the server's not-a-GitHub 422 inline.
-    const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
+    // surface that must answer the server's not-a-GitHub 422 inline. The row
+    // is opened through its chevron first (design 2e: no triggers means a
+    // collapsed row), then the STARTS WHEN header's `+ Add trigger` is the door.
+    const {
+      projectId: labProjectId,
+      repoName,
+      key,
+      assignmentId,
+    } = await openRepoWorkflowRow(page, "feature-development");
+    await openRowStartsBox(
+      page,
+      key,
+      await apiTriggerCount(page.request, labProjectId, assignmentId),
+    );
     await page.getByTestId(`repo-workflow-add-${key}`).click();
     const dialog = page.getByTestId("trigger-dialog");
     await expect(dialog).toBeVisible({ timeout: 30_000 });

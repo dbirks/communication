@@ -127,7 +127,18 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
       />
       <EdgeLabelRenderer>
         <div
-          className="pointer-events-auto absolute group"
+          // While the picker is open this group must paint above EVERY other
+          // edge's group (each group is a transform stacking context, so they
+          // compete by z-index inside the edge-label renderer). A 44px "+"
+          // hit square from a neighbouring edge used to land on the open
+          // picker's kind cards — the click hit the "+" instead of the item
+          // (the shell acceptance's timed-out click). One z-bump on the open
+          // edge lifts its whole picker over all the "+" squares.
+          className={
+            pickerOpen
+              ? "pointer-events-auto absolute group z-50"
+              : "pointer-events-auto absolute group"
+          }
           style={{ left: midX, top: midY, transform: "translate(-50%, -50%)" }}
         >
           {/* A read-only canvas (the Run Workbench's Graph tab projects a pinned
@@ -135,21 +146,6 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               editor's verbs, and drawing them on a screen that cannot take the
               edit is a lie about the page. The route label below still prints —
               it is a fact of the definition, not a verb. */}
-          {interactive && pickerOpen && (
-            <div
-              className="pointer-events-auto absolute"
-              style={{ left: 0, top: 24, transform: "translate(-50%, -50%)" }}
-            >
-              <StepPicker
-                title={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
-                onPick={(kind) => {
-                  setPickerOpen(false);
-                  data.onInsert(kind);
-                }}
-                onClose={() => setPickerOpen(false)}
-              />
-            </div>
-          )}
           {interactive && (
             <button
               type="button"
@@ -167,6 +163,10 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                // With its own picker already open the "+" is inert: the click
+                // neither reopens it nor fires a second insert gesture — the
+                // one picker on screen owns the next click.
+                if (pickerOpen) return;
                 setPickerOpen(true);
               }}
             >
@@ -174,6 +174,24 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
                 +
               </span>
             </button>
+          )}
+          {/* Rendered AFTER the button and z-raised inside the (already
+              z-raised) group, so the open picker always wins the hit test
+              over its own "+" square as well as every neighbour's. */}
+          {interactive && pickerOpen && (
+            <div
+              className="pointer-events-auto absolute z-50"
+              style={{ left: 0, top: 24, transform: "translate(-50%, -50%)" }}
+            >
+              <StepPicker
+                title={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
+                onPick={(kind) => {
+                  setPickerOpen(false);
+                  data.onInsert(kind);
+                }}
+                onClose={() => setPickerOpen(false)}
+              />
+            </div>
           )}
           {/* Design 1g: the "insert step" word sits immediately right of the
               "+" — single-line mono, no bubble, no wrap — and is hidden

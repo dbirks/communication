@@ -162,6 +162,49 @@ describe("StudioCanvas", () => {
     expect(kind).toBe("process.exec");
   });
 
+  it("inserts exactly one step per picker click: the open picker swallows the “+”, never a second insert", async () => {
+    // The acceptance-33 defect: the 44px "+" hit square sat over the open
+    // picker, so a click aimed at a kind card could hit the "+" instead. The
+    // contract: one item click → exactly one onInsertOnEdge call, and the "+"
+    // is inert (no reopen, no duplicate picker) while the picker is open.
+    const onInsertOnEdge = vi.fn();
+    renderCanvas({ onInsertOnEdge });
+    const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
+    fireEvent.click(add);
+    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    // Re-clicking the "+" with its picker open changes nothing: still ONE
+    // picker on the canvas, and no insert has happened yet.
+    fireEvent.click(add);
+    expect(screen.getAllByTestId("step-picker")).toHaveLength(1);
+    expect(onInsertOnEdge).not.toHaveBeenCalled();
+    // The single card click inserts exactly one step.
+    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    expect(onInsertOnEdge).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("step-picker")).toBeNull();
+  });
+
+  it("stacks the open picker above the “+” hit square (jsdom has no paint order)", async () => {
+    // jsdom implements neither layout nor `document.elementFromPoint`, so the
+    // fix is asserted through the DOM contract the browser stacks by: the
+    // picker renders AFTER its "+" button inside the group, carries its own
+    // z-50, and the open group itself is z-raised above every other edge's
+    // transform-stacked group (a neighbour's 44px square used to win the hit
+    // test against the first kind card).
+    renderCanvas();
+    const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
+    const group = add.parentElement as HTMLElement;
+    expect(group.className).not.toContain("z-50");
+    fireEvent.click(add);
+    const picker = screen.getByTestId("step-picker");
+    const pickerWrap = picker.parentElement as HTMLElement;
+    expect(pickerWrap.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(pickerWrap.className).toContain("z-50");
+    expect(group.className).toContain("z-50");
+    // The 44px target and the 22px circle stay exactly as designed.
+    expect(add.className).toContain("h-[44px]");
+    expect(add.querySelector("span[aria-hidden='true']")?.className).toContain("h-[22px]");
+  });
+
   it("shows the trailing + only on terminal steps, and never in read-only mode", async () => {
     const { unmount } = renderCanvas();
     expect(screen.getByTestId("add-after-check")).toBeTruthy();

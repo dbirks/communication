@@ -376,7 +376,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
 
     const lastTerminal = "publish_needs_attention";
     // Canvas step nodes are `canvas-step-<id>`; the step-list panel adds
-    // `canvas-step-row-<id>` and a `canvas-step-list` wrapper, which are
+    // `canvas-step-row-<id>` and a `canvas-step-list` wrapper and 35624f6 gave
+    // every node a `canvas-step-fact-<id>` key-fact line INSIDE its own box, so
+    // a bare `canvas-step-` prefix counts one step twice. All three are
     // filtered out in-page (a CSS `:not()` with nested quotes is rejected by
     // Playwright's selector parser).
     const stepIds = (): Promise<string[]> =>
@@ -387,6 +389,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
           if (
             t.startsWith("canvas-step-") &&
             !t.startsWith("canvas-step-row-") &&
+            !t.startsWith("canvas-step-fact-") &&
             t !== "canvas-step-list"
           ) {
             out.push(t.slice("canvas-step-".length));
