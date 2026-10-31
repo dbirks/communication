@@ -234,20 +234,27 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       const title = dialog.getByTestId("use-in-repo-title");
       await expect(
         title,
-        "design 2a: the dialog opens as the plain question 'Use in a repo…'",
-      ).toHaveText("Use in a repo…", { timeout: 20_000 });
-      const m4State = dialog.getByTestId(`assign-project-state-${projectId}`);
+        "design 2a: the dialog opens naming its workflow (`Use <workflow> in a repo…`)",
+      ).toHaveText(`Use ${SCHED_NAME} in a repo…`, { timeout: 20_000 });
+      // The pin bookkeeping renders ONLY where it says something (2026-10-30
+      // copy review, 2a item 7): this pass's workflow is brand new, so no
+      // project pins it and the old per-project `not used yet` list is simply
+      // not drawn — the project select below already lists those projects.
       await expect(
-        m4State,
-        "design 2a: the dialog names the project's current state (read-only)",
-      ).toBeVisible({ timeout: 30_000 });
+        dialog.getByTestId("assign-project-states"),
+        "design 2a: with no pin anywhere the bookkeeping list renders nothing at all",
+      ).toHaveCount(0);
       await expect(
-        m4State.getByTestId(`assign-project-pin-${projectId}`),
-        "design 2a: that state is honest words — this pass's workflow is new, so 'not used yet'",
-      ).toContainText(/not used yet/i, { timeout: 30_000 });
+        dialog.getByTestId(`assign-project-state-${projectId}`),
+        "design 2a: M4 Exit says nothing about itself until this workflow is pinned there",
+      ).toHaveCount(0);
       await expect(
-        dialog.getByTestId("assign-project-states").locator("button"),
-        "design 2a: no `Use here` button survives anywhere in that list — the select is the one way in",
+        dialog.getByText(/not used yet/i),
+        "design 2a: the retired `not used yet` line (the select's own list, drawn twice) stays gone",
+      ).toHaveCount(0);
+      await expect(
+        dialog.getByRole("button", { name: /^use here$/i }),
+        "design 2a: no `Use here` button survives anywhere in the dialog — the select is the one way in",
       ).toHaveCount(0);
       await expect(
         dialog.getByTestId(/^assign-pick-/),
@@ -264,8 +271,8 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       await repoSelect.selectOption({ label: "app" }, { timeout: 20_000 });
       await expect(
         title,
-        "design 2a: the dialog is named for the pin it is about to make (`Use in app`)",
-      ).toHaveText("Use in app", { timeout: 20_000 });
+        "design 2a: the dialog is named for the pin it is about to make (`Use <workflow> in app`)",
+      ).toHaveText(`Use ${SCHED_NAME} in app`, { timeout: 20_000 });
       await dialog.getByTestId("assign-confirm").click({ timeout: 20_000 });
       // The deployed dialog confirms and closes on its own; the durable
       // proof is the assignment the pin created (the rail refetches late,
@@ -293,6 +300,36 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
           { message: "the pin lands as an assignment on the project", timeout: 60_000 },
         )
         .toBe("pinned");
+      // 2026-10-30 copy review (2a item 7) kept the bookkeeping for exactly the
+      // fact the project select cannot carry — a project that ALREADY uses this
+      // workflow, and on which of its repos. Now the pin exists, so re-open the
+      // dialog and read that line (nothing is clicked but `esc`: this proves
+      // the note, not a second write). The assignments cache the dialog reads
+      // must be the served ones, so this is a fresh navigation, not the stale
+      // page the pin left behind.
+      await page.goto(`/workflows/${pipelineId}`);
+      await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId("assign-open").click({ timeout: 20_000 });
+      await expect(dialog, "design 2a: the dialog re-opens on the workflow page").toBeVisible({
+        timeout: 20_000,
+      });
+      const m4PinRow = dialog.getByTestId(`assign-project-state-${projectId}`);
+      await expect(
+        m4PinRow,
+        "design 2a: once a project pins the workflow, the bookkeeping names it",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        m4PinRow.getByTestId(`assign-project-pin-${projectId}`),
+        "design 2a: its line is the pin itself — `<repo> pins r<n> (<newest|an older revision>)`",
+      ).toContainText(/^app pins r\d+ \((newest|an older revision)\)/, { timeout: 30_000 });
+      await expect(
+        dialog.getByText(/not used yet/i),
+        "design 2a: a project that does not pin this workflow is still not listed",
+      ).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await expect(dialog, "the dialog closes on esc with no second write").toBeHidden({
+        timeout: 15_000,
+      });
     });
 
     await test.step("2e — the repo page lists the workflow", async () => {

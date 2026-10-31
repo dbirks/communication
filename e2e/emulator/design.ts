@@ -524,11 +524,12 @@ const USE_DIALOG: Landmark = {
 };
 const USE_DIALOG_TITLE: Landmark = {
   id: "use-dialog-title",
-  // The 1c rule (the title says what the verb will do): the plain question
-  // `Use in a repo…` until a repo is chosen, then `Use in <repo>` / `Use in
-  // every repo of <project>` — the same heading, whichever stage it is at.
-  desc: "the dialog's title (the question 'Use in a repo…', then the repo it names)",
-  any: [{ testid: "use-in-repo-title" }, { role: "heading", name: /^use in\b/i }],
+  // The 1c rule (the title says what the verb will do) AND the 2a item-7 fix of
+  // 2026-10-30 (the title names its SUBJECT): `Use <workflow> in a repo…`
+  // until a repo is chosen, then `Use <workflow> in <repo>` / `Use <workflow>
+  // in every repo of <project>` — the same heading, whichever stage it is at.
+  desc: "the dialog's title (the workflow's name in the question, then the repo it names)",
+  any: [{ testid: "use-in-repo-title" }, { role: "heading", name: /^use\b/i }],
 };
 const USE_FORM: Landmark = {
   id: "use-dialog-form",
@@ -663,10 +664,11 @@ const YAML_COPY: Landmark = {
 };
 const YAML_DOWNLOAD: Landmark = {
   id: "yaml-download",
-  // The 390px design check: the button's LABEL is the plain word `download`
-  // and the file's name is its title/accessible description — the old
+  // The 390px design check: the button's LABEL is the plain word `Download`
+  // (2d item 3, 2026-10-30 copy review: `Copy` and `Download` are one case and
+  // one size) and the file's name is its title/accessible description — the old
   // `<slug>-r<n>.yaml` label was cut to `…-r1.ya…` on the bar.
-  desc: "the 'download' control (the file's name is its title, not its label)",
+  desc: "the 'Download' control (the file's name is its title, not its label)",
   any: [{ testid: "yaml-view-download" }, { role: "button", name: /^download\b/i }],
 };
 const YAML_LINES: Landmark = {
@@ -1246,7 +1248,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     WF_TAB_USED_IN_ACTIVE,
     USED_IN_PANEL,
     USED_IN_EMPTY,
-    USED_IN_FOOTNOTE,
+    // The footnote explains the rows' `Open ›` link, so it is no longer drawn
+    // over an empty list (2026-10-30 copy review, 2a item 7) — a screen with no
+    // rows may not require it. `2a used-in-assigned` still does.
   ],
   "2a used-in-assigned": [
     WF_BREADCRUMB,

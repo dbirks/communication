@@ -227,6 +227,14 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1b: a failed library read is a ProblemBanner quoting the server's problem, not a blank list",
     ).toBeVisible({ timeout: 30_000 });
+    // The shared load-failure block (2026-10-30 copy review): the page's own
+    // sentence leads and the server's problem document sits under it as muted
+    // evidence — so the problem IS still quoted (asserted above), but it is no
+    // longer the headline and the bar no longer borrows the run-status word.
+    await expect(
+      page.getByTestId("workflows-load-error"),
+      "design 1b: the banner leads with `Couldn't load the workflow library.`",
+    ).toContainText("Couldn't load the workflow library.", { timeout: 30_000 });
     await expect(
       page.getByTestId("workflows-list"),
       "design 1b: no list is invented over a failed read",
@@ -285,6 +293,14 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       "design 1e: the failed read lands on the page-level failure banner",
     ).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("pipeline-page-failure")).toContainText(PROBLEM_LINE);
+    // The shared block: a plain `Couldn't load <what the page read>` heading
+    // with the server's problem as the muted evidence quoted just above, then
+    // Retry and the way back — `FAILED` is a run's status word, not this
+    // page's story (2026-10-30 copy review).
+    await expect(
+      page.getByTestId("pipeline-page-failure"),
+      "design 1e: the failure says `Couldn't load the workflow.` in its own words",
+    ).toContainText("Couldn't load the workflow.");
     await expect(
       page.getByTestId("workflow-load-retry"),
       "design 1e: a server error (unlike a 404) offers the way back — Retry",
@@ -302,6 +318,10 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       "design 1g: a draft that cannot be read says so — the canvas is never drawn from invented bytes",
     ).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("studio-draft-error")).toContainText(PROBLEM_LINE);
+    await expect(
+      page.getByTestId("studio-draft-error"),
+      "design 1g: the failed draft read says `Couldn't load the draft.` — the shared block, not the bare run word",
+    ).toContainText("Couldn't load the draft.");
     await expect(
       page.getByTestId("studio-page"),
       "design 1g: no canvas mounts over the failed read",
@@ -517,6 +537,10 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       "design 1b: the shell quotes the server's own problem",
     ).toBeVisible();
     await expect(
+      page.getByTestId("project-page-error").getByRole("alert").first(),
+      "design 1b: and it leads with its own sentence — the shared `Couldn't load …` block",
+    ).toContainText("Couldn't load the project.");
+    await expect(
       page.getByTestId("project-page"),
       "design 1b: no overview is assembled from parts",
     ).toHaveCount(0);
@@ -536,6 +560,10 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByTestId("threads-list-error"),
       "design 1g: the list pane says the read could not be made",
     ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.getByTestId("threads-list-error"),
+      "design 1g: it is the shared load-failure block — `Couldn't load the thread list.",
+    ).toContainText("Couldn't load the thread list.", { timeout: 30_000 });
     await expect(
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1g: the thread column carries the loud banner",

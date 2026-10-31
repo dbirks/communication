@@ -443,13 +443,15 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
     });
     await test.step("the row answers the one question a schedule screen is for", async () => {
       const row = scheduleRows(scheduledRowKey).last();
-      // "next 214d left" — a countdown, never "due now"/"passed": the whole
+      // "next in 214d" — a countdown, never "due now"/"passed": the whole
       // point of a far-future slot is that nothing fires while this runs. The
       // bookkeeping column (scheduleNextText) carries it, and with no
       // `· last <id>` link beside it nothing has fired — the row's own words
-      // for the retired `never run` line.
+      // for the retired `never run` line. (2026-10-30 copy review, 2c item 5:
+      // the countdown used to read `next 214d left`, which said the same thing
+      // twice; the ` left` suffix is gone.)
       await expect(row.locator('[data-testid^="repo-workflow-trigger-meta-"]')).toHaveText(
-        /^next [0-9]+[smhd] left$/,
+        /^next in [0-9]+[smhd]$/,
       );
     });
     await test.step("disabling it is served, not just clicked — and survives a reload", async () => {
@@ -469,16 +471,22 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       ).toHaveText("paused", { timeout: 30_000 });
       // A paused row's `next_run_at` is a stale number, so the clock must stop
       // promising a fire (ADR-0032: re-enabling re-derives it from now). The
-      // shared 2e bookkeeping column says the state word where an enabled row
-      // says the countdown — so the paused row's meta cell reads `paused` and
-      // nothing in the row still promises a `next …`.
+      // 2026-10-30 copy review (2c item 5) took the repeated state word out of
+      // the bookkeeping cell — the switch's own `paused` word above already
+      // says it — so a paused row's meta cell now carries only the run fact:
+      // `last <id>` when the schedule has fired, `never run` when it has not.
+      // Nothing in the row may still promise a `next …`.
       const meta = row.locator('[data-testid^="repo-workflow-trigger-meta-"]');
-      await expect(meta).toHaveText("paused");
+      await expect(meta).toHaveText(/^(never run|last [0-9a-z-]{4,})$/i);
       const pausedText = ((await row.textContent()) ?? "").toLowerCase();
       expect(
         pausedText,
         `a paused row promises no fire (row read: "${pausedText.trim()}")`,
       ).not.toMatch(/next [0-9]/);
+      expect(
+        pausedText,
+        `a paused row promises no fire (row read: "${pausedText.trim()}")`,
+      ).not.toMatch(/next in [0-9]/);
       // Read the served state back from a fresh navigation, not the client's
       // cache: the pause is the database's, not the page's.
       await gotoApp(alice, `${projectPath}/pipelines`);
@@ -497,10 +505,15 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
           .locator('[data-testid^="repo-workflow-trigger-enabled-"][data-testid$="-state"]'),
       ).toHaveText("paused");
       // The served pause drops the countdown too — a fresh navigation reads
-      // the same contract the click produced, not a client-side flourish.
+      // the same contract the click produced, not a client-side flourish. The
+      // meta cell keeps only the run fact (`never run`, or `last <id>` once the
+      // schedule has fired); the state word belongs to the switch alone.
       await expect(fresh.last().locator('[data-testid^="repo-workflow-trigger-meta-"]')).toHaveText(
-        "paused",
+        /^(never run|last [0-9a-z-]{4,})$/i,
       );
+      await expect(
+        fresh.last().locator('[data-testid^="repo-workflow-trigger-meta-"]'),
+      ).not.toContainText(/next/i);
       scheduledRowKey = ""; // nothing is left on the clock for afterAll to pause
       await shot(alice, "m5-schedules-02-paused");
     });

@@ -420,16 +420,14 @@ export function PipelinePage() {
             </div>
             {/* One subtitle, two sources (2a/1e): the workflow's own
                 description when it has one (the design shows the description
-                — two lines max), the library sentence only when it does not.
+                in full — it caps nothing), the library sentence only when it
+                does not.
                 A workflow carries its words in two places — the library row,
                 or the document's own `metadata.description` (what a YAML
                 import or a starter workflow writes) — and the review's 1e
                 item is exactly the second one: a workflow WITH a description
                 showed the generic sentence because only the row was read. */}
-            <p
-              className="line-clamp-2 max-w-[70ch] text-[13px] text-muted"
-              data-testid="workflow-kind-line"
-            >
+            <p className="max-w-[70ch] text-[13px] text-muted" data-testid="workflow-kind-line">
               {workflowDescription ||
                 "Library workflow. It runs only in the repos that use it, and triggers are set up there."}
             </p>

@@ -707,16 +707,22 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         // whole-project semantics the old dialog carried implicitly.
         await assign.click();
         await expect(admin.getByTestId("use-in-repo-dialog")).toBeVisible();
-        // Design 2a (pass-2 review): the dialog is named for what it will do.
-        // It opens as the plain question; once the reader has chosen, its title
-        // names the pin. The project's own state line is read-only — the old
-        // per-row `Use here` button was a second way to do what the project
-        // select does, so it is gone.
+        // Design 2a (pass-2 review): the dialog is named for what it will do,
+        // and — since the 2026-10-30 copy review (2a item 7) — it names its
+        // SUBJECT: `Use <workflow> in a repo…`, so the reader never has to
+        // remember which page they clicked the verb on. The project bookkeeping
+        // is read-only AND quiet until it says something: the old list printed
+        // every project you maintain with `not used yet` beside each, which was
+        // the project select's own option list drawn twice.
         const assignTitle = admin.getByTestId("use-in-repo-title");
-        await expect(assignTitle, "the dialog opens as the plain question").toHaveText(
-          "Use in a repo…",
+        await expect(assignTitle, "the dialog names the workflow and the action").toHaveText(
+          `Use ${SLUG} in a repo…`,
         );
         await selectByOptionText(admin, "assign-project-select", ALICE.projectName);
+        await expect(
+          admin.getByTestId("assign-project-states"),
+          "design 2a: nothing pins this workflow yet, so the bookkeeping list renders nothing",
+        ).toHaveCount(0);
         await expect(
           admin.getByTestId("assign-project-states").locator("button"),
           "the project-state rows are read-only — no `Use here` button anywhere (one way to choose)",
@@ -725,7 +731,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         await expect(
           assignTitle,
           "whole-project choice: the title says which repos the pin covers",
-        ).toHaveText(`Use in every repo of ${ALICE.projectName}`);
+        ).toHaveText(`Use ${SLUG} in every repo of ${ALICE.projectName}`);
         const created = admin.waitForResponse(
           (response) =>
             response.url().includes("/api/v1/projects/") &&

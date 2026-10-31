@@ -172,15 +172,16 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       expect(text, "design 2d: the emu prompt edit is in the published YAML").toContain(
         `emu edit ${EMU_PASS_ID}`,
       );
-      // Design 2d copy (the 390 check): the export button reads the plain word
-      // `download` — the filename moved to its title/accessible name, where it
-      // can no longer be cut to `…-r1.ya…` on the bar.
+      // Design 2d copy (the 390 check, and the 2d item-3 case fix): the export
+      // button reads the plain word `Download` — the filename lives in its
+      // title/accessible name, where it can no longer be cut to `…-r1.ya…` on
+      // the bar. Case-insensitive: the WORD is the contract.
       await expect(
         page.getByTestId("yaml-view-download"),
-        "design 2d: the export button's label is 'download'",
-      ).toHaveText("download", { timeout: 30_000 });
+        "design 2d: the export button's label is 'Download'",
+      ).toHaveText(/^download$/i, { timeout: 30_000 });
       await expect(
-        page.getByRole("button", { name: /^download .*\.yaml$/ }),
+        page.getByRole("button", { name: /^download .*\.yaml$/i }),
         "design 2d: the button still names the file it writes, in its accessible name",
       ).toBeVisible({ timeout: 30_000 });
       await emu.screen("2d", "yaml");
@@ -220,25 +221,23 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       const title = dialog.getByTestId("use-in-repo-title");
       await expect(
         title,
-        "design 2a: before anything is chosen the dialog is still the plain question",
-      ).toHaveText("Use in a repo…", { timeout: 20_000 });
-      // The projects list is READ-ONLY bookkeeping: it says where the workflow
-      // is already pinned and nothing else. The pass-2 review retired the
-      // per-row `Use here` button, so the project select below is the ONE way
-      // to choose — assert no row offers a second way.
+        "design 2a: before anything is chosen the dialog names its workflow and its verb",
+      ).toHaveText(`Use ${NAME} in a repo…`, { timeout: 20_000 });
+      // The pin bookkeeping is READ-ONLY and it says ONLY what the project
+      // select cannot (2026-10-30 copy review, 2a item 7): a project that
+      // already uses this workflow, and on which of its repos. Until a pin
+      // exists there is nothing to say, so the list renders nothing at all —
+      // the old `not used yet` line was the select's own option list drawn
+      // twice. The pass-2 review retired the per-row `Use here` button, so the
+      // project select below is the ONE way to choose; a row must never offer
+      // a second way.
       const states = dialog.getByTestId("assign-project-states");
       await expect(
         states,
-        "design 2a: the dialog shows where each project stands (read-only bookkeeping)",
-      ).toBeVisible({ timeout: 30_000 });
-      const m4Row = states.locator("li").filter({ hasText: "M4 Exit" });
-      await expect(m4Row, "design 2a: 'M4 Exit' is named there, with its pin line").toHaveCount(1);
+        "design 2a: no project pins this fresh workflow, so there is no state line to read",
+      ).toHaveCount(0);
       await expect(
-        m4Row.getByTestId(/^assign-project-pin-/),
-        "design 2a: the state is honest words — 'not used yet' / 'pins r<n>'",
-      ).toContainText(/not used yet|pins r/i, { timeout: 30_000 });
-      await expect(
-        states.locator("button"),
+        dialog.getByRole("button", { name: /^use here$/i }),
         "design 2a: that list is read-only — no `Use here` button anywhere; the project select is the ONE way to choose",
       ).toHaveCount(0);
       await expect(
@@ -261,7 +260,7 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
       await expect(
         title,
         "design 2a (1c rule): once a repo is chosen the dialog is named for what it will do",
-      ).toHaveText("Use in app", { timeout: 20_000 });
+      ).toHaveText(`Use ${NAME} in app`, { timeout: 20_000 });
       // The 1c footer: Cancel first, the primary verb last, both on the right.
       await expect
         .poll(
@@ -314,6 +313,34 @@ test.describe("workflow-lifecycle (alice uses it in a repo)", () => {
         page.getByTestId("workflow-used-in-count"),
         "design 1e/2a: the tab carries the same count",
       ).toHaveText("1", { timeout: 30_000 });
+      // Now the bookkeeping has something to say, and it says ONLY that
+      // (2026-10-30 copy review, 2a item 7): the project that already pins this
+      // workflow, and on which of its repos. Re-read the dialog — the check is
+      // read-only, `esc` closes it without a second write.
+      await page.goto(`/workflows/${pipelineId}`);
+      await page.getByTestId("assign-open").click({ timeout: 20_000 });
+      const again = page.getByTestId("use-in-repo-dialog");
+      await expect(again, "design 2a: the dialog re-opens on the workflow page").toBeVisible({
+        timeout: 20_000,
+      });
+      const pinRow = again.getByTestId(/^assign-project-state-/);
+      await expect(
+        pinRow,
+        "design 2a: once pinned, exactly the project that uses it is named there",
+      ).toHaveCount(1);
+      await expect(
+        pinRow.locator('[data-testid^="assign-project-pin-"]'),
+        "design 2a: its line is the pin itself — `<repo> pins r<n> (<newest|an older revision>)`",
+      ).toContainText(/^app pins r\d+ \((newest|an older revision)\)$/, { timeout: 30_000 });
+      await expect(
+        again.getByText(/not used yet/i),
+        "design 2a: no `not used yet` line comes back for the projects that do not pin it",
+      ).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await expect(again, "the dialog closes again with no second write").toBeHidden({
+        timeout: 15_000,
+      });
+      await page.goto(`/workflows/${pipelineId}/used-in`);
       await emu.screen("2a", "used-in-assigned");
     });
   });
