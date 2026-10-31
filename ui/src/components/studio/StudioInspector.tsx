@@ -155,10 +155,15 @@ function PipelinePanel({
         value={description}
         onCommit={(v) => apply((t) => setDocValue(t, ["metadata", "description"], v || undefined))}
       />
+      {/* Pass-8 review, item 8: with nothing selected the inspector opened on
+          the document's own path — `SPEC.INPUTS` over a raw JSON schema. The
+          word a person uses for this is the inputs a RUN gets, so the field is
+          labelled `Run inputs` and one line says what the box is. The editor
+          itself stays (it is the only surface that edits `spec.inputs`). */}
       <JsonField
         id="pipeline-inputs"
-        label="spec.inputs"
-        hint="the inputs schema every run must satisfy (JSON)"
+        label="Run inputs"
+        hint="What every run of this workflow must be given. This box is that list, written as JSON."
         readOnly={readOnly}
         value={inputs}
         onCommit={(v) => apply((t) => setDocValue(t, ["spec", "inputs"], v))}

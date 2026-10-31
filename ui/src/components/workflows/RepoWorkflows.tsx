@@ -22,8 +22,10 @@
  *   `bg-accent-wash` header strip in accent mono caps carrying the row's ONE
  *   `+ Add trigger` on the right), one grid row
  *   per trigger (`18px 1fr 160px 80px 40px`; below 900px the same cells lay
- *   out as TWO lines — icon·sentence·toggle over detail·bookkeeping·Edit — so
- *   390px never scrolls sideways or breaks a trigger into seven lines), and
+ *   out as a short stack — icon·sentence·toggle, then the mono detail line, then
+ *   the bookkeeping with `Edit` at its right — so 390px never scrolls sideways,
+ *   never breaks a `›` off a step chain and never squeezes a cron down to
+ *   `* …`), and
  *   the closing line "Or start it by hand with Run, or from an issue below."
  *
  * Honesty rules:
@@ -178,12 +180,17 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
   const triggerReadsReady = !schedules.isPending && !issueTriggers.isPending;
   const triggerReadsFailed = schedules.isError || issueTriggers.isError;
 
+  // “WORKFLOWS ON THIS REPO · n” is what the bar USED to read at 390 — with the
+  // ellipsis eating the count (pass-8 review, item 5): the
+  // `+ use a library workflow` link keeps its full words at every width
+  // (reflow-390, 2c item 3), the bar is one line (ds/Panel), and the two do not
+  // fit in 390px. So the label is the shorter `REPO WORKFLOWS`, which says the
+  // same thing about the same repository, and the count — the part the reader
+  // cannot get any other way — survives.
   return (
     <Panel
       id="repo-workflows"
-      title={
-        assignments.data ? `WORKFLOWS ON THIS REPO · ${usable.length}` : "WORKFLOWS ON THIS REPO"
-      }
+      title={assignments.data ? `REPO WORKFLOWS · ${usable.length}` : "REPO WORKFLOWS"}
       headingId="repo-workflows-heading"
       headingLevel={2}
       className="max-w-[900px]"
@@ -197,8 +204,8 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
           >
             {/* The same words at every width (reflow-390 review, 2c item 3):
                 the phone used to swap in `+ use workflow`; the panel bar
-                ellipsises its own title instead of ever shortening or
-                wrapping this honest label. */}
+                shortens its OWN label instead of ever shortening, wrapping or
+                ellipsising this honest one (pass-8 review, item 5). */}
             + use a library workflow
           </button>
         ) : undefined
@@ -420,27 +427,34 @@ function RepoWorkflowRow({
               </span>
             )}
           </div>
+          {/* The step chain is ONE line at every width, ellipsised (pass-8
+              review, item 6 — the same treatment reflow-390 gave the 1b rows).
+              A wrapped chain is what put a `›` at the start of three of the
+              four phone lines here, and split a `loop:` chip across two; one
+              line cannot do either. The whole chain rides the `title`, so the
+              full truth is one hover away. */}
           <div
-            className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[4px] pl-[22px]"
+            className="min-w-0 truncate pl-[22px] font-mono text-[10.5px]"
+            title={data.chain ? data.chain.map((cell) => cell.label).join(" › ") : undefined}
             data-testid={`repo-workflow-chain-${key}`}
           >
             {data.chain === null ? (
-              <span className="font-mono text-[10.5px] text-muted">…</span>
+              <span className="text-muted">…</span>
             ) : data.chain.length === 0 ? (
-              <span className="font-mono text-[10.5px] text-muted">—</span>
+              <span className="text-muted">—</span>
             ) : (
               data.chain.map((cell, index) => (
-                <span key={index} className="flex items-center gap-[6px]">
+                <span key={index}>
                   {index > 0 ? (
-                    <span aria-hidden="true" className="font-mono text-[10px] text-muted">
-                      ›
+                    <span aria-hidden="true" className="text-[10px] text-muted">
+                      {" › "}
                     </span>
                   ) : null}
                   <span
                     className={
                       cell.loop
-                        ? "rounded-[3px] border border-line bg-paper px-[5px] py-[1px] font-mono text-[10.5px] text-ink-2"
-                        : "font-mono text-[10.5px] text-ink-2"
+                        ? "rounded-[3px] border border-line bg-paper px-[5px] py-[1px] text-ink-2"
+                        : "text-ink-2"
                     }
                     data-testid={`repo-workflow-chain-${key}-${index}`}
                   >
@@ -631,10 +645,14 @@ function scheduleSentence(schedule: Schedule): string {
 const TRIGGER_GRID =
   "grid grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-x-[10px] gap-y-[2px] border-t border-line-soft px-3 py-[9px] min-[900px]:grid-cols-[18px_minmax(0,1fr)_160px_80px_40px] min-[900px]:gap-y-0";
 
-/** The phone's second line (detail + bookkeeping side by side); from 900px
- * the wrapper dissolves and its two spans sit in their own grid cells. */
+/** The phone's second line: the detail over the bookkeeping (from 900px the
+ * wrapper dissolves and its two spans sit in their own grid cells). It is a
+ * COLUMN because the two of them side by side left the cron ~100px wide — a
+ * schedule reading `* …` at 390 (pass-8 review, item 12), which is the one
+ * fact the line exists to state. Stacked, each gets the full width: the cron
+ * wraps in whole tokens and the “next in …” bookkeeping keeps its own line. */
 const TRIGGER_META_LINE =
-  "col-start-2 row-start-2 flex min-w-0 items-center gap-x-[10px] min-[900px]:contents";
+  "col-start-2 row-start-2 flex min-w-0 flex-col items-start gap-y-[2px] min-[900px]:contents";
 
 /** The shared cells: the switch column (line 1's right end at phone width,
  * 2e's 80px column at desktop) and the edit column (line 2's right end). */
@@ -707,7 +725,7 @@ export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: Repo
       </span>
       <span className={TRIGGER_META_LINE}>
         <span
-          className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
+          className="w-full min-w-0 break-words font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
           data-testid={`repo-workflow-trigger-detail-${testidOf(schedule.id)}`}
         >
           {schedule.cron_expr}
@@ -827,7 +845,7 @@ export function RepoIssueRow({
       </span>
       <span className={TRIGGER_META_LINE}>
         <span
-          className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
+          className="w-full min-w-0 break-words font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
           data-testid={`repo-workflow-trigger-detail-${testidOf(trigger.id)}`}
         >
           {repoRef} · checked every minute

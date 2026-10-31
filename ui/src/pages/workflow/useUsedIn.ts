@@ -67,6 +67,19 @@ export interface UsedInFacts {
   loading: boolean;
   /** A read the rows need failed — say so rather than under-counting. */
   error: boolean;
+  /** The first read that actually broke (the fan walks many): what the load-
+   * failure block quotes, so the sentence is the page's and the evidence the
+   * server's. `undefined` when nothing has answered with an error yet. */
+  failure: unknown;
+  /** Any read still arriving (the retry button's "Retrying…" state). */
+  fetching: boolean;
+  /**
+   * Ask every read again — the `Retry` the shared load-failure block offers.
+   * The fan is per project, so one button re-asks the projects list, every
+   * assignment list it walked and the runs read together: re-asking only one
+   * of them would leave the panel quoting the failure the others answered.
+   */
+  retry: () => void;
 }
 
 export function useUsedIn(pipelineId: string): UsedInFacts {
@@ -140,5 +153,20 @@ export function useUsedIn(pipelineId: string): UsedInFacts {
     projects.isError ||
     projectItems.some((_project, index) => assignmentLists[index]?.isError) ||
     runs.isError;
-  return { groups, loading, error };
+  const fetching =
+    projects.isFetching ||
+    projectItems.some((_project, index) => assignmentLists[index]?.isFetching === true) ||
+    runs.isFetching;
+  // Which read broke, for the banner to quote: the caller's own projects read
+  // first (everything hangs on it), then the per-project lists in their own
+  // order, then the runs list.
+  const failed =
+    [projects, runs, ...assignmentLists].find((query) => query?.isError === true) ?? null;
+  const failure = failed ? failed.error : undefined;
+  const retry = () => {
+    void projects.refetch();
+    void runs.refetch();
+    for (const list of assignmentLists) void list?.refetch();
+  };
+  return { groups, loading, error, failure, fetching, retry };
 }

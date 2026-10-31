@@ -10,8 +10,16 @@
  *
  * Honesty rules are the run pages'. The wire carries no run title and no
  * repository on a run, so a callout names its run by the workflow slug the
- * library serves, its short id and the `failed_cause` the server reported —
- * never an invented sentence about what went wrong.
+ * library serves and the `failed_cause` the server reported — never an invented
+ * sentence about what went wrong.
+ *
+ * The callout is the design's shape and nothing more (1b): ONE header strip —
+ * the state word, then `workflow · age` in the bar's right slot — and ONE body
+ * sentence, with the actions beside it. The pass-3 review cut the second mono
+ * line (`! APPROVAL  run #af9713f0 · /approve`): the bar already says the state,
+ * and a run short-id and a node path are two things a person cannot read, click
+ * or say back to anyone. The run is still reachable — `Read plan` and `Open run`
+ * are links to it.
  *
  * Shape (pass-2 review, 390): the bar's mono meta truncates instead of
  * wrapping against the label — `NEEDS YOUR DECISION` never sits on two lines
@@ -31,11 +39,10 @@ import { useAttentionForProject } from "../../lib/attention";
 import type { Approval, Project, RunSummary } from "../../api/types";
 import { Alert } from "../ds/Alert";
 import { Button } from "../ds/Button";
-import { StatusChip } from "../ds/Row";
 import { Spinner } from "../Feedback";
 import { RUN_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import { ATTENTION_TITLE_CLAMP, attentionTitle } from "../../lib/attention";
-import { formatAge, shortId, testidOf } from "../../lib/format";
+import { formatAge, testidOf } from "../../lib/format";
 import { routes } from "../../lib/routes";
 
 /** `node_execution_failed:/loop/body/scan` → the instance key to retry, plus
@@ -218,17 +225,6 @@ function DecisionCallout({
           >
             {attentionTitle(approval.summary)}
           </p>
-          <p className="mt-[6px] flex flex-wrap items-center gap-[6px] font-mono text-[10.5px] text-st-waiting-pale-fg">
-            <StatusChip
-              state="waiting"
-              label="approval"
-              className="h-[15px]"
-              labelProps={{ "data-testid": `project-attention-decision-status-${key}` }}
-            />
-            <span>
-              run #{shortId(approval.run_id)} · {approval.node_instance_key ?? "gate"}
-            </span>
-          </p>
           {error ? (
             <p
               className="mt-[6px] font-mono text-[10.5px] text-st-failed-pale-fg"
@@ -327,15 +323,6 @@ function StoppedRunCallout({
         <div className="min-w-0 flex-1">
           <p className="text-[13.5px] leading-[19px] font-medium">
             {failedCauseInWords(run.failed_cause)}
-          </p>
-          <p className="mt-[6px] flex flex-wrap items-center gap-[6px] font-mono text-[10.5px]">
-            <StatusChip
-              state={state}
-              label={SHORT_WORD[state]}
-              className="h-[15px]"
-              labelProps={{ "data-testid": `project-attention-run-status-${key}` }}
-            />
-            <span>run #{shortId(run.id)}</span>
           </p>
           {error ? (
             <p

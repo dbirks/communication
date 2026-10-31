@@ -90,7 +90,8 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
   // (never dragging the page sideways — `overscroll-x-contain`) and two edge
   // fades appear on whichever side still has tabs hidden, so the phone strip
   // says "there is more" instead of cutting Artifacts/Settings off with no cue
-  // (pass-2 review). The active tab is held fully in view — see
+  // (pass-2 review, made visible by pass-3 — see the markup at the bottom of
+  // this component). The active tab is held fully in view — see
   // `pullActiveIntoView` for why once is not enough.
   const navRef = useRef<HTMLElement | null>(null);
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({
@@ -197,26 +198,80 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
           );
         })}
       </nav>
-      {/* The cue that the strip continues: a solid edge cap in the band's own
-          colour over the last few pixels, painted only while that side still
-          has a tab off-strip. It is `pointer-events-none` and `aria-hidden` —
-          the tab links are all in the accessibility tree either way — and it is
-          a decoration only, never a control. */}
+      {/* The cue that the strip continues. Pass-3 review: the earlier cap was a
+          solid rectangle in the BAND'S OWN colour over a white band, so it
+          existed in the DOM and inked nothing — the phone showed `Workflov`
+          with no hint of a scroll. It is now a shadow gradient that darkens
+          toward the clipped edge plus a mono chevron pointing the way the strip
+          still moves. It is `pointer-events-none` and `aria-hidden` — every tab
+          link stays in the accessibility tree and stays clickable under it —
+          and it is a decoration only, never a control. */}
+      {/* The cue that the strip continues. Pass-3 review: the earlier cap was a
+          solid rectangle in the BAND'S OWN colour over a white band, so it
+          existed in the DOM and inked nothing — the phone showed `Workflov`
+          with no hint of a scroll. It is now a shadow that deepens toward the
+          clipped edge plus a chevron pointing the way the strip still moves.
+          The chevron is an SVG, not a text glyph: a printed character under the
+          cap would sit on top of the clipped tab's own ink, which is the
+          collision the emulator's overlap check reports. It is
+          `pointer-events-none` and `aria-hidden` — every tab link stays in the
+          accessibility tree and stays clickable under it — and it is a
+          decoration only, never a control. */}
       {fade.left ? (
         <span
           aria-hidden="true"
           data-testid="project-tabs-fade-left"
-          className="pointer-events-none absolute inset-y-0 left-0 w-[18px]"
-          style={{ background: "var(--color-surface)" }}
-        />
+          className="pointer-events-none absolute inset-y-0 left-0 flex w-[26px] items-center"
+          style={{
+            background:
+              "linear-gradient(to left, transparent, color-mix(in srgb, var(--color-ink) 16%, transparent))",
+          }}
+        >
+          <svg
+            className="ml-[6px] text-surface"
+            width="8"
+            height="12"
+            viewBox="0 0 8 12"
+            aria-hidden="true"
+          >
+            <path
+              d="M6.5 1.5l-4 4.5 4 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
       ) : null}
       {fade.right ? (
         <span
           aria-hidden="true"
           data-testid="project-tabs-fade-right"
-          className="pointer-events-none absolute inset-y-0 right-0 w-[18px]"
-          style={{ background: "var(--color-surface)" }}
-        />
+          className="pointer-events-none absolute inset-y-0 right-0 flex w-[26px] items-center justify-end"
+          style={{
+            background:
+              "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 16%, transparent))",
+          }}
+        >
+          <svg
+            className="mr-[6px] text-surface"
+            width="8"
+            height="12"
+            viewBox="0 0 8 12"
+            aria-hidden="true"
+          >
+            <path
+              d="M1.5 1.5l4 4.5-4 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
       ) : null}
     </div>
   );

@@ -754,13 +754,13 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
     expect(place).toMatchObject({ x: 95, y: 160 });
   });
 
-  it("anchors ONE ROW under its own node when right AND below are crowded (the 390 chain)", () => {
+  it("OPENS UPWARD when the slot below is the next step (the 390 chain)", () => {
     // 390px: the pane fits one column of steps, so the slot right of the node
-    // is off-pane and the slot below it is the next step. The pass-2 review
-    // docked the actions to the pane's bottom edge; the pass-7 review read
-    // that as a menu bar belonging to the CANVAS — the actions had to stay
-    // attached to the step they act on, so the menu takes one compact row
-    // directly under its node instead.
+    // is off-pane and the slot below it is the next step. Pass-8 review,
+    // defect 1: the answer used to be the one-row strip dropped directly under
+    // the node, which printed across the connector edge and the next card and
+    // hugged the pane's own border. The menu now turns around and opens upward
+    // instead — still anchored to its step, over nothing but empty canvas.
     const place = chooseNodeMenuPlacement({
       node: step,
       others: [{ x: 95, y: 160, w: 200, h: 52 }],
@@ -768,22 +768,111 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
       pane: { w: 390, h: 400 },
     });
     expect(place.docked).toBe(false);
-    expect(place.compact).toBe(true);
-    expect(place).toMatchObject({ x: 95, y: 160 });
+    expect(place.compact).toBe(false);
+    expect(place).toMatchObject({ x: 95, y: 100 - 8 - menu.h });
+    expect(place.y + place.h).toBeLessThan(160); // never touches the next step
   });
 
-  it("keeps the one-row menu inside the pane sideways and down", () => {
-    // A node hugging the pane's right edge / bottom edge: the row is pulled
-    // back inside rather than hanging off the canvas.
+  it("stays inside the pane for a node hugging its right and bottom edges", () => {
+    // The pass-7 contract was “the one row is pulled back inside the pane”;
+    // pass-8 keeps that promise with the full menu, opened upward on the
+    // inside edge rather than hanging off the canvas' bottom-right corner.
     const place = chooseNodeMenuPlacement({
       node: { x: 250, y: 380, w: 200, h: 52 },
       others: [],
       menu,
       pane: { w: 390, h: 440 },
     });
-    expect(place.compact).toBe(true);
-    expect(place.x).toBe(390 - MENU_COMPACT_W_PX - 8);
+    expect(place.docked).toBe(false);
+    expect(place.x + place.w).toBeLessThanOrEqual(390 - 8);
     expect(place.y + place.h).toBeLessThanOrEqual(440 - 8);
+    expect(place.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("slides the menu back beside its own step when the pane edge cuts the slot", () => {
+    // No room above or below (a step in the middle of a dense chain), and the
+    // design's right-hand slot hangs off the pane: the menu is clamped back
+    // inside, still on its own step's row. The only card it can cover there is
+    // the one it belongs to — never the neighbour, never the connector edge.
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others: [
+        { x: 95, y: 30, w: 200, h: 52 },
+        { x: 95, y: 160, w: 200, h: 52 },
+      ],
+      menu,
+      pane: { w: 390, h: 400 },
+    });
+    expect(place.docked).toBe(false);
+    expect(place.compact).toBe(false);
+    expect(place.y).toBe(step.y); // its own row, not a strip of its own
+    expect(place.x + place.w).toBeLessThanOrEqual(390 - 8);
+    for (const other of [
+      { x: 95, y: 30, w: 200, h: 52 },
+      { x: 95, y: 160, w: 200, h: 52 },
+    ]) {
+      const covers =
+        place.x < other.x + other.w &&
+        place.x + place.w > other.x &&
+        place.y < other.y + other.h &&
+        place.y + place.h > other.y;
+      expect(covers, `menu at ${place.x},${place.y} paints over ${other.y}`).toBe(false);
+    }
+  });
+
+  it("centres the ONE ROW in the measured gap when no full-menu slot is clear", () => {
+    // Every full-menu slot is taken — the step above, the step below, the
+    // pane's right edge and the neighbour in the right column — so the two
+    // actions fall back to one row. It goes into the free air between the step
+    // and its next sibling, centred in what is ACTUALLY clear (58px of gap for
+    // a 52px row here), so it covers neither the card below nor nothing at all.
+    const others = [
+      { x: 95, y: 44, w: 200, h: 52 }, // above: 44..96
+      { x: 95, y: 210, w: 200, h: 52 }, // below: 210..262, 58px of clear air
+      { x: 300, y: 96, w: 40, h: 60 }, // the clamped side slot's column
+    ];
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others,
+      menu,
+      compact: { w: 153, h: 52 },
+      pane: { w: 340, h: 400 },
+    });
+    expect(place.docked).toBe(false);
+    expect(place.compact).toBe(true);
+    expect(place).toMatchObject({ x: 95, y: 155 }); // 152 + (58-52)/2
+    for (const other of others) {
+      const covers =
+        place.x < other.x + other.w &&
+        place.x + place.w > other.x &&
+        place.y < other.y + other.h &&
+        place.y + place.h > other.y;
+      expect(covers, `menu at ${place.x},${place.y} paints over ${other.y}`).toBe(false);
+    }
+  });
+
+  it("keeps the last-resort ONE ROW anchored to its own step, never docked", () => {
+    // A dense chain with no clear air at all: the actions still stay attached
+    // to the step they act on (docking them to the pane's edge is what pass-7
+    // review rejected), clamped inside the pane sideways and down.
+    const place = chooseNodeMenuPlacement({
+      node: step,
+      others: [
+        { x: 95, y: 44, w: 200, h: 52 },
+        { x: 95, y: 152, w: 200, h: 52 },
+      ],
+      menu,
+      pane: { w: 390, h: 400 },
+    });
+    expect(place.docked).toBe(false);
+    expect(place.compact).toBe(true);
+    expect(place).toMatchObject({ x: 95, y: 160 });
+    // Clamped: the row it paints is the row the math reserved, and the whole
+    // thing stays inside a 390px pane.
+    expect(place.w).toBe(MENU_COMPACT_W_PX);
+    expect(place.x + MENU_COMPACT_W_PX).toBeLessThanOrEqual(390);
+    expect(place.x + place.w).toBeLessThanOrEqual(390 - 8);
+    expect(place.y + place.h).toBeLessThanOrEqual(400 - 8);
   });
 
   it("docks to its own strip only when the pane cannot hold the row at all", () => {

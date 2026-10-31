@@ -473,18 +473,25 @@ export default function ConversationPage({
     const turnHasGlyph = Boolean(described.record || described.active) && turnSpec.glyph !== "·";
     // The shared controls stack their badge over their buttons (rail
     // styling); the pane header wears them as one pill-then-buttons row,
-    // restyled from here because the component itself is shared. The row
-    // stays ONE line at the phone's 390px (pass review defect 4): the acts
-    // wear the pane's own mono skin so pill + Return + Stop fit side by side
-    // above the transcript, and only a copy too long for any row ("No
-    // controller — take control to drive" + its button) lets the flex wrap.
+    // restyled from here because the component itself is shared. At `lg+`
+    // that row sits right of the title, as design 1g draws it. Below `lg` the
+    // title owns its full-width line and the row REFLOWS AS THE SAME ROW
+    // turned sideways (pass-3 review): full width, LEFT-aligned under the
+    // title — pill first, then the act, a lone `Take control` filling the
+    // line — never a shrink-to-fit block parked against the right edge with
+    // nothing beside it. Two acts (Return control + Stop) still share one
+    // inline line.
     const pillRow =
-      "[&>div:first-child]:flex [&>div:first-child]:flex-wrap [&>div:first-child]:items-center " +
-      "[&>div:first-child]:justify-end [&>div:first-child]:gap-[6px] [&>div:first-child]:space-y-0! " +
-      "[&>div:first-child>span:last-child]:shrink-0 " +
+      "[&>div:first-child]:flex [&>div:first-child]:w-full [&>div:first-child]:flex-wrap " +
+      "[&>div:first-child]:items-center [&>div:first-child]:gap-[6px] [&>div:first-child]:space-y-0! " +
+      "[&>div:first-child>span:last-child]:w-full [&>div:first-child>span:last-child]:shrink-0 " +
       "[&>div:first-child>span:last-child>button]:px-[10px] " +
+      "[&>div:first-child>span:last-child>button:only-child]:w-full " +
       "[&>div:first-child>span:last-child>button]:font-mono [&>div:first-child>span:last-child>button]:text-[11px] " +
-      "[&>div:not(:first-child)]:basis-full";
+      "[&>div:not(:first-child)]:basis-full " +
+      "lg:[&>div:first-child]:w-auto lg:[&>div:first-child]:justify-end " +
+      "lg:[&>div:first-child>span:last-child]:w-auto " +
+      "lg:[&>div:first-child>span:last-child>button:only-child]:w-auto";
     const pillSkin = session.isController
       ? "[&>div:first-child>span:first-child]:h-[24px] " +
         "[&>div:first-child>span:first-child]:border-accent-edge " +
@@ -525,11 +532,10 @@ export default function ConversationPage({
                 {data.title}
               </h1>
               {/* The control line (1g): only the pill and the acts ride the
-                  title row — `You are in control` keeps its exact wording for
-                  the journey suites, and Stop (danger) appears only while a
-                  turn runs. */}
+                  title row — the pill is the design's own `you're in control`,
+                  and Stop (danger) appears only while a turn runs. */}
               <div
-                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-end gap-[6px] lg:mt-0 lg:shrink-0`}
+                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-start gap-[6px] lg:mt-0 lg:shrink-0 lg:justify-end`}
               >
                 <AgentConversationControls
                   session={session}

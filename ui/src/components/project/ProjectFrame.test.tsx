@@ -175,6 +175,23 @@ describe("ProjectFrame", () => {
     expect(alert.textContent).toContain("Service unavailable");
     expect(alert.textContent).toContain("still migrating");
     await waitFor(() => expect(screen.getByTestId("project-runs-error")).toBeTruthy());
+    // Pass-3 review: the failure is a PAGE, not a crash banner. Its H1 wears the
+    // same header band the refusal draws — the `Projects /` breadcrumb, the
+    // section's title and the band's bottom rule — and the server's answer sits
+    // under it, with one way back in the band rather than a second link in the
+    // box.
+    const shell = screen.getByTestId("project-runs-error");
+    const heading = screen.getByRole("heading", { level: 1 });
+    const band = heading.closest("header");
+    expect(band).toBeTruthy();
+    expect(band?.className.split(/\s+/)).toContain("border-b");
+    expect(band?.querySelector("nav[aria-label='Breadcrumb']")).toBeTruthy();
+    expect(within(band as HTMLElement).getByTestId("project-runs-back-to-projects")).toBeTruthy();
+    expect(alert.textContent).not.toContain("←");
+    // A plain sentence, not the reviewer's `draws none of it rather than part of
+    // a guess`.
+    expect(shell.textContent).toContain("The project could not be loaded");
+    expect(shell.textContent).not.toContain("rather than part of a guess");
   });
 
   it("says which section is loading while the project read has not answered", async () => {

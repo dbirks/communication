@@ -57,6 +57,7 @@ import {
 } from "../m4/NewRunForm";
 import { useCreateSchedule, usePatchSchedule, useRevision } from "../../api/pipelines";
 import type { Schedule } from "../../api/pipelines";
+import { hasCredential } from "../repo/GitHubAccess";
 import { useCreateIssueTrigger, usePatchIssueTrigger } from "../../api/useIssueTriggers";
 import type { IssueTrigger } from "../../api/useIssueTriggers";
 import { cronInWords } from "../../lib/cronText";
@@ -765,7 +766,15 @@ function TriggerDialogBody({
 
           {mode === "issue" ? (
             <span className="font-mono text-[10.5px] text-faint" data-testid="trigger-dialog-note">
+              {/* Design 2c's footnote, told honestly: the poll is minute-based,
+                  and an issue trigger can only be read from a repository this
+                  platform can reach anonymously — i.e. a public one. ADR-0061
+                  gives a repository a GitHub credential, and with one that limit
+                  is gone, so the second half is said only where it is true
+                  (2026-10-30 copy review; pass-8 review item 10 put the design's
+                  words back for the case they describe). */}
               Checked every minute
+              {hasCredential(repository) ? "" : " · public GitHub repositories only"}
             </span>
           ) : null}
 

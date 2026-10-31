@@ -6,7 +6,7 @@
  * read-only by decision — edits go through a draft (the `YamlView` header says
  * as much).
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { YamlView } from "../../components/workflows/YamlView";
 import { ProblemBanner, Spinner } from "../../components/Feedback";
@@ -17,9 +17,18 @@ export interface YamlTabProps {
   slug: string;
   /** The pipeline's revision summaries, newest first (server order). */
   revisions: UsedInRevision[];
+  /**
+   * The `Validate a YAML document` disclosure, owned by the page (it is the
+   * authoring surface, so the page decides who sees it). The tab draws it only
+   * over a revision it actually read: with the read broken there is no document
+   * to validate against, and a disclosure that opens onto a panel of a thing
+   * that failed to load is a second failure wearing the first one's clothes
+   * (pass-8 review, item 4).
+   */
+  validate?: ReactNode;
 }
 
-export function WorkflowYamlTab({ slug, revisions }: YamlTabProps) {
+export function WorkflowYamlTab({ slug, revisions, validate }: YamlTabProps) {
   // A `?revision=<digest>` from a History row seeds the selection; the newest
   // revision is the default (the server's own newest-first order, never
   // re-sorted here).
@@ -81,7 +90,24 @@ export function WorkflowYamlTab({ slug, revisions }: YamlTabProps) {
         ) : null}
       </div>
       {revision.isError ? (
-        <ProblemBanner error={revision.error} fallback="The selected revision could not be read." />
+        // The app's ONE load-failure treatment (pass-8 review, item 4): the
+        // shared `Couldn't load …` block with the `Retry` this read supports,
+        // not a bare `FAILED` callout quoting a problem document — `FAILED` is
+        // a run's status word, and a callout with no way out is the 2026-10-30
+        // review's complaint about every screen that had one. The server's own
+        // problem still sits under the sentence as `server said:`.
+        <ProblemBanner
+          error={revision.error}
+          fallback="The selected revision could not be read."
+          subject="this revision's document"
+          hint="The YAML stays empty until the revision loads."
+          retry={{
+            onClick: () => void revision.refetch(),
+            pending: revision.isFetching,
+            testid: "yaml-revision-retry",
+          }}
+          testid="yaml-revision-error"
+        />
       ) : null}
       {revision.isPending && !revision.data ? (
         <Spinner label="Loading the revision document" />
@@ -93,6 +119,9 @@ export function WorkflowYamlTab({ slug, revisions }: YamlTabProps) {
           testId="yaml-view"
         />
       ) : null}
+      {/* The disclosure only stands with a revision that loaded (see the prop's
+          note); the author's line is otherwise a door onto a failed read. */}
+      {revision.isError ? null : validate}
     </div>
   );
 }

@@ -116,6 +116,7 @@ function mount(
   editing: TriggerEditing | null = null,
   overrides: RouteStub[] = [],
   revision: unknown = wireRevision,
+  repo: Repository = repository,
 ) {
   const { requests } = mockFetch([
     ...overrides,
@@ -138,7 +139,7 @@ function mount(
           onClose={onClose}
           workflowLabel="plan-with-approval"
           project={{ id: projectFixture.id, name: projectFixture.name }}
-          repository={repository}
+          repository={repo}
           assignment={assignment}
           editing={editing}
         />
@@ -407,10 +408,26 @@ describe("TriggerDialog — the 2c contract", () => {
     expect(screen.getByTestId("trigger-dialog-mode-issue").getAttribute("aria-pressed")).toBe(
       "true",
     );
-    expect(screen.getByTestId("trigger-dialog-note").textContent).toBe("Checked every minute");
-    expect(screen.getByTestId("trigger-dialog").textContent).not.toContain(
-      "public GitHub repositories only",
+    // Design 2c's footnote, and honest about the half it claims: this fixture
+    // repository carries no GitHub credential, so the poller does read it
+    // anonymously and “public GitHub repositories only” is the truth (pass-8
+    // review, item 10). The next case takes the claim back away.
+    expect(screen.getByTestId("trigger-dialog-note").textContent).toBe(
+      "Checked every minute · public GitHub repositories only",
     );
+  });
+
+  it("drops the public-only claim when the repository carries a credential (ADR-0061)", async () => {
+    mount(null, [], wireRevision, {
+      ...repository,
+      credential: "configured",
+      credential_secret_id: "01987b99-0000-7000-8000-abcdef012345",
+    });
+    const context = await screen.findByTestId("trigger-dialog-context");
+    expect(context.textContent).toBe("plan-with-approval · Widgets / storefront");
+    // With a credential the poller reaches a private repository too, so the
+    // footnote keeps the poll's cadence and loses the limit it cannot claim.
+    expect(screen.getByTestId("trigger-dialog-note").textContent).toBe("Checked every minute");
   });
 
   it("holds the segments to their content and weights only the chosen one", async () => {

@@ -8,7 +8,10 @@
  *     `overscroll-x-contain`, so dragging it never takes the page sideways),
  *     every tab keeps its place in the strip (nothing is hidden behind a
  *     `display:none`), and the active tab is scrolled into view on arrival;
- *   - an edge fade paints only while that side still has tabs off-strip.
+ *   - an edge fade paints only while that side still has tabs off-strip — and
+ *     it PAINTS: pass 3 found the cue present in the DOM and invisible, a solid
+ *     cap in the band's own white over a white band, so the tests below ask for
+ *     the ink (a gradient toward the clipped edge and a chevron), not a box.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
@@ -81,11 +84,35 @@ describe("the project tab strip at phone width", () => {
     expect(screen.queryByTestId("project-tabs-fade-left")).toBeNull();
   });
 
+  it("inks the fade — a shadow to the clipped edge and a chevron — over the band's own colour", () => {
+    mount("overview");
+    fakeScrollableStrip(0);
+    const fade = screen.getByTestId<HTMLSpanElement>("project-tabs-fade-right");
+    // The pass-2 cue was `background: var(--color-surface)`: white over the
+    // white band, so the phone showed `Workflov` with nothing saying the strip
+    // scrolled. A fade that cannot be seen is not an affordance.
+    expect(fade.style.background).toContain("linear-gradient");
+    expect(fade.style.background).not.toContain("var(--color-surface)");
+    // The direction cue is an SVG: a printed glyph under the cap would print on
+    // top of the clipped tab's own ink.
+    expect(fade.querySelector("svg")).toBeTruthy();
+    // It stays a decoration: the tab under it keeps its click.
+    expect(fade.getAttribute("aria-hidden")).toBe("true");
+    expect(fade.className.split(/\s+/)).toContain("pointer-events-none");
+  });
+
   it("shows both fades mid-strip", () => {
     mount("settings");
     fakeScrollableStrip(120); // 120 + 320 < 600 — the tail is still off-strip.
-    expect(screen.getByTestId("project-tabs-fade-left")).toBeTruthy();
-    expect(screen.getByTestId("project-tabs-fade-right")).toBeTruthy();
+    const left = screen.getByTestId("project-tabs-fade-left");
+    const right = screen.getByTestId("project-tabs-fade-right");
+    expect(left).toBeTruthy();
+    expect(right).toBeTruthy();
+    // Both caps darken toward THEIR OWN edge, and both carry their chevron.
+    expect(left.style.background).toContain("linear-gradient(to left");
+    expect(right.style.background).toContain("linear-gradient(to right");
+    expect(left.querySelector("svg")).toBeTruthy();
+    expect(right.querySelector("svg")).toBeTruthy();
   });
 
   it("drops the right fade once the strip is at its end", () => {

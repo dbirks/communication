@@ -276,9 +276,23 @@ export function PipelinePage() {
               back={{
                 to: routes.workflows(),
                 label: "Workflows",
-                testid: "workflow-back-to-list",
+                testid: "workflow-load-breadcrumb",
               }}
             />
+            {/* A refusal is not a break, so there is nothing to retry — but the
+                reader still has to leave. The load-failure block's shared verb
+                sits under the sentence (review3 item 3, the precedent being this
+                page's own server-error state): the breadcrumb is the trail, this
+                is the button. */}
+            <div className="mt-[12px] flex flex-wrap items-center gap-[6px]">
+              <Link
+                to={routes.workflows()}
+                className="ds-btn ds-btn--secondary ds-btn--compact inline-flex items-center rounded-[4px]"
+                data-testid="workflow-back-to-list"
+              >
+                ← Back to workflows
+              </Link>
+            </div>
           </div>
         </div>
       );
@@ -314,7 +328,7 @@ export function PipelinePage() {
               error={pipeline.error}
               fallback="The workflow could not be loaded."
               subject="the workflow"
-              hint="Nothing of it is drawn without the read — no graph, no revision, no draft."
+              hint="Nothing is shown until the workflow loads."
               retry={{
                 onClick: () => void pipeline.refetch(),
                 pending: pipeline.isFetching,
@@ -480,13 +494,12 @@ export function PipelinePage() {
                 {createDraft.isPending || draftCreating ? "Opening…" : "Edit workflow"}
               </Button>
             ) : (
-              // 1e item 2 (2026-10-30 copy review): the reason used to be a mono
-              // sentence floating beside `Use in a repo…`, which read as a note
-              // pinned to the header rather than a fact about the verb. It is now
-              // the tooltip on the disabled verb — the button stays where the
-              // design puts it, and its title says why it cannot be pressed. The
-              // same words stand behind it for assistive tech (a `title` alone is
-              // unreachable by keyboard).
+              // Pass-8 review, item 7: a disabled primary verb with its reason
+              // only in a `title` and an `sr-only` span is a button that cannot
+              // be pressed and says nothing. The verb stays where the design
+              // puts it, disabled, and the reason is now the muted line under
+              // the actions in plain words — reachable by eye, by keyboard
+              // (`aria-describedby`) and by the pointer's tooltip.
               <>
                 <Button
                   variant="primary"
@@ -499,9 +512,12 @@ export function PipelinePage() {
                 >
                   Edit workflow
                 </Button>
-                <span className="sr-only" data-testid="workflow-author-hint">
-                  {LIBRARY_AUTHORING_HINT}
-                </span>
+                <p
+                  className="w-full basis-full text-right font-mono text-[10.5px] leading-[14px] text-faint"
+                  data-testid="workflow-author-hint"
+                >
+                  You can view this workflow, not edit it.
+                </p>
               </>
             )}
           </div>
@@ -597,18 +613,21 @@ export function PipelinePage() {
               <WorkflowYamlTab
                 slug={pipeline.data?.slug ?? pipelineId}
                 revisions={usedInRevisions}
+                // W8’s home (contract § 7.2: “the YAML viewer’s ‘Validate’ panel”)
+                // — the authoring surface, so only a caller with the library role
+                // (the same check as `Edit workflow`) ever sees the line. The tab
+                // draws it only over a revision it read (pass-8 review, item 4).
+                validate={
+                  canAuthor ? (
+                    <YamlValidateDisclosure
+                      pipelineId={pipelineId}
+                      slug={pipeline.data?.slug ?? pipelineId}
+                      displayName={summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
+                      initialText={revision.data?.document_text ?? ""}
+                    />
+                  ) : null
+                }
               />
-              {/* W8’s home (contract § 7.2: “the YAML viewer’s ‘Validate’ panel”) —
-                  the authoring surface, so only a caller with the library role
-                  (the same check as `Edit workflow`) ever sees the line. */}
-              {canAuthor ? (
-                <YamlValidateDisclosure
-                  pipelineId={pipelineId}
-                  slug={pipeline.data?.slug ?? pipelineId}
-                  displayName={summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
-                  initialText={revision.data?.document_text ?? ""}
-                />
-              ) : null}
             </div>
           ) : null}
           {tab === "used-in" ? (
@@ -618,6 +637,9 @@ export function PipelinePage() {
                 groups={usedIn.groups}
                 loading={usedIn.loading}
                 error={usedIn.error}
+                failure={usedIn.failure}
+                onRetry={usedIn.retry}
+                retrying={usedIn.fetching}
                 revisions={usedInRevisions}
                 newestPublished={
                   newestPublished

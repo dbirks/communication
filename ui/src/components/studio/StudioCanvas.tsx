@@ -158,23 +158,27 @@ const edgeTypes = {
 const DROP_EDGE_RADIUS_PX = 48;
 
 /** Width the node menu is measured at for the fits-on-the-right check
- * (design 1g: a two-item menu, ~80–110px wide). */
-const MENU_WIDTH_PX = 110;
+ * (design 1g: a two-item menu). Measured on the live canvas at 1280: the two
+ * labels, their 8px padding each side and the 3px pad + border around them.
+ * The drawn box is reported back through `onMeasure` and re-placed with its
+ * real size, so this number only has to be honest BEFORE the first paint. */
+const MENU_WIDTH_PX = 78;
 
-/** The same menu's height (two 24px rows + the 3px pad + the 2px gap). */
-const MENU_HEIGHT_PX = 58;
+/** The same menu's height (two 24px rows + the 3px pad + the 2px gap). On the
+ * phone band the 44px control floor grows it; `onMeasure` corrects that. */
+const MENU_HEIGHT_PX = 64;
 
 /** The design's gap between a step and its menu (1g: 8px). */
 const MENU_GAP_PX = 8;
 
 /** The same two actions as ONE row (`Duplicate` · `Delete ⌫`) — the shape the
- * menu takes when it has to live directly under its own node. Width: the two
- * labels, their 8px padding each side and the 6px between them. Height: the
- * 44px phone touch floor the app-shell band gives every button
- * (`styles/tokens.css`) plus the menu's own 3px pad, so the box the placement
- * math reserves is the box the phone actually draws. */
-export const MENU_COMPACT_W_PX = 168;
-export const MENU_COMPACT_H_PX = 50;
+ * menu takes when nothing else clears. Width and height are the box the phone
+ * actually draws: the two labels, their 8px padding each side and the 6px
+ * between them, over the 44px touch floor the app-shell band gives every
+ * button (`styles/tokens.css`) plus the menu's own 3px pad and border — so the
+ * box the placement math reserves is the box that gets painted. */
+export const MENU_COMPACT_W_PX = 153;
+export const MENU_COMPACT_H_PX = 52;
 
 /** A box in PANE pixels. */
 export interface MenuBoxPx {
@@ -186,23 +190,32 @@ export interface MenuBoxPx {
 
 /**
  * Where the selected step's menu goes (design 1g: right of the node, top-
- * aligned). A menu that lands on ANOTHER step is the pass-2 390px defect —
- * `Duplicate`/`Delete` painted over `approve` and the chain read as a mess —
- * so a candidate is only taken when it sits inside the pane AND touches no
- * other node: right first (the desktop design), then below the node.
+ * aligned). A menu that lands on ANOTHER step or on the pane's own edge is the
+ * defect — `Duplicate`/`Delete` painted over `approve` and the chain read as a
+ * mess (pass-2), and at 390 the row dropped under its node, printed across the
+ * connector edge and the next card, and hugged the canvas' right border
+ * (pass-8, defect 1). So the candidates run in this order:
  *
- * When neither clears (the 390 chain: the pane is one step wide, so right
- * misses the pane edge and below lands on the next step) the menu stays
- * ANCHORED to its node as one compact row directly under it, clamped into the
- * pane. It may overlap a neighbour there — that is the point: the menu belongs
- * to the selected step, and a reader who cannot see which step it speaks to
- * has lost more than a few pixels of overlap. The pass-2 answer, a strip
- * docked to the pane's own bottom edge, detached the actions from the node
- * they act on entirely (the pass-7 review read `1g inspector-edit` at 390 as a
- * menu bar belonging to the canvas). Docking survives only for a pane too
- * short to hold even the one-row menu.
+ *  1. right of the node (the design's slot),
+ *  2. below the node,
+ *  3. ABOVE the node — the menu opens upward when there is no room below,
+ *  4. right of the node again, but slid back into the pane: it is still
+ *     anchored to its own step's right edge, and the only card it can cover
+ *     there is the one it belongs to,
+ *  5. ONE ROW centred in the clear air between its step and its neighbour
+ *     (below, then above) — the gap is measured, not assumed, because the
+ *     canvas is zoomed to fit and a constant would be wrong at every width,
+ *  6. ONE ROW directly under its step, clamped into the pane, even though it
+ *     paints over a neighbour: the menu belongs to the selected step, and a
+ *     reader who cannot see which step it speaks to has lost more than a few
+ *     pixels of overlap. The pass-2 answer, a strip docked to the pane's own
+ *     bottom edge, detached the actions from the node they act on entirely
+ *     (the pass-7 review read `1g inspector-edit` at 390 as a menu bar
+ *     belonging to the canvas), so it survives only for a pane too short to
+ *     hold even the one-row menu.
+ *
  * An unmeasured pane (0×0 — jsdom, or a canvas that has not laid out yet)
- * keeps the plain right-hand position rather than docking everything.
+ * keeps the plain right-hand position rather than clamping everything.
  */
 export function chooseNodeMenuPlacement(input: {
   /** The selected node (or the right-click point) in pane px. */
@@ -217,42 +230,96 @@ export function chooseNodeMenuPlacement(input: {
   gap?: number;
 }): MenuBoxPx & { docked: boolean; compact: boolean } {
   const gap = input.gap ?? MENU_GAP_PX;
+  const { node, others, pane } = input;
   const overlaps = (a: MenuBoxPx, b: MenuBoxPx) =>
     a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-  const fits = (x: number, y: number) => {
-    const box: MenuBoxPx = { x, y, w: input.menu.w, h: input.menu.h };
+  const inside = (box: MenuBoxPx) => {
     if (box.x < 0 || box.y < 0) return false;
-    if (input.pane.w > 0 && box.x + box.w > input.pane.w - gap) return false;
-    if (input.pane.h > 0 && box.y + box.h > input.pane.h - gap) return false;
-    return !input.others.some((other) => overlaps(box, other));
+    if (pane.w > 0 && box.x + box.w > pane.w - gap) return false;
+    if (pane.h > 0 && box.y + box.h > pane.h - gap) return false;
+    return true;
   };
-  const placed = (x: number, y: number, compact: boolean): MenuBoxPx & { compact: boolean } => ({
-    x,
-    y,
-    w: compact ? (input.compact?.w ?? MENU_COMPACT_W_PX) : input.menu.w,
-    h: compact ? (input.compact?.h ?? MENU_COMPACT_H_PX) : input.menu.h,
-    compact,
-  });
-  const right = { x: input.node.x + input.node.w + gap, y: input.node.y };
-  if (fits(right.x, right.y)) return { ...placed(right.x, right.y, false), docked: false };
-  const below = { x: input.node.x, y: input.node.y + input.node.h + gap };
-  if (fits(below.x, below.y)) return { ...placed(below.x, below.y, false), docked: false };
-  // Directly under the node, one row, clamped sideways and down so none of it
-  // leaves the pane.
+  const clear = (box: MenuBoxPx) => inside(box) && !others.some((other) => overlaps(box, other));
+  const placed = (
+    box: MenuBoxPx,
+    compact: boolean,
+  ): MenuBoxPx & { compact: boolean; docked: boolean } => ({ ...box, compact, docked: false });
   const cw = input.compact?.w ?? MENU_COMPACT_W_PX;
   const ch = input.compact?.h ?? MENU_COMPACT_H_PX;
-  if (input.pane.h >= ch + gap * 2) {
-    const maxLeft = Math.max(gap, input.pane.w - cw - gap);
-    return {
-      ...placed(
-        Math.min(Math.max(input.node.x, gap), maxLeft),
-        Math.min(input.node.y + input.node.h + gap, Math.max(gap, input.pane.h - ch - gap)),
-        true,
-      ),
-      docked: false,
-    };
+
+  for (const box of [
+    { x: node.x + node.w + gap, y: node.y, w: input.menu.w, h: input.menu.h },
+    { x: node.x, y: node.y + node.h + gap, w: input.menu.w, h: input.menu.h },
+    // Opens upward instead of covering the step below (the phone chain, and any
+    // step whose next sibling is crowded).
+    { x: node.x, y: node.y - gap - input.menu.h, w: input.menu.w, h: input.menu.h },
+  ] satisfies MenuBoxPx[]) {
+    if (clear(box)) return placed(box, false);
   }
-  return { ...placed(0, Math.max(0, input.pane.h - input.menu.h), false), docked: true };
+
+  // 4. To the side, clamped back into the pane.
+  if (pane.w > 0 && pane.h > 0) {
+    const side: MenuBoxPx = {
+      x: Math.max(gap, Math.min(node.x + node.w + gap, pane.w - input.menu.w - gap)),
+      y: Math.max(gap, Math.min(node.y, pane.h - input.menu.h - gap)),
+      w: input.menu.w,
+      h: input.menu.h,
+    };
+    if (clear(side)) return placed(side, false);
+
+    // 5. One row, centred in the free air on the side with room. `sameColumn`
+    // is the neighbour the row would actually paint over: a step offset to the
+    // side (a branch) leaves the space under the node clear.
+    const sameColumn = (other: MenuBoxPx) =>
+      other.x < node.x + node.w && other.x + other.w > node.x;
+    const rowX = Math.min(Math.max(node.x, gap), Math.max(gap, pane.w - cw - gap));
+    const belowCeil = others
+      .filter((other) => sameColumn(other) && other.y >= node.y + node.h)
+      .reduce((ceil, other) => Math.min(ceil, other.y), pane.h - gap);
+    const aboveFloor = others
+      .filter((other) => sameColumn(other) && other.y + other.h <= node.y)
+      .reduce((floor, other) => Math.max(floor, other.y + other.h), gap);
+    for (const box of [
+      {
+        x: rowX,
+        y: node.y + node.h + Math.min(gap, Math.max(0, (belowCeil - (node.y + node.h) - ch) / 2)),
+        w: cw,
+        h: ch,
+      },
+      {
+        x: rowX,
+        y: node.y - ch - Math.min(gap, Math.max(0, (node.y - aboveFloor - ch) / 2)),
+        w: cw,
+        h: ch,
+      },
+    ] satisfies MenuBoxPx[]) {
+      if (clear(box)) return placed(box, true);
+    }
+  }
+
+  // Directly under the node, one row, clamped sideways and down so none of it
+  // leaves the pane.
+  if (pane.h >= ch + gap * 2) {
+    const maxLeft = Math.max(gap, pane.w - cw - gap);
+    return placed(
+      {
+        x: Math.min(Math.max(node.x, gap), maxLeft),
+        y: Math.min(node.y + node.h + gap, Math.max(gap, pane.h - ch - gap)),
+        w: cw,
+        h: ch,
+      },
+      true,
+    );
+  }
+  // Nothing fits over the graph at all: the actions leave the pane and take a
+  // flow row of their own under the viewport.
+  return {
+    ...placed(
+      { x: 0, y: Math.max(0, pane.h - input.menu.h), w: input.menu.w, h: input.menu.h },
+      false,
+    ),
+    docked: true,
+  };
 }
 
 /* ------------------------------------------------------------------ the
@@ -699,6 +766,27 @@ function CanvasInner({
   const [menuDocked, setMenuDocked] = useState(false);
   /** The menu drew itself as one row anchored under its own node. */
   const [menuCompact, setMenuCompact] = useState(false);
+  /**
+   * The menu's drawn box, per shape, as the DOM reports it. Placement starts
+   * from the constants (MENU_WIDTH_PX / MENU_COMPACT_W_PX) and re-derives once
+   * the real box is known: an estimate that is 30px too wide is exactly what
+   * drove the 390 menu off the design's slot and onto the next step's card
+   * (pass-8 review, defect 1).
+   */
+  const [menuSizes, setMenuSizes] = useState<{
+    menu?: { w: number; h: number };
+    compact?: { w: number; h: number };
+  }>({});
+  const measureMenu = useCallback(
+    (shape: "menu" | "compact") => (size: { w: number; h: number }) => {
+      setMenuSizes((current) => {
+        const known = current[shape];
+        if (known && known.w === size.w && known.h === size.h) return current;
+        return { ...current, [shape]: size };
+      });
+    },
+    [],
+  );
   const menuFocusRef = useRef<HTMLElement | null>(null);
 
   const selectedMenuNodeId = useMemo(() => {
@@ -1149,13 +1237,14 @@ function CanvasInner({
     const place = chooseNodeMenuPlacement({
       node,
       others,
-      menu: { w: MENU_WIDTH_PX, h: MENU_HEIGHT_PX },
+      menu: menuSizes.menu ?? { w: MENU_WIDTH_PX, h: MENU_HEIGHT_PX },
+      compact: menuSizes.compact ?? { w: MENU_COMPACT_W_PX, h: MENU_COMPACT_H_PX },
       pane: { w: paneWidth, h: paneHeight },
     });
     setMenuDocked(place.docked);
     setMenuCompact(place.compact);
     setMenuScreen({ x: place.x, y: place.y });
-  }, [menu, viewportEl]);
+  }, [menu, viewportEl, menuSizes]);
 
   useEffect(() => {
     if (menu === null) return;
@@ -1521,6 +1610,7 @@ function CanvasInner({
             x={menuScreen.x}
             y={menuScreen.y}
             compact={menuCompact}
+            onMeasure={measureMenu(menuCompact ? "compact" : "menu")}
             nodeId={menu.nodeId}
             onDuplicate={onDuplicate}
             onDelete={(ids) => onDelete?.(ids)}

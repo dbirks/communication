@@ -237,12 +237,16 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
   it("counts the workflows in the panel title and offers the library link to a maintainer", async () => {
     mount();
     await screen.findByTestId(`repo-workflow-row-${assignmentKey}`);
-    expect(screen.getByRole("heading", { name: /WORKFLOWS ON THIS REPO/ }).textContent).toContain(
-      "WORKFLOWS ON THIS REPO · 1",
+    // Pass-8 review, item 5: the bar's words are short enough that 390px keeps
+    // the COUNT. It used to read `WORKFLOWS ON THIS REPO · n` and the ellipsis
+    // ate `· n` — the one number in the header that nothing else on the page
+    // states. The accessible name still says what the panel is.
+    expect(screen.getByRole("heading", { name: /REPO WORKFLOWS/ }).textContent).toContain(
+      "REPO WORKFLOWS · 1",
     );
     // One honest label at every width (reflow-390 review, 2c item 3): the
-    // phone used to render a shortened `+ use workflow`; the panel's own
-    // title ellipsis makes room for the full words instead.
+    // phone used to render a shortened `+ use workflow`; the panel shortens its
+    // own title instead of ever ellipsising or wrapping the library link.
     const libraryAction = screen.getByTestId("repo-workflow-library");
     expect(libraryAction.textContent).toContain("+ use a library workflow");
     expect(libraryAction.textContent).not.toContain("+ use workflow ");
@@ -607,10 +611,11 @@ describe("RepoWorkflows — adding a trigger through the 2c dialog", () => {
     expect(screen.getByTestId("trigger-dialog-run-gets-goal").textContent).toBe(
       "goal = the issue title and the issue body",
     );
-    expect(screen.getByTestId("trigger-dialog-note").textContent).toBe("Checked every minute");
-    // ADR-0061 gives repositories a GitHub credential: never claim public-only.
-    expect(screen.getByTestId("trigger-dialog").textContent).not.toContain(
-      "public GitHub repositories only",
+    // The design's footnote (2c), claimed only because this fixture repository
+    // has no GitHub credential — ADR-0061's credentialed row loses the claim
+    // (TriggerDialog.test.tsx covers that half; pass-8 review, item 10).
+    expect(screen.getByTestId("trigger-dialog-note").textContent).toBe(
+      "Checked every minute · public GitHub repositories only",
     );
 
     fireEvent.click(screen.getByTestId("trigger-dialog-submit"));

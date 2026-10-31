@@ -304,6 +304,18 @@ describe("/p/:projectId — what needs you", () => {
     const callout = await screen.findByTestId(`project-attention-decision-${key}`);
     // The gate's own text, never an invented subject line.
     expect(callout.textContent).toContain("The plan is ready");
+    // Design 1b: ONE header strip (the state word, then the workflow slug and
+    // its age) over ONE body sentence. The internal `! APPROVAL · run #id ·
+    // node path` line the pass-3 review named is gone — and the state word in
+    // the bar is not color-alone (handoff rule 06), so nothing was lost.
+    const bar = callout.querySelector("[data-ds-bar]");
+    expect(bar?.textContent).toContain("NEEDS YOUR DECISION");
+    // The strip's right slot carries the meta the wire really serves — the
+    // workflow slug (honestly `workflow unknown` when this read has no pipeline
+    // to name) and the relative age — and that is all of it.
+    expect(bar?.textContent).toMatch(/· \d+[smhd]/);
+    expect(callout.textContent).not.toContain(`run #${shortId(WIRE_APPROVAL_ID)}`);
+    expect(callout.textContent).not.toContain("/approve");
     expect(within(callout).getByTestId(`project-read-plan-${key}`).getAttribute("href")).toBe(
       `/approvals/${WIRE_APPROVAL_ID}`,
     );
@@ -336,14 +348,15 @@ describe("/p/:projectId — what needs you", () => {
 
     const key = testidOf(WIRE_RUN_ID);
     const callout = await screen.findByTestId(`project-attention-run-${key}`);
-    expect(within(callout).getByTestId(`project-attention-run-status-${key}`).textContent).toBe(
-      "failed",
-    );
-    // Named by the pipeline slug and the short id the wire serves — never an
-    // invented title, and never the raw `node_execution_failed:/implement`.
+    // Named by the workflow slug the library serves, in the ONE header strip the
+    // design draws (state word · workflow · age) — and by nothing else: the
+    // pass-3 review cut the second mono line, so the callout prints no run
+    // short-id and no node path (`run #af9713f0 · /approve`). The run is
+    // reached by its links, not by an id a person cannot read.
     expect(callout.textContent).toContain("A step failed: implement");
     expect(callout.textContent).toContain("feature-development");
-    expect(callout.textContent).toContain(`run #${shortId(WIRE_RUN_ID)}`);
+    expect(callout.textContent).not.toContain(`run #${shortId(WIRE_RUN_ID)}`);
+    expect(callout.textContent).not.toContain("/implement");
     expect(callout.textContent).not.toContain("node_execution_failed");
     expect(within(callout).getByTestId(`project-open-run-${key}`).getAttribute("href")).toBe(
       `/runs/${WIRE_RUN_ID}`,
@@ -402,7 +415,11 @@ describe("/p/:projectId — what needs you", () => {
     ]);
     const callout = await screen.findByTestId(`project-attention-run-${testidOf(WIRE_RUN_ID)}`);
     expect(screen.queryAllByTestId(/^project-attention-decision-/)).toHaveLength(0);
-    expect(callout.textContent).toContain("need you");
+    // The state word is spelled out in the ONE header strip (handoff rule 06:
+    // never color alone) — it used to be repeated by a chip under the body, and
+    // that second line is what design 1b does not have.
+    expect(callout.querySelector("[data-ds-bar]")?.textContent).toContain("NEED YOU");
+    expect(callout.textContent).not.toContain(`run #${shortId(WIRE_RUN_ID)}`);
   });
 });
 

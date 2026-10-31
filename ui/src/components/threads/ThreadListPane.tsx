@@ -406,7 +406,7 @@ export function ThreadListPane({
             <div className="p-[14px]" data-testid="threads-list-error">
               <ProblemBanner
                 error={list.error}
-                fallback="Open threads from a project's Threads tab meanwhile — this read could not be loaded, and no rows are invented to fill the gap."
+                fallback="The list shows no threads because none could be read. Open a project's Threads tab meanwhile."
                 subject="the thread list"
                 retry={{
                   onClick: list.refetch,

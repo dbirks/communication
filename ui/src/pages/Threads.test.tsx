@@ -222,7 +222,11 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     // because it lives where the reader already is.
     const alerts = await screen.findAllByRole("alert");
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].textContent).toContain("could not be loaded");
+    expect(alerts[0].textContent).toContain("Couldn't load the thread list");
+    // The pass-3 review asked for a plain sentence: what the reader sees, and
+    // where else to go — not the old `no rows are invented to fill the gap`.
+    expect(alerts[0].textContent).toContain("none could be read");
+    expect(alerts[0].textContent).not.toContain("invented");
     expect(await screen.findByTestId("threads-list-error")).toBeTruthy();
     // Pass review 1g defect 5: a failed read no longer BLANKS the thread
     // column — a dead pane beside the banner read as a broken app. The
@@ -480,7 +484,7 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     // gone with design 1g (the "one-off only" default is dropped), and the
     // stream/turn state is the quiet readout, not a pile of chips.
     expect(within(header as HTMLElement).getByTestId("controller-badge").textContent).toBe(
-      "You are in control",
+      "you're in control",
     );
     expect(within(header as HTMLElement).getByTestId("return-control")).toBeTruthy();
     expect(within(header as HTMLElement).getByTestId("turn-status").textContent).toContain("idle");
@@ -520,6 +524,23 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     const controls = screen.getByTestId("controller-badge").parentElement?.parentElement;
     expect(controls?.parentElement).toBe(title.parentElement);
     expect(controls).not.toBe(title);
+
+    // Pass-3 review defect 5: below `lg` that row is the 1280 row turned
+    // sideways — a full-width, LEFT-aligned line under the title — not a
+    // shrink-to-fit block right-aligned against the pane's edge, which is what
+    // made "No controller — take control to drive" and its button look like
+    // they were floating over the thread. `lg:` puts the design's right-hand
+    // placement back, and a lone act (`Take control`) fills the phone line while
+    // the controller's two acts (Return control + Stop) stay side by side.
+    const rowTokens = controls?.className.split(/\s+/) ?? [];
+    expect(rowTokens).toContain("justify-start");
+    expect(rowTokens).toContain("lg:justify-end");
+    expect(rowTokens).toContain("[&>div:first-child]:w-full");
+    expect(rowTokens).toContain("lg:[&>div:first-child]:w-auto");
+    expect(rowTokens).not.toContain("[&>div:first-child]:justify-end");
+    expect(rowTokens).toContain("lg:[&>div:first-child]:justify-end");
+    expect(rowTokens).toContain("[&>div:first-child>span:last-child>button:only-child]:w-full");
+    expect(rowTokens).toContain("lg:[&>div:first-child>span:last-child>button:only-child]:w-auto");
 
     // The meta line is one truncated row at every width (review 1g defects 2
     // and 4) — plain block flow below `lg`, no floated narrow column; `lg:`

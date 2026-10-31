@@ -38,6 +38,10 @@ import { automationViaWords, submitterCopy, turnStatusText } from "../../api/tra
 /**
  * Copy for the controller badge — ownership is always written in words.
  *
+ * The design's pill is the lower-case `● you're in control` (Projects Review
+ * 1g), so the controller's own line reads that way on every surface; the pane
+ * header draws the leading glyph, this string is the words.
+ *
  * `control.display_name` is server-resolved and usually present, but the API may
  * omit it (an older replica, a member the projection did not name). The session
  * already holds an actor directory, so a named member is named; "another member"
@@ -48,7 +52,7 @@ export function controllerCopy(
   isController: boolean,
   nameOf?: (userId: string) => string,
 ): string {
-  if (isController) return "You are in control";
+  if (isController) return "you're in control";
   if (control.kind === "run_attempt") return "Controlled by a pipeline run";
   if (control.kind === "human") {
     const named = control.display_name ?? (control.user_id ? nameOf?.(control.user_id) : undefined);

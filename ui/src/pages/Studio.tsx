@@ -484,11 +484,16 @@ export function StudioPage() {
                 error={draft.error}
                 fallback="The draft could not be read."
                 subject="the draft"
-                hint="No canvas is drawn from invented bytes: the document this page edits is exactly what this read answers."
+                hint="Nothing is shown until the draft loads."
                 retry={{
                   onClick: () => void draft.refetch(),
                   pending: draft.isFetching,
                   testid: "studio-draft-retry",
+                }}
+                back={{
+                  to: routes.workflows(),
+                  label: "← Back to workflows",
+                  testid: "studio-back-to-workflows",
                 }}
                 testid="studio-draft-error"
               />

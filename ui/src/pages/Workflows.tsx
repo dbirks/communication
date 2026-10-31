@@ -332,6 +332,21 @@ export function LibraryPage() {
     return true;
   });
 
+  // Is anything narrowing the list right now? The no-match line offers to undo
+  // exactly that, so the offer appears only where it would do something.
+  const filtersActive =
+    search !== "" || filter !== "all" || usedInProject !== "" || effectiveFolderFilter !== null;
+  function clearFilters() {
+    setSearch("");
+    setFilter("all");
+    setUsedInProject("");
+    if (searchParams.has("folder")) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("folder");
+      setSearchParams(next, { replace: true });
+    }
+  }
+
   // The grouped view (ADR-0049 § 8): one panel per folder, Unfiled last —
   // with the same panel header the folder groups carry, because it is a group
   // of rows like any other (design 1b review).
@@ -468,7 +483,7 @@ export function LibraryPage() {
           error={pipelines.error}
           fallback="The workflow library could not be read."
           subject="the workflow library"
-          hint="No rows are listed rather than a short list — nothing here is invented to fill the gap."
+          hint="Nothing is listed, because the list could not be read."
           retry={{
             onClick: () => void pipelines.refetch(),
             pending: pipelines.isFetching,
@@ -480,7 +495,7 @@ export function LibraryPage() {
       {projects.isError ? (
         <ProblemBanner
           error={projects.error}
-          fallback="Your projects could not be read — assignment cells stay honest about it."
+          fallback="Your projects could not be read, so a workflow's 'used in' line may be missing a repo."
           subject="your projects"
           retry={{
             onClick: () => void projects.refetch(),
@@ -492,7 +507,7 @@ export function LibraryPage() {
       {fanBroke ? (
         <ProblemBanner
           error={undefined}
-          fallback="Some rows could not be read in full — their cells stay empty rather than invented."
+          fallback="Some rows could not be read in full, so parts of those rows are missing."
         />
       ) : null}
       {pipelines.data ? (
@@ -557,11 +572,29 @@ export function LibraryPage() {
         </div>
       ) : null}
       {pipelines.data && visible.length === 0 ? (
-        <p className="text-[12.5px] text-muted" data-testid="workflows-empty">
-          {rows.length === 0
-            ? "No workflows yet. Start from a card above or New workflow."
-            : "No workflow matches the current filter."}
-        </p>
+        <div className="flex flex-wrap items-center gap-[8px]">
+          <p className="text-[12.5px] text-muted" data-testid="workflows-empty">
+            {rows.length === 0
+              ? "No workflows yet. Start from a card above or New workflow."
+              : "No workflow matches the current filter."}
+          </p>
+          {/* The sentence named the filter; the way out of it is the action
+              beside it (review3 item: “Clear search”). It appears only when a
+              filter is actually narrowing the list — an empty library has
+              nothing to clear — and it clears every filter the row holds, the
+              search box and the chips and the folder alike, because the reader
+              who landed here wants the list back, not one control at a time. */}
+          {rows.length > 0 && filtersActive ? (
+            <Button
+              variant="secondary"
+              compact
+              onClick={clearFilters}
+              data-testid="workflows-clear-search"
+            >
+              Clear search
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {pipelines.data && visible.length > 0 ? (
         showFolders ? (

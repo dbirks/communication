@@ -17,7 +17,7 @@
 import { Clock, Play } from "lucide-react";
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
-import { Alert } from "../ds/Alert";
+import { ProblemBanner } from "../Feedback";
 import { problemOf } from "../../api/client";
 import { usePatchAssignment, type Schedule } from "../../api/pipelines";
 import type { IssueTrigger } from "../../api/useIssueTriggers";
@@ -44,6 +44,14 @@ export interface UsedInPanelProps {
   groups: UsedInGroup[];
   loading: boolean;
   error: boolean;
+  /** The shared load-failure block's `Retry`: re-ask the reads the rows need. */
+  onRetry?: () => void;
+  /** The read that broke, so the block can quote the server under its own
+   * sentence (the fan walks several reads, so the caller passes the first one
+   * that answered; `undefined` leaves the block on its own words). */
+  failure?: unknown;
+  /** Any of those reads is arriving (the button says `Retrying…`). */
+  retrying?: boolean;
   /** The pipeline's revision summaries, newest first (server order). */
   revisions: UsedInRevision[];
   /** The newest PUBLISHED revision — the pin an "Update to rN" moves to. Its
@@ -76,7 +84,7 @@ export function TriggerSentences({ group }: { group: UsedInGroup }) {
         className="font-mono text-[11px] text-st-failed-tag-fg"
         data-testid={`used-in-triggers-error-${group.assignment.id}`}
       >
-        the trigger reads failed — not counted
+        its triggers could not be read
       </span>
     );
   }
@@ -159,10 +167,10 @@ export function pinLabel(
 
 /**
  * The panel's own header. A count only speaks when a read ANSWERED it: a
- * failed read shows the bare `USED IN` beside the FAILED banner, and a read
- * still in flight shows it too — `USED IN 0 REPOS` over either is a number the
- * page never earned (pass-7 review, 2a server-error: the tab said `Used in ?`
- * and the header `USED IN ? REPOS`, and a `?` in a mono title bar reads as
+ * failed read shows the bare `USED IN` beside the load-failure block, and a
+ * read still in flight shows it too — `USED IN 0 REPOS` over either is a number
+ * the page never earned (pass-7 review, 2a server-error: the tab said `Used in
+ * ?` and the header `USED IN ? REPOS`, and a `?` in a mono title bar reads as
  * data). One repo is one repo: `USED IN 1 REPO`.
  */
 export function usedInPanelTitle(count: number, loading: boolean, error: boolean): string {
@@ -177,16 +185,23 @@ export function usedInPanelTitle(count: number, loading: boolean, error: boolean
  *
  * A failed read is never a count: when one of the reads behind the list broke,
  * the header says `USED IN` with no number at all (the tab beside it drops its
- * count the same way) and the standard FAILED banner — the same `Alert` every
- * other server-error state uses — says what broke, instead of red mono text
- * passing as a count of zero (pass-2 review, 2a server-error at 390; the `?`
- * this replaced was still a value in a number's seat, pass-7 review).
+ * count the same way) and the app's ONE load-failure treatment — the shared
+ * `Couldn't load …` block with its `Retry` — says what broke, instead of red
+ * mono text passing as a count of zero (pass-2 review, 2a server-error at 390;
+ * the `?` this replaced was still a value in a number's seat, pass-7 review).
+ * Pass-8 review (item 4) moved this panel off the bare `FAILED` callout: a
+ * panel of a page that otherwise uses the shared block read as a different
+ * product, and `FAILED` is a run's status word, not this list's story. The
+ * `used-in-error` id stays — the block carries it.
  */
 export function UsedInPanel({
   pipelineId,
   groups,
   loading,
   error,
+  onRetry,
+  retrying = false,
+  failure,
   revisions,
   newestPublished,
   newestPublishedId,
@@ -205,9 +220,17 @@ export function UsedInPanel({
         ) : null}
         {error ? (
           <div className="p-[10px]">
-            <Alert state="failed" label="FAILED" role="alert" testid="used-in-error">
-              The projects could not all be read — this list may be missing a use.
-            </Alert>
+            <ProblemBanner
+              error={failure}
+              fallback="The projects could not all be read — this list may be missing a use."
+              subject="the list of repos that use this workflow"
+              retry={
+                onRetry
+                  ? { onClick: onRetry, pending: retrying, testid: "used-in-retry" }
+                  : undefined
+              }
+              testid="used-in-error"
+            />
           </div>
         ) : null}
         {groups.length === 0 && !loading && !error ? (

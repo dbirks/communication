@@ -327,7 +327,7 @@ describe("/p/:projectId/conversations/:conversationId", () => {
       expect(JSON.parse(request.body ?? "{}")).toEqual({ version: 7 });
     });
     await waitFor(() =>
-      expect(screen.getByTestId("controller-badge").textContent).toBe("You are in control"),
+      expect(screen.getByTestId("controller-badge").textContent).toBe("you're in control"),
     );
 
     // The composer becomes usable now that this browser holds the lock.

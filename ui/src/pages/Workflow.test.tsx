@@ -359,16 +359,18 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
   it("without the library role the edit verb is disabled and carries the reason", async () => {
     mount(detail, [{ path: "/api/v1/me", body: member }]);
     await screen.findByTestId("pipeline-page");
-    // 1e item 2 (2026-10-30 copy review): the reason used to be a mono sentence
-    // floating beside `Use in a repo…`. The verb stays where the design puts it,
-    // disabled, and its tooltip says why — with the same words in the DOM for a
-    // reader who never gets a tooltip.
+    // Pass-8 review, item 7: the reason for the disabled verb is SHOWING, not
+    // hidden in a tooltip and a screen-reader span. The verb stays where the
+    // design puts it, disabled, its tooltip still says why, and the muted line
+    // under the actions reads in plain words.
     const edit = (await screen.findByTestId("pipeline-customize")) as HTMLButtonElement;
     expect(edit.disabled).toBe(true);
     expect(edit.getAttribute("title")).toBe("authoring needs the library role");
-    expect(screen.getByTestId("workflow-author-hint").textContent).toBe(
-      "authoring needs the library role",
-    );
+    const hint = screen.getByTestId("workflow-author-hint");
+    expect(hint.textContent).toBe("You can view this workflow, not edit it.");
+    // “shown” is the whole item: an sr-only span is invisible copy, which is
+    // exactly what the review called out.
+    expect(hint.className).not.toContain("sr-only");
     // Reading the uses is not authoring — the rail's use row is still shown.
     expect(await screen.findByTestId(`overview-used-in-${WIRE_ASSIGNMENT_ID}`)).toBeTruthy();
     // 1e review item 1: the canvas caption pointed the reader at `Edit
@@ -701,8 +703,11 @@ describe("YAML tab — the Validate panel (contract § 7.2 W8, re-homed here)", 
     await screen.findByTestId("yaml-view");
     expect(screen.queryByTestId("yaml-validate-disclosure")).toBeNull();
     expect(screen.queryByTestId("validate-panel-input")).toBeNull();
-    // The viewer still reads the YAML, and still gets the reason in words.
-    expect(screen.getByTestId("workflow-author-hint").textContent).toContain("library role");
+    // The viewer still reads the YAML, and still gets the reason in words
+    // (pass-8 review, item 7: the reason is a plain sentence, not a role name).
+    expect(screen.getByTestId("workflow-author-hint").textContent).toContain(
+      "You can view this workflow, not edit it",
+    );
 
     mount(detail, [{ path: "/api/v1/me", body: admin }]);
     await screen.findByTestId("pipeline-page");
@@ -993,14 +998,16 @@ describe("Use in a repo… (ADR-0060)", () => {
     expect(line.textContent).toContain("You maintain no project");
     expect(screen.getByTestId("assign-projects-link").getAttribute("href")).toBe("/");
   });
-  it("a failed read is never a count: no `Used in 0`, the FAILED banner instead", async () => {
+  it("a failed read is never a count: no `Used in 0`, the load-failure block instead", async () => {
     // Pass-2 review, 2a server-error at 390: the tab read `Used in 0` and the
     // panel `USED IN 0 REPOS` over a fan that had failed — a lost read stated
-    // as “nobody uses this”. The standard FAILED banner (the same `Alert` every
-    // other server-error screen uses) says what broke. Pass-7 review took the
-    // interim answer back: a `?` in a number's seat is still a value the page
-    // never read, so the failed read shows NO count at all — the tab says
-    // `Used in`, the header says `USED IN`, and only the banner speaks.
+    // as “nobody uses this”. Pass-7 review took the interim answer back: a `?`
+    // in a number's seat is still a value the page never read, so the failed
+    // read shows NO count at all — the tab says `Used in`, the header says
+    // `USED IN`, and only the banner speaks. Pass-8 review, item 4, moved that
+    // banner onto the app's ONE load-failure treatment: the shared
+    // `Couldn't load …` block with the `Retry` the read actually supports, not a
+    // bare `FAILED` callout (FAILED is a run's status word).
     mount(`${detail}/used-in`, [
       {
         path: `/api/v1/projects/${wireProjectId}/assignments`,
@@ -1016,8 +1023,10 @@ describe("Use in a repo… (ADR-0060)", () => {
     const panel = await screen.findByTestId("used-in");
     const banner = await within(panel).findByTestId("used-in-error", undefined, settled);
     expect(banner.getAttribute("role")).toBe("alert");
-    expect(banner.textContent).toContain("FAILED");
+    expect(banner.textContent).toContain("Couldn't load the list of repos");
     expect(banner.textContent).toContain("could not all be read");
+    // ... and it offers the one thing a server error supports: ask again.
+    expect(within(panel).getByTestId("used-in-retry").textContent).toBe("Retry");
     // The header says the section's name and nothing that looks like a count.
     expect(within(panel).getByRole("heading", { level: 2 }).textContent).toBe("USED IN");
     expect(within(panel).queryByTestId("used-in-empty")).toBeNull();

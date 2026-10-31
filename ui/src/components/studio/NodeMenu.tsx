@@ -5,7 +5,7 @@
  * (danger tint). The same two actions serve the context menu at the pointer;
  * arrow keys + enter work, esc / click-away close, focus returns.
  */
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 export interface NodeMenuProps {
   x: number;
@@ -25,6 +25,15 @@ export interface NodeMenuProps {
    * over the graph. It ignores x/y; it flows.
    */
   docked?: boolean;
+  /**
+   * The menu's OWN box in px, reported as soon as it is drawn (and on every
+   * resize). The placement math needs the real size, not an estimate: the
+   * estimate is what pushed the 390px menu off its node and into the next
+   * step's card (pass-8 review, defect 1), and the phone band's 44px control
+   * floor (`styles/tokens.css`) changes the height per width band, so no
+   * constant can be right for both.
+   */
+  onMeasure?: (size: { w: number; h: number }) => void;
   nodeId: string;
   /** Duplicate the step; hidden (not rendered) when the page has none. */
   onDuplicate?: (id: string) => void;
@@ -43,6 +52,7 @@ export function NodeMenu({
   compact = false,
   docked = false,
   nodeId,
+  onMeasure,
   onDuplicate,
   onDelete,
   onClose,
@@ -50,6 +60,25 @@ export function NodeMenu({
   const listRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([null, null]);
   const [active, setActive] = useState(0);
+
+  // Report the drawn box (offset* = the border box the placement math wants,
+  // 0×0 in jsdom, which leaves the caller on its estimate).
+  const report = useCallback(() => {
+    const el = listRef.current;
+    if (!el || !onMeasure) return;
+    if (el.offsetWidth > 0 && el.offsetHeight > 0)
+      onMeasure({ w: el.offsetWidth, h: el.offsetHeight });
+  }, [onMeasure]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || !onMeasure) return;
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [onMeasure, report, compact, docked]);
 
   // The Duplicate action is only offered when the page can run it; a canvas
   // without a duplicate op hides the item rather than rendering a dead button.

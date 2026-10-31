@@ -78,21 +78,25 @@ export function SelectionToolbar({
     // Design 1g: a compact 30px mono strip with 26px secondary buttons — the
     // wrap function stays, the bar must not read as a second tool pane.
     //
-    // It is ONE row at every width (pass-7 review, 1g-inspector-edit at 390:
-    // the wrapping strip stacked `Wrap in For each` under `1 step selected`,
-    // so the selection's actions read as two bars and ate another line of the
-    // phone's canvas). The row never breaks; when the actions are wider than
-    // the pane the strip scrolls sideways, which keeps both verbs reachable
-    // and keeps `1 step selected` on the same line as them. The phone band's
-    // 44px control floor grows the row's height (a `h-[30px]` would clip it),
-    // which is why the height is a floor and not a fixed size.
+    // It WRAPS (pass-8 review, defect 1: at 390 the one-row strip clipped
+    // `Wrap in For each` at the pane's right edge — `Wrap in For eac` — and
+    // hid the second verb behind a sideways scroll nobody scrolls on a canvas
+    // that already pans). Nothing on this bar may be cut and nothing may
+    // scroll sideways: when the actions are wider than the pane the row breaks
+    // between whole buttons and the strip grows a line. The height stays a
+    // floor, not a fixed size, both for that second line and for the phone
+    // band's 44px control floor (`styles/tokens.css`).
     return (
       <div
         role="toolbar"
         aria-label="Selection actions"
         data-testid={testids.box}
-        className="flex min-h-[30px] shrink-0 flex-nowrap items-center gap-x-2 overflow-x-auto border-b border-line bg-surface px-3 py-1 md:h-[30px] md:py-0"
+        className="flex min-h-[30px] shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-surface px-3 py-1"
       >
+        {/* The count rides with its verbs: `1 step selected` is the subject of
+            the two buttons, so it stays at the head of the row and never gets
+            a line to itself (it is `shrink-0 whitespace-nowrap` — the wrap
+            happens between whole controls, never inside one). */}
         <span
           className="shrink-0 whitespace-nowrap font-mono text-[11px] text-muted"
           data-testid="selection-count"

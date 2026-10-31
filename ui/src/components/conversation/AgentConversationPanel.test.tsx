@@ -391,7 +391,7 @@ describe("AgentConversationPanel (dock)", () => {
     expect(JSON.parse(posts[0].body ?? "{}")).toEqual({ version: 2 });
     // The takeover landed: the badge says so, and the composer unlocks.
     await waitFor(async () =>
-      expect(screen.getByTestId("controller-badge").textContent).toBe("You are in control"),
+      expect(screen.getByTestId("controller-badge").textContent).toBe("you're in control"),
     );
     expect(screen.getByTestId("composer-input").hasAttribute("disabled")).toBe(false);
   });
@@ -418,7 +418,7 @@ describe("AgentConversationPanel (dock)", () => {
     );
     expect(screen.queryByTestId("take-control-card")).toBeNull();
     await waitFor(() =>
-      expect(screen.getByTestId("controller-badge").textContent).toBe("You are in control"),
+      expect(screen.getByTestId("controller-badge").textContent).toBe("you're in control"),
     );
   });
 });

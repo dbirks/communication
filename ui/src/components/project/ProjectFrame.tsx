@@ -15,11 +15,14 @@
  *
  * The unusable branches are the ones every screen under `/p/:id` already gives:
  * a refusal is `ProjectUnavailable`'s one sentence, and any other failure
- * quotes the server. A caller who cannot open the project gets no band, no tabs
- * and no counts — the shell itself would confirm more than the API chose to say
- * (the list routes answer the same 404/403 as the project read, hence `refused`).
+ * quotes the server under the same header band (the breadcrumb, the section's
+ * H1 and its bottom rule) the refusal draws. A caller who cannot open the
+ * project gets no band, no tabs and no counts — the shell itself would confirm
+ * more than the API chose to say (the list routes answer the same 404/403 as
+ * the project read, hence `refused`).
  */
 import { useState, type ReactNode } from "react";
+import { Link } from "react-router";
 import { useProject } from "../../api/queries";
 import type { Project } from "../../api/types";
 import NewConversationDialog from "../NewConversationDialog";
@@ -100,27 +103,39 @@ export function ProjectFrame({
   // Any other failure quotes the server — and so does a read that answered
   // nothing at all, which is a broken read rather than a refusal.
   if (project.error || !project.data) {
+    // The same header band the refusal draws (pass-3 review): the section's
+    // breadcrumb and its H1 over a bottom rule, and the server's answer under
+    // it. A bare H1 glued to a red box read as a crash rather than a page.
     return branch(
       `${testid}-error`,
       <section aria-labelledby={`${testid}-error-heading`}>
-        <h1 id={`${testid}-error-heading`} className="text-title-l font-bold">
-          {heading}
-        </h1>
-        <div className="mt-2 max-w-[70ch]">
+        <header className="flex flex-col gap-[6px] border-b border-line pb-[12px]">
+          <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+            <Link
+              to={routes.projects()}
+              className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              data-testid={`${testid}-back-to-projects`}
+            >
+              Projects
+            </Link>
+            <span aria-hidden="true" className="px-1.5">
+              /
+            </span>
+          </nav>
+          <h1 id={`${testid}-error-heading`} className="text-title-l font-bold">
+            {heading}
+          </h1>
+        </header>
+        <div className="mt-[12px] max-w-[70ch]">
           <ProblemBanner
             error={project.error}
             fallback={`${heading} could not be loaded.`}
             subject={`the ${heading.toLowerCase()}`}
-            hint="The page has no project to draw, so it draws none of it rather than part of a guess."
+            hint="The project could not be loaded, so this page has nothing to show yet."
             retry={{
               onClick: () => void project.refetch(),
               pending: project.isFetching,
               testid: `${testid}-retry`,
-            }}
-            back={{
-              to: routes.projects(),
-              label: "← Projects",
-              testid: `${testid}-back-to-projects`,
             }}
           />
         </div>
