@@ -72,6 +72,10 @@ export interface ThreadListState {
   items: ConversationSummary[];
   loaded: boolean;
   nextCursor: string | null;
+  /** Re-run the read that failed — what the pane's `Retry` presses. */
+  refetch: () => void;
+  /** The read is in flight (a retry included). */
+  fetching: boolean;
 }
 
 export function useThreadList(
@@ -89,6 +93,8 @@ export function useThreadList(
       items: scoped.data?.items ?? [],
       loaded: Boolean(scoped.data),
       nextCursor: null,
+      refetch: () => void scoped.refetch(),
+      fetching: scoped.isFetching,
     };
   }
   return {
@@ -98,6 +104,8 @@ export function useThreadList(
     items: cross.data?.items ?? [],
     loaded: Boolean(cross.data),
     nextCursor: cross.data?.next_cursor ?? null,
+    refetch: () => void cross.refetch(),
+    fetching: cross.isFetching,
   };
 }
 
@@ -398,7 +406,13 @@ export function ThreadListPane({
             <div className="p-[14px]" data-testid="threads-list-error">
               <ProblemBanner
                 error={list.error}
-                fallback="The thread list could not be loaded — newer servers carry it; open threads from a project's Threads tab until then."
+                fallback="Open threads from a project's Threads tab meanwhile — this read could not be loaded, and no rows are invented to fill the gap."
+                subject="the thread list"
+                retry={{
+                  onClick: list.refetch,
+                  pending: list.fetching,
+                  testid: "threads-list-retry",
+                }}
               />
             </div>
           ) : (

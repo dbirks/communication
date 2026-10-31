@@ -37,6 +37,11 @@ export interface UseInRepoDialogProps {
   open: boolean;
   onClose: () => void;
   pipelineId: string;
+  /** The workflow's own name — the dialog's title names it (2026-10-30 copy
+   * review, 2a item 7: `Use in a repo…` never said WHAT would be used, so the
+   * reader had to remember the page they clicked the button on). The page passes
+   * the display name it already draws in its H1. */
+  workflowName: string;
   /** The newest PUBLISHED revision — the one this dialog pins. Null when the
    * workflow has never published: there is nothing to use yet, and the
    * header's button is not offered at all in that case. */
@@ -86,6 +91,7 @@ function DialogBody({
   open,
   onClose,
   pipelineId,
+  workflowName,
   newestPublished,
   revisions,
   onAssigned,
@@ -221,7 +227,11 @@ function DialogBody({
   // Known with no click spent: this reader cannot use a workflow anywhere.
   if (projects.data && maintainerProjects.length === 0) {
     return (
-      <Chrome onClose={onClose} headingId="assign-no-project-heading" title="Use in a repo…">
+      <Chrome
+        onClose={onClose}
+        headingId="assign-no-project-heading"
+        title={`Use ${workflowName || "this workflow"} in a repo…`}
+      >
         <p className="text-[12.5px]" data-testid="assign-no-maintainer">
           You maintain no project — a project maintainer can use this workflow from that{" "}
           <Link
@@ -239,7 +249,11 @@ function DialogBody({
   // Success: the row is a real thing now — say where, and offer the look.
   if (assigned) {
     return (
-      <Chrome onClose={onClose} headingId="assign-success-heading" title="Used in a repo">
+      <Chrome
+        onClose={onClose}
+        headingId="assign-success-heading"
+        title={`Used in ${assigned.project.name} / ${assigned.repo}`}
+      >
         <p className="text-[12.5px]" data-testid="assign-success-panel">
           <span data-testid="assign-success-label">
             {`Used in ${assigned.project.name} / ${assigned.repo}`}
@@ -263,16 +277,19 @@ function DialogBody({
   const nothingToAssign = open && listsLoaded && candidates.length === 0;
 
   // The dialog is named for what it will do (the 1c rule: the title and the
-  // primary verb say the same thing): the repo it names once the reader has
-  // chosen one, the plain question until then.
+  // primary verb say the same thing) AND it names its subject — the workflow is
+  // what the reader is about to pin, and a title that only says `Use in a repo…`
+  // left them to remember which page they opened it from (2026-10-30 copy review,
+  // 2a item 7). The workflow's own name carries through all three stages.
   const chosenProject = maintainerProjects.find((project) => project.id === projectId) ?? null;
   const chosenRepo = offeredRepos.find((repo) => repo.id === repoId) ?? null;
+  const name = workflowName || "this workflow";
   const formTitle =
     wholeProject && chosenProject
-      ? `Use in every repo of ${chosenProject.name}`
+      ? `Use ${name} in every repo of ${chosenProject.name}`
       : chosenRepo
-        ? `Use in ${chosenRepo.name}`
-        : "Use in a repo…";
+        ? `Use ${name} in ${chosenRepo.name}`
+        : `Use ${name} in a repo…`;
 
   return (
     <Chrome onClose={onClose} headingId="assign-form-heading" title={formTitle}>
@@ -289,35 +306,34 @@ function DialogBody({
         {assignmentLists.some((result) => result.isPending) ? (
           <Spinner label="Checking which projects already use this workflow" />
         ) : null}
-        {maintainerProjects.length > 0 ? (
-          /* Where this workflow is already pinned — the bookkeeping the
-             candidate list below cannot carry. It is READ-ONLY by design (the
-             pass-2 review, 2a “Use in a repo…”): the dialog has exactly ONE
-             way to choose, the project select; the old per-row `Use here`
-             button was a second, parallel way to do the same thing. */
-          <ul
-            className="divide-y divide-line border-y border-line"
-            data-testid="assign-project-states"
-          >
-            {states.map(({ project, loaded, pins }) => (
-              <li
-                key={project.id}
-                className="flex flex-wrap items-baseline gap-[6px] px-[2px] py-[7px]"
-                data-testid={`assign-project-state-${project.id}`}
-              >
-                <span className="text-[12.5px] font-semibold">{project.name}</span>
-                <span
-                  className="font-mono text-[10.5px]"
-                  data-testid={`assign-project-pin-${project.id}`}
+        {states.some(({ pins }) => pins.length > 0) ? (
+          /* Where this workflow is ALREADY pinned — and only there (2026-10-30
+             copy review, 2a item 7): the dialog once listed every project you
+             maintain with a `not used yet` line beside each, which was the
+             project select's own option list drawn twice. The select is the one
+             way to choose; this note survives for the fact the select cannot
+             carry — a project that already uses this workflow, and on which of
+             its repos, so a repo missing from the repository select is explained
+             rather than guessed at. It is READ-ONLY by design (the pass-2 review
+             retired the per-row `Use here` button). */
+          <ul className="flex flex-col gap-[2px]" data-testid="assign-project-states">
+            {states
+              .filter(({ pins }) => pins.length > 0)
+              .map(({ project, pins }) => (
+                <li
+                  key={project.id}
+                  className="flex flex-wrap items-baseline gap-x-[6px] text-[12px] text-muted"
+                  data-testid={`assign-project-state-${project.id}`}
                 >
-                  {pins.length > 0
-                    ? pins.map((pin) => pinStateLine(pin, revisions, newestPublished)).join(" · ")
-                    : loaded
-                      ? "not used yet"
-                      : "checking…"}
-                </span>
-              </li>
-            ))}
+                  <span className="font-semibold text-ink">{project.name}</span>
+                  <span
+                    className="font-mono text-[10.5px]"
+                    data-testid={`assign-project-pin-${project.id}`}
+                  >
+                    {pins.map((pin) => pinStateLine(pin, revisions, newestPublished)).join(" · ")}
+                  </span>
+                </li>
+              ))}
           </ul>
         ) : null}
         {nothingToAssign ? (
@@ -401,7 +417,6 @@ function DialogBody({
             id="assign-ceiling"
             label="max concurrent runs"
             hint="how many runs of this workflow may be in flight at once"
-            className="w-[12rem]"
           >
             <Input
               id="assign-ceiling"
@@ -410,15 +425,23 @@ function DialogBody({
               max={8}
               value={maxConcurrentRuns}
               onChange={(event) => setMaxConcurrentRuns(event.target.valueAsNumber || 1)}
+              // `block` + a width on the CONTROL, not on the field: the helper
+              // is a bare line of text in the field's flow, so an inline-block
+              // 12rem input let it sit down beside the box (2026-10-30 copy
+              // review, 2a item 7 — the helper was squeezed into a ~110px
+              // column). Full width, the helper gets its own line under it.
+              className="block max-w-[12rem]"
               data-testid="assign-ceiling"
             />
           </Field>
         ) : null}
-        {/* The 1c footer pattern: Cancel first, the primary verb last, both
-            pushed to the right edge. */}
+        {/* The 1c footer pattern: Cancel first (a plain secondary button, the
+            same control every other dialog carries — 2026-10-30 copy review, 2a
+            item 7: the ghost variant read as a text link beside the primary
+            button), the primary verb last, both pushed to the right edge. */}
         {!nothingToAssign ? (
           <div className="flex justify-end gap-[8px] border-t border-line pt-[10px]">
-            <Button variant="ghost" compact data-testid="assign-cancel" onClick={onClose}>
+            <Button variant="secondary" compact data-testid="assign-cancel" onClick={onClose}>
               Cancel
             </Button>
             <Button

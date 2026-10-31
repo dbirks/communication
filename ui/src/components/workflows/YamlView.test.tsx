@@ -63,18 +63,20 @@ describe("YamlView", () => {
     await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
   });
 
-  it("names the export button `download`, with the file's name as its title", () => {
+  it("names the export button `Download`, with the file's name as its title", () => {
     // The 390 design check: the button used to print the whole
-    // `<slug>-r<n>.yaml`, which the panel header cut in half.
+    // `<slug>-r<n>.yaml`, which the panel header cut in half. The copy review
+    // (2d item 3) then put it in the same case as its neighbour — the bar reads
+    // `Copy · Download`, two buttons of one kind, not a button and a caption.
     render(<YamlView text={FLOW_TEXT} filename="plan-with-approval-r1.yaml" />);
     const button = screen.getByTestId("yaml-view-download");
-    expect(button.textContent).toBe("download");
+    expect(button.textContent).toBe("Download");
     expect(button.getAttribute("title")).toBe("plan-with-approval-r1.yaml");
-    expect(button.getAttribute("aria-label")).toBe("download plan-with-approval-r1.yaml");
+    expect(button.getAttribute("aria-label")).toBe("Download plan-with-approval-r1.yaml");
     expect(button.className).not.toContain("truncate");
   });
 
-  it("keeps the header's Copy · download inside the bar's line box (390)", () => {
+  it("keeps the header's Copy · Download inside the bar's line box (390)", () => {
     // Below 560px the shell's phone floor (tokens.css `APP-SHELL-PHONE`) makes
     // every `main button` 44px tall; the bar holds one line by clipping that
     // growth (the Repositories `+ add` treatment) instead of growing to 53px
@@ -89,6 +91,21 @@ describe("YamlView", () => {
     expect(wrap.className).toContain("overflow-hidden");
     expect(wrap.className).toContain("min-[560px]:h-auto");
     expect(wrap.className).toContain("min-[560px]:overflow-visible");
+  });
+
+  it("soft-wraps every line instead of clipping it at the panel edge (390)", () => {
+    // reflow-390 (2d): at 390px `whitespace-pre` cut the long description and
+    // digest lines off at the right edge; the 1280 view wrapped them. Every
+    // line now wraps softly at all widths (`wrap-anywhere` — Tailwind 4's
+    // name for `overflow-wrap: anywhere` — carries even an unbroken token to
+    // the next line).
+    render(<YamlView text={FLOW_TEXT} filename="plan-with-approval-r1.yaml" />);
+    const line = screen.getByTestId("yaml-view-line-4");
+    const content = line.lastElementChild as HTMLElement;
+    const classes = content.className.split(/\s+/);
+    expect(classes).toContain("whitespace-pre-wrap");
+    expect(classes).toContain("wrap-anywhere");
+    expect(classes).not.toContain("whitespace-pre");
   });
 
   it("downloads the block text as a blob url", () => {

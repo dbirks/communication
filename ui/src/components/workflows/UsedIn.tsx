@@ -212,8 +212,12 @@ export function UsedInPanel({
         ) : null}
         {groups.length === 0 && !loading && !error ? (
           <p className="p-[10px] text-[12.5px] text-muted" data-testid="used-in-empty">
-            Not used in any repo yet — <span className="font-mono">Use in a repo…</span> pins the
-            latest published revision, and triggers are set up there.
+            {/* The button's name is quoted as ordinary text (2026-10-30 copy
+                review, 2a item 7): in inline mono inside a UI-font sentence the
+                word-spacing came out uneven and the phrase read as a piece of
+                the interface rather than a word in a sentence. */}
+            Not used in any repo yet — “Use in a repo…” pins the latest published revision, and
+            triggers are set up there.
           </p>
         ) : null}
         <ul className="divide-y divide-line-soft" data-testid="used-in-list">
@@ -229,12 +233,17 @@ export function UsedInPanel({
           ))}
         </ul>
       </Panel>
-      <p
-        className="font-mono text-[10.5px] leading-[16px] text-faint"
-        data-testid="used-in-footnote"
-      >
-        Open › goes to the repo page, where its triggers are edited.
-      </p>
+      {/* The footnote explains the rows' `Open ›` link, so it belongs under a
+          list that HAS rows: with none, the sentence pointed at a link nobody
+          can see (2026-10-30 copy review, 2a item 7). */}
+      {groups.length > 0 ? (
+        <p
+          className="font-mono text-[10.5px] leading-[16px] text-faint"
+          data-testid="used-in-footnote"
+        >
+          Open › goes to the repo page, where its triggers are edited.
+        </p>
+      ) : null}
     </section>
   );
 }

@@ -412,14 +412,17 @@ export function LibraryPage() {
       {/* The starter cards: the dialog's own three starting points, so a card
           click preselects what `New workflow` would otherwise start from. */}
       <div
-        className="grid grid-cols-1 gap-3 min-[900px]:grid-cols-3"
+        /* Four starters, one honest grid (1b review, 390/1280): one column on
+           the phone, 2×2 between phone and desktop, and four across at
+           1280 — the 4th card never sits alone on a second row. */
+        className="grid grid-cols-1 gap-3 min-[700px]:grid-cols-2 min-[1150px]:grid-cols-4"
         data-testid="workflow-starters"
       >
         <button
           type="button"
           disabled={!canAuthor}
           onClick={() => setNewWorkflow({ open: true, preset: "blank" })}
-          className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-dashed border-line bg-surface p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
+          className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-dashed border-line bg-surface p-3 text-left max-[559px]:items-start! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
           data-testid="workflow-starter-blank"
         >
           <span className="font-mono text-[10px] tracking-[.06em] text-faint">START BLANK</span>
@@ -432,7 +435,7 @@ export function LibraryPage() {
             type="button"
             disabled={!canAuthor}
             onClick={() => setNewWorkflow({ open: true, preset: template.id })}
-            className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-line bg-surface p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-line bg-surface p-3 text-left max-[559px]:items-start! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
             data-testid={`workflow-starter-${template.id}`}
           >
             <span className="font-mono text-[10px] tracking-[.06em] text-faint">
@@ -461,12 +464,29 @@ export function LibraryPage() {
       ) : null}
       {pipelines.isPending ? <Spinner label="Loading the workflow library" /> : null}
       {pipelines.isError && !newWorkflow.open ? (
-        <ProblemBanner error={pipelines.error} fallback="The workflow library could not be read." />
+        <ProblemBanner
+          error={pipelines.error}
+          fallback="The workflow library could not be read."
+          subject="the workflow library"
+          hint="No rows are listed rather than a short list — nothing here is invented to fill the gap."
+          retry={{
+            onClick: () => void pipelines.refetch(),
+            pending: pipelines.isFetching,
+            testid: "workflows-load-retry",
+          }}
+          testid="workflows-load-error"
+        />
       ) : null}
       {projects.isError ? (
         <ProblemBanner
           error={projects.error}
           fallback="Your projects could not be read — assignment cells stay honest about it."
+          subject="your projects"
+          retry={{
+            onClick: () => void projects.refetch(),
+            pending: projects.isFetching,
+            testid: "workflows-projects-retry",
+          }}
         />
       ) : null}
       {fanBroke ? (

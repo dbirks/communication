@@ -467,9 +467,10 @@ describe("TriggerDialog — the 2c contract", () => {
     // schedule arm says ADD TRIGGER like the issue arm does.
     expect(screen.getByTestId("trigger-dialog-submit").textContent).toBe("Add trigger");
     // The hint is plain words about what the form wants — no grammar mnemonics,
-    // no list of the tokens the server refuses (2026-10-30 review, 2c item 5).
+    // no list of the tokens the server refuses (2026-10-30 review, 2c item 5),
+    // and it names the five FIELDS rather than counting "five times".
     expect(screen.getByTestId("trigger-dialog-cron-hint").textContent).toBe(
-      "five times to run on: minute, hour, day of month, month, day of week",
+      "five fields: minute, hour, day of month, month, day of week",
     );
     fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "* * * * *" } });
     expect(screen.getByTestId("trigger-dialog-cron-words").textContent).toBe("every minute");

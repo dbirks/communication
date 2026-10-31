@@ -106,7 +106,16 @@ export function RecentThreads({
         ) : null}
         {threads.isError ? (
           <div className="p-[10px]">
-            <ProblemBanner error={threads.error} fallback="Threads could not be loaded." />
+            <ProblemBanner
+              error={threads.error}
+              fallback="Threads could not be loaded."
+              subject="this project's threads"
+              retry={{
+                onClick: () => void threads.refetch(),
+                pending: threads.isFetching,
+                testid: "recent-threads-retry",
+              }}
+            />
           </div>
         ) : null}
         {threads.data && rows.length === 0 ? (

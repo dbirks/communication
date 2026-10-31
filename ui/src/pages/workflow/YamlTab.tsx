@@ -1,6 +1,6 @@
 /**
  * YAML tab (design 2d): the selected revision's regenerated canonical text,
- * block style everywhere, line numbers, `copy · download`. The revision is
+ * block style everywhere, line numbers, `Copy · Download`. The revision is
  * picked here (the History tab's rows deep-link into this tab with
  * `?revision=<digest>`); a published revision is immutable, so the panel is
  * read-only by decision — edits go through a draft (the `YamlView` header says
@@ -11,7 +11,6 @@ import { useSearchParams } from "react-router";
 import { YamlView } from "../../components/workflows/YamlView";
 import { ProblemBanner, Spinner } from "../../components/Feedback";
 import { useRevision, useRevisionDocument } from "../../api/pipelines";
-import { shortDigest } from "../../lib/pipeline/yamlPointer";
 import type { UsedInRevision } from "../../components/workflows/UsedIn";
 
 export interface YamlTabProps {
@@ -71,8 +70,13 @@ export function WorkflowYamlTab({ slug, revisions }: YamlTabProps) {
           ))}
         </select>
         {revision.data ? (
-          <span className="font-mono text-[10.5px] text-faint" data-testid="yaml-tab-label">
-            {`r${revision.data.revision_number} · ${revision.data.version_label} · ${shortDigest(revision.data.revision_digest)} · regenerated canonical`}
+          // Plain provenance, not a digest (2026-10-30 copy review, 2d item 3):
+          // the line used to read `r1 · 1.0.0 · c75e31850724 · regenerated
+          // canonical`, which is three facts about the server's object and one
+          // word a person does not use. What the reader needs is that this text
+          // was GENERATED from the revision in the select, not hand-typed.
+          <span className="text-[11px] text-muted" data-testid="yaml-tab-label">
+            {`generated from revision r${revision.data.revision_number} · ${revision.data.version_label}`}
           </span>
         ) : null}
       </div>

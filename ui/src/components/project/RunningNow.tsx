@@ -109,7 +109,16 @@ export function RunningNow({ project, limit = 6 }: RunningNowProps) {
         ) : null}
         {runs.isError && !notFound ? (
           <div className="p-[10px]">
-            <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
+            <ProblemBanner
+              error={runs.error}
+              fallback="Runs could not be loaded."
+              subject="this project's runs"
+              retry={{
+                onClick: () => void runs.refetch(),
+                pending: runs.isFetching,
+                testid: "running-now-retry",
+              }}
+            />
           </div>
         ) : null}
         {notFound ? (

@@ -136,6 +136,34 @@ describe("WorkflowRow", () => {
     expect(textOf(`workflow-assignment-${pipeline.slug}-1`)).toBe("M4 Project B · whole project");
   });
 
+  // 1b review (reflow-390 item 1): a wrapping chain made rows ~3x taller
+  // than the design's one line; one ellipsized line now carries the full
+  // chain in its `title`, at both widths.
+  it("shows the chain on one ellipsized line whose title carries the whole chain", () => {
+    mount();
+    const first = screen.getByTestId(`workflow-chain-${pipeline.slug}-0`);
+    const line = first.closest("div") as HTMLElement;
+    const classes = line.className.split(/\s+/);
+    expect(classes).toContain("truncate"); // nowrap + overflow-hidden + ellipsis
+    expect(line.title).toBe(
+      "plan › approve › loop: implement · test · review › verdict › publish_verified › publish_needs_attention",
+    );
+  });
+
+  // 1b review (reflow-390 item 2): the phone's 44px floor turned `Edit` and
+  // `⋯` into heavy boxed rows — they keep the desktop's 26px box and grow
+  // their HIT area to 44px instead (an invisible `::after` band).
+  it("keeps the row actions drawn as the desktop's buttons with a 44px phone hit area", () => {
+    mount();
+    const edit = screen.getByTestId(`workflow-open-${pipeline.slug}`);
+    expect(edit.className).toContain("max-[559px]:min-h-0!");
+    expect(edit.className).toContain("max-[559px]:after:-top-[9px]");
+    const menuWrap = screen.getByTestId(`workflow-menu-${pipeline.slug}`).parentElement
+      ?.parentElement as HTMLElement; // the action wrapper around RowMenu's root
+    expect(menuWrap.className).toContain("max-[559px]:min-h-0!");
+    expect(menuWrap.className).toContain("[data-menu-trigger]");
+  });
+
   it("gives the name column the free width and wraps it below the desktop breakpoint", () => {
     mount();
     const grid = screen

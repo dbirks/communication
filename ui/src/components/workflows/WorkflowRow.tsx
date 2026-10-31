@@ -225,23 +225,28 @@ export function WorkflowRow({
           )}
         </div>
 
-        {/* step chain */}
-        <div className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[4px]">
+        {/* step chain: ONE line at every width, ellipsized (1b review, 390):
+            wrapping turned a row into four lines of loop pills. The full
+            chain rides the `title`, so the whole truth is one hover away. */}
+        <div
+          className="min-w-0 truncate font-mono text-[10.5px]"
+          title={cells.map((cell) => cell.label).join(" › ")}
+        >
           {cells.length === 0 ? (
-            <span className="font-mono text-[10.5px] text-muted">—</span>
+            <span className="text-muted">—</span>
           ) : (
             cells.map((cell, index) => (
-              <span key={index} className="flex items-center gap-[6px]">
+              <span key={index}>
                 {index > 0 ? (
-                  <span aria-hidden="true" className="font-mono text-[10px] text-muted">
-                    ›
+                  <span aria-hidden="true" className="text-[10px] text-muted">
+                    {" › "}
                   </span>
                 ) : null}
                 <span
                   className={
                     cell.loop
-                      ? "rounded-[3px] border border-line bg-paper px-[6px] py-[1px] font-mono text-[10.5px]"
-                      : "font-mono text-[10.5px]"
+                      ? "rounded-[3px] border border-line bg-paper px-[6px] py-[1px]"
+                      : undefined
                   }
                   data-testid={`workflow-chain-${pipeline.slug}-${index}`}
                 >
@@ -295,11 +300,14 @@ export function WorkflowRow({
         {/* actions: `Edit` opens the workflow page (which opens the open
             draft); the row itself no longer prints a draft line */}
         <div className="flex min-w-0 items-start gap-[5px] min-[900px]:items-end min-[900px]:justify-end min-[900px]:text-right">
-          <div className="flex items-center gap-[6px]">
+          {/* the `⋯` trigger inside RowMenu shares the row's phone hit-area
+              treatment; RowMenu owns its markup, so it is reached from here */}
+          <div className={`flex items-center gap-[6px] ${PHONE_HIT_MENU_TRIGGER}`}>
             <Button
               variant="secondary"
               compact
               onClick={onOpen}
+              className={PHONE_HIT}
               data-testid={`workflow-open-${pipeline.slug}`}
             >
               Edit
@@ -322,6 +330,27 @@ export function WorkflowRow({
     </li>
   );
 }
+
+/* ------------------------------------------------------- phone hit area */
+
+/**
+ * Keep the desktop's 26px button DRAWN at 390 while it still answers to a
+ * 44px target (1b review): the shell's phone floor (`APP-SHELL-PHONE` in
+ * `styles/tokens.css`, unlayered) gives every `main button` a `min-height:
+ * 44px` below 560px, which turned the row's `Edit` and `⋯` into heavy boxed
+ * buttons. `min-h-0!` outranks the unlayered floor, the box stays the 1280
+ * one, and the invisible `::after` extends the hit area 9px above and below
+ * the 26px box (26 + 9 + 9 = 44).
+ */
+const PHONE_HIT =
+  "max-[559px]:relative max-[559px]:min-h-0! max-[559px]:after:absolute max-[559px]:after:inset-x-0 max-[559px]:after:-top-[9px] max-[559px]:after:-bottom-[9px] max-[559px]:after:content-['']";
+
+/** The same treatment for the `⋯` trigger RowMenu owns (reached from the
+ * row's own wrapper via the `[data-menu-trigger]` attribute it carries —
+ * the pseudo-element lives inside one arbitrary selector because a stacked
+ * `after:` variant under `[&…]` does not compose a quoted `content`). */
+const PHONE_HIT_MENU_TRIGGER =
+  "[&_[data-menu-trigger]]:relative [&_[data-menu-trigger]]:max-[559px]:min-h-0! max-[559px]:[&_[data-menu-trigger]::after]:content-[''] max-[559px]:[&_[data-menu-trigger]::after]:absolute max-[559px]:[&_[data-menu-trigger]::after]:inset-x-0 max-[559px]:[&_[data-menu-trigger]::after]:-top-[9px] max-[559px]:[&_[data-menu-trigger]::after]:-bottom-[9px]";
 
 /* ------------------------------------------------------- move to folder */
 

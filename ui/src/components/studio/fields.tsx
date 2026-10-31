@@ -186,8 +186,20 @@ export function NumberField({
     setDraft(current);
     setProblem(null);
   }, [current]);
-  const range =
-    min !== undefined || max !== undefined ? ` (allowed ${min ?? "…"}–${max ?? "…"})` : "";
+  // The accepted range is a HINT under the field, never a suffix on its label
+  // (2026-10-30 copy review, 1g item 9): Field renders labels in mono caps, so
+  // `(allowed 0–2)` came out as `TEMPERATURE (ALLOWED 0-2)` — schema text
+  // wearing the label's voice, which read as a validation code rather than
+  // plain guidance. The input keeps its native min/max too.
+  const rangeWords =
+    min !== undefined && max !== undefined
+      ? `${min} to ${max}`
+      : min !== undefined
+        ? `${min} or more`
+        : max !== undefined
+          ? `up to ${max}`
+          : "";
+  const guidance = rangeWords ? (hint ? `${hint} · ${rangeWords}` : rangeWords) : hint;
   function commit() {
     const trimmed = draft.trim();
     if (trimmed === "") {
@@ -197,15 +209,15 @@ export function NumberField({
     }
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed)) {
-      setProblem(`${label} must be a number${range}`);
+      setProblem(`${label} must be a number${rangeWords ? ` (${rangeWords})` : ""}`);
       return;
     }
     if ((min !== undefined && parsed < min) || (max !== undefined && parsed > max)) {
-      setProblem(`${label}: ${parsed} is out of range${range}`);
+      setProblem(`${label}: ${parsed} is out of range${rangeWords ? ` (${rangeWords})` : ""}`);
       return;
     }
     if (integerOnly && !Number.isInteger(parsed)) {
-      setProblem(`${label} must be a whole number${range}`);
+      setProblem(`${label} must be a whole number${rangeWords ? ` (${rangeWords})` : ""}`);
       return;
     }
     setProblem(null);
@@ -214,8 +226,8 @@ export function NumberField({
   return (
     <Field
       id={id}
-      label={label + range}
-      hint={problem ? <span className="text-st-failed-strong">{problem}</span> : hint}
+      label={label}
+      hint={problem ? <span className="text-st-failed-strong">{problem}</span> : guidance}
     >
       <Input
         id={id}

@@ -8,7 +8,7 @@
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BoolField } from "./fields";
+import { BoolField, NumberField } from "./fields";
 
 afterEach(() => {
   cleanup();
@@ -58,5 +58,66 @@ describe("BoolField", () => {
     render(<BoolField id="x" label="X" readOnly={false} value={false} onCommit={onCommit} />);
     fireEvent.click(screen.getByTestId("insp-x"));
     expect(onCommit).toHaveBeenCalledWith(true);
+  });
+});
+
+// The accepted range is guidance under the field, not a suffix on its label
+// (2026-10-30 copy review, 1g item 9): Field sets labels in mono caps, so
+// `(allowed 0–2)` printed as `TEMPERATURE (ALLOWED 0-2)` — a schema fragment
+// wearing the label's voice.
+describe("NumberField range hint", () => {
+  it("keeps the label clean and says the range under the field", () => {
+    render(
+      <NumberField
+        id="retry-backoff-multiplier"
+        label="Backoff multiplier"
+        readOnly={false}
+        value={1.5}
+        min={0}
+        max={2}
+        onCommit={vi.fn()}
+      />,
+    );
+    const label = screen.getByText("Backoff multiplier") as HTMLElement;
+    expect(label.textContent).toBe("Backoff multiplier");
+    expect(label.textContent).not.toMatch(/allowed|0–2/i);
+    expect(screen.getByText("0 to 2")).toBeTruthy();
+  });
+
+  it("adds the hint the caller passed rather than replacing it", () => {
+    render(
+      <NumberField
+        id="timeout"
+        label="Timeout"
+        hint="seconds the step may run"
+        readOnly={false}
+        value={30}
+        min={1}
+        max={600}
+        onCommit={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("seconds the step may run · 1 to 600")).toBeTruthy();
+  });
+
+  it("still refuses an out-of-range value in plain words", () => {
+    const onCommit = vi.fn();
+    render(
+      <NumberField
+        id="attempts"
+        label="Max attempts"
+        readOnly={false}
+        value={1}
+        min={1}
+        max={10}
+        integerOnly
+        onCommit={onCommit}
+      />,
+    );
+    const input = screen.getByTestId("insp-attempts") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "40" } });
+    fireEvent.blur(input);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(screen.getByText(/Max attempts: 40 is out of range/)).toBeTruthy();
   });
 });

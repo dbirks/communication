@@ -1,5 +1,8 @@
+import { type ReactNode } from "react";
+import { Link } from "react-router";
 import { problemOf } from "../api/client";
 import { Alert } from "./ds/Alert";
+import { Button } from "./ds/Button";
 
 export interface SpinnerProps {
   label: string;
@@ -36,20 +39,117 @@ export interface ProblemBannerProps {
   /** Copy used when the server gave nothing usable. */
   fallback: string;
   testid?: string;
+  /**
+   * The thing a screen tried to read, in the reader's words — "the workflow
+   * library", "this project's runs". With it the banner is the app's ONE load
+   * failure treatment: a plain `Couldn't load <thing>` heading, the actions
+   * that read actually supports (`retry`, `back`), and the server's own problem
+   * document kept as a muted `server said:` line — quoting it is honest, but it
+   * is evidence, not the headline, because "Internal Server Error: emulated
+   * failure" is a sentence no person reads as an answer.
+   *
+   * Without it the banner stays the compact inline callout a dialog or a panel
+   * quotes beside its own fields, which is what it has always been.
+   */
+  subject?: string;
+  /** One line on what the reader does next, or what is safe. Defaults to
+   * `fallback` — the copy the call site already owns. */
+  hint?: string;
+  /** What the reader can do from here. `retry` refetches the read (and says
+   * `Retrying…` while it runs); `back` is the page's parent, when it has one.
+   * A refusal gets neither: re-asking for a thing that is not here answers the
+   * same, and a retry button that cannot help is not honesty, it is theatre. */
+  retry?: { onClick?: () => void; pending?: boolean; testid?: string };
+  /** The page's parent, when it has one. */
+  back?: { to: string; label: string; testid?: string };
 }
 
-/** Read-state error (e.g. a 404 on a project the caller cannot see). */
-export function ProblemBanner({ error, fallback, testid }: ProblemBannerProps) {
+/**
+ * Read-state error: a 404 on a project the caller cannot see, a 500 on the list
+ * the page is made of. Two renderings, one component — the page-level load
+ * failure (with `subject`) and the compact inline callout (without it) — so a
+ * failed read never means two different screens in two different vocabularies.
+ */
+export function ProblemBanner({
+  error,
+  fallback,
+  testid,
+  subject,
+  hint,
+  retry,
+  back,
+}: ProblemBannerProps) {
   const problem = problemOf(error);
-  const text =
-    problem.status === 404
-      ? fallback
-      : problem.detail
-        ? `${problem.title}: ${problem.detail}`
-        : problem.title;
+  // `problemOf` stringifies whatever it was handed, and a call site that says
+  // “one of these reads broke” without a specific error hands it `undefined` —
+  // which came out as “Network error: undefined”, a message that is not honest,
+  // it is a leak. An empty answer is dropped rather than quoted.
+  const detail =
+    problem.detail === undefined ||
+    problem.detail === null ||
+    problem.detail === "undefined" ||
+    problem.detail === "null" ||
+    problem.detail === ""
+      ? ""
+      : problem.detail;
+  const quoted = detail ? `${problem.title}: ${detail}` : problem.title;
+  // A refusal (404, or the page's own client-side absence) is not a break: the
+  // server's title ("Not Found") is not evidence a person can act on, so the
+  // muted line is dropped and the call site's sentence carries the screen.
+  const refused = problem.status === 404;
+
+  if (!subject) {
+    const text = refused ? fallback : quoted;
+    return (
+      <Alert state="failed" label="FAILED" role="alert" testid={testid}>
+        {text}
+      </Alert>
+    );
+  }
+
+  // The bar keeps the failed set's glyph + word (handoff rule 06: a state is
+  // never color alone) but says what happened to THIS page — `COULDN'T LOAD` —
+  // instead of `FAILED`, which is the word a run's status carries.
+  const actions: ReactNode[] = [];
+  if (retry?.onClick) {
+    actions.push(
+      <Button
+        key="retry"
+        variant="secondary"
+        compact
+        onClick={retry.onClick}
+        disabled={retry.pending}
+        data-testid={retry.testid}
+      >
+        {retry.pending ? "Retrying…" : "Retry"}
+      </Button>,
+    );
+  }
+  if (back) {
+    actions.push(
+      <Link
+        key="back"
+        to={back.to}
+        className="ds-btn ds-btn--secondary ds-btn--compact inline-flex items-center rounded-[4px]"
+        data-testid={back.testid}
+      >
+        {back.label}
+      </Link>,
+    );
+  }
+
   return (
-    <Alert state="failed" label="FAILED" role="alert" testid={testid}>
-      {text}
+    <Alert state="failed" label="COULDN'T LOAD" role="alert" testid={testid}>
+      <div className="min-w-0 max-w-[70ch] space-y-[3px]">
+        <p className="text-[13px] font-semibold text-ink">{`Couldn't load ${subject}.`}</p>
+        <p className="text-[12px] text-muted">{hint ?? fallback}</p>
+        {refused ? null : (
+          <p className="font-mono text-[10.5px] text-faint">server said: {quoted}</p>
+        )}
+        {actions.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-[6px] pt-[3px]">{actions}</div>
+        ) : null}
+      </div>
     </Alert>
   );
 }

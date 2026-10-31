@@ -133,3 +133,28 @@ describe("the USED IN panel header", () => {
     expect(heading().textContent).toBe("USED IN");
   });
 });
+
+// The panel's own two sentences (2026-10-30 copy review, 2a item 7): the empty
+// line is ordinary text — quoting the button in inline mono inside a UI-font
+// sentence came out with uneven word-spacing and read as a piece of the
+// interface — and the `Open ›` footnote belongs under a list that HAS rows.
+describe("the USED IN panel's sentences", () => {
+  it("writes the empty line in one voice, with no inline mono fragment", async () => {
+    mount({ groups: [], loading: false, error: false });
+    const empty = await screen.findByTestId("used-in-empty");
+    expect(empty.textContent).toContain("Not used in any repo yet");
+    expect(empty.textContent).toContain("Use in a repo…");
+    expect(empty.querySelector("code, span.font-mono")).toBeNull();
+  });
+
+  it("keeps the `Open ›` footnote under a list of rows", async () => {
+    mount({ groups: [group("a", "app")], loading: false, error: false });
+    expect(await screen.findByTestId("used-in-footnote")).toBeTruthy();
+  });
+
+  it("hides the `Open ›` footnote when there are no rows to open", async () => {
+    mount({ groups: [], loading: false, error: false });
+    await screen.findByTestId("used-in-empty");
+    expect(screen.queryByTestId("used-in-footnote")).toBeNull();
+  });
+});

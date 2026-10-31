@@ -3,8 +3,10 @@
  *
  * The panel renders the document as block style (via `lib/pipeline/blockYaml`)
  * with a line-number gutter, and header actions to copy or download the text.
- * The export button is the plain word `download` with the file's name as its
- * title (the 390px design check: the full `<slug>-r<n>.yaml` label was cut to
+ * The two actions are buttons of one case and one size (`Copy` · `Download`,
+ * 2026-10-30 copy review, 2d item 3 — `Copy`/`download` read as two different
+ * kinds of control) and the export button carries the file's name as its title
+ * (the 390px design check: the full `<slug>-r<n>.yaml` label was cut to
  * `…-r1.ya…` on the bar). It is read-only by decision: a published revision is
  * immutable, edits go through a draft. The Studio's authoring textarea is the
  * only keystroke path.
@@ -79,7 +81,7 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
         // below 560px the shell's phone floor (tokens.css `APP-SHELL-PHONE`)
         // makes every `main button` 44px tall, and this bar grew to twice its
         // siblings (53px against the other panels' 23px). The wrapper holds the
-        // bar's line box and clips the floor's growth, so `Copy · download` sit
+        // bar's line box and clips the floor's growth, so `Copy · Download` sit
         // in the header exactly like every other panel's meta slot; the buttons
         // stay real buttons and keep their names.
         <span className="flex h-[14px] items-center gap-2 overflow-hidden min-[560px]:h-auto min-[560px]:overflow-visible">
@@ -98,10 +100,10 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
             onClick={handleDownload}
             data-testid={`${testId}-download`}
             title={filename}
-            aria-label={`download ${filename}`}
+            aria-label={`Download ${filename}`}
             className="h-[26px] px-[10px] font-mono text-[11px]"
           >
-            download
+            Download
           </Button>
         </span>
       }
@@ -121,7 +123,13 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
             >
               {index + 1}
             </span>
-            <span className="min-w-0 whitespace-pre pl-[8px]">{line === "" ? "\u00a0" : line}</span>
+            {/* Soft-wrapped at every width (2d review, 390): `whitespace-pre`
+                let a long line clip at the panel's right edge on a phone;
+                the whole line now stays readable, and `wrap-anywhere`
+                keeps even an unbroken digest from forcing sideways scroll. */}
+            <span className="min-w-0 wrap-anywhere whitespace-pre-wrap pl-[8px]">
+              {line === "" ? "\u00a0" : line}
+            </span>
           </div>
         ))}
       </div>

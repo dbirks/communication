@@ -596,6 +596,22 @@ describe("/workflows — the index (3a)", () => {
       expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
     });
 
+    it("lays all four starter cards in one honest grid with left-aligned text (390/1280)", async () => {
+      // reflow-390 item 1: `min-[900px]:grid-cols-3` left the 4th card alone
+      // on a second row at 1280, and centred phone text read as a different
+      // card than the desktop one — 2×2 between phone and desktop, four
+      // across from 1150px, `text-left` everywhere.
+      mount("/library");
+      const cards = await screen.findByTestId("workflow-starters");
+      expect(cards.className).toContain("min-[700px]:grid-cols-2");
+      expect(cards.className).toContain("min-[1150px]:grid-cols-4");
+      for (const id of ["blank", "plan-with-approval", "security-review", "issue-to-pr"]) {
+        expect(within(cards).getByTestId(`workflow-starter-${id}`).className).toContain(
+          "text-left",
+        );
+      }
+    });
+
     it("reads the vetted starting points: the canvas step count, and the document's own chain", async () => {
       mount("/library");
       const cards = await screen.findByTestId("workflow-starters");

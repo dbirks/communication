@@ -35,6 +35,7 @@ import {
   type ScopePath,
 } from "../lib/pipeline/graphDoc";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
+import { ProjectUnavailable } from "../components/ProjectUnavailable";
 import { Button } from "../components/ds/Button";
 import {
   canConnectOf,
@@ -471,30 +472,28 @@ export function StudioPage() {
         />
         <section aria-label="Draft unavailable" className="px-[22px] py-[22px] md:px-[28px]">
           <div className="max-w-[70ch]">
-            <ProblemBanner
-              error={draft.error}
-              fallback={
-                notFound
-                  ? "Draft not found or you do not have access."
-                  : "The draft could not be read."
-              }
-              testid="studio-draft-error"
-            />
+            {notFound ? (
+              <ProjectUnavailable
+                testid="studio-draft-error"
+                label="Draft unavailable"
+                copy="Draft not found or you do not have access."
+                hint="The breadcrumb above opens the workflow, whose History tab lists the drafts that are there. There is nothing to retry: this draft is not here."
+              />
+            ) : (
+              <ProblemBanner
+                error={draft.error}
+                fallback="The draft could not be read."
+                subject="the draft"
+                hint="No canvas is drawn from invented bytes: the document this page edits is exactly what this read answers."
+                retry={{
+                  onClick: () => void draft.refetch(),
+                  pending: draft.isFetching,
+                  testid: "studio-draft-retry",
+                }}
+                testid="studio-draft-error"
+              />
+            )}
           </div>
-          {notFound ? null : (
-            <div className="mt-[12px] flex flex-wrap items-center gap-[8px]">
-              <Button
-                variant="secondary"
-                compact
-                className="h-[30px]"
-                onClick={() => void draft.refetch()}
-                disabled={draft.isFetching}
-                data-testid="studio-draft-retry"
-              >
-                {draft.isFetching ? "Retrying…" : "Retry"}
-              </Button>
-            </div>
-          )}
         </section>
       </div>
     );

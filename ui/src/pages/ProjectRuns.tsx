@@ -24,7 +24,6 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
 import { RUN_STATE, SHORT_WORD, stateOf, type StateName } from "../components/ds/states";
@@ -184,15 +183,17 @@ export function RunsListColumn({
         ) : null}
         {runs.isError ? (
           <div className="space-y-[6px] px-[10px] py-[10px]">
-            <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
-            <Button
-              variant="secondary"
-              compact
-              onClick={() => void runs.refetch()}
-              data-testid="runs-retry"
-            >
-              Retry
-            </Button>
+            <ProblemBanner
+              error={runs.error}
+              fallback="Runs could not be loaded."
+              subject="this project's runs"
+              hint="The list below is empty because the read failed, not because the project has never run."
+              retry={{
+                onClick: () => void runs.refetch(),
+                pending: runs.isFetching,
+                testid: "runs-retry",
+              }}
+            />
           </div>
         ) : null}
         {runs.data && filter !== null && matched.length === 0 ? (
@@ -386,6 +387,7 @@ export function RunsTabBody({ projectId }: { projectId: string }) {
         heading="Runs"
         headingId="project-runs-heading"
         testid="project-runs-not-found"
+        hint="The project's own tabs are the way in — a run list you cannot open is not listed here."
       />
     );
   }

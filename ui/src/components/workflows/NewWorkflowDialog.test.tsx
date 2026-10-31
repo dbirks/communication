@@ -12,11 +12,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { NewWorkflowDialog, tileSubtitle } from "./NewWorkflowDialog";
+import { NewWorkflowDialog, starterHint, tileSubtitle } from "./NewWorkflowDialog";
 import { ApiError } from "../../api/client";
 import {
   BLANK_SKELETON_YAML,
   PIPELINE_TEMPLATES,
+  firstSentence,
   templateById,
 } from "../../lib/pipeline/templates";
 
@@ -85,6 +86,15 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
     return screen.getByTestId("new-workflow-dialog");
   }
 
+  it("keeps every START FROM tile's text left-aligned at any width", () => {
+    // reflow-390 item 1: at 390 the tile text centred while 1280 was
+    // left-aligned; the phone card must read as the same card.
+    mount();
+    for (const id of ["blank", "plan-with-approval", "security-review", "issue-to-pr"]) {
+      expect(screen.getByTestId(`new-workflow-template-${id}`).className).toContain("text-left");
+    }
+  });
+
   it("each tile shows its own step count under its name", () => {
     const dialog = mount();
     const tile = (id: string) => screen.getByTestId(`new-workflow-template-${id}`).textContent;
@@ -115,5 +125,28 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
   it("draws no banner when the library read answered", () => {
     mount();
     expect(screen.queryByTestId("new-workflow-list-failure")).toBeNull();
+  });
+});
+
+// The line under the START FROM cards (design 1c). A template quotes its own
+// metadata; Blank's metadata line is a build note about the skeleton FILE
+// ("skeleton draft — the top-level shape and one node, then write the YAML
+// yourself"), which is not a sentence for the person choosing a start
+// (2026-10-30 copy review, 1c item 1).
+describe("starterHint", () => {
+  it("says Blank in the canvas's own words, not the skeleton's", () => {
+    const hint = starterHint(templateById("blank"));
+    expect(hint).toBe("One agent step to start from. Add and edit steps on the canvas.");
+    // No build vocabulary: the reader is not being told how the starter file
+    // is assembled or that YAML exists at all at this moment.
+    expect(hint).not.toMatch(/skeleton|YAML|top-level|node/i);
+  });
+
+  it("leaves every real template on its own first sentence", () => {
+    for (const template of PIPELINE_TEMPLATES.filter((t) => t.id !== "blank")) {
+      expect(starterHint(template)).toBe(firstSentence(template.description));
+      expect(starterHint(template)).not.toBe("");
+    }
+    expect(starterHint(null)).toBe("");
   });
 });

@@ -356,11 +356,17 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     expect(await screen.findByTestId("overview-graph-empty")).toBeTruthy();
   });
 
-  it("without the library role the edit verb is replaced by the one-line reason", async () => {
+  it("without the library role the edit verb is disabled and carries the reason", async () => {
     mount(detail, [{ path: "/api/v1/me", body: member }]);
     await screen.findByTestId("pipeline-page");
-    expect(screen.queryByTestId("pipeline-customize")).toBeNull();
-    expect((await screen.findByTestId("workflow-author-hint")).textContent).toBe(
+    // 1e item 2 (2026-10-30 copy review): the reason used to be a mono sentence
+    // floating beside `Use in a repo…`. The verb stays where the design puts it,
+    // disabled, and its tooltip says why — with the same words in the DOM for a
+    // reader who never gets a tooltip.
+    const edit = (await screen.findByTestId("pipeline-customize")) as HTMLButtonElement;
+    expect(edit.disabled).toBe(true);
+    expect(edit.getAttribute("title")).toBe("authoring needs the library role");
+    expect(screen.getByTestId("workflow-author-hint").textContent).toBe(
       "authoring needs the library role",
     );
     // Reading the uses is not authoring — the rail's use row is still shown.
@@ -898,11 +904,15 @@ describe("Use in a repo… (ADR-0060)", () => {
       { path: gadgetsAssignmentsPath, body: { assignments: [] } },
     ]);
     const dialog = await openDialog();
-    // The bookkeeping stays (an already-used project is named, not hidden),
-    // but it carries no second way to choose.
-    expect(within(dialog).getByTestId(`assign-project-state-${wireProjectId}`)).toBeTruthy();
+    // The dialog's ONE way to choose is the project select: nothing in it is a
+    // second way (no per-row button, no `Use here`), and the project list that
+    // used to sit above the select is gone — it drew the select's own options a
+    // second time (2026-10-30 copy review, 2a item 7). A project that ALREADY
+    // uses the workflow is still named there, not hidden (the test above reads
+    // that line).
     expect(dialog.querySelector('[data-testid^="assign-pick-"]')).toBeNull();
     expect(dialog.textContent).not.toContain("Use here");
+    expect(within(dialog).queryByTestId(`assign-project-state-${wireProjectId}`)).toBeNull();
 
     // Footer: Cancel first, the primary verb last, both at the right edge.
     const confirm = within(dialog).getByTestId("assign-confirm");
@@ -914,8 +924,11 @@ describe("Use in a repo… (ADR-0060)", () => {
     expect(dialog.textContent).not.toContain("wire default");
     expect(dialog.textContent).toContain("how many runs of this workflow");
 
-    // The title follows the choice.
-    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe("Use in a repo…");
+    // The title follows the choice, and always names the workflow it pins
+    // (2a item 7: `Use in a repo…` alone never said what was being used).
+    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe(
+      "Use Feature development in a repo…",
+    );
     fireEvent.change(within(dialog).getByTestId("assign-project-select"), {
       target: { value: wireProjectId },
     });
@@ -924,10 +937,12 @@ describe("Use in a repo… (ADR-0060)", () => {
     )) as HTMLSelectElement;
     await waitFor(() => expect(repoSelect.options.length).toBeGreaterThan(1), settled);
     fireEvent.change(repoSelect, { target: { value: PAYMENTS_REPO_ID } });
-    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe("Use in payments");
+    expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe(
+      "Use Feature development in payments",
+    );
     fireEvent.change(repoSelect, { target: { value: "__whole__" } });
     expect(within(dialog).getByTestId("use-in-repo-title").textContent).toBe(
-      `Use in every repo of ${projectFixture.name}`,
+      `Use Feature development in every repo of ${projectFixture.name}`,
     );
   });
 

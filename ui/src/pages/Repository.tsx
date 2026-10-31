@@ -57,6 +57,7 @@ import type {
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { Spinner, ProblemBanner } from "../components/Feedback";
+import { ProjectUnavailable } from "../components/ProjectUnavailable";
 import { RUN_STATE, SHORT_WORD, STATES, WORKSPACE_STATE } from "../components/ds/states";
 import { formatAge, shortBranch, shortCommit, shortId, testidOf } from "../lib/format";
 import { routes } from "../lib/routes";
@@ -151,7 +152,20 @@ export default function Repository() {
         <h1 id="repo-error-heading" className="text-title-l font-bold">
           Repository
         </h1>
-        <ProblemBanner error={project.error} fallback="The project could not be loaded." />
+        <div className="mt-2 max-w-[70ch]">
+          <ProblemBanner
+            error={project.error}
+            fallback="The project could not be loaded."
+            subject="the project this repository belongs to"
+            hint="Nothing of the repository is drawn without its project — the read that failed is the one that names it."
+            retry={{
+              onClick: () => void project.refetch(),
+              pending: project.isFetching,
+              testid: "project-load-retry",
+            }}
+            back={{ to: routes.projects(), label: "← Projects", testid: "repo-back-to-projects" }}
+          />
+        </div>
       </section>
     );
   }
@@ -182,18 +196,18 @@ export default function Repository() {
         </header>
         <section aria-labelledby="repo-load-error-heading" className="min-w-0 space-y-3">
           <div className="max-w-[70ch]">
-            <ProblemBanner error={repos.error} fallback="Repositories could not be loaded." />
+            <ProblemBanner
+              error={repos.error}
+              fallback="Repositories could not be loaded."
+              subject={`the repositories of ${projectData.name}`}
+              hint="The repository's own name is exactly what this read answers, so the page cannot name it either."
+              retry={{
+                onClick: () => void repos.refetch(),
+                pending: repos.isFetching,
+                testid: "repo-load-retry",
+              }}
+            />
           </div>
-          <Button
-            variant="secondary"
-            compact
-            className="h-[30px]"
-            onClick={() => void repos.refetch()}
-            disabled={repos.isFetching}
-            data-testid="repo-load-retry"
-          >
-            {repos.isFetching ? "Retrying…" : "Retry"}
-          </Button>
         </section>
       </div>
     );
@@ -201,15 +215,21 @@ export default function Repository() {
 
   if (!repository) {
     return (
-      <section aria-labelledby="repo-not-found-heading" data-testid="repo-page">
-        <h1 id="repo-not-found-heading" className="text-title-l font-bold">
-          Repository
-        </h1>
-        <p className="mt-2 text-st-failed-tag-fg" role="alert">
-          <span aria-hidden="true">× </span>
-          <span data-testid="repo-not-found">Repository not found or you do not have access</span>
-        </p>
-      </section>
+      <div data-testid="repo-page">
+        <ProjectUnavailable
+          heading="Repository"
+          headingId="repo-not-found-heading"
+          label="Repository not found"
+          testid="repo-not-found"
+          copy="Repository not found or you do not have access"
+          hint="Check the name in the link, or go back to the project and pick a repository it does have."
+          back={{
+            to: routes.project(id),
+            label: projectData.name,
+            testid: "repo-breadcrumb",
+          }}
+        />
+      </div>
     );
   }
 
@@ -874,12 +894,12 @@ function RepoRuns({
         {rows.map((run) => (
           <RunRow key={run.id} run={run} name={names.get(run.pipeline_id) ?? null} />
         ))}
-        {runs.data && rows.length > 0 && !attributable ? (
+        {rows.length > 0 && !attributable ? (
           <p
-            className="border-t border-line-soft px-3 py-[8px] font-mono text-[10.5px] text-st-waiting-tag-fg"
+            className="border-t border-line-soft px-3 py-[8px] text-[12px] leading-[16px] text-muted"
             data-testid="repo-runs-project-note"
           >
-            these are the project's runs — this repository's own runs could not be told apart
+            These are the project's runs — this repository's own runs could not be told apart.
           </p>
         ) : null}
       </div>

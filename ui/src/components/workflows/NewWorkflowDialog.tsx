@@ -82,6 +82,25 @@ export function tileSubtitle(template: PipelineTemplate): string {
   return `${template.stepCount} ${template.stepCount === 1 ? "step" : "steps"}`;
 }
 
+/**
+ * The selected starter's one-line description under the cards.
+ *
+ * A template quotes its own document metadata, trimmed to the first sentence —
+ * those words describe a workflow the author is about to copy. Blank has no
+ * document to describe: its metadata line says how the starter FILE is built
+ * ("skeleton draft — the top-level shape and one node, then write the YAML
+ * yourself"), which is a note to whoever maintains the library, not a sentence
+ * for the person choosing a start (2026-10-30 copy review, 1c item 1). Blank is
+ * picked because it opens an empty canvas, so the line says that, in the same
+ * words the Workflows index card uses for it (`One agent step to start from.`).
+ */
+export function starterHint(template: PipelineTemplate | null | undefined): string {
+  if (!template) return "";
+  if (template.id === "blank")
+    return "One agent step to start from. Add and edit steps on the canvas.";
+  return firstSentence(template.description);
+}
+
 export function NewWorkflowDialog({
   open,
   onClose,
@@ -349,7 +368,7 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
                 return (
                   <label
                     key={option.id}
-                    className={`flex cursor-pointer flex-col gap-1 rounded-[3px] border p-[10px] ${
+                    className={`flex cursor-pointer flex-col gap-1 rounded-[3px] border p-[10px] text-left max-[559px]:items-start! ${
                       selectedCard
                         ? "border-ink bg-accent-wash shadow-[2px_2px_0_0_var(--color-ink)]"
                         : "border-line bg-surface"
@@ -375,13 +394,13 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
                 );
               })}
             </div>
-            {/* The selected starter's one-line description, trimmed to its
-                first sentence — the metadata's own words. */}
+            {/* The selected starter's one-line description (`starterHint`: a
+                template's own metadata sentence, Blank's plain starting line). */}
             <p
               className="text-[12px] leading-[17px] text-muted"
               data-testid="library-new-template-hint"
             >
-              {template ? firstSentence(template.description) : ""}
+              {starterHint(template)}
             </p>
           </div>
           <div className="flex flex-col gap-1">

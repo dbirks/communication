@@ -1,7 +1,8 @@
 /**
  * `WORKFLOWS ON THIS REPO` (design 1e + 2e) against the fake fetch: the row
  * (name, pinned revision chip, trigger summary, step chain, 2e's two actions),
- * the `STARTS WHEN` box it opens with (one row per trigger, switch, edit), the 2c
+ * the `STARTS WHEN` box a trigger-bearing row opens with (one row per trigger,
+ * switch, edit) — collapsed by default on a trigger-less row (reflow-390), the 2c
  * dialog's two writes (issue trigger, schedule — with the server's `422
  * invalid_cron` kept inline), the ADR-0060 attachment rule (this repo's pins
  * plus the whole-project ones, never another repo's), the empty state, and the
@@ -160,8 +161,16 @@ async function openDialogFromRow() {
   await screen.findByTestId("trigger-dialog");
 }
 
-/** The STARTS WHEN box 2e draws open; the chevron is the reader's way to shut
- * it, and the tests that care about a COLLAPSED row use this. */
+/** 2e (reflow-390 review item 4): a row with NO triggers starts collapsed and
+ * the chevron opens its STARTS WHEN box — the tests that care about the box
+ * on a hand-started row use this. */
+async function expandRow() {
+  const toggle = await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`);
+  fireEvent.click(toggle);
+  await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+}
+
+/** The chevron on an open row CLOSES it. */
 async function collapseRow() {
   const toggle = await screen.findByTestId(`repo-workflow-toggle-${assignmentKey}`);
   fireEvent.click(toggle);
@@ -195,30 +204,33 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     // A scope node folds to one shaded `loop:` cell — the document's own ids.
     expect(chain.textContent).toContain("loop:");
 
-    // 2e item 7 (2026-10-30 review): the STARTS WHEN box is drawn OPEN — the
-    // triggers are why the row exists, so they are not behind a click.
-    expect(screen.getByTestId(`repo-workflow-starts-${assignmentKey}`)).toBeTruthy();
-    // 2e item 6: and ONE `+ Add trigger`, in that box's header — not one there
-    // and one in the row's actions as well.
+    // 2e (reflow-390 review item 4): a row with NO triggers starts COLLAPSED
+    // — design 2e draws it with `+ Add trigger` and `Run` in the row, not as
+    // a permanently open “Never triggered…” box.
+    expect(screen.queryByTestId(`repo-workflow-starts-${assignmentKey}`)).toBeNull();
+    expect(
+      screen.getByTestId(`repo-workflow-toggle-${assignmentKey}`).getAttribute("aria-expanded"),
+    ).toBe("false");
+    // 2e item 6: still ONE `+ Add trigger` — in the row while the box is shut.
+    expect(screen.getAllByTestId(`repo-workflow-add-${assignmentKey}`)).toHaveLength(1);
+  });
+
+  it("opens its STARTS WHEN box on the chevron and moves its ONE `+ Add trigger` into it", async () => {
+    mount();
+    await screen.findByTestId(`repo-workflow-row-${assignmentKey}`);
+    // Collapsed at first: `+ Add trigger` lives in the row's actions.
+    expect(screen.getByTestId(`repo-workflow-add-${assignmentKey}`).textContent).toBe(
+      "+ Add trigger",
+    );
+    await expandRow();
+    // Open: the affordance moved into the box's header — never two of them.
     expect(screen.getAllByTestId(`repo-workflow-add-${assignmentKey}`)).toHaveLength(1);
     expect(
       screen
         .getByTestId(`repo-workflow-starts-${assignmentKey}`)
         .querySelector(`[data-testid="repo-workflow-add-${assignmentKey}"]`),
     ).toBeTruthy();
-  });
-
-  it("collapses on the chevron and moves its ONE `+ Add trigger` into the row", async () => {
-    mount();
-    await screen.findByTestId(`repo-workflow-row-${assignmentKey}`);
     await collapseRow();
-    // The collapsed row is 2e's first row: `+ Add trigger` over the step chain,
-    // with the affordance in the row because the box that usually carries it is
-    // gone. Still exactly one.
-    expect(screen.getByTestId(`repo-workflow-add-${assignmentKey}`).textContent).toBe(
-      "+ Add trigger",
-    );
-    expect(screen.getAllByTestId(`repo-workflow-add-${assignmentKey}`)).toHaveLength(1);
     expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`).textContent).toBe("Run");
   });
 
@@ -228,13 +240,13 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     expect(screen.getByRole("heading", { name: /WORKFLOWS ON THIS REPO/ }).textContent).toContain(
       "WORKFLOWS ON THIS REPO · 1",
     );
-    // One honest label per width (390px design check): the full
-    // `+ use a library workflow` from 560px up, `+ use workflow` below it —
-    // both live in the DOM and CSS media rules pick which renders (jsdom
-    // applies no stylesheet, so it sees both texts).
+    // One honest label at every width (reflow-390 review, 2c item 3): the
+    // phone used to render a shortened `+ use workflow`; the panel's own
+    // title ellipsis makes room for the full words instead.
     const libraryAction = screen.getByTestId("repo-workflow-library");
     expect(libraryAction.textContent).toContain("+ use a library workflow");
-    expect(libraryAction.textContent).toContain("+ use workflow");
+    expect(libraryAction.textContent).not.toContain("+ use workflow ");
+    expect(libraryAction.textContent).toBe("+ use a library workflow");
   });
 
   it("keeps another repository's pin off this page and shows the whole-project one", async () => {
@@ -369,9 +381,38 @@ describe("RepoWorkflows — the STARTS WHEN box (2e)", () => {
     expect(box.textContent).toContain("Or start it by hand with Run, or from an issue below.");
   });
 
-  it("says never triggered when the workflow carries no trigger at all", async () => {
+  it("lays each trigger row as two phone lines that flatten into 2e's five columns", async () => {
+    // reflow-390 item 3: at 390 the five cells stacked into seven lines
+    // (icon alone, title, chip, repo, “never polled”, toggle, boxed Edit);
+    // they are now `icon·sentence·toggle` over `detail·bookkeeping·Edit`,
+    // with `Edit` the design's text button. From 900px the same cells lay
+    // out as 2e's grid.
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule()] },
+      },
+    ]);
+    const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    const row = within(box).getByTestId(`repo-workflow-trigger-${testidOf(SCHEDULE_ID)}`);
+    const classes = row.className.split(/\s+/);
+    expect(classes).toContain("grid");
+    expect(classes).toContain("grid-cols-[18px_minmax(0,1fr)_auto]"); // two phone lines
+    expect(classes).toContain("min-[900px]:grid-cols-[18px_minmax(0,1fr)_160px_80px_40px]");
+    // Line 1: the switch stands at the sentence's right end; line 2: the
+    // detail and the bookkeeping, then `Edit` — a text button, not a box.
+    const edit = within(row).getByTestId(`repo-workflow-trigger-edit-${testidOf(SCHEDULE_ID)}`);
+    expect(edit.className).toContain("text-accent-text");
+    expect(edit.className).not.toContain("ds-btn");
+  });
+
+  it("says never triggered when the reader opens a trigger-less row", async () => {
     mount();
-    // 2e draws the STARTS WHEN box OPEN; nothing has to be clicked to see it.
+    // The row starts collapsed (reflow-390 item 4); the “Never triggered”
+    // line is what the chevron reveals.
+    await screen.findByTestId(`repo-workflow-row-${assignmentKey}`);
+    await expandRow();
     const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
     expect(box.textContent).toContain("Never triggered");
     expect(box.textContent).toContain("started by a person");
@@ -765,5 +806,89 @@ describe("RepoWorkflows — the trigger glyphs", () => {
     expect(box.textContent).not.toContain("◷");
     expect(box.textContent).not.toContain("⏱");
     expect(box.querySelectorAll("svg").length).toBeGreaterThan(1);
+  });
+});
+
+// The paused trigger row (2026-10-30 copy review, 2e/2c item 5). A row that is
+// switched OFF is not deleted text, and the word `paused` belongs to ONE
+// element — the switch beside it already says it. The countdown of a live
+// schedule reads `next in <span>`, not `next <span> left`.
+describe("RepoWorkflows — a paused trigger reads as paused, not deleted", () => {
+  it("mutes the collapsed summary instead of striking it through", async () => {
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule({ enabled: false })] },
+      },
+      {
+        path: `/api/v1/projects/${wireProjectId}/issue-triggers`,
+        method: "GET",
+        body: { issue_triggers: [wireIssueTrigger({ enabled: false })] },
+      },
+    ]);
+    // A row WITH triggers opens to show them (2e); the collapsed summary is the
+    // chevron's other state, and that is where the strike used to live.
+    await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    await collapseRow();
+    const summary = await screen.findByTestId(`repo-workflow-summary-${assignmentKey}`);
+    expect(summary.textContent).toContain("weekly Monday 06:00 UTC");
+    expect(summary.textContent).toContain("An issue is labeled");
+    // No `line-through` anywhere: a paused trigger is off, not gone. The mute
+    // that says so is `text-faint`.
+    expect(summary.innerHTML).not.toContain("line-through");
+    expect(summary.innerHTML).toContain("text-faint");
+  });
+
+  it("says `paused` once in a paused schedule row and drops the countdown", async () => {
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule({ enabled: false })] },
+      },
+    ]);
+    const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    const row = within(box).getByTestId(`repo-workflow-trigger-${testidOf(SCHEDULE_ID)}`);
+    // ONCE: the switch's own state word is the row's only `paused`.
+    expect((row.textContent?.match(/paused/g) ?? []).length).toBe(1);
+    expect(
+      within(row).getByTestId(`repo-workflow-trigger-enabled-${testidOf(SCHEDULE_ID)}-state`)
+        .textContent,
+    ).toBe("paused");
+    // The bookkeeping cell has nothing to count down to, so it says what the
+    // schedule did instead of repeating the state.
+    expect(
+      within(row).getByTestId(`repo-workflow-trigger-meta-${testidOf(SCHEDULE_ID)}`).textContent,
+    ).toBe("never run");
+  });
+
+  it("names the last run of a paused schedule without the word `paused`", async () => {
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule({ enabled: false, last_run_id: SCHEDULE_ID })] },
+      },
+    ]);
+    const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    const meta = within(box).getByTestId(`repo-workflow-trigger-meta-${testidOf(SCHEDULE_ID)}`);
+    expect(meta.textContent).toContain("last");
+    expect(meta.textContent).not.toContain("paused");
+  });
+
+  it("counts a live schedule down as `next in <span>`, never `next <span> left`", async () => {
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule({ last_run_id: SCHEDULE_ID })] },
+      },
+    ]);
+    const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    const meta = within(box).getByTestId(`repo-workflow-trigger-meta-${testidOf(SCHEDULE_ID)}`);
+    expect(meta.textContent).toContain("next in 3d");
+    expect(meta.textContent).not.toContain("left");
+    expect(meta.textContent).toContain("last");
   });
 });

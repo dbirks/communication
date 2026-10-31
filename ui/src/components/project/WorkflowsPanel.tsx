@@ -165,6 +165,12 @@ export function WorkflowsPanel({
             <ProblemBanner
               error={assignments.error}
               fallback="The project's workflow assignments could not be read."
+              subject="the workflows in this project"
+              retry={{
+                onClick: () => void assignments.refetch(),
+                pending: assignments.isFetching,
+                testid: "project-workflows-rail-retry",
+              }}
             />
           </div>
         ) : null}

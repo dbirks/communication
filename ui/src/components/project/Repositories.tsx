@@ -120,7 +120,16 @@ export function Repositories({ project }: RepositoriesProps) {
         ) : null}
         {repos.error ? (
           <div className="p-[10px]">
-            <ProblemBanner error={repos.error} fallback="Repositories could not be loaded." />
+            <ProblemBanner
+              error={repos.error}
+              fallback="Repositories could not be loaded."
+              subject="this project's repositories"
+              retry={{
+                onClick: () => void repos.refetch(),
+                pending: repos.isFetching,
+                testid: "repo-list-retry",
+              }}
+            />
           </div>
         ) : null}
         {repos.data ? (

@@ -69,6 +69,7 @@ export function ThreadsTabBody({ project }: { project: Project }) {
         heading="Threads"
         headingId="project-conversations-heading"
         testid="project-conversations-not-found"
+        hint="The project's other tabs stay open — a thread list you cannot open is not listed here."
       />
     );
   }

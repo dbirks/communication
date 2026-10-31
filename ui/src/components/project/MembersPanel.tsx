@@ -68,7 +68,16 @@ export function MembersPanel({ project }: MembersPanelProps) {
       <div className="space-y-3 p-[10px]">
         {members.isPending ? <Spinner label="Loading members" /> : null}
         {members.error ? (
-          <ProblemBanner error={members.error} fallback="Members could not be loaded." />
+          <ProblemBanner
+            error={members.error}
+            fallback="Members could not be loaded."
+            subject="this project's members"
+            retry={{
+              onClick: () => void members.refetch(),
+              pending: members.isFetching,
+              testid: "member-list-retry",
+            }}
+          />
         ) : null}
         {members.data ? (
           items.length === 0 ? (

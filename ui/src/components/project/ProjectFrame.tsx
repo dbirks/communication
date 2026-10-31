@@ -25,6 +25,7 @@ import type { Project } from "../../api/types";
 import NewConversationDialog from "../NewConversationDialog";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { ProjectUnavailable, projectAccessRefused } from "../ProjectUnavailable";
+import { routes } from "../../lib/routes";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPageShell } from "./ProjectPageShell";
 import type { ProjectTabKey } from "./ProjectTabs";
@@ -90,6 +91,8 @@ export function ProjectFrame({
         heading={heading}
         headingId={headingId ?? `${testid}-heading`}
         testid={refusalTestid}
+        hint="Check the link, or go back to Projects and open one you belong to — a project you cannot open reads exactly like one that is not there."
+        back={{ to: routes.projects(), label: "Projects", testid: `${testid}-back-to-projects` }}
       />,
     );
   }
@@ -103,7 +106,24 @@ export function ProjectFrame({
         <h1 id={`${testid}-error-heading`} className="text-title-l font-bold">
           {heading}
         </h1>
-        <ProblemBanner error={project.error} fallback={`${heading} could not be loaded.`} />
+        <div className="mt-2 max-w-[70ch]">
+          <ProblemBanner
+            error={project.error}
+            fallback={`${heading} could not be loaded.`}
+            subject={`the ${heading.toLowerCase()}`}
+            hint="The page has no project to draw, so it draws none of it rather than part of a guess."
+            retry={{
+              onClick: () => void project.refetch(),
+              pending: project.isFetching,
+              testid: `${testid}-retry`,
+            }}
+            back={{
+              to: routes.projects(),
+              label: "← Projects",
+              testid: `${testid}-back-to-projects`,
+            }}
+          />
+        </div>
       </section>,
     );
   }

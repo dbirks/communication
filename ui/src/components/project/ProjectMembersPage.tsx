@@ -45,6 +45,12 @@ export default function ProjectMembersPage() {
             heading="Project"
             headingId="project-members-heading"
             testid="project-not-found"
+            hint="Members are a project's own list — go back to Projects and open one you belong to."
+            back={{
+              to: routes.projects(),
+              label: "Projects",
+              testid: "project-members-back-to-projects",
+            }}
           />
         </ProjectPageShell>
       );
@@ -55,7 +61,23 @@ export default function ProjectMembersPage() {
           <h1 id="project-members-error-heading" className="text-title-l font-bold">
             Members
           </h1>
-          <ProblemBanner error={project.error} fallback="The project could not be loaded." />
+          <div className="mt-2 max-w-[70ch]">
+            <ProblemBanner
+              error={project.error}
+              fallback="The project could not be loaded."
+              subject="the project these members belong to"
+              retry={{
+                onClick: () => void project.refetch(),
+                pending: project.isFetching,
+                testid: "project-members-retry",
+              }}
+              back={{
+                to: routes.projects(),
+                label: "← Projects",
+                testid: "project-members-back",
+              }}
+            />
+          </div>
         </section>
       </ProjectPageShell>
     );
@@ -67,6 +89,12 @@ export default function ProjectMembersPage() {
           heading="Project"
           headingId="project-members-heading"
           testid="project-not-found"
+          hint="Members are a project's own list — go back to Projects and open one you belong to."
+          back={{
+            to: routes.projects(),
+            label: "Projects",
+            testid: "project-members-back-to-projects",
+          }}
         />
       </ProjectPageShell>
     );

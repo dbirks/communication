@@ -155,6 +155,7 @@ export function ProjectWorkflowsPanel({ projectId, project }: ProjectWorkflowsPa
         heading="Workflows"
         headingId="project-pipelines-heading"
         testid="project-pipelines-not-found"
+        hint="The project's other tabs stay open — the workflows it uses are listed on none of them."
       />
     );
   }
@@ -238,6 +239,12 @@ export function ProjectWorkflowsPanel({ projectId, project }: ProjectWorkflowsPa
             <ProblemBanner
               error={assignments.error}
               fallback="The project's assignments could not be read."
+              subject="the workflows in this project"
+              retry={{
+                onClick: () => void assignments.refetch(),
+                pending: assignments.isFetching,
+                testid: "project-workflows-retry",
+              }}
             />
           ) : null}
           {assignments.data && rows.length === 0 ? (

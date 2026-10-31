@@ -700,7 +700,7 @@ describe("/p/:projectId/:repo", () => {
       await screen.findByTestId(`repo-run-${run.id.replace(/-/g, "").slice(0, 13)}`),
     ).toBeTruthy();
     const note = await screen.findByTestId("repo-runs-project-note");
-    expect(note.textContent).toContain("these are the project's runs");
+    expect(note.textContent).toContain("These are the project's runs");
   });
 
   it("expands an issue row inline and posts the run with the issue as its goal", async () => {

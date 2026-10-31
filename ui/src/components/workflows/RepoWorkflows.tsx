@@ -8,20 +8,23 @@
  * panel therefore lists the assignments that name THIS repository plus the
  * whole-project ones (`repository_id` null covers every repo of the project).
  *
- * Each row is collapsible (the handoff's SVG chevron `M3 4.5l3 3 3-3`) and it
- * starts OPEN — design 2e draws the STARTS WHEN box, so that is what the reader
- * sees (2026-10-30 review, 2e item 7):
+ * Each row is collapsible (the handoff's SVG chevron `M3 4.5l3 3 3-3`): a row
+ * that HAS triggers starts OPEN, a row with none starts collapsed with
+ * `+ Add trigger` and `Run` in the row itself — which is exactly what design
+ * 2e draws for each kind (reflow-390 review, 2e item):
  * - collapsed: name · pinned-revision chip (`✓ r3`, the number the server's
  *   own revision summary carries) · trigger summary ("started by hand", or a
  *   Lucide icon + sentence per trigger) · `+ Add trigger` · `Run`, over the
  *   mono step chain of the PINNED revision (loop scopes shaded). The workflow's
  *   own name is the way to its library page: 2e draws no separate `Edit`;
- * - open: the `STARTS WHEN` box (indented 34px, `bg-accent-wash` header
- *   strip in accent mono caps carrying the row's ONE `+ Add trigger` on the
- *   right), one grid row
- *   per trigger (`18px 1fr 160px 80px 40px`, stacking below 900px so 390px
- *   never scrolls sideways), and the closing line "Or start it by hand with
- *   Run, or from an issue below."
+ * - open: the `STARTS WHEN` box (indented 34px from 900px up, no indent on
+ *   the phone,
+ *   `bg-accent-wash` header strip in accent mono caps carrying the row's ONE
+ *   `+ Add trigger` on the right), one grid row
+ *   per trigger (`18px 1fr 160px 80px 40px`; below 900px the same cells lay
+ *   out as TWO lines — icon·sentence·toggle over detail·bookkeeping·Edit — so
+ *   390px never scrolls sideways or breaks a trigger into seven lines), and
+ *   the closing line "Or start it by hand with Run, or from an issue below."
  *
  * Honesty rules:
  * - Nothing renders before its read has arrived: the count, the chain and the
@@ -111,8 +114,11 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
   const repositories = useRepositories(projectId);
 
   const canManage = project.my_role === "maintainer";
-  // Open by default (2e item 7): the trigger set is why the row is on this
-  // page. The chevron collapses it for a reader who wants the list short.
+  // A row that HAS triggers opens to show them; a row with none starts
+  // collapsed with `+ Add trigger` and `Run` in the row (design 2e,
+  // reflow-390 item 4) — the always-open box turned the whole panel into a
+  // stack of “Never triggered…” rectangles. The chevron is the reader's
+  // override either way.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [runOpen, setRunOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -189,12 +195,11 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
             className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid="repo-workflow-library"
           >
-            {/* One line at any width (390px design check, 2e): the full
-                honest label from 560px up, a shorter — still honest, it
-                opens the same library picker — one below it. Both texts
-                exist in the DOM; only one renders per width. */}
-            <span className="hidden min-[560px]:inline">+ use a library workflow</span>
-            <span className="min-[560px]:hidden">+ use workflow</span>
+            {/* The same words at every width (reflow-390 review, 2c item 3):
+                the phone used to swap in `+ use workflow`; the panel bar
+                ellipsises its own title instead of ever shortening or
+                wrapping this honest label. */}
+            + use a library workflow
           </button>
         ) : undefined
       }
@@ -205,6 +210,12 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
           <ProblemBanner
             error={assignments.error}
             fallback="The project's assignments could not be read."
+            subject="the workflows on this repository"
+            retry={{
+              onClick: () => void assignments.refetch(),
+              pending: assignments.isFetching,
+              testid: "repo-workflows-retry",
+            }}
           />
         ) : null}
         {assignments.data && usable.length === 0 ? (
@@ -226,13 +237,19 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
               canManage={canManage}
               triggerReadsReady={triggerReadsReady}
               triggerReadsFailed={triggerReadsFailed}
-              open={expanded[row.assignment.id] ?? true}
+              open={
+                expanded[row.assignment.id] ?? row.schedules.length + row.issueTriggers.length > 0
+              }
               onToggle={() =>
                 setExpanded((current) => ({
                   ...current,
-                  // `?? true` — the same default the row renders with (2e item
-                  // 7): the chevron on an open row CLOSES it.
-                  [row.assignment.id]: !(current[row.assignment.id] ?? true),
+                  // The same trigger-dependent default the row renders with
+                  // (2e, reflow-390 item 4): the chevron flips whatever the
+                  // row currently shows.
+                  [row.assignment.id]: !(
+                    current[row.assignment.id] ??
+                    row.schedules.length + row.issueTriggers.length > 0
+                  ),
                 }))
               }
               onAddTrigger={() =>
@@ -464,7 +481,7 @@ function RepoWorkflowRow({
 
       {open ? (
         <div
-          className="mb-[6px] ml-[34px] mt-[10px] overflow-hidden rounded-[3px] border border-line-strong"
+          className="mb-[6px] mt-[10px] overflow-hidden rounded-[3px] border border-line-strong min-[900px]:ml-[34px]"
           data-testid={`repo-workflow-starts-${key}`}
         >
           <div className="flex items-center gap-2 border-b border-accent-ring bg-accent-wash px-3 py-[6px] font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-accent-text">
@@ -574,7 +591,10 @@ export function TriggerSummary({
       {issueTriggers.map((trigger) => (
         <span key={trigger.id} className="flex items-center gap-[5px]">
           <GithubIcon size={14} strokeWidth={2} aria-hidden className="shrink-0" />
-          <span className={trigger.enabled ? "" : "line-through"}>
+          {/* A paused trigger is muted, never struck through (2026-10-30 copy
+              review, 2e item 5): the strike read as deleted text, when the row
+              is a live trigger that is simply switched off. */}
+          <span className={trigger.enabled ? "" : "text-faint"}>
             {issueTriggerSentence(trigger)}
           </span>
         </span>
@@ -582,9 +602,7 @@ export function TriggerSummary({
       {schedules.map((schedule) => (
         <span key={schedule.id} className="flex items-center gap-[5px]">
           <Clock size={14} strokeWidth={2} aria-hidden className="shrink-0" />
-          <span className={schedule.enabled ? "" : "line-through"}>
-            {scheduleSentence(schedule)}
-          </span>
+          <span className={schedule.enabled ? "" : "text-faint"}>{scheduleSentence(schedule)}</span>
         </span>
       ))}
     </span>
@@ -604,11 +622,41 @@ function scheduleSentence(schedule: Schedule): string {
   return words === "" ? raw : words === raw ? raw : words;
 }
 
-/** The grid every trigger row uses: icon, the sentence over its mono detail
- * line, the bookkeeping column, the switch, the edit action. Below 900px the
- * five cells stack, so a 390px viewport never scrolls sideways. */
+/** The grid every trigger row uses. From 900px it is 2e's five cells —
+ * icon, the sentence over its mono detail line, the bookkeeping column, the
+ * switch, the edit action. Below 900px the same cells lay out as TWO lines
+ * (reflow-390 review, 2c/2e item 3): `icon · sentence · toggle` over
+ * `detail · bookkeeping · Edit` — seven stacked lines made a trigger read as
+ * a paragraph. `Edit` is the design's text button, not a boxed one. */
 const TRIGGER_GRID =
-  "grid grid-cols-1 items-center gap-x-[10px] gap-y-[4px] border-t border-line-soft px-3 py-[9px] min-[900px]:grid-cols-[18px_minmax(0,1fr)_160px_80px_40px]";
+  "grid grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-x-[10px] gap-y-[2px] border-t border-line-soft px-3 py-[9px] min-[900px]:grid-cols-[18px_minmax(0,1fr)_160px_80px_40px] min-[900px]:gap-y-0";
+
+/** The phone's second line (detail + bookkeeping side by side); from 900px
+ * the wrapper dissolves and its two spans sit in their own grid cells. */
+const TRIGGER_META_LINE =
+  "col-start-2 row-start-2 flex min-w-0 items-center gap-x-[10px] min-[900px]:contents";
+
+/** The shared cells: the switch column (line 1's right end at phone width,
+ * 2e's 80px column at desktop) and the edit column (line 2's right end). */
+const TRIGGER_SWITCH_CELL =
+  "col-start-3 row-start-1 flex items-center justify-end min-[900px]:col-start-4 min-[900px]:row-span-2";
+const TRIGGER_EDIT_CELL =
+  "col-start-3 row-start-2 flex items-center justify-end min-[900px]:col-start-5 min-[900px]:row-span-2";
+
+/** The row's `Edit` — 2e draws it as the accent text button, not a boxed
+ * secondary; the phone's touch floor still gives it its 44px tap target. */
+function TriggerEditButton({ testid, onEdit }: { testid: string; onEdit: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onEdit}
+      className="shrink-0 text-[12.5px] font-semibold text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+      data-testid={testid}
+    >
+      Edit
+    </button>
+  );
+}
 
 export interface RepoScheduleRowProps {
   projectId: string;
@@ -624,13 +672,42 @@ export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: Repo
   const inputs = Object.entries(schedule.inputs ?? {});
   return (
     <div className={TRIGGER_GRID} data-testid={`repo-workflow-trigger-${testidOf(schedule.id)}`}>
-      <Clock size={14} strokeWidth={2} aria-hidden className="shrink-0 text-ink-2" />
-      <span className="min-w-0">
-        <span className="block text-[13px] font-semibold text-ink">
+      <Clock
+        size={14}
+        strokeWidth={2}
+        aria-hidden
+        className="col-start-1 row-start-1 shrink-0 self-center text-ink-2 min-[900px]:row-span-2"
+      />
+      <span className="col-start-2 row-start-1 min-w-0 text-[13px] font-semibold">
+        <span className={schedule.enabled ? "text-ink" : "text-muted"}>
           {scheduleSentence(schedule)}
         </span>
+      </span>
+      <span className={TRIGGER_SWITCH_CELL}>
+        {canManage ? (
+          <ToggleSwitch
+            checked={schedule.enabled}
+            testid={`repo-workflow-trigger-enabled-${testidOf(schedule.id)}`}
+            onChange={(next) =>
+              patch.mutate({
+                scheduleId: schedule.id,
+                body: { version: schedule.version, enabled: next },
+              })
+            }
+          />
+        ) : (
+          <StatusChip
+            state={schedule.enabled ? "info" : "interrupted"}
+            label={schedule.enabled ? "on" : "paused"}
+            labelProps={{
+              "data-testid": `repo-workflow-trigger-state-${testidOf(schedule.id)}`,
+            }}
+          />
+        )}
+      </span>
+      <span className={TRIGGER_META_LINE}>
         <span
-          className="block truncate font-mono text-[10.5px] text-muted"
+          className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
           data-testid={`repo-workflow-trigger-detail-${testidOf(schedule.id)}`}
         >
           {schedule.cron_expr}
@@ -638,58 +715,34 @@ export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: Repo
             ? ` · ${inputs.map(([name, value]) => `${name}: ${formatInputValue(value)}`).join(" · ")}`
             : ""}
         </span>
-      </span>
-      <span
-        className="font-mono text-[10.5px] text-muted"
-        data-testid={`repo-workflow-trigger-meta-${testidOf(schedule.id)}`}
-      >
-        {scheduleNextText(schedule)}
-        {schedule.last_run_id ? (
-          <>
-            {" · "}
-            <Link
-              to={routes.run(schedule.last_run_id)}
-              className="text-accent-text hover:underline"
-            >
-              last {shortId(schedule.last_run_id)}
-            </Link>
-          </>
-        ) : null}
+        <span
+          className="shrink-0 font-mono text-[10.5px] text-muted min-[900px]:col-start-3 min-[900px]:row-span-2"
+          data-testid={`repo-workflow-trigger-meta-${testidOf(schedule.id)}`}
+        >
+          {schedule.enabled ? (
+            <>
+              {scheduleNextText(schedule)}
+              {schedule.last_run_id ? <LastRunLink id={schedule.last_run_id} lead=" · " /> : null}
+            </>
+          ) : schedule.last_run_id ? (
+            <LastRunLink id={schedule.last_run_id} />
+          ) : (
+            "never run"
+          )}
+        </span>
       </span>
       {canManage ? (
-        <ToggleSwitch
-          checked={schedule.enabled}
-          testid={`repo-workflow-trigger-enabled-${testidOf(schedule.id)}`}
-          onChange={(next) =>
-            patch.mutate({
-              scheduleId: schedule.id,
-              body: { version: schedule.version, enabled: next },
-            })
-          }
-        />
-      ) : (
-        <StatusChip
-          state={schedule.enabled ? "info" : "interrupted"}
-          label={schedule.enabled ? "on" : "paused"}
-          labelProps={{ "data-testid": `repo-workflow-trigger-state-${testidOf(schedule.id)}` }}
-        />
-      )}
-      {canManage ? (
-        <span className="min-[900px]:text-right">
-          <Button
-            variant="secondary"
-            compact
-            onClick={onEdit}
-            data-testid={`repo-workflow-trigger-edit-${testidOf(schedule.id)}`}
-          >
-            Edit
-          </Button>
+        <span className={TRIGGER_EDIT_CELL}>
+          <TriggerEditButton
+            testid={`repo-workflow-trigger-edit-${testidOf(schedule.id)}`}
+            onEdit={onEdit}
+          />
         </span>
       ) : null}
       {patch.isError ? (
         <p
           role="alert"
-          className="font-mono text-[11px] text-st-failed-pale-fg min-[900px]:col-span-5"
+          className="col-span-3 font-mono text-[11px] text-st-failed-pale-fg min-[900px]:col-span-5"
           data-testid={`repo-workflow-trigger-error-${testidOf(schedule.id)}`}
         >
           {patchErrorText(patch.error)}
@@ -728,73 +781,78 @@ export function RepoIssueRow({
   const repoRef = watched ? repoRefOf(watched) : "repository unavailable";
   return (
     <div className={TRIGGER_GRID} data-testid={`repo-workflow-trigger-${testidOf(trigger.id)}`}>
-      <GithubIcon size={14} strokeWidth={2} aria-hidden className="shrink-0 text-ink-2" />
-      <span className="min-w-0">
-        <span className="flex flex-wrap items-center gap-[6px] text-[13px] font-semibold text-ink">
-          {issueTriggerSentence(trigger)}
-          {trigger.labels.length > 0 ? (
-            trigger.labels.map((label) => (
-              <span
-                key={label}
-                className="rounded-[3px] border border-line bg-fill px-[5px] py-[1px] font-mono text-[11px] font-medium text-ink-2"
-                data-testid={`repo-workflow-trigger-label-${testidOf(trigger.id)}`}
-              >
-                {label}
-              </span>
-            ))
-          ) : (
-            <span className="font-normal text-muted">— any issue</span>
-          )}
-        </span>
+      <GithubIcon
+        size={14}
+        strokeWidth={2}
+        aria-hidden
+        className="col-start-1 row-start-1 shrink-0 self-center text-ink-2 min-[900px]:row-span-2"
+      />
+      <span className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center gap-[6px] text-[13px] font-semibold text-ink">
+        {issueTriggerSentence(trigger)}
+        {trigger.labels.length > 0 ? (
+          trigger.labels.map((label) => (
+            <span
+              key={label}
+              className="rounded-[3px] border border-line bg-fill px-[5px] py-[1px] font-mono text-[11px] font-medium text-ink-2"
+              data-testid={`repo-workflow-trigger-label-${testidOf(trigger.id)}`}
+            >
+              {label}
+            </span>
+          ))
+        ) : (
+          <span className="font-normal text-muted">— any issue</span>
+        )}
+      </span>
+      <span className={TRIGGER_SWITCH_CELL}>
+        {canManage ? (
+          <ToggleSwitch
+            checked={trigger.enabled}
+            testid={`repo-workflow-trigger-enabled-${testidOf(trigger.id)}`}
+            onChange={(next) =>
+              patch.mutate({
+                issueTriggerId: trigger.id,
+                body: { version: trigger.version, enabled: next },
+              })
+            }
+          />
+        ) : (
+          <StatusChip
+            state={trigger.enabled ? "info" : "interrupted"}
+            label={trigger.enabled ? "on" : "paused"}
+            labelProps={{
+              "data-testid": `repo-workflow-trigger-state-${testidOf(trigger.id)}`,
+            }}
+          />
+        )}
+      </span>
+      <span className={TRIGGER_META_LINE}>
         <span
-          className="block truncate font-mono text-[10.5px] text-muted"
+          className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
           data-testid={`repo-workflow-trigger-detail-${testidOf(trigger.id)}`}
         >
           {repoRef} · checked every minute
         </span>
-      </span>
-      <span
-        className="font-mono text-[10.5px] text-muted"
-        data-testid={`repo-workflow-trigger-meta-${testidOf(trigger.id)}`}
-      >
-        {trigger.last_polled_at
-          ? `polled ${formatAge(trigger.last_polled_at)} ago`
-          : "never polled"}
+        <span
+          className="shrink-0 font-mono text-[10.5px] text-muted min-[900px]:col-start-3 min-[900px]:row-span-2"
+          data-testid={`repo-workflow-trigger-meta-${testidOf(trigger.id)}`}
+        >
+          {trigger.last_polled_at
+            ? `polled ${formatAge(trigger.last_polled_at)} ago`
+            : "never polled"}
+        </span>
       </span>
       {canManage ? (
-        <ToggleSwitch
-          checked={trigger.enabled}
-          testid={`repo-workflow-trigger-enabled-${testidOf(trigger.id)}`}
-          onChange={(next) =>
-            patch.mutate({
-              issueTriggerId: trigger.id,
-              body: { version: trigger.version, enabled: next },
-            })
-          }
-        />
-      ) : (
-        <StatusChip
-          state={trigger.enabled ? "info" : "interrupted"}
-          label={trigger.enabled ? "on" : "paused"}
-          labelProps={{ "data-testid": `repo-workflow-trigger-state-${testidOf(trigger.id)}` }}
-        />
-      )}
-      {canManage ? (
-        <span className="min-[900px]:text-right">
-          <Button
-            variant="secondary"
-            compact
-            onClick={onEdit}
-            data-testid={`repo-workflow-trigger-edit-${testidOf(trigger.id)}`}
-          >
-            Edit
-          </Button>
+        <span className={TRIGGER_EDIT_CELL}>
+          <TriggerEditButton
+            testid={`repo-workflow-trigger-edit-${testidOf(trigger.id)}`}
+            onEdit={onEdit}
+          />
         </span>
       ) : null}
       {trigger.last_error ? (
         <p
           role="alert"
-          className="font-mono text-[11px] text-st-failed-pale-fg min-[900px]:col-span-5"
+          className="col-span-3 font-mono text-[11px] text-st-failed-pale-fg min-[900px]:col-span-5"
           data-testid={`repo-workflow-trigger-last-error-${testidOf(trigger.id)}`}
         >
           <span aria-hidden="true">×</span> {trigger.last_error}
@@ -803,7 +861,7 @@ export function RepoIssueRow({
       {patch.isError ? (
         <p
           role="alert"
-          className="font-mono text-[11px] text-st-failed-pale-fg min-[900px]:col-span-5"
+          className="col-span-3 font-mono text-[11px] text-st-failed-pale-fg min-[900px]:col-span-5"
           data-testid={`repo-workflow-trigger-error-${testidOf(trigger.id)}`}
         >
           {patchErrorText(patch.error)}
@@ -813,15 +871,31 @@ export function RepoIssueRow({
   );
 }
 
-/** The next fire in the one form that is true for the schedule's state. A
- * paused schedule keeps its `next_run_at` (ADR-0032 never backfills), so the
- * line says `paused` instead of promising a countdown. */
+/** The next fire in the one form that is true for the schedule's state: `next
+ * in <span>` (2026-10-30 copy review, 2c item 5 — the countdown used to read
+ * `next 3h left`, which says the same thing twice). A paused schedule has no
+ * countdown at all: `next_run_at` stands (ADR-0032 never backfills), so the row
+ * leaves this cell to the switch's own `paused` word rather than repeating it
+ * (2c item 5 again — `paused` was printed twice in one row). */
 function scheduleNextText(schedule: Schedule, now = Date.now()): string {
-  if (!schedule.enabled) return "paused";
-  const remaining = formatRemaining(schedule.next_run_at, now);
+  if (!schedule.enabled) return "";
+  const remaining = formatRemaining(schedule.next_run_at, now).replace(/ left$/, "");
   if (remaining === "passed") return `due now · ${formatClock(schedule.next_run_at)}`;
   if (remaining === "unknown") return `unknown · ${formatClock(schedule.next_run_at)}`;
-  return `next ${remaining}`;
+  return `next in ${remaining}`;
+}
+
+/** The run a schedule last started. `lead` keeps the separator on the enabled
+ * row (the countdown stands before it) and off the paused one. */
+function LastRunLink({ id, lead = "" }: { id: string; lead?: string }) {
+  return (
+    <>
+      {lead}
+      <Link to={routes.run(id)} className="text-accent-text hover:underline">
+        last {shortId(id)}
+      </Link>
+    </>
+  );
 }
 
 /** A schedule's fixed input value, short enough to live on the mono line. */
@@ -1006,7 +1080,13 @@ function RepoLibraryPickerBody({
           {pipelines.isError ? (
             <ProblemBanner
               error={pipelines.error}
-              fallback="The workflow library could not be read."
+              fallback="The workflow library could not be read — the picker has nothing to list."
+              subject="the workflow library"
+              retry={{
+                onClick: () => void pipelines.refetch(),
+                pending: pipelines.isFetching,
+                testid: "repo-library-retry",
+              }}
             />
           ) : null}
           {!pipelines.isPending && !pipelines.isError && items.length === 0 ? (

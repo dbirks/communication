@@ -502,9 +502,13 @@ function TriggerDialogBody({
               {editing ? "Edit trigger" : "Add a trigger"}
             </h2>
             <span
-              className="block truncate font-mono text-[10.5px] text-muted"
+              className="block break-words font-mono text-[10.5px] text-muted"
               data-testid="trigger-dialog-context"
             >
+              {/* The whole context line, at every width (2026-10-30 copy review,
+                  2c item 8): `truncate` cut the REPOSITORY off — the one name
+                  the trigger is about — because the project's name came first. It
+                  wraps instead. */}
               {`${workflowLabel} · ${project.name} / ${repository.name}`}
             </span>
           </div>
@@ -634,7 +638,7 @@ function TriggerDialogBody({
               label="RUNS AT (UTC)"
               hint={
                 <span data-testid="trigger-dialog-cron-hint">
-                  five times to run on: minute, hour, day of month, month, day of week
+                  five fields: minute, hour, day of month, month, day of week
                 </span>
               }
             >

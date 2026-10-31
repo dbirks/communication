@@ -34,6 +34,7 @@ import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
 import { REVISION_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
+import { ProjectUnavailable } from "../components/ProjectUnavailable";
 import { ApiError } from "../api/client";
 import { UseInRepoDialog } from "../components/workflows/UseInRepoDialog";
 import { UsedInPanel } from "../components/workflows/UsedIn";
@@ -262,46 +263,70 @@ export function PipelinePage() {
   if (pipeline.isPending) return <Spinner label="Loading workflow" />;
   if (pipeline.isError) {
     const notFound = pipeline.error instanceof ApiError && pipeline.error.status === 404;
+    if (notFound) {
+      return (
+        <div data-testid="pipeline-page" className="min-h-[calc(100dvh-44px)] bg-paper">
+          <div className="px-[22px] pt-[20px] md:px-[28px]">
+            <ProjectUnavailable
+              heading="Workflow"
+              headingId="pipeline-load-error-heading"
+              testid="pipeline-page-failure"
+              copy="Workflow not found or you do not have access."
+              hint="Check the link, or go back to Workflows and open it from the library list — a workflow you cannot see reads exactly like one that is not there."
+              back={{
+                to: routes.workflows(),
+                label: "Workflows",
+                testid: "workflow-back-to-list",
+              }}
+            />
+          </div>
+        </div>
+      );
+    }
     return (
       <div data-testid="pipeline-page" className="min-h-[calc(100dvh-44px)] bg-paper">
         <section
           aria-labelledby="pipeline-load-error-heading"
-          className="px-[22px] py-[22px] md:px-[28px]"
+          className="px-[22px] pt-[20px] md:px-[28px]"
         >
-          <h1 id="pipeline-load-error-heading" className="text-[22px] leading-[28px] font-semibold">
-            Workflow
-          </h1>
+          <header className="flex flex-col gap-[6px] border-b border-line pb-[12px]">
+            <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+              <Link
+                to={routes.workflows()}
+                className="text-accent-text hover:text-ink"
+                data-testid="workflow-load-breadcrumb"
+              >
+                Workflows
+              </Link>
+              <span aria-hidden="true" className="px-1.5">
+                /
+              </span>
+            </nav>
+            <h1
+              id="pipeline-load-error-heading"
+              className="text-[22px] leading-[28px] font-semibold"
+            >
+              Workflow
+            </h1>
+          </header>
           <div className="mt-[12px] max-w-[70ch]">
             <ProblemBanner
               error={pipeline.error}
-              fallback={
-                notFound
-                  ? "Workflow not found or you do not have access."
-                  : "The workflow could not be loaded."
-              }
+              fallback="The workflow could not be loaded."
+              subject="the workflow"
+              hint="Nothing of it is drawn without the read — no graph, no revision, no draft."
+              retry={{
+                onClick: () => void pipeline.refetch(),
+                pending: pipeline.isFetching,
+                testid: "workflow-load-retry",
+              }}
+              back={{
+                to: routes.workflows(),
+                label: "← Back to workflows",
+                testid: "workflow-back-to-list",
+              }}
               testid="pipeline-page-failure"
             />
-          </div>
-          <div className="mt-[12px] flex flex-wrap items-center gap-[8px]">
-            {notFound ? null : (
-              <Button
-                variant="secondary"
-                compact
-                className="h-[30px]"
-                onClick={() => void pipeline.refetch()}
-                disabled={pipeline.isFetching}
-                data-testid="workflow-load-retry"
-              >
-                {pipeline.isFetching ? "Retrying…" : "Retry"}
-              </Button>
-            )}
-            <Link
-              to={routes.workflows()}
-              className="ds-btn ds-btn--secondary h-[30px]"
-              data-testid="workflow-back-to-list"
-            >
-              ← Back to workflows
-            </Link>
           </div>
         </section>
       </div>
@@ -408,11 +433,17 @@ export function PipelinePage() {
               {workflowDescription ||
                 "Library workflow. It runs only in the repos that use it, and triggers are set up there."}
             </p>
+            {/* The header's one extra line is the workflow's id, in the words
+                the New workflow dialog already uses for it (1c: `id: retry-
+                payments-plan`). The `· 1 revision` half is gone (2026-10-30 copy
+                review, 1e item 2): the `PUBLISHED R1` chip above already states
+                it, and a count under the description said the same fact twice.
+                The id itself stays because the two lab journeys identify the
+                opened workflow by it (`pipeline-header-meta` is what
+                issue2-studio and shell-journey wait on) and it is the name the
+                document carries in its own `name:` line. */}
             <p className="font-mono text-[11px] text-muted" data-testid="pipeline-header-meta">
-              {pipeline.data?.slug ?? pipelineId} ·{" "}
-              {pipeline.data?.revision_count === 1
-                ? "1 revision"
-                : `${pipeline.data?.revision_count ?? 0} revisions`}
+              {`id: ${pipeline.data?.slug ?? pipelineId}`}
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-[8px]">
@@ -451,12 +482,29 @@ export function PipelinePage() {
                 {createDraft.isPending || draftCreating ? "Opening…" : "Edit workflow"}
               </Button>
             ) : (
-              <span
-                className="font-mono text-[10.5px] text-faint"
-                data-testid="workflow-author-hint"
-              >
-                {LIBRARY_AUTHORING_HINT}
-              </span>
+              // 1e item 2 (2026-10-30 copy review): the reason used to be a mono
+              // sentence floating beside `Use in a repo…`, which read as a note
+              // pinned to the header rather than a fact about the verb. It is now
+              // the tooltip on the disabled verb — the button stays where the
+              // design puts it, and its title says why it cannot be pressed. The
+              // same words stand behind it for assistive tech (a `title` alone is
+              // unreachable by keyboard).
+              <>
+                <Button
+                  variant="primary"
+                  compact
+                  className="h-[30px]"
+                  disabled
+                  data-testid="pipeline-customize"
+                  title={LIBRARY_AUTHORING_HINT}
+                  aria-describedby="workflow-author-hint"
+                >
+                  Edit workflow
+                </Button>
+                <span className="sr-only" data-testid="workflow-author-hint">
+                  {LIBRARY_AUTHORING_HINT}
+                </span>
+              </>
             )}
           </div>
         </div>
@@ -607,6 +655,7 @@ export function PipelinePage() {
         open={useDialogOpen}
         onClose={() => setUseDialogOpen(false)}
         pipelineId={pipelineId}
+        workflowName={summary?.display_name ?? pipeline.data?.slug ?? ""}
         newestPublished={
           newestPublished
             ? (usedInRevisions.find((row) => row.id === newestPublished.id) ?? null)

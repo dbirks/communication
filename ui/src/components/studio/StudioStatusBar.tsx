@@ -54,10 +54,14 @@ export function StudioStatusBar({
         type="button"
         onClick={onDiff}
         data-testid="studio-diff"
-        title={diffLabel ?? "diff"}
+        title={diffLabel ?? "compare the draft with the published revisions"}
         className="shrink-0 text-muted underline decoration-line underline-offset-2 hover:text-ink"
       >
-        {diffLabel ?? "diff"}
+        {/* A verb, not a bare noun (2026-10-30 copy review, 1g item 9): the
+            strip read `4 steps · not validated · diff`, where `diff` looked
+            like a third state of the draft rather than the thing you can press.
+            The revision it compares against is the button's title. */}
+        view diff
       </button>
       {/* The phone gives the reason a line of its own (right-aligned, full
           width, never truncated); md keeps the design's right-hand slot. */}
