@@ -3,8 +3,11 @@
 // renders, so the 390 match is the screen's 1280 content and hierarchy
 // reflowed into one column, with (a) no sideways scroll, (b) content parity
 // with 1280, (c) no clipped text without an ellipsis, and (d) touch targets
-// ≥ 44px tall (docs/design/handoff-app-shell/README.md: "Heights 26 / 30 /
-// 36; mobile 44–48"), and (e) no leaf text or control paints over another
+// whose HIT AREA is ≥ 44px tall (docs/design/handoff-app-shell/README.md:
+// "Heights 26 / 30 / 36; mobile 44–48"; `findSmallTargets` measures the tap
+// area — the box plus the control's own invisible absolute `::after`
+// extension, proven by hit test — not the painted box), and (e) no leaf text
+// or control paints over another
 // (see `findOverlaps`; that one runs at both widths). Every violation is a
 // RECORDED defect, never a throw.
 //
@@ -54,7 +57,10 @@ export interface ClipHit {
   text: string;
 }
 
-/** An interactive control shorter than the 44px phone minimum. */
+/** An interactive control whose hit area is shorter than the 44px phone
+ * minimum. `height` is the REAL hit-area height: the painted box when that is
+ * all there is, or the (probed, reachable) union with the control's own
+ * absolutely positioned `::before` / `::after` extension. */
 export interface TargetHit {
   name: string;
   height: number;
@@ -531,16 +537,144 @@ export function findOverlaps(): OverlapHit[] {
  * / [role=tab] / select / input / textarea. Bare <a> links without a role
  * are inline text links, not touch targets. Hidden/checkbox/radio inputs
  * are measured through their <label> box. Runs in the page.
+ *
+ * What is MEASURED is the hit area, not the painted box (acceptance-36 false
+ * positive: the phone workflow rows keep the desktop's 26px `Edit` / `⋯` DRAWN
+ * and extend the tappable area to 44px with an invisible absolutely positioned
+ * `::after` — `PHONE_HIT` in `ui/src/components/workflows/WorkflowRow.tsx`. A
+ * bare `getBoundingClientRect()` called that a 26px target on every screen).
+ * So for a short element the effective box is the union of its own rect and the
+ * boxes of its own `::before` / `::after`, but only for a pseudo the ELEMENT
+ * hosts as its containing block (`position` other than `static`) with
+ * `position:absolute` and `content` other than `none`/`normal` — an `absolute`
+ * pseudo on a `static` element belongs to some ANCESTOR's padding box, not to
+ * this target, and does not lengthen it.
+ *
+ * The CSS is never taken on faith: the extra band must actually answer to a
+ * touch. `document.elementFromPoint` is probed — at the effective box's
+ * horizontal centre — `top+2` and `bottom-2`; the element counts as ≥44 only if
+ * both probes resolve to the element itself or a descendant of it. A sibling or
+ * overlay parked over the extension means the extension is unreachable, so the
+ * target keeps its measured (small) height. A probe point outside the viewport
+ * is skipped when the element is outside it too (nothing is provable about a
+ * row that is not on screen); when the element IS on screen and its extension
+ * is not, the extension does not count either.
  */
 export function findSmallTargets(): TargetHit[] {
   const main = document.querySelector("main") ?? document.body;
   const MIN = 44;
+  /** How far inside the effective box the probes sit (px). */
+  const PROBE_INSET = 2;
   const norm = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
       'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
     ) !== null;
+  interface Box {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  }
+  const toBox = (rect: DOMRect): Box => ({
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  });
+  const widthOf = (box: Box): number => box.right - box.left;
+  const heightOf = (box: Box): number => box.bottom - box.top;
+  const union = (a: Box, b: Box): Box => ({
+    left: Math.min(a.left, b.left),
+    top: Math.min(a.top, b.top),
+    right: Math.max(a.right, b.right),
+    bottom: Math.max(a.bottom, b.bottom),
+  });
+  /** A used px value, or null for `auto` / a percentage / anything unresolvable. */
+  const px = (value: string | null | undefined): number | null => {
+    const text = norm(value);
+    if (!/^-?\d+(\.\d+)?px$/.test(text)) return null;
+    const num = Number.parseFloat(text);
+    return Number.isFinite(num) ? num : null;
+  };
+  const side = (value: string | null | undefined): number => px(value) ?? 0;
+  /**
+   * The element's own generated pseudo boxes in viewport coordinates, for the
+   * hit-area extension pattern. Empty when the element hosts no such box.
+   */
+  const pseudoBoxes = (el: Element, rect: Box): Box[] => {
+    const host = window.getComputedStyle(el);
+    // `static`: the element is not the containing block, so an `absolute`
+    // pseudo is positioned against an ancestor and is not this target's area.
+    if (host.position === "static") return [];
+    const boxes: Box[] = [];
+    // The abspos containing block is the element's PADDING box.
+    const padLeft = rect.left + side(host.borderLeftWidth);
+    const padTop = rect.top + side(host.borderTopWidth);
+    const padW = widthOf(rect) - side(host.borderLeftWidth) - side(host.borderRightWidth);
+    const padH = heightOf(rect) - side(host.borderTopWidth) - side(host.borderBottomWidth);
+    for (const pseudo of ["::before", "::after"]) {
+      const cs = window.getComputedStyle(el, pseudo);
+      const content = norm(cs.content);
+      if (content === "" || content === "none" || content === "normal") continue;
+      if (cs.position !== "absolute") continue;
+      // A `display:none` / `visibility:hidden` pseudo generates no hit box;
+      // `opacity:0` DOES still answer to a touch, so it is not excluded here.
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      const w = px(cs.width);
+      const h = px(cs.height);
+      const left = px(cs.left);
+      const right = px(cs.right);
+      const top = px(cs.top);
+      const bottom = px(cs.bottom);
+      let l: number;
+      let r: number;
+      if (left !== null) {
+        l = padLeft + left;
+        r = w !== null ? l + w : padLeft + padW - (right ?? 0);
+      } else if (right !== null) {
+        r = padLeft + padW - right;
+        l = w !== null ? r - w : padLeft;
+      } else {
+        l = padLeft;
+        r = padLeft + (w ?? padW);
+      }
+      let t: number;
+      let b: number;
+      if (top !== null) {
+        t = padTop + top;
+        b = h !== null ? t + h : padTop + padH - (bottom ?? 0);
+      } else if (bottom !== null) {
+        b = padTop + padH - bottom;
+        t = h !== null ? b - h : padTop;
+      } else {
+        t = padTop;
+        b = padTop + (h ?? padH);
+      }
+      if (r - l <= 0 || b - t <= 0) continue;
+      boxes.push({ left: l, top: t, right: r, bottom: b });
+    }
+    return boxes;
+  };
+  /**
+   * Does a touch at (x,y) land on `box` (or something inside it)? A point
+   * outside the viewport is unprovable: it passes only when `box` is off screen
+   * too, because then nothing about the row can be checked anyway.
+   */
+  const probe = (el: Element, rect: Box, x: number, y: number): boolean => {
+    const onScreen = x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight;
+    if (!onScreen) {
+      const elementVisible =
+        rect.top < window.innerHeight &&
+        rect.bottom > 0 &&
+        rect.left < window.innerWidth &&
+        rect.right > 0;
+      return !elementVisible;
+    }
+    const hit = document.elementFromPoint(x, y);
+    return hit !== null && (hit === el || el.contains(hit));
+  };
   const hits: TargetHit[] = [];
   const nodes = main.querySelectorAll(
     'button, [role="button"], [role="tab"], select, input, textarea',
@@ -558,9 +692,23 @@ export function findSmallTargets(): TargetHit[] {
         box = el.closest("label") ?? el;
       }
     }
-    const rect = box.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    if (rect.height >= MIN) continue;
+    const rect = toBox(box.getBoundingClientRect());
+    if (widthOf(rect) <= 0 || heightOf(rect) <= 0) continue;
+    let measured = heightOf(rect);
+    if (measured < MIN) {
+      // The hit area the CSS CLAIMS: own rect ∪ own hosting pseudos.
+      const effective = pseudoBoxes(box, rect).reduce(union, rect);
+      if (heightOf(effective) > measured) {
+        // …and the hit area a finger actually GETS, probed through the top and
+        // bottom of that extension at the box's horizontal centre.
+        const cx = (effective.left + effective.right) / 2;
+        const reachable =
+          probe(box, rect, cx, effective.top + PROBE_INSET) &&
+          probe(box, rect, cx, effective.bottom - PROBE_INSET);
+        if (reachable) measured = heightOf(effective);
+      }
+    }
+    if (measured >= MIN) continue;
     const name =
       norm(el.getAttribute("aria-label")) ||
       norm(el.getAttribute("title")) ||
@@ -568,7 +716,7 @@ export function findSmallTargets(): TargetHit[] {
       norm(el.textContent) ||
       norm(el.getAttribute("data-testid")) ||
       el.tagName.toLowerCase();
-    hits.push({ name: name.slice(0, 40), height: Math.round(rect.height) });
+    hits.push({ name: name.slice(0, 40), height: Math.round(measured) });
   }
   return hits;
 }

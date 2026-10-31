@@ -134,9 +134,16 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   visually-hidden (`.sr-only`) copy is skipped — it renders no visible text
 - **(d) touch targets ≥ 44px** — rendered, enabled buttons / `[role=button]`
   / `[role=tab]` / selects / inputs (hidden/checkbox/radio measured via
-  their label box) / textareas under 44px tall, per the app-shell handoff
-  ("Heights 26 / 30 / 36; mobile 44–48"), are recorded as `kind: target`.
-  Bare `<a>` links are inline text, not targets.
+  their label box) / textareas whose **hit area** is under 44px tall, per the
+  app-shell handoff ("Heights 26 / 30 / 36; mobile 44–48"), are recorded as
+  `kind: target`. Bare `<a>` links are inline text, not targets. The hit area is
+  the box ∪ the element's own `position:absolute` `::before`/`::after` (the
+  phone rows draw a 26px button and extend its tap area with an invisible
+  pseudo — `PHONE_HIT`), but only when the element hosts the pseudo (not
+  `position:static`) and `document.elementFromPoint` at the extension's top and
+  bottom still resolves to the element or a descendant of it; a neighbour
+  parked over the band takes the extension away. The reported height is the
+  measured hit area, so a `42px` line means 42 real pixels, not a short box.
 - **(e) no overlapping content** — NOT 390-only: `findOverlaps` runs on every
   screen at **1280 and 390** and is recorded as `kind: overlap`. Within MAIN
   (shell excluded) the candidates are the things a person reads or presses:
@@ -180,12 +187,15 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   draft…` row at 1280.
   The checker is itself tested, with no lab and no app: `reflow-overlap.spec.ts`
   hands it `page.setContent` fixtures (adjacent inline runs that wrap → no hit;
-  an absolutely positioned span printed over a line → hit) in its own
-  `reflow` Playwright project, which has no `setup` dependency:
+  an absolutely positioned span printed over a line → hit) and
+  `reflow-target.spec.ts` hands `findSmallTargets` hit-area fixtures (a 26px box
+  with a ±9px absolute `::after` → passes; the same box with a 1px border → 42px,
+  reported; a plain 26px box, a covered extension, a `static` host → reported) in
+  its own `reflow` Playwright project, which has no `setup` dependency:
 
   ```bash
   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts \
-    emulator/reflow-overlap.spec.ts
+    --project=reflow
   ```
 
 Like sidescroll today, every violation is a RECORDED defect (one aggregated
