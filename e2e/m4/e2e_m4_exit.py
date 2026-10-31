@@ -20352,6 +20352,60 @@ def w_input_expectations(doc):
     return out
 
 
+# The ONE door into the run form since f2f06d9 (design 1b, project-tabs-2):
+# `Start run` is a LINK in the project header band (ProjectHeader.tsx,
+# testid `project-start-run`) whose href is `/projects/<id>/runs?new=1`, and
+# that query is what mounts `NewRunForm` over the list (ProjectRuns.tsx's
+# `RunsTabBody`). The RUNS panel's own `New run` BUTTON was the same verb twice
+# and is retired — a driver that still clicks it opens nothing, then reads a run
+# list with no form on it and fails every field arm for the wrong reason. The
+# accessible names below are the ones the components actually render today:
+# `new-run-heading` prints "New run", `Field id="new-run-assignment"` labels the
+# assignment `select` "Pipeline assignment", a declared input is labelled
+# `<name>` + ` *` when required, and the submit Button says "Start run" (so the
+# door and the submit share a NAME and are told apart by ROLE).
+W_DOOR_ROLE = "link"
+W_DOOR_NAME = "Start run"
+W_FORM_HEADING = "New run"
+W_ASSIGNMENT_LABEL = "Pipeline assignment"
+W_SUBMIT_NAME = "Start run"
+# The roles a declared `spec.inputs` entry can render as (NewRunForm's
+# InputFieldControl: textarea/text -> textbox, repository/enum -> combobox,
+# boolean -> checkbox, integer/number -> spinbutton).
+W_CONTROL_ROLES = ("textbox", "combobox", "checkbox", "spinbutton", "listbox", "slider")
+
+
+def w_field_control_hits(nodes, want, name=None):
+    """The controls carrying a field's accessible name — the label (`goal *`)
+    or, if a build drops the marker, the bare input name. Roles only: a `text`
+    node repeating the label is not a control the arm could fill."""
+    return [n for n in nodes if n["role"] in W_CONTROL_ROLES
+            and (n["name"] == want or n["name"] == name
+                 or (n["name"] or "").startswith((name or "") + " ")
+                 or (n["name"] or "").startswith((name or "") + "*"))]
+
+
+def w_form_opened_verdict(nodes, expected=()):
+    """(ok, detail): is `NewRunForm` on the page? The click on the band's
+    `Start run` is only the door — the form proves itself with its own heading
+    (`new-run-heading`) AND a control under it: the `Pipeline assignment`
+    selector, or one of the inputs the pinned revision declares. A page that
+    took the `?new=1` URL and shows only the run list opened nothing."""
+    heading = any(n["role"] == "heading" and (n["name"] or "").strip() == W_FORM_HEADING
+                  for n in nodes)
+    assignment = bool(pw_refs(nodes, role="combobox", name=W_ASSIGNMENT_LABEL))
+    labels = set()
+    for field in expected or ():
+        labels.add(field.get("label") or field.get("name"))
+        labels.add(field.get("name"))
+    shown = sorted({n["name"] for n in nodes
+                    if n["role"] in W_CONTROL_ROLES and (n["name"] or "") in labels})
+    ok = bool(heading and (assignment or shown))
+    return ok, (f"heading {W_FORM_HEADING!r}={'yes' if heading else 'no'}, "
+                f"{W_ASSIGNMENT_LABEL!r} combobox={'yes' if assignment else 'no'}, "
+                f"declared input controls={shown or 'none'}")
+
+
 def w_form_field_verdicts(expected, nodes):
     """One verdict per declared input: rendered, with the required marker the
     schema asked for. Field controls are matched by accessible name (`goal *`),
@@ -20359,11 +20413,7 @@ def w_form_field_verdicts(expected, nodes):
     verdicts = []
     for field in expected:
         want = field["label"]
-        hits = [n for n in nodes if n["role"] in ("textbox", "combobox", "checkbox",
-                                                  "spinbutton", "listbox", "slider")
-                and (n["name"] == want or n["name"] == field["name"]
-                     or (n["name"] or "").startswith(field["name"] + " ")
-                     or (n["name"] or "").startswith(field["name"] + "*"))]
+        hits = w_field_control_hits(nodes, want, field["name"])
         if not hits:
             verdicts.append((f"field {field['name']}", False,
                              f"no control named {want!r} in the snapshot — the form is "
@@ -22071,13 +22121,35 @@ def w1():
         gap("W1 browser arms", "the mock IdP form did not sign alice in in the browser")
         return
     pw_goto(f"/projects/{project_id}/runs", session="m4w1")
-    opened, ref, detail = pw_click(role="button", name="New run", session="m4w1",
-                                   label="new-run panel")
-    check("W1 New run opens the form", opened, f"ref={ref} {detail}")
+    # The door is the header band's `Start run` LINK, not a panel button: the
+    # RUNS panel's own `New run` was retired with design 1b (f2f06d9) and this
+    # link's href — /projects/<id>/runs?new=1 — is what opens NewRunForm over
+    # the list. Role matters: the form's own submit button is ALSO named
+    # `Start run`, so a name-only lookup would click whichever came first.
+    opened, ref, detail = pw_click(role=W_DOOR_ROLE, name=W_DOOR_NAME, session="m4w1",
+                                   label="the header band's Start run link")
+    # The click is the door; the FORM is the verdict. Poll until the card raises
+    # its own heading and a control under it, so no field arm below reads a page
+    # that has not rendered the form yet (or never will).
+    ok_form, nodes = pw_poll(lambda ns: w_form_opened_verdict(ns, expected)[0],
+                             session="m4w1", tries=8, delay=2)
+    _, why_form = w_form_opened_verdict(nodes, expected)
+    shot_open = pw_shot("w1-door", session="m4w1")
+    check("W1 New run opens the form", opened and ok_form,
+          f"door={W_DOOR_ROLE} {W_DOOR_NAME!r} ref={ref}; {detail.strip()} — {why_form} "
+          f"[{shot_open}]")
+    if not ok_form:
+        gap("W1 form arms", f"the band's {W_DOOR_NAME!r} never put NewRunForm on the "
+                            f"page ({why_form}) — there is no form to read fields, "
+                            "defaults, the repository list or Submit off")
+        pw("close", session="m4w1")
+        return
     # the form renders the FIRST assignment's revision; pin the arm to the exit
     # pipeline whose spec.inputs the manifest named, so the comparison is honest
+    pw_poll(lambda ns: bool(pw_refs(ns, role="combobox", name=W_ASSIGNMENT_LABEL)),
+            session="m4w1", tries=6, delay=2)
     rc, snap = pw_snapshot(session="m4w1")
-    arefs = pw_refs(pw_snapshot_nodes(snap), role="combobox", name="Pipeline assignment")
+    arefs = pw_refs(pw_snapshot_nodes(snap), role="combobox", name=W_ASSIGNMENT_LABEL)
     picked = ""
     if arefs:
         rc2, opts = pw("snapshot", arefs[0], session="m4w1")
@@ -22088,15 +22160,15 @@ def w1():
             picked = label.group("name")
             pw("select", arefs[0], picked, session="m4w1")
     show("New run: pipeline assignment selected", picked or "(left on the default)")
-    landed, nodes = pw_poll(lambda ns: bool(pw_refs(ns, name="goal *")), session="m4w1",
-                           tries=8, delay=2)
+    landed, nodes = pw_poll(lambda ns: bool(w_field_control_hits(ns, "goal *", "goal")),
+                            session="m4w1", tries=8, delay=2)
     shot = pw_shot("w1-form", session="m4w1")
     for label, ok, detail in w_form_field_verdicts(expected, nodes):
         check(f"W1 {label}", ok, f"{detail} [{shot}]")
     # the declared default arrives in the control, not in a hard-coded placeholder
     ac = next((f for f in expected if f["name"] == "acceptance_criteria"), None)
     if ac and ac["default"]:
-        hit = pw_refs(nodes, name=ac["label"]) or pw_refs(nodes, name=ac["name"])
+        hit = [n["ref"] for n in w_field_control_hits(nodes, ac["label"], ac["name"])]
         rc2, val = pw("eval", f"el => el.value", hit[0], session="m4w1") if hit else (1, "")
         check("W1 declared default prefilled", str(ac["default"]) in (val or ""),
               f"default={ac['default']!r} observed={val!r} [{shot}]")
@@ -22122,7 +22194,10 @@ def w1():
     def fill(name, value):
         rc, s = pw_snapshot(session="m4w1")
         ns = pw_snapshot_nodes(s)
-        refs = pw_refs(ns, name=name) or pw_refs(ns, contains=name)
+        # a control first: the field's LABEL carries the same words and is not
+        # something playwright-cli can fill.
+        refs = ([n["ref"] for n in w_field_control_hits(ns, name, name)]
+                or pw_refs(ns, name=name) or pw_refs(ns, contains=name))
         if not refs:
             return False, f"no control for {name!r}"
         rc2, out = pw("fill", refs[0], value, session="m4w1")
@@ -22133,13 +22208,16 @@ def w1():
             fill(f["label"], "W1 exit leg: prove the form is schema-driven")
         elif f["name"] == "repository":
             rc, s = pw_snapshot(session="m4w1")
-            refs = pw_refs(pw_snapshot_nodes(s), name=f["label"])
+            refs = [n["ref"] for n in w_field_control_hits(pw_snapshot_nodes(s),
+                                                           f["label"], f["name"])]
             if refs:
                 pw("select", refs[0], (want or ["app"])[0], session="m4w1")
         elif f["name"] == "acceptance_criteria" and f["required"]:
             fill(f["label"], "hello.py adds")
     shot2 = pw_shot("w1-filled", session="m4w1")
-    ok_submit, sref, _ = pw_click(role="button", name="Start run", session="m4w1")
+    # `Start run` again — this time the form's submit BUTTON (NewRunForm's
+    # `new-run-submit`), told apart from the header's door LINK by role.
+    ok_submit, sref, _ = pw_click(role="button", name=W_SUBMIT_NAME, session="m4w1")
     check("W1 Submit is enabled once the required inputs are filled", ok_submit,
           f"ref={sref} [{shot2}]")
     if sref:

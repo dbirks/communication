@@ -71,6 +71,11 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w3_gate_detail_verdict,
     w_counter_verdicts,
     w_form_field_verdicts,
+    w_form_opened_verdict,
+    W_ASSIGNMENT_LABEL,
+    W_DOOR_NAME,
+    W_DOOR_ROLE,
+    W_SUBMIT_NAME,
     w_input_expectations,
     W5_COUNTDOWN_COPY,
     W5_FORBIDDEN_WORDS,
@@ -105,6 +110,8 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_spinner_nodes,
     w_strip_cells,
     pw_snapshot_nodes,
+    pw_refs,
+    w_field_control_hits,
     pw_text,
 )
 
@@ -123,7 +130,7 @@ CANNED_SNAPSHOT = """
     - option "app" [ref=e15]
     - option "docs" [ref=e16]
   - textbox "acceptance_criteria" [ref=e17]
-  - button "Submit" [ref=e20] [cursor=pointer]
+  - button "Start run" [ref=e20] [cursor=pointer]
   - button "Approve" [ref=e21]
   - term "approver roles" [ref=e30]
   - definition [ref=e31]: maintainers
@@ -131,6 +138,72 @@ CANNED_SNAPSHOT = """
   - definition [ref=e33]: 2026-10-17 05:35:59 UTC · 23h left
   - listitem [ref=e34]: artifact plan.md
   - paragraph: you are not a designated approver for this gate
+```
+"""
+
+# The Runs tab as design 1b (project-tabs-2, f2f06d9) renders it: the RUNS panel
+# carries NO `New run` button — the project header band's `Start run` LINK
+# (`project-start-run`, ProjectHeader.tsx) is the one door, and its href is the
+# `?new=1` state that mounts NewRunForm over the list. Note the two controls
+# that share the accessible name `Start run`: the band's door is a `link`, the
+# form's submit (`new-run-submit`) is a `button` — which is why the driver picks
+# them by role, never by name alone.
+W1_RUNS_LIST_ONLY = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs
+### Snapshot
+```yaml
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - heading "m4-exit" [level=1] [ref=e4]
+    - link "Start run" [ref=e5] [cursor=pointer]:
+      - /url: /projects/01a1/runs?new=1
+  - generic [ref=e6]:
+    - heading "Runs" [level=2] [ref=e7]
+    - listitem [ref=e8]: run 01a1 finished
+```
+"""
+
+W1_RUNS_FORM_OPEN = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs?new=1
+### Snapshot
+```yaml
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - heading "m4-exit" [level=1] [ref=e4]
+    - link "Start run" [ref=e5] [cursor=pointer]:
+      - /url: /projects/01a1/runs?new=1
+  - generic [ref=e6]:
+    - form "New run" [ref=e7]:
+      - heading "New run" [level=2] [ref=e8]
+      - combobox "Pipeline assignment" [ref=e9]
+        - option "— choose —" [ref=e10]
+        - option "feature-development · 1.0.0 · max 1 concurrent" [ref=e11]
+      - textbox "goal *" [ref=e13]
+      - combobox "repository *" [ref=e14]
+        - option "— choose —" [ref=e15]
+        - option "app" [ref=e16]
+      - textbox "acceptance_criteria" [ref=e17]: hello.py works
+      - button "Start run" [ref=e20] [cursor=pointer]
+    - heading "Runs" [level=2] [ref=e21]
+```
+"""
+
+# The door fired but the card raised nothing: the heading is there, the form is
+# not (React errored between them). An arm that only reads the heading would
+# grade the ghost as an opened form and then FAIL eight fields it never rendered.
+W1_FORM_HEADING_ONLY = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs?new=1
+### Snapshot
+```yaml
+- main [ref=e2]:
+  - link "Start run" [ref=e5] [cursor=pointer]:
+    - /url: /projects/01a1/runs?new=1
+  - heading "New run" [level=2] [ref=e8]
+  - heading "Runs" [level=2] [ref=e21]
+  - text "goal *"
 ```
 """
 
@@ -147,7 +220,8 @@ def test_snapshot_nodes():
     _assert("nodes parsed", len(nodes) >= 9, len(nodes))
     _assert("textbox username -> e12", by_name.get("username", {}).get("ref") == "e12",
             by_name.get("username"))
-    _assert("role kept", by_name.get("Submit", {}).get("role") == "button", by_name.get("Submit"))
+    _assert("role kept", [n["role"] for n in nodes if n["name"] == "Start run"]
+            == ["button"], [n for n in nodes if n["name"] == "Start run"])
     _assert("combobox repository", by_name.get("repository *", {}).get("role") == "combobox")
     _assert("option child", by_name.get("app", {}).get("ref") == "e15")
     _assert("unnamed line has no ref crash",
@@ -187,6 +261,67 @@ def test_input_expectations():
     _assert("missing fanout flagged as a FAIL verdict", got.get("field fanout") is False, v)
     _assert("required marker on the label", any("required" in d.lower() or "*" in d
             for _, ok, d in v if ok and "goal" in _), v)
+
+
+def test_w1_door_is_the_header_bands_start_run_link():
+    """The live 11-arm failure in one line: the driver asked for
+    `button "New run"` on /projects/<id>/runs, got `no button 'New run' in the
+    snapshot`, and every arm after it (fields, default, repo list, submit,
+    idempotency) read a run list with no form on it. Since f2f06d9 the panel
+    carries no such button — the ONE door is the band's `Start run` LINK."""
+    nodes = pw_snapshot_nodes(W1_RUNS_LIST_ONLY)
+    _assert("the retired panel button is really gone",
+            pw_refs(nodes, role="button", name="New run") == [],
+            pw_refs(nodes, role="button", name="New run"))
+    _assert("the door the driver now clicks is the band's link",
+            pw_refs(nodes, role=W_DOOR_ROLE, name=W_DOOR_NAME) == ["e5"],
+            pw_refs(nodes, role=W_DOOR_ROLE, name=W_DOOR_NAME))
+    # and on the page WITH the form open, the door and the form's submit share
+    # the accessible name `Start run`: role is the only thing that tells them
+    # apart, so neither lookup may be name-only.
+    both = pw_snapshot_nodes(W1_RUNS_FORM_OPEN)
+    _assert("the door stays a link with the form open",
+            pw_refs(both, role=W_DOOR_ROLE, name=W_SUBMIT_NAME) == ["e5"],
+            pw_refs(both, role=W_DOOR_ROLE, name=W_SUBMIT_NAME))
+    _assert("Submit is the button of the same name",
+            pw_refs(both, role="button", name=W_SUBMIT_NAME) == ["e20"],
+            pw_refs(both, role="button", name=W_SUBMIT_NAME))
+
+
+def test_w1_form_opened_verdict_needs_the_card_not_just_the_url():
+    """A click that fires is not a form: the verdict is the form's own heading
+    PLUS a control under it, so the field arms never grade a ghost."""
+    doc = {"spec": {"inputs": {"required": ["goal", "repository"], "properties": {
+        "goal": {"type": "string"}, "repository": {"type": "string"},
+        "acceptance_criteria": {"type": "string", "default": "hello.py works"}}}}}
+    expected = w_input_expectations(doc)
+    list_only = pw_snapshot_nodes(W1_RUNS_LIST_ONLY)
+    ok, detail = w_form_opened_verdict(list_only, expected)
+    _assert("no card means no form", ok is False, detail)
+    _assert("the detail names what is missing", "heading" in detail and "no" in detail, detail)
+    opened = pw_snapshot_nodes(W1_RUNS_FORM_OPEN)
+    ok2, detail2 = w_form_opened_verdict(opened, expected)
+    _assert("the heading plus the assignment selector is the form", ok2 is True, detail2)
+    _assert("the declared fields are named in the detail",
+            "goal *" in detail2 and "repository *" in detail2, detail2)
+    # the heading alone is the ghost the arm must refuse
+    ghost = pw_snapshot_nodes(W1_FORM_HEADING_ONLY)
+    ok3, detail3 = w_form_opened_verdict(ghost, expected)
+    _assert("a heading with no control under it opened nothing", ok3 is False, detail3)
+    # w_field_control_hits reads controls, never the label text beside them
+    _assert("the label text node is not a control",
+            w_field_control_hits(ghost, "goal *", "goal") == [],
+            w_field_control_hits(ghost, "goal *", "goal"))
+    _assert("the control is",
+            [n["ref"] for n in w_field_control_hits(opened, "goal *", "goal")] == ["e13"],
+            w_field_control_hits(opened, "goal *", "goal"))
+    # the assignment combobox alone (a revision with no declared inputs) still
+    # proves the card is up
+    no_inputs = [n for n in opened if n["name"] not in ("goal *", "repository *",
+                                                        "acceptance_criteria")]
+    ok4, detail4 = w_form_opened_verdict(no_inputs, expected)
+    _assert("the assignment selector alone is enough to call the card open", ok4 is True,
+            detail4)
 
 
 def test_counter_verdicts():
@@ -2203,6 +2338,8 @@ def test_w6_wires_the_engine_retry_and_never_posts_its_own():
 
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
+               test_w1_door_is_the_header_bands_start_run_link,
+               test_w1_form_opened_verdict_needs_the_card_not_just_the_url,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,
