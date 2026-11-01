@@ -256,12 +256,23 @@ test.describe("run-gate-artifacts (alice)", () => {
         numberingVerdict.reason,
         `the plan's steps are numbered in order (numbers read: ${numberingVerdict.steps.join(", ")}; lists: ${JSON.stringify(numbering.lists)})`,
       ).toBe("");
-      // The run's own title is never the thing that gives way (item 3).
+      // The run's own title is never the thing that gives way (item 3) —
+      // measured ON the element, after waiting for it. A null
+      // `document.querySelector` used to fold into a magic `9999`; the
+      // `toBeVisible` below is what a missing title now fails with, in
+      // words, and the overflow number only ever comes from a real box.
+      // (The live lab shows exactly one `[data-testid="run-title"]` on this
+      // view — the workbench H1 — before AND after the Decide jump.)
+      const gateTitle = page.getByTestId("run-title");
+      await expect(
+        gateTitle,
+        "the run page at the gate renders its run title (a missing title is the defect this waits for)",
+      ).toBeVisible({ timeout: 30_000 });
       expect(
-        await page.evaluate(() => {
-          const title = document.querySelector('[data-testid="run-title"]');
-          return title instanceof HTMLElement ? title.scrollWidth - title.clientWidth : 9999;
-        }),
+        await gateTitle.evaluate(
+          (el: HTMLElement) => el.scrollWidth - el.clientWidth,
+        ),
+        "the run's own title gives way horizontally inside its box (item 3)",
       ).toBeLessThanOrEqual(0);
       // The run page offers the decision from the gate card itself or from
       // its attention drawer — whichever this build wires up.
@@ -310,6 +321,25 @@ test.describe("run-gate-artifacts (alice)", () => {
       // whole at 1280. Pass-2 review (this brief, item 3) finished the job: a
       // run that ENDED WELL shows no retry note at all — the old short
       // `× nothing to retry` read as a failure verdict on the happy end.
+      //
+      // The header is waited for FIRST because the reload answers with the
+      // page's designed loading skeleton (`RunHeaderLoading`, gh-69) while the
+      // run's reads and the workbench chunk arrive. The pass-1/20261101173601
+      // trace names the frame: its `page.reload()` (call zwir@4015) left the
+      // page on the “Loading run…” line; the two `toHaveCount(0)` verbs below
+      // passed VACUOUSLY on that skeleton (it holds no Retry row), and the
+      // title check at old L329 then measured nothing — the `9999` fallback of
+      // a null `querySelector`, not an overflowing title (the same check at
+      // the gate had already returned 0 on the real header, call zwir@3982).
+      // So the header was not dropped by the finished-run view — the read just
+      // landed before it mounted. Waiting for the title keeps the contract
+      // whole and a header that never mounts fails HERE, saying it is missing,
+      // instead of through a magic number.
+      const finishedTitle = page.getByTestId("run-title");
+      await expect(
+        finishedTitle,
+        "the reloaded finished-run page renders its run title (a missing title is the defect this waits for)",
+      ).toBeVisible({ timeout: 60_000 });
       await expect(page.getByTestId("run-retry"), "no Retry verb on a finished run").toHaveCount(
         0,
         {
@@ -321,11 +351,10 @@ test.describe("run-gate-artifacts (alice)", () => {
         "a clean completed run says nothing about Retry",
       ).toHaveCount(0);
       expect(
-        await page.evaluate(() => {
-          const title = document.querySelector('[data-testid="run-title"]');
-          if (!(title instanceof HTMLElement)) return 9999;
-          return title.scrollWidth - title.clientWidth;
-        }),
+        await finishedTitle.evaluate(
+          (el: HTMLElement) => el.scrollWidth - el.clientWidth,
+        ),
+        "the run's own title gives way horizontally inside its box on the finished run",
       ).toBeLessThanOrEqual(0);
       await emu.screen("run-gate", "completed");
     });
