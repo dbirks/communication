@@ -15,6 +15,27 @@
 // serialized to source and must be fully self-contained (DOM only, no
 // references to this module). The Node-side diff (parity + the allowlist)
 // lives here too, next to the data shapes it produces.
+//
+// EVERY collector measures only what the browser would PAINT for a person.
+// Chrome lays a closed `<details>`'s content out and hands it a real
+// `getBoundingClientRect` while painting none of it (the `Details` disclosure
+// error-details-r6 added in `ui/src/components/Feedback.tsx`), so box-and-
+// computed-style arithmetic alone invents defects: pass-1
+// (`out/pass-1-20261101113830`) filed 19 of its 20 defects that way — the
+// folded `server said: …` line measured on top of the Retry button, at both
+// widths, on every `*-server-error` screen (`1b-server-error-1280.png` shows
+// the text hidden behind `▸ Details` with nothing overlapping). The question
+// is asked the browser's way, `el.checkVisibility({contentVisibilityAuto:
+// true, opacityProperty: true, visibilityProperty: true})` — closed-details
+// content fails it, and the flags cover the other ways a subtree is laid out
+// but not painted (`content-visibility`, group `opacity: 0`, an inherited
+// `visibility: hidden`). It does NOT replace the rules c31bd22 added for what
+// is painted but unreachable — inert / `aria-hidden` subtrees and the page
+// behind an open modal — both still apply.
+//
+// Because of the self-containment rule the predicate is repeated, verbatim, in
+// each collector; `reflow-target.spec.ts` ("what the user cannot see is not
+// measured") is the test that keeps the copies honest, one case per collector.
 
 /** Per-width check outcomes on a screen record (true = pass). */
 export interface EmuChecks {
@@ -160,9 +181,21 @@ export function collectReflowItems(): ReflowItem[] {
   const main = document.querySelector("main") ?? document.body;
   const norm = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
-  // "Visible" = rendered: a non-zero box, not display:none / visibility:hidden.
-  // Position on/off screen does not matter (a sidebar-scrolled card is shown).
+  // "Visible" = the browser paints it for a person: `checkVisibility` (see the
+  // file header — a closed `<details>` lays its folded text out with a real box
+  // and shows none of it, so inventorying it would also invent a parity loss),
+  // a non-zero box, and not display:none / visibility:hidden. Position on/off
+  // screen does not matter (a sidebar-scrolled card is shown).
   const rendered = (el: Element): boolean => {
+    if (
+      !el.checkVisibility({
+        contentVisibilityAuto: true,
+        opacityProperty: true,
+        visibilityProperty: true,
+      })
+    ) {
+      return false;
+    }
     const cs = window.getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return false;
     const box = el.getBoundingClientRect();
@@ -232,7 +265,19 @@ export function findClippedText(): ClipHit[] {
   const main = document.querySelector("main") ?? document.body;
   const norm = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
+  // Painted for a person, and cut short: `checkVisibility` first (see the file
+  // header), because text nobody can read — the server line behind a closed
+  // `Details` — is not text the reflow "clipped".
   const rendered = (el: Element): boolean => {
+    if (
+      !el.checkVisibility({
+        contentVisibilityAuto: true,
+        opacityProperty: true,
+        visibilityProperty: true,
+      })
+    ) {
+      return false;
+    }
     const cs = window.getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return false;
     const box = el.getBoundingClientRect();
@@ -295,11 +340,16 @@ export function findClippedText(): ClipHit[] {
  * • unless one candidate's whole box contains the other's, or that fragment
  *   pair contains one another (±1px): a label inside its field, a heading
  *   inside its card and a badge inside its tile are the design;
- * • both must be PAINTED: a zero box, display:none/visibility:hidden/opacity:0,
- *   `.sr-only`/clip-path'd text, and anything an `overflow: hidden|clip|auto|
- *   scroll` ancestor clips away are not visible, so they cannot collide. The
- *   clip walk is what keeps a React Flow node parked outside its pane — which
- *   has a real, large box — from pairing with another off-pane node;
+ * • both must be PAINTED: `checkVisibility` says whether the browser draws the
+ *   element for a person at all (a closed `<details>` is the case that matters:
+ *   Chrome lays its folded text out with a real box, paints nothing of it, and
+ *   pass-1 reported that box as a 57×12px collision with the Retry button under
+ *   it on every `*-server-error` screen); a zero box,
+ *   display:none/visibility:hidden/opacity:0, `.sr-only`/clip-path'd text, and
+ *   anything an `overflow: hidden|clip|auto|scroll` ancestor clips away are not
+ *   visible, so they cannot collide. The clip walk is what keeps a React Flow
+ *   node parked outside its pane — which has a real, large box — from pairing
+ *   with another off-pane node;
  * • a text candidate is measured by the boxes that get INKED, and compared
  *   FRAGMENT BY FRAGMENT. When it has one box that box is its layout rect
  *   unioned with the Range rects of its direct text nodes: `getBoundingClientRect`
@@ -363,6 +413,20 @@ export function findOverlaps(): OverlapHit[] {
   // The open modal (if any): everything outside it is background right now.
   const modal = document.querySelector('[role="dialog"], [role="alertdialog"], dialog[open]');
   const painted = (el: Element): DOMRect | null => {
+    // Not painted for the user ⇒ it cannot collide with anything: closed
+    // `<details>` content, `content-visibility`, a group `opacity: 0` and an
+    // inherited `visibility: hidden` are all the browser's own answer (see the
+    // file header), and `opacityProperty` subsumes the element's own `opacity:0`
+    // check below.
+    if (
+      !el.checkVisibility({
+        contentVisibilityAuto: true,
+        opacityProperty: true,
+        visibilityProperty: true,
+      })
+    ) {
+      return null;
+    }
     const cs = window.getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") return null;
     if (parseFloat(cs.opacity || "1") === 0) return null;
@@ -606,8 +670,15 @@ export function findSmallTargets(): TargetHit[] {
         '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"], dialog[open]',
       ),
     )) {
-      const cs = window.getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      if (
+        !el.checkVisibility({
+          contentVisibilityAuto: true,
+          opacityProperty: true,
+          visibilityProperty: true,
+        })
+      ) {
+        continue;
+      }
       if (el.closest('[aria-hidden="true"]') !== null) continue;
       return el;
     }
@@ -615,6 +686,19 @@ export function findSmallTargets(): TargetHit[] {
   })();
   /** Could a finger press this control at all, as the page stands? */
   const reachableNow = (el: Element): boolean => {
+    // Nothing painted, nothing to press — the browser's own answer (see the
+    // file header): the server line behind a closed `<details>` keeps a real
+    // 26px box for the `Retry`-shaped control next to it, and a finger cannot
+    // reach either while the disclosure is shut.
+    if (
+      !el.checkVisibility({
+        contentVisibilityAuto: true,
+        opacityProperty: true,
+        visibilityProperty: true,
+      })
+    ) {
+      return false;
+    }
     // An inert or aria-hidden subtree answers to nothing — the app marks the
     // content behind a dialog one of these two ways (and a closed disclosure
     // can park controls there while they stay painted).

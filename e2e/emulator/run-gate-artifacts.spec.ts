@@ -368,9 +368,35 @@ test.describe("run-gate-artifacts (alice)", () => {
       // payload is behind “show raw”, and the byline names the step and the run.
       const prose = page.getByTestId("artifact-preview-prose");
       await expect(prose, "the preview holds the plan, not its envelope").toBeVisible();
-      const firstHeading = prose.locator('[data-testid="markdown-heading"]').first();
-      await expect(firstHeading, "the plan's own heading leads the preview").toBeVisible();
-      expect(await firstHeading.textContent()).toMatch(/^Plan[:\s]/i);
+      // Pass-1 (`out/pass-1-20261101113830`, `run-gate completed`) red-passed
+      // here on `expect(firstHeading.textContent()).toMatch(/^Plan[:\s]/i)`. That
+      // line pinned the MODEL's wording: the plan is live `model.chat` output, and
+      // pass-1's plan led with “Implementation Plan: emu gate journey …”, which
+      // says the same thing in the planner's own words. What the PRODUCT controls
+      // is that a `##` line became a heading and that the markup the author wrote
+      // does not survive as ink, so that is what is measured now — never a phrase.
+      // (`lib/markdown.tsx` draws a heading as `p[data-testid="markdown-heading"]`;
+      // the selector also accepts a semantic h1/h2/h3 should the renderer move, so
+      // no assertion depends on which tag the product chose.)
+      const heading = prose.locator('[data-testid="markdown-heading"], h1, h2, h3').first();
+      await expect(heading, "the markdown read: the document has a heading").toBeVisible();
+      const headingText = ((await heading.textContent()) ?? "").replace(/\s+/g, " ").trim();
+      expect(headingText, "the heading carries words").not.toBe("");
+      // A marker that reaches the screen is an UNPARSED line: `##` kept its hashes,
+      // `**bold**` its asterisks, `` `code` `` its backticks.
+      for (const marker of ["#", "**", "`"]) {
+        expect(headingText, `the heading carries no raw ${marker} markup`).not.toContain(marker);
+      }
+      expect(
+        await prose.evaluate((el) => (el.textContent ?? "").replace(/\s+/g, " ").trim().length),
+        "the preview is a non-empty document",
+      ).toBeGreaterThan(0);
+      await expect(
+        prose.locator(
+          '[data-testid="markdown-paragraph"], [data-testid="markdown-list"], [data-testid="markdown-list-ordered"], [data-testid="markdown-code"]',
+        ),
+        "the markdown read: the body under the heading is structure too",
+      ).not.toHaveCount(0);
       await expect(prose, "no API field in the document").not.toContainText("endpoint");
       await expect(prose, "no escaped markdown in the document").not.toContainText("\\n");
       await expect(

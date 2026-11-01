@@ -32,6 +32,16 @@
 //
 //   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts --project=reflow
 //
+// The middle describe block is the THIRD pass-1 checker fix: `out/pass-1-
+// 20261101113830` recorded 20 defects and 19 of them were the same bug — every
+// `*-server-error` screen at both widths reported an `overlap` such as
+// `workflows-load-error-server × workflows-load-retry (57×12px)`, measured on
+// the raw server line a7ea79f had just moved behind a CLOSED `<details>`
+// disclosure (`ui/src/components/Feedback.tsx`). Nothing overlaps in
+// `1b-server-error-1280.png`: the text is folded away, and Chrome still lays it
+// out with a real box. So every collector now asks the browser whether it PAINTS
+// the element (`checkVisibility`), not just whether it has a box.
+//
 // The last describe block is the other pass-1 checker fix and lives here for
 // the same reason: `plan-steps.ts` (the gate card's “the steps are numbered in
 // order” rule) needs a browser and no lab, and this is the no-lab project.
@@ -42,7 +52,14 @@ import {
   type PlanBlock,
   type PlanBlockKind,
 } from "./plan-steps.js";
-import { findSmallTargets, type TargetHit } from "./reflow.js";
+import {
+  collectReflowItems,
+  findClippedText,
+  findOverlaps,
+  findSmallTargets,
+  type OverlapHit,
+  type TargetHit,
+} from "./reflow.js";
 
 /**
  * A document whose MAIN holds `body`. The 26px box is the design's compact
@@ -352,6 +369,176 @@ test.describe("findSmallTargets and the real hit area", () => {
       const hits = await page.evaluate(findSmallTargets);
       expect(hitFor("closed-i", hits)).toEqual({ name: "closed-i", height: 26 });
     });
+  });
+});
+
+/**
+ * pass-1 (`out/pass-1-20261101113830`): 20 defects, 19 of them one checker bug.
+ * Every `*-server-error` screen at BOTH widths filed
+ *
+ *   overlap: workflows-load-error-server × workflows-load-retry (57×12px)
+ *   overlap: p.wrap-anywhere "server said: Internal Server" × repo-load-retry
+ *
+ * while `1b-server-error-1280.png` shows a clean block: `Couldn't load the
+ * workflow library.`, the hint, `▸ Details`, `Retry` — nothing printed over
+ * anything. a7ea79f had moved the server's own words into a CLOSED `<details>`
+ * disclosure, and a closed disclosure is exactly the case a box-based checker
+ * gets wrong: Chrome lays the folded text out (`getBoundingClientRect` answers a
+ * real non-zero box, `display: block`, `visibility: visible`) and paints none of
+ * it. The collectors measured ink that is on no screenshot — the probe that
+ * reproduced it on the live page printed before/after
+ *
+ *   WIDTH 1280 before: overlap=[{"a":"workflows-load-error-server","b":"workflows-load-retry","dx":57,"dy":12}]
+ *   WIDTH 1280 after:  overlap=[]
+ *
+ * which is pass-1's defect line, 57×12px and all.
+ *
+ * `folded` reproduces that block with the app's own geometry — the folded line
+ * and the action row occupy the SAME band while the disclosure is shut — and
+ * keeps it identical when open by parking the button absolutely. That is the
+ * point of the pair: the boxes, the computed styles and the text are the same in
+ * both states, so the only thing a collector may legitimately ask is whether the
+ * browser paints the element, and the only thing that may change the answer is
+ * the `open` attribute.
+ *
+ *   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts --project=reflow
+ */
+function folded(open: boolean): string {
+  return [
+    '<div style="position:relative;width:420px">',
+    `<details data-testid="server-details"${open ? " open" : ""}>`,
+    '<summary data-testid="server-summary" style="font-size:11px;font-weight:600">Details</summary>',
+    // `.wrap-anywhere` is the app's own class on that line.
+    '<p data-testid="server-said" style="width:300px;margin:0;overflow-wrap:anywhere">',
+    "server said: Internal Server Error: emulated failure</p>",
+    "</details>",
+    // Parked, not flowed: with the row in the flow the open disclosure pushes it
+    // clear of the text and there is nothing to measure either way. The app's
+    // own row sits in the band the folded line keeps.
+    '<button data-testid="load-retry" style="position:absolute;left:0;top:18px">Retry</button>',
+    "</div>",
+  ].join("");
+}
+
+/**
+ * The fixture's own proof: the folded line's box and the button's box really do
+ * intersect by more than the 4px floor on both axes, in BOTH states — otherwise
+ * “no overlap while closed” would only be proving the fixture never collided.
+ */
+function foldedBoxesOverlap(): { dx: number; dy: number; serverPainted: boolean } {
+  const server = document.querySelector('[data-testid="server-said"]');
+  const retry = document.querySelector('[data-testid="load-retry"]');
+  if (server === null || retry === null) return { dx: -1, dy: -1, serverPainted: false };
+  const a = server.getBoundingClientRect();
+  const b = retry.getBoundingClientRect();
+  return {
+    dx: Math.round(Math.min(a.right, b.right) - Math.max(a.left, b.left)),
+    dy: Math.round(Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)),
+    serverPainted: server.checkVisibility({
+      contentVisibilityAuto: true,
+      opacityProperty: true,
+      visibilityProperty: true,
+    }),
+  };
+}
+
+/** The pair that names both elements, or undefined. */
+function pairWith(testid: string, hits: OverlapHit[]): OverlapHit | undefined {
+  return hits.find((hit) => hit.a === testid || hit.b === testid);
+}
+
+test.describe("what the user cannot see is not measured", () => {
+  test("(v1) a folded server line over a button is not an overlap", async ({ page }) => {
+    await page.setContent(doc(folded(false)));
+    const boxes = await page.evaluate(foldedBoxesOverlap);
+    // The pass-1 defect's shape, box for box: the two overlap, and Chrome paints
+    // only one of them.
+    expect(boxes.dx).toBeGreaterThan(4);
+    expect(boxes.dy).toBeGreaterThan(4);
+    expect(boxes.serverPainted, "closed-details content fails checkVisibility").toBe(false);
+    expect(await page.evaluate(findOverlaps)).toEqual([]);
+  });
+
+  test("(v2) the same block with <details open> IS an overlap", async ({ page }) => {
+    await page.setContent(doc(folded(true)));
+    const boxes = await page.evaluate(foldedBoxesOverlap);
+    // Same boxes (the button is parked, not flowed), so the ONLY change is that
+    // the browser now paints the line — and a painted collision is a defect.
+    expect(boxes.dx).toBeGreaterThan(4);
+    expect(boxes.dy).toBeGreaterThan(4);
+    expect(boxes.serverPainted, "opened-details content passes checkVisibility").toBe(true);
+    const hits = await page.evaluate(findOverlaps);
+    const hit = pairWith("server-said", hits);
+    expect(hit, `the opened line collides with the button: ${JSON.stringify(hits)}`).toBeTruthy();
+    expect(hit!.a === "load-retry" || hit!.b === "load-retry").toBe(true);
+    // …and the summary above them is not dragged in as a third party.
+    expect(pairWith("server-summary", hits)).toBeUndefined();
+  });
+
+  test("(v3) a 26px control behind the closed disclosure is not a touch target", async ({
+    page,
+  }) => {
+    const block = (open: boolean): string =>
+      `<details data-testid="tgt-details"${open ? " open" : ""}>` +
+      '<summary data-testid="tgt-summary">Details</summary>' +
+      '<div style="padding-top:60px"><button data-testid="tgt-btn" class="bordered" aria-label="tgt-btn"></button></div>' +
+      "</details>";
+    await page.setContent(doc(block(false)));
+    // Painted-size arithmetic alone sees the box: this is the false positive the
+    // fix is for, and `findSmallTargets`' inert/aria-hidden rules (c31bd22) do
+    // not cover a closed disclosure.
+    expect(
+      await page.evaluate(
+        () => document.querySelector('[data-testid="tgt-btn"]')!.getBoundingClientRect().height,
+      ),
+    ).toBe(26);
+    expect(await page.evaluate(findSmallTargets)).toEqual([]);
+    // Open it and the same control is a target again, at the same 26px.
+    await page.setContent(doc(block(true)));
+    expect(await page.evaluate(findSmallTargets)).toEqual([{ name: "tgt-btn", height: 26 }]);
+  });
+
+  test("(v4) folded content is in no parity inventory, open content is", async ({ page }) => {
+    const block = (open: boolean): string =>
+      `<details data-testid="inv-details"${open ? " open" : ""}>` +
+      "<summary>Details</summary>" +
+      '<h2 data-testid="inv-heading">Internal Server Error</h2>' +
+      "</details>";
+    await page.setContent(doc(block(false)));
+    const keys = (await page.evaluate(collectReflowItems)).map((item) => item.key);
+    expect(keys, "a heading behind a closed disclosure is not on the screen").not.toContain(
+      "testid:inv-heading",
+    );
+    expect(keys).not.toContain("heading:Internal Server Error");
+    // Inventorying it at 1280 and not at 390 would ALSO have invented a parity
+    // defect; the collector reads the same rule both times, so it never does.
+    await page.setContent(doc(block(true)));
+    const opened = (await page.evaluate(collectReflowItems)).map((item) => item.key);
+    expect(opened).toContain("testid:inv-heading");
+    expect(opened).toContain("heading:Internal Server Error");
+  });
+
+  test("(v5) folded text is never a clip defect either", async ({ page }) => {
+    const block = (open: boolean): string =>
+      `<details data-testid="clip-details"${open ? " open" : ""}>` +
+      "<summary>Details</summary>" +
+      '<div data-testid="clip-line" style="width:120px;overflow-x:hidden;white-space:nowrap">' +
+      "server said: Internal Server Error: emulated failure for the whole library</div>" +
+      "</details>";
+    await page.setContent(doc(block(false)));
+    // The box IS cut short — the check only has to notice nothing paints.
+    expect(
+      await page.evaluate(
+        () =>
+          (document.querySelector('[data-testid="clip-line"]') as HTMLElement).scrollWidth -
+          (document.querySelector('[data-testid="clip-line"]') as HTMLElement).clientWidth,
+      ),
+    ).toBeGreaterThan(4);
+    expect(await page.evaluate(findClippedText)).toEqual([]);
+    await page.setContent(doc(block(true)));
+    expect(await page.evaluate(findClippedText)).toEqual([
+      { label: "clip-line", text: expect.stringContaining("server said:") },
+    ]);
   });
 });
 /**
