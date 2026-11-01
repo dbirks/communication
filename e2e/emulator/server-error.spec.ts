@@ -500,6 +500,33 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       dialog.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 2c: the dialog whose pinned-revision read failed quotes the server instead of hiding the break",
     ).toBeVisible({ timeout: 30_000 });
+    // 2026-11-01 review (pass-1 shot 2c-server-error): the dialog quoted the
+    // problem in a bare `× FAILED` callout over a greyed `Add trigger` with no
+    // word of explanation. It now shows the app's ONE load-failure block — the
+    // plain sentence, the server text demoted to `server said:`, and the Retry
+    // the read actually supports — and the disabled verb says why beside itself.
+    await expect(
+      dialog.getByTestId("trigger-dialog-revision-error"),
+      "design 2c: the failed read leads with its own sentence, not the run-status word",
+    ).toContainText("Couldn't load the pinned workflow revision.", { timeout: 30_000 });
+    await expect(
+      dialog.getByTestId("trigger-dialog-revision-error"),
+      "design 2c: and it says what that means for the trigger, in plain words",
+    ).toContainText("it will not send a trigger it cannot complete", { timeout: 30_000 });
+    await expect(
+      page.getByTestId("trigger-dialog-revision-retry"),
+      "design 2c: a server error offers the one thing it supports — ask again",
+    ).toHaveText("Retry", { timeout: 30_000 });
+    await expect(
+      dialog.getByTestId("trigger-dialog-submit-reason"),
+      "design 2c: the greyed verb explains itself — the run's inputs come from the revision that did not read",
+    ).toContainText("Add trigger is off until the pinned workflow revision can be read", {
+      timeout: 30_000,
+    });
+    await expect(
+      page.getByTestId("trigger-dialog-submit"),
+      "design 2c: the verb stays disabled for THAT reason (no inputs to send), never silently",
+    ).toBeDisabled({ timeout: 30_000 });
     await expect(
       dialog.getByTestId("trigger-dialog-run-gets"),
       "design 2c: the run-input table is only drawn from the revision the server served — never invented",

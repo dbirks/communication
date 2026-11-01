@@ -18,6 +18,16 @@
  * bytes the artboard's `lucide-static/icons/github.svg` carries. The `#` /
  * `◷` text glyphs are never used for trigger types.
  *
+ * A write that came back refusing is said in the app's ONE failure treatment
+ * (2026-11-01 review, pass-1 shot 2c-server-error): the plain sentence
+ * `Couldn't save the trigger. Nothing was changed.`, the server's own problem
+ * document kept below it as the muted `server said:` line, and the primary verb
+ * left ENABLED — the author presses `Add trigger` again rather than hunting for
+ * a way back in. Where the verb really is off (the pinned revision could not be
+ * read, so the run's inputs are unknown; or a field is still incomplete) the
+ * dialog SAYS that reason in the same words next to the button: a greyed verb
+ * with no sentence beside it reads as a stuck dialog, not as a refusal.
+ *
  * The server stays the authority for the cron grammar, the label set and the
  * fixed inputs: a `422 invalid_cron`, a `422 not_a_github_repository` /
  * `repository_mismatch` or a stale-version `409` renders inline and the
@@ -44,8 +54,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Clock, createLucideIcon } from "lucide-react";
 import { Button } from "../ds/Button";
+import { Alert } from "../ds/Alert";
 import { Field, Input, Select, labelClass } from "../ds/Field";
-import { FormError, ProblemBanner, Spinner } from "../Feedback";
+import { ProblemBanner, Spinner } from "../Feedback";
+import { problemOf } from "../../api/client";
 import {
   defaultValuesOf,
   inputProblemsOf,
@@ -214,6 +226,114 @@ export function runGetsValue(field: RunInputField, value: InputValue | undefined
   if (words !== null) return words;
   const flat = text.replace(/\s+/g, " ");
   return flat.length > 48 ? `“${flat.slice(0, 48)}…”` : `“${flat}”`;
+}
+
+/**
+ * The block a refused write leaves in the dialog. Feedback's `Couldn't load …`
+ * block is the app's one treatment for a thing that did not happen, and this is
+ * that block with the verb a WRITE needs: a sentence in the reader's words
+ * first, the server's problem document as evidence second (quoting
+ * `Internal Server Error: emulated failure` is honest, but it is not something
+ * a person reads as an answer), and the way out named — the same verb they just
+ * pressed, which stays enabled.
+ *
+ * The old rendering was the compact `× FAILED / <problem>` callout, which the
+ * 2c review graded a defect on both counts: `FAILED` is a run's status word (the
+ * handoff's rule 06), and with the verb greyed beside it the screen said
+ * “something broke, and you cannot do anything about it”.
+ */
+function TriggerWriteFailure({
+  error,
+  verb,
+  canRetry,
+}: {
+  error: unknown;
+  /** The dialog's own primary verb, so the sentence points at the real button. */
+  verb: string;
+  /** Whether that verb is pressable right now (a broken read says its own
+   * reason beside the button instead of promising a press that does nothing). */
+  canRetry: boolean;
+}) {
+  const problem = problemOf(error);
+  // `problemOf` stringifies whatever it was handed; an empty answer is dropped
+  // rather than quoted as `server said: undefined`.
+  const detail =
+    problem.detail === undefined ||
+    problem.detail === null ||
+    problem.detail === "undefined" ||
+    problem.detail === "null" ||
+    problem.detail === ""
+      ? ""
+      : String(problem.detail);
+  const quoted = detail ? `${problem.title}: ${detail}` : problem.title;
+  // A refusal (404 — the trigger was deleted under the dialog) is not a break:
+  // “Not Found” is no evidence a person can act on, so the muted line goes and
+  // the plain sentence carries the block.
+  const refused = problem.status === 404;
+  return (
+    <Alert
+      state="failed"
+      label="COULDN'T SAVE"
+      role="alert"
+      testid="trigger-dialog-error"
+      className="shrink-0"
+    >
+      <div className="min-w-0 max-w-[70ch] space-y-[3px]">
+        <p
+          className="text-[13px] font-semibold text-ink"
+          data-testid="trigger-dialog-error-summary"
+        >
+          {"Couldn't save the trigger. Nothing was changed."}
+        </p>
+        <p className="text-[12px] text-muted" data-testid="trigger-dialog-error-hint">
+          {canRetry
+            ? `Your answers are still here — press ${verb} to try again.`
+            : `Your answers are still here — ${verb} says below what it is waiting for.`}
+        </p>
+        {refused ? null : (
+          <p
+            className="font-mono text-[10.5px] text-faint"
+            data-testid="trigger-dialog-error-server"
+          >
+            {`server said: ${quoted}`}
+          </p>
+        )}
+      </div>
+    </Alert>
+  );
+}
+
+/** Why the primary verb sits disabled, in the words the author reads — null
+ * when it is live (2026-11-01 review: the pass-1 shot showed a filled-looking
+ * form with a greyed `Add trigger` and nothing explaining it, which reads as a
+ * dead end rather than as a rule).
+ *
+ * An EMPTY LABEL FIELD is deliberately not one of these reasons: the label hint
+ * already says “leave it empty to watch every issue”, so empty labels are a
+ * valid answer, not a blocker. */
+export function primaryVerbBlock({
+  verb,
+  revisionPending,
+  revisionFailed,
+  problems,
+}: {
+  verb: string;
+  revisionPending: boolean;
+  revisionFailed: boolean;
+  problems: Record<string, string>;
+}): string | null {
+  if (revisionFailed) {
+    return `${verb} is off until the pinned workflow revision can be read — the run's inputs come from it.`;
+  }
+  if (revisionPending) {
+    return `${verb} is off while the pinned workflow revision loads.`;
+  }
+  const names = Object.keys(problems);
+  if (names.length === 0) return null;
+  // The field itself carries the full note; this line repeats it where the
+  // button is, without the grammar mnemonic the author does not read.
+  const what = names.map((name) => problems[name].replace(/ by spec\.inputs$/i, "")).join("; ");
+  return `${verb} is off until the form is complete — ${what}.`;
 }
 
 export type TriggerEditing =
@@ -486,6 +606,19 @@ function TriggerDialogBody({
     "issue-patch": patchIssue.error,
   };
   const writeError = lastWrite === null ? null : writeErrors[lastWrite];
+  // The verb the author reads on the button, reused in the sentences that talk
+  // about the button, so the copy and the control never disagree.
+  const verb = editing ? "Save trigger" : "Add trigger";
+  // A failed write does NOT disable the verb (nothing about the form changed),
+  // so the only reasons left to explain are the ones `blocked` answers for.
+  const blockReason = busy
+    ? null
+    : primaryVerbBlock({
+        verb,
+        revisionPending: revision.isPending,
+        revisionFailed: revision.isError,
+        problems,
+      });
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
@@ -518,285 +651,333 @@ function TriggerDialogBody({
           </span>
         </div>
         <form
-          className="flex max-h-[calc(100vh-8rem)] flex-col gap-[14px] overflow-y-auto px-4 py-4"
+          className="flex max-h-[calc(100vh-8rem)] flex-col gap-[14px] px-4 py-4"
           onSubmit={submit}
           data-testid="trigger-dialog-form"
         >
-          <div className="flex flex-col gap-[6px]">
-            <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-              START IT WHEN
-            </span>
-            <div
-              className="flex w-max overflow-hidden rounded-[3px] border border-line-strong"
-              role="group"
-              aria-label="start it when"
-              data-testid="trigger-dialog-mode"
-            >
-              <button
-                type="button"
-                aria-pressed={mode === "issue"}
-                onClick={() => chooseMode("issue")}
-                className={`flex items-center gap-[6px] px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
-                  mode === "issue"
-                    ? "bg-ink font-semibold text-surface"
-                    : "bg-surface font-normal text-ink-2"
-                }`}
-                data-testid="trigger-dialog-mode-issue"
-              >
-                <GithubIcon size={14} strokeWidth={2} aria-hidden />
-                A GitHub issue…
-              </button>
-              <button
-                type="button"
-                aria-pressed={mode === "schedule"}
-                onClick={() => chooseMode("schedule")}
-                className={`flex items-center gap-[6px] border-l border-line-strong px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
-                  mode === "schedule"
-                    ? "bg-ink font-semibold text-surface"
-                    : "bg-surface font-normal text-ink-2"
-                }`}
-                data-testid="trigger-dialog-mode-schedule"
-              >
-                <Clock size={14} strokeWidth={2} aria-hidden />
-                On a schedule
-              </button>
-            </div>
-          </div>
-
-          {mode === "issue" ? (
-            <>
-              <Field id="trigger-dialog-event" label="IS">
-                <Select
-                  id="trigger-dialog-event"
-                  value={event}
-                  onChange={(changeEvent) =>
-                    setEvent(changeEvent.target.value as IssueTrigger["event"])
-                  }
-                  className="font-ui"
-                  data-testid="trigger-dialog-event"
-                >
-                  <option value="opened">opened</option>
-                  <option value="labeled">labeled</option>
-                </Select>
-              </Field>
-              <div className="flex flex-col gap-1">
-                <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-                  WITH ANY OF THESE LABELS
-                </span>
-                <div
-                  className="flex min-h-[30px] flex-wrap items-center gap-[6px] rounded-[3px] border border-line-strong bg-surface px-2 py-[3px] focus-within:border-ink focus-within:shadow-[0_0_0_2px_var(--color-accent-ring)]"
-                  data-testid="trigger-dialog-labels-row"
-                >
-                  {labels.map((label, index) => (
-                    <span
-                      key={`${label}-${index}`}
-                      className="inline-flex items-center gap-[4px] rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[11px] text-ink-2"
-                      data-testid={`trigger-dialog-label-chip-${index}`}
-                    >
-                      {label}
-                      <button
-                        type="button"
-                        aria-label={`remove label ${label}`}
-                        className="text-faint hover:text-ink"
-                        onClick={() =>
-                          setLabels((current) => current.filter((_, i) => i !== index))
-                        }
-                        data-testid={`trigger-dialog-label-remove-${index}`}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                  <input
-                    id="trigger-dialog-labels"
-                    value={labelDraft}
-                    onChange={(changeEvent) => setLabelDraft(changeEvent.target.value)}
-                    onKeyDown={(keyEvent) => {
-                      if (keyEvent.key === "Enter" || keyEvent.key === ",") {
-                        keyEvent.preventDefault();
-                        addLabel();
-                      }
-                    }}
-                    onBlur={addLabel}
-                    placeholder="add label…"
-                    aria-label="labels (any of)"
-                    className="min-w-[120px] flex-1 bg-transparent font-mono text-[12px] text-ink outline-none placeholder:text-faint"
-                    data-testid="trigger-dialog-labels"
-                  />
-                </div>
-                <p
-                  className="font-mono text-[10.5px] text-faint"
-                  data-testid="trigger-dialog-labels-hint"
-                >
-                  an issue with any one of these labels starts the run; leave it empty to watch
-                  every issue
-                </p>
-              </div>
-            </>
-          ) : (
-            <Field
-              id="trigger-dialog-cron"
-              label="RUNS AT (UTC)"
-              hint={
-                <span data-testid="trigger-dialog-cron-hint">
-                  five fields: minute, hour, day of month, month, day of week
-                </span>
-              }
-            >
-              <div className="flex flex-wrap items-center gap-[8px]">
-                <Input
-                  id="trigger-dialog-cron"
-                  value={cron}
-                  onChange={(changeEvent) => setCron(changeEvent.target.value)}
-                  className="max-w-[180px] font-mono"
-                  data-testid="trigger-dialog-cron"
-                />
-                <span
-                  className="font-mono text-[11px] text-ink-2"
-                  data-testid="trigger-dialog-cron-words"
-                >
-                  {cronInWords(cron)}
-                </span>
-              </div>
-            </Field>
-          )}
-
-          {revision.isPending ? <Spinner label="Loading the pinned revision" /> : null}
-          {revision.isError ? (
-            <ProblemBanner
-              error={revision.error}
-              fallback="The pinned revision could not be read."
-            />
-          ) : null}
-
-          {fields && fields.length > 0 ? (
-            <div
-              className="flex flex-col gap-1 rounded-[3px] border border-line bg-paper px-3 py-[10px]"
-              data-testid="trigger-dialog-run-gets"
-            >
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted">
-                THE RUN GETS
+          {/* The fields scroll; the refusal and the verbs do not (2026-11-01
+              review): with the whole form scrolling, a tall run-input form pushed
+              `Couldn't save the trigger.` below the fold — the explanation the
+              author needs to read sat under the very button it explains. */}
+          <div
+            className="flex min-h-0 flex-col gap-[14px] overflow-y-auto"
+            data-testid="trigger-dialog-body"
+          >
+            <div className="flex flex-col gap-[6px]">
+              <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                START IT WHEN
               </span>
-              {fields.map((field) => (
-                <span
-                  key={field.name}
-                  className="text-[12.5px] text-ink"
-                  data-testid={`trigger-dialog-run-gets-${field.name}`}
+              <div
+                className="flex w-max overflow-hidden rounded-[3px] border border-line-strong"
+                role="group"
+                aria-label="start it when"
+                data-testid="trigger-dialog-mode"
+              >
+                <button
+                  type="button"
+                  aria-pressed={mode === "issue"}
+                  onClick={() => chooseMode("issue")}
+                  className={`flex items-center gap-[6px] px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
+                    mode === "issue"
+                      ? "bg-ink font-semibold text-surface"
+                      : "bg-surface font-normal text-ink-2"
+                  }`}
+                  data-testid="trigger-dialog-mode-issue"
                 >
-                  <code className="font-mono text-[11.5px]">{field.name}</code> ={" "}
-                  {runGetsValue(field, values[field.name])}
-                </span>
-              ))}
+                  <GithubIcon size={14} strokeWidth={2} aria-hidden />
+                  A GitHub issue…
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mode === "schedule"}
+                  onClick={() => chooseMode("schedule")}
+                  className={`flex items-center gap-[6px] border-l border-line-strong px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
+                    mode === "schedule"
+                      ? "bg-ink font-semibold text-surface"
+                      : "bg-surface font-normal text-ink-2"
+                  }`}
+                  data-testid="trigger-dialog-mode-schedule"
+                >
+                  <Clock size={14} strokeWidth={2} aria-hidden />
+                  On a schedule
+                </button>
+              </div>
             </div>
-          ) : null}
 
-          {editableFields?.map((field) => {
-            // The issue arm reads a placeholder-only value in words; the
-            // schedule arm has no issue to fill anything, so the same bytes
-            // there ARE the literal text and stay in the box the author typed.
-            const stored = values[field.name];
-            const isTextKind = field.kind === "text" || field.kind === "textarea";
-            const words =
-              mode === "issue" && isTextKind
-                ? issueValueInWords(typeof stored === "string" ? stored : "")
-                : null;
-            const showRaw = words === null || rawTemplates[field.name] === true;
-            return (
-              <div key={field.name} className="flex flex-col gap-1">
-                {showRaw ? (
-                  <InputFieldControl
-                    field={field}
-                    value={stored}
-                    repositories={[repository.name]}
-                    repositoriesLoading={false}
-                    error={showProblems ? problems[field.name] : undefined}
-                    onChange={(value) =>
-                      setValues((current) => ({ ...current, [field.name]: value }))
+            {mode === "issue" ? (
+              <>
+                <Field id="trigger-dialog-event" label="IS">
+                  <Select
+                    id="trigger-dialog-event"
+                    value={event}
+                    onChange={(changeEvent) =>
+                      setEvent(changeEvent.target.value as IssueTrigger["event"])
                     }
-                  />
-                ) : (
-                  <IssueWordsField
-                    field={field}
-                    words={words}
-                    onWriteOwnWords={() =>
-                      setRawTemplates((current) => ({ ...current, [field.name]: true }))
-                    }
-                  />
-                )}
-                {showRaw && mode === "issue" && isTextKind ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setValues((current) => ({
-                        ...current,
-                        [field.name]: "{{issue.title}}\n\n{{issue.body}}",
-                      }))
-                    }
-                    className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    data-testid={`trigger-dialog-quickfill-${field.name}`}
+                    className="font-ui"
+                    data-testid="trigger-dialog-event"
                   >
-                    use issue title/body
-                  </button>
-                ) : null}
-                {/* An integer input (the shipped `issue-to-pr` template's
-                    `issue_number`) is unfillable without this: the number control
-                    cannot type a placeholder, and the fire fills the value the
-                    row carries. */}
-                {mode === "issue" && (field.kind === "integer" || field.kind === "number") ? (
-                  <>
+                    <option value="opened">opened</option>
+                    <option value="labeled">labeled</option>
+                  </Select>
+                </Field>
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                    WITH ANY OF THESE LABELS
+                  </span>
+                  <div
+                    className="flex min-h-[30px] flex-wrap items-center gap-[6px] rounded-[3px] border border-line-strong bg-surface px-2 py-[3px] focus-within:border-ink focus-within:shadow-[0_0_0_2px_var(--color-accent-ring)]"
+                    data-testid="trigger-dialog-labels-row"
+                  >
+                    {labels.map((label, index) => (
+                      <span
+                        key={`${label}-${index}`}
+                        className="inline-flex items-center gap-[4px] rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[11px] text-ink-2"
+                        data-testid={`trigger-dialog-label-chip-${index}`}
+                      >
+                        {label}
+                        <button
+                          type="button"
+                          aria-label={`remove label ${label}`}
+                          className="text-faint hover:text-ink"
+                          onClick={() =>
+                            setLabels((current) => current.filter((_, i) => i !== index))
+                          }
+                          data-testid={`trigger-dialog-label-remove-${index}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      id="trigger-dialog-labels"
+                      value={labelDraft}
+                      onChange={(changeEvent) => setLabelDraft(changeEvent.target.value)}
+                      onKeyDown={(keyEvent) => {
+                        if (keyEvent.key === "Enter" || keyEvent.key === ",") {
+                          keyEvent.preventDefault();
+                          addLabel();
+                        }
+                      }}
+                      onBlur={addLabel}
+                      placeholder="add label…"
+                      aria-label="labels (any of)"
+                      className="min-w-[120px] flex-1 bg-transparent font-mono text-[12px] text-ink outline-none placeholder:text-faint"
+                      data-testid="trigger-dialog-labels"
+                    />
+                  </div>
+                  <p
+                    className="font-mono text-[10.5px] text-faint"
+                    data-testid="trigger-dialog-labels-hint"
+                  >
+                    an issue with any one of these labels starts the run; leave it empty to watch
+                    every issue
+                  </p>
+                </div>
+              </>
+            ) : (
+              <Field
+                id="trigger-dialog-cron"
+                label="RUNS AT (UTC)"
+                hint={
+                  <span data-testid="trigger-dialog-cron-hint">
+                    five fields: minute, hour, day of month, month, day of week
+                  </span>
+                }
+              >
+                <div className="flex flex-wrap items-center gap-[8px]">
+                  <Input
+                    id="trigger-dialog-cron"
+                    value={cron}
+                    onChange={(changeEvent) => setCron(changeEvent.target.value)}
+                    className="max-w-[180px] font-mono"
+                    data-testid="trigger-dialog-cron"
+                  />
+                  <span
+                    className="font-mono text-[11px] text-ink-2"
+                    data-testid="trigger-dialog-cron-words"
+                  >
+                    {cronInWords(cron)}
+                  </span>
+                </div>
+              </Field>
+            )}
+
+            {revision.isPending ? <Spinner label="Loading the pinned revision" /> : null}
+            {revision.isError ? (
+              <ProblemBanner
+                error={revision.error}
+                fallback="The dialog cannot see what the run needs, so it will not send a trigger it cannot complete."
+                subject="the pinned workflow revision"
+                testid="trigger-dialog-revision-error"
+                // A 404 is a refusal, not a break: re-asking for a revision that
+                // is not there answers the same, so the block offers no Retry
+                // (the rule `ProblemBanner` states for every load failure).
+                retry={
+                  problemOf(revision.error).status === 404
+                    ? undefined
+                    : {
+                        onClick: () => void revision.refetch(),
+                        pending: revision.isFetching,
+                        testid: "trigger-dialog-revision-retry",
+                      }
+                }
+              />
+            ) : null}
+
+            {fields && fields.length > 0 ? (
+              <div
+                className="flex flex-col gap-1 rounded-[3px] border border-line bg-paper px-3 py-[10px]"
+                data-testid="trigger-dialog-run-gets"
+              >
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted">
+                  THE RUN GETS
+                </span>
+                {fields.map((field) => (
+                  <span
+                    key={field.name}
+                    className="text-[12.5px] text-ink"
+                    data-testid={`trigger-dialog-run-gets-${field.name}`}
+                  >
+                    <code className="font-mono text-[11.5px]">{field.name}</code> ={" "}
+                    {runGetsValue(field, values[field.name])}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {editableFields?.map((field) => {
+              // The issue arm reads a placeholder-only value in words; the
+              // schedule arm has no issue to fill anything, so the same bytes
+              // there ARE the literal text and stay in the box the author typed.
+              const stored = values[field.name];
+              const isTextKind = field.kind === "text" || field.kind === "textarea";
+              const words =
+                mode === "issue" && isTextKind
+                  ? issueValueInWords(typeof stored === "string" ? stored : "")
+                  : null;
+              const showRaw = words === null || rawTemplates[field.name] === true;
+              return (
+                <div key={field.name} className="flex flex-col gap-1">
+                  {showRaw ? (
+                    <InputFieldControl
+                      field={field}
+                      value={stored}
+                      repositories={[repository.name]}
+                      repositoriesLoading={false}
+                      error={showProblems ? problems[field.name] : undefined}
+                      onChange={(value) =>
+                        setValues((current) => ({ ...current, [field.name]: value }))
+                      }
+                    />
+                  ) : (
+                    <IssueWordsField
+                      field={field}
+                      words={words}
+                      onWriteOwnWords={() =>
+                        setRawTemplates((current) => ({ ...current, [field.name]: true }))
+                      }
+                    />
+                  )}
+                  {showRaw && mode === "issue" && isTextKind ? (
                     <button
                       type="button"
                       onClick={() =>
                         setValues((current) => ({
                           ...current,
-                          [field.name]: ISSUE_NUMBER_TOKEN,
+                          [field.name]: "{{issue.title}}\n\n{{issue.body}}",
                         }))
                       }
                       className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                       data-testid={`trigger-dialog-quickfill-${field.name}`}
                     >
-                      use issue number
+                      use issue title/body
                     </button>
-                    <NumericIssueBindingLine name={field.name} value={values[field.name]} />
-                  </>
-                ) : null}
-              </div>
-            );
-          })}
+                  ) : null}
+                  {/* An integer input (the shipped `issue-to-pr` template's
+                    `issue_number`) is unfillable without this: the number control
+                    cannot type a placeholder, and the fire fills the value the
+                    row carries. */}
+                  {mode === "issue" && (field.kind === "integer" || field.kind === "number") ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setValues((current) => ({
+                            ...current,
+                            [field.name]: ISSUE_NUMBER_TOKEN,
+                          }))
+                        }
+                        className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        data-testid={`trigger-dialog-quickfill-${field.name}`}
+                      >
+                        use issue number
+                      </button>
+                      <NumericIssueBindingLine name={field.name} value={values[field.name]} />
+                    </>
+                  ) : null}
+                </div>
+              );
+            })}
 
-          {mode === "issue" ? (
-            <span className="font-mono text-[10.5px] text-faint" data-testid="trigger-dialog-note">
-              {/* Design 2c's footnote, told honestly: the poll is minute-based,
+            {mode === "issue" ? (
+              <span
+                className="font-mono text-[10.5px] text-faint"
+                data-testid="trigger-dialog-note"
+              >
+                {/* Design 2c's footnote, told honestly: the poll is minute-based,
                   and an issue trigger can only be read from a repository this
                   platform can reach anonymously — i.e. a public one. ADR-0061
                   gives a repository a GitHub credential, and with one that limit
                   is gone, so the second half is said only where it is true
                   (2026-10-30 copy review; pass-8 review item 10 put the design's
                   words back for the case they describe). */}
-              Checked every minute
-              {hasCredential(repository) ? "" : " · public GitHub repositories only"}
-            </span>
+                Checked every minute
+                {hasCredential(repository) ? "" : " · public GitHub repositories only"}
+              </span>
+            ) : null}
+          </div>
+
+          {writeError ? (
+            <TriggerWriteFailure
+              error={writeError}
+              verb={verb}
+              // The way out of a refusal is the same verb; say so only when the
+              // button can actually be pressed.
+              canRetry={!blocked}
+            />
           ) : null}
 
-          {writeError ? <FormError error={writeError} testid="trigger-dialog-error" /> : null}
-
-          <div className="flex justify-end gap-2 border-t border-line pt-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              data-testid="trigger-dialog-cancel"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={blocked}
-              data-testid="trigger-dialog-submit"
-            >
-              {busy ? "Saving…" : editing ? "Save trigger" : "Add trigger"}
-            </Button>
+          <div className="flex shrink-0 flex-col items-end gap-[6px] border-t border-line pt-3">
+            {/* The reason sits beside the verb it explains, not in a tooltip on a
+                button a pointer cannot hover and a screen reader cannot reach. */}
+            {blockReason ? (
+              <p
+                id="trigger-dialog-submit-reason"
+                className="w-full max-w-[360px] text-right font-mono text-[10.5px] text-muted"
+                data-testid="trigger-dialog-submit-reason"
+              >
+                {blockReason}
+              </p>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={onClose}
+                data-testid="trigger-dialog-cancel"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={blocked}
+                aria-describedby={blockReason ? "trigger-dialog-submit-reason" : undefined}
+                data-testid="trigger-dialog-submit"
+              >
+                {busy ? "Saving…" : verb}
+              </Button>
+            </div>
           </div>
         </form>
       </div>

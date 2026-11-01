@@ -782,3 +782,203 @@ describe("TriggerDialog — the run-input reading", () => {
     ]);
   });
 });
+
+/**
+ * The 2026-11-01 review of pass-1 shot `2c-server-error`: a write that came
+ * back refusing left the dialog showing `× FAILED / Internal Server Error:
+ * emulated failure` over a greyed `Add trigger`, with nothing explaining either
+ * the refusal or the button. The dialog now speaks the app's one failure
+ * language, keeps the verb live after a refusal, and says the reason whenever
+ * the verb really is off.
+ */
+describe("TriggerDialog — a refused save is said in plain words and stays retryable", () => {
+  it("says Couldn't save the trigger, quotes the server as evidence, and keeps Add trigger live", async () => {
+    const { requests } = mountInHost(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/schedules`,
+        method: "POST",
+        status: 500,
+        body: problem(500, "Internal Server Error", "emulated failure"),
+      },
+    ]);
+    fireEvent.click(await screen.findByTestId("trigger-dialog-mode-schedule"));
+    // The inputs only exist once the pinned revision has read in.
+    await screen.findByTestId("new-run-input-goal");
+    fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "* * * * *" } });
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), {
+      target: { value: "Prove the retry path" },
+    });
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+
+    const error = await screen.findByTestId("trigger-dialog-error");
+    // The plain sentence a person reads, in the app's own words, first.
+    expect(error.textContent).toContain("Couldn't save the trigger. Nothing was changed.");
+    // The server's document stays on screen as evidence — in the muted mono
+    // line, not as the headline.
+    expect(error.textContent).toContain("server said: Internal Server Error: emulated failure");
+    // `FAILED` is a run's status word (handoff rule 06 says a state is never
+    // color alone, and the review says this state is not a run).
+    expect(error.textContent).not.toMatch(/FAILED/);
+    // It is also READ: the fields scroll, the refusal and the verbs do not, so
+    // a tall run-input form cannot push the explanation below the fold.
+    const body = screen.getByTestId("trigger-dialog-body");
+    expect(body.contains(error)).toBe(false);
+    expect(screen.getByTestId("trigger-dialog-form").contains(error)).toBe(true);
+    expect(body.contains(screen.getByTestId("trigger-dialog-run-gets"))).toBe(true);
+
+    // The way out is the same verb: a refused write changes nothing about the
+    // form, so the button is NOT greyed and no reason line hangs beside it.
+    const submit = screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    expect(screen.queryByTestId("trigger-dialog-submit-reason")).toBeNull();
+
+    // Pressing it again spends a second create — the dialog is not a dead end.
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/schedules`, "POST"),
+      ).toHaveLength(2),
+    );
+    expect(screen.queryByTestId("host-dialog-unmounted")).toBeNull();
+  });
+
+  it("keeps a 422 refusal's own words under the plain sentence and the verb live", async () => {
+    const { requests } = mount(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
+        method: "POST",
+        status: 422,
+        body: problem(
+          422,
+          "Not A Github Repository",
+          "this repository has no GitHub remote, so an issue trigger would never fire",
+        ),
+      },
+    ]);
+    await screen.findByTestId("new-run-input-goal");
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), {
+      target: { value: "Close the issue with a summary" },
+    });
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    const error = await screen.findByTestId("trigger-dialog-error");
+    expect(error.textContent).toContain("Couldn't save the trigger. Nothing was changed.");
+    // The refusal is the useful part, so it is still quotable verbatim — the
+    // e2e suite reads this node for the server's own words.
+    expect(error.textContent).toContain(
+      "this repository has no GitHub remote, so an issue trigger would never fire",
+    );
+    expect(error.textContent).toContain("Not A Github Repository");
+    // The point-out answer to “how would the author recover?”: the point-out
+    // sentence names the verb that is still pressable.
+    expect(screen.getByTestId("trigger-dialog-error-hint").textContent).toContain(
+      "press Add trigger to try again",
+    );
+    expect((screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      requestsTo(requests, `/api/v1/projects/${projectFixture.id}/issue-triggers`, "POST"),
+    ).toHaveLength(1);
+  });
+});
+
+describe("TriggerDialog — a disabled verb says why beside itself", () => {
+  it("reads a failed pinned-revision read as the shared Couldn't load block with Retry", async () => {
+    // The emulator's 2c server-error journey: the dialog's OWN read (the pinned
+    // revision) answers 500, so the run inputs are unknown and the create
+    // cannot be built. That is a real reason — and it is now said out loud.
+    mount(null, [
+      {
+        path: `/api/v1/revisions/${WIRE_REVISION_ID}`,
+        method: "GET",
+        body: wireRevision as object,
+        flaky: { failures: 1, status: 500 },
+      },
+    ]);
+    const banner = await screen.findByTestId("trigger-dialog-revision-error");
+    expect(banner.textContent).toContain("Couldn't load the pinned workflow revision.");
+    expect(banner.textContent).toContain("server said:");
+    expect(banner.textContent).not.toMatch(/^FAILED/);
+    // The read really can be re-asked, so the block offers it.
+    expect(screen.getByTestId("trigger-dialog-revision-retry").textContent).toBe("Retry");
+
+    const reason = await screen.findByTestId("trigger-dialog-submit-reason");
+    expect(reason.textContent).toContain(
+      "Add trigger is off until the pinned workflow revision can be read",
+    );
+    expect((screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement).disabled).toBe(true);
+    // The reason is reachable from the button it explains, not only by eye.
+    expect(screen.getByTestId("trigger-dialog-submit").getAttribute("aria-describedby")).toBe(
+      "trigger-dialog-submit-reason",
+    );
+    // No run-input box invented over the failed read.
+    expect(screen.queryByTestId("trigger-dialog-run-gets")).toBeNull();
+
+    // Retry asks again, the revision arrives, the block and its reason go.
+    fireEvent.click(screen.getByTestId("trigger-dialog-revision-retry"));
+    await screen.findByTestId("trigger-dialog-run-gets-goal");
+    expect(screen.queryByTestId("trigger-dialog-revision-error")).toBeNull();
+  });
+
+  it("offers no Retry on a pinned-revision 404 — re-asking a refusal cannot help", async () => {
+    mount(null, [
+      {
+        path: `/api/v1/revisions/${WIRE_REVISION_ID}`,
+        method: "GET",
+        status: 404,
+        body: problem(404, "Not Found", "no such revision"),
+      },
+    ]);
+    const banner = await screen.findByTestId("trigger-dialog-revision-error");
+    expect(banner.textContent).toContain("Couldn't load the pinned workflow revision.");
+    // A refusal is not a break: neither the server's title nor a dead Retry.
+    expect(banner.textContent).not.toContain("server said:");
+    expect(screen.queryByTestId("trigger-dialog-revision-retry")).toBeNull();
+    // The verb still says why it sits disabled.
+    const reason = await screen.findByTestId("trigger-dialog-submit-reason");
+    expect(reason.textContent).toContain(
+      "Add trigger is off until the pinned workflow revision can be read",
+    );
+  });
+
+  it("names the field an empty form is waiting for, without the grammar mnemonic", async () => {
+    mount();
+    await screen.findByTestId("new-run-input-goal");
+    const reason = screen.getByTestId("trigger-dialog-submit-reason");
+    // `spec.inputs` is the server's vocabulary; the author reads the field name.
+    await waitFor(() =>
+      expect(reason.textContent).toContain("Add trigger is off until the form is complete"),
+    );
+    expect(reason.textContent).toContain("goal is required");
+    expect(reason.textContent).not.toContain("spec.inputs");
+    expect((screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), {
+      target: { value: "Ship the review fix" },
+    });
+    await waitFor(() => expect(screen.queryByTestId("trigger-dialog-submit-reason")).toBeNull());
+    expect((screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("treats empty labels as the valid answer they are, not as a reason to stop the verb", async () => {
+    // The label hint already says “leave it empty to watch every issue”, so
+    // with the required input filled the verb must be live and silent.
+    mount();
+    await screen.findByTestId("new-run-input-goal");
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), { target: { value: "Triage" } });
+    await waitFor(() =>
+      expect((screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    expect(screen.queryByTestId("trigger-dialog-submit-reason")).toBeNull();
+  });
+
+  it("says Save trigger in the sentence when the dialog edits a trigger", async () => {
+    // The copy tracks the button: an edit dialog never promises `Add trigger`.
+    mount({ kind: "schedule", schedule: wireSchedule({ inputs: {} }) });
+    await screen.findByTestId("new-run-input-goal");
+    const reason = screen.getByTestId("trigger-dialog-submit-reason");
+    await waitFor(() =>
+      expect(reason.textContent).toContain("Save trigger is off until the form is complete"),
+    );
+  });
+});
