@@ -19,6 +19,7 @@
  * — and Escape closes.
  */
 import { offeredSteps } from "../../lib/pipeline/graphDoc";
+import { StepKindIcon } from "../../lib/stepIcons";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 export interface StepLibraryEntry {
@@ -293,6 +294,9 @@ function PickerRow({
       onClick={onPick}
     >
       <div className="flex items-center gap-1.5">
+        {/* Issue #65: the same compact kind icon the palette rows carry;
+            aria-hidden — the row's label and catalogue name are the text. */}
+        <StepKindIcon kind={entry.kind} className="shrink-0 text-ink-2" />
         <span className="truncate text-[12px] font-medium text-ink">
           {card?.title ?? entry.label}
         </span>

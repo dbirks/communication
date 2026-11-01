@@ -30,7 +30,8 @@ import {
   type GraphModel,
   type OpResult,
 } from "../../lib/pipeline/graphDoc";
-import { DEFERRED_KINDS, kindGlyph, kindWord } from "../../lib/pipeline/definition";
+import { DEFERRED_KINDS, kindWord } from "../../lib/pipeline/definition";
+import { StepKindIcon } from "../../lib/stepIcons";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "../../api/client";
 import { useAgentProfiles, useSystemSandbox } from "../../api/queries";
@@ -1207,14 +1208,14 @@ export function StudioInspector({
   }
 
   return (
-    // Design 1g: 16px padding, the header row (glyph + step id 15/600 +
+    // Design 1g: 16px padding, the header row (kind icon + step id 15/600 +
     // mono `kind · after <prev>` + Delete) over a divider, then the fields.
     <div className="space-y-[14px] p-[16px]" data-testid="insp-node">
       <div className="space-y-[8px]" data-testid="insp-header">
         <div className="flex items-center gap-[8px] border-b border-line-soft pb-[12px]">
-          <span aria-hidden="true" className="font-mono text-[14px] leading-none text-ink-2">
-            {kindGlyph(kind)}
-          </span>
+          {/* Issue #65: the header carries the shared kind icon; the kind's
+              name rides below in the sr-only chip and the kind word line. */}
+          <StepKindIcon kind={kind} size={14} className="shrink-0 text-ink-2" />
           <div className="min-w-0 flex-1">
             <div className="truncate text-[15px] font-semibold leading-tight text-ink">
               <span data-testid="insp-node-id-label">{nodeId}</span>
@@ -1233,7 +1234,7 @@ export function StudioInspector({
           </Button>
         </div>
         {/* The e2e suite and screen readers read the kind word from the chip
-            — keep it in the DOM, visually superseded by the glyph above. */}
+            — keep it in the DOM, visually superseded by the icon above. */}
         <span className="sr-only">
           <KindChip kind={kind} deferredTo={deferred} testid="insp-kind-chip" />
         </span>

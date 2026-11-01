@@ -22,12 +22,8 @@ import {
   type DefinitionGraphLayout,
   type GraphNodeView,
 } from "../../lib/pipeline/layout";
-import {
-  bindingText,
-  kindGlyph,
-  rootWords,
-  type DefinitionDocument,
-} from "../../lib/pipeline/definition";
+import { bindingText, rootWords, type DefinitionDocument } from "../../lib/pipeline/definition";
+import { StepKindIcon } from "../../lib/stepIcons";
 import type { NodeExecutionStatus } from "../../lib/pipeline/contract";
 import { Panel } from "../ds/Panel";
 import { StatusChip } from "../ds/Row";
@@ -397,13 +393,15 @@ function GraphNode({
         ) : null}
       </span>
       {/* Row 2: the kind in the few words a box can carry, then the state in
-          glyph + word. The catalogue name — what the API and an expression use —
+          kind word. The catalogue name — what the API and an expression use —
           travels in the `title`, the `aria-label` and the node list below. This
           is the line allowed to ellipsize, and in a definition-only render there
           is no state to name at all: the kind word stands alone. */}
       <span className="flex min-w-0 items-center gap-[4px] font-mono text-[11px] leading-[14px] text-muted">
-        <span aria-hidden className="shrink-0 text-[11px] text-ink-2">
-          {kindGlyph(node.kind)}
+        <span aria-hidden className="inline-flex shrink-0 items-center text-ink-2">
+          {/* Issue #65: the shared lucide kind icon replaces the drawn glyph;
+              the kind word beside it stays the accessible text. */}
+          <StepKindIcon kind={node.kind} />
         </span>
         <span
           className="shrink-0"

@@ -2,13 +2,13 @@
  * StudioPalette — the left-hand step palette of the Studio (design 1g).
  *
  * Mono group labels (`ADD A STEP`, `WRAP STEPS`), the DS search field, 32px
- * rows (kind glyph + label), not-runnable kinds behind a collapsed disclosure,
+ * rows (kind icon + label), not-runnable kinds behind a collapsed disclosure,
  * and the click-vs-drag tip. Clicking adds the kind after the selected step;
  * dragging adds it onto a canvas line. No Tailwind defaults: every heading is
  * mono and the rows use the ds radius.
  */
 import { offeredSteps, type ScopePath } from "../../lib/pipeline/graphDoc";
-import { kindGlyph } from "../../lib/pipeline/definition";
+import { StepKindIcon } from "../../lib/stepIcons";
 import { setPaletteDragKind } from "./StudioCanvas";
 import { useMemo, useState, type DragEvent } from "react";
 
@@ -118,8 +118,9 @@ export function StudioPalette({
         if (e.key === "Enter" && selectable) add(item);
       }}
     >
-      <span aria-hidden="true" className="w-[14px] shrink-0 font-mono text-[12px] text-ink-2">
-        {kindGlyph(item.kind)}
+      <span aria-hidden="true" className="flex w-[14px] shrink-0 items-center text-ink-2">
+        {/* Issue #65: the catalogue glyph column is now the shared lucide icon. */}
+        <StepKindIcon kind={item.kind} />
       </span>
       <span className="truncate text-[13px] text-ink">{SHORT_LABELS[item.kind] ?? item.label}</span>
       {/* Design 1g: the row of the kind the canvas selection holds carries the

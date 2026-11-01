@@ -7,7 +7,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import { useState } from "react";
-import { kindGlyph } from "../../lib/pipeline/definition";
+import { StepKindIcon } from "../../lib/stepIcons";
 import { StepPicker } from "./StepPicker";
 
 export type StepNodeRender = {
@@ -80,9 +80,9 @@ function statusGlyph(state: string): string {
 const chip =
   "rounded-full border border-line bg-fill px-1.5 py-0.5 text-[10px] leading-4 text-muted";
 
-/** The ONE key fact a canvas node carries beyond glyph + kind word: the
+/** The ONE key fact a canvas node carries beyond icon + kind word: the
  * kind's own config value — the model name, the command, the approver, the
- * artifact — or nothing. Absent → the second line is glyph + kind word only;
+ * artifact — or nothing. Absent → the second line is kind word only;
  * nothing is ever invented (design 1g).
  */
 function keyFactFor(kind: string, config: Record<string, unknown> | undefined): string | null {
@@ -131,8 +131,8 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   const inPosition = Position.Top;
   const outPosition = Position.Bottom;
 
-  // Design 1g keeps exactly two lines in the node: the id, and glyph + kind
-  // word + one key fact. The `when` guard is not drawn on the node — it
+  // Design 1g keeps exactly two lines in the node: the id, and kind icon +
+  // kind word + one key fact. The `when` guard is not drawn on the node — it
   // stays visible in the inspector and the edge labels.
   const pick = (event: KeyboardEvent) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -142,9 +142,10 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   };
 
   const keyFact = keyFactFor(data.kind, data.config);
-  const secondLine = keyFact
-    ? `${kindGlyph(data.kind)} ${data.kindWord} · ${keyFact}`
-    : `${kindGlyph(data.kind)} ${data.kindWord}`;
+  // Issue #65: the kind's icon rides in front of the line (aria-hidden); the
+  // line's text is the accessible content, so `title` and `textContent` stay
+  // the same string.
+  const secondLine = keyFact ? `${data.kindWord} · ${keyFact}` : data.kindWord;
 
   return (
     <div
@@ -203,11 +204,16 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           <span
             className="min-w-0 truncate font-mono text-[11px] leading-none text-ink-2"
             data-testid={`canvas-step-fact-${data.id}`}
-            // The full text the ellipsis stands for — glyph, kind word and the
-            // kind's own key fact (`◇ model · david-birks/qwen3-8-flash-next`),
-            // which at 390 never fits the 200px box.
+            // The full text the ellipsis stands for — kind word and the
+            // kind's own key fact (`model · david-birks/qwen3-8-flash-next`),
+            // which at 390 never fits the 200px box. The issue #65 icon in
+            // front of it is aria-hidden decoration, never in this string.
             title={secondLine}
           >
+            <StepKindIcon
+              kind={data.kind}
+              className="mr-[3px] inline-block shrink-0 align-[-2px]"
+            />
             {secondLine}
           </span>
           {data.deferred && (

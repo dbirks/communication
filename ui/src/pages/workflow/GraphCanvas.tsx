@@ -18,7 +18,7 @@
  * drew the "<" zig-zags). The node list the m4 graph keeps visible here exists as a
  * visually-hidden sibling — the canvas is never the only way in.
  *
- * The second line mirrors the Studio's rule (1g): kind glyph + kind word +
+ * The second line mirrors the Studio's rule (1g): kind icon + kind word +
  * the ONE key fact the kind's own config carries — model name, executable,
  * approver, artifact — never an invention.
  *
@@ -39,11 +39,11 @@ import {
   type EdgeBox,
 } from "../../components/studio/flowModel";
 import {
-  kindGlyph,
   scopeBody,
   type DefinitionDocument,
   type DefinitionNode,
 } from "../../lib/pipeline/definition";
+import { StepKindIcon } from "../../lib/stepIcons";
 import { fitScale, pansHorizontally } from "./graphFit";
 
 /** A node key as a selector-safe suffix (same rule as the m4 graph). */
@@ -51,7 +51,7 @@ function keySlug(key: string): string {
   return key.replace(/^\//, "").replace(/\W+/g, "-");
 }
 
-/** The ONE key fact a card carries beyond glyph + kind word — the same
+/** The ONE key fact a card carries beyond kind icon + kind word — the same
  * reading the Studio canvas uses, mirrored here because the run-screen graph
  * and the editor must not disagree about what a kind shows. */
 export function keyFactFor(
@@ -313,11 +313,12 @@ export function GraphCanvas({ document, label }: GraphCanvasProps) {
                   >
                     {node.id}
                   </span>
-                  {/* glyph + kind word + the ONE key fact the config carries — the
-                  Studio's rule (1g); nothing is invented when it holds none. */}
+                  {/* kind icon + kind word + the ONE key fact the config carries — the
+                  Studio's rule (1g); nothing is invented when it holds none. The
+                  issue #65 icon is aria-hidden; the kind word is the accessible text. */}
                   <span className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted">
-                    <span aria-hidden>{kindGlyph(node.kind)}</span>
-                    {` ${node.word}${fact ? ` · ${fact}` : ""}`}
+                    <StepKindIcon kind={node.kind} className="mr-[3px] inline-block align-[-2px]" />
+                    {`${node.word}${fact ? ` · ${fact}` : ""}`}
                   </span>
                 </div>
               );

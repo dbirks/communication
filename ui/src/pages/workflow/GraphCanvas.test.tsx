@@ -165,18 +165,18 @@ describe("GraphCanvas", () => {
     expect(points[0].x).toBeCloseTo(source.cx, 6);
   });
 
-  it("labels each card with glyph + kind word + the one key fact the config carries", () => {
+  it("labels each card with kind icon + kind word + the one key fact the config carries", () => {
     renderCanvas();
     const approve = screen.getByTestId("workflow-graph-node-approve");
     // human.approval in the sample names its approver role — the card shows
-    // `⊙ gate · maintainer`, nothing invented (the fact comes from
-    // config.approverRoles[0]).
-    expect(approve.textContent).toContain("⊙");
+    // the UserCheck icon (issue #65) + `gate · maintainer`, nothing invented
+    // (the fact comes from config.approverRoles[0]).
+    expect(approve.querySelector('[data-step-kind="human.approval"]')).toBeTruthy();
     expect(approve.textContent).toContain("gate");
     expect(approve.textContent).toContain("maintainer");
-    // The sample's `plan` is an agent step (agent.acp → ◆ agent).
+    // The sample's `plan` is an agent step (agent.acp → Bot icon + `agent`).
     const plan = screen.getByTestId("workflow-graph-node-plan");
-    expect(plan.textContent).toContain("◆");
+    expect(plan.querySelector('[data-step-kind="agent.acp"]')).toBeTruthy();
     expect(plan.textContent).toContain("agent");
   });
 });
