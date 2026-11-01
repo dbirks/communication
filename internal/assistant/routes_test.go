@@ -16,6 +16,35 @@ var appRouteRe = regexp.MustCompile(`path="([^"]*)"`)
 // idSegment is the allowlist form a ":param" segment takes.
 const idSegment = `[A-Za-z0-9_-]{1,64}`
 
+// expandOptionalRoutes expands React Router's optional segment markers — a
+// trailing "?" on a ":param?" or a static "seg?" segment — into every
+// concrete path the pattern can match. "/threads/:id?" expands to
+// "/threads/:id" and "/threads"; "/a/b?" expands to "/a/b" and "/a". With k
+// optional segments there are 2^k expansions; paths without markers expand to
+// themselves.
+func expandOptionalRoutes(p string) []string {
+	segs := strings.Split(p, "/")
+	var out []string
+	var walk func(i int, acc []string)
+	walk = func(i int, acc []string) {
+		if i == len(segs) {
+			out = append(out, strings.Join(acc, "/"))
+			return
+		}
+		s := segs[i]
+		if strings.HasSuffix(s, "?") && len(s) > 1 {
+			with := append(append([]string{}, acc...), s[:len(s)-1])
+			without := append([]string{}, acc...)
+			walk(i+1, with)
+			walk(i+1, without)
+			return
+		}
+		walk(i+1, append(append([]string{}, acc...), s))
+	}
+	walk(0, nil)
+	return out
+}
+
 // uiRoutes reads ../../ui/src/App.tsx (relative to this package) and returns
 // the regexp strings every real <Route path="..."> compiles to. The catch-all
 // `path="*"` (the NotFound page) is not a page the assistant may link to and
@@ -32,12 +61,47 @@ func uiRoutes(t *testing.T) map[string]bool {
 		if p == "*" || !strings.HasPrefix(p, "/") || strings.Contains(p, " ") {
 			continue
 		}
-		routes["^"+paramRe.ReplaceAllString(p, idSegment)+"$"] = true
+		for _, variant := range expandOptionalRoutes(p) {
+			routes["^"+paramRe.ReplaceAllString(variant, idSegment)+"$"] = true
+		}
 	}
 	if len(routes) == 0 {
 		t.Fatalf("no path=\"...\" routes found in ui/src/App.tsx; the file format changed?")
 	}
 	return routes
+}
+
+// TestExpandOptionalRoutes pins the optional-segment expansion the mirror
+// relies on: both the optional param form (":conversationId?") and the
+// optional static form ("b?") must expand to the path with and without the
+// optional segment, and plain paths must pass through untouched.
+func TestExpandOptionalRoutes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"/threads/:conversationId?", []string{"/threads/:conversationId", "/threads"}},
+		{"/a/b?", []string{"/a/b", "/a"}},
+		{"/runs/:runId", []string{"/runs/:runId"}},
+		{"/", []string{"/"}},
+		{"/x/:a?/y?", []string{"/x/:a/y", "/x/:a", "/x/y", "/x"}},
+	}
+	for _, c := range cases {
+		got := expandOptionalRoutes(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("expandOptionalRoutes(%q) = %q, want %q", c.in, got, c.want)
+			continue
+		}
+		seen := map[string]bool{}
+		for _, g := range got {
+			seen[g] = true
+		}
+		for _, w := range c.want {
+			if !seen[w] {
+				t.Errorf("expandOptionalRoutes(%q) = %q, missing %q", c.in, got, w)
+			}
+		}
+	}
 }
 
 // TestAllowedRoutesMirrorUIRoutes fails the build when the link allowlist and
