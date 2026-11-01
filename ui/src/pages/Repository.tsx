@@ -200,11 +200,20 @@ export default function Repository() {
               error={repos.error}
               fallback="Repositories could not be loaded."
               subject={`the repositories of ${projectData.name}`}
-              hint="The repository's own name is exactly what this read answers, so the page cannot name it either."
+              hint="The list of repositories could not be read, so this page cannot show one."
               retry={{
                 onClick: () => void repos.refetch(),
                 pending: repos.isFetching,
                 testid: "repo-load-retry",
+              }}
+              // The way back, the same verb the project server-error and every
+              // other review3 error state carries (round-2 review item 2): a
+              // reader with a page that cannot read leaves by the door they
+              // came in, not by the breadcrumb alone.
+              back={{
+                to: routes.project(id),
+                label: `← ${projectData.name}`,
+                testid: "repo-load-back-to-project",
               }}
             />
           </div>

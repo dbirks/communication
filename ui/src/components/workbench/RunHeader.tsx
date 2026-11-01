@@ -143,7 +143,14 @@ export function RunHeader({
           <span className="text-ink-2">run</span>
         </nav>
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="truncate text-[19px] font-bold" data-testid="run-title">
+          <h1
+            className="truncate text-[19px] font-bold"
+            // The short id is an internal handle, so it is not the headline when
+            // the run has a name (round-2 review item 3): the goal sentence, or
+            // the title the server serves, leads, and the handle rides `title`.
+            title={`run ${shortId(run.id)}`}
+            data-testid="run-title"
+          >
             {goal ?? runTitle ?? `Run #${shortId(run.id)}`}
           </h1>
           <RunStateChip status={run.status} testid="run-header-status" />
@@ -151,8 +158,17 @@ export function RunHeader({
             {streamStatus}
           </span>
         </div>
-        <p className="min-w-0 font-mono text-[11px] text-muted" data-testid="run-header-meta">
-          {slug} #{shortId(run.id)}
+        <p
+          className="min-w-0 font-mono text-[11px] text-muted"
+          // The short id is an internal handle, and it belongs in the `title`,
+          // not the sentence (round-2 review item 3). Where the run's own name —
+          // the `goal` input or the served title — is on screen, the workflow's
+          // slug is enough to say which workflow this run of it is.
+          title={`run ${shortId(run.id)}`}
+          data-testid="run-header-meta"
+        >
+          {slug}
+          {goal === null && runTitle === null ? <> #{shortId(run.id)}</> : null}
           {repoName ? <> · {repoName}</> : null} · revision{" "}
           <Link
             to={routes.workflow(run.pipeline_id)}

@@ -33,6 +33,7 @@ import type { NodeExecution } from "../api/types";
 import type { NodeExecutionSummary } from "../lib/pipeline/contract";
 import { viewNodeExecution } from "../api/m4view";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
+import { shortId } from "./ProjectRuns";
 import {
   WIRE_ATTEMPT_1,
   WIRE_NODE_IMPLEMENT,
@@ -155,8 +156,13 @@ describe(`/projects/:projectId/runs/:runId`, () => {
   it("renders the header, the run's status and the three view tabs", async () => {
     mountRun();
 
+    // Round-2 review item 3 (hide internal ids where a name exists): this run
+    // serves a `goal` input, so the sentence is the headline and the short id —
+    // an internal handle — rides the `title` instead of being the page's H1.
     const title = await screen.findByTestId("run-title");
-    expect(title.textContent).toMatch(/^Run #/);
+    expect(title.textContent).toBe("ship M4");
+    expect(title.getAttribute("title")).toBe(`run ${shortId(WIRE_RUN_ID)}`);
+    expect(title.textContent).not.toMatch(/^Run #/);
     expect(screen.getByTestId("run-header-status").textContent).toContain("running");
     expect(screen.getAllByRole("tab")).toHaveLength(3);
     expect(screen.getByTestId("run-tab-definition")).toBeTruthy();
@@ -227,8 +233,23 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(screen.getByTestId("run-new-revision-link").getAttribute("href")).toBe(
       `/workflows/${WIRE_PIPELINE_ID}`,
     );
-    // The pinned identity the run started with is unchanged on the page.
-    expect(screen.getByTestId("run-title").textContent).toMatch(/^Run #/);
+    // The pinned identity the run started with is unchanged on the page: the
+    // title is still the run's own sentence and the meta line still carries the
+    // digest the run was pinned to (`shortDigest`, the same 12 hex chars the
+    // newer-revision notice names).
+    expect(screen.getByTestId("run-title").textContent).toBe("ship M4");
+    expect(screen.getByTestId("run-inspector-meta").textContent).toContain(
+      `pinned ${shortDigest(wireRun.revision_digest)}`,
+    );
+  });
+
+  // Round-2 review item 3: a run nobody named has nothing to be titled by, so
+  // the short id IS its headline — the fallback stays, and it is the only case
+  // that prints one.
+  it("titles a run with no goal and no served title by its short id", async () => {
+    mountRun("", [{ path: RUN_PATH, body: { ...wireRun, inputs: [], title: null } }]);
+    const title = await screen.findByTestId("run-title");
+    expect(title.textContent).toBe(`Run #${shortId(WIRE_RUN_ID)}`);
   });
 
   it("opens on Definition with the graph, and pre-selects what the run waits on", async () => {
@@ -1065,6 +1086,40 @@ describe("the run page's Retry control", () => {
     expect(screen.queryByTestId("run-retry")).toBeNull();
   });
 
+  // Round-2 review item 3: a run that has ended cannot be paused or cancelled —
+  // route 31 refuses both, and there is no live work to stop — so drawing the
+  // two verbs grey beside a third grey verb and a sentence saying the same thing
+  // read as three broken controls rather than one finished run. Only the verb
+  // that can still apply stays on the header.
+  it("shows a terminal run only the verb that can still apply", async () => {
+    mountRun("", [
+      {
+        path: RUN_PATH,
+        body: { ...wireRun, status: "failed", failed_cause: "node_execution_failed:/verify" },
+      },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireVerifyFailedNodes } },
+      { path: `${RUN_PATH}/retry`, method: "POST", body: { ...wireRun, status: "queued" } },
+    ]);
+    await screen.findByTestId("run-title");
+
+    const verbs = (screen.getByTestId("run-actions").children[0] as HTMLElement).children;
+    expect(Array.from(verbs).map((verb) => verb.getAttribute("data-testid"))).toEqual([
+      "run-retry",
+    ]);
+    expect((screen.getByTestId("run-retry") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // A paused run is not terminal: Resume and Cancel both answer to it, and they
+  // stay exactly where they were — the rule is about finished runs only.
+  it("keeps Resume and Cancel on a paused run", async () => {
+    mountRun("", [{ path: RUN_PATH, body: { ...wireRun, status: "paused" } }]);
+    await screen.findByTestId("run-title");
+
+    expect(screen.getByTestId("run-resume")).toBeTruthy();
+    expect(screen.getByTestId("run-cancel")).toBeTruthy();
+    expect(screen.queryByTestId("run-pause")).toBeNull();
+  });
+
   it("retryVerdict reads the same rows route 31 reads", () => {
     expect(retryVerdict("completed", summaries(wireRejectedGateNodes))).toMatchObject({
       show: true,
@@ -1110,7 +1165,9 @@ describe("the run page's Retry control", () => {
  * that sentence UNDER its verbs instead of asking for the header's whole width
  * beside them (`w-full` on a non-wrapping row). A header that already fits side
  * by side is untouched — which is why the normal run asserts the same classes. */
-function inspectorHeaderWidthContract() {
+function inspectorHeaderWidthContract(
+  verbsToShow: readonly string[] = ["run-pause", "run-cancel"],
+) {
   const classes = (el: Element) => el.getAttribute("class")?.split(/\s+/) ?? [];
   const meta = screen.getByTestId("run-inspector-meta");
   const column = meta.parentElement as HTMLElement;
@@ -1135,8 +1192,9 @@ function inspectorHeaderWidthContract() {
   // header's whole width and crush the meta line to afford it.
   const verbs = actions.children[0] as HTMLElement;
   expect(classes(verbs)).not.toContain("flex-col");
-  expect(verbs.contains(screen.getByTestId("run-pause"))).toBe(true);
-  expect(verbs.contains(screen.getByTestId("run-cancel"))).toBe(true);
+  for (const verb of verbsToShow) {
+    expect(verbs.contains(screen.getByTestId(verb))).toBe(true);
+  }
   for (const line of Array.from(actions.querySelectorAll("p"))) {
     expect(verbs.contains(line)).toBe(false);
     expect(classes(line)).not.toContain("w-full");
@@ -1148,7 +1206,9 @@ function inspectorHeaderWidthContract() {
 describe("the inspector header's width", () => {
   it("puts the meta line on a flex-basis floor so a wide action column wraps below it", async () => {
     // The crushed case: a completed run whose gate was answered rejected, so the
-    // long `Retry` reason sentence is showing beside three verbs.
+    // long `Retry` reason sentence is showing. A terminal run now shows ONE verb
+    // (`run-retry`) — Pause and Cancel went with round-2 review item 3 — and the
+    // sentence is still the wide thing the floor exists to absorb.
     mountRun("", [
       { path: RUN_PATH, body: { ...wireRun, status: "completed" } },
       { path: `${RUN_PATH}/nodes`, body: { node_executions: wireRejectedGateNodes } },
@@ -1156,7 +1216,10 @@ describe("the inspector header's width", () => {
     await screen.findByTestId("run-title");
 
     expect(screen.getByTestId("run-retry-reason").textContent).toContain("business outcome");
-    inspectorHeaderWidthContract();
+    inspectorHeaderWidthContract(["run-retry"]);
+    // …and the two verbs route 31 refuses on a terminal run are gone, not grey.
+    expect(screen.queryByTestId("run-pause")).toBeNull();
+    expect(screen.queryByTestId("run-cancel")).toBeNull();
   });
 
   it("keeps the side-by-side geometry for a normal run — the floor only changes the crush", async () => {

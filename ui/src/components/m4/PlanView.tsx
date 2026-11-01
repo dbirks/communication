@@ -27,8 +27,6 @@
 import { useMemo, useState } from "react";
 import { MarkdownBody, looksLikeMarkdown } from "../../lib/markdown";
 
-/** Plain-text arm: lines shown before "show all". */
-const PLAIN_LINES = 12;
 /** The `context` paragraph's collapsed height in lines. */
 const CONTEXT_LINES = 4;
 /** Characters per line used to decide a "more" is needed. The clamp is done by
@@ -512,10 +510,15 @@ function RestBlock({
 }
 
 /**
- * The fallback arm: a payload that is not a JSON plan is text, and text is
- * what gets shown — whitespace preserved, clamped to a dozen lines with the
- * whole thing behind "show all". A gate that carries prose instead of a plan is
- * still decidable.
+ * The fallback arm: a payload that is not a JSON plan is text, and the text is
+ * shown WHOLE — whitespace preserved, nothing capped.
+ *
+ * It used to clamp to a dozen lines behind a “show all (30 lines)” control, and
+ * that clamp decided how much of the plan the person choosing Approve/Reject
+ * could see. The Projects handoff forbids it (`docs/design/handoff-projects/README.md`
+ * § Shared page pattern: “rows grow to fit their content”) and round-2 review
+ * item 3 called the old behaviour by name: a gate whose body ran to thirty lines
+ * was unreadable at twelve. A long body makes the card long; that is the design.
  *
  * When that text is markdown (which is what an agent writes: `## Step`,
  * `**Files**`, back-ticked paths), it is *read* rather than printed — headings,
@@ -524,32 +527,15 @@ function RestBlock({
  * always had: whitespace preserved, nothing re-flowed.
  */
 function PlainText({ text, className }: { text: string; className: string }) {
-  const [open, setOpen] = useState(false);
-  const lines = text.split("\n");
-  const tooLong = lines.length > PLAIN_LINES || text.length > PLAIN_LINES * CHARS_PER_LINE;
-  const shown = open || !tooLong ? text : lines.slice(0, PLAIN_LINES).join("\n");
-  const markdown = looksLikeMarkdown(shown);
+  const markdown = looksLikeMarkdown(text);
   return (
     <div className={className} data-testid="plan-view-plain">
       <div
-        className={`text-[13px] leading-[19px] break-words whitespace-pre-wrap ${
-          open || !tooLong ? "" : "line-clamp-12"
-        }`}
+        className="text-[13px] leading-[19px] break-words whitespace-pre-wrap"
         data-testid="plan-plain-text"
       >
-        {markdown ? <MarkdownBody text={shown} /> : shown}
+        {markdown ? <MarkdownBody text={text} /> : text}
       </div>
-      {tooLong ? (
-        <button
-          type="button"
-          onClick={() => setOpen((previous) => !previous)}
-          aria-expanded={open}
-          className="font-mono text-[10.5px] text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          data-testid="plan-plain-show-all"
-        >
-          {open ? "show less" : `show all (${lines.length} lines)`}
-        </button>
-      ) : null}
     </div>
   );
 }

@@ -153,11 +153,16 @@ describe("WorkflowRow", () => {
   // 1b review (reflow-390 item 2): the phone's 44px floor turned `Edit` and
   // `⋯` into heavy boxed rows — they keep the desktop's 26px box and grow
   // their HIT area to 44px instead (an invisible `::after` band).
+  //
+  // The band is ±10px, not ±9px: an absolutely positioned pseudo is laid out
+  // against the button's PADDING box, and `.ds-btn` draws a 1px border on the
+  // 26px border-box, so 24 + 10 + 10 = 44 (±9px measured 42px on the lab).
   it("keeps the row actions drawn as the desktop's buttons with a 44px phone hit area", () => {
     mount();
     const edit = screen.getByTestId(`workflow-open-${pipeline.slug}`);
     expect(edit.className).toContain("max-[559px]:min-h-0!");
-    expect(edit.className).toContain("max-[559px]:after:-top-[9px]");
+    expect(edit.className).toContain("max-[559px]:after:-top-[10px]");
+    expect(edit.className).toContain("max-[559px]:after:-bottom-[10px]");
     const menuWrap = screen.getByTestId(`workflow-menu-${pipeline.slug}`).parentElement
       ?.parentElement as HTMLElement; // the action wrapper around RowMenu's root
     expect(menuWrap.className).toContain("max-[559px]:min-h-0!");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { definitionKeyOf, iterationOf, rollupStatuses } from "./runView";
+import { definitionKeyOf, iterationOf, rollupStatuses, stepWordOf } from "./runView";
 import type { NodeExecutionSummary } from "./contract";
 import { featureNodes } from "../../test/fixtures/m4/runs";
 
@@ -89,5 +89,21 @@ describe("rollupStatuses", () => {
 
   it("says nothing about a run with no rows", () => {
     expect(rollupStatuses([])).toEqual({});
+  });
+});
+
+describe("stepWordOf — the step's NAME for a sentence, not the key", () => {
+  it("names the leaf node and drops the iteration suffix", () => {
+    // The gate card used to print `node /approve`; the step's name is the node
+    // id the definition declares (round-2 review item 3).
+    expect(stepWordOf("/approve")).toBe("approve");
+    expect(stepWordOf("/build_until_verified[2]/review")).toBe("review");
+    // A scope row names itself, suffix and all — it IS the step.
+    expect(stepWordOf("/verify_each[22]")).toBe("verify_each");
+  });
+
+  it("leaves a key with no leaf standing as it is", () => {
+    expect(stepWordOf("/")).toBe("/");
+    expect(stepWordOf("")).toBe("");
   });
 });

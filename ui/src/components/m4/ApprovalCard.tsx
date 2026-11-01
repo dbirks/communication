@@ -28,6 +28,7 @@ import { Field, Textarea } from "../ds/Field";
 import { StatusChip } from "../ds/Row";
 import { APPROVAL_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import { formatAge, formatRemaining, formatTime } from "../../lib/format";
+import { stepWordOf } from "../../lib/pipeline/runView";
 import { PlanView, splitPlanText } from "./PlanView";
 
 export interface ApprovalCardProps {
@@ -127,8 +128,15 @@ export function ApprovalCard({
 
         <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] text-ink-2 sm:grid-cols-2">
           <div className="flex gap-2">
-            <dt className="text-muted">node</dt>
-            <dd data-testid="approval-node">{approval.node_instance_key}</dd>
+            {/* The step's NAME, not the run's internal path identity: the
+                round-2 review read `node /approve` where the reader wants the
+                step. The full `node_instance_key` (with its scope segments and
+                `[n]` iteration suffixes) stays in the value's `title`, and
+                `stepWordOf` is the same leaf rule the graph and the tree use. */}
+            <dt className="text-muted">step</dt>
+            <dd data-testid="approval-node" title={approval.node_instance_key}>
+              {stepWordOf(approval.node_instance_key)}
+            </dd>
           </div>
           <div className="flex gap-2">
             <dt className="text-muted">approver roles</dt>
@@ -288,7 +296,18 @@ export function ApprovalCard({
                   ·{" "}
                 </>
               ) : null}
-              {approval.decided_at ? formatTime(approval.decided_at) : "no timestamp served"}
+              {/* The handoff's copy rule (`handoff-projects` § 1: “Times are relative
+                  (`8m`, `2h`); never show ISO strings”) applied to the decision
+              record (round-2 review): WHEN is a distance from now, and the exact
+              instant the audit trail speaks lives in the value's `title`. */}
+              <span
+                data-testid="approval-decided-at"
+                title={approval.decided_at ? formatTime(approval.decided_at) : undefined}
+              >
+                {approval.decided_at
+                  ? `${formatAge(approval.decided_at, now())} ago`
+                  : "no timestamp served"}
+              </span>
             </span>
             {approval.state === "denied" ? (
               <span

@@ -898,6 +898,16 @@ describe("/p/:projectId/:repo", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("repos unavailable");
     expect(screen.getByTestId("repo-load-retry").textContent).toBe("Retry");
+    // Round-2 review item 2: the failed read also gives the reader out. The
+    // breadcrumb names the project; this is the verb — the same “← …” way back
+    // every other server-error screen in the app carries.
+    const back = screen.getByTestId("repo-load-back-to-project");
+    expect(back.getAttribute("href")).toBe(`/p/${projectFixture.id}`);
+    expect(back.textContent).toBe(`← ${projectFixture.name}`);
+    // …and the plain-word copy rule: the sentence says what is missing, not what
+    // the failed read was for.
+    expect(alert.textContent).toContain("The list of repositories could not be read");
+    expect(alert.textContent).not.toContain("exactly what this read answers");
     // No repository page is assembled over the failed read.
     expect(screen.queryByTestId("repo-page")).toBeNull();
   });

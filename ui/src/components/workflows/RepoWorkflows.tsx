@@ -470,8 +470,16 @@ function RepoWorkflowRow({
               in the STARTS WHEN header when the box is open (the design's
               expanded row) and in the row's own actions only when it is closed
               (the design's collapsed row) — the two never stand side by side.
-              `Edit` is gone: the workflow's name is the link to its library
-              page, and 2e draws only `+ Add trigger` and `Run` here. */}
+
+              `Edit` is the row's own verb (round-2 review item 2): the workflows
+              handoff § 2 writes the row's buttons as “`Edit` (secondary-plain)
+              and `Run`”, and § 5 says what Edit does — it opens the workflow,
+              which is the page that carries the open draft. It is the same
+              destination the row's own name carries, drawn as the design's
+              secondary-plain button so the verb is visible without hunting for
+              the name link. `.ds-btn` gets the phone's 44px floor from
+              `APP-SHELL-PHONE` (styles/tokens.css), so no hit-area extension is
+              needed here — unlike the 1b rows, which pin the 26px draw. */}
           {canManage && !open ? (
             <button
               type="button"
@@ -482,6 +490,13 @@ function RepoWorkflowRow({
               + Add trigger
             </button>
           ) : null}
+          <Link
+            to={routes.workflow(assignment.pipeline_id)}
+            className="ds-btn ds-btn--secondary-plain ds-btn--compact inline-flex items-center rounded-[4px]"
+            data-testid={`repo-workflow-edit-${key}`}
+          >
+            Edit
+          </Link>
           <Button
             variant="secondary"
             compact

@@ -325,14 +325,20 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`)).toBeTruthy();
   });
 
-  it("gives the row 2e's two actions, with the name as the way to the workflow", async () => {
-    // 2e item 8 (2026-10-30 review): the design's row actions are `+ Add
-    // trigger` and `Run` — no third `Edit` button linking to the page the
-    // workflow's own name already links to.
+  it("gives the row 2e's actions — `Edit`, `Run` — with the name also the way to the workflow", async () => {
+    // Round-2 review item 2 put `Edit` back: the workflows handoff § 2 writes
+    // the row's buttons as “`Edit` (secondary-plain) and `Run`” (the earlier
+    // 2e-item-8 reading, which dropped it because the name already links
+    // there, was the render's abbreviation of that line). § 5 is what Edit
+    // does: it opens the workflow, the page that carries the open draft — the
+    // same destination as the name, drawn as the design's verb.
     mount();
     const name = await screen.findByText("Feature development");
     expect(name.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
-    expect(screen.queryByTestId(`repo-workflow-edit-${assignmentKey}`)).toBeNull();
+    const edit = screen.getByTestId(`repo-workflow-edit-${assignmentKey}`);
+    expect(edit.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    expect(edit.textContent).toBe("Edit");
+    expect(edit.className).toContain("ds-btn--secondary-plain");
     expect(screen.getByTestId(`repo-workflow-add-${assignmentKey}`).textContent).toBe(
       "+ Add trigger",
     );

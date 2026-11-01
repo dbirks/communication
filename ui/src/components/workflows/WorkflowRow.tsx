@@ -339,18 +339,26 @@ export function WorkflowRow({
  * `styles/tokens.css`, unlayered) gives every `main button` a `min-height:
  * 44px` below 560px, which turned the row's `Edit` and `⋯` into heavy boxed
  * buttons. `min-h-0!` outranks the unlayered floor, the box stays the 1280
- * one, and the invisible `::after` extends the hit area 9px above and below
- * the 26px box (26 + 9 + 9 = 44).
+ * one, and the invisible `::after` extends the hit area above and below it.
+ *
+ * The extension is ±10px, not ±9px, because an absolutely positioned pseudo
+ * is laid out against the element's PADDING box, not its border box: `.ds-btn
+ * --compact` is 26px border-box with the 1px `.ds-btn` border on each side, so
+ * the containing block is 24px tall and ±9px only reaches 24+9+9 = 42px
+ * (measured on the lab's own 390 pass, and reproduced by
+ * `e2e/emulator/reflow-target.spec.ts` case (a2)). ±10px is 24+10+10 = 44.
  */
 const PHONE_HIT =
-  "max-[559px]:relative max-[559px]:min-h-0! max-[559px]:after:absolute max-[559px]:after:inset-x-0 max-[559px]:after:-top-[9px] max-[559px]:after:-bottom-[9px] max-[559px]:after:content-['']";
+  "max-[559px]:relative max-[559px]:min-h-0! max-[559px]:after:absolute max-[559px]:after:inset-x-0 max-[559px]:after:-top-[10px] max-[559px]:after:-bottom-[10px] max-[559px]:after:content-['']";
 
 /** The same treatment for the `⋯` trigger RowMenu owns (reached from the
  * row's own wrapper via the `[data-menu-trigger]` attribute it carries —
  * the pseudo-element lives inside one arbitrary selector because a stacked
- * `after:` variant under `[&…]` does not compose a quoted `content`). */
+ * `after:` variant under `[&…]` does not compose a quoted `content`). Same
+ * ±10px arithmetic as `PHONE_HIT`: the trigger is the app's bordered 26px
+ * compact button, so its padding box is 24px. */
 const PHONE_HIT_MENU_TRIGGER =
-  "[&_[data-menu-trigger]]:relative [&_[data-menu-trigger]]:max-[559px]:min-h-0! max-[559px]:[&_[data-menu-trigger]::after]:content-[''] max-[559px]:[&_[data-menu-trigger]::after]:absolute max-[559px]:[&_[data-menu-trigger]::after]:inset-x-0 max-[559px]:[&_[data-menu-trigger]::after]:-top-[9px] max-[559px]:[&_[data-menu-trigger]::after]:-bottom-[9px]";
+  "[&_[data-menu-trigger]]:relative [&_[data-menu-trigger]]:max-[559px]:min-h-0! max-[559px]:[&_[data-menu-trigger]::after]:content-[''] max-[559px]:[&_[data-menu-trigger]::after]:absolute max-[559px]:[&_[data-menu-trigger]::after]:inset-x-0 max-[559px]:[&_[data-menu-trigger]::after]:-top-[10px] max-[559px]:[&_[data-menu-trigger]::after]:-bottom-[10px]";
 
 /* ------------------------------------------------------- move to folder */
 

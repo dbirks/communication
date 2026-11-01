@@ -56,6 +56,13 @@ describe("a pending gate you can decide", () => {
 
   it("names the roles, the deadline and the consequence of the deadline", () => {
     render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    // Round-2 review item 3: the card read `node /approve` — the run's internal
+    // path identity — where the reader wants the step. The leaf of the key *is*
+    // the step's name (`/approve` → `approve`, `/scope[2]/gate` → `gate`), and
+    // the whole key stays one hover away in the value's `title`.
+    const step = screen.getByTestId("approval-node");
+    expect(step.textContent).toBe("approve");
+    expect(step.getAttribute("title")).toBe("/approve");
     expect(screen.getByTestId("approval-roles").textContent).toBe("maintainer");
     // A waiting gate's deadline is ONE relative number — the time left — with
     // the exact instant it counts down to in the title (pass-7 review, the gate
@@ -132,7 +139,13 @@ describe("a closed gate", () => {
     );
     expect(screen.getByTestId("approval-decided-by").textContent).toBe("Ada Lovelace");
     expect(screen.getByTestId("approval-decided").textContent).not.toContain("01a18c3e");
-    expect(screen.getByTestId("approval-decided").textContent).toContain("2026-07-31 14:02:19");
+    // Round-2 review item 3 (the handoff's own copy rule: “Times are relative
+    // (`8m`, `2h`); never show ISO strings”): WHEN is the distance from now, and
+    // the exact instant the audit trail speaks rides the value's `title`.
+    expect(screen.getByTestId("approval-decided-at").textContent).toBe("42m ago");
+    expect(screen.getByTestId("approval-decided-at").getAttribute("title")).toBe(
+      "2026-07-31 14:02:19 UTC",
+    );
   });
 
   it("says someone (id) rather than a bare uuid when no directory was handed over", () => {

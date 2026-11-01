@@ -451,12 +451,19 @@ describe("the Run Workbench", () => {
 /* -------------------------------------------------- the header stays honest */
 
 describe("the run header's meta line", () => {
-  it("names the workflow, the short run id, the pinned revision and the started age", async () => {
+  it("names the workflow, the pinned revision and the started age; the run's handle rides the title", async () => {
     mount();
 
     const meta = await screen.findByTestId("run-header-meta");
-    // `feature-development #<short> · revision r<n> <digest> (pinned) · started <age>`.
-    expect(meta.textContent).toContain("feature-development #");
+    // `feature-development · revision r<n> <digest> (pinned) · started <age>`.
+    // Round-2 review item 3 (hide internal ids where a name exists): this run
+    // serves a `goal` input, which IS its title, so the short id is not printed
+    // in the copy — it rides the line's `title` and the URL in the address bar.
+    expect(meta.textContent).toContain("feature-development");
+    expect(meta.textContent).not.toContain("#");
+    expect(meta.getAttribute("title")).toBe(`run ${shortId(WIRE_RUN_ID)}`);
+    // The H1 says the same thing the meta used to spell with the handle.
+    expect(screen.getByTestId("run-title").textContent).toBe("ship M4");
     expect(meta.textContent).toContain("(pinned) · started ");
     // § 7.2 W4: the page names the pin with its number AND the pinned digest — the
     // full 12 hex chars `shortDigest` prints everywhere else in the app (the runs

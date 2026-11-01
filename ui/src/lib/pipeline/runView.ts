@@ -126,3 +126,21 @@ function worse(
 ): NodeExecutionSummary["status"] {
   return PRIORITY.indexOf(a) <= PRIORITY.indexOf(b) ? a : b;
 }
+
+/**
+ * The step's NAME, in the words a person would use: the leaf segment of a
+ * `node_instance_key` without its `[n]` iteration suffix — `/approve` →
+ * `approve`, `/build_until_verified[2]/review` → `review`. A key that is only a
+ * scope marker (`/`) has no leaf to name, so it stands as it is; the full key
+ * never disappears, it just moves to the control's `title`.
+ *
+ * The run screens print instance keys because the wire carries no human title
+ * (`NodePaneHeader`'s note). Where a sentence — not a tree row — names a step,
+ * that path identity reads as an internal id (round-2 review item 3: the gate
+ * card said `node /approve`), and the leaf is the honest shortening: it is the
+ * node id the definition itself declares.
+ */
+export function stepWordOf(instanceKey: string): string {
+  const leaf = (instanceKey.split("/").filter(Boolean).pop() ?? "").replace(/\[\d+\]$/, "");
+  return leaf !== "" ? leaf : instanceKey;
+}

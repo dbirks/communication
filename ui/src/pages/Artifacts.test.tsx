@@ -331,7 +331,7 @@ describe("/artifacts/:artifactId", () => {
     expect(document.querySelector("iframe")).toBeNull();
   });
 
-  it("offers no preview affordance for bytes that are not HTML", async () => {
+  it("offers no preview affordance for bytes that are not HTML or Markdown", async () => {
     const logArtifact: Artifact = {
       ...artifactFixture,
       media_type: "text/plain",
@@ -342,10 +342,89 @@ describe("/artifacts/:artifactId", () => {
       path: `/artifacts/${artifactId}`,
       routes: routes([{ path: detailPath, method: "GET", body: logArtifact }]),
     });
-    expect((await screen.findByTestId("artifact-preview-unavailable")).textContent).toContain(
-      "Only HTML artifacts preview",
-    );
+    const line = await screen.findByTestId("artifact-preview-unavailable");
+    expect(line.textContent).toContain("Only HTML previews");
     expect(screen.queryByTestId("artifact-preview-open")).toBeNull();
+    // Round-2 review item 4: the raw wire media type is not user copy. `kind`
+    // says how the row was filed; the sentence says what the bytes are, in the
+    // words a person uses.
+    expect(line.textContent).toContain("Text");
+    expect(line.textContent).not.toContain("text/plain");
+    expect(screen.getByTestId("artifact-media-type").textContent).toBe("Text");
+    expect(screen.getByTestId("artifact-media-type").getAttribute("title")).toBe("text/plain");
+  });
+
+  // Round-2 review item 4: `plan.md` — the artifact the gate's whole decision
+  // rests on — told the reader to go download it while the app already owns a
+  // markdown reader. A small text/markdown artifact is now READ on the page,
+  // through `lib/markdown.tsx`, which emits React text nodes: no HTML, no
+  // script, nothing executing in this origin (ADR-0020 stays intact — the
+  // isolated preview frame remains the only way bytes are rendered).
+  it("reads a small markdown artifact on the page instead of sending the reader away", async () => {
+    const planArtifact: Artifact = {
+      ...artifactFixture,
+      name: "plan.md",
+      kind: "markdown",
+      media_type: "text/markdown",
+      sensitivity: "standard",
+      preview_url: null,
+      size_bytes: 4096,
+    };
+    renderApp({
+      path: `/artifacts/${artifactId}`,
+      routes: routes([
+        { path: detailPath, method: "GET", body: planArtifact },
+        {
+          path: `${detailPath}/content`,
+          method: "GET",
+          body: "## Implementation Plan\n\n1. **Confirm the binding**\n",
+        },
+      ]),
+    });
+
+    const preview = await screen.findByTestId("artifact-preview-markdown");
+    expect(preview.textContent).toContain("Implementation Plan");
+    // The markers became structure rather than text the reader decodes.
+    expect(screen.getByTestId("markdown-heading").textContent).toBe("Implementation Plan");
+    expect(preview.textContent).not.toContain("##");
+    expect(screen.queryByTestId("artifact-preview-unavailable")).toBeNull();
+    // …and the media line says what it is in the reader's own words.
+    expect(screen.getByTestId("artifact-media-type").textContent).toBe("Markdown");
+  });
+
+  it("leaves a markdown file too large to read on the page as a download", async () => {
+    const bigArtifact: Artifact = {
+      ...artifactFixture,
+      name: "plan.md",
+      kind: "markdown",
+      media_type: "text/markdown",
+      sensitivity: "standard",
+      preview_url: null,
+      size_bytes: 4 * 1024 * 1024,
+    };
+    renderApp({
+      path: `/artifacts/${artifactId}`,
+      routes: routes([{ path: detailPath, method: "GET", body: bigArtifact }]),
+    });
+
+    expect((await screen.findByTestId("artifact-preview-unavailable")).textContent).toContain(
+      "Markdown",
+    );
+    expect(screen.queryByTestId("artifact-preview-markdown")).toBeNull();
+  });
+
+  it("names a file the common types do not cover by its own extension", async () => {
+    const logArtifact: Artifact = {
+      ...artifactFixture,
+      name: "run.log",
+      media_type: "application/octet-stream",
+      preview_url: null,
+    };
+    renderApp({
+      path: `/artifacts/${artifactId}`,
+      routes: routes([{ path: detailPath, method: "GET", body: logArtifact }]),
+    });
+    expect((await screen.findByTestId("artifact-media-type")).textContent).toBe("LOG");
   });
 });
 

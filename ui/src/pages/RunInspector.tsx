@@ -312,6 +312,16 @@ export default function RunInspector({
     () => new Map((pipelines.data?.pipelines ?? []).map((p) => [p.id, p.slug])),
     [pipelines.data],
   );
+  // The run's own sentence, read exactly the way `RunWorkbench` reads it: the
+  // `goal` input first, then the title the server serves (ADR-0064). Neither is
+  // ever invented — a run nobody named keeps the short-id title it always had,
+  // and the handle rides the h1's `title` either way (round-2 review item 3:
+  // an internal id is not a headline once the page can say what the run is).
+  const runGoal = useMemo(() => {
+    const found = runQuery.data?.inputs?.find((input) => input.name === "goal");
+    return typeof found?.value === "string" && found.value.trim() !== "" ? found.value : null;
+  }, [runQuery.data]);
+  const runTitle = runQuery.data?.title ?? null;
   // 4a draws the stage strip as a compact header across the run, not as
   // content that hides behind a tab — so the page itself owns the read. Same
   // cached revision as the Definition tab: one request, two readers.
@@ -497,8 +507,15 @@ export default function RunInspector({
                 folded
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-[19px] font-bold" data-testid="run-title">
-                  Run #{shortId(run.id)}
+                <h1
+                  className="text-[19px] font-bold"
+                  // Same copy rule as the workbench header (round-2 review
+                  // item 3): the run's sentence leads when it has one, and the
+                  // short id — an internal handle — stays in the `title`.
+                  title={`run ${shortId(run.id)}`}
+                  data-testid="run-title"
+                >
+                  {runGoal ?? runTitle ?? `Run #${shortId(run.id)}`}
                 </h1>
                 <RunStateChip status={run.status} testid="run-header-status" />
                 {!run.placement.scheduled &&
@@ -679,6 +696,16 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
 
 /** The run's verbs, and the sentence explaining a verb that is not offered.
  *
+ * What a reader gets depends on whether the run can still be moved at all:
+ *
+ * - a live or paused run gets its own verbs (Pause/Resume and Cancel);
+ * - a **terminal** run gets only `Retry` (round-2 review item 3). Pause and
+ *   Cancel answer to a run that exists to be paused, and route 31 refuses both
+ *   on a completed/failed/cancelled run — drawing them grey beside a grey
+ *   `Retry` and a sentence said three times over that nothing here works. The
+ *   one verb that can still do something stays; when even it has no target the
+ *   sentence below explains why rather than a dead button guessing at it.
+ *
  * Layout: a column with the buttons in their own wrapping row, so the reason is
  * a line UNDER the verbs rather than a `w-full` flex item beside them. In a
  * single non-wrapping row, `w-full` on that sentence asks the row for 100% of
@@ -718,7 +745,10 @@ export function RunActions({
   return (
     <div className="flex min-w-0 flex-col items-end gap-2" data-testid="run-actions">
       <div className="flex flex-wrap items-center justify-end gap-2">
-        {status === "paused" ? (
+        {/* A terminal run shows no Pause and no Cancel: both routes refuse it,
+            so the two grey boxes said “not here” twice beside the sentence that
+            says it properly (round-2 review item 3). */}
+        {terminal ? null : status === "paused" ? (
           <Button
             variant="primary"
             disabled={resume.isPending}
@@ -730,7 +760,7 @@ export function RunActions({
         ) : (
           <Button
             variant="secondary"
-            disabled={terminal || pause.isPending}
+            disabled={pause.isPending}
             title="In-flight attempts finish honestly — this is a request, not a stop"
             data-testid="run-pause"
             onClick={pauseRun}
@@ -738,14 +768,16 @@ export function RunActions({
             Pause
           </Button>
         )}
-        <Button
-          variant="danger"
-          disabled={terminal || cancel.isPending}
-          data-testid="run-cancel"
-          onClick={cancelRun}
-        >
-          Cancel
-        </Button>
+        {terminal ? null : (
+          <Button
+            variant="danger"
+            disabled={cancel.isPending}
+            data-testid="run-cancel"
+            onClick={cancelRun}
+          >
+            Cancel
+          </Button>
+        )}
         {verdict.show ? (
           <Button
             variant="secondary"

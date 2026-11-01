@@ -16,13 +16,18 @@ import { useCreatePreviewToken } from "../api/queries";
 import {
   downloadBlockedReason,
   isHtml,
+  isMarkdown,
+  isSmallTextArtifact,
+  mediaTypeWords,
   previewBlockReason,
   PREVIEW_SANDBOX,
   redactionCopy,
   resolvePreviewUrl,
   sensitivityCopy,
 } from "../api/artifacts";
+import { useArtifactContent } from "../api/approvals";
 import type { Artifact, PreviewToken } from "../api/types";
+import { MarkdownBody } from "../lib/markdown";
 import { Alert } from "./ds/Alert";
 import { Button } from "./ds/Button";
 import { Panel } from "./ds/Panel";
@@ -142,9 +147,19 @@ export function ArtifactPreview({ artifact, currentOrigin }: ArtifactPreviewProp
     );
   }
   if (!html) {
+    // A small Markdown file is READ here (round-2 review item 4): the artifact
+    // page used to tell everyone to download `plan.md` while the app already
+    // owns a markdown reader (`lib/markdown.tsx`) — and that reader emits React
+    // text nodes, never HTML, so ADR-0020's rule (this origin never executes
+    // artifact bytes) is untouched. Anything else stays a download, said in the
+    // media's own name rather than its wire string.
+    if (isMarkdown(artifact) && isSmallTextArtifact(artifact)) {
+      return <MarkdownArtifactBody artifact={artifact} />;
+    }
     return (
       <p className="text-[12.5px] text-muted" data-testid="artifact-preview-unavailable">
-        Only HTML artifacts preview. This one is {artifact.media_type} — download it instead.
+        Only HTML previews in a frame of its own and small Markdown files are read below. This one
+        is {mediaTypeWords(artifact.media_type, artifact.name)} — download it instead.
       </p>
     );
   }
@@ -218,6 +233,37 @@ export function ArtifactPreview({ artifact, currentOrigin }: ArtifactPreviewProp
   );
 }
 
+/**
+ * The in-page read of a small Markdown artifact. The bytes come from
+ * `…/content` — the same role-gated read the Download link navigates to — and
+ * `lib/markdown.tsx` turns them into React text nodes: headings, lists, code
+ * spans and emphasis, and never an HTML element, so the app's origin still
+ * cannot run anything the artifact contains (`ADR-0020`).
+ */
+function MarkdownArtifactBody({ artifact }: { artifact: Artifact }) {
+  const content = useArtifactContent(artifact.id);
+
+  if (content.isPending) return <Spinner label="Reading the document" />;
+
+  if (content.isError || typeof content.data !== "string") {
+    return (
+      <p className="text-[12.5px] text-muted" data-testid="artifact-preview-unavailable">
+        ! The text did not come back over the same role-gated read as the download, so it is not
+        shown — download it to read the bytes.
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-[3px] border border-line bg-surface p-[10px]"
+      data-testid="artifact-preview-markdown"
+    >
+      <MarkdownBody text={content.data} />
+    </div>
+  );
+}
+
 export interface ArtifactDetailProps {
   artifact: Artifact;
   /** Words for who created it; a worker id is not readable on its own. */
@@ -268,7 +314,12 @@ export function ArtifactDetail({
             </div>
             <div className="flex gap-2">
               <dt className="text-muted">media</dt>
-              <dd>{artifact.media_type}</dd>
+              {/* `text/markdown` is what the server records; Markdown is what the
+                  reader calls it (round-2 review item 4). The wire value stays
+                  one hover away — it is the string to paste at an API. */}
+              <dd title={artifact.media_type} data-testid="artifact-media-type">
+                {mediaTypeWords(artifact.media_type, artifact.name)}
+              </dd>
             </div>
             <div className="flex gap-2">
               <dt className="text-muted">sha256</dt>

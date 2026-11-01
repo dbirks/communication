@@ -1529,6 +1529,14 @@ function CanvasInner({
           edges={edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          // The “React Flow” badge is a library watermark, not information: the
+          // run page (RunWorkbench mounts this canvas) and the Studio are the
+          // app's own surfaces, and the round-2 review (item 3) asked for it out
+          // of the user's view. The shipped package is MIT-licensed and its
+          // LICENSE carries no attribution condition
+          // (`ui/node_modules/@xyflow/react/LICENSE`), so hiding it is what the
+          // library's own `proOptions` flag exists for.
+          proOptions={{ hideAttribution: true }}
           minZoom={0.4}
           maxZoom={1.25}
           onlyRenderVisibleElements={false}

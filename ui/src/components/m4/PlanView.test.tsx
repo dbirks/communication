@@ -133,12 +133,16 @@ describe("a payload that is not a plan", () => {
     expect(screen.queryByTestId("plan-plain-show-all")).toBeNull();
   });
 
-  it("clamps a long text and puts the rest behind show all", () => {
-    const long = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n");
+  it("renders a long body whole — the gate does not cap what a decision is made on", () => {
+    // Round-2 review item 3: the body used to stop at twelve lines behind a
+    // “show all (30 lines)” control, which decided how much of the plan the
+    // person choosing Approve/Reject could read. The handoff's rule is the
+    // opposite (`handoff-projects` § Shared page pattern: “rows grow to fit
+    // their content”), so every line is on screen and there is nothing to open.
+    const long = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
     render(<PlanView text={long} />);
-    expect(screen.getByTestId("plan-plain-text").textContent).not.toContain("line 13");
-    fireEvent.click(screen.getByTestId("plan-plain-show-all"));
-    expect(screen.getByTestId("plan-plain-text").textContent).toContain("line 20");
+    expect(screen.getByTestId("plan-plain-text").textContent).toContain("line 30");
+    expect(screen.queryByTestId("plan-plain-show-all")).toBeNull();
   });
 
   it("leaves a JSON array as text rather than pretending to read it", () => {
@@ -181,13 +185,11 @@ describe("a payload that is not a plan", () => {
     );
   });
 
-  it("reads markdown past the clamp too, from the show-all arm", () => {
+  it("reads every line of a long markdown body, not the first screenful", () => {
     const long = ["# Plan", "", ...Array.from({ length: 20 }, (_, i) => `- step ${i + 1}`)].join(
       "\n",
     );
     render(<PlanView text={long} />);
-    expect(screen.getAllByTestId("markdown-list-item").length).toBe(10);
-    fireEvent.click(screen.getByTestId("plan-plain-show-all"));
     expect(screen.getAllByTestId("markdown-list-item").length).toBe(20);
   });
 });
