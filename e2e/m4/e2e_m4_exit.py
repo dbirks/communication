@@ -11232,6 +11232,14 @@ def c8():
     runc = c8_post_run(alice, facts, C8_ITEMS, f"m4x-c8-cancel-{suffix}", "mid-fan-out cancel")
     if runc:
         stc = c8_watch(alice, facts, runc, 1800, "mid-fan-out cancel", hook=cancel_mid)
+        # ONE read, deliberately. C8g's "every child reaches a terminal state" is
+        # ordered against the PARENT's terminal: ADR-0023 § 10 (as amended) says a
+        # cancelling run holds run.cancelled until every booked child run has
+        # written its own terminal, because a `waiting` pipeline.invoke row is work
+        # its child still owns. Polling here would mask the exact defect this arm
+        # exists to catch — acceptance 38 measured ['cancelled','completed',
+        # 'running'] on a parent that had already gone 'cancelled' (the fix is in
+        # runtime.settleRun's cancel arm + M4Children.CancelChild/CreateChild).
         kids = c8_child_statuses(runc)
         c8_emit(c8_cancel_verdicts(stc or "", c8_event(runc, "run.cancel_requested"),
                                    kids, c8_event(runc, "run.cancelled")))

@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -482,17 +483,43 @@ func worklist(n int) map[string]any {
 // created child is immediately terminal with its scripted status. maxActive
 // measures the highest simultaneously-live child count the advancer produced,
 // which is C8c's "measured from the journal, not asserted from the schema".
+//
+// A cancel-REQUESTED child does not vanish inside the pass that asks it: the
+// real child closes its attempt via ACP session/cancel or the process-group
+// kill and its OWN advancer writes its terminal, so it keeps reading `running`
+// for cancelGrace further polls and then reports `cancelled` (C8g's window).
+// `delay` is the other arm — a child that is live because nothing has told it
+// otherwise — and it never outranks a cancel: a child that has been told to
+// stop cannot un-hear it.
 type scriptedChildren struct {
-	status    map[int]string
-	live      map[string]int
-	settled   map[string]bool
-	inputs    map[int]any
-	delay     map[int]int
-	polls     map[string]int
-	cancelled bool
-	created   []string
-	maxActive int
-	active    int
+	status  map[int]string
+	live    map[string]int
+	settled map[string]bool
+	inputs  map[int]any
+	delay   map[int]int
+	polls   map[string]int
+	// cancelRequests records every CancelChild call, in order, so a test can
+	// name which children the cascade actually reached.
+	cancelRequests []string
+	// cancelAck maps a child run to the poll on which it was told to stop.
+	cancelAck   map[string]int
+	cancelGrace int
+	cancelled   bool
+	created     []string
+	maxActive   int
+	active      int
+}
+
+// liveChildren lists the booked children that have never been observed terminal.
+func (c *scriptedChildren) liveChildren() []string {
+	var out []string
+	for id := range c.live {
+		if !c.settled[id] {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (c *scriptedChildren) CreateChild(_ context.Context, req runtime.ChildRequest) (runtime.ChildOutcome, error) {
@@ -528,7 +555,12 @@ func (c *scriptedChildren) ChildStatus(_ context.Context, childRunID string) (st
 		c.polls = map[string]int{}
 	}
 	c.polls[childRunID]++
-	if d, isDelayed := c.delay[idx]; isDelayed && c.polls[childRunID] <= d {
+	if ack, told := c.cancelAck[childRunID]; told {
+		if c.polls[childRunID] <= ack+c.cancelGrace {
+			return runtime.RunRunning, "", nil // told, not yet closed
+		}
+		s = runtime.RunCancelled
+	} else if d, isDelayed := c.delay[idx]; isDelayed && c.polls[childRunID] <= d {
 		return runtime.RunRunning, "", nil // still live
 	}
 	cause := ""
@@ -537,7 +569,8 @@ func (c *scriptedChildren) ChildStatus(_ context.Context, childRunID string) (st
 	}
 	// A child stops counting as live exactly once, the first time a poll
 	// observes it terminal.
-	if s == runtime.RunCompleted || s == runtime.RunFailed {
+	switch s {
+	case runtime.RunCompleted, runtime.RunFailed, runtime.RunCancelled:
 		if !c.settled[childRunID] {
 			c.settled[childRunID] = true
 			c.active--
@@ -548,10 +581,18 @@ func (c *scriptedChildren) ChildStatus(_ context.Context, childRunID string) (st
 
 func (c *scriptedChildren) CancelChild(_ context.Context, childRunID, _ string) error {
 	c.cancelled = true
-	// The child reaches its terminal promptly; the next poll proves the
-	// advancer treats a cancelled child as cancelled, not failed.
+	c.cancelRequests = append(c.cancelRequests, childRunID)
+	if !c.settled[childRunID] {
+		if c.cancelAck == nil {
+			c.cancelAck = map[string]int{}
+		}
+		if _, told := c.cancelAck[childRunID]; !told {
+			c.cancelAck[childRunID] = c.polls[childRunID]
+		}
+	}
+	// The child reaches its terminal after its own cancel round-trip; the next
+	// polls prove the advancer treats a cancelled child as cancelled, not failed.
 	c.status[c.live[childRunID]] = runtime.RunCancelled
-	delete(c.settled, childRunID)
 	return nil
 }
 

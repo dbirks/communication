@@ -314,6 +314,24 @@ the compiler rejects it with `unsupported_policy`, and a detached child's visibi
 already met by `GET /runs/{id}/tree`. Pause stops scheduling only; "ask the agent to yield" is
 Later.
 
+**Amendment (C8g, m4 acceptance 38) — the cascade closes the parent, not just the request.** The
+cascade reaches every child run the fan-out booked, and the PARENT's `run.cancelled` waits for them:
+a `pipeline.invoke` row is `waiting` precisely because its child run owns the work, so terminalising
+the parent while that child is live is the same lie § 4 step 11 refuses for a `leased`/`running` row
+("the control plane does not own the terminal"). Concretely: in the cancelling arm of `settleRun`,
+after the run's own rows close, the pass polls every `pipeline_invocations` child and holds the
+terminal while any of them is non-terminal, re-requesting `CancelChild` on each live child every pass
+(the request is idempotent — `cancel_requested_at` is `COALESCE`d and the child journals exactly one
+`run.cancel_requested`, so re-asking costs a read, not a journal row). Two consequences are pinned:
+(i) a child booked by a run whose `cancel_requested_at` is already set is **born cancel-requested**
+(the fan-out arms rows inside a cancelling pass — the approval `on_timeout: cancel_run` arm sets the
+flag and keeps scheduling), and (ii) `GET /runs/{id}/tree` never shows a `cancelled` parent over a
+running child. Bounded, not indefinite: a child under cancellation always terminalises — its worker
+closes the attempt, or the lease pass interrupts it (§ 11 pass 1) — and a vanished child row answers
+terminal (`interrupted`/`child_run_missing`) rather than holding its parent open. The `failed` and
+`interrupted` arms are unchanged: they request the cascade for their children and state their own
+outcome, because their terminal is decided by the graph rather than by the cancellation.
+
 ### 11. Reconciler extensions (serve, advisory-locked, one pass)
 
 `02`: a reconciler detects expired leases, marks attempts `interrupted`, inspects persisted

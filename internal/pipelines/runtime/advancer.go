@@ -1809,6 +1809,24 @@ func (ac *advanceCtx) settleRun() error {
 				}
 			}
 		}
+		// A booked child run closes before the parent states its terminal.
+		// `pipeline.invoke` waits (its row is `waiting`), so while any child is
+		// live the parent still OWNS running work and `run.cancelled` would be
+		// the control plane terminalising a run whose fan-out is still writing
+		// files; § 4 step 11 refuses exactly that for a leased row. The child
+		// writes its own terminal (its advancer, its worker), so the parent
+		// waits for it and re-asks it on every pass — which is also what keeps a
+		// child booked AFTER the cascade's first pass inside the cascade (the
+		// fan-out materialises its invoke rows over several passes, and the
+		// one-shot `run.cancel_requested` marker means the per-child ask in
+		// cascadeCancel has already been spent by the time the late row lands).
+		open, err := ac.childrenOutstanding()
+		if err != nil {
+			return err
+		}
+		if open {
+			return nil
+		}
 		if !ac.anyLive() {
 			var keys, aids []string
 			for _, n := range ac.st.Nodes {
@@ -1911,6 +1929,45 @@ func (ac *advanceCtx) anyLive() bool {
 		}
 	}
 	return false
+}
+
+// childrenOutstanding reports whether a run being cancelled still has a child
+// run booked against it that is not terminal. Every live child is asked to
+// cancel on THIS pass: CancelChild is idempotent (a terminal child is a no-op,
+// a live one keeps its first cancel_requested_at), so a child the fan-out
+// booked after the cascade's first pass is caught here rather than escaping it,
+// and the parent's terminal is unreachable while any child is still writing.
+//
+// The child status is read through the resolver on the pass's own transaction,
+// so "terminal" here is terminal: 01's machines never leave a terminal run, and
+// a child whose row vanished answers terminal (interrupted/child_run_missing)
+// rather than holding its parent forever. A parent with no resolver cannot have
+// children — advanceInvoke refuses without one — so the nil case is "nothing
+// outstanding", not "wait for nothing".
+func (ac *advanceCtx) childrenOutstanding() (bool, error) {
+	if ac.deps.Children == nil || len(ac.st.Invocations) == 0 {
+		return false, nil
+	}
+	ctx := ac.deps.Context
+	if ctx == nil {
+		ctx = context.TODO()
+	}
+	open := false
+	for _, iv := range ac.st.Invocations {
+		status, _, err := ac.deps.Children.ChildStatus(ctx, iv.ChildRunID)
+		if err != nil {
+			return false, err
+		}
+		if RunTerminal(status) {
+			continue
+		}
+		if err := ac.deps.Children.CancelChild(ctx, iv.ChildRunID, "cascade"); err != nil {
+			return false, err
+		}
+		open = true // ask EVERY live child this pass: one per pass would stretch
+		// the cascade over as many ticks as the fan-out has items.
+	}
+	return open, nil
 }
 
 // cascadeCancel implements the cancel arm: queued/ready rows cancel, live

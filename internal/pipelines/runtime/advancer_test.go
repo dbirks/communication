@@ -497,6 +497,167 @@ func TestCancelCascadeClosesEverything(t *testing.T) {
 	}
 }
 
+// TestCancelParentWaitsForLiveChildren is the intermittent C8g the m4 exit
+// caught (acceptance 38/m4: child statuses=['cancelled','completed','running'])
+// reproduced deterministically: the fan-out's own rows close in the pass that
+// handles the cancel, while the child run it booked is still answering
+// session/cancel.
+//
+// Before the fix, settleRun's cancel arm asked the child to stop (CancelChild)
+// and terminalised the `waiting` invoke row in the SAME breath, so
+// `run.cancelled` landed while the child was still writing files: the parent
+// had terminalised work its own child still owned, the mirror of what § 4 step
+// 11 refuses for a leased row. Now the parent holds the terminal until every
+// booked child run reports one (ADR-0023 § 10 as amended). The child converges
+// here on a POLL COUNT, not a sleep: scriptedChildren.cancelGrace=2 keeps it
+// `running` for the two polls its round-trip would take.
+func TestCancelParentWaitsForLiveChildren(t *testing.T) {
+	plan := loadPlan(t, "testdata/fanout_collect.yaml")
+	// maxConcurrency 3 with 3 live children: the cascade must reach every one of
+	// them, and none of them may still be running when the parent says cancelled.
+	cr := &scriptedChildren{status: map[int]string{}, delay: map[int]int{0: 99, 1: 99, 2: 99}, cancelGrace: 2}
+	dv := newDriverWith(t, plan, map[string]any{"goal": "cancel me"}, runtime.AdvancerDeps{Children: cr})
+	dv.script("/seed", step{outputs: worklist(3)})
+	dv.pump(50)
+	st := dv.state()
+	if st.Run.Status != runtime.RunRunning {
+		t.Fatalf("run = %s pre-cancel", st.Run.Status)
+	}
+	booked := len(cr.created)
+	if booked != 3 {
+		t.Fatalf("children booked = %d (%v), want 3 live at cancel time", booked, cr.created)
+	}
+	if err := dv.ms.RequestCancel(dv.run.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	dv.advance()
+	st = dv.state()
+
+	// The parent's OWN rows are all terminal now — the cascade did its local work.
+	for _, n := range st.Nodes {
+		if !runtime.NodeTerminal(n.Status) {
+			t.Fatalf("cascade left %s %s live", n.InstanceKey, n.Status)
+		}
+	}
+	// …and the run must NOT have terminalised over the children it booked.
+	if live := cr.liveChildren(); len(live) > 0 {
+		if runtime.RunTerminal(st.Run.Status) {
+			t.Fatalf("run went %s while booked children %v were still live — C8g's race", st.Run.Status, live)
+		}
+		for _, e := range st.Events {
+			if e.Type == pevents.TypeRunCancelled {
+				t.Fatalf("run.cancelled journalled with live children %v", live)
+			}
+		}
+	}
+	// Every booked child is inside the cascade, not just the first one the pass
+	// happened to look at (the one-shot run.cancel_requested marker means nobody
+	// else asks on a later pass).
+	asked := map[string]bool{}
+	for _, id := range cr.cancelRequests {
+		asked[id] = true
+	}
+	if len(asked) != booked {
+		t.Errorf("cascade reached %d of %d booked children (%v)", len(asked), booked, cr.cancelRequests)
+	}
+
+	for i := 0; i < 10 && !runtime.RunTerminal(st.Run.Status); i++ {
+		dv.advance()
+		st = dv.state()
+	}
+	if st.Run.Status != runtime.RunCancelled {
+		t.Fatalf("run = %s/%s, want cancelled once the children closed (events=%v)",
+			st.Run.Status, st.Run.FailedCause, eventTypes(st))
+	}
+	if live := cr.liveChildren(); len(live) > 0 {
+		t.Errorf("run.cancelled landed with children still live: %v", live)
+	}
+	// The wait is a wait, not a spin: the parent's terminal is journalled once.
+	if n := countEvents(st, pevents.TypeRunCancelled); n != 1 {
+		t.Errorf("run.cancelled rows = %d, want exactly 1", n)
+	}
+	if n := countEvents(st, pevents.TypeRunCancelRequested); n != 1 {
+		t.Errorf("run.cancel_requested rows = %d, want exactly 1 (the cascade marker is not per-pass)", n)
+	}
+}
+
+// TestCancelBookedChildNeverEscapesTheCascade walks the property the fix is
+// actually about, over every pass: from the pass that requests the cancel to
+// the pass that ends the run, no child the fan-out booked is left live without
+// a cancel request against its name, and none is left live at all when the run
+// terminalises.
+func TestCancelBookedChildNeverEscapesTheCascade(t *testing.T) {
+	plan := loadPlan(t, "testdata/fanout_single.yaml")
+	// Index 0 closes a few passes after being told; the un-started indices are
+	// what the fan-out would otherwise keep opening under the cancel.
+	cr := &scriptedChildren{status: map[int]string{}, delay: map[int]int{0: 99}, cancelGrace: 3}
+	dv := newDriverWith(t, plan, map[string]any{"goal": "cancel me"}, runtime.AdvancerDeps{Children: cr})
+	dv.script("/seed", step{outputs: worklist(4)})
+	dv.pump(50)
+	st := dv.state()
+	if err := dv.ms.RequestCancel(dv.run.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range st.LiveAttempts() {
+		if a.CancelRequested != nil {
+			if err := dv.ms.CancelAttempt(dv.run.ID, a.ID, a.WorkerID, a.FencingToken, "run_cancelled"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 20 && !runtime.RunTerminal(st.Run.Status); i++ {
+		dv.advance()
+		st = dv.state()
+		for _, id := range cr.liveChildren() {
+			seen[id] = true
+			asked := false
+			for _, got := range cr.cancelRequests {
+				if got == id {
+					asked = true
+				}
+			}
+			if !asked {
+				t.Fatalf("child %s is live in pass %d with no CancelChild against it", id, i)
+			}
+		}
+		if runtime.RunTerminal(st.Run.Status) {
+			asked := map[string]bool{}
+			for _, id := range cr.cancelRequests {
+				asked[id] = true
+			}
+			for _, iv := range st.Invocations {
+				if !asked[iv.ChildRunID] {
+					t.Fatalf("run went %s with booked child %s never asked to cancel",
+						st.Run.Status, iv.ChildRunID)
+				}
+			}
+		}
+	}
+	if st.Run.Status != runtime.RunCancelled {
+		t.Fatalf("run = %s/%s, want cancelled", st.Run.Status, st.Run.FailedCause)
+	}
+	if len(seen) == 0 {
+		t.Error("the interleaving never had a live child to watch — the test proved nothing")
+	}
+	for id := range seen {
+		if cr.settled[id] {
+			continue
+		}
+		t.Errorf("run ended %s with booked child %s never terminal", st.Run.Status, id)
+	}
+}
+
+func countEvents(st *runtime.State, typ string) int {
+	n := 0
+	for _, e := range st.Events {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
 // TestPauseBlocksClaimsAndResumeReDerives: routes 28/29 — pause stops FUTURE
 // scheduling only; the in-flight attempt finishes honestly; resume re-derives
 // readiness from rows.

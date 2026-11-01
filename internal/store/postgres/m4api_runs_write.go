@@ -1402,6 +1402,23 @@ func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest)
 		return runtime.ChildOutcome{}, fmt.Errorf("postgres: create child run of %s for node execution %s: %w",
 			parent.ID, req.NodeExecutionID, err)
 	}
+	// A child booked by a run that has already asked to stop is BORN
+	// cancel-requested (ADR-0023 § 10 as amended, "a child created after the
+	// parent's cancel_requested_at must be born cancelled or be cancelled by the
+	// cascade"). The pass that books it holds the parent row FOR UPDATE for its
+	// whole transaction, so this read is not raced by the cancel route: either
+	// the flag is already stamped here, or the cancel waits for this pass and
+	// then finds the child and its invocation committed. What the stamp removes
+	// is the window where a fan-out armed inside a cancelling pass (the
+	// approval `on_timeout: cancel_run` arm sets the flag and keeps scheduling in
+	// the same pass) spawns a child nobody ever asked to stop: the parent's one
+	// run.cancel_requested marker is already spent, and the child's own advancer
+	// only cancels a run whose row says so.
+	if parent.CancelRequestedAt != nil {
+		if err := ch.CancelChild(ctx, child.ID, "cascade"); err != nil {
+			return runtime.ChildOutcome{}, err
+		}
+	}
 	// ONE writer books the pipeline_invocations row: the PARENT's advance
 	// transaction (postgres.RuntimeStore.writeRowsTx -> insertInvocationTx).
 	// It has to be that one, because the row references the node execution that
@@ -1451,6 +1468,14 @@ func (ch *M4Children) CancelChild(ctx context.Context, childRunID string, reason
 		return err
 	}
 	if runTerminalStatuses[r.Status] {
+		return nil
+	}
+	// Already asked: the request is the row's `cancel_requested_at` and the
+	// journal already carries its one run.cancel_requested marker. The parent's
+	// cascade re-walks its bookings on every pass while it waits for this child
+	// to close (runtime.settleRun), and an unconditional re-flag would write a
+	// cancel-requested row per pass into the child's journal.
+	if r.CancelRequestedAt != nil {
 		return nil
 	}
 	children, err := m4ChildRunIDs(ctx, ch.Runs.Pool, r.ID)
