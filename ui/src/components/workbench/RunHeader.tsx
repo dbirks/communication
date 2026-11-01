@@ -148,18 +148,21 @@ export function RunHeader({
           <span className="text-ink-2">run</span>
         </nav>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {/* Pass-1 review (run-gate-waiting-390 / run-gate-completed-390): at
-              390 the single-line `truncate` cut the run's sentence to
-              “emu gate journey pass-1-20261101113…” — the ellipsis ate the one
-              fact that told the reader WHICH pass this run belongs to. Below
-              `lg` the H1 now WRAPS instead (`wrap-anywhere` =
-              overflow-wrap:anywhere, so a long unbroken slug never hangs past
-              the phone either); `lg+` keeps the design's one-line title, and
-              there the `title` attribute carries the whole sentence — plus the
-              short-id handle, which round-2 review item 3 still keeps out of
-              the visible copy. */}
+          {/* Pass-1 review (run-gate-waiting-390 / run-gate-completed-390) cut
+              the 390 one-line `truncate`; 89d81ad then brought a one-line
+              title back at `lg+` with `lg:truncate` — and acceptance 46
+              (run-gate-waiting at 1280x900) failed on it: “emu gate journey
+              pass-1-…” overflowed the H1 at DESKTOP width too. The check is
+              the contract: the run's own title is NEVER the thing that gives
+              way (`scrollWidth - clientWidth <= 0` at every width). So the H1
+              WRAPS at every breakpoint — no `truncate`/`whitespace-nowrap`
+              anywhere — and `wrap-anywhere` (overflow-wrap:anywhere) keeps a
+              long unbroken slug inside the box at a phone's 390 as well. The
+              `title` attribute still carries the whole sentence plus the
+              short-id handle, which round-2 review item 3 keeps out of the
+              visible copy. */}
           <h1
-            className="min-w-0 wrap-anywhere text-[19px] font-bold lg:truncate"
+            className="min-w-0 wrap-anywhere text-[19px] font-bold"
             title={`${goal ?? runTitle ?? `Run #${shortId(run.id)}`} · run ${shortId(run.id)}`}
             data-testid="run-title"
           >

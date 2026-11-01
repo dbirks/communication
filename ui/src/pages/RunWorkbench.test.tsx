@@ -488,22 +488,25 @@ describe("the run header's meta line", () => {
     expect(meta.textContent).not.toContain("worker");
   });
 
-  it("wraps the H1 below lg instead of ellipsis-cutting the sentence (pass-1 review run-gate-*-390)", async () => {
+  it("wraps the H1 at EVERY width — the run title is never the thing that gives way (pass-1 390 + acceptance 46 1280)", async () => {
     // At 390 the one-line `truncate` cut “emu gate journey
     // pass-1-20261101113830” to one ellipsised line — the meaningful half of
-    // the run's own title was lost on the phone. jsdom performs no layout,
-    // so the classes ARE the contract: wrap-anywhere (overflow-wrap:
-    // anywhere) below lg, one truncated line from lg up, and the FULL title
-    // riding `title` where the line can still ellipsise. The revision chip
-    // beside it is untouched — the pinned digest stays visible text (§ 7.2
-    // W4, asserted by the meta-line test above).
+    // the run's own title was lost on the phone. 89d81ad's `lg:truncate`
+    // brought that cut back at desktop and acceptance 46
+    // (run-gate-waiting 1280x900) failed on it: the e2e check
+    // `scrollWidth - clientWidth <= 0` on `run-title` IS the contract — the
+    // run's own title never gives way at ANY width. jsdom performs no
+    // layout, so the classes are the jsdom-visible half of it: wrap-anywhere
+    // (overflow-wrap:anywhere) at every breakpoint, and NOT ONE truncate or
+    // whitespace-nowrap token at any prefix. The FULL title still rides
+    // `title`. The revision chip beside it is untouched — the pinned digest
+    // stays visible text (§ 7.2 W4, asserted by the meta-line test above).
     mount();
     const title = await screen.findByTestId("run-title");
     const tokens = title.className.split(/\s+/);
     expect(tokens).toContain("wrap-anywhere");
     expect(tokens).toContain("min-w-0");
-    expect(tokens).toContain("lg:truncate");
-    expect(tokens).not.toContain("truncate"); // the ellipsis is a lg+ shape only
+    expect(title.className).not.toMatch(/truncate|nowrap/); // no ellipsis shape at any breakpoint
     expect(title.getAttribute("title")).toBe(`ship M4 · run ${shortId(WIRE_RUN_ID)}`);
   });
 
