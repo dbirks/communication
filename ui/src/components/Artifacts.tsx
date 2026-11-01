@@ -546,7 +546,12 @@ export function ArtifactDetail({
               <dd data-testid="artifact-sensitivity">{sensitivityCopy(artifact.sensitivity)}</dd>
             </div>
             <div className="flex gap-2">
-              <dt className="text-muted">scanner</dt>
+              {/* The copy spells the scanner into its sentence ("scanner
+                  changed nothing"), so the key says "redaction": a
+                  "scanner" key paired with that value read "scanner
+                  scanner changed nothing", a doubled word (pass-1
+                  review, this brief). */}
+              <dt className="text-muted">redaction</dt>
               <dd data-testid="artifact-redaction">{redactionCopy(artifact.redaction_count)}</dd>
             </div>
             <div className="flex gap-2">

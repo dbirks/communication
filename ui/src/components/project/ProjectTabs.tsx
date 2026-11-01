@@ -204,11 +204,67 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
   }, [active, flags.needsYou, flags.threads, flags.workflows, pullActiveIntoView]);
 
   return (
-    <div className="relative" data-testid="project-tabs-wrap">
+    // `flex`, not a relative overlay box: the LEFT fade is an in-flow lane
+    // beside the strip (see its markup), so its arrow can never sit on top of
+    // a tab label.
+    <div className="relative flex items-stretch" data-testid="project-tabs-wrap">
+      {/* The cue that the strip continues. Pass-3 review: the earlier cap was a
+          solid rectangle in the BAND'S OWN colour over a white band, so it
+          existed in the DOM and inked nothing — the phone showed `Workflov`
+          with no hint of a scroll. It is now a shadow that deepens toward the
+          clipped edge plus a chevron pointing the way the strip still moves.
+          The chevron is an SVG, not a text glyph: a printed character under the
+          cap would sit on top of the clipped tab's own ink, which is the
+          collision the emulator's overlap check reports. It is
+          `pointer-events-none` and `aria-hidden` — every tab link stays in the
+          accessibility tree and stays clickable under it — and it is a
+          decoration only, never a control. */}
+      {/* The cue that the strip continues past its LEFT edge. This one is an
+          in-flow lane (`shrink-0`), not an overlay: the pass-1 review of this
+          brief saw the absolute left arrow drawn on top of `Overview`
+          (“‹verview”) at 390 — any tab that enters the strip's left edge
+          crosses a 34px overlay, so an overlaid arrow cannot promise it never
+          covers a label. A lane beside the strip pads the strip by the arrow's
+          width instead: the arrow appears only once the strip has scrolled
+          away from 0 (`fade.left`), and it occupies space the tabs never draw
+          in. It is still `pointer-events-none` and `aria-hidden` — decoration,
+          never a control. */}
+      {fade.left ? (
+        <span
+          aria-hidden="true"
+          data-testid="project-tabs-fade-left"
+          className="pointer-events-none flex w-[34px] shrink-0 items-center"
+          style={{
+            // Pass-4 review, item 3: at 16% the shadow was barely inkable on
+            // the white band — “make the edge fade visible enough to read as
+            // ‘more’”. A deeper ramp and a dark chevron make the cue seen,
+            // not just present.
+            background:
+              "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",
+          }}
+        >
+          <svg
+            className="ml-[8px] text-ink-2"
+            width="8"
+            height="12"
+            viewBox="0 0 8 12"
+            aria-hidden="true"
+          >
+            <path
+              d="M6.5 1.5l-4 4.5 4 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      ) : null}
       <nav
         ref={navRef}
         aria-label="Project sections"
-        className="-mb-px flex min-w-0 gap-[4px] overflow-x-auto overscroll-x-contain"
+        className="-mb-px flex min-w-0 flex-1 gap-[4px] overflow-x-auto overscroll-x-contain"
         data-testid="project-tabs"
       >
         {PROJECT_TABS.map(({ key, label }) => {
@@ -251,57 +307,12 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
           );
         })}
       </nav>
-      {/* The cue that the strip continues. Pass-3 review: the earlier cap was a
-          solid rectangle in the BAND'S OWN colour over a white band, so it
-          existed in the DOM and inked nothing — the phone showed `Workflov`
-          with no hint of a scroll. It is now a shadow gradient that darkens
-          toward the clipped edge plus a mono chevron pointing the way the strip
-          still moves. It is `pointer-events-none` and `aria-hidden` — every tab
-          link stays in the accessibility tree and stays clickable under it —
-          and it is a decoration only, never a control. */}
-      {/* The cue that the strip continues. Pass-3 review: the earlier cap was a
-          solid rectangle in the BAND'S OWN colour over a white band, so it
-          existed in the DOM and inked nothing — the phone showed `Workflov`
-          with no hint of a scroll. It is now a shadow that deepens toward the
-          clipped edge plus a chevron pointing the way the strip still moves.
-          The chevron is an SVG, not a text glyph: a printed character under the
-          cap would sit on top of the clipped tab's own ink, which is the
-          collision the emulator's overlap check reports. It is
-          `pointer-events-none` and `aria-hidden` — every tab link stays in the
-          accessibility tree and stays clickable under it — and it is a
-          decoration only, never a control. */}
-      {fade.left ? (
-        <span
-          aria-hidden="true"
-          data-testid="project-tabs-fade-left"
-          className="pointer-events-none absolute inset-y-0 left-0 flex w-[34px] items-center"
-          style={{
-            // Pass-4 review, item 3: at 16% the shadow was barely inkable on
-            // the white band — “make the edge fade visible enough to read as
-            // ‘more’”. A deeper ramp and a dark chevron make the cue seen,
-            // not just present.
-            background:
-              "linear-gradient(to left, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",
-          }}
-        >
-          <svg
-            className="ml-[8px] text-ink-2"
-            width="8"
-            height="12"
-            viewBox="0 0 8 12"
-            aria-hidden="true"
-          >
-            <path
-              d="M6.5 1.5l-4 4.5 4 4.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </span>
-      ) : null}
+      {/* The right cue stays the pass-4 overlay: it darkens toward the strip's
+          end and rides OVER the tab clipped at the edge, which is what that
+          review asked the fade to do (“the right edge clipped UNDER its
+          fade”). The left lane is the brief's fix for the arrow-on-a-label
+          collision; the right cue was not reported, and its whole-label snap
+          parks the edge between labels. */}
       {fade.right ? (
         <span
           aria-hidden="true"

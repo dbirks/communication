@@ -165,6 +165,12 @@ describe("/artifacts/:artifactId", () => {
     expect(screen.getByTestId("artifact-size").textContent).toContain("KB");
     expect(screen.getByTestId("artifact-sensitivity").textContent).toContain("may download");
     expect(screen.getByTestId("artifact-redaction").textContent).toContain("changed nothing");
+    // The byline (pass-1 review of this brief): the old "scanner" key beside
+    // the "scanner changed nothing" copy printed the word twice — the key is
+    // "redaction" now, and "scanner" is in the sentence exactly once.
+    const redactionRow = screen.getByTestId("artifact-redaction").parentElement as HTMLElement;
+    expect(redactionRow.querySelector("dt")?.textContent).toBe("redaction");
+    expect(redactionRow.textContent?.match(/scanner/g)).toHaveLength(1);
     // Provenance is a link to the conversation, because the ids are not readable.
     const provenance = screen.getByTestId("artifact-conversation-link");
     expect(provenance.getAttribute("href")).toBe(`/threads/${conversationId}`);

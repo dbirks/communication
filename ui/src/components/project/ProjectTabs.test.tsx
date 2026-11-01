@@ -104,13 +104,19 @@ describe("the project tab strip at phone width", () => {
   it("shows both fades mid-strip", () => {
     mount("settings");
     fakeScrollableStrip(120); // 120 + 320 < 600 — the tail is still off-strip.
-    const left = screen.getByTestId("project-tabs-fade-left");
+    const left = screen.getByTestId<HTMLSpanElement>("project-tabs-fade-left");
     const right = screen.getByTestId("project-tabs-fade-right");
     expect(left).toBeTruthy();
     expect(right).toBeTruthy();
-    // Both caps darken toward THEIR OWN edge, and both carry their chevron.
-    expect(left.style.background).toContain("linear-gradient(to left");
+    // Both cues darken toward THEIR adjacent edge and carry their chevron. The
+    // LEFT cue is an in-flow lane beside the strip (pass-1 review: the old
+    // absolute left arrow printed “‹verview” over the tab at the edge), so its
+    // shadow darkens toward the strip on its right — and it must never be an
+    // overlay again.
+    expect(left.style.background).toContain("linear-gradient(to right");
     expect(right.style.background).toContain("linear-gradient(to right");
+    expect(left.className.split(/\s+/)).toContain("shrink-0");
+    expect(left.className).not.toContain("absolute");
     expect(left.querySelector("svg")).toBeTruthy();
     expect(right.querySelector("svg")).toBeTruthy();
   });

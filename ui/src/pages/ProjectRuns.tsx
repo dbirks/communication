@@ -309,9 +309,12 @@ export function runStateWord(status: RunStatus): string {
   return SHORT_WORD[stateOf(RUN_STATE[status])];
 }
 
-/** `#482`-style handle: the last eight characters of the run's id. */
+/** `#482`-style handle: the last eight characters of the run's id, in the
+ * same lowercase the rest of the app prints ids in (`2f967772/app`,
+ * `api/names.ts`) — uppercase here read as a different kind of thing
+ * (pass-1 review, this brief). */
 export function shortId(id: string): string {
-  return id.replace(/-/g, "").slice(-8).toUpperCase();
+  return id.replace(/-/g, "").slice(-8).toLowerCase();
 }
 
 export function shortDigest(digest: string | null | undefined): string {

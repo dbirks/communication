@@ -169,8 +169,13 @@ export function ApprovalCard({
           <PlanView text={summary.body} className="mt-[2px]" />
         </div>
 
+        {/* Each pair stacks its key over its value (one of the fix shapes the
+            pass-1 review of this brief allows): the card's pane is ~190px
+            wide per column, and no side-by-side split left "fail the node
+            when the deadline passes" under two lines there. A full-column
+            value reads in one or two lines at 1280 and at 390. */}
         <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] text-ink-2 sm:grid-cols-2">
-          <div className="flex gap-2">
+          <div className="flex flex-col">
             {/* The step's NAME, not the run's internal path identity: the
                 round-2 review read `node /approve` where the reader wants the
                 step. The full `node_instance_key` (with its scope segments and
@@ -181,17 +186,17 @@ export function ApprovalCard({
               {stepWordOf(approval.node_instance_key)}
             </dd>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-col">
             <dt className="text-muted">approver roles</dt>
             <dd data-testid="approval-roles">
               {approval.approver_roles.join(", ") || "named users only"}
             </dd>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-col">
             <dt className="text-muted">on timeout</dt>
             <dd data-testid="approval-on-timeout">{timeoutWords(approval.on_timeout)}</dd>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-col">
             <dt className="text-muted">deadline</dt>
             {/* The handoff's time rule (`docs/design/handoff-projects/README.md`
                 § 1 copy — “Times are relative; never show ISO strings”): the
@@ -211,7 +216,7 @@ export function ApprovalCard({
             </dd>
           </div>
           {approval.re_requested ? (
-            <div className="flex gap-2">
+            <div className="flex flex-col">
               <dt className="text-muted">re-requested</dt>
               <dd data-testid="approval-re-requested">
                 yes — this gate was asked for again after an earlier one closed

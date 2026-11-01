@@ -843,7 +843,7 @@ describe("/p/:projectId — the inventory column", () => {
     );
   });
 
-  it("prefers ADR-0065's served repository and draws the served last line — one line at md, stacked at 390", async () => {
+  it("prefers ADR-0065's served repository and draws the served last line — title line at md with the preview under it, stacked at 390", async () => {
     mounted([
       {
         path: conversationsPath,
@@ -870,16 +870,15 @@ describe("/p/:projectId — the inventory column", () => {
       `project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`,
     );
     expect(lastLine.textContent).toContain("Landed the checkpoint; waiting on review.");
-    // ONE line at `md` and up, like the design: the two grouping wrappers
-    // dissolve into the row's five-column grid (`md:contents`), so glyph ·
-    // title · last line · `repo · agent` · age are still five cells, each
-    // text one truncating with a full `title` tooltip. Below `md` the same
-    // DOM stacks (title line, last line, meta) — at 390 one line truncated
-    // every cell to noise (this brief's pass-2 review), and at 1280 stacked
-    // block-lines read as paragraphs (the earlier pass-2 review); one DOM
-    // answers both. (Project.test.tsx adjusted by project-tabs-2 for the
-    // stacked-at-390 contract.)
-    const cells = Array.from(row.querySelectorAll(":scope > span > span")).filter(
+    // The design's row (pass-1 review, this brief): at `md` the FIRST line is
+    // glyph · title · `repo · agent` · age — the preview never shares it, so
+    // the title keeps everything the short mono cells do not need and
+    // ellipsises only when the row really runs out. The agent's last line is
+    // its own second row, aligned under the title; below `md` the same grid
+    // stacks (title line, last line, meta) as the earlier pass-2 review
+    // demands. Every cell is a direct child, placed by grid coordinates that
+    // re-park at `md`.
+    const cells = Array.from(row.querySelectorAll(":scope > span")).filter(
       (cell) => !cell.className.includes("sr-only") && !cell.hasAttribute("aria-hidden"),
     );
     expect(cells).toHaveLength(4);
@@ -888,9 +887,17 @@ describe("/p/:projectId — the inventory column", () => {
     for (const cell of [titleCellEl, lastLineCell, metaCell])
       expect(cell.className.split(/\s+/)).toContain("truncate");
     expect(ageCell.className.split(/\s+/)).toContain("shrink-0");
-    // The row stacks below `md` and grids from `md` up.
-    expect(row.className).toContain("flex-col");
-    expect(row.className).toContain("md:grid");
+    // One grid at every width: the title and the meta take the `minmax(0,1fr)`
+    // body column; the preview sits under the title (row 2) at both widths;
+    // at `md` the meta re-parks onto the title line (row 1, column 3) and the
+    // age onto column 4.
+    expect(row.className).toContain("grid");
+    expect(row.className).toContain("md:grid-cols-[auto_minmax(0,1fr)_auto_auto]");
+    expect(titleCellEl.className).toContain("row-start-1");
+    expect(metaCell.className).toContain("md:col-start-3");
+    expect(metaCell.className).toContain("md:row-start-1");
+    expect(lastLineCell.className).toContain("col-start-2");
+    expect(lastLineCell.className).toContain("row-start-2");
     // The title is ink 600, not the link's blue (the review: title in ink).
     expect(titleCellEl.className.split(/\s+/)).toContain("text-ink");
     // The title and the last line keep their whole text as a tooltip, so
