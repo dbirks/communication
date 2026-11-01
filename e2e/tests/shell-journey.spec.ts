@@ -882,7 +882,9 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
             .getByTestId("dock-controller")
             .textContent()
             .catch(() => "")) ?? "";
-        if (/you are in control/i.test(badge)) break; // the click landed after all
+        // ce8cfda renamed the pill to lower-case `you're in control`; either
+        // wording proves the takeover landed, which is what this guard asks.
+        if (/you(?:'re| are) in control/i.test(badge)) break; // the click landed after all
         if (round >= 1)
           throw new Error(
             `the take-control confirm click for ${NEW_NODE_ID} missed twice (the card closed?) — ${String(
@@ -900,7 +902,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       .poll(async () => (await page.getByTestId("dock-controller").textContent()) ?? "", {
         timeout: 60_000,
       })
-      .toMatch(/you are in control/i);
+      .toMatch(/you're in control/);
 
     // One prompt in the composer; the agent replies.
     const before = await page.getByTestId("transcript-item").count();

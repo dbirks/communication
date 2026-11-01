@@ -351,7 +351,7 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
 
       await expect(
         page.getByTestId("repo-workflows"),
-        "design 1e: WORKFLOWS ON THIS REPO leads the left column",
+        "design 1e: REPO WORKFLOWS leads the left column",
       ).toBeVisible({ timeout: 30_000 });
       const pins = await listJson(page, `projects/${projectId}/assignments`);
       if (pins.length > 0) {

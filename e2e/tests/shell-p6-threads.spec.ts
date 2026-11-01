@@ -152,7 +152,7 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
       ).toBe(0);
       expect(await page.getByTestId("thread-draft-pr").count(), "the honest note entry").toBe(1);
       await takeControl.click({ timeout: 30_000 });
-      await expect(page.getByTestId("controller-badge")).toContainText(/You are in control/i, {
+      await expect(page.getByTestId("controller-badge")).toContainText(/you're in control/i, {
         timeout: 30_000,
       });
     }

@@ -195,7 +195,7 @@ test.describe("M2 shared conversation and control handoff", () => {
 
     // Alice is the controller of her own conversation and the agent is real:
     // the session binding is reported, not assumed.
-    await expect(alice.getByTestId("controller-badge")).toHaveText("You are in control");
+    await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control");
     await expect(alice.getByTestId("agent-session")).toContainText("agent: claude", {
       timeout: PERMISSION_TIMEOUT_MS,
     });
@@ -250,7 +250,7 @@ test.describe("M2 shared conversation and control handoff", () => {
     // While the ticks are still running: a takeover requests cancellation of
     // the in-flight turn rather than pretending it finished (ADR-0014 §9).
     await takeControl(bob);
-    await expect(bob.getByTestId("controller-badge")).toHaveText("You are in control");
+    await expect(bob.getByTestId("controller-badge")).toHaveText("you're in control");
     await expectTurnStatus(bob, /cancelled/);
 
     // Alice, without reloading, learns she is no longer driving and that her
@@ -283,7 +283,7 @@ test.describe("M2 shared conversation and control handoff", () => {
     await bob.getByTestId("return-control").click();
     await expect(bob.getByTestId("controller-badge")).toHaveText(`Controlled by ${ALICE.name}`);
     await expect(bob.getByTestId("composer-input")).toBeDisabled();
-    await expect(alice.getByTestId("controller-badge")).toHaveText("You are in control", {
+    await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control", {
       timeout: PERMISSION_TIMEOUT_MS,
     });
     await expect(alice.getByTestId("composer-input")).toBeEnabled();
@@ -315,7 +315,7 @@ test.describe("M2 shared conversation and control handoff", () => {
     await gotoApp(bob, `${API_B_URL}${conversationPath}`);
     await expect(alice.getByTestId("user-badge")).toContainText(ALICE.name);
     await expect(bob.getByTestId("user-badge")).toContainText(BOB.name);
-    await expect(alice.getByTestId("controller-badge")).toHaveText("You are in control");
+    await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control");
     await expect(bob.getByTestId("controller-badge")).toHaveText(`Controlled by ${ALICE.name}`);
 
     // Same journal, same fold: the two transcripts must read the same, and

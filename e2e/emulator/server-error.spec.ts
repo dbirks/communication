@@ -377,9 +377,11 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
     // A failed read is NOT a count (pass-2 review at 390, and pass-7 review on
     // the `?` the first fix left behind): the panel header says the bare
     // `USED IN` with NO number, the tab beside it drops its count the same way,
-    // and the STANDARD FAILED banner — the same Alert every other server-error
-    // state uses — says what broke. A `?` would still be a value standing in a
-    // number's seat, so neither surface may print one.
+    // and the app's ONE load-failure treatment — the shared `Couldn't load …`
+    // block with its `Retry`, the same every other server-error state shows —
+    // says what broke. A `?` would still be a value standing in a number's
+    // seat, so neither surface may print one (pass-8 review item 4 retired the
+    // bare `FAILED` callout here: that is a run's status word).
     await expect(
       page.locator("#used-in-heading"),
       "design 2a: the broken fan reads `USED IN` with no count, never `USED IN 0 REPOS`",
@@ -398,16 +400,20 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
     const banner = page.getByTestId("used-in-error");
     await expect(
       banner,
-      "design 2a: the failure is the standard FAILED alert, not red mono text passing as data",
+      "design 2a: the failure is the shared load-failure alert, not red mono text passing as data",
     ).toBeVisible({ timeout: 30_000 });
     await expect(
       page.getByRole("alert").filter({ hasText: /could not all be read/i }),
-      "design 2a: it is the FAILED banner (role=alert), the same one every other server-error state shows",
+      "design 2a: it is the shared block (role=alert), the same one every other server-error state shows",
     ).toBeVisible({ timeout: 30_000 });
     await expect(
       banner,
-      "design 2a: the banner's bar reads FAILED and its body says what broke",
-    ).toContainText(/FAILED/i);
+      "design 2a: the block leads with its own sentence — `Couldn't load the list of repos …`, not the bare run word FAILED",
+    ).toContainText("Couldn't load the list of repos", { timeout: 30_000 });
+    await expect(
+      page.getByTestId("used-in-retry"),
+      "design 2a: a server error offers the one thing it supports — ask again",
+    ).toHaveText("Retry", { timeout: 30_000 });
     await expect(
       banner,
       "design 2a: a failed assignments fan is stated, not counted as 'not used'",

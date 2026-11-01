@@ -473,6 +473,49 @@ export async function takeControl(page: Page, timeout = 120_000): Promise<void> 
 }
 
 /**
+ * Put the page back at the top of EVERY scroll container before a `fullPage`
+ * capture, then wait two animation frames so the paint reflects it.
+ *
+ * A `fullPage` screenshot is stitched from the page's scroll position, and a
+ * sticky top bar paints at that position — so a journey that auto-scrolled a
+ * clicked row leaves the bar's ink stitched MID-PAGE over the content in the
+ * 390 captures (observed in the emulator's phone shots: the app-shell band
+ * crossing the transcript). Nothing is restored afterwards: the capture is
+ * evidence of the screen as designed (from the top), not of wherever the last
+ * click happened to leave it.
+ *
+ * The reset covers the document (`window` + `documentElement`/`body`) AND every
+ * element holding a scroll offset — the app scrolls `window` on some pages and
+ * its own `<main>` on others, and a capture must not depend on which.
+ */
+export async function scrollToTopForCapture(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const twoFrames = () =>
+      new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())));
+    const resetAll = () => {
+      window.scrollTo(0, 0);
+      for (const el of [document.documentElement, document.body]) {
+        if (el.scrollTop !== 0 || el.scrollLeft !== 0) {
+          el.scrollTop = 0;
+          el.scrollLeft = 0;
+        }
+      }
+      for (const el of Array.from(document.querySelectorAll("*"))) {
+        if (el.scrollTop === 0 && el.scrollLeft === 0) continue;
+        el.scrollTop = 0;
+        el.scrollLeft = 0;
+      }
+    };
+    resetAll();
+    await twoFrames();
+    // A frame later the layout may have settled somewhere else again (a
+    // virtualised list, a scroll-restoring effect); one more pass, then paint.
+    resetAll();
+    await twoFrames();
+  });
+}
+
+/**
  * A screenshot of the current screen into the repo's gitignored browser
  * output directory (`.playwright-cli/`) — never into the working tree, and
  * never a build artifact a human has to clean up afterwards.
@@ -481,6 +524,7 @@ export async function shot(page: Page, name: string): Promise<string> {
   const dir = path.join(repoRoot, ".playwright-cli");
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, `${name}.png`);
+  await scrollToTopForCapture(page);
   await page.screenshot({ path: file, fullPage: true });
   return file;
 }

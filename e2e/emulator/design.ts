@@ -481,8 +481,9 @@ const USED_IN_PANEL: Landmark = {
   id: "used-in-panel",
   // A count only speaks when a read ANSWERED it (pass-7 review, 2a
   // server-error): a failed or still-pending read says the bare `USED IN`
-  // beside the FAILED banner — the `?` the pass-2 review left there was still
-  // a value sitting in a number's seat — and one repository is one `REPO`.
+  // beside the shared `Couldn't load …` block — the `?` the pass-2 review left
+  // there was still a value sitting in a number's seat — and one repository is
+  // one `REPO`.
   desc: "the USED IN panel (a count only when a read answered it; `USED IN` alone when one broke)",
   any: [{ testid: "used-in" }, { role: "heading", name: /^USED IN(\s+\d+\s+REPOS?)?$/i }],
 };
@@ -513,7 +514,7 @@ const USED_IN_FOOTNOTE: Landmark = {
 };
 const USED_IN_ERROR: Landmark = {
   id: "used-in-error",
-  desc: "the FAILED banner saying the uses could not all be read",
+  desc: "the load-failure block saying the uses could not all be read",
   any: [{ testid: "used-in-error" }, { role: "alert" }, { text: /could not all be read/i }],
 };
 /** The Use in a repo… dialog (2a's dialog beat). */
@@ -706,8 +707,12 @@ const REPO_START_RUN: Landmark = {
 };
 const REPO_WORKFLOWS_PANEL: Landmark = {
   id: "repo-workflows-panel",
-  desc: "the WORKFLOWS ON THIS REPO panel",
-  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^WORKFLOWS ON THIS REPO/i }],
+  // ce8cfda: at 390 the old `WORKFLOWS ON THIS REPO · n` bar ellipsised away
+  // its COUNT, so the header is the shorter `REPO WORKFLOWS · n`. The testid is
+  // the stable hook; the heading is the copy it now draws (with or without the
+  // count, which is data).
+  desc: "the REPO WORKFLOWS panel",
+  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^REPO WORKFLOWS/i }],
 };
 const REPO_LIBRARY_LINK: Landmark = {
   id: "repo-use-library-workflow",
@@ -719,7 +724,7 @@ const REPO_ADD_TRIGGER: Landmark = {
   desc: "a workflow row's '+ Add trigger' action",
   any: [{ role: "button", name: /\+ add trigger$/i }, { text: /^\+ (Add trigger|use workflow)/i }],
 };
-// No `Edit` landmark on a WORKFLOWS ON THIS REPO row: 2e.png
+// No `Edit` landmark on a REPO WORKFLOWS row: 2e.png
 // (docs/design/handoff-workflows/png/2e.png) draws a workflow row with
 // `+ Add trigger` and `Run` and nothing else — see REPO_ADD_TRIGGER /
 // REPO_ROW_RUN. `Edit` is the TRIGGER rows' verb, inside the row's STARTS WHEN

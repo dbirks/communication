@@ -38,7 +38,7 @@ import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { checkA11y } from "./a11y.js";
-import { expectNoLegacyAppBar, gotoApp, signIn } from "./helpers.js";
+import { expectNoLegacyAppBar, gotoApp, scrollToTopForCapture, signIn } from "./helpers.js";
 
 const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
@@ -49,6 +49,9 @@ const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "test-results/issue2";
 /** One piece of journey evidence: a screenshot plus a single log line. */
 async function evidence(page: Page, name: string, what: string): Promise<void> {
   await mkdir(EVIDENCE_DIR, { recursive: true });
+  // Captured from the top: a full-page shot of a scrolled page stitches the
+  // sticky phone top bar into the MIDDLE of the image.
+  await scrollToTopForCapture(page);
   await page.screenshot({ path: path.join(EVIDENCE_DIR, `${name}.png`), fullPage: true });
   console.log(`EVIDENCE ${name}: ${what}`);
 }

@@ -16,7 +16,12 @@ journeys are added as screens land.
    `emu.screen(badge, name)`, which captures the page at **1280×900 and
    390×844** and records it against the design render
    `docs/design/handoff-workflows/png/<badge>.png` (Projects Review
-   badges will come under `docs/design/handoff-projects/png/`).
+   badges will come under `docs/design/handoff-projects/png/`). Each capture
+   goes from the **top**: `emu.screen` calls `scrollToTopForCapture` (the
+   shared helper in `tests/helpers.ts`) first, because a `fullPage` shot is
+   stitched from the page's scroll position and a journey that auto-scrolled a
+   clicked row otherwise paints the sticky phone band across the MIDDLE of the
+   390 render. Nothing is scrolled back afterwards.
 3. The `emu` fixture (fixtures.ts) records, per page:
    - `pageerror` events and `console.error` messages (URL + text);
    - every `/api/` response with status ≥ 400 (method, path, status) and
@@ -190,7 +195,12 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   an absolutely positioned span printed over a line → hit) and
   `reflow-target.spec.ts` hands `findSmallTargets` hit-area fixtures (a 26px box
   with a ±9px absolute `::after` → passes; the same box with a 1px border → 42px,
-  reported; a plain 26px box, a covered extension, a `static` host → reported) in
+  reported; a plain 26px box, a covered extension, a `static` host → reported)
+  and `reflow-capture.spec.ts` hands the capture rule the same treatment (a
+  sticky band, a scrolled window and a scrolled `main`: after
+  `scrollToTopForCapture` the full-page shot's first ink is the band and its
+  bottom border is row 43; captured while scrolled, the same shot starts 248px
+  down and borders at 443 — the stitched band over the content) in
   its own `reflow` Playwright project, which has no `setup` dependency:
 
   ```bash
@@ -268,7 +278,9 @@ verbs — and, for the saved arms, the STARTS WHEN row with its switch and
 `Edit` on the repo page (2e.png puts `Edit` on the TRIGGER rows under
 STARTS WHEN, never on a workflow row — whose verbs are `+ Add trigger` and
 `Run`); the 2d tab with its revision select, Copy, download
-and line-numbered text; the 2e/repo-1e page verbs, WORKFLOWS ON THIS REPO
+and line-numbered text; the 2e/repo-1e page verbs, REPO WORKFLOWS (ce8cfda:
+the bar used to read WORKFLOWS ON THIS REPO and ellipsised its own count away
+at 390)
 with its library link, the row verbs, the STARTS WHEN box, and (Projects
 Review) OPEN ISSUES, WORK IN THIS REPO and RECENT RUNS; the project overview's
 title, two verbs, six tabs and RUNNING NOW / RECENT THREADS / REPOSITORIES /

@@ -16,7 +16,7 @@ import path from "node:path";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { checkA11y } from "./a11y.js";
-import { signIn } from "./helpers.js";
+import { scrollToTopForCapture, signIn } from "./helpers.js";
 
 /** The shared gate: suites only run against the app-shell lab. */
 export const SHELL_ENABLED = process.env.COMMUNICATION_E2E_SHELL === "1";
@@ -28,6 +28,9 @@ const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "test-results/shell";
 /** One piece of journey evidence: a screenshot plus a single log line. */
 export async function evidence(page: Page, name: string, what: string): Promise<void> {
   await mkdir(EVIDENCE_DIR, { recursive: true });
+  // Captured from the top: a full-page shot of a scrolled page stitches the
+  // sticky phone top bar into the MIDDLE of the image.
+  await scrollToTopForCapture(page);
   await page.screenshot({ path: path.join(EVIDENCE_DIR, `${name}.png`), fullPage: true });
   console.log(`EVIDENCE ${name}: ${what}`);
 }

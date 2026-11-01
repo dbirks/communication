@@ -37,6 +37,7 @@ import {
   expectRunStatus,
   openProjectBySlug,
   repinAssignment,
+  scrollToTopForCapture,
   setMember,
   signIn,
 } from "./helpers.js";
@@ -67,6 +68,9 @@ const TAKEOVER_RETURN_TIMEOUT_MS = Number(process.env.E2E_TAKEOVER_RETURN_TIMEOU
 /** One piece of journey evidence: a screenshot plus a single log line. */
 async function evidence(page: Page, name: string, what: string): Promise<void> {
   await mkdir(EVIDENCE_DIR, { recursive: true });
+  // Captured from the top: a full-page shot of a scrolled page stitches the
+  // sticky phone top bar into the MIDDLE of the image.
+  await scrollToTopForCapture(page);
   await page.screenshot({ path: path.join(EVIDENCE_DIR, `${name}.png`), fullPage: true });
   console.log(`EVIDENCE ${name}: ${what}`);
 }
@@ -833,7 +837,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
             .getByTestId("dock-controller")
             .textContent()
             .catch(() => "")) ?? "";
-        if (/you are in control/i.test(badge)) break; // the click landed after all
+        if (/you(?:'re| are) in control/i.test(badge)) break; // the click landed after all
         if (round >= 1)
           throw new Error(
             `the take-control confirm click missed twice (the card closed?) — ${String(err)}`,
@@ -843,9 +847,9 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
         await expect(bob.getByTestId("take-control-card-heading")).toContainText(state.acpSlug);
       }
     }
-    // The badge is written in words: on bob's own page it reads "You are in
+    // The badge is written in words: on bob's own page it reads "you're in
     // control" (the name "Controlled by Bob" is what OTHER pages show).
-    await expect(bob.getByTestId("dock-controller")).toContainText(/you are in control/i, {
+    await expect(bob.getByTestId("dock-controller")).toContainText(/you're in control/, {
       timeout: NODE_STEP_TIMEOUT_MS,
     });
     // The takeover interrupted the in-flight attempt: it closed
@@ -858,7 +862,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await evidence(
       bob,
       "wb-a5-bob-control",
-      `bob (contributor) took control while ${runningKey} was running — the badge reads "You are in control" and the run is paused for human_takeover (the attempt was interrupted)`,
+      `bob (contributor) took control while ${runningKey} was running — the badge reads "you're in control" and the run is paused for human_takeover (the attempt was interrupted)`,
     );
 
     // carol (viewer): the same dock shows Take control disabled and no

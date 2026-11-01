@@ -40,6 +40,7 @@ import path from "node:path";
 import { test as base } from "@playwright/test";
 import type { APIResponse, Page, Request } from "@playwright/test";
 import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
+import { scrollToTopForCapture } from "../tests/helpers.js";
 import {
   collectReflowItems,
   findClippedText,
@@ -355,6 +356,14 @@ class EmuRecorder {
         data: true,
       };
       const shot = `${badge}-${name}-${width}.png`;
+      // The capture goes from the TOP. A journey that clicked its way down a
+      // list leaves the window (or the shell's `<main>`) scrolled, and a
+      // `fullPage` shot is stitched from that scroll offset: the sticky phone
+      // band painted across the middle of the 390 renders, over content it was
+      // never sitting on. Nothing is restored — the screen's record is the
+      // screen as designed, and the checks below (parity, targets, overlaps,
+      // landmarks) are all top-anchored measurements anyway.
+      await scrollToTopForCapture(this.page);
       await this.page.screenshot({
         path: path.join(EMU_OUT_DIR, shot),
         fullPage: true,

@@ -30,6 +30,7 @@ import {
   expectNoLegacyAppBar,
   gotoApp,
   openProjectBySlug,
+  scrollToTopForCapture,
   selectByOptionText,
   signIn,
 } from "./helpers.js";
@@ -57,6 +58,9 @@ const EVIDENCE_DIR = process.env.E2E_EVIDENCE_DIR ?? "test-results/issue2";
 /** One piece of journey evidence: a screenshot plus a single log line. */
 async function evidence(page: Page, name: string, what: string): Promise<void> {
   await mkdir(EVIDENCE_DIR, { recursive: true });
+  // Captured from the top: a full-page shot of a scrolled page stitches the
+  // sticky phone top bar into the MIDDLE of the image.
+  await scrollToTopForCapture(page);
   await page.screenshot({ path: path.join(EVIDENCE_DIR, `${name}.png`), fullPage: true });
   console.log(`EVIDENCE ${name}: ${what}`);
 }
