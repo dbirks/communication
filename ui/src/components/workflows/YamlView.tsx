@@ -115,23 +115,40 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
         aria-label={`${title} document`}
         className="max-h-[460px] overflow-auto rounded-[3px] border border-line bg-surface p-[10px] font-mono text-[11.5px] leading-[18px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
-        {lines.map((line, index) => (
-          <div key={index} data-testid={`${testId}-line-${index + 1}`} className="flex">
-            <span
-              aria-hidden="true"
-              className="w-[3rem] shrink-0 select-none text-right pr-[8px] text-[10.5px] text-faint"
-            >
-              {index + 1}
-            </span>
-            {/* Soft-wrapped at every width (2d review, 390): `whitespace-pre`
-                let a long line clip at the panel's right edge on a phone;
-                the whole line now stays readable, and `wrap-anywhere`
-                keeps even an unbroken digest from forcing sideways scroll. */}
-            <span className="min-w-0 wrap-anywhere whitespace-pre-wrap pl-[8px]">
-              {line === "" ? "\u00a0" : line}
-            </span>
-          </div>
-        ))}
+        {lines.map((line, index) => {
+          // Hanging indent for the soft-wrap (error-details-r6 item 3, pass-1
+          // shot 2d-yaml-390): a wrapped continuation line used to start at
+          // column 0, losing the indentation that IS the YAML's structure.
+          // Each line's block-start padding grows by its own leading
+          // whitespace and `text-indent` pulls only the FIRST line back by the
+          // same amount, so the first line sits exactly where it did and every
+          // wrapped continuation aligns under the line's content, not the
+          // margin. (The panel is mono, so `ch` is the space width exactly.)
+          const indent = line.length - line.trimStart().length;
+          return (
+            <div key={index} data-testid={`${testId}-line-${index + 1}`} className="flex">
+              <span
+                aria-hidden="true"
+                className="w-[3rem] shrink-0 select-none text-right pr-[8px] text-[10.5px] text-faint"
+              >
+                {index + 1}
+              </span>
+              {/* Soft-wrapped at every width (2d review, 390): `whitespace-pre`
+                  let a long line clip at the panel's right edge on a phone;
+                  the whole line now stays readable, and `wrap-anywhere`
+                  keeps even an unbroken digest from forcing sideways scroll. */}
+              <span
+                className="min-w-0 wrap-anywhere whitespace-pre-wrap"
+                style={{
+                  paddingLeft: `calc(8px + ${indent}ch)`,
+                  textIndent: `-${indent}ch`,
+                }}
+              >
+                {line === "" ? "\u00a0" : line}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </Panel>
   );

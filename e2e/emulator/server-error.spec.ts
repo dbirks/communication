@@ -41,7 +41,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, apiMutate } from "./fixtures.js";
 import type { Emu } from "./fixtures.js";
-import type { Page, Route } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import {
   EMU_ADMIN_STATE,
   EMU_ALICE_STATE,
@@ -60,6 +60,47 @@ const SERVER_PROBLEM = {
 
 /** The banner the screens must show: the server's own words, quoted. */
 const PROBLEM_LINE = /Internal Server Error: emulated failure/i;
+
+/**
+ * error-details-r6: the shared block's raw-text contract. The break is said in
+ * a plain status sentence the reader can act on; the server's problem document
+ * stays in the DOM but COLLAPSED behind a `Details` disclosure — not visible
+ * until opened (the pass-1 reviewers graded the always-visible
+ * `server said: Internal Server Error: emulated failure` line as
+ * developer-facing text shown to users). The disclosure is opened, read, and
+ * closed again so the screen shot captures the at-rest state.
+ */
+async function expectRawTextBehindDetails(banner: Locator): Promise<void> {
+  await expect(
+    banner,
+    "error-details-r6: a 5xx is said in a plain sentence, not only as a quoted problem",
+  ).toContainText("The server had a problem — try again in a moment.", { timeout: 30_000 });
+  const details = banner.locator("details");
+  await expect(
+    details,
+    "error-details-r6: the raw server text sits behind exactly one Details disclosure",
+  ).toHaveCount(1);
+  await expect(
+    details.locator("summary"),
+    "error-details-r6: the disclosure is labelled `Details`",
+  ).toHaveText("Details");
+  const raw = details.locator("p");
+  await expect(
+    raw,
+    "error-details-r6: the raw server line is NOT shown until Details opens",
+  ).toBeHidden();
+  await expect(
+    raw,
+    "error-details-r6: the raw problem is still in the DOM (the failure is not made up away)",
+  ).toContainText(PROBLEM_LINE);
+  await details.locator("summary").click();
+  await expect(
+    raw,
+    "error-details-r6: opening Details quotes the server's own problem",
+  ).toBeVisible();
+  await details.locator("summary").click();
+  await expect(raw, "error-details-r6: and it closes again").toBeHidden();
+}
 
 const SCRATCH_SLUG = `emu-srvfail-${EMU_PASS_ID}-${randomUUID().slice(0, 8)}`.toLowerCase();
 const SCRATCH_NAME = `Emu srvfail ${EMU_PASS_ID}`;
@@ -227,14 +268,16 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1b: a failed library read is a ProblemBanner quoting the server's problem, not a blank list",
     ).toBeVisible({ timeout: 30_000 });
-    // The shared load-failure block (2026-10-30 copy review): the page's own
-    // sentence leads and the server's problem document sits under it as muted
-    // evidence — so the problem IS still quoted (asserted above), but it is no
-    // longer the headline and the bar no longer borrows the run-status word.
+    // The shared load-failure block (2026-10-30 copy review, error-details-r6):
+    // the page's own sentence leads, the 5xx is said in a plain status
+    // sentence, and the server's problem document rides collapsed behind
+    // `Details` — so the problem IS still quoted (asserted above via the
+    // banner's text), but never as developer-facing text on the reading line.
     await expect(
       page.getByTestId("workflows-load-error"),
       "design 1b: the banner leads with `Couldn't load the workflow library.`",
     ).toContainText("Couldn't load the workflow library.", { timeout: 30_000 });
+    await expectRawTextBehindDetails(page.getByTestId("workflows-load-error"));
     await expect(
       page.getByTestId("workflows-list"),
       "design 1b: no list is invented over a failed read",
@@ -269,18 +312,17 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       "design 1c: the list read's failure renders INSIDE the open dialog, not behind it",
     ).toBeVisible();
     await expect(dialog.getByTestId("new-workflow-list-failure")).toContainText(PROBLEM_LINE);
-    // Pass-1 review, item 2: inside the dialog the read failure is the app's
-    // ONE load-failure treatment — a plain `Couldn't load <what the page read>`
-    // sentence with the server's problem document quoted under it as the
-    // `server said:` evidence. Bare `FAILED` over a quoted status line is the
-    // vocabulary of a run, not of this form.
+    // Pass-1 review, item 2 (and error-details-r6): inside the dialog the read
+    // failure is the app's ONE load-failure treatment — a plain
+    // `Couldn't load <what the page read>` sentence, a plain status sentence,
+    // and the server's problem document collapsed behind `Details`. Bare
+    // `FAILED` over a quoted status line is the vocabulary of a run, not of
+    // this form, and the raw line never sits on the reading line.
     await expect(
       dialog.getByTestId("new-workflow-list-failure"),
       "design 1c: the dialog's banner leads with `Couldn't load the workflow library.`",
     ).toContainText("Couldn't load the workflow library.");
-    await expect(dialog.getByTestId("new-workflow-list-failure")).toContainText(
-      /server said: Internal Server Error/i,
-    );
+    await expectRawTextBehindDetails(dialog.getByTestId("new-workflow-list-failure"));
     await expect(
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }),
       "design 1c: exactly one failure is on screen, and it is the dialog's — the page does " +
@@ -305,14 +347,15 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       "design 1e: the failed read lands on the page-level failure banner",
     ).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("pipeline-page-failure")).toContainText(PROBLEM_LINE);
-    // The shared block: a plain `Couldn't load <what the page read>` heading
-    // with the server's problem as the muted evidence quoted just above, then
-    // Retry and the way back — `FAILED` is a run's status word, not this
-    // page's story (2026-10-30 copy review).
+    // The shared block: a plain `Couldn't load <what the page read>` heading,
+    // a plain status sentence, then Retry and the way back — `FAILED` is a
+    // run's status word, not this page's story (2026-10-30 copy review), and
+    // the raw problem is collapsed behind `Details` (error-details-r6).
     await expect(
       page.getByTestId("pipeline-page-failure"),
       "design 1e: the failure says `Couldn't load the workflow.` in its own words",
     ).toContainText("Couldn't load the workflow.");
+    await expectRawTextBehindDetails(page.getByTestId("pipeline-page-failure"));
     await expect(
       page.getByTestId("workflow-load-retry"),
       "design 1e: a server error (unlike a 404) offers the way back — Retry",
@@ -334,6 +377,7 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       page.getByTestId("studio-draft-error"),
       "design 1g: the failed draft read says `Couldn't load the draft.` — the shared block, not the bare run word",
     ).toContainText("Couldn't load the draft.");
+    await expectRawTextBehindDetails(page.getByTestId("studio-draft-error"));
     await expect(
       page.getByTestId("studio-page"),
       "design 1g: no canvas mounts over the failed read",
@@ -356,6 +400,7 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 2d: a revision that cannot be read is a ProblemBanner, not an empty editor",
     ).toBeVisible({ timeout: 30_000 });
+    await expectRawTextBehindDetails(page.getByTestId("yaml-revision-error"));
     await expect(
       page.getByTestId("yaml-view"),
       "design 2d: no YAML is shown that did not come from the server",
@@ -427,9 +472,10 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       "design 2a: a server error offers the one thing it supports — ask again",
     ).toHaveText("Retry", { timeout: 30_000 });
     await expect(
-      banner,
+      page.getByTestId("used-in-error"),
       "design 2a: a failed assignments fan is stated, not counted as 'not used'",
     ).toContainText(/could not/i);
+    await expectRawTextBehindDetails(page.getByTestId("used-in-error"));
     await expect(
       page.getByTestId("used-in-empty"),
       "design 2a: the honest empty line never speaks over a failed read",
@@ -455,6 +501,9 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByTestId("repo-workflows").getByRole("alert").filter({ hasText: PROBLEM_LINE }),
       "design 2e: the workflows panel quotes the failure (its assignments read is the one that broke)",
     ).toBeVisible({ timeout: 30_000 });
+    await expectRawTextBehindDetails(
+      page.getByTestId("repo-workflows").getByRole("alert").filter({ hasText: PROBLEM_LINE }),
+    );
     await expect(
       page.getByTestId("repo-workflows-empty"),
       "design 2e: a failed read is never dressed as 'uses no workflow yet'",
@@ -515,12 +564,14 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
     // 2026-11-01 review (pass-1 shot 2c-server-error): the dialog quoted the
     // problem in a bare `× FAILED` callout over a greyed `Add trigger` with no
     // word of explanation. It now shows the app's ONE load-failure block — the
-    // plain sentence, the server text demoted to `server said:`, and the Retry
-    // the read actually supports — and the disabled verb says why beside itself.
+    // plain sentence, the plain status sentence, the raw server text collapsed
+    // behind `Details` (error-details-r6), and the Retry the read actually
+    // supports — and the disabled verb says why beside itself.
     await expect(
       dialog.getByTestId("trigger-dialog-revision-error"),
       "design 2c: the failed read leads with its own sentence, not the run-status word",
     ).toContainText("Couldn't load the pinned workflow revision.", { timeout: 30_000 });
+    await expectRawTextBehindDetails(dialog.getByTestId("trigger-dialog-revision-error"));
     await expect(
       dialog.getByTestId("trigger-dialog-revision-error"),
       "design 2c: and it says what that means for the trigger, in plain words",
@@ -558,6 +609,9 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1e: a failed repositories read is the ProblemBanner, not a spinner",
     ).toBeVisible({ timeout: 30_000 });
+    await expectRawTextBehindDetails(
+      page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
+    );
     await expectNoSpinner(page, "Loading repositories");
     await expect(
       page.getByTestId("repo-page"),
@@ -585,6 +639,9 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByTestId("project-page-error").getByRole("alert").first(),
       "design 1b: and it leads with its own sentence — the shared `Couldn't load …` block",
     ).toContainText("Couldn't load the project.");
+    await expectRawTextBehindDetails(
+      page.getByTestId("project-page-error").getByRole("alert").first(),
+    );
     await expect(
       page.getByTestId("project-page"),
       "design 1b: no overview is assembled from parts",
@@ -609,6 +666,7 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByTestId("threads-list-error"),
       "design 1g: it is the shared load-failure block — `Couldn't load the thread list.",
     ).toContainText("Couldn't load the thread list.", { timeout: 30_000 });
+    await expectRawTextBehindDetails(page.getByTestId("threads-list-error"));
     await expect(
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1g: the thread column carries the loud banner",

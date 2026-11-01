@@ -4,10 +4,17 @@
  * emulated failure` callout — the vocabulary of a run's status applied to a page
  * that simply could not load, with the server's problem document as the headline
  * and, on half the screens, no way to try again. These tests are the contract
- * the fix owns: a plain heading, the server's words kept as muted evidence (not
- * hidden — hiding them would make the failure up), a Retry that refetches, and a
- * way back where the page has a parent. The compact callout a dialog or a form
- * needs is asserted to be unchanged, because ~40 call sites still use it.
+ * the fix owns: a plain heading, the server's words kept as muted evidence, a
+ * Retry that refetches, and a way back where the page has a parent. The compact
+ * callout a dialog or a form needs is asserted to be unchanged, because ~40 call
+ * sites still use it.
+ *
+ * error-details-r6 moved that evidence one step further off the reading line:
+ * the pass-1 reviewers graded the visible `server said: Internal Server Error:
+ * emulated failure` line as developer-facing text shown to users. The raw quote
+ * is still in the DOM — hiding it would make the failure up — but collapsed
+ * behind a `Details` disclosure, and the status itself is said in a plain
+ * sentence the reader understands.
  */
 import { afterEach } from "vitest";
 import { describe, expect, it, vi } from "vitest";
@@ -53,7 +60,7 @@ describe("ProblemBanner — a page's load failure (`subject`)", () => {
     expect(banner.textContent).toContain("COULDN'T LOAD");
   });
 
-  it("keeps the server's own problem as muted evidence, not as the headline", () => {
+  it("collapses the server's raw problem behind a Details disclosure, never on the reading line", () => {
     show(
       <ProblemBanner
         error={serverError}
@@ -62,13 +69,110 @@ describe("ProblemBanner — a page's load failure (`subject`)", () => {
         testid="library-load-error"
       />,
     );
-    const evidence = screen.getByText(/server said:/);
-    expect(evidence.textContent).toContain("Internal Server Error: emulated failure");
-    expect(evidence.className).toContain("text-faint");
-    // The heading is the first line; the server's words are the muted tail.
     const banner = screen.getByTestId("library-load-error");
+    const details = banner.querySelector("details");
+    expect(details).toBeTruthy();
+    // Collapsed: the raw text is in the DOM but not on the screen — a reader
+    // who wants it opens `Details` (a native disclosure: focusable, Enter/Space
+    // opens it).
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(details?.querySelector("summary")?.textContent).toBe("Details");
+    const evidence = screen.getByTestId("library-load-error-server");
+    expect(details?.contains(evidence)).toBe(true);
+    expect(evidence.textContent).toContain("server said: Internal Server Error: emulated failure");
+    expect(evidence.className).toContain("text-faint");
+    // The heading is the first line; the server's words are the tail, inside
+    // the disclosure.
     expect(banner.textContent?.indexOf("Couldn't load")).toBeLessThan(
       banner.textContent?.indexOf("server said:") ?? 0,
+    );
+  });
+
+  it("says a 5xx in a plain status sentence the reader can act on", () => {
+    show(
+      <ProblemBanner
+        error={serverError}
+        fallback="The workflow library could not be read."
+        subject="the workflow library"
+        testid="library-load-error"
+      />,
+    );
+    expect(screen.getByTestId("library-load-error").textContent).toContain(
+      "The server had a problem — try again in a moment.",
+    );
+  });
+
+  it("says a network failure in a plain status sentence too", () => {
+    // Not an ApiError: `problemOf` gives it status 0 — the network's answer.
+    show(
+      <ProblemBanner
+        error={new Error("connect ECONNREFUSED")}
+        fallback="The workflow library could not be read."
+        subject="the workflow library"
+        testid="library-load-error"
+      />,
+    );
+    const banner = screen.getByTestId("library-load-error");
+    expect(banner.textContent).toContain(
+      "We couldn't reach the server — check your connection and try again.",
+    );
+    // The raw text still rides behind the disclosure, not on the line.
+    expect(screen.getByTestId("library-load-error-server").closest("details")).toBeTruthy();
+  });
+
+  it("404 and 403 keep their own words — no generic status sentence", () => {
+    const refusal = (status: number, title: string) =>
+      new ApiError({ type: "about:blank", title, status }, { type: "about:blank", title, status });
+    const notFound = show(
+      <ProblemBanner
+        error={refusal(404, "Not Found")}
+        fallback="The workflow you are looking for is not here."
+        subject="the workflow"
+        testid="nf-banner"
+      />,
+    );
+    expect(notFound.getByTestId("nf-banner").textContent).toContain(
+      "The workflow you are looking for is not here.",
+    );
+    expect(notFound.getByTestId("nf-banner").textContent).not.toContain("The server had a problem");
+    expect(notFound.getByTestId("nf-banner").textContent).not.toMatch(/server said/);
+
+    const forbidden = show(
+      <ProblemBanner
+        error={refusal(403, "Forbidden")}
+        fallback="You do not have access to this project."
+        subject="the project"
+        testid="fb-banner"
+      />,
+    );
+    expect(forbidden.getByTestId("fb-banner").textContent).toContain(
+      "You do not have access to this project.",
+    );
+    expect(forbidden.getByTestId("fb-banner").textContent).not.toContain(
+      "The server had a problem",
+    );
+    expect(forbidden.getByTestId("fb-banner").textContent).not.toContain("check your connection");
+  });
+
+  it("the same block carries the verb a write needs (Couldn't save …)", () => {
+    show(
+      <ProblemBanner
+        error={serverError}
+        fallback="Nothing was changed."
+        subject="the trigger"
+        verb="save"
+        testid="write-banner"
+      />,
+    );
+    const banner = screen.getByTestId("write-banner");
+    expect(banner.textContent).toContain("Couldn't save the trigger.");
+    expect(banner.textContent).toContain("COULDN'T SAVE");
+    expect(banner.textContent).not.toContain("FAILED");
+    // A write failure of a server's own 5xx gets the same plain sentence and
+    // the same collapsed evidence.
+    expect(banner.textContent).toContain("The server had a problem — try again in a moment.");
+    expect(banner.querySelector("details")?.textContent).toContain(
+      "server said: Internal Server Error: emulated failure",
     );
   });
 
@@ -160,7 +264,12 @@ describe("ProblemBanner — the compact inline callout (unchanged)", () => {
     );
     const banner = screen.getByTestId("no-error-subject");
     expect(banner.textContent).not.toMatch(/undefined/);
-    expect(banner.textContent).toContain("server said: Network error");
+    // The network answer is said plainly; the raw quote sits behind Details.
+    expect(banner.textContent).toContain(
+      "We couldn't reach the server — check your connection and try again.",
+    );
+    expect(banner.querySelector("details")?.textContent).toContain("server said: Network error");
+    expect(banner.querySelector("details")?.hasAttribute("open")).toBe(false);
   });
 
   it("a 404 in the compact form is the caller's sentence, not a server quote", () => {

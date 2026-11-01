@@ -811,11 +811,24 @@ describe("TriggerDialog — a refused save is said in plain words and stays retr
     fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
 
     const error = await screen.findByTestId("trigger-dialog-error");
-    // The plain sentence a person reads, in the app's own words, first.
-    expect(error.textContent).toContain("Couldn't save the trigger. Nothing was changed.");
-    // The server's document stays on screen as evidence — in the muted mono
-    // line, not as the headline.
-    expect(error.textContent).toContain("server said: Internal Server Error: emulated failure");
+    // The plain sentence a person reads, in the app's own words, first — and
+    // the 5xx said plainly too (error-details-r6).
+    expect(screen.getByTestId("trigger-dialog-error-summary").textContent).toContain(
+      "Couldn't save the trigger.",
+    );
+    expect(screen.getByTestId("trigger-dialog-error-hint").textContent).toContain(
+      "Nothing was changed. Your answers are still here — press Add trigger to try again.",
+    );
+    expect(error.textContent).toContain("The server had a problem — try again in a moment.");
+    // The server's document stays available as evidence — collapsed behind
+    // `Details`, off the reading line (error-details-r6: raw server text is
+    // developer-facing text unless the reader asks for it).
+    const details = error.querySelector("details");
+    expect(details).toBeTruthy();
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(screen.getByTestId("trigger-dialog-error-server").textContent).toContain(
+      "server said: Internal Server Error: emulated failure",
+    );
     // `FAILED` is a run's status word (handoff rule 06 says a state is never
     // color alone, and the review says this state is not a run).
     expect(error.textContent).not.toMatch(/FAILED/);
@@ -861,9 +874,15 @@ describe("TriggerDialog — a refused save is said in plain words and stays retr
     });
     fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
     const error = await screen.findByTestId("trigger-dialog-error");
-    expect(error.textContent).toContain("Couldn't save the trigger. Nothing was changed.");
+    expect(screen.getByTestId("trigger-dialog-error-summary").textContent).toContain(
+      "Couldn't save the trigger.",
+    );
+    expect(screen.getByTestId("trigger-dialog-error-hint").textContent).toContain(
+      "Nothing was changed.",
+    );
     // The refusal is the useful part, so it is still quotable verbatim — the
-    // e2e suite reads this node for the server's own words.
+    // e2e suite reads this node's text for the server's own words, which ride
+    // collapsed behind `Details` (error-details-r6).
     expect(error.textContent).toContain(
       "this repository has no GitHub remote, so an issue trigger would never fire",
     );
@@ -895,7 +914,12 @@ describe("TriggerDialog — a disabled verb says why beside itself", () => {
     ]);
     const banner = await screen.findByTestId("trigger-dialog-revision-error");
     expect(banner.textContent).toContain("Couldn't load the pinned workflow revision.");
-    expect(banner.textContent).toContain("server said:");
+    // error-details-r6: the raw problem rides collapsed behind `Details`, and
+    // the break itself is said in a plain sentence.
+    expect(banner.textContent).toContain("The server had a problem — try again in a moment.");
+    const revisionDetails = banner.querySelector("details");
+    expect((revisionDetails as HTMLDetailsElement | null)?.open).toBe(false);
+    expect(revisionDetails?.textContent).toContain("server said:");
     expect(banner.textContent).not.toMatch(/^FAILED/);
     // The read really can be re-asked, so the block offers it.
     expect(screen.getByTestId("trigger-dialog-revision-retry").textContent).toBe("Retry");

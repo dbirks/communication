@@ -95,7 +95,8 @@ export function WorkflowYamlTab({ slug, revisions, validate }: YamlTabProps) {
         // not a bare `FAILED` callout quoting a problem document — `FAILED` is
         // a run's status word, and a callout with no way out is the 2026-10-30
         // review's complaint about every screen that had one. The server's own
-        // problem still sits under the sentence as `server said:`.
+        // problem document sits collapsed behind the block's `Details`
+        // disclosure (error-details-r6).
         <ProblemBanner
           error={revision.error}
           fallback="The selected revision could not be read."

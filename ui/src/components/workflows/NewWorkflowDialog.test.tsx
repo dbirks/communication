@@ -119,11 +119,21 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
     // Inside the dialog's own box — the page behind the overlay shows nothing.
     expect(screen.getByTestId("new-workflow-dialog").contains(banner)).toBe(true);
     // The shared `Couldn't load …` block (pass-1 review, item 2): the page's
-    // own sentence leads and the server's problem document is quoted under it
-    // as evidence, so `FAILED` (a run's status word) is gone from this surface.
+    // own sentence leads, a plain status sentence says what broke, and the
+    // server's problem document rides collapsed behind `Details`
+    // (error-details-r6 — raw server text is evidence, not screen copy), so
+    // `FAILED` (a run's status word) is gone from this surface.
     expect(banner.textContent).toContain("Couldn't load the workflow library.");
-    expect(banner.textContent).toContain("server said: Internal Server Error");
+    expect(banner.textContent).toContain("The server had a problem — try again in a moment.");
+    const details = banner.querySelector("details");
+    expect(details).toBeTruthy();
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(details?.textContent).toContain("server said: Internal Server Error");
     expect(banner.textContent).not.toContain("FAILED");
+    // error-details-r6 item 2: the callout is a flex item of a column that
+    // scrolls; it must NOT be squeezed — it grows to fit (the pass-1 shot
+    // 1c-server-error-390 had its body line cut in half).
+    expect(banner.className).toContain("shrink-0");
   });
 
   it("draws no banner when the library read answered", () => {

@@ -19,6 +19,39 @@ const FLOW_TEXT = `spec:
 `;
 
 describe("YamlView", () => {
+  it("gives every line a hanging indent for its soft-wrap (error-details-r6 item 3)", () => {
+    // The pass-1 shot 2d-yaml-390: a long line wrapped at 390 and the
+    // continuation started at column 0, losing the indentation that IS YAML
+    // structure. Each line's content column is padded out by its own leading
+    // whitespace (`padding-left: 8px + Nch`) and only the first line is pulled
+    // back by the same amount (`text-indent: -Nch`), so wrapped continuations
+    // align under the line's content, not the margin.
+    render(<YamlView text={FLOW_TEXT} filename="plan-with-approval-r1.yaml" />);
+    const contentOf = (lineTestId: string) => {
+      const line = screen.getByTestId(lineTestId);
+      return line.querySelector("span:nth-child(2)") as HTMLElement;
+    };
+    // jsdom's CSS parser normalises the calc operand order; match either.
+    const hanging = (el: HTMLElement, indent: number) => {
+      const pad = el.style.paddingLeft.replace(/\s+/g, "");
+      expect(
+        pad === `calc(8px+${indent}ch)` || pad === `calc(${indent}ch+8px)`,
+        `hanging-indent padding-left, got "${el.style.paddingLeft}"`,
+      ).toBe(true);
+      expect(el.style.textIndent).toBe(
+        // jsdom folds `-0ch` to `0ch`; either is “no pull-back”.
+        indent === 0 && el.style.textIndent === "0ch" ? "0ch" : `-${indent}ch`,
+      );
+    };
+    hanging(contentOf("yaml-view-line-1"), 0); // `spec:` — no indent
+    const indented = contentOf("yaml-view-line-2"); // `  inputs:` — 2 spaces
+    expect(indented.textContent).toBe("  inputs:");
+    hanging(indented, 2);
+    const deeper = contentOf("yaml-view-line-3"); // `    type: object` — 4
+    expect(deeper.textContent).toBe("    type: object");
+    hanging(deeper, 4);
+  });
+
   it("renders the block-style text with one line number per line", () => {
     render(<YamlView text={FLOW_TEXT} filename="plan-with-approval-r1.yaml" />);
     expect(screen.getByTestId("yaml-view")).toBeTruthy();

@@ -297,10 +297,16 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
               overlay covers the page, so the page's banner would sit behind it
               (design 1c review). It is the app's ONE load-failure treatment —
               the shared `Couldn't load …` block (pass-1 review, item 2): a
-              plain sentence about what this page could not read, the server's
-              own words kept as the muted `server said:` evidence under it, not
-              the headline. The starter itself still works — its document ships
-              with the app — so the hint says what IS missing. */}
+              plain sentence about what this page could not read, a plain
+              status sentence, and the server's own words collapsed behind
+              `Details` (error-details-r6). `shrink-0` because the dialog form
+              is a flex column and the alert box's `overflow-hidden` drops the
+              flex auto-min-size: without it the callout was squeezed to a
+              fixed height at 390, its body line cut in half (pass-1 shot
+              1c-server-error-390). With it the callout grows to fit and the
+              form's own `overflow-y-auto` scrolls the dialog body. The starter
+              itself still works — its document ships with the app — so the
+              hint says what IS missing. */}
           {listError ? (
             <ProblemBanner
               error={listError}
@@ -308,6 +314,7 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
               subject="the workflow library"
               hint="Its folders cannot be listed here, so a new workflow lands under No folder."
               testid="new-workflow-list-failure"
+              className="shrink-0"
             />
           ) : null}
           <Field id="new-workflow-name" label="NAME">

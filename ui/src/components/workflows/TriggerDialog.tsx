@@ -54,7 +54,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Clock, createLucideIcon } from "lucide-react";
 import { Button } from "../ds/Button";
-import { Alert } from "../ds/Alert";
 import { Field, Input, Select, labelClass } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { problemOf } from "../../api/client";
@@ -229,13 +228,14 @@ export function runGetsValue(field: RunInputField, value: InputValue | undefined
 }
 
 /**
- * The block a refused write leaves in the dialog. Feedback's `Couldn't load …`
- * block is the app's one treatment for a thing that did not happen, and this is
- * that block with the verb a WRITE needs: a sentence in the reader's words
- * first, the server's problem document as evidence second (quoting
- * `Internal Server Error: emulated failure` is honest, but it is not something
- * a person reads as an answer), and the way out named — the same verb they just
- * pressed, which stays enabled.
+ * The block a refused write leaves in the dialog: Feedback's shared
+ * `Couldn't …` block (error-details-r6 — every caller gets the one treatment
+ * through it, not a copy of it), with the verb a WRITE needs. The plain
+ * sentence in the reader's words leads, the status gets its own plain line
+ * when one applies, and the server's problem document sits collapsed behind
+ * `Details` — quoting `Internal Server Error: emulated failure` on the reading
+ * line is developer-facing text (the pass-1 review's defect), while dropping
+ * it would be dishonest, so the disclosure keeps it one keypress away.
  *
  * The old rendering was the compact `× FAILED / <problem>` callout, which the
  * 2c review graded a defect on both counts: `FAILED` is a run's status word (the
@@ -254,52 +254,20 @@ function TriggerWriteFailure({
    * reason beside the button instead of promising a press that does nothing). */
   canRetry: boolean;
 }) {
-  const problem = problemOf(error);
-  // `problemOf` stringifies whatever it was handed; an empty answer is dropped
-  // rather than quoted as `server said: undefined`.
-  const detail =
-    problem.detail === undefined ||
-    problem.detail === null ||
-    problem.detail === "undefined" ||
-    problem.detail === "null" ||
-    problem.detail === ""
-      ? ""
-      : String(problem.detail);
-  const quoted = detail ? `${problem.title}: ${detail}` : problem.title;
-  // A refusal (404 — the trigger was deleted under the dialog) is not a break:
-  // “Not Found” is no evidence a person can act on, so the muted line goes and
-  // the plain sentence carries the block.
-  const refused = problem.status === 404;
   return (
-    <Alert
-      state="failed"
-      label="COULDN'T SAVE"
-      role="alert"
+    <ProblemBanner
+      error={error}
+      fallback="Nothing was changed."
+      subject="the trigger"
+      verb="save"
+      hint={
+        canRetry
+          ? `Nothing was changed. Your answers are still here — press ${verb} to try again.`
+          : `Nothing was changed. Your answers are still here — ${verb} says below what it is waiting for.`
+      }
       testid="trigger-dialog-error"
       className="shrink-0"
-    >
-      <div className="min-w-0 max-w-[70ch] space-y-[3px]">
-        <p
-          className="text-[13px] font-semibold text-ink"
-          data-testid="trigger-dialog-error-summary"
-        >
-          {"Couldn't save the trigger. Nothing was changed."}
-        </p>
-        <p className="text-[12px] text-muted" data-testid="trigger-dialog-error-hint">
-          {canRetry
-            ? `Your answers are still here — press ${verb} to try again.`
-            : `Your answers are still here — ${verb} says below what it is waiting for.`}
-        </p>
-        {refused ? null : (
-          <p
-            className="font-mono text-[10.5px] text-faint"
-            data-testid="trigger-dialog-error-server"
-          >
-            {`server said: ${quoted}`}
-          </p>
-        )}
-      </div>
-    </Alert>
+    />
   );
 }
 
