@@ -94,8 +94,17 @@ export function ProjectFrame({
         heading={heading}
         headingId={headingId ?? `${testid}-heading`}
         testid={refusalTestid}
+        // The refusal is about the PROJECT (the sub-resource reads never run
+        // for an id this page cannot open), so the H1 says `Project not found`
+        // even on a tab page — the section's own word stays in the page title
+        // and the tab row it came from (pass-1 review, item 5).
+        missing="Project"
         hint="Check the link, or go back to Projects and open one you belong to — a project you cannot open reads exactly like one that is not there."
         back={{ to: routes.projects(), label: "Projects", testid: `${testid}-back-to-projects` }}
+        backButton={{
+          label: "← Projects",
+          testid: `${testid}-back-to-projects-action`,
+        }}
       />,
     );
   }

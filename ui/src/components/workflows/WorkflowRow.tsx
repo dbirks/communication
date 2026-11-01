@@ -46,11 +46,13 @@ import { routes } from "../../lib/routes";
  * own names are two words; the lab's are long slugs, and a fixed 220px name
  * column truncated them mid-word while the chain column had room to spare.
  * The name column therefore takes the free width with the design's 220px as
- * its floor (`minmax(220px,1fr)`), the chain keeps the larger share and wraps,
- * and the used-in/actions columns stay the design's 180px/120px.
+ * its floor (`minmax(220px,1fr)`), the chain keeps the LARGER share of what is
+ * left and wraps over it (pass-1 review, item 1: a 1.2fr share left the chain
+ * ~330px of a ~980px row, so the whole loop chip never fitted), and the
+ * used-in/actions columns stay the design's 180px/120px.
  */
 export const WORKFLOW_ROW_GRID =
-  "min-[900px]:grid-cols-[minmax(220px,1fr)_minmax(0,1.2fr)_180px_120px]";
+  "min-[900px]:grid-cols-[minmax(220px,1fr)_minmax(0,1.6fr)_180px_120px]";
 
 /** A chain cell: a plain step id, or a shaded `loop: …` scope chip. */
 export interface StepChainCell {
@@ -225,11 +227,18 @@ export function WorkflowRow({
           )}
         </div>
 
-        {/* step chain: ONE line at every width, ellipsized (1b review, 390):
-            wrapping turned a row into four lines of loop pills. The full
-            chain rides the `title`, so the whole truth is one hover away. */}
+        {/* The chain owns the free width and WRAPS onto further lines on the
+            desktop (pass-1 review, item 1: at 1280 the row had room to spare,
+            yet the chain ended `…test · revi…` — the ellipsis hid real steps
+            behind a hover). This is the treatment the repo page (`RepoWorkflows`)
+            and the project's Workflows tab already give the same chain, and
+            design 1b draws the whole chain rather than a cut of it. The phone
+            keeps the ONE ellipsized line (reflow-390 item 1: a wrapping chain
+            turned a row into four lines of loop pills at 390), and the full
+            chain rides the `title` at every width, so the whole truth is never
+            further than a hover. */}
         <div
-          className="min-w-0 truncate font-mono text-[10.5px]"
+          className="min-w-0 font-mono text-[10.5px] max-[899px]:truncate min-[900px]:overflow-visible min-[900px]:text-clip min-[900px]:whitespace-normal"
           title={cells.map((cell) => cell.label).join(" › ")}
         >
           {cells.length === 0 ? (

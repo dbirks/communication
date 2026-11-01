@@ -295,6 +295,19 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
         "design 1b: a random-UUID project reads the same one sentence every screen under it gives",
       ).toBeVisible({ timeout: 30_000 });
       await expect(refusal).toHaveText("Project not found or you do not have access");
+      // Pass-1 review, item 5: the H1 NAMES what was missing (`Project not
+      // found`, not the generic `Project`) and the way back is a BUTTON beside
+      // the sentence, not only the mono breadcrumb above it.
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Project not found" }),
+        "design 1b: the refusal's H1 names the project that is not there",
+      ).toBeVisible({ timeout: 30_000 });
+      const backToProjects = page.getByTestId("project-page-back-to-projects-action");
+      await expect(
+        backToProjects,
+        "design 1b: `← Projects` is an act beside the message",
+      ).toHaveText("← Projects");
+      await expect(backToProjects).toHaveAttribute("href", "/projects");
       await expect(
         page.getByTestId("project-tabs"),
         "the refusal mounts no shell around a project the reader cannot open",
@@ -415,6 +428,18 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
         "design 1e: a missing repository gets the same one-sentence refusal",
       ).toBeVisible({ timeout: 30_000 });
       await expect(refusal).toHaveText("Repository not found or you do not have access");
+      // Pass-1 review, item 5: same two fixes on the repository's refusal —
+      // the H1 names what was missing, and the project it belongs to is a
+      // button (the project read DID answer, so the button can name it).
+      await expect(
+        page.getByRole("heading", { level: 1, name: "Repository not found" }),
+        "design 1e: the refusal's H1 names the repository that is not there",
+      ).toBeVisible({ timeout: 30_000 });
+      const backToProject = page.getByTestId("repo-back-to-project");
+      await expect(backToProject, "design 1e: the way back is the project's own name").toHaveText(
+        /^← /,
+      );
+      await expect(backToProject).toHaveAttribute("href", new RegExp(`^/p/${projectId}$`));
       await expect(
         page.getByTestId("repo-workflows"),
         "the refusal mounts no repository panels around a repository that is not there",

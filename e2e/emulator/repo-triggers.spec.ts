@@ -624,6 +624,19 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
         schedRow.getByTestId(`repo-workflow-trigger-enabled-${testidOf(scheduleId)}-state`),
         "the schedule trigger reads `paused` after the journey ends",
       ).toHaveText("paused", { timeout: 30_000 });
+      // design 2e names the run in the bookkeeping cell — `last fired 2h ago ·
+      // #9c1e` — never a bare hex (pass-1 review, item 4): the word says what
+      // the number is, the age comes from the schedule's own `last_run_at`, and
+      // the cell links to the run the trigger started.
+      const schedMeta = schedRow.getByTestId(`repo-workflow-trigger-meta-${testidOf(scheduleId)}`);
+      await expect(
+        schedMeta,
+        "design 2e: the paused schedule's bookkeeping cell says `last fired … · #<id>`",
+      ).toContainText(/last fired .* · #/i, { timeout: 30_000 });
+      await expect(
+        schedMeta.locator(`a[href="/runs/${firedRunId}"]`),
+        "the run the trigger fired is the link, not a bare id in text",
+      ).toBeVisible();
       await emu.screen("2e", "triggers-paused");
     });
 

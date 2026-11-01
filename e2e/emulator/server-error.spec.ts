@@ -269,6 +269,18 @@ test.describe("server-error (admin: 1b, 1c, 1e, 1g, 2d)", () => {
       "design 1c: the list read's failure renders INSIDE the open dialog, not behind it",
     ).toBeVisible();
     await expect(dialog.getByTestId("new-workflow-list-failure")).toContainText(PROBLEM_LINE);
+    // Pass-1 review, item 2: inside the dialog the read failure is the app's
+    // ONE load-failure treatment — a plain `Couldn't load <what the page read>`
+    // sentence with the server's problem document quoted under it as the
+    // `server said:` evidence. Bare `FAILED` over a quoted status line is the
+    // vocabulary of a run, not of this form.
+    await expect(
+      dialog.getByTestId("new-workflow-list-failure"),
+      "design 1c: the dialog's banner leads with `Couldn't load the workflow library.`",
+    ).toContainText("Couldn't load the workflow library.");
+    await expect(dialog.getByTestId("new-workflow-list-failure")).toContainText(
+      /server said: Internal Server Error/i,
+    );
     await expect(
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }),
       "design 1c: exactly one failure is on screen, and it is the dialog's — the page does " +

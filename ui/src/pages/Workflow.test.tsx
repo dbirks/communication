@@ -276,9 +276,11 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
   it("carries the breadcrumb, H1 + revision chip, the library line and exactly two actions", async () => {
     mount(detail);
     const header = await screen.findByTestId("pipeline-page");
-    // Breadcrumb `Workflows / Delivery /` — the folder from the pipeline read,
-    // so wait for that read to have arrived before reading the row.
-    await screen.findByTestId("pipeline-header-meta");
+    // Breadcrumb `Workflows / Delivery /` — the folder comes from the pipeline
+    // read, so wait for a control that arrives WITH that read (the revision
+    // chip; `pipeline-header-meta` rides the H1 and is drawn from the first
+    // frame) before reading the row.
+    await screen.findByTestId("workflow-revision-chip");
     const crumb = within(header).getByTestId("workflow-breadcrumb");
     expect(crumb.textContent).toContain("Workflows");
     expect(crumb.textContent).toContain("Delivery");
@@ -292,10 +294,15 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     expect(within(header).getByTestId("workflow-kind-line").textContent).toBe(
       wirePipeline.description,
     );
-    // The slug line stays (`pipeline-header-meta`, read by the index test too).
-    expect(within(header).getByTestId("pipeline-header-meta").textContent).toContain(
-      wirePipeline.slug,
+    // The header names the workflow and never prints a raw id (pass-1 review,
+    // 2a item 3): `pipeline-header-meta` rides the H1 — the workflow's name —
+    // and the old `id: <slug>` line is gone (design 1e/2a names the band as
+    // breadcrumb, H1 + chip and ONE sentence; the YAML tab is where the
+    // document's own `name:` line lives).
+    expect(within(header).getByTestId("pipeline-header-meta").textContent).toBe(
+      wirePipeline.display_name,
     );
+    expect(within(header).queryByText(/^id: /)).toBeNull();
     // The two design actions — and no Start run, and no trigger editing.
     const useButton = within(header).getByTestId("assign-open");
     expect(useButton.textContent).toBe("Use in a repo…");

@@ -928,6 +928,32 @@ const PROJECT_NOT_FOUND: Landmark = {
   desc: "the honest 'project not found' line",
   any: [{ testid: "project-not-found" }, { text: /project.*(not found|could not)/i }],
 };
+/** Pass-1 review, item 5: a refusal page's H1 NAMES what was missing
+ * (`Project not found`), it is not the generic section word; the way back is a
+ * button beside the sentence, not only the mono breadcrumb above it. */
+const PROJECT_NOT_FOUND_HEADING: Landmark = {
+  id: "project-not-found-heading",
+  desc: "the H1 that names the project the page could not open",
+  any: [{ role: "heading", level: 1, name: /^Project not found$/ }],
+};
+const PROJECT_NOT_FOUND_BACK: Landmark = {
+  id: "project-not-found-back",
+  desc: "the explicit `← Projects` button beside the refusal",
+  any: [
+    { testid: "project-page-back-to-projects-action" },
+    { role: "link", name: /←\s*Projects$/ },
+  ],
+};
+const REPO_NOT_FOUND_HEADING: Landmark = {
+  id: "repo-not-found-heading",
+  desc: "the H1 that names the repository the page could not open",
+  any: [{ role: "heading", level: 1, name: /^Repository not found$/ }],
+};
+const REPO_NOT_FOUND_BACK: Landmark = {
+  id: "repo-not-found-back",
+  desc: "the explicit button back to the project beside the refusal",
+  any: [{ testid: "repo-back-to-project" }, { role: "link", name: /^←\s/ }],
+};
 const PROJECT_ERROR_SHELL: Landmark = {
   id: "project-error-shell",
   desc: "the error shell that holds a failed project read",
@@ -1443,7 +1469,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     PROJECT_REPOS_EMPTY,
     PROJECT_WORKFLOWS_EMPTY,
   ],
-  "project-1b not-found": [PROJECT_UNAVAILABLE_HEADING, PROJECT_NOT_FOUND],
+  "project-1b not-found": [PROJECT_NOT_FOUND_HEADING, PROJECT_NOT_FOUND, PROJECT_NOT_FOUND_BACK],
   "project-1b server-error": [
     PROJECT_UNAVAILABLE_HEADING,
     PROJECT_ERROR_SHELL,
@@ -1461,7 +1487,13 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     REPO_WORK_PANEL,
     REPO_RUNS_PANEL,
   ],
-  "repo-1e not-found": [REPO_PAGE, REPO_FAILED_HEADING, REPO_NOT_FOUND],
+  "repo-1e not-found": [
+    REPO_PAGE,
+    REPO_FAILED_HEADING,
+    REPO_NOT_FOUND_HEADING,
+    REPO_NOT_FOUND,
+    REPO_NOT_FOUND_BACK,
+  ],
   // The design has no server-error render; the app's own rule (README) is that
   // a failed read keeps its heading and quotes the server, and the repos read now
   // follows it (#24): `repo-error-page` keeps the project breadcrumb and the

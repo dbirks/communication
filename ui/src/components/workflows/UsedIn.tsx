@@ -40,7 +40,9 @@ export interface UsedInRevision {
 }
 
 export interface UsedInPanelProps {
-  pipelineId: string;
+  // No pipeline id: every row names itself by its repo, its project and the pin
+  // it holds, the page's own H1 says which workflow this list belongs to, and a
+  // raw id is never a label here (pass-1 review, 2a item 3).
   groups: UsedInGroup[];
   loading: boolean;
   error: boolean;
@@ -195,7 +197,6 @@ export function usedInPanelTitle(count: number, loading: boolean, error: boolean
  * `used-in-error` id stays — the block carries it.
  */
 export function UsedInPanel({
-  pipelineId,
   groups,
   loading,
   error,
@@ -247,7 +248,6 @@ export function UsedInPanel({
           {groups.map((group) => (
             <UsedInRow
               key={group.assignment.id}
-              pipelineId={pipelineId}
               group={group}
               revisions={revisions}
               newestPublished={newestPublished}
@@ -272,13 +272,11 @@ export function UsedInPanel({
 }
 
 function UsedInRow({
-  pipelineId,
   group,
   revisions,
   newestPublished,
   newestPublishedId,
 }: {
-  pipelineId: string;
   group: UsedInGroup;
   revisions: UsedInRevision[];
   newestPublished: UsedInRevision | null;
@@ -371,7 +369,9 @@ function UsedInRow({
       >
         Open ›
       </Link>
-      <span className="sr-only">{`workflow ${pipelineId}`}</span>
+      {/* No `workflow <uuid>` aside: a raw id is never a label (pass-1 review,
+          2a item 3). The row says the repo, its project and the pin it holds —
+          the page's own H1 already names the workflow this list belongs to. */}
     </li>
   );
 }

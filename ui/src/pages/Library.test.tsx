@@ -212,8 +212,16 @@ describe("/workflows — the index (3a)", () => {
     );
     fireEvent.click(screen.getByTestId("workflow-open-feature-development"));
     expect(await screen.findByTestId("pipeline-page")).toBeTruthy();
-    expect((await screen.findByTestId("pipeline-header-meta")).textContent).toContain(
-      "feature-development",
+    // The page you land on names the workflow by its own name (`pipeline-
+    // header-meta` rides the H1 since the header stopped printing the raw slug
+    // — pass-1 review, 2a item 3), so the wait is on that name arriving with
+    // the pipeline read.
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("pipeline-header-meta").textContent).toBe(
+          wirePipeline.display_name,
+        ),
+      settled,
     );
   });
 
@@ -337,8 +345,12 @@ describe("/workflows — the index (3a)", () => {
     await openNewWorkflow();
     const dialog = await screen.findByTestId("new-workflow-dialog", undefined, settled);
     const banner = within(dialog).getByTestId("new-workflow-list-failure");
-    expect(banner.textContent).toContain("FAILED");
-    expect(banner.textContent).toContain("Internal Server Error: emulated failure");
+    // The shared load-failure block (pass-1 review, item 2): the dialog's own
+    // plain sentence leads and the server's problem document rides under it as
+    // the `server said:` evidence — `FAILED` is a run's status word, not this
+    // form's story.
+    expect(banner.textContent).toContain("Couldn't load the workflow library.");
+    expect(banner.textContent).toContain("server said: Internal Server Error: emulated failure");
     // Exactly one failure is on screen: the overlay owns the view, so the
     // page-level banner steps aside rather than repeating behind it.
     expect(screen.getAllByRole("alert")).toHaveLength(1);
@@ -596,15 +608,18 @@ describe("/workflows — the index (3a)", () => {
       expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
     });
 
-    it("lays all four starter cards in one honest grid with left-aligned text (390/1280)", async () => {
-      // reflow-390 item 1: `min-[900px]:grid-cols-3` left the 4th card alone
-      // on a second row at 1280, and centred phone text read as a different
-      // card than the desktop one — 2×2 between phone and desktop, four
-      // across from 1150px, `text-left` everywhere.
+    it("lays the starter cards in the design's three columns with left-aligned text (390/1280)", async () => {
+      // reflow-390 item 1 wanted an honest grid (no orphan card, no centred
+      // phone text); pass-1 review item 1 named WHICH grid: design 1b writes
+      // “Starter cards: 3 columns, gap 12”, so the desk shows three across and
+      // the fourth card wraps onto the second row instead of squeezing the row
+      // into four narrow columns. 2×2 between phone and desktop, one column on
+      // the phone, `text-left` everywhere.
       mount("/library");
       const cards = await screen.findByTestId("workflow-starters");
       expect(cards.className).toContain("min-[700px]:grid-cols-2");
-      expect(cards.className).toContain("min-[1150px]:grid-cols-4");
+      expect(cards.className).toContain("min-[1150px]:grid-cols-3");
+      expect(cards.className).not.toContain("grid-cols-4");
       for (const id of ["blank", "plan-with-approval", "security-review", "issue-to-pr"]) {
         expect(within(cards).getByTestId(`workflow-starter-${id}`).className).toContain(
           "text-left",

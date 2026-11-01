@@ -231,11 +231,21 @@ export default function Repository() {
           label="Repository not found"
           testid="repo-not-found"
           copy="Repository not found or you do not have access"
+          // The H1 names what was missing instead of the page's own word
+          // (pass-1 review, item 5) …
+          missing="Repository"
           hint="Check the name in the link, or go back to the project and pick a repository it does have."
           back={{
             to: routes.project(id),
             label: projectData.name,
             testid: "repo-breadcrumb",
+          }}
+          // … and the hint’s “go back to the project” is a button as well as a
+          // breadcrumb: the project read DID answer, so the way home can be
+          // named in full.
+          backButton={{
+            label: `← ${projectData.name}`,
+            testid: "repo-back-to-project",
           }}
         />
       </div>

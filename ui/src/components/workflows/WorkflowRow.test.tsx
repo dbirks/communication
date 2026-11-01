@@ -136,15 +136,22 @@ describe("WorkflowRow", () => {
     expect(textOf(`workflow-assignment-${pipeline.slug}-1`)).toBe("M4 Project B · whole project");
   });
 
-  // 1b review (reflow-390 item 1): a wrapping chain made rows ~3x taller
-  // than the design's one line; one ellipsized line now carries the full
-  // chain in its `title`, at both widths.
-  it("shows the chain on one ellipsized line whose title carries the whole chain", () => {
+  // 1b review (reflow-390 item 1): a wrapping chain made rows ~3x taller than
+  // the design's one line AT 390, so the phone keeps one ellipsized line.
+  // Pass-1 review (item 1) takes the ellipsis away from the desk: at 1280 the
+  // row had room, and a chain cut to `…test · revi…` hid real steps. The chain
+  // therefore wraps over its own column from 900px up (the repo page's and the
+  // project Workflows tab's treatment of the same chain), and the whole chain
+  // rides the `title` at both widths.
+  it("wraps the whole chain on the desk and ellipsizes it only on the phone", () => {
     mount();
     const first = screen.getByTestId(`workflow-chain-${pipeline.slug}-0`);
     const line = first.closest("div") as HTMLElement;
     const classes = line.className.split(/\s+/);
-    expect(classes).toContain("truncate"); // nowrap + overflow-hidden + ellipsis
+    expect(classes).toContain("max-[899px]:truncate"); // the phone's one line
+    expect(classes).not.toContain("truncate"); // never ellipsized on the desk
+    expect(classes).toContain("min-[900px]:whitespace-normal"); // wraps at desktop
+    expect(classes).toContain("min-[900px]:overflow-visible"); // nothing clipped
     expect(line.title).toBe(
       "plan › approve › loop: implement · test · review › verdict › publish_verified › publish_needs_attention",
     );

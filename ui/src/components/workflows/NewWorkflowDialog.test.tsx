@@ -109,7 +109,7 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
     expect(dialog).toBeTruthy();
   });
 
-  it("carries the library read's FAILED banner inside the dialog, not behind it", () => {
+  it("carries the library read's load-failure block inside the dialog, not behind it", () => {
     const error = new ApiError(
       { type: "about:blank", title: "Internal Server Error", status: 500 },
       { title: "Internal Server Error", status: 500 },
@@ -118,8 +118,12 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
     const banner = screen.getByTestId("new-workflow-list-failure");
     // Inside the dialog's own box — the page behind the overlay shows nothing.
     expect(screen.getByTestId("new-workflow-dialog").contains(banner)).toBe(true);
-    expect(banner.textContent).toContain("FAILED");
-    expect(banner.textContent).toContain("Internal Server Error");
+    // The shared `Couldn't load …` block (pass-1 review, item 2): the page's
+    // own sentence leads and the server's problem document is quoted under it
+    // as evidence, so `FAILED` (a run's status word) is gone from this surface.
+    expect(banner.textContent).toContain("Couldn't load the workflow library.");
+    expect(banner.textContent).toContain("server said: Internal Server Error");
+    expect(banner.textContent).not.toContain("FAILED");
   });
 
   it("draws no banner when the library read answered", () => {

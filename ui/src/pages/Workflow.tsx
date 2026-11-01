@@ -414,7 +414,11 @@ export function PipelinePage() {
               {" /"}
             </nav>
             <div className="flex flex-wrap items-center gap-[10px]">
-              <h1 className="text-[22px] leading-[28px] font-semibold" id="pipeline-heading">
+              <h1
+                className="text-[22px] leading-[28px] font-semibold"
+                id="pipeline-heading"
+                data-testid="pipeline-header-meta"
+              >
                 {summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
               </h1>
               {revisionRows[0] ? (
@@ -445,18 +449,19 @@ export function PipelinePage() {
               {workflowDescription ||
                 "Library workflow. It runs only in the repos that use it, and triggers are set up there."}
             </p>
-            {/* The header's one extra line is the workflow's id, in the words
-                the New workflow dialog already uses for it (1c: `id: retry-
-                payments-plan`). The `· 1 revision` half is gone (2026-10-30 copy
-                review, 1e item 2): the `PUBLISHED R1` chip above already states
-                it, and a count under the description said the same fact twice.
-                The id itself stays because the two lab journeys identify the
-                opened workflow by it (`pipeline-header-meta` is what
-                issue2-studio and shell-journey wait on) and it is the name the
-                document carries in its own `name:` line. */}
-            <p className="font-mono text-[11px] text-muted" data-testid="pipeline-header-meta">
-              {`id: ${pipeline.data?.slug ?? pipelineId}`}
-            </p>
+            {/* No third header line. Design 1e/2a names the band as the
+                breadcrumb, the H1 + revision chip and ONE sentence about the
+                workflow; the `· 1 revision` half went (2026-10-30 copy review,
+                1e item 2) and the `id: <slug>` half goes now (pass-1 review,
+                item 2a): a machine-minted slug reads as a raw id — the same
+                line the Projects Review design dropped for a project (1a's
+                `slug: northwind` is absent from 1b). A raw id is never this
+                app's label: the workflow's NAME is the H1, and its library id
+                is the `name:` line of its own YAML tab. `pipeline-header-meta`
+                rides that H1 — it is the handle the two lab journeys wait on
+                to know which workflow opened (issue2-studio, shell-journey),
+                and the H1 already carries the slug whenever the workflow has
+                no other name. */}
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-[8px]">
             {newestPublished ? (
@@ -633,7 +638,6 @@ export function PipelinePage() {
           {tab === "used-in" ? (
             <div className="max-w-[980px]">
               <UsedInPanel
-                pipelineId={pipelineId}
                 groups={usedIn.groups}
                 loading={usedIn.loading}
                 error={usedIn.error}

@@ -427,10 +427,12 @@ export function LibraryPage() {
       {/* The starter cards: the dialog's own three starting points, so a card
           click preselects what `New workflow` would otherwise start from. */}
       <div
-        /* Four starters, one honest grid (1b review, 390/1280): one column on
-           the phone, 2×2 between phone and desktop, and four across at
-           1280 — the 4th card never sits alone on a second row. */
-        className="grid grid-cols-1 gap-3 min-[700px]:grid-cols-2 min-[1150px]:grid-cols-4"
+        /* The design's three columns (1b: “Starter cards: 3 columns, gap 12”),
+           one honest grid at every width (1b review, 390/1280): one column on
+           the phone, 2×2 between phone and desktop, and three across at 1280 —
+           the card the design has no fourth slot for WRAPS onto the second row
+           rather than squeezing the row into four 237px columns. */
+        className="grid grid-cols-1 gap-3 min-[700px]:grid-cols-2 min-[1150px]:grid-cols-3"
         data-testid="workflow-starters"
       >
         <button

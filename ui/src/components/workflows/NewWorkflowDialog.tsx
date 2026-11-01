@@ -293,14 +293,20 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
           onSubmit={submit}
           data-testid="new-workflow-form"
         >
-          {/* The list read's FAILED banner belongs INSIDE the dialog: this
+          {/* The list read's failure belongs INSIDE the dialog: this
               overlay covers the page, so the page's banner would sit behind it
-              (design 1c review). The starter itself still works — its document
-              ships with the app — so the sentence says what IS missing. */}
+              (design 1c review). It is the app's ONE load-failure treatment —
+              the shared `Couldn't load …` block (pass-1 review, item 2): a
+              plain sentence about what this page could not read, the server's
+              own words kept as the muted `server said:` evidence under it, not
+              the headline. The starter itself still works — its document ships
+              with the app — so the hint says what IS missing. */}
           {listError ? (
             <ProblemBanner
               error={listError}
-              fallback="The workflow library could not be read — existing folders cannot be listed here."
+              fallback="The workflow library could not be read."
+              subject="the workflow library"
+              hint="Its folders cannot be listed here, so a new workflow lands under No folder."
               testid="new-workflow-list-failure"
             />
           ) : null}

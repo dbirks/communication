@@ -757,10 +757,12 @@ export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: Repo
           {schedule.enabled ? (
             <>
               {scheduleNextText(schedule)}
-              {schedule.last_run_id ? <LastRunLink id={schedule.last_run_id} lead=" · " /> : null}
+              {schedule.last_run_id ? (
+                <LastRunLink id={schedule.last_run_id} firedAt={schedule.last_run_at} lead=" · " />
+              ) : null}
             </>
           ) : schedule.last_run_id ? (
-            <LastRunLink id={schedule.last_run_id} />
+            <LastRunLink id={schedule.last_run_id} firedAt={schedule.last_run_at} />
           ) : (
             "never run"
           )}
@@ -920,14 +922,32 @@ function scheduleNextText(schedule: Schedule, now = Date.now()): string {
   return `next in ${remaining}`;
 }
 
-/** The run a schedule last started. `lead` keeps the separator on the enabled
- * row (the countdown stands before it) and off the paused one. */
-function LastRunLink({ id, lead = "" }: { id: string; lead?: string }) {
+/** The run a schedule last started, in the words design 2e writes for the
+ * cell — `last fired 2h ago · #9c1e`. A bare hex is not a run: every other
+ * surface names a run with its `#` short id (the Used-in cell, the repo page's
+ * own work list), so the link says WHAT it is, when it happened (the
+ * schedule's own `last_run_at`, never an invented age) and carries the reader
+ * to the run. `lead` keeps the separator on the enabled row (the countdown
+ * stands before it) and off the paused one; with no fire time on the row
+ * (`last_run_at` is null on an older replica) the link says `last run` and
+ * nothing about an age it never read. */
+function LastRunLink({
+  id,
+  firedAt,
+  lead = "",
+}: {
+  id: string;
+  firedAt?: string | null;
+  lead?: string;
+}) {
+  const age = firedAt ? formatAge(firedAt) : "";
   return (
     <>
       {lead}
       <Link to={routes.run(id)} className="text-accent-text hover:underline">
-        last {shortId(id)}
+        {age && age !== "unknown"
+          ? `last fired ${age} ago · #${shortId(id)}`
+          : `last run #${shortId(id)}`}
       </Link>
     </>
   );

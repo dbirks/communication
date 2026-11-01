@@ -16,14 +16,18 @@
  * neither is a banner quoting a server error.
  *
  * The 2026-10-30 review added the other half: a refusal that is a red line under
- * a bare H1 leaves the reader nowhere to go. Three parts, in design order —
+ * a bare H1 leaves the reader nowhere to go. Four parts, in design order —
  * the page's header band with the parent's breadcrumb (the way back), the
- * sentence, and ONE line of what to do. It is deliberately not an error box:
- * nothing failed, this thing is simply not here for you. A screen that already
- * draws its own band (`Studio`, a framed project tab) passes no `heading` and
- * names the section with `label` instead, so the page never carries two H1s.
- * Callers outside the project routes pass their own `copy` (a repository is not
- * a project and must not borrow the project's words).
+ * sentence, ONE line of what to do, and (when the caller passes `backButton`)
+ * the way back as an act beside the sentence. Its H1 names WHAT was missing
+ * when the caller passes `missing` (`Project not found`), because a generic
+ * section word over a refusal read as an unrelated page (pass-1 review, item
+ * 5). It is deliberately not an error box: nothing failed, this thing is simply
+ * not here for you. A screen that already draws its own band (`Studio`, a
+ * framed project tab) passes no `heading` and names the section with `label`
+ * instead, so the page never carries two H1s. Callers outside the project
+ * routes pass their own `copy` (a repository is not a project and must not
+ * borrow the project's words).
  */
 import { Link } from "react-router";
 import { ApiError } from "../api/client";
@@ -54,6 +58,21 @@ export interface ProjectUnavailableProps {
   back?: { to: string; label: string; testid: string };
   /** One line on what to do. */
   hint?: string;
+  /**
+   * The thing this page was opened for and could not open ("Project",
+   * "Repository"). With it the H1 NAMES what was missing — `Project not
+   * found` — instead of repeating the section's bare word, which read as a
+   * generic page standing over a refusal (pass-1 review, item 5). Omit it
+   * where the heading is right on its own.
+   */
+  missing?: string;
+  /**
+   * The same way back, as a BUTTON beside the message. The breadcrumb in
+   * `back` is the trail; a reader who arrived on a dead link wants the verb,
+   * which is what every other failed read offers (`ProblemBanner`'s own
+   * `← Back to …`). Pass it with the `back` it repeats.
+   */
+  backButton?: { label: string; testid: string };
   /** Test handle for the frame the refusal stands in. */
   sectionTestId?: string;
 }
@@ -66,6 +85,8 @@ export function ProjectUnavailable({
   copy = PROJECT_UNAVAILABLE_COPY,
   back,
   hint,
+  missing,
+  backButton,
   sectionTestId,
 }: ProjectUnavailableProps) {
   const sectionProps =
@@ -94,7 +115,7 @@ export function ProjectUnavailable({
           ) : null}
           {heading ? (
             <h1 id={headingId} className="text-title-l font-bold">
-              {heading}
+              {missing ? `${missing} not found` : heading}
             </h1>
           ) : null}
         </header>
@@ -113,6 +134,21 @@ export function ProjectUnavailable({
         >
           {hint}
         </p>
+      ) : null}
+      {/* The way back, as the button the hint only names. It sits with the
+          sentence (pass-1 review, item 5) because the breadcrumb above is
+          navigation, not an act — and a reader on a dead link should not have
+          to aim at an 11px mono trail to leave. */}
+      {back && backButton ? (
+        <div className="mt-[12px] flex flex-wrap items-center gap-[6px]">
+          <Link
+            to={back.to}
+            className="ds-btn ds-btn--secondary ds-btn--compact inline-flex items-center rounded-[4px]"
+            data-testid={backButton.testid}
+          >
+            {backButton.label}
+          </Link>
+        </div>
       ) : null}
     </section>
   );

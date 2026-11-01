@@ -75,7 +75,6 @@ function mount(props: {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <UsedInPanel
-          pipelineId="pipe-1"
           groups={props.groups}
           loading={props.loading}
           error={props.error}
