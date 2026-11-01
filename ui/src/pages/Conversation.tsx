@@ -694,13 +694,43 @@ export default function ConversationPage({
                 design's quiet disclosure: a sentence-case line in the
                 transcript column's own voice — no box, no caps bar — that
                 opens in place. Both testids and the `details` semantics are
-                unchanged. */}
-            <details className="mt-4 min-w-0 max-w-[720px]" data-testid="thread-context-block">
+                unchanged.
+                Pass-2 review (threads-1g-thread / -not-controller / -took-
+                control): the line printed NO marker. The `flex` on the
+                <summary> suppresses the native ▸, so it read as stray text
+                that happened to hide a door. The design's own SVG chevron
+                (`M3 4.5l3 3 3-3`, the path `Workflows.tsx` and `Sidebar.tsx`
+                already draw) rides inside the summary: rotated -90° (pointing
+                right) while closed, 0° while open, `aria-hidden` because the
+                disclosure state is the summary's own semantics. The label now
+                names what is BEHIND the door — the rail's interactive parts —
+                instead of the header meta line's facts, and the 44px tap
+                height at phone widths is unchanged. */}
+            <details
+              className="group mt-4 min-w-0 max-w-[720px]"
+              data-testid="thread-context-block"
+            >
               <summary
-                className="flex min-h-[44px] cursor-pointer items-center text-[11.5px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent min-[560px]:min-h-[24px]"
+                className="flex min-h-[44px] cursor-pointer items-center gap-[6px] text-[11.5px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent min-[560px]:min-h-[24px]"
                 data-testid="thread-context-disclosure"
               >
-                Thread details — workspace, artifacts, next
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  className="shrink-0 -rotate-90 transition-transform group-open:rotate-0"
+                >
+                  <path
+                    d="M3 4.5l3 3 3-3"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span>Thread details — handoff, artifacts and draft PR</span>
               </summary>
               <div className="mt-[8px] border-t border-line pt-[10px]">{rail}</div>
             </details>

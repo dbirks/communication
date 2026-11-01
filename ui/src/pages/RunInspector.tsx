@@ -716,6 +716,16 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
         "cancelled, so Retry has no target; start a new run to go down another path.",
     };
   }
+  // Pass-2 review (`run-gate-completed`): a run that ENDED WELL got no note at
+  // all. “nothing to retry” beside a completed run read as a failure verdict
+  // wearing a × glyph — the absence of a broken control needs no explanation
+  // when nothing broke. The sentence stays for the terminal-but-unhappy tail
+  // (a `failed`/`cancelled` run route 31 still refuses: no failed, interrupted
+  // or cancelled node to re-run), where the reader has a reason to look for
+  // the verb and not find it.
+  if (status === "completed") {
+    return { show: false, available: false, reason: "", short: "" };
+  }
   return {
     show: true,
     available: false,
@@ -828,13 +838,17 @@ export function RunActions({
          * sits beside the title, so whatever is widest in here is what the title
          * column is left with after it. The full sentence is the `title` (the
          * app's standing rule for a long fact one hover away) and the dock prints
-         * it in prose under the node it is about. */
+         * it in prose under the node it is about.
+         * Pass-2 review (`run-gate-completed`): the marker is a neutral em dash,
+         * not a × — this line only ever speaks for a run whose next step is a
+         * new run, not for a run that broke, and the failure glyph said “look
+         * here, something failed” about a page where nothing did. */
         <p
           className="max-w-full font-mono text-[10.5px] text-faint"
           title={verdict.reason}
           data-testid="run-retry-reason"
         >
-          × {verdict.short}
+          — {verdict.short}
         </p>
       ) : null}
       {conflict ? (

@@ -1117,10 +1117,11 @@ const THREAD_SEND: Landmark = {
 };
 /** Design thread view (10 / 1g): WORKSPACE, ARTIFACTS and NEXT are no longer a
  * always-open rail beside the transcript — they sit behind one disclosure, so
- * the claim is the door itself (its summary names all three sections). */
+ * the claim is the door itself (pass-2 review: its summary names the rail's
+ * interactive parts, and the design's chevron marks it as a door). */
 const THREAD_CONTEXT_DISCLOSURE: Landmark = {
   id: "thread-context-disclosure",
-  desc: "the 'Thread details — workspace, artifacts, next' disclosure holding the rail",
+  desc: "the 'Thread details — handoff, artifacts and draft PR' disclosure holding the rail",
   any: [
     { testid: "thread-context-disclosure" },
     { testid: "thread-context-block" },

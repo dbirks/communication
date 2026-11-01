@@ -353,19 +353,28 @@ export function ThreadListPane({
       aria-label="Threads"
     >
       <div className="flex flex-col gap-[10px] border-b border-line px-[14px] pb-[12px] pt-4">
-        <div className="flex items-center gap-2">
-          <h1 id="threads-heading" className="min-w-0 flex-1 text-[19px] font-semibold">
-            Threads
-          </h1>
-          <Button
-            variant="primary"
-            compact
-            data-testid="threads-new-open"
-            onClick={() => setDialogOpen(true)}
-          >
-            New thread
-          </Button>
-        </div>
+        {/* Pass-2 review (`project-1b-threads`): inside a project's Threads tab
+            the band above already prints the project H1 and its ONE `New
+            thread` verb (`ProjectHeader`), so the pane drew a second `Threads`
+            heading and a second primary button under it. Filtered to one
+            project, the pane is a TAB, not a page: the title and the verb
+            belong to the band. Standalone `/threads` keeps both — there the
+            pane IS the page (and the only `New thread` on screen). */}
+        {projectId ? null : (
+          <div className="flex items-center gap-2">
+            <h1 id="threads-heading" className="min-w-0 flex-1 text-[19px] font-semibold">
+              Threads
+            </h1>
+            <Button
+              variant="primary"
+              compact
+              data-testid="threads-new-open"
+              onClick={() => setDialogOpen(true)}
+            >
+              New thread
+            </Button>
+          </div>
+        )}
         <Input
           id="threads-search"
           data-testid="threads-search"
@@ -513,14 +522,13 @@ export function ThreadListPane({
           )
         ) : null}
       </div>
-      {/* Filtered to one project, the pane's `New thread` opens the shared
-          dialog with that project already fixed — the same dialog the band's
-          own verb opens. */}
-      <NewConversationDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        projectId={projectId || undefined}
-      />
+      {/* Only the standalone page opens a dialog from here: filtered to one
+          project, the band's own `New thread` is the page's one verb (its
+          dialog lives in `ProjectFrame`), and the pane's `dialogOpen` has no
+          trigger any more. */}
+      {projectId ? null : (
+        <NewConversationDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+      )}
     </div>
   );
 }

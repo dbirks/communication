@@ -87,6 +87,13 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
       ).toBeTruthy();
       expect(screen.getByTestId("project-name").textContent).toBe(projectFixture.name);
       expect(screen.getByTestId("project-new-conversation").textContent).toBe("New thread");
+      // Pass-2 review (`project-1b-threads`): the tab repeated the band — a
+      // second `Threads` H1 and a second primary `New thread` under the
+      // header's own. The band owns them: the page holds ONE h1 (the
+      // project's name) and ONE `New thread` button.
+      expect(screen.queryByTestId("threads-new-open")).toBeNull();
+      expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(projectFixture.name);
       const tabs = screen.getByTestId("project-tabs");
       expect(within(tabs).getByTestId("project-tab-threads").getAttribute("aria-current")).toBe(
         "page",
@@ -150,7 +157,10 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
   );
 
   it(
-    "starts a thread from the pane's own verb, with this project fixed",
+    // Pass-2 review (`project-1b-threads`): the pane's duplicate `Threads`
+    // H1 and its second primary `New thread` are gone — the band owns both —
+    // so the tab's one verb is the header's.
+    "starts a thread from the band's verb, with this project fixed",
     async () => {
       const { requests } = renderApp({
         path: `/p/${projectFixture.id}/conversations`,
@@ -167,7 +177,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
       await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
       });
-      fireEvent.click(screen.getByTestId("threads-new-open"));
+      fireEvent.click(screen.getByTestId("project-new-conversation"));
       const dialog = await screen.findByTestId("new-conversation-dialog", undefined, {
         timeout: READ_MS,
       });

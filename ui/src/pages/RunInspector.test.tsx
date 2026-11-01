@@ -1081,11 +1081,25 @@ describe("the run page's Retry control", () => {
     await screen.findByTestId("run-title");
 
     const note = screen.getByTestId("run-retry-reason");
-    const visible = (note.textContent ?? "").replace(/^\s*\u00d7\s*/, "").trim();
+    const visible = (note.textContent ?? "").replace(/^\s*\u2014\s*/, "").trim();
     expect(visible.length).toBeLessThanOrEqual(RETRY_NOTE_MAX);
     // The summarised sentence did not shrink with it.
     expect((note.getAttribute("title") ?? "").length).toBeGreaterThan(visible.length * 2);
     expect(screen.getByTestId("run-title").textContent).toBe("ship M4");
+    inspectorHeaderWidthContract([]);
+  });
+
+  // Pass-2 review (`run-gate-completed-1280/-390`): the happy end got the
+  // loudest treatment — a `× nothing to retry` under a finished, successful
+  // run, failure glyph and all. A run that ended well now shows no note at
+  // all: the header's silence is the honest statement that nothing broke.
+  it("says nothing about Retry on a run that ended well", async () => {
+    mountRun("", [{ path: RUN_PATH, body: { ...wireRun, status: "completed" } }]);
+    await screen.findByTestId("run-title");
+
+    expect(screen.queryByTestId("run-retry")).toBeNull();
+    expect(screen.queryByTestId("run-retry-reason")).toBeNull();
+    expect((screen.getByTestId("run-actions").textContent ?? "").trim()).toBe("");
     inspectorHeaderWidthContract([]);
   });
 
@@ -1164,10 +1178,19 @@ describe("the run page's Retry control", () => {
       show: true,
       available: true,
     });
-    // A run that merely finished with no gate answered has no target either.
+    // A run that merely finished with no gate answered says NOTHING: pass-2
+    // review (`run-gate-completed`) — “nothing to retry” beside a run that
+    // ended well read as a failure verdict. No verb and no note.
     expect(retryVerdict("completed", [summaries(wireNodeList.node_executions)[0]])).toMatchObject({
+      show: false,
+      available: false,
+    });
+    // A terminal run that did NOT end well but has no route-31 target keeps
+    // the explanation — the reader has a reason to look for the missing verb.
+    expect(retryVerdict("failed", [])).toMatchObject({
       show: true,
       available: false,
+      short: "nothing to retry",
     });
     expect(retryVerdict("running", summaries(wireVerifyFailedNodes)).show).toBe(false);
     // An ordinary failure's reason stays the plain route-31 re-run sentence.
@@ -1237,8 +1260,9 @@ function inspectorHeaderWidthContract(
     expect(classes(line)).toContain("max-w-full");
     if (line.getAttribute("data-testid") === "run-retry-reason") {
       // The one standing sentence in the action column: short enough that the
-      // column stays no wider than the verbs beside it.
-      const visible = (line.textContent ?? "").replace(/^\s*\u00d7\s*/, "").trim();
+      // column stays no wider than the verbs beside it. (Pass-2 review swapped
+      // its failure `×` for a neutral em dash; the budget strip is that dash.)
+      const visible = (line.textContent ?? "").replace(/^\s*\u2014\s*/, "").trim();
       expect(visible.length).toBeLessThanOrEqual(RETRY_NOTE_MAX);
       expect((line.getAttribute("title") ?? "").toLowerCase()).toContain("retry");
     } else {
@@ -1263,7 +1287,7 @@ describe("the inspector header's width", () => {
 
     const actions = screen.getByTestId("run-actions");
     expect(actions.querySelectorAll("button")).toHaveLength(0);
-    expect((actions.textContent ?? "").trim()).toBe("× the gate answered rejected");
+    expect((actions.textContent ?? "").trim()).toBe("— the gate answered rejected");
     inspectorHeaderWidthContract([]);
     // …and the two verbs route 31 refuses on a terminal run are gone, not grey.
     expect(screen.queryByTestId("run-pause")).toBeNull();

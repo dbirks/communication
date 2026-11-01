@@ -161,7 +161,20 @@ describe("/artifacts/:artifactId", () => {
       routes: routes([{ path: detailPath, method: "GET", body: artifactFixture }]),
     });
 
-    expect((await screen.findByTestId("artifact-sha256")).textContent).toBe(artifactFixture.sha256);
+    // Pass-2 review (`artifact-plan-md`): the full 64-char digest is not a
+    // fact a reader can compare at a glance — the row prints the 12-char
+    // prefix with an ellipsis, the whole value rides the `title`, and the
+    // copy button is the paste path. And `kind markdown` beside `media
+    // Markdown` said it twice: the media row is the one that stays.
+    const sha = await screen.findByTestId("artifact-sha256");
+    expect(sha.querySelector("span[title]")?.getAttribute("title")).toBe(artifactFixture.sha256);
+    expect(sha.textContent).toContain("7c1f7c1f7c1f");
+    expect(sha.textContent).not.toContain(artifactFixture.sha256);
+    expect(screen.getByTestId("artifact-sha256-copy").textContent).toBe("copy");
+    const mediaRow = screen.getByTestId("artifact-media-type").parentElement as HTMLElement;
+    expect(mediaRow.querySelector("dt")?.textContent).toBe("media");
+    expect(sha.parentElement?.querySelector("dt")?.textContent).toBe("sha256");
+    expect(screen.queryByText("kind")).toBeNull();
     expect(screen.getByTestId("artifact-size").textContent).toContain("KB");
     expect(screen.getByTestId("artifact-sensitivity").textContent).toContain("may download");
     expect(screen.getByTestId("artifact-redaction").textContent).toContain("changed nothing");

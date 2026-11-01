@@ -35,6 +35,7 @@ import { StatusChip } from "./ds/Row";
 import { ARTIFACT_STATE, SENSITIVITY_STATE, stateOf } from "./ds/states";
 import { Spinner } from "./Feedback";
 import { formatAge, formatBytes, formatTime, shortId } from "../lib/format";
+import { shortDigest } from "../lib/pipeline/yamlPointer";
 import { routes } from "../lib/routes";
 
 /** One artifact row (`⟨T:artifact-row-*⟩`). Metadata only; bytes are never here. */
@@ -518,10 +519,10 @@ export function ArtifactDetail({
             {artifact.name}
           </h3>
           <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] text-ink-2 sm:grid-cols-2">
-            <div className="flex gap-2">
-              <dt className="text-muted">kind</dt>
-              <dd>{artifact.kind}</dd>
-            </div>
+            {/* Pass-2 review (`artifact-plan-md`): `kind markdown` over `media
+                Markdown` said the same fact twice, once in the wire's enum and
+                once in the reader's words. The reader's row stays — it carries
+                the wire value in its `title`, one hover from an API call. */}
             <div className="flex gap-2">
               <dt className="text-muted">media</dt>
               {/* `text/markdown` is what the server records; Markdown is what the
@@ -531,12 +532,7 @@ export function ArtifactDetail({
                 {mediaTypeWords(artifact.media_type, artifact.name)}
               </dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-muted">sha256</dt>
-              <dd className="break-all" data-testid="artifact-sha256">
-                {artifact.sha256}
-              </dd>
-            </div>
+            <DigestRow sha256={artifact.sha256} />
             <div className="flex gap-2">
               <dt className="text-muted">size</dt>
               <dd data-testid="artifact-size">{formatBytes(artifact.size_bytes)}</dd>
@@ -622,6 +618,54 @@ export function ArtifactDetail({
         </div>
       </Panel>
       <StatusChipForSensitivity artifact={artifact} />
+    </div>
+  );
+}
+
+/**
+ * The content digest, in the reader's measure (pass-2 review, `artifact-plan-
+ * md`): a bare 64-character hex string in the primary metadata is not a fact a
+ * person can compare — it is the wire's column width on the page. The value
+ * keeps its honest shape: a 12-char prefix with the ellipsis that says the
+ * value is longer (the same spelling `shortDigest` gives run digests app-wide),
+ * the full digest in the `title` for a visual compare, and a copy button for
+ * the paste — so the whole value is one click away, and only the part a reader
+ * can actually read sits in the line. jsdom has no clipboard and non-secure
+ * contexts lack it too, so the write is guarded and the button degrades to a
+ * no-op (the `ProfileDetail` digest block's rule).
+ */
+function DigestRow({ sha256 }: { sha256: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    if (!navigator.clipboard) return;
+    void navigator.clipboard.writeText(sha256).then(
+      () => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 2000);
+      },
+      () => {},
+    );
+  };
+  return (
+    <div className="flex min-w-0 gap-2">
+      <dt className="shrink-0 text-muted">sha256</dt>
+      <dd className="flex min-w-0 items-center gap-[6px]" data-testid="artifact-sha256">
+        {/* The full 64 chars are the `title` — the string to compare byte-for
+            byte against the library's digests. */}
+        <span title={sha256}>
+          {shortDigest(sha256)}
+          <span aria-hidden="true">…</span>
+        </span>
+        <button
+          type="button"
+          onClick={copy}
+          aria-label={copied ? "Digest copied" : "Copy the full sha256 digest"}
+          className="shrink-0 rounded-[2px] border border-line px-[5px] py-[1px] text-[10px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          data-testid="artifact-sha256-copy"
+        >
+          {copied ? "copied" : "copy"}
+        </button>
+      </dd>
     </div>
   );
 }

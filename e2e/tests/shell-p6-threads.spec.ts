@@ -102,17 +102,19 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
       `the /threads/<id> page header shows the conversation title "${conversation.title}" and its meta line`,
     );
 
-    // The rail is no longer an always-open column: WORKSPACE, ARTIFACTS and
-    // NEXT sit behind ONE disclosure under the transcript (design thread view),
-    // so the journey opens it before reading anything inside it. The summary
-    // names all three sections, which is the claim that the content moved
-    // behind the door rather than out of the page.
+    // The rail is no longer an always-open column: the thread's context sits
+    // behind ONE disclosure under the transcript (design thread view), so the
+    // journey opens it before reading anything inside it. Pass-2 review
+    // (threads-1g-*): the summary names what is BEHIND the door — the rail's
+    // interactive parts (handoff, artifacts, draft PR) — and carries the
+    // design's chevron, which is the claim that the content moved behind the
+    // door rather than out of the page.
     const context = page.getByTestId("thread-context-block");
     await expect(context, "the thread's context block stands under the transcript").toBeVisible();
     await expect(
       page.getByTestId("thread-context-disclosure"),
       "the disclosure names what it holds",
-    ).toContainText(/workspace, artifacts, next/i);
+    ).toContainText(/handoff, artifacts and draft PR/i);
     await context.locator("summary").click();
     await expect(context).toHaveAttribute("open", "");
     await expect(

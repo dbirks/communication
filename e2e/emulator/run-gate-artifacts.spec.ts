@@ -306,15 +306,20 @@ test.describe("run-gate-artifacts (alice)", () => {
       // Pass-1 design review item 3 (`run-gate-completed-1280.png`): a finished
       // run showed a disabled `Retry` plus a ~100-character sentence beside it,
       // and that sentence was wide enough to truncate the run's H1 to `pr…`. The
-      // changed contract: no dead verb on a run that ended clean, the note in the
-      // header's own measure, and the title whole at 1280.
+      // changed contract: no dead verb on a run that ended clean, and the title
+      // whole at 1280. Pass-2 review (this brief, item 3) finished the job: a
+      // run that ENDED WELL shows no retry note at all — the old short
+      // `× nothing to retry` read as a failure verdict on the happy end.
       await expect(page.getByTestId("run-retry"), "no Retry verb on a finished run").toHaveCount(
         0,
         {
           timeout: 30_000,
         },
       );
-      await expect(page.getByTestId("run-retry-reason")).toBeVisible();
+      await expect(
+        page.getByTestId("run-retry-reason"),
+        "a clean completed run says nothing about Retry",
+      ).toHaveCount(0);
       expect(
         await page.evaluate(() => {
           const title = document.querySelector('[data-testid="run-title"]');
