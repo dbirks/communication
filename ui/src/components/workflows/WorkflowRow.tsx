@@ -101,6 +101,72 @@ export function graphChain(documentText: string | null): StepChainCell[] {
   return cells;
 }
 
+/**
+ * The shared step-chain row (index 1b `WorkflowRow`, repo page 2e
+ * `RepoWorkflows`): the chain is a flex-wrap line of non-breaking UNITS, each
+ * one step plus the `›` that precedes it (`flex` never breaks between flex
+ * items, so the arrow rides with its step across a wrap — bb8b7c7's fix to
+ * the project Workflows panel, applied to every wrapped chain: no line may
+ * start or end with a bare `›`). The unit is `items-baseline`, so when a
+ * `loop:` chip wraps its own words the arrow sits on the chip's FIRST line,
+ * never parked mid-chip where the continuation reads as starting with an
+ * orphan `›`. The chain wraps at EVERY width (index-row-r7 item 2: the phone
+ * used to keep one ellipsized line, which collapsed `plan › approve ›
+ * loop: …` to `plan › approve …` at 390 — reflow must keep content, the same
+ * full wrap the desktop already has).
+ */
+export function StepChain({
+  cells,
+  /** Shared testid prefix: the container carries `testid`, each step
+   * `testid-{index}` (named `testid` so the template literal stays visible to
+   * `scripts/check-testids.mjs`, which only knows `data-testid=`/`testid=`). */
+  testid,
+  /** Extra container classes (the repo row's indent and ink). */
+  className,
+  /** Hover text carrying the whole chain (the index row offers it). */
+  title,
+  /** Honest placeholder while the chain's own read is absent or empty. */
+  placeholder,
+}: {
+  cells: StepChainCell[];
+  testid: string;
+  className?: string;
+  title?: string;
+  placeholder?: string;
+}) {
+  return (
+    <div
+      className={`flex min-w-0 flex-wrap items-baseline gap-x-[6px] gap-y-[4px] font-mono text-[10.5px] ${className ?? ""}`}
+      title={title}
+      data-testid={testid}
+    >
+      {cells.length === 0 ? (
+        <span className="text-muted">{placeholder ?? "—"}</span>
+      ) : (
+        cells.map((cell, index) => (
+          <span key={index} className="flex min-w-0 items-baseline gap-[5px]">
+            {index > 0 ? (
+              <span aria-hidden="true" className="shrink-0 text-[10px] text-muted">
+                ›
+              </span>
+            ) : null}
+            <span
+              className={
+                cell.loop
+                  ? "min-w-0 break-words rounded-[3px] border border-line bg-paper px-[5px] py-[1px]"
+                  : "min-w-0 break-words"
+              }
+              data-testid={`${testid}-${index}`}
+            >
+              {cell.label}
+            </span>
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
 /** `Export YAML`: the bytes the browser downloads. The text is re-flowed
  * through `toBlockYaml` (design 2d) and the file is named `<slug>.yaml`. */
 export function workflowExportYaml(documentText: string, slug: string) {
@@ -193,14 +259,15 @@ export function WorkflowRow({
       <div
         className={`grid grid-cols-1 gap-y-[6px] gap-x-4 ${WORKFLOW_ROW_GRID} min-[900px]:items-center`}
       >
-        {/* name + revision chip: the name wraps below 900px (two lines of a
-            slug beat an ellipsis in the middle of a word) and only truncates
-            from there up, where the column has a fixed floor */}
+        {/* name + revision chip: the name WRAPS (overflow-wrap:anywhere, up
+            to two lines — `line-clamp-2`) at every width (index-row-r7 item
+            1: at 1280 `feature-development-determini…` cut the row's main
+            identifier mid-word). The full name also rides the `title`. */}
         <div className="min-w-0 space-y-[4px]">
           <Link
             to={routes.workflow(pipeline.id)}
             title={pipeline.display_name || pipeline.slug}
-            className="block break-words text-[13.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-[900px]:truncate"
+            className="line-clamp-2 wrap-anywhere text-[13.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid={`workflow-name-${pipeline.slug}`}
           >
             {pipeline.display_name || pipeline.slug}
@@ -227,53 +294,19 @@ export function WorkflowRow({
           )}
         </div>
 
-        {/* The chain owns the free width and WRAPS onto further lines on the
-            desktop (pass-1 review, item 1: at 1280 the row had room to spare,
-            yet the chain ended `…test · revi…` — the ellipsis hid real steps
-            behind a hover). This is the treatment the repo page (`RepoWorkflows`)
-            and the project's Workflows tab already give the same chain, and
-            design 1b draws the whole chain rather than a cut of it. The phone
-            keeps the ONE ellipsized line (reflow-390 item 1: a wrapping chain
-            turned a row into four lines of loop pills at 390), and the full
-            chain rides the `title` at every width, so the whole truth is never
-            further than a hover. Pass-4 review, item 2: on the desktop wrap the
-            `›` is now part of the FOLLOWING step's non-breaking unit (an
-            inline-flex of `›` + step, baselines aligned) — printed as free
-            text with spaces around it, ` › ` was a line-break point, so a
-            wrapped line could end with the arrow or start with a bare one.
-            The break points are now between units, and a unit always carries
-            its arrow with its step. */}
-        <div
-          className="min-w-0 font-mono text-[10.5px] max-[899px]:truncate min-[900px]:overflow-visible min-[900px]:text-clip min-[900px]:whitespace-normal"
+        {/* The chain owns the free width and WRAPS onto further lines at EVERY
+            width (pass-1 review item 1 took the ellipsis off the desk;
+            index-row-r7 item 2 takes it off the phone too — `plan › approve …`
+            at 390 collapsed the chain, and reflow must keep content, not cut
+            it). The full chain also rides the `title`. Each step carries its
+            own `›` in one non-breaking unit (`StepChain`), so no wrapped line
+            starts or ends with a bare arrow (index-row-r7 item 3, the
+            treatment bb8b7c7 gave the project Workflows panel). */}
+        <StepChain
+          cells={cells}
+          testid={`workflow-chain-${pipeline.slug}`}
           title={cells.map((cell) => cell.label).join(" › ")}
-        >
-          {cells.length === 0 ? (
-            <span className="text-muted">—</span>
-          ) : (
-            cells.map((cell, index) => (
-              <span
-                key={index}
-                className="inline-flex items-baseline gap-[5px] whitespace-nowrap align-baseline mr-[6px]"
-              >
-                {index > 0 ? (
-                  <span aria-hidden="true" className="text-[10px] text-muted">
-                    ›
-                  </span>
-                ) : null}
-                <span
-                  className={
-                    cell.loop
-                      ? "rounded-[3px] border border-line bg-paper px-[6px] py-[1px]"
-                      : undefined
-                  }
-                  data-testid={`workflow-chain-${pipeline.slug}-${index}`}
-                >
-                  {cell.label}
-                </span>
-              </span>
-            ))
-          )}
-        </div>
+        />
 
         {/* where it is used + trigger */}
         <div className="min-w-0 space-y-[3px]">

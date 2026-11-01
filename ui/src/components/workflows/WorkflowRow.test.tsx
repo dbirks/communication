@@ -136,25 +136,44 @@ describe("WorkflowRow", () => {
     expect(textOf(`workflow-assignment-${pipeline.slug}-1`)).toBe("M4 Project B · whole project");
   });
 
-  // 1b review (reflow-390 item 1): a wrapping chain made rows ~3x taller than
-  // the design's one line AT 390, so the phone keeps one ellipsized line.
-  // Pass-1 review (item 1) takes the ellipsis away from the desk: at 1280 the
-  // row had room, and a chain cut to `…test · revi…` hid real steps. The chain
-  // therefore wraps over its own column from 900px up (the repo page's and the
-  // project Workflows tab's treatment of the same chain), and the whole chain
-  // rides the `title` at both widths.
-  it("wraps the whole chain on the desk and ellipsizes it only on the phone", () => {
+  // 1b review history: reflow-390 item 1 once kept the phone's one ellipsized
+  // line; pass-1 item 1 took the ellipsis off the desk (at 1280 the row had
+  // room, yet `…test · revi…` hid real steps); index-row-r7 item 2 lifts it
+  // off the phone too — reflow must keep content, so the WHOLE chain wraps at
+  // EVERY width (390 reads what 1280 reads), and the full chain still rides
+  // the `title`. Item 3: every `›` is glued to the step after it in one
+  // non-breaking flex unit (the treatment bb8b7c7 gave the project Workflows
+  // panel — now shared through `StepChain`), so a wrapped line never starts
+  // or ends with a bare arrow; `items-baseline` rides the arrow on its step's
+  // FIRST line even when a `loop:` chip wraps its own words.
+  it("wraps the whole chain at every width, each › glued to its step", () => {
     mount();
     const first = screen.getByTestId(`workflow-chain-${pipeline.slug}-0`);
     const line = first.closest("div") as HTMLElement;
     const classes = line.className.split(/\s+/);
-    expect(classes).toContain("max-[899px]:truncate"); // the phone's one line
-    expect(classes).not.toContain("truncate"); // never ellipsized on the desk
-    expect(classes).toContain("min-[900px]:whitespace-normal"); // wraps at desktop
-    expect(classes).toContain("min-[900px]:overflow-visible"); // nothing clipped
+    expect(classes).toContain("flex-wrap"); // wraps over its own column…
+    expect(classes).toContain("items-baseline"); // …arrows ride each step's first line
+    expect(classes).not.toContain("truncate"); // no one-line ellipsis at any width
+    expect(classes).not.toContain("max-[899px]:truncate"); // gone with it
     expect(line.title).toBe(
       "plan › approve › loop: implement · test · review › verdict › publish_verified › publish_needs_attention",
     );
+    // The non-breaking units: step 0 carries no arrow; every later step's `›`
+    // lives INSIDE the step's own flex unit — a flex row never breaks between
+    // its items, so the arrow cannot separate from its step across a wrap.
+    expect(first.parentElement?.textContent).toBe("plan");
+    for (let index = 1; index < 6; index += 1) {
+      const cell = screen.getByTestId(`workflow-chain-${pipeline.slug}-${index}`);
+      const unit = cell.parentElement as HTMLElement;
+      expect(unit.tagName).toBe("SPAN");
+      expect(unit.className.split(/\s+/)).toContain("flex"); // one non-breaking unit
+      const arrow = unit.querySelector('[aria-hidden="true"]');
+      expect(arrow?.textContent).toBe("›"); // null would fail the line above
+      if (arrow) {
+        // the arrow sits immediately BEFORE its step, in the same unit
+        expect(arrow.compareDocumentPosition(cell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    }
   });
 
   // 1b review (reflow-390 item 2): the phone's 44px floor turned `Edit` and
@@ -176,7 +195,7 @@ describe("WorkflowRow", () => {
     expect(menuWrap.className).toContain("[data-menu-trigger]");
   });
 
-  it("gives the name column the free width and wraps it below the desktop breakpoint", () => {
+  it("gives the name column the free width and wraps the name up to two lines", () => {
     mount();
     const grid = screen
       .getByTestId(`workflow-name-${pipeline.slug}`)
@@ -185,10 +204,16 @@ describe("WorkflowRow", () => {
     // the chain column had slack; the name now gets a flexible column with a
     // 220px floor.
     expect(grid?.getAttribute("class") ?? "").toContain(WORKFLOW_ROW_GRID);
+    // Index-row-r7 item 1: at 1280 the name still truncated to
+    // `feature-development-determini…` — the row's main identifier, unreadable.
+    // It WRAPS now (overflow-wrap:anywhere, at most two lines), and the full
+    // name also rides the `title`.
     const name = screen.getByTestId(`workflow-name-${pipeline.slug}`);
     const classes = (name.getAttribute("class") ?? "").split(/\s+/);
-    expect(classes).not.toContain("truncate"); // truncating at every width cut
-    expect(classes).toContain("min-[900px]:truncate"); // slugs mid-word on phones
+    expect(classes).not.toContain("truncate"); // never cut mid-word, at any width
+    expect(classes).not.toContain("min-[900px]:truncate");
+    expect(classes).toContain("line-clamp-2"); // up to two wrapped lines
+    expect(classes).toContain("wrap-anywhere"); // a long slug wraps inside itself
     expect(name.getAttribute("title")).toBe(pipeline.display_name || pipeline.slug);
   });
 

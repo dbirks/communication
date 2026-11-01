@@ -471,7 +471,14 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
               </Button>
             </div>
           ) : null}
-          <div className="flex justify-end gap-[8px] pt-1">
+          {/* The footer STICKS to the bottom of the form's scroll area (1c
+              review, index-row-r7 item 4: at 390 the Cancel/Create pair sat
+              below the fold INSIDE the scroll area — the create verb was
+              unreachable until the author scrolled). `bg-surface` is the
+              dialog's own background so scrolled content never shows through,
+              and the top border marks the seam; the negative margins bleed it
+              across the form's own 16px padding so the strip spans the card. */}
+          <div className="sticky bottom-0 -mx-[16px] -mb-[16px] flex justify-end gap-[8px] rounded-b-[4px] border-t border-line bg-surface px-[16px] pb-[16px] pt-[10px]">
             <Button
               type="button"
               variant="secondary"

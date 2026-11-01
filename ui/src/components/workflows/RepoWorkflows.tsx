@@ -80,7 +80,7 @@ import { formatAge, formatClock, formatRemaining, testidOf } from "../../lib/for
 import { shortId } from "../../api/names";
 import { routes } from "../../lib/routes";
 import { isDefinitionDocument } from "../../lib/pipeline/definition";
-import { stepChain } from "./WorkflowRow";
+import { StepChain, stepChain } from "./WorkflowRow";
 import { repoRefOf } from "./IssueTriggerRow";
 import { patchErrorText } from "./Triggers";
 import { GithubIcon, TriggerDialog, type TriggerEditing } from "./TriggerDialog";
@@ -190,7 +190,14 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
     <Panel
       id="repo-workflows"
       title={
-        assignments.data ? `WORKFLOWS ON THIS REPO · ${usable.length}` : "WORKFLOWS ON THIS REPO"
+        // Pass-1 review (repo-1e-repo-390): the bar wrapped as
+        // “WORKFLOWS ON THIS REPO” / “· 3”, the count orphaned on its own
+        // line. NBSPs before and after the `·` keep the count welded to the
+        // last word — the wrap can still happen at any real space, only not
+        // between REPO, `·` and n.
+        assignments.data
+          ? `WORKFLOWS ON THIS REPO\u00A0\u00B7\u00A0${usable.length}`
+          : "WORKFLOWS ON THIS REPO"
       }
       // Pass-4 review, item 4: at 390 the one-line bar ellipsised to
       // “WORKFLOWS ON THIS REPO…” — the count, a fact of the header’s own
@@ -438,44 +445,19 @@ function RepoWorkflowRow({
               already gives the same rows, and what design 1e draws (repo-chain-r4
               review item 1). The earlier one-line ellipsis hid most of every
               workflow behind a `…`; the chain's whole truth must be on the page,
-              not on hover. Each cell carries the `›` that precedes it so the
-              separator rides with its step across a wrap, and a `loop:` chip
-              breaks its own words rather than its steps. Pass-4 review, item 2:
-              that ride is on the STEP'S FIRST LINE (`items-baseline`) — against
-              a two-line `loop:` chip, the old `items-center` parked the `›` in
-              the middle of the chip and the continuation line read as starting
-              with an orphan `›`. It now sits inline, immediately before its
-              step's own text, on the line that step begins on. */}
-          <div
-            className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[4px] pl-[22px] font-mono text-[10.5px]"
-            data-testid={`repo-workflow-chain-${key}`}
-          >
-            {data.chain === null ? (
-              <span className="text-muted">…</span>
-            ) : data.chain.length === 0 ? (
-              <span className="text-muted">—</span>
-            ) : (
-              data.chain.map((cell, index) => (
-                <span key={index} className="flex items-baseline gap-[6px]">
-                  {index > 0 ? (
-                    <span aria-hidden="true" className="text-[10px] text-muted">
-                      ›
-                    </span>
-                  ) : null}
-                  <span
-                    className={
-                      cell.loop
-                        ? "rounded-[3px] border border-line bg-paper px-[5px] py-[1px] text-ink-2"
-                        : "text-ink-2"
-                    }
-                    data-testid={`repo-workflow-chain-${key}-${index}`}
-                  >
-                    {cell.label}
-                  </span>
-                </span>
-              ))
-            )}
-          </div>
+              not on hover. Rendered by the shared `StepChain` (index-row-r7 item
+              3): each step carries its own preceding `›` in one non-breaking
+              flex unit on the STEP'S FIRST LINE (`items-baseline`) — against a
+              two-line `loop:` chip, `items-center` parked the `›` in the middle
+              of the chip and the continuation line read as starting with an
+              orphan `›`. No line may start or end with a bare `›`; a `loop:`
+              chip breaks its own words rather than its steps. */}
+          <StepChain
+            cells={data.chain ?? []}
+            testid={`repo-workflow-chain-${key}`}
+            className="pl-[22px] text-ink-2"
+            placeholder={data.chain === null ? "…" : "—"}
+          />
         </div>
         <div className="flex items-center gap-2 min-[900px]:justify-end">
           {/* 2026-10-30 review (2e items 6 + 8): one `+ Add trigger` per row,

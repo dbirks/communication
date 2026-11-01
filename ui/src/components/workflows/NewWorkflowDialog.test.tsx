@@ -86,6 +86,24 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
     return screen.getByTestId("new-workflow-dialog");
   }
 
+  // Index-row-r7 item 4: at 390 the Cancel/Create footer sat below the fold
+  // INSIDE the form's scroll area — the dialog's only create verb needed a
+  // scroll to reach. The footer now sticks to the scroll area's bottom, on
+  // the dialog's own background with a top border, so `Create and open
+  // canvas` stays on screen at any height.
+  it("sticks the Cancel/Create footer to the bottom of the scroll area", () => {
+    mount();
+    const footer = screen.getByTestId("new-workflow-cancel").parentElement as HTMLElement;
+    const classes = footer.className.split(/\s+/);
+    expect(classes).toContain("sticky");
+    expect(classes).toContain("bottom-0");
+    expect(classes).toContain("bg-surface"); // the dialog's own background, no see-through
+    expect(classes).toContain("border-t"); // the seam above the sticky strip
+    expect(footer.querySelector('[data-testid="library-new-submit"]')).toBeTruthy();
+    // and it still lives in the form that scrolls (submit must stay in it)
+    expect(footer.closest("form")).toBe(screen.getByTestId("new-workflow-form"));
+  });
+
   it("keeps every START FROM tile's text left-aligned at any width", () => {
     // reflow-390 item 1: at 390 the tile text centred while 1280 was
     // left-aligned; the phone card must read as the same card.

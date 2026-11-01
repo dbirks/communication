@@ -257,9 +257,11 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     // review item 1): the shorter `REPO WORKFLOWS` was a pass-8 workaround for
     // an ellipsis eating the count at 390 — the design's own words fit the bar
     // alongside the library link, so the name is the design's and the count
-    // still rides with it.
+    // still rides with it. Pass-1 review (repo-1e-repo-390): the count rides
+    // welded to the last word — NBSP either side of the `·`, so a phone-width
+    // wrap never orphans a “· 3” line.
     expect(screen.getByRole("heading", { name: /WORKFLOWS ON THIS REPO/ }).textContent).toContain(
-      "WORKFLOWS ON THIS REPO · 1",
+      "WORKFLOWS ON THIS REPO\u00A0·\u00A01",
     );
     // One honest label at every width (reflow-390 review, 2c item 3): the
     // phone used to render a shortened `+ use workflow`; the panel shortens its
