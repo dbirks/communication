@@ -24,13 +24,14 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../../api/client";
 import {
   useAgentProfiles,
   useConversations,
   useMe,
   useProjects,
+  prefetchConversation,
   type ConversationListFilters,
 } from "../../api/queries";
 import type { ConversationSummary } from "../../api/types";
@@ -221,6 +222,11 @@ function ThreadItem({
   projectName: string;
   profileName: string;
 }) {
+  // gh-69: a pointer that lands on a row warms that thread's detail read (a
+  // 60s-fresh prefetch per row), so the click itself opens the thread without
+  // waiting on a round trip. Touch taps fire `pointerenter` too — at worst the
+  // open read is one the click was going to make anyway.
+  const queryClient = useQueryClient();
   const state: StateName = stateOf(CONVERSATION_STATE[conversation.status]);
   const spec = STATES[state];
   const word = ROW_STATUS_WORDS[conversation.status];
@@ -229,6 +235,7 @@ function ThreadItem({
     <li>
       <Link
         to={routes.thread(conversation.id)}
+        onPointerEnter={() => prefetchConversation(queryClient, conversation.id)}
         data-testid={`thread-row-${conversation.id}`}
         aria-current={selected ? "page" : undefined}
         className={`block rounded-[3px] border px-[10px] py-[9px] ${

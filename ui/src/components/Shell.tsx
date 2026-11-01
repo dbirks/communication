@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useLocation } from "react-router";
+import { Link, useLocation } from "react-router";
 import { useLayoutPrefs } from "../lib/prefs";
 import { Mark } from "./ds/Mark";
 import { Button } from "./ds/Button";
@@ -114,15 +114,29 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
               />
             </svg>
           </button>
-          <Mark size={22} />
-          <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>
+          {/* The brand is a logo, not text (issue #61): a home link that
+              never highlights or drags; the C mark's box and the wordmark's
+              box share a vertical centre (items-center). */}
+          <Link
+            to="/"
+            aria-label="Communication"
+            draggable={false}
+            data-testid="brand-home"
+            className="flex min-w-0 select-none items-center gap-2"
+          >
+            <Mark size={22} />
+            <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>
+          </Link>
           <CommandPalette context={sectionOf(location.pathname)} className="ml-auto shrink-0" />
         </header>
 
         <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
-          {/* Keyed by the path: navigating clears a caught render error instead
-              of leaving the crash banner on every later page. */}
-          <RouteErrorBoundary key={location.pathname}>{children}</RouteErrorBoundary>
+          {/* gh-69: navigation clears a caught render error through `resetKey`
+              instead of a `key={location.pathname}` remount — keying the
+              subtree threw away every already-painted page (skeleton flash on
+              the first click of a thread/run, and state loss on every param
+              change) merely to reset one error flag. */}
+          <RouteErrorBoundary resetKey={location.pathname}>{children}</RouteErrorBoundary>
         </main>
       </div>
 

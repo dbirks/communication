@@ -8,7 +8,8 @@
  * `getConversation` and echoes it, and when the server answers `409` the
  * returned `control` replaces the cached one rather than being retried over.
  */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { apiFetch, conversationConflictOf, setCsrfToken } from "./client";
 import { agentProfileVersionsKey } from "./useProfileVersions";
 import type { components } from "./schema";
@@ -307,11 +308,36 @@ export function useConversations(projectId: string, filters: ConversationListFil
   });
 }
 
+function fetchConversation(conversationId: string): Promise<Conversation> {
+  return apiFetch<Conversation>(`/api/v1/conversations/${conversationId}`);
+}
+
+/** gh-69: `placeholderData: keepPreviousData` is what keeps the ALREADY-PAINTED
+ *  thread on screen while the next one loads. Without it the query goes pending
+ *  on every key change, and every host that branches on `isPending` (the thread
+ *  route, `ConversationPage` itself) replaced the whole painted screen with a
+ *  spinner — the flash on the first click of a run/thread. With it the previous
+ *  answer stays as `data` (fresh content simply swaps in when the read lands);
+ *  a cold first open has no previous answer and shows the stable two-pane
+ *  frame, not a collapsed one-line fallback. */
 export function useConversation(conversationId: string) {
   return useQuery({
     queryKey: queryKeys.conversation(conversationId),
-    queryFn: () => apiFetch<Conversation>(`/api/v1/conversations/${conversationId}`),
+    queryFn: () => fetchConversation(conversationId),
     enabled: conversationId.length > 0,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Warm one thread's detail read ahead of the click (gh-69): the thread list
+ *  pane calls this when a pointer enters a row, so the click lands on a
+ *  finished read instead of starting it. `staleTime` makes a pointer sweep
+ *  across the list cost one request per row, not one per re-enter. */
+export function prefetchConversation(queryClient: QueryClient, conversationId: string): void {
+  void queryClient.prefetchQuery({
+    queryKey: queryKeys.conversation(conversationId),
+    queryFn: () => fetchConversation(conversationId),
+    staleTime: 60_000,
   });
 }
 

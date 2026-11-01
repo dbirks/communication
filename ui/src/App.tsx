@@ -4,7 +4,7 @@ import Shell from "./components/Shell";
 import RequireAuth from "./components/RequireAuth";
 import { Spinner } from "./components/Feedback";
 import { ApiError } from "./api/client";
-import { useConversation, useMe } from "./api/queries";
+import { useMe } from "./api/queries";
 import { routes } from "./lib/routes";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
@@ -100,24 +100,8 @@ function Redirect({
   return <Navigate to={{ pathname: target, search, hash }} replace />;
 }
 
-/**
- * The project-less thread deep link (`/threads/:id`). The conversation detail
- * API is unscoped; the page reads its project from the same response and gets
- * it here as a prop.
- */
-function ThreadDeepLink() {
-  const { conversationId = "" } = useParams();
-  const conversation = useConversation(conversationId);
-  if (conversation.isPending) return <Spinner label="Loading conversation" />;
-  return (
-    <Suspense fallback={<Spinner label="Loading conversation" />}>
-      <ConversationPage projectId={conversation.data?.project_id ?? ""} />
-    </Suspense>
-  );
-}
-
-/** The thread page behind a project-scoped route: same pending line as the
- *  project-less deep link, so the chunk arriving does not change the copy. */
+/** The thread page behind a project-scoped route (`/p/:id/conversations/:id`):
+ *  the standalone page keeps its own pending line while the chunk arrives. */
 function ConversationRoute() {
   return (
     <Suspense fallback={<Spinner label="Loading conversation" />}>
@@ -253,19 +237,21 @@ export default function App() {
               </RequireAuth>
             }
           />
+          {/* gh-69: one optional-param route serves `/threads` and
+              `/threads/:conversationId` on ONE mounted screen
+              (`pages/Threads.tsx` → `ThreadScreen`). It used to be two routes
+              with two elements, and the deep-link element returned a one-line
+              spinner while its conversation read was cold — so the first
+              click on a run remounted the whole screen (list pane included)
+              into that spinner, and the first click on another run flashed it
+              again. Clicking a row now changes a param: the pane never
+              leaves, and the thread column keeps its previous content (or the
+              same-size loading frame) while the next read lands. */}
           <Route
-            path="/threads"
+            path="/threads/:conversationId?"
             element={
               <RequireAuth>
                 <Threads />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/threads/:conversationId"
-            element={
-              <RequireAuth>
-                <ThreadDeepLink />
               </RequireAuth>
             }
           />

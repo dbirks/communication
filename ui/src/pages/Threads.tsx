@@ -15,7 +15,24 @@
  * repository of a row nor the agent's last line, so the rows say what the
  * wire says (see the pane's header comment for the exact gap).
  */
+import { Suspense, lazy } from "react";
+import { useParams } from "react-router";
+import { useConversation } from "../api/queries";
+import { Spinner } from "../components/Feedback";
 import { ThreadListPane, useThreadList } from "../components/threads/ThreadListPane";
+
+/**
+ * The open thread lives in its own chunk (shared with `App.tsx`'s
+ * project-scoped conversation route — same module, so same chunk). gh-69:
+ * the chunk starts loading when THIS module evaluates — arriving on `/threads`
+ * or the project's Threads tab already has it in hand — instead of waiting
+ * for the conversation read to resolve before the import was even issued
+ * (the old deep-link gate stacked a data waterfall on a chunk waterfall, and
+ * every spinner in between replaced the already-painted screen).
+ */
+const loadConversationPage = () => import("./Conversation");
+const ConversationPage = lazy(loadConversationPage);
+void loadConversationPage();
 
 export interface ThreadsViewProps {
   /** Restrict the list to one project (a project's Threads tab); empty means
@@ -96,6 +113,61 @@ export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
   );
 }
 
+/**
+ * The stable loading frame (gh-69). The old deep-link route answered a cold
+ * conversation read with a bare one-line `Spinner`, which REPLACED the whole
+ * painted screen — the 320px list pane gone, the two-column height collapsed
+ * to one line, the page flashing as the thread landed. This frame is the
+ * exact `ThreadsView` silhouette: the list pane mounts in its column (same
+ * query key as the list page, so it paints from cache with no round trip) and
+ * the thread column holds the announced spinner at the column's own size.
+ * The reader sees one steady layout from the click to the thread.
+ */
+export function ThreadScreenLoading({ conversationId }: { conversationId: string }) {
+  return (
+    <div
+      className="flex h-[calc(100vh-44px)] min-w-0 flex-col overflow-hidden md:h-screen lg:flex-row"
+      data-testid="threads-view"
+    >
+      <div className="flex min-h-0 w-full flex-1 border-b border-line-strong bg-surface lg:w-[320px] lg:flex-none lg:border-b-0 lg:border-r">
+        <ThreadListPane selectedId={conversationId} />
+      </div>
+      <div
+        className="hidden min-h-0 min-w-0 flex-1 flex-col bg-paper lg:flex"
+        data-testid="threads-detail-column"
+      >
+        <div className="flex flex-1 items-center justify-center p-8">
+          <Spinner label="Loading conversation" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One screen for `/threads` and `/threads/:conversationId` (the route is a
+ * single optional-param path — gh-69). No id: the list beside the honest
+ * at-rest column. An id: the thread, with the read's state deciding what the
+ * thread column holds — `useConversation` keeps the previous thread as
+ * placeholder data, so switching between opened threads paints the previous
+ * content until the next arrives; only a truly cold open (no previous answer)
+ * shows the same-size frame, and the Suspense fallback for the chunk is that
+ * frame too, so no fallback ever redraws a smaller layout over a painted one.
+ */
+export function ThreadScreen() {
+  const { conversationId = "" } = useParams();
+  const conversation = useConversation(conversationId);
+  if (conversationId.length === 0) return <ThreadsView />;
+  if (conversation.isPending) {
+    return <ThreadScreenLoading conversationId={conversationId} />;
+  }
+  return (
+    <Suspense fallback={<ThreadScreenLoading conversationId={conversationId} />}>
+      <ConversationPage projectId={conversation.data?.project_id ?? ""} />
+    </Suspense>
+  );
+}
+
 export default function Threads() {
-  return <ThreadsView />;
+  return <ThreadScreen />;
 }

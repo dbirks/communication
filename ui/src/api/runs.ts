@@ -8,7 +8,7 @@
  * is terminal (`09`'s state table). The mutations below therefore invalidate —
  * they never write a hoped-for status into the cache.
  */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
 import { queryKeys } from "./queries";
 import type {
@@ -37,12 +37,17 @@ export function useProjectRuns(projectId: string) {
   });
 }
 
-/** `GET /api/v1/runs/{runId}` — pinned identity, status, honest placement. */
+/** `GET /api/v1/runs/{runId}` — pinned identity, status, honest placement.
+ *  gh-69: `placeholderData: keepPreviousData` keeps the already-painted
+ *  workbench on screen when the route moves from one run to another (the same
+ *  mount, a new id); without it `RunDeepLink`/`RunWorkbench` collapse to the
+ *  header's loading line and the whole painted page flashes. */
 export function useRun(runId: string) {
   return useQuery({
     queryKey: queryKeys.run(runId),
     queryFn: () => apiFetch<Run>(`/api/v1/runs/${runId}`),
     enabled: runId.length > 0,
+    placeholderData: keepPreviousData,
   });
 }
 

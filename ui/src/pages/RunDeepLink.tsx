@@ -19,7 +19,13 @@ import { useParams } from "react-router";
 import { RunHeaderLoading } from "../components/workbench/RunHeader";
 import { useRun } from "../api/runs";
 
-const RunWorkbench = lazy(() => import("./RunWorkbench"));
+const loadRunWorkbench = () => import("./RunWorkbench");
+const RunWorkbench = lazy(loadRunWorkbench);
+// gh-69: fetch the workbench chunk the moment this chunk arrives, in parallel
+// with the run read. The old code issued the import only after the read
+// resolved (the pending gate above the Suspense boundary stacked a chunk
+// waterfall on a data waterfall: three loading lines before the workbench).
+void loadRunWorkbench();
 
 export default function RunDeepLink() {
   const { runId = "" } = useParams();
