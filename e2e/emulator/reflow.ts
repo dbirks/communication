@@ -538,6 +538,18 @@ export function findOverlaps(): OverlapHit[] {
  * are inline text links, not touch targets. Hidden/checkbox/radio inputs
  * are measured through their <label> box. Runs in the page.
  *
+ * What is MEASURED is only what a finger could press. While a modal is open —
+ * `[role=dialog][aria-modal=true]` / `[role=alertdialog][aria-modal=true]` (the
+ * app's dialogs: `NewWorkflowDialog`, `RunDrawer`, `StepDialog`, …) or a native
+ * `<dialog open>` — the backdrop takes every touch and the page behind is
+ * marked inert / `aria-hidden`, so a control OUTSIDE that subtree is not a
+ * target at all and is skipped (the 1c `new-workflow` screen at 390 reported
+ * `Edit:26px, ⋯:26px` for `/workflows` rows parked behind the open dialog:
+ * real 26px boxes, and untappable in the sense that the dialog is what answers
+ * the touch). An inert or `aria-hidden="true"` subtree is skipped the same way
+ * whether or not a modal is open. Controls INSIDE the open dialog are still
+ * measured — the dialog is the thing a phone user is operating.
+ *
  * What is MEASURED is the hit area, not the painted box (acceptance-36 false
  * positive: the phone workflow rows keep the desktop's 26px `Edit` / `⋯` DRAWN
  * and extend the tappable area to 44px with an invisible absolutely positioned
@@ -582,6 +594,34 @@ export function findSmallTargets(): TargetHit[] {
     el.closest(
       'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
     ) !== null;
+  /**
+   * The modal open RIGHT NOW, if one is: an `aria-modal` dialog/alertdialog or
+   * a native `<dialog open>` that actually renders and is not itself hidden.
+   * While one is open it owns the screen — its backdrop takes the touch and the
+   * page behind is inert/`aria-hidden` — so nothing outside it is a target.
+   */
+  const openModal: Element | null = (() => {
+    for (const el of Array.from(
+      document.querySelectorAll(
+        '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"], dialog[open]',
+      ),
+    )) {
+      const cs = window.getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      if (el.closest('[aria-hidden="true"]') !== null) continue;
+      return el;
+    }
+    return null;
+  })();
+  /** Could a finger press this control at all, as the page stands? */
+  const reachableNow = (el: Element): boolean => {
+    // An inert or aria-hidden subtree answers to nothing — the app marks the
+    // content behind a dialog one of these two ways (and a closed disclosure
+    // can park controls there while they stay painted).
+    if (el.closest('[inert], [aria-hidden="true"]') !== null) return false;
+    // Outside an open modal the backdrop takes the touch.
+    return openModal === null || openModal.contains(el);
+  };
   interface Box {
     left: number;
     top: number;
@@ -739,7 +779,7 @@ export function findSmallTargets(): TargetHit[] {
     'button, [role="button"], [role="tab"], select, input, textarea',
   );
   for (const el of Array.from(nodes)) {
-    if (inShell(el)) continue;
+    if (inShell(el) || !reachableNow(el)) continue;
     const cs = window.getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") continue;
     const html = el as HTMLElement & { disabled?: boolean; type?: string };

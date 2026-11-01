@@ -11,6 +11,7 @@
 // → open plan.md and prove the content renders. Polling everywhere; model
 // calls can take minutes.
 import { expect, test } from "./fixtures.js";
+import { collectPlanNumbering, judgePlanNumbering } from "./plan-steps.js";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
 const SCHED_NAME = `Emu sched ${EMU_PASS_ID}`;
@@ -234,15 +235,27 @@ test.describe("run-gate-artifacts (alice)", () => {
         await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? ""),
         "the jump lands the reader in the decision form",
       ).toBe("approval-comment");
-      // Pass-1 review item 1: the plan's steps are ONE ordered list, so the
-      // reader can count them — the renderer used to print “1.” for every step.
-      const stepNumbers = await page
-        .getByTestId("markdown-list-ordered")
-        .locator(":scope > li > span[aria-hidden]")
-        .allTextContents();
-      expect(stepNumbers.join(" "), "the plan's steps are numbered in order").toMatch(
-        /^(1\. 2\.|1\. 2\. 3\.|1\. 2\. 3\. 4\.|1\. 2\. 3\. 4\. 5\. 6\.)/,
-      );
+      // Pass-1 review item 1: the plan's steps are numbered so the reader can
+      // count them — the renderer used to print “1.” for every step. The plan
+      // is LIVE model output, so the check holds for the SHAPE-INDEPENDENT
+      // rule (e2e/emulator/plan-steps.ts), not for one document structure: in
+      // `out/pass-1-20261101102509` the planner wrote its steps as bold
+      // paragraphs (“**1. Confirm …**”, “**2. Execute …**”) with bullet lists
+      // under each, there was no ordered list at all, and a locator on
+      // `markdown-list-ordered` returned nothing on a plan that reads 1…5.
+      // Now: every ordered list numbers its own items consecutively from its
+      // start, AND the numbers a reader sees in reading order rise by one — a
+      // fresh 1 opens a new sequence (steps 1…5 then an acceptance 1…3 is what
+      // a live plan looks like), while “1. 1. 1.”, a repeat (1, 2, 2) or a fall
+      // that is not a restart (1, 2, 3, 2) is the defect this line exists for.
+      // The rule's own unit tests (both shapes, the two-sequence plan and the
+      // “1. 1. 1.” / “1, 2, 2” fixtures) are in `reflow-target.spec.ts`.
+      const numbering = await page.evaluate(collectPlanNumbering);
+      const numberingVerdict = judgePlanNumbering(numbering);
+      expect(
+        numberingVerdict.reason,
+        `the plan's steps are numbered in order (numbers read: ${numberingVerdict.steps.join(", ")}; lists: ${JSON.stringify(numbering.lists)})`,
+      ).toBe("");
       // The run's own title is never the thing that gives way (item 3).
       expect(
         await page.evaluate(() => {

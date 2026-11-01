@@ -18,12 +18,30 @@
 // every scroll restored) — see the `fold` cases below, which are the lab's own
 // 390×844 shape.
 //
+// pass-1 (`out/pass-1-20261101102509`, screen 1c new-workflow at 390) added the
+// other half of “the real hit area”: what a finger can REACH. That screen is
+// the /workflows index with the New workflow dialog open over it, so the rows'
+// 26px `Edit` / `⋯` were reported as defects even though the dialog's backdrop
+// takes every touch and the page behind is inert — a target nobody can tap is
+// not a short target. The `modal` cases below pin both halves: a 26px control
+// behind an open modal is not reported, and a 26px control INSIDE it still is.
+//
 // This spec is the checker's own unit test: no lab, no server, no app build —
 // `page.setContent` fixtures, run by the config's `reflow` project (no `setup`
 // dependency).
 //
 //   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts --project=reflow
+//
+// The last describe block is the other pass-1 checker fix and lives here for
+// the same reason: `plan-steps.ts` (the gate card's “the steps are numbered in
+// order” rule) needs a browser and no lab, and this is the no-lab project.
 import { expect, test } from "@playwright/test";
+import {
+  collectPlanNumbering,
+  judgePlanNumbering,
+  type PlanBlock,
+  type PlanBlockKind,
+} from "./plan-steps.js";
 import { findSmallTargets, type TargetHit } from "./reflow.js";
 
 /**
@@ -81,6 +99,20 @@ function ownerAbove(pair: [testid: string, offset: number]): string {
   const hit = document.elementFromPoint(r.left + r.width / 2, r.top + offset);
   if (hit === null) return "null";
   return hit.getAttribute("data-testid") ?? hit.tagName.toLowerCase();
+}
+
+/** What `elementFromPoint` says owns the centre of `testid` (walking up to the
+ * nearest `data-testid`): the fixture's own proof that the control really is
+ * behind the scrim — and that a control in the dialog really answers to a
+ * touch. */
+function ownerAt(testid: string): string {
+  const el = document.querySelector(`[data-testid="${testid}"]`);
+  if (el === null) return "missing";
+  const r = el.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  if (hit === null) return "null";
+  const owner = hit.closest("[data-testid]");
+  return owner?.getAttribute("data-testid") ?? hit.tagName.toLowerCase();
 }
 
 test.describe("findSmallTargets and the real hit area", () => {
@@ -242,5 +274,505 @@ test.describe("findSmallTargets and the real hit area", () => {
       const hits = await page.evaluate(findSmallTargets);
       expect(hitFor("fold-h", hits)).toEqual({ name: "fold-h", height: 26 });
     });
+  });
+
+  // 1c new-workflow at 390: the modal is open, so the rows behind it are not
+  // touch targets at all. `withDialog` reproduces `NewWorkflowDialog`'s markup
+  // (`fixed inset-0 … bg-ink/25` backdrop holding the
+  // `role=dialog aria-modal=true` sheet) inside `<main>`, which is where the
+  // page renders it, so the checker sees the same tree the finger does.
+  test.describe("while a modal is open", () => {
+    const sheet = (body: string): string =>
+      [
+        '<div data-testid="scrim" style="position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.25)">',
+        '<div role="dialog" aria-modal="true" data-testid="the-dialog" style="width:300px;margin:120px auto;background:#fff;padding:8px">',
+        body,
+        "</div></div>",
+      ].join("");
+    const behind = (testid: string): string =>
+      `<div style="padding-top:60px"><button data-testid="${testid}" class="bordered" aria-label="${testid}"></button></div>`;
+
+    test("(i) a 26px control behind an open modal is not reported", async ({ page }) => {
+      await page.setContent(doc(`${behind("behind-i")}${sheet("<p>new workflow</p>")}`));
+      // The control is painted, enabled and 26px tall — and the backdrop is
+      // what answers a touch on it, so there is no target to judge.
+      expect(await page.evaluate(ownerAt, "behind-i")).toBe("scrim");
+      expect(await page.evaluate(findSmallTargets)).toEqual([]);
+    });
+
+    test("(ii) a 26px control inside the open modal is still reported", async ({ page }) => {
+      await page.setContent(
+        doc(`${behind("behind-ii")}${sheet(behind("inside-ii").replace("padding-top:60px", ""))}`),
+      );
+      expect(await page.evaluate(ownerAt, "behind-ii")).toBe("scrim");
+      expect(await page.evaluate(ownerAt, "inside-ii")).toBe("inside-ii");
+      const hits = await page.evaluate(findSmallTargets);
+      expect(hits).toEqual([{ name: "inside-ii", height: 26 }]);
+    });
+
+    test("a native <dialog open> is a modal too", async ({ page }) => {
+      await page.setContent(
+        doc(
+          [
+            behind("behind-dialog"),
+            '<dialog open data-testid="the-dialog" style="position:fixed;left:40px;top:120px;background:#fff">',
+            '<button data-testid="inside-dialog" class="bordered" aria-label="inside-dialog"></button>',
+            "</dialog>",
+          ].join(""),
+        ),
+      );
+      const hits = await page.evaluate(findSmallTargets);
+      expect(hits).toEqual([{ name: "inside-dialog", height: 26 }]);
+    });
+
+    test("an inert or aria-hidden subtree answers to no touch", async ({ page }) => {
+      // No modal here: the page itself parks a subtree out of reach, and a
+      // painted 26px button in it is still not a target.
+      await page.setContent(
+        doc(
+          [
+            '<div inert data-testid="inert-box">',
+            '<button data-testid="inert-btn" class="bordered" aria-label="inert-btn"></button></div>',
+            '<div aria-hidden="true" data-testid="hidden-box">',
+            '<button data-testid="hidden-btn" class="bordered" aria-label="hidden-btn"></button></div>',
+            behind("live-btn"),
+          ].join(""),
+        ),
+      );
+      const hits = await page.evaluate(findSmallTargets);
+      expect(hits).toEqual([{ name: "live-btn", height: 26 }]);
+    });
+
+    test("with no modal open, the 26px control behind where it would be is reported", async ({
+      page,
+    }) => {
+      // The same document minus the dialog: the checker did not simply learn
+      // to ignore rows, it ignores them while something is actually open.
+      await page.setContent(doc(behind("closed-i")));
+      const hits = await page.evaluate(findSmallTargets);
+      expect(hitFor("closed-i", hits)).toEqual({ name: "closed-i", height: 26 });
+    });
+  });
+});
+/**
+ * `plan-steps.ts` — pass-1 defect 2, `run-gate waiting`.
+ *
+ * The gate card's plan is live model output. In `out/pass-1-20261101102509` the
+ * planner wrote its steps as BOLD PARAGRAPHS (“**1. Confirm repository binding
+ * and fixture integrity**”, “**2. Execute the gate …**”) with bullet lists under
+ * each, so the document holds no `markdown-list-ordered` at all, the old
+ * locator returned nothing, and the check red on a plan that reads 1…5 on
+ * screen. The contract is the READER's ("the steps are numbered in order, never
+ * 1. 1. 1."), not the markup's, so both shapes must satisfy it — and the
+ * renderer it exists to catch must still fail, which is what (p3)/(p4) prove.
+ *
+ * Reading order is judged as SEQUENCES, because live plans number their steps
+ * 1…5 and then number an acceptance list 1…3: a fresh "1." opens a new
+ * sequence (p7), while three "1."s in a row (p3, p6), a repeat inside a
+ * sequence (p8) and a fall that is not a restart (p8) are the defects.
+ *
+ * `planDoc` reproduces `lib/markdown.tsx`'s DOM, because that shape — not the
+ * CSS — is what the collector reads: a `markdown-paragraph` whose own text
+ * carries the author's newlines under `white-space: pre-line`, and a
+ * `display:flex` `markdown-list-item` whose `aria-hidden` marker span is its
+ * own box (flex items are blockified, so the number and the words the browser
+ * paints on separate lines arrive on separate lines here too).
+ */
+function planDoc(body: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    body { margin: 0; font: 13px/19px ui-sans-serif, system-ui, sans-serif; }
+    main { padding: 8px; }
+    p, ul, ol, pre { margin: 0; }
+    ul, ol { padding-left: 0; list-style: none; }
+    li { display: flex; gap: 6px; }
+    [aria-hidden] { color: #888; }
+  </style></head><body><main>
+    <div data-testid="approval-summary">
+      <div data-testid="plan-view-plain">
+        <div style="white-space:pre-line"><div data-testid="markdown-body">${body}</div></div>
+      </div>
+    </div>
+  </main></body></html>`;
+}
+
+/** `<p data-testid="markdown-paragraph">…</p>` — the author's newlines kept. */
+const para = (inner: string): string => `<p data-testid="markdown-paragraph">${inner}</p>`;
+/** A paragraph led by a bold run: the model writing “**1. Confirm …**”. */
+const boldPara = (lead: string, ...rest: string[]): string =>
+  para(`<strong>${lead}</strong>\n${rest.join("\n")}`);
+/** A heading block. */
+const heading = (text: string): string => `<p data-testid="markdown-heading">${text}</p>`;
+/** A bullet list as the renderer draws it: `·` in its own box, text beside it. */
+const bullets = (...items: string[]): string =>
+  `<ul data-testid="markdown-list">${items
+    .map(
+      (item) =>
+        `<li data-testid="markdown-list-item"><span aria-hidden="true">·</span><div><span>${item}</span></div></li>`,
+    )
+    .join("")}</ul>`;
+/** A fenced block: payload, never a step (the fixture's copy holds a line that
+ * opens “1.” precisely so the collector is caught if it ever reads code). */
+const code = (text: string): string =>
+  `<pre data-testid="markdown-code" tabindex="0">${text}</pre>`;
+/** An ordered list the renderer numbers — the shape the OLD check could see. An
+ * item's own html may carry a nested list, as `lib/markdown.tsx` nests it. */
+const ordered = (start: number, items: [marker: string, inner: string][]): string =>
+  `<ol data-testid="markdown-list-ordered" start="${start}">${items
+    .map(
+      ([marker, inner]) =>
+        `<li data-testid="markdown-list-item"><span aria-hidden="true">${marker}</span><div><span>${inner}</span></div></li>`,
+    )
+    .join("")}</ol>`;
+
+/** The live pass's plan, block for block, as `run-gate-waiting-1280.png` shows
+ * it (hand-copied; the wording of every step, not every wrapped line). */
+const LIVE_PLAN_BODY = [
+  para(
+    "Plan for emu gate journey pass-1-20261101102509 — prove the gate and the plan artifact in repository app",
+  ),
+  heading("Implementation Plan: emu gate journey pass-1-20261101102509"),
+  boldPara(
+    "1. Confirm repository binding and fixture integrity",
+    "Files touched: <code>./README.md</code>, <code>./pytest.ini</code>,",
+    "<code>./tests/test_hello.py</code>, <code>./hello.py</code> (read-only inspection)",
+  ),
+  bullets(
+    "Verify the four expected files exist at the paths listed in the survey.",
+    "Confirm pytest.ini declares the test discovery path and that <code>tests/test_hello.py</code> contains at least one assertion that will fail on a clean checkout (per README § M4 exit run iteration 1).",
+  ),
+  boldPara(
+    "Verification:",
+    "<code>ls ./README.md ./hello.py ./pytest.ini</code>",
+    "<code>./tests/test_hello.py</code> returns all four paths with no errors.",
+  ),
+  boldPara(
+    "2. Execute the gate — run pytest and capture the expected failure",
+    "Files touched: none (read-only execution); stdout/stderr captured to a transient log.",
+  ),
+  bullets(
+    "Run <code>python -m pytest --tb=short -q</code> from the repo root.",
+    "Assert the exit code is non-zero (gate “fails” as designed for iteration 1).",
+    "Record the exact failure message and exit code as the gate proof.",
+  ),
+  boldPara(
+    "Verification:",
+    "<code>echo $?</code> after the pytest invocation yields <code>1</code> (or another non-zero code), and the captured output contains a <code>FAILED</code> line referencing <code>tests/test_hello.py</code>.",
+  ),
+  boldPara(
+    "3. Produce the plan artifact",
+    "Files touched: <code>./plan-artifact.md</code> (new file, written to the working tree)",
+  ),
+  bullets(
+    "Write this numbered plan (steps 1-5) into <code>./plan-artifact.md</code> with a header block:",
+  ),
+  code(
+    "---\n  journey: pass-1-20261101102509\n  repo: app\n  gate_status: FAILED (expected)\n  artifact_type: implementation-plan\n---\n1. this line is code, not a step",
+  ),
+  bullets(
+    "Include the pytest exit code and first failure line captured in step 2 as an embedded proof block.",
+  ),
+  boldPara(
+    "Verification:",
+    "<code>head -80 ./plan-artifact.md</code> shows the YAML front-matter with <code>gate_status: FAILED (expected)</code> and <code>journey: pass-1-20261101102509</code>.",
+  ),
+  boldPara(
+    "4. Validate the artifact is self-consistent",
+    "Files touched: <code>./plan-artifact.md</code> (read-back)",
+  ),
+  bullets(
+    "Grep the artifact for the journey ID string <code>pass-1-20261101102509</code> — must appear at least twice (front-matter + proof block).",
+    "Confirm the embedded pytest output matches the actual run from step 2 (byte-for-byte on the <code>FAILED</code> line).",
+  ),
+  boldPara(
+    "Verification:",
+    "<code>grep -c 'pass-1-20261101102509' ./plan-artifact.md</code> returns ≥ 2; <code>grep 'FAILED' ./plan-artifact.md</code> returns the same line produced in step 2.",
+  ),
+  boldPara(
+    "5. Seal the gate proof — final assertion",
+    "Files touched: none (exit-status check only)",
+  ),
+  bullets(
+    "Assert: (a) pytest exited non-zero → gate fired correctly; (b) <code>plan-artifact.md</code> exists, is non-empty, and contains the required front-matter keys → plan artifact is valid.",
+    "Print a single summary line: <code>GATE=FAILED ARTIFACT=OK JOURNEY=pass-1-20261101102509</code>.",
+  ),
+  boldPara(
+    "Verification:",
+    "The summary line is emitted to stdout and the overall script exit code is 0 (the journey passes even though the gate fails, which is the intended M4 iteration-1 semantics).",
+  ),
+].join("\n");
+
+const readPlan = async (page: import("@playwright/test").Page) =>
+  judgePlanNumbering(await page.evaluate(collectPlanNumbering));
+
+/** One block as the collector reports it (`"text"` = ordinary prose, which the
+ * judge does not read as a step). */
+const blk = (text: string, kind: PlanBlockKind = "text"): PlanBlock => ({ text, kind });
+
+test.describe("the plan's steps are numbered in order", () => {
+  test("(p1) the live pass's plan — bold paragraphs, no ordered list — reads 1…5", async ({
+    page,
+  }) => {
+    await page.setContent(planDoc(LIVE_PLAN_BODY));
+    const read = await page.evaluate(collectPlanNumbering);
+    const verdict = judgePlanNumbering(read);
+    // This is the shape that red-passed: no `markdown-list-ordered` anywhere —
+    // the exact locator the check used to assert on reads nothing here, which
+    // is why a plan that reads 1…5 on screen failed it.
+    expect(read.lists, "the live plan holds no ordered list").toEqual([]);
+    expect(
+      await page.locator('[data-testid="markdown-list-ordered"] > li > span[aria-hidden]').count(),
+      "the OLD locator had nothing to read on this plan",
+    ).toBe(0);
+    expect(read.blocks.length, "the plan's blocks were read").toBeGreaterThan(15);
+    // The collector also tells the judge what the blocks LOOK like, which is
+    // what keeps an unnumbered plan-shaped document a defect while a prose plan
+    // passes: the `##` heading and the bold-led paragraphs read as steps, the
+    // bullet items (unordered) and the plain paragraphs read as prose.
+    const kinds = read.blocks.map((block) => block.kind);
+    expect(kinds.filter((kind) => kind === "heading")).toEqual(["heading"]);
+    expect(
+      kinds.filter((kind) => kind === "strong").length,
+      "the five step titles (and the bold Verification: lines) lead their paragraph",
+    ).toBeGreaterThanOrEqual(5);
+    expect(
+      kinds.filter((kind) => kind === "item"),
+      "· bullets are not steps",
+    ).toEqual([]);
+    expect(verdict.steps, "the reader counts five steps, numbered in order").toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    expect(verdict.reason).toBe("");
+  });
+
+  test("(p2) the same plan written as ONE ordered list reads in order too", async ({ page }) => {
+    await page.setContent(
+      planDoc(
+        [
+          heading("Implementation Plan: emu gate journey"),
+          ordered(1, [
+            ["1.", "Confirm repository binding and fixture integrity"],
+            ["2.", "Execute the gate"],
+            [
+              "3.",
+              "Produce the plan artifact" +
+                ordered(1, [
+                  ["1.", "front-matter keys"],
+                  ["2.", "the proof block"],
+                ]),
+            ],
+          ]),
+        ].join("\n"),
+      ),
+    );
+    const verdict = await readPlan(page);
+    // A step's OWN nested list restarts at 1 by the author's design: rule (1)
+    // judges each list on its own items, and the nested items are not steps,
+    // so the plan still reads 1, 2, 3.
+    expect(verdict.steps, "the plan's steps, not its sub-list").toEqual([1, 2, 3]);
+    expect(verdict.reason).toBe("");
+  });
+
+  test("(p3) a renderer that prints “1.” for every step still fails", async ({ page }) => {
+    // `run-gate-waiting-1280.png` the FIRST time: one authored list broken into
+    // a list per step, each starting at 1. Every list is internally
+    // consecutive, so only the reading-order walk sees the repeat.
+    await page.setContent(
+      planDoc(
+        [
+          heading("Implementation Plan: emu gate journey"),
+          ordered(1, [["1.", "Confirm repository binding and fixture integrity"]]),
+          ordered(1, [["1.", "Execute the gate"]]),
+          ordered(1, [["1.", "Produce the plan artifact"]]),
+        ].join("\n"),
+      ),
+    );
+    const verdict = await readPlan(page);
+    expect(verdict.ok, "a plan whose steps all read “1.” is a defect").toBe(false);
+    expect(verdict.steps).toEqual([1, 1, 1]);
+    expect(verdict.reason).toMatch(/3 steps in a row are numbered "1\." \(1, 1, 1\)/);
+  });
+
+  test("(p4) a renderer that prints “1.” for every item of ONE list still fails", async ({
+    page,
+  }) => {
+    await page.setContent(
+      planDoc(
+        ordered(1, [
+          ["1.", "Confirm repository binding and fixture integrity"],
+          ["1.", "Execute the gate"],
+          ["1.", "Produce the plan artifact"],
+        ]),
+      ),
+    );
+    const verdict = await readPlan(page);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toMatch(/ordered list 1 prints 1, 1, 1/);
+  });
+
+  test("(p5) fenced code and collapsed JSON never count as steps", async ({ page }) => {
+    await page.setContent(
+      planDoc(
+        [
+          boldPara("1. Confirm the binding", "Files touched: <code>./README.md</code>"),
+          code("1. not a step\n2. not a step"),
+          boldPara("2. Execute the gate", "Files touched: none"),
+        ].join("\n"),
+      ),
+    );
+    expect((await readPlan(page)).steps).toEqual([1, 2]);
+  });
+
+  test("(p6) the judge on the live plan's OWN text, and on the bug's text", () => {
+    // No browser: the judge's input is text, so this is the measurement the
+    // acceptance report quotes — the pass-1 plan's lines (the reader's, as
+    // `run-gate-waiting-1280.png` shows them) and the bug's lines.
+    const live = judgePlanNumbering({
+      found: true,
+      lists: [],
+      where: "out/pass-1-20261101102509/run-gate-waiting-1280.png",
+      blocks: [
+        blk(
+          "Plan for emu gate journey pass-1-20261101102509 — prove the gate and the plan artifact in repository app",
+        ),
+        blk("Implementation Plan: emu gate journey pass-1-20261101102509", "heading"),
+        blk(
+          "1. Confirm repository binding and fixture integrity\nFiles touched: ./README.md, ./pytest.ini,",
+          "strong",
+        ),
+        blk("·\nVerify the four expected files exist at the paths listed in the survey."),
+        blk("·\nWrite this numbered plan (steps 1-5) into ./plan-artifact.md with a header block:"),
+        blk("Verification: head -80 ./plan-artifact.md shows the YAML front-matter"),
+        blk(
+          "2. Execute the gate — run pytest and capture the expected failure\nFiles touched: none (read-only execution)",
+          "strong",
+        ),
+        blk("3. Produce the plan artifact\nFiles touched: ./plan-artifact.md (new file)", "strong"),
+        blk(
+          "4. Validate the artifact is self-consistent\nFiles touched: ./plan-artifact.md (read-back)",
+          "strong",
+        ),
+        blk(
+          "5. Seal the gate proof — final assertion\nFiles touched: none (exit-status check only)",
+          "strong",
+        ),
+      ],
+    });
+    expect(live.reason).toBe("");
+    expect(live.steps).toEqual([1, 2, 3, 4, 5]);
+
+    const broken = judgePlanNumbering({
+      found: true,
+      lists: [["1."], ["1."], ["1."]],
+      where: "1. 1. 1. fixture",
+      blocks: [
+        blk("1.\nConfirm repository binding", "item"),
+        blk("1.\nExecute the gate", "item"),
+        blk("1.\nProduce the plan artifact", "item"),
+      ],
+    });
+    expect(broken.ok).toBe(false);
+    expect(broken.reason).toMatch(/3 steps in a row are numbered "1\." \(1, 1, 1\)/);
+  });
+
+  test("(p7) two sequences in one plan — steps 1…5, then an acceptance 1…3 — pass", async ({
+    page,
+  }) => {
+    // What a live model plan actually looks like: a numbered set of steps, then
+    // a DIFFERENT numbered set (criteria, risks). A fresh "1." opens a new
+    // sequence; it is not the renderer's 1. 1. 1. and must not red.
+    await page.setContent(
+      planDoc(
+        [
+          heading("Implementation Plan: emu gate journey pass-1-20261101102509"),
+          boldPara("1. Confirm the binding", "Files touched: <code>./README.md</code>"),
+          boldPara("2. Execute the gate", "Files touched: none"),
+          boldPara(
+            "3. Produce the plan artifact",
+            "Files touched: <code>./plan-artifact.md</code>",
+          ),
+          boldPara("4. Validate the artifact", "Files touched: <code>./plan-artifact.md</code>"),
+          boldPara("5. Seal the gate proof", "Files touched: none"),
+          heading("Acceptance"),
+          ordered(1, [
+            ["1.", "<code>plan-artifact.md</code> exists"],
+            ["2.", "the FAILED line is embedded"],
+            ["3.", "the script exit code is 0"],
+          ]),
+        ].join("\n"),
+      ),
+    );
+    const read = await page.evaluate(collectPlanNumbering);
+    const verdict = judgePlanNumbering(read);
+    expect(
+      read.blocks.filter((block) => block.kind === "item").map((block) => block.text),
+      "the acceptance items are steps of their own list",
+    ).toEqual([
+      "1.\nplan-artifact.md exists",
+      "2.\nthe FAILED line is embedded",
+      "3.\nthe script exit code is 0",
+    ]);
+    expect(verdict.steps, "the reader sees two sequences").toEqual([1, 2, 3, 4, 5, 1, 2, 3]);
+    expect(verdict.reason).toBe("");
+  });
+
+  test("(p8) a repeat, a fall and an unnumbered step-list all fail; prose and a 1,1 pair pass", () => {
+    const read = (where: string, numbers: number[], kind: PlanBlockKind = "strong") =>
+      judgePlanNumbering({
+        found: true,
+        lists: [],
+        where,
+        blocks: numbers.map((n) => blk(`${n}. Step ${n}`, kind)),
+      });
+
+    const repeat = read("1, 2, 2, 3 fixture", [1, 2, 2, 3]);
+    expect(repeat.ok).toBe(false);
+    expect(repeat.reason).toMatch(/step 2 is numbered twice in a row/);
+
+    // A restart, then the renderer's signature: the run is what counts, not the
+    // position in the plan.
+    const restartThenBroken = read("5, 1, 1, 1 fixture", [5, 1, 1, 1]);
+    expect(restartThenBroken.reason).toMatch(/3 steps in a row are numbered "1\." \(1, 1, 1\)/);
+
+    const falls = read("1, 2, 3, 2 fixture", [1, 2, 3, 2]);
+    expect(falls.reason).toMatch(/falls without starting a new sequence/);
+
+    const jumps = read("1, 3 fixture", [1, 3]);
+    expect(jumps.reason).toMatch(/numbering skips/);
+
+    // Two single-item sequences read exactly like the split-list renderer's
+    // first two steps and are the model's own doing: only the third "1." in a
+    // row is the signature (p3, p6).
+    expect(read("1, 1 fixture", [1, 1]).reason).toBe("");
+    expect(read("5, 1, 2, 3 fixture", [5, 1, 2, 3]).reason).toBe("");
+
+    // A plan whose blocks look like steps but carry no number at all is the
+    // reader-who-cannot-count defect; a plan that is prose only is not.
+    const unnumbered = judgePlanNumbering({
+      found: true,
+      lists: [],
+      where: "unnumbered step-shaped fixture",
+      blocks: [
+        blk("Confirm the binding", "heading"),
+        blk("Execute the gate", "heading"),
+        blk("Produce the artifact", "heading"),
+      ],
+    });
+    expect(unnumbered.reason).toMatch(
+      /3 blocks read as steps .* but none of them carries a number/,
+    );
+
+    const prose = judgePlanNumbering({
+      found: true,
+      lists: [],
+      where: "prose fixture",
+      blocks: [
+        blk("Plan for the gate journey: confirm, execute, publish."),
+        blk("·\nConfirm the binding."),
+        blk("·\nExecute the gate."),
+      ],
+    });
+    expect(prose.ok).toBe(true);
+    expect(prose.steps).toEqual([]);
+    expect(prose.reason).toBe("");
   });
 });
