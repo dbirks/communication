@@ -457,25 +457,69 @@ spec:
     );
   });
 
-  it("renders the selected node's menu with Duplicate and Delete, and wires the actions", () => {
+  it("shows NO Duplicate/Delete menu for a plain selection — a left click only selects (#66)", () => {
+    // Issue #66: the old contract opened the two-verb menu the moment a step
+    // was selected. A left click is now select + inspector ONLY; the verbs
+    // answer right-click, the ⋯ on the selected step, and the keyboard. The
+    // click DOES select (React Flow's ring appears) — the menu simply no
+    // longer follows it.
+    const onDuplicate = vi.fn();
+    const onDelete = vi.fn();
+    const onSelect = vi.fn();
+    renderCanvas({ selectedId: "check", onDuplicate, onDelete, onSelect });
+    // A selected step alone draws no menu…
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+    // …and clicking a step only reports the selection.
+    fireEvent.click(screen.getByLabelText("Run command / tests step check"));
+    expect(onSelect).toHaveBeenCalledWith("check");
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+    // Re-clicking the ALREADY-selected step (the old reopen path) still
+    // shows nothing.
+    fireEvent.click(screen.getByLabelText("Run command / tests step check"));
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+    // Neither verb was reachable “for free” from those clicks.
+    expect(onDuplicate).not.toHaveBeenCalled();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it("opens Duplicate/Delete from the ⋯ on the selected step and wires the actions", () => {
     const onDuplicate = vi.fn();
     const onDelete = vi.fn();
     renderCanvas({ selectedId: "check", onDuplicate, onDelete });
-    const menu = screen.getByTestId("studio-node-menu");
-    expect(menu).toBeTruthy();
+    // The ⋯ rides the step React Flow has SELECTED (the ring the reader
+    // sees): clicking `check` selects it; `plan` never carries a ⋯.
+    fireEvent.click(screen.getByLabelText("Run command / tests step check"));
+    expect(screen.queryByTestId("node-menu-button-plan")).toBeNull();
+    const trigger = screen.getByTestId("node-menu-button-check");
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    // The ⋯ opens the menu and does NOT re-trigger the step's selection.
+    fireEvent.click(trigger);
+    expect(screen.getByTestId("studio-node-menu")).toBeTruthy();
     expect(screen.getByTestId("studio-node-menu-duplicate")).toBeTruthy();
-    expect(screen.getByTestId("studio-node-menu-delete")).toBeTruthy();
-
-    // Both actions live in one menu that closes after each activation, so the
-    // second action needs the menu re-opened (right-click) before it can fire.
     fireEvent.click(screen.getByTestId("studio-node-menu-delete"));
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith(["check"]);
-
-    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    // The menu closed after the action; the ⋯ opens it again for the next one.
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+    fireEvent.click(screen.getByTestId("node-menu-button-check"));
     fireEvent.click(screen.getByTestId("studio-node-menu-duplicate"));
     expect(onDuplicate).toHaveBeenCalledTimes(1);
     expect(onDuplicate).toHaveBeenCalledWith("check");
+  });
+
+  it("draws no ⋯ and opens no menu on an uneditable canvas", () => {
+    // Right-click is the canvas's only menu gesture that needs no selection,
+    // so the read-only/stale refusal is asserted through it (the ⋯ rides the
+    // selection React Flow keeps).
+    const { unmount } = renderCanvas({ selectedId: "check", readOnly: true });
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+    expect(screen.queryByTestId("node-menu-button-check")).toBeNull();
+    unmount();
+    renderCanvas({ selectedId: "check", stale: true });
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+    expect(screen.queryByTestId("node-menu-button-check")).toBeNull();
   });
 
   it("opens the context menu on right-click and deletes from it", () => {
@@ -487,11 +531,54 @@ spec:
     expect(onDelete).toHaveBeenCalledWith(["check"]);
   });
 
+  it("opens the context menu with Shift+F10 and the ContextMenu key (#66)", () => {
+    // Keyboard/touch parity for the verbs that left the plain-click toolbar.
+    const { unmount } = renderCanvas({ selectedId: "check" });
+    fireEvent.keyDown(document, { key: "F10", shiftKey: true });
+    expect(screen.getByTestId("studio-node-menu")).toBeTruthy();
+    fireEvent.keyDown(screen.getByTestId("studio-node-menu"), { key: "Escape" });
+    unmount();
+    renderCanvas({ selectedId: "check" });
+    fireEvent.keyDown(document, { key: "ContextMenu" });
+    expect(screen.getByTestId("studio-node-menu")).toBeTruthy();
+  });
+
+  it("opens the keyboard context menu for the FOCUSED step, not the selection", () => {
+    const onDelete = vi.fn();
+    renderCanvas({ selectedId: "check", onDelete });
+    const plan = screen.getByLabelText("Ask a model step plan") as HTMLElement;
+    plan.focus();
+    fireEvent.keyDown(plan, { key: "ContextMenu" });
+    // The menu speaks for the FOCUSED step: its Delete targets `plan`.
+    fireEvent.click(screen.getByTestId("studio-node-menu-delete"));
+    expect(onDelete).toHaveBeenCalledWith(["plan"]);
+  });
+
   it("closes the context menu with Escape", () => {
     renderCanvas({ selectedId: "check" });
     fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
     const menu = screen.getByTestId("studio-node-menu");
     fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+  });
+
+  it("closes the context menu when the selection moves to another step", () => {
+    const { rerender } = renderCanvas({ selectedId: "check", onSelect: vi.fn() });
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    expect(screen.getByTestId("studio-node-menu")).toBeTruthy();
+    // A left click elsewhere moved the selection — the menu belonged to
+    // `check`, so it goes with it.
+    rerender(
+      <StudioCanvas
+        model={fixtureModel}
+        document={parse(fixtureYaml)}
+        layout={{}}
+        selectedId="plan"
+        readOnly={false}
+        stale={false}
+        onSelect={vi.fn()}
+      />,
+    );
     expect(screen.queryByTestId("studio-node-menu")).toBeNull();
   });
 
@@ -557,6 +644,24 @@ spec:
     fireEvent.keyDown(document, { key: "Backspace" });
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith(["check"]);
+  });
+
+  it("gives the zoom controls a ≥30px hit box without growing the painted glyph (#68)", () => {
+    // Issue #68 remainder: the − / + measured 29×27 at 1280 (the CSS box is
+    // 28×26). The box moves to 30×30 and the shared `.icon-hit` utility keeps
+    // the 30px floor; the painted glyphs keep their type.
+    renderCanvas();
+    for (const testid of ["canvas-zoom-in", "canvas-zoom-out"]) {
+      const button = screen.getByTestId(testid) as HTMLElement;
+      const classes = button.className.split(/\s+/);
+      expect(classes).toContain("icon-hit");
+      expect(classes).toContain("h-[30px]");
+      expect(classes).toContain("w-[30px]");
+      expect(classes).toContain("text-[13px]"); // the glyph is not magnified
+    }
+    const fit = screen.getByTestId("canvas-fit") as HTMLElement;
+    expect(fit.className.split(/\s+/)).toContain("icon-hit");
+    expect(fit.className.split(/\s+/)).toContain("h-[30px]");
   });
 
   it("keeps the terminal plus sign on the terminal step via the add-after stub", async () => {

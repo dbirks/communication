@@ -28,6 +28,14 @@ export type StepNodeRender = {
   /** Layout direction for the handle positions; falls back to the canvas's last layout. */
   direction?: "LR" | "TB";
   onSelect: () => void;
+  /**
+   * Opens this step's Duplicate/Delete menu — the ⋯ button on the SELECTED
+   * step (issue #66: a plain left click only selects; the verbs live on
+   * right-click, on this ⋯, and on the keyboard, so touch and keyboard users
+   * still reach them). Null on a canvas that cannot run them (read-only,
+   * stale YAML), and the button never renders without it.
+   */
+  onMenu: (() => void) | null;
   /** Present only on terminal steps: opens the picker, then adds after this. */
   onAddAfter: ((kind: string) => void) | null;
 };
@@ -142,6 +150,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
     <div
       className="relative"
       data-highlight={data.highlight ? "assistant-proposed" : undefined}
+      data-step-node-id={data.id}
       data-testid={`canvas-step-${data.id}`}
     >
       <Handle id="in" type="target" position={inPosition} className={handleClass(interactive)} />
@@ -211,6 +220,32 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           )}
         </div>
       </div>
+
+      {/* Issue #66: Duplicate/Delete left the plain-click toolbar and live on
+          right-click, the keyboard and THIS ⋯ — drawn only while the step is
+          selected, so the touch user who has no right-click reaches the verbs
+          from the step they just selected. The shared `.icon-hit` utility
+          (#68) grows the desktop hit area to 30×30 without growing the painted
+          dot; the phone band's `main button` floor gives it 44px there. */}
+      {selected && interactive && data.onMenu && (
+        <button
+          type="button"
+          data-testid={`node-menu-button-${data.id}`}
+          aria-label={`Actions for step ${data.id}`}
+          aria-haspopup="menu"
+          className="icon-hit absolute right-[2px] top-[2px] z-20 grid h-[20px] w-[20px] place-items-center rounded-[3px] border border-line bg-surface text-[12px] leading-none text-ink-2 hover:border-accent hover:text-accent"
+          // Same guard as every canvas affordance: the pointerdown must not
+          // reach React Flow (node drag / selection churn) or the menu's own
+          // click-away, and the click must not re-trigger the step's select.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            data.onMenu?.();
+          }}
+        >
+          <span aria-hidden="true">⋯</span>
+        </button>
+      )}
 
       {data.terminal && interactive && data.onAddAfter && (
         <div

@@ -754,12 +754,13 @@ function CanvasInner({
     );
   }, [base]);
 
-  // The selected node's context/selection menu (design 1g): a small menu to
-  // the RIGHT of the single selected step, TOP-ALIGNED with it, 8px gap —
-  // Duplicate / Delete — plus the same actions on right-click (context menu
-  // at the pointer). The menu is kept in FLOW coordinates: it must track the
-  // node through any pan/zoom, so its screen position is re-derived from the
-  // rendered viewport transform every time that transform changes.
+  // The step Duplicate/Delete menu (issue #66): it answers an explicit ask
+  // ONLY — right-click on a step (menu at the pointer), the ⋯ button on the
+  // selected step, or Shift+F10 / the ContextMenu key — and never on a plain
+  // left click, which just selects the step and opens the inspector. The menu
+  // is kept in FLOW coordinates: it must track its step through any pan/zoom,
+  // so its screen position is re-derived from the rendered viewport transform
+  // every time that transform changes.
   const [menu, setMenu] = useState<{
     fx: number;
     fy: number;
@@ -796,69 +797,58 @@ function CanvasInner({
   );
   const menuFocusRef = useRef<HTMLElement | null>(null);
 
-  const selectedMenuNodeId = useMemo(() => {
-    if (readOnly || stale) return null;
-    if (selectedId === null) return null;
-    if (selectedIds !== undefined && selectedIds.length > 1) return null;
-    const node = base.nodes.find((n) => n.data.nodeId === selectedId);
-    return node && node.type === "step" ? node.data.nodeId : null;
-  }, [readOnly, stale, selectedId, selectedIds, base]);
+  // The selected step's Duplicate/Delete menu (issue #66 contract): it opens
+  // ONLY on an explicit ask — right-click at the pointer, the ⋯ button on the
+  // selected step, or the keyboard (Shift+F10 / ContextMenu key). A plain left
+  // click just selects (the page opens the inspector); the menu no longer
+  // follows the selection. When the SELECTION ITSELF moves (the page's prop
+  // changes) anywhere but onto the menu's own step, the menu retires — but a
+  // menu opened for a FOCUSED step with an unchanged selection is not orphaned
+  // (that is the keyboard path above), and a right-click selects its step
+  // first, which must not close what it just opened.
+  const selectionKey = `${selectedId ?? ""}\u0000${JSON.stringify(selectedIds ?? null)}`;
+  const lastSelectionKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const changed =
+      lastSelectionKeyRef.current !== null && lastSelectionKeyRef.current !== selectionKey;
+    lastSelectionKeyRef.current = selectionKey;
+    if (!changed || menu === null) return;
+    const stillSelected =
+      menu.nodeId === selectedId ||
+      (selectedIds !== undefined && selectedIds.includes(menu.nodeId));
+    if (stillSelected) return;
+    setMenu(null);
+    setMenuScreen(null);
+    setMenuDocked(false);
+    setMenuCompact(false);
+    menuFocusRef.current = null;
+  }, [menu, selectionKey, selectedId, selectedIds]);
 
-  const selectedMenuBox = useMemo(() => {
-    const node = base.nodes.find((n) => n.data.nodeId === selectedId);
-    if (!node) return null;
-    return nodeBoxes[node.id] ?? null;
-  }, [base, nodeBoxes, selectedId]);
-
-  // Re-clicking the ALREADY-selected step re-opens the menu that a
-  // click-away closed: the selection prop never changes, so the effect below
-  // does not re-fire — the canvas answers the click itself.
-  const selectedMenuBoxRef = useRef(selectedMenuBox);
-  selectedMenuBoxRef.current = selectedMenuBox;
-  const reopenMenuFor = useCallback(
-    (id: string) => {
-      if (selectedMenuNodeId === null || id !== selectedMenuNodeId) return;
-      const box = selectedMenuBoxRef.current;
+  // Where the menu of `nodeId` opens from the node itself (⋯ button,
+  // keyboard): the design-1g slot at the step's RIGHT EDGE, top-aligned — the
+  // same anchor the plain-click menu used before #66 moved the verbs off the
+  // selection. `updateMenuScreen` re-derives the pane position (and falls back
+  // below/upward/one-row through `chooseNodeMenuPlacement`) from this box.
+  const openMenuForNode = useCallback(
+    (nodeId: string) => {
+      if (readOnly || stale) return;
+      const node = base.nodes.find((n) => n.data.nodeId === nodeId);
+      const box = node ? nodeBoxes[node.id] : null;
       if (!box) return;
+      const active = globalThis.document.activeElement;
+      menuFocusRef.current = active instanceof HTMLElement ? active : null;
       setMenu({
         fx: box.x + box.width,
         fy: box.y,
         fLeft: box.x,
         fBottom: box.y + box.height,
-        nodeId: id,
+        nodeId,
       });
     },
-    [selectedMenuNodeId],
+    [readOnly, stale, base, nodeBoxes],
   );
-  const reopenMenuRef = useRef(reopenMenuFor);
-  reopenMenuRef.current = reopenMenuFor;
-
-  useEffect(() => {
-    if (selectedMenuNodeId === null) {
-      setMenu(null);
-      setMenuScreen(null);
-      return;
-    }
-    const box = selectedMenuBox;
-    if (!box) return;
-    // Remember what had focus before the menu took it, so closing hands it back.
-    // `globalThis.document` — the component's own `document` prop shadows
-    // the global.
-    const active = globalThis.document.activeElement;
-    if (active instanceof HTMLElement) {
-      menuFocusRef.current = active;
-    }
-    // Design 1g: right of the node with an 8px gap, top-aligned with it. The
-    // box is stored at the node's RIGHT EDGE and BOTTOM; the 8px gap is added
-    // in SCREEN pixels so it stays 8px at any zoom.
-    setMenu({
-      fx: box.x + box.width,
-      fy: box.y,
-      fLeft: box.x,
-      fBottom: box.y + box.height,
-      nodeId: selectedMenuNodeId,
-    });
-  }, [selectedMenuNodeId, selectedMenuBox]);
+  const openMenuForNodeRef = useRef(openMenuForNode);
+  openMenuForNodeRef.current = openMenuForNode;
 
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -875,6 +865,33 @@ function CanvasInner({
     // click point, left-aligned there.
     setMenu({ fx: x, fy: y, fLeft: x, fBottom: y, nodeId });
   }, []);
+
+  // Issue #66's keyboard path: Shift+F10 (the platform context-menu chord)
+  // and the ContextMenu key open the same menu for the step the reader is on
+  // — the FOCUSED step if there is one (React Flow makes every step card a
+  // tab stop), else the single selected step. `Delete`/`Backspace` already
+  // removes the selection through the window handler below.
+  useEffect(() => {
+    if (readOnly || stale) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+      const focused = globalThis.document.activeElement;
+      const focusedStep =
+        focused?.closest?.("[data-step-node-id]")?.getAttribute("data-step-node-id") ?? null;
+      const ids =
+        selectedIds !== undefined && selectedIds.length > 0
+          ? selectedIds
+          : selectedId !== null
+            ? [selectedId]
+            : [];
+      const nodeId = focusedStep ?? (ids.length === 1 ? ids[0] : null);
+      if (nodeId === null) return;
+      event.preventDefault();
+      openMenuForNodeRef.current(nodeId);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [readOnly, stale, selectedId, selectedIds]);
 
   // Standard controlled pattern: apply every change (position, dimensions,
   // select, …) so the `nodes` state tracks React Flow's internal store —
@@ -943,13 +960,17 @@ function CanvasInner({
 
   const onNodeContextMenu: NodeMouseHandler<Node> = useCallback(
     (event, node) => {
-      if (readOnly) return;
+      if (readOnly || stale) return;
       const id = (node.data as { id?: string }).id;
       if (typeof id !== "string") return;
+      // Right-click selects its step (the inspector follows the menu's
+      // subject, like every other editor) BEFORE the menu opens, so the
+      // orphan-close effect knows the selection belongs to this menu.
+      onSelectRef.current?.(id);
       const flow = clientToFlow(event.clientX, event.clientY);
       openMenuAt(flow.x, flow.y, id);
     },
-    [readOnly, clientToFlow, openMenuAt],
+    [readOnly, stale, clientToFlow, openMenuAt],
   );
 
   const onDragOver = useCallback(
@@ -1091,9 +1112,17 @@ function CanvasInner({
           // Shift+click: React Flow multi-selects and reports via
           // onSelectionChange; the page's single-select would clobber it.
           if (shiftHeld.current) return;
-          reopenMenuRef.current(scope.nodeId);
+          // Issue #66: a plain click SELECTS — and nothing else. The
+          // Duplicate/Delete menu no longer follows the click; it answers
+          // right-click, the ⋯ on the selected step, and the keyboard only.
           onSelectRef.current?.(scope.nodeId);
         },
+        onMenu:
+          readOnly || stale
+            ? null
+            : () => {
+                openMenuForNodeRef.current(scope.nodeId);
+              },
         onAddAfter: b.data.terminal
           ? (kind: string) => onAddAfterRef.current?.(scope.nodeId, scope.scope, kind)
           : null,
@@ -1698,7 +1727,10 @@ function CanvasInner({
               userMovedRef.current = true;
               zoomOut({ duration: 200 });
             }}
-            className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+            // Issue #68: the hit box is 30×30 (was 28×26 — measured 29×27 at
+            // 1280); the painted − glyph stays 13px. `icon-hit` keeps the
+            // shared 30px floor for anyone who re-sizes the box later.
+            className="icon-hit h-[30px] w-[30px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
           >
             −
           </button>
@@ -1710,7 +1742,8 @@ function CanvasInner({
               userMovedRef.current = true;
               zoomIn({ duration: 200 });
             }}
-            className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+            // Issue #68: 30×30 hit box, painted + glyph unchanged.
+            className="icon-hit h-[30px] w-[30px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
           >
             +
           </button>
@@ -1722,7 +1755,7 @@ function CanvasInner({
               userMovedRef.current = false;
               safeFit();
             }}
-            className="h-[26px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill"
+            className="icon-hit h-[30px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill"
           >
             fit
           </button>

@@ -178,11 +178,15 @@ export function StepPicker({
       />
       {/* tabindex=0 keeps the scrollable region keyboard reachable (AXE
           scrollable-region-focusable); the search input still owns the
-          picker's keyboard contract. */}
+          picker's keyboard contract. Issue #67: React Flow's `nowheel` keeps a
+          wheel over this list scrolling the LIST (not the canvas), and
+          `nopan nodrag` keep a pointer-down inside the picker from dragging
+          the graph underneath — in every picker the canvas hosts (edge “+”,
+          terminal “+”, empty scope body, empty canvas). */}
       <div
         data-testid="step-picker-list"
         tabIndex={0}
-        className="max-h-72 overflow-y-auto outline-none"
+        className="nowheel nopan nodrag max-h-72 overflow-y-auto outline-none"
       >
         {featuredVisible && (
           <section aria-label="Start a new step" data-testid="step-picker-featured">

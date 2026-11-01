@@ -18,7 +18,7 @@ import {
 } from "@xyflow/react";
 import type { GraphEdge } from "../../lib/pipeline/graphDoc";
 import { EDGE_ADD_LABEL_OFFSET_PX, routeEdge, type EdgeAxis, type EdgeBox } from "./flowModel";
-import { useState, type CSSProperties } from "react";
+import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { StepPicker } from "./StepPicker";
 
 /** The endpoint geometry a routed edge is drawn from (see `routeEdge`). */
@@ -116,6 +116,7 @@ function edgePath(
 export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
   const { id, data } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
+  const groupRef = useRef<HTMLDivElement | null>(null);
   const [path, midX, midY] = edgePath(data, props);
   // The collision-checked anchor overrides the raw path midpoint: in the dense
   // top-to-bottom cut the midpoint can sit on a neighbour scope's box.
@@ -139,6 +140,34 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
   const anchorDx = labelX - midX;
   const anchorDy = labelY - midY;
   const pillOnLeft = anchorDx < -0.5;
+
+  // Issue #67: the open picker owns the outside world. It used to close ONLY
+  // through its own input's Escape (focus inside), so a click anywhere else on
+  // the page left it hanging over the graph. A capture-phase pointerdown
+  // OUTSIDE the edge's group closes it without swallowing the gesture (no
+  // preventDefault/stopPropagation — the click reaches its real target, the
+  // same contract as the canvas's node-menu click-away), and Escape closes it
+  // whether or not focus is inside. INSIDE the group is deliberately still
+  // inert: the edge's own “+” keeps b266061's one-click-one-step rule (the
+  // re-click reads `pickerOpen === true` and returns; nothing toggles
+  // close-then-reopen under it).
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onPointerDown = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest && groupRef.current?.contains(target)) return;
+      setPickerOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPickerOpen(false);
+    };
+    globalThis.document.addEventListener("pointerdown", onPointerDown, true);
+    globalThis.document.addEventListener("keydown", onKeyDown);
+    return () => {
+      globalThis.document.removeEventListener("pointerdown", onPointerDown, true);
+      globalThis.document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [pickerOpen]);
   const nearEdge = (side: boolean, top: number): CSSProperties =>
     side
       ? { left: -EDGE_ADD_LABEL_OFFSET_PX, top, transform: "translate(-100%, -50%)" }
@@ -164,6 +193,7 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
       />
       <EdgeLabelRenderer>
         <div
+          ref={groupRef}
           // While the picker is open this group must paint above EVERY other
           // edge's group (each group is a transform stacking context, so they
           // compete by z-index inside the edge-label renderer). A 44px "+"
@@ -217,7 +247,11 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
               over its own "+" square as well as every neighbour's. */}
           {interactive && pickerOpen && (
             <div
-              className="pointer-events-auto absolute z-50"
+              // Issue #67: React Flow's own classes — `nowheel` keeps the wheel
+              // over the picker's scrollable list scrolling the LIST instead of
+              // zooming the canvas, `nopan`/`nodrag` keep a pointer-down inside
+              // the picker from panning or dragging the graph underneath.
+              className="nowheel nopan nodrag pointer-events-auto absolute z-50"
               style={{ left: 0, top: 24, transform: "translate(-50%, -50%)" }}
             >
               <StepPicker
