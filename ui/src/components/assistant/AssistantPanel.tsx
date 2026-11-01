@@ -470,6 +470,29 @@ export function AssistantPanel({
 
   const send = () => submit(draft);
 
+  /**
+   * Issue #63: `Retry` under a failed ask re-sends those SAME words. The
+   * composer's duplicate copy (the assistant-lost-ask restore) leaves with
+   * the ask; a draft typed since is never clobbered — it stays put while
+   * the retry travels, and the failed bubble (still holding the words) is
+   * only re-marked `failed` if the retry fails too.
+   */
+  const retrySend = useCallback(
+    (messageId: string) => {
+      if (busy) return;
+      const message = messages.find((candidate) => candidate.id === messageId);
+      if (!message || message.payload.kind !== "user") return;
+      const text = message.payload.text.trim();
+      if (text.length === 0) return;
+      if (draft.trim() === text) {
+        submit(text);
+      } else {
+        watchSend(onSend(text), text);
+      }
+    },
+    [busy, draft, messages, onSend, submit, watchSend],
+  );
+
   const answerQuestion = useCallback(
     (label: string) => watchSend(onAnswerQuestion(label), label),
     [onAnswerQuestion, watchSend],
@@ -596,6 +619,7 @@ export function AssistantPanel({
           onConfirmApproval={onConfirmApproval}
           onDismissApproval={onDismissApproval}
           onGo={onGo}
+          onRetrySend={retrySend}
         />
       )}
       {busy ? (

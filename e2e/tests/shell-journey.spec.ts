@@ -1171,10 +1171,12 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         // (assistant-lost-ask), so the retry re-sends the label verbatim.
         lastSend = { via: "composer", text: label };
         await options.nth(best).click();
-        // The reply travels as a plain-text user message equal to the label, and
-        // the answer turn lands that row only when it completes — so the wait is
-        // bounded by the turn's own completion, then the label asserts verbatim.
-        await waitForAssistantTurn(page);
+        // Issue #63 moved this assertion EARLIER: the reply travels as a
+        // plain-text user message equal to the label, and the click shows
+        // it as the person's own transcript row immediately (an optimistic
+        // row the server's echo later replaces) — not only when the answer
+        // turn completes. Assert it verbatim at once, then bound the wait
+        // on the turn's own completion.
         await expect
           .poll(
             async () => {
@@ -1183,9 +1185,10 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
                 ? ((await msgs.nth(userBefore).textContent()) ?? "").trim()
                 : "";
             },
-            { timeout: 15_000 },
+            { timeout: 15_000, message: `the option click shows "${label}" as the person's message at once` },
           )
           .toBe(label);
+        await waitForAssistantTurn(page);
         followUps += 1;
         console.log(`journey f: question answered with "${label}" (turn ${followUps}/3)`);
         continue;

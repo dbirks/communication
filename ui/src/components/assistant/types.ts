@@ -136,12 +136,29 @@ export type AssistantMessagePayload =
   | AssistantApprovalRequestPayload
   | AssistantApprovalResponsePayload;
 
+/**
+ * Client-only marker for an optimistic row (issue #63): a send shows the
+ * person's ask as their own bubble the moment they click, BEFORE the POST
+ * settles. `pending` = in flight (the server has not taken the turn yet);
+ * `failed` = the turn was rejected — the bubble stays on screen with the
+ * honest error line under it and a Retry (a failed turn stores nothing
+ * server-side, ADR-0034, so the row is retired the next round-trip).
+ * Never present on server data.
+ */
+export interface AssistantMessageLocal {
+  state: "pending" | "failed";
+  /** The honest failure line, shown under the bubble when `failed`. */
+  error?: string | null;
+}
+
 /** One transcript row (`GET /assistant/conversations/{id}/messages`). */
 export interface AssistantMessage {
   id: string;
   kind: AssistantMessageKind;
   payload: AssistantMessagePayload;
   created_at: string;
+  /** Present only on the container's own optimistic rows (issue #63). */
+  local?: AssistantMessageLocal;
 }
 
 /**

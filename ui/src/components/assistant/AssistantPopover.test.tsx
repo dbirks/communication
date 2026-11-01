@@ -110,7 +110,9 @@ interface Stub {
  * gets the n-th response — the question test's first turn ends with a
  * question card, the option's turn is a plain one.
  */
-function stubFetch(postResponses: (() => Response) | (() => Response)[]): Stub {
+function stubFetch(
+  postResponses: (() => Response | Promise<Response>) | Array<() => Response | Promise<Response>>,
+): Stub {
   const queue = Array.isArray(postResponses) ? postResponses : [postResponses];
   const stub: Stub = { posted: [], created: 0 };
   let postCount = 0;
@@ -607,5 +609,188 @@ describe("a failed send never loses the ask (assistant-lost-ask)", () => {
     expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).value).toBe(
       "a draft ask",
     );
+  });
+});
+
+/** Issue #62: one menu open at a time. Opening Ask must close the shell's
+ * New menu; the keyboard paths have no outside pointerdown for it to react
+ * to, so the popover's open transitions broadcast `communication:
+ * close-other-menus`, which NewMenu listens for. */
+describe("menu-close coordination (issue #62)", () => {
+  const closed: Event[] = [];
+  const listener = (event: Event) => closed.push(event);
+  afterEach(() => {
+    window.removeEventListener("communication:close-other-menus", listener);
+    closed.length = 0;
+  });
+
+  it("broadcasts close-other-menus when Ask opens, and only when Ask opens", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    window.addEventListener("communication:close-other-menus", listener);
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-popover");
+    expect(closed).toHaveLength(1);
+
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true })));
+    // Already open: the chord hands over to the jump palette (NewMenu
+    // listens for palette-open too) — no second broadcast, and no popover
+    // re-open churn.
+    expect(closed).toHaveLength(1);
+  });
+
+  it("broadcasts close-other-menus when Ask opens over the ⌘K chord (the sidebar Ask press)", () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    window.addEventListener("communication:close-other-menus", listener);
+    renderPopover();
+    // Sidebar's openAsk(): a synthetic ⌘K keydown on the window.
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true })));
+    expect(closed).toHaveLength(1);
+    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
+  });
+});
+
+/**
+ * Issue #63: clicking a suggested question ("What needs me right now?")
+ * showed `thinking…` while the suggestions stayed on screen and the clicked
+ * question appeared nowhere. The new contract: the click puts the question
+ * into the transcript as the person's OWN message bubble immediately (the
+ * suggestions disappear with it), `thinking…` follows, and the reply lands
+ * under it. A failed request keeps the person's message on screen with the
+ * honest error line UNDER it and a `Retry` that sends the same words again.
+ */
+describe("a clicked suggestion becomes the person's message (issue #63)", () => {
+  /** The server echo of the asked text + one plain answer row. */
+  const echoTurn = (text: string) =>
+    json({
+      messages: [
+        {
+          id: "msg-user-echo",
+          kind: "user",
+          payload: { kind: "user", text, context: null },
+          created_at: "2026-07-07T00:00:03Z",
+        },
+        {
+          id: "msg-answer-1",
+          kind: "assistant",
+          payload: {
+            kind: "assistant",
+            turn_id: "t-9",
+            answer_markdown: "Nothing is blocked on you right now.",
+            links: [],
+            tool_calls: [],
+          },
+          created_at: "2026-07-07T00:00:04Z",
+        },
+      ],
+      next_cursor: null,
+    });
+
+  const modelTimeout = () =>
+    json(
+      {
+        type: "https://communication.dev/errors/assistant-degraded",
+        title: "Assistant unavailable",
+        status: 503,
+        detail: "the model endpoint returned 503",
+        degraded: "model_timeout",
+      },
+      503,
+    );
+
+  /** Open the popover over a FRESH conversation (empty transcript ⇒ the
+   * "FOR THIS PAGE" chips render) and return the first chip with its text. */
+  async function openToFreshSuggestions() {
+    renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-composer-input");
+    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    const [chip] = await screen.findAllByTestId("assistant-suggest");
+    return { chip, text: (chip.textContent ?? "").trim() };
+  }
+
+  it("the click hides the suggestions and shows the question as the person's bubble while thinking", async () => {
+    let settleTurn: (value: Response) => void = () => {};
+    const turn = new Promise<Response>((resolve) => {
+      settleTurn = resolve;
+    });
+    stubFetch(() => turn);
+    const { chip, text } = await openToFreshSuggestions();
+    fireEvent.click(chip);
+    // Same instant: the chips are gone and the clicked question is the
+    // person's own transcript row — exactly as if it had been typed+sent.
+    expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
+    expect(screen.queryByTestId("assistant-empty")).toBeNull();
+    expect(screen.getByTestId("assistant-msg-user").textContent).toBe(text);
+    // `thinking…` follows the bubble; the composer locks with the turn.
+    await screen.findByTestId("assistant-thinking");
+    expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    // The reply lands under it, and the local row is REPLACED by the
+    // server's echo — never duplicated.
+    await act(async () => {
+      settleTurn(echoTurn(text));
+    });
+    await waitFor(() => expect(screen.queryByTestId("assistant-thinking")).toBeNull());
+    expect(screen.getAllByTestId("assistant-msg-user")).toHaveLength(1);
+    expect(screen.getByTestId("assistant-msg-user").textContent).toBe(text);
+    expect((await screen.findByTestId("assistant-answer")).textContent).toContain(
+      "Nothing is blocked on you right now.",
+    );
+    // The transcript stays open: on the next empty-state there are no chips
+    // to click over a live conversation.
+    expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
+  });
+
+  it("a failed request keeps the message on screen, lines the error under it, and Retry sends the same words", async () => {
+    const stub = stubFetch([modelTimeout, () => echoTurn("x")]);
+    const { chip, text } = await openToFreshSuggestions();
+    fireEvent.click(chip);
+    const line = await screen.findByTestId("assistant-error");
+    // The person's message STAYS, with the line under it — not a banner at
+    // the top of the panel, and not the question lost off-screen.
+    const bubble = screen.getByTestId("assistant-msg-user");
+    expect(bubble.textContent).toContain(text);
+    expect(bubble.contains(line)).toBe(true);
+    expect(line.textContent).toContain("Your question was not sent — send it again.");
+    expect(screen.queryByTestId("assistant-thinking")).toBeNull();
+    // assistant-lost-ask still holds: the composer also holds the words.
+    await waitFor(() =>
+      expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).value).toBe(text),
+    );
+    fireEvent.click(screen.getByTestId("assistant-send-retry"));
+    await waitFor(() => expect(stub.posted).toHaveLength(2));
+    // Retry re-sends the SAME words to the SAME conversation.
+    expect(JSON.parse(stub.posted[1].body).text).toBe(text);
+    expect(stub.posted[1].conversationId).toBe(stub.posted[0].conversationId);
+    expect(stub.created).toBe(1);
+    // It landed: no error line, one bubble (the echo replaced the local row),
+    // and the reply under it.
+    await waitFor(() => expect(screen.queryByTestId("assistant-error")).toBeNull());
+    await waitFor(() => expect(screen.getAllByTestId("assistant-msg-user")).toHaveLength(1));
+    expect(await screen.findByTestId("assistant-answer")).toBeTruthy();
+  });
+
+  it("a typed ask gets the same treatment: bubble first, then thinking, then the reply", async () => {
+    let settleTurn: (value: Response) => void = () => {};
+    const turn = new Promise<Response>((resolve) => {
+      settleTurn = resolve;
+    });
+    stubFetch(() => turn);
+    const { text } = await openToFreshSuggestions();
+    const input = screen.getByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: "why is run 4f2a stuck?" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    expect(screen.getByTestId("assistant-msg-user").textContent).toBe("why is run 4f2a stuck?");
+    await act(async () => {
+      settleTurn(echoTurn("why is run 4f2a stuck?"));
+    });
+    await waitFor(() => expect(screen.getAllByTestId("assistant-msg-user")).toHaveLength(1));
+    // The untouched suggestion chip is still there for later (the empty
+    // state only ever renders with an empty transcript, so the live
+    // conversation shows none).
+    expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
+    expect(text).not.toBe("");
   });
 });

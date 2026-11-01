@@ -162,3 +162,80 @@ describe("MessageList", () => {
     expect(screen.queryAllByTestId("assistant-question-option").length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Issue #63: the ask lands in the transcript the moment it is sent, as an
+ * optimistic local row. While in flight it is a plain user bubble (the
+ * caller shows `thinking…`); a failed send KEEPS the bubble and answers it
+ * in place — the honest line under the person's own words, with the Retry
+ * that re-sends them (named by the row's id).
+ */
+describe("MessageList optimistic rows (issue #63)", () => {
+  const pendingAsk = (): AssistantMessage => ({
+    ...userMessage("What needs me right now?"),
+    local: { state: "pending" },
+  });
+  const failedAsk = (): AssistantMessage => ({
+    ...userMessage("What needs me right now?"),
+    local: {
+      state: "failed",
+      error: "The assistant could not answer. Your question was not sent — send it again.",
+    },
+  });
+
+  it("draws an in-flight ask as a plain user bubble — no line, no Retry", () => {
+    render(
+      <MessageList
+        messages={[pendingAsk()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const bubble = screen.getByTestId("assistant-msg-user");
+    expect(bubble.textContent).toBe("What needs me right now?");
+    expect(screen.queryByTestId("assistant-error")).toBeNull();
+    expect(screen.queryByTestId("assistant-send-retry")).toBeNull();
+  });
+
+  it("keeps a failed ask's bubble and puts the error line under it with a Retry", () => {
+    const onRetrySend = vi.fn();
+    render(
+      <MessageList
+        messages={[failedAsk()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+        onRetrySend={onRetrySend}
+      />,
+    );
+    const bubble = screen.getByTestId("assistant-msg-user");
+    // The person's words stay, and the line lives UNDER them — inside the
+    // bubble's own row, not floating at the top of the panel.
+    expect(bubble.textContent).toContain("What needs me right now?");
+    const error = screen.getByTestId("assistant-error");
+    expect(bubble.contains(error)).toBe(true);
+    expect(bubble.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(error.textContent).toContain("Your question was not sent — send it again.");
+    // The bubble's text comes first, the error after it.
+    expect(onRetrySend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("assistant-send-retry"));
+    expect(onRetrySend).toHaveBeenCalledWith("m-user");
+  });
+
+  it("a server row with no local marker renders exactly as before", () => {
+    render(
+      <MessageList
+        messages={[userMessage("echoed")]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("assistant-msg-user").textContent).toBe("echoed");
+    expect(screen.queryByTestId("assistant-error")).toBeNull();
+  });
+});

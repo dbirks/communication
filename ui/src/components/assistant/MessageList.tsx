@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { Button } from "../ds/Button";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
 import type { AssistantAnswerPayload, AssistantMessage } from "./types";
@@ -19,6 +20,12 @@ export interface MessageListProps {
   onDismissApproval: (messageId: string) => void;
   /** Perform the same-origin navigation a `Go ›` row points at. */
   onGo: (route: string) => void;
+  /**
+   * Issue #63: `Retry` under a failed send's own bubble — re-sends that
+   * message's text. Only optimistic local rows can fail, so only they
+   * render the line and the button.
+   */
+  onRetrySend?: (messageId: string) => void;
 }
 
 export function MessageList({
@@ -28,6 +35,7 @@ export function MessageList({
   onConfirmApproval,
   onDismissApproval,
   onGo,
+  onRetrySend,
 }: MessageListProps) {
   return (
     <div data-testid="assistant-messages" className="flex flex-col gap-[8px]">
@@ -47,6 +55,27 @@ export function MessageList({
                 >
                   {message.payload.text}
                 </div>
+                {/* Issue #63: a failed send keeps its bubble and answers it
+                    in place — the honest line sits under the person's own
+                    words, with the Retry that sends them again. */}
+                {message.local?.state === "failed" ? (
+                  <div className="flex flex-col items-end gap-[6px] pt-[6px]">
+                    <p
+                      data-testid="assistant-error"
+                      className="m-0 max-w-full rounded-[4px] border border-st-failed-pale-edge bg-st-failed-pale-body px-[8px] py-[5px] text-[11.5px] leading-[1.4] text-st-failed-pale-fg"
+                    >
+                      × {message.local.error ?? "The assistant could not answer."}
+                    </p>
+                    <Button
+                      variant="primary"
+                      compact
+                      data-testid="assistant-send-retry"
+                      onClick={() => onRetrySend?.(message.id)}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             );
           case "assistant":

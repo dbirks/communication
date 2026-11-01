@@ -404,3 +404,53 @@ describe("a failed send puts the ask back (assistant-lost-ask)", () => {
     expect(composerValue()).toBe("carried ask");
   });
 });
+
+/**
+ * Issue #63: a failed send keeps its bubble in the transcript with the
+ * error line and a `Retry` under it (rendered by MessageList); the panel
+ * owns what Retry does with the composer — the restored duplicate copy
+ * leaves with the ask, a draft typed since never gets clobbered, and the
+ * in-flight turn locks the button like it locks the composer.
+ */
+describe("Retry under a failed ask (issue #63)", () => {
+  const failedAsk = (text: string): AssistantMessage => ({
+    ...userMessage(text),
+    local: {
+      state: "failed",
+      error: "The assistant could not answer. Your question was not sent — send it again.",
+    },
+  });
+
+  it("Retry re-sends the failed row's words verbatim and clears the composer's copy", async () => {
+    const onSend = vi.fn(() => Promise.resolve(true));
+    renderPanel({ onSend, messages: [failedAsk("What needs me right now?")] });
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "What needs me right now?" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-send-retry"));
+    expect(onSend).toHaveBeenCalledWith("What needs me right now?");
+    await waitFor(() => expect(composerValue()).toBe(""));
+  });
+
+  it("Retry sends even from an empty composer, and a failing retry never eats a newer draft", async () => {
+    const onSend = vi.fn(() => Promise.resolve(false));
+    renderPanel({ onSend, messages: [failedAsk("What needs me right now?")] });
+    // The failure restored the words into the composer; the person rephrases.
+    fireEvent.change(screen.getByTestId("assistant-composer-input"), {
+      target: { value: "a different question" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-send-retry"));
+    expect(onSend).toHaveBeenCalledWith("What needs me right now?");
+    await flush();
+    // The retry failed again: the failed bubble still holds the words, and
+    // the person's own draft is untouched.
+    expect(composerValue()).toBe("a different question");
+  });
+
+  it("Retry is locked while a turn is in flight", () => {
+    const onSend = vi.fn();
+    renderPanel({ onSend, busy: true, messages: [failedAsk("again")] });
+    fireEvent.click(screen.getByTestId("assistant-send-retry"));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});

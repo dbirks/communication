@@ -19,6 +19,16 @@
  * question was not sent, and the person's words come back into the composer
  * — the popover, the expanded view and the palette's carried-over question
  * all behave the same way (assistant-lost-ask).
+ *
+ * Issue #63 changes where an ask lives while its turn is in flight: every
+ * send (composer, suggestion chip, question option, palette carry-over)
+ * lands in the transcript IMMEDIATELY as the person's own user bubble — the
+ * empty-state suggestions disappear on the click, `thinking…` follows the
+ * bubble, and the server's rows replace the local one when the turn
+ * settles. A failed turn keeps the bubble and answers it in place: the
+ * honest error line under the person's words, with a `Retry` that sends
+ * them again (the row is retired by the next round-trip — it was never
+ * stored, ADR-0034).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
@@ -47,6 +57,15 @@ const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
 
 /** The jump palette's open event; ⌘K while the assistant is up dispatches it. */
 const PALETTE_OPEN_EVENT = "communication:palette-open";
+
+/** One menu open at a time (issue #62): whenever the assistant opens over a
+ * chord or the palette's Ask row, the shell's other menus (New) close now —
+ * the keyboard paths have no outside pointerdown to close them. */
+const CLOSE_OTHER_MENUS_EVENT = "communication:close-other-menus";
+
+function closeOtherMenus(): void {
+  window.dispatchEvent(new CustomEvent(CLOSE_OTHER_MENUS_EVENT));
+}
 
 /** Open the assistant popover; `text`, when given, is sent as a question. */
 export function openAssistantPopover(text?: string): void {
@@ -272,12 +291,43 @@ export default function AssistantPopover() {
    *
    * `carriedOver` marks the palette's question, which never lived in the
    * composer: on failure this container hands it back through `composerRestore`.
+   *
+   * Issue #63: the ask shows as the person's own bubble the moment it is
+   * sent — an optimistic local row appended BEFORE the round-trip (so the
+   * empty-state suggestions disappear on a chip click and `thinking…`
+   * follows the words). On success the server's echoed rows replace the
+   * local row; on failure the bubble stays, carries the honest line under
+   * it, and offers `Retry` (see MessageList).
    */
+  const localSeq = useRef(0);
+
+  /** Issue #63: drop failed optimistic rows from an earlier attempt — they
+   * are not server rows (a failed turn stores nothing), and a fresh
+   * round-trip supersedes them. */
+  const retireFailedAsks = useCallback(() => {
+    setMessages((current) =>
+      current.some((message) => message.local?.state === "failed")
+        ? current.filter((message) => message.local?.state !== "failed")
+        : current,
+    );
+  }, []);
+
   const send = useCallback(
     (text: string, carriedOver = false): Promise<boolean> => {
       const trimmed = text.trim();
       if (trimmed.length === 0) return Promise.resolve(false);
       setSendError(null);
+      retireFailedAsks();
+      localSeq.current += 1;
+      const localId = `local-user-${localSeq.current}`;
+      const optimistic: AssistantMessage = {
+        id: localId,
+        kind: "user",
+        payload: { kind: "user", text: trimmed },
+        created_at: new Date().toISOString(),
+        local: { state: "pending" },
+      };
+      setMessages((current) => [...current, optimistic]);
       return (async () => {
         try {
           let id = conversationId;
@@ -291,16 +341,44 @@ export default function AssistantPopover() {
             conversationId: id,
             body: { text: trimmed, context: assistantContextOf(location.pathname) },
           });
-          setMessages((current) => [...current, ...result]);
+          setMessages((current) => {
+            const rest = current.filter((message) => message.id !== localId);
+            // The server echoes the user row first on success; if a turn
+            // returned none, keep the local bubble as a plain row so the
+            // ask that WAS sent never vanishes from the screen.
+            const head = result.some((message) => message.kind === "user")
+              ? []
+              : [{ ...optimistic, local: undefined }];
+            return [...rest, ...head, ...result];
+          });
           return true;
         } catch (error) {
-          setSendError(failureLine(error));
+          // Issue #63: the person's words stay on screen — the honest line
+          // answers them under the bubble, with a Retry. The composer
+          // still takes a rejected ask back (assistant-lost-ask: the panel
+          // restores the text when this resolves `false`, and carried-over
+          // questions come back through `composerRestore`).
+          const line = failureLine(error);
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === localId
+                ? { ...message, local: { state: "failed", error: line } }
+                : message,
+            ),
+          );
           if (carriedOver) handBackToComposer(trimmed);
           return false;
         }
       })();
     },
-    [conversationId, createConversation, handBackToComposer, post, location.pathname],
+    [
+      conversationId,
+      createConversation,
+      handBackToComposer,
+      post,
+      location.pathname,
+      retireFailedAsks,
+    ],
   );
 
   /** ui-newconv: `New conversation` — clear the panel; the next send
@@ -337,8 +415,12 @@ export default function AssistantPopover() {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        if (!open) setOpen(true);
-        else window.dispatchEvent(new CustomEvent(PALETTE_OPEN_EVENT));
+        if (!open) {
+          closeOtherMenus();
+          setOpen(true);
+        } else {
+          window.dispatchEvent(new CustomEvent(PALETTE_OPEN_EVENT));
+        }
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -348,6 +430,7 @@ export default function AssistantPopover() {
   // The palette's Ask row: open (and, with a question carried over, send it).
   useEffect(() => {
     const onOpen = (event: Event) => {
+      closeOtherMenus();
       setOpen(true);
       const text = (event as CustomEvent<string | undefined>).detail;
       if (typeof text === "string" && text.trim().length > 0) void send(text, true);
@@ -377,6 +460,9 @@ export default function AssistantPopover() {
   const answerApproval = (messageId: string, confirm: boolean) => {
     void (async () => {
       setSendError(null);
+      // Issue #63: a decision round-trip supersedes any ask still sitting
+      // failed on screen (it was never stored; the composer holds its text).
+      retireFailedAsks();
       try {
         let id = conversationId;
         if (!id) {
@@ -396,8 +482,10 @@ export default function AssistantPopover() {
     })();
   };
 
-  /** The failure line, identical in both sizes (assistant-lost-ask): the
-   * expanded view showed no line at all, so a lost ask there was silent. */
+  /** The decision-failure line, identical in both sizes (assistant-lost-ask).
+   * Issue #63 moved a failed QUESTION ask inline — its line now lives under
+   * the person's own bubble with the Retry — so this row carries the
+   * approval Round-Trip failures, which have no user bubble of their own. */
   const errorLine = sendError ? (
     <p
       data-testid="assistant-error"
