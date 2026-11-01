@@ -647,7 +647,14 @@ function CanvasInner({
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The pane the graph fills — observed so a dock drag/collapse refits. */
   const paneRef = useRef<HTMLDivElement | null>(null);
-  const base: FlowModel = useMemo(() => toFlow(model, document, layout), [model, document, layout]);
+  // `toFlow` also places every route label, and where it may put one depends on
+  // the "+" squares this canvas draws: an editor draws them (so a label seats
+  // beside its own "+"), a read-only or stale canvas draws none (the label keeps
+  // its seat centred on the line).
+  const base: FlowModel = useMemo(
+    () => toFlow(model, document, layout, { addButtons: !readOnly && !stale }),
+    [model, document, layout, readOnly, stale],
+  );
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [dragKind, setDragKind] = useState<string | null>(null);

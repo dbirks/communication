@@ -79,9 +79,11 @@ export interface FlowEdgeBase {
   labelTitle: string | null;
   /**
    * The collision-checked label anchor in absolute flow coordinates, or null
-   * when the edge has no label. The edges draw their pill there instead of
-   * the raw path midpoint, which in a dense top-to-bottom cut can sit on a
-   * neighbour group's box (label∩node in `.canvas-check.mjs`).
+   * when the edge has no label (or nothing cleared). The edges draw their pill
+   * centred there instead of at the raw path midpoint, which in a dense
+   * top-to-bottom cut can sit on a neighbour group's box (label∩node in
+   * `.canvas-check.mjs`) — and on the "+" that owns the midpoint (see
+   * `EDGE_ADD_LABEL_OFFSET_PX`).
    */
   labelX: number | null;
   labelY: number | null;
@@ -273,7 +275,17 @@ export function stepCardBox(box: { x: number; y: number; width: number; height: 
  * and an under-clearance is exactly the overlap the check exists to forbid. */
 const EDGE_LABEL_PX = { height: 24, padX: 12 };
 
-function labelBoxSize(label: string): { width: number; height: number } {
+/** The REAL box of the insert "+" the canvas draws centred on an insertable
+ * edge's routed midpoint (`edges.tsx`'s 44px target wearing a 22px circle). */
+export const EDGE_ADD_TARGET_PX = 44;
+/** How far out from the line's midpoint a label STARTS when it sits beside the
+ * "+": the target's edge plus slack, so a pill centred half its own width past
+ * this line cannot reach the target even if the width estimate runs thin. The
+ * design measures its 9px gap from the 22px CIRCLE (ink ends at +11); the hit
+ * box reaches +22, so the gap has to be taken off the box, not the ink. */
+export const EDGE_ADD_LABEL_OFFSET_PX = EDGE_ADD_TARGET_PX / 2 + 4;
+
+export function labelBoxSize(label: string): { width: number; height: number } {
   return {
     width: Math.ceil(measureText(label, 10, "mono")) + EDGE_LABEL_PX.padX * 2,
     height: EDGE_LABEL_PX.height,
@@ -424,6 +436,7 @@ export function toFlow(
   model: GraphModel,
   document: unknown,
   layout: LayoutOverrides = {},
+  opts: { addButtons?: boolean } = {},
 ): FlowModel {
   // A missing document (draft not read yet, broken YAML with no last-good)
   // yields an empty flow — the canvas then shows its empty-canvas affordance.
@@ -561,18 +574,9 @@ export function toFlow(
   // The anchor registry is rebuilt per draft: a stale anchor from a previous
   // toFlow call would float a label over the wrong place.
   labelAnchors.clear();
-  const edges: FlowEdgeBase[] = model.edges.map((edge) => {
-    // Pinned to the handles every step/scope node renders (hidden in
-    // read-only, present in the DOM for the geometry): without explicit
-    // handle ids React Flow drops the edge ("Couldn't create edge for
-    // source handle id: null") as soon as a node has more than one handle
-    // or the default resolution changes.
-    const guardedWhen = edge.kind === "guarded" ? (edgeWhen(model, edge) ?? null) : null;
-    const label = edge.kind === "error" ? "on error" : guardedWhen ? routeLabel(guardedWhen) : null;
-    // The boxes are computed here, where the whole graph's absolute boxes are
-    // in one map; the edge renderer only draws. A node a draft override has
-    // moved is re-boxed at the override's position (the override replaces
-    // the dagre position in `nodes` above, so routing follows the move).
+  // The endpoint geometry of one edge, from the boxes as the renderer will
+  // draw them (a moved node rides its override).
+  const geometryOf = (edge: GraphEdge) => {
     const boxOf = (fid: string, nodeId: string): EdgeBox | null => {
       const e = abs.get(fid);
       if (!e) return null;
@@ -586,17 +590,86 @@ export function toFlow(
       (abs.get(flowId(edge.scope, edge.to))?.node.isScope ?? false);
     const axis: EdgeAxis =
       sourceBox && targetBox ? edgeAxis(sourceBox, targetBox, touchesScope, direction) : "v";
+    return { sourceBox, targetBox, axis };
+  };
+  // Every "+" square the canvas is about to draw, at its edge's ROUTED
+  // midpoint — the same point `edges.tsx` centres its 44px target on. A route
+  // label is a painted box like any other, and a "+" owns the midpoint it sits
+  // on, so the label placement below clears these: its own (the label never
+  // prints over its own "+") and its siblings' (in a fan-out the sibling
+  // midpoints sit closer together than a wide label is long — observed on a
+  // `ok` / `needs attention` twin, where the 104px pill reached 42px into the
+  // neighbour's target). A read-only canvas draws no "+", so nothing to clear.
+  const addBoxes = new Map<string, AnchorBox>();
+  if (opts.addButtons !== false) {
+    for (const edge of model.edges) {
+      if (edge.kind === "error") continue;
+      const g = geometryOf(edge);
+      if (!g.sourceBox || !g.targetBox) continue;
+      const mid = routeEdge(g.sourceBox, g.targetBox, g.axis);
+      addBoxes.set(edge.id, {
+        x: mid.x - EDGE_ADD_TARGET_PX / 2,
+        y: mid.y - EDGE_ADD_TARGET_PX / 2,
+        width: EDGE_ADD_TARGET_PX,
+        height: EDGE_ADD_TARGET_PX,
+      });
+    }
+  }
+  const edges: FlowEdgeBase[] = model.edges.map((edge) => {
+    // Pinned to the handles every step/scope node renders (hidden in
+    // read-only, present in the DOM for the geometry): without explicit
+    // handle ids React Flow drops the edge ("Couldn't create edge for
+    // source handle id: null") as soon as a node has more than one handle
+    // or the default resolution changes.
+    const guardedWhen = edge.kind === "guarded" ? (edgeWhen(model, edge) ?? null) : null;
+    const label = edge.kind === "error" ? "on error" : guardedWhen ? routeLabel(guardedWhen) : null;
+    // The boxes are computed here, where the whole graph's absolute boxes are
+    // in one map; the edge renderer only draws. A node a draft override has
+    // moved is re-boxed at the override's position (the override replaces
+    // the dagre position in `nodes` above, so routing follows the move).
+    const { sourceBox, targetBox, axis } = geometryOf(edge);
     let labelX: number | null = null;
     let labelY: number | null = null;
     if (label && sourceBox && targetBox) {
-      const anchor = clearLabelAnchor(
-        label,
-        sourceBox,
-        targetBox,
-        [...abs.values()].map((box) => box),
-        direction,
-        axis,
-      );
+      // Everything the pill must miss: the drawn node boxes and every "+"
+      // square except its own (its own is handled by the seat below, which
+      // starts a full offset past the target's edge).
+      const blockers: AnchorBox[] = [
+        ...abs.values(),
+        ...[...addBoxes.entries()].filter(([id]) => id !== edge.id).map(([, box]) => box),
+      ];
+      const size = labelBoxSize(label);
+      const clears = (center: { x: number; y: number }) =>
+        blockers.every(
+          (box) =>
+            !boxHits(
+              {
+                x: center.x - size.width / 2,
+                y: center.y - size.height / 2,
+                width: size.width,
+                height: size.height,
+              },
+              box,
+            ),
+        );
+      // Design 1g: the "+" owns the line's midpoint, so the label sits BESIDE
+      // it — the design's own gap, taken off the 44px target rather than the
+      // 22px ink. Right first (the reading side), left when a neighbour's "+",
+      // a node or the pane edge stands there, and only then the old slide/spiral
+      // along the line.
+      const mid = routeEdge(sourceBox, targetBox, axis);
+      const seat = EDGE_ADD_LABEL_OFFSET_PX + size.width / 2;
+      // A read-only canvas draws no "+", so nothing owns the midpoint and the
+      // label keeps its seat centred on the line.
+      const beside =
+        opts.addButtons === false
+          ? undefined
+          : [
+              { x: mid.x + seat, y: mid.y },
+              { x: mid.x - seat, y: mid.y },
+            ].find(clears);
+      const anchor =
+        beside ?? clearLabelAnchor(label, sourceBox, targetBox, blockers, direction, axis);
       if (anchor) {
         labelX = anchor.x;
         labelY = anchor.y;

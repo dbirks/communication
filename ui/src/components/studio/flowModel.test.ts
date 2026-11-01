@@ -13,6 +13,8 @@ import {
   flowId,
   nearestEdge,
   pointSegmentDistance,
+  EDGE_ADD_TARGET_PX,
+  labelBoxSize,
   routeEdge,
   routeLabel,
   toFlow,
@@ -367,6 +369,104 @@ describe("routeEdge", () => {
     expect(path).toBe("M 150 52 L 150 150");
     expect(x).toBe(150);
     expect(y).toBe(101);
+  });
+});
+
+describe('the route label\'s seat beside the "+"', () => {
+  /**
+   * A fan-out: two guarded routes off one step, so the two midpoints — and the
+   * two "+" squares the canvas centres on them — sit side by side, closer
+   * together than the longer route label is wide. The pass-1 overlap rule
+   * (`e2e/emulator/reflow.ts`'s `findOverlaps`: no leaf text or control paints
+   * over another by more than 4px on BOTH axes) measures the REAL 44px target,
+   * so a label may not reach into one: not its own, and not its sibling's.
+   */
+  const fanoutYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: fanout-seat
+  description: two guarded routes
+spec:
+  policies:
+    maxConcurrentNodes: 1
+  nodes:
+    - id: plan
+      kind: model.chat
+      config:
+        model: m
+        messages:
+          - { role: user, content: hi }
+    - id: ship
+      kind: process.exec
+      dependsOn:
+        - plan
+      when: nodes.plan.outputs.text == 'ok'
+      config:
+        executable: sh
+        args: []
+    - id: hold
+      kind: process.exec
+      dependsOn:
+        - plan
+      when: nodes.plan.outputs.text == 'needs attention'
+      config:
+        executable: sh
+        args: []
+`;
+
+  it("seats every label clear of the " + " squares the canvas draws", () => {
+    const parsed = parseGraph(fanoutYaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const flow = toFlow(parsed.model, parseDocument(fanoutYaml).toJS(), {}, { addButtons: true });
+    const labelled = flow.edges.filter((e) => e.labelX !== null && e.sourceBox && e.targetBox);
+    expect(labelled.length).toBe(2);
+
+    /** The 44px square `edges.tsx` centres on the edge's routed midpoint. */
+    const addBox = (edge: (typeof flow.edges)[number]) => {
+      const mid = routeEdge(edge.sourceBox!, edge.targetBox!, edge.axis);
+      return {
+        x: mid.x - EDGE_ADD_TARGET_PX / 2,
+        y: mid.y - EDGE_ADD_TARGET_PX / 2,
+        width: EDGE_ADD_TARGET_PX,
+        height: EDGE_ADD_TARGET_PX,
+      };
+    };
+    const boxes = flow.edges.filter((e) => e.sourceBox && e.targetBox).map(addBox);
+    for (const edge of labelled) {
+      const mid = routeEdge(edge.sourceBox!, edge.targetBox!, edge.axis);
+      const size = labelBoxSize(String(edge.label));
+      const cx = edge.labelX ?? mid.x;
+      const cy = edge.labelY ?? mid.y;
+      const pill = {
+        x: cx - size.width / 2,
+        y: cy - size.height / 2,
+        width: size.width,
+        height: size.height,
+      };
+      for (const box of boxes) {
+        const dx = Math.min(pill.x + pill.width, box.x + box.width) - Math.max(pill.x, box.x);
+        const dy = Math.min(pill.y + pill.height, box.y + box.height) - Math.max(pill.y, box.y);
+        const paintsOver = dx > 0 && dy > 0;
+        expect(
+          paintsOver,
+          `label "${String(edge.label)}" overlaps a "+" box by ${dx.toFixed(1)}x${dy.toFixed(1)}px`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("draws no seat offset on a canvas without " + " squares", () => {
+    // The Run Workbench's read-only graph has no insert affordance, so nothing
+    // owns the midpoint and a label whose path point clears the nodes keeps it.
+    const parsed = parseGraph(fanoutYaml);
+    if (!parsed.ok) throw new Error("fixture must parse");
+    const flow = toFlow(parsed.model, parseDocument(fanoutYaml).toJS(), {}, { addButtons: false });
+    const shifted = flow.edges.filter((e) => e.labelX !== null);
+    for (const edge of shifted) {
+      const mid = routeEdge(edge.sourceBox!, edge.targetBox!, edge.axis);
+      expect([edge.labelX, edge.labelY]).toEqual([mid.x, mid.y]);
+    }
   });
 });
 

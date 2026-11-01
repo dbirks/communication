@@ -17,8 +17,8 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import type { GraphEdge } from "../../lib/pipeline/graphDoc";
-import { routeEdge, type EdgeAxis, type EdgeBox } from "./flowModel";
-import { useState } from "react";
+import { EDGE_ADD_LABEL_OFFSET_PX, routeEdge, type EdgeAxis, type EdgeBox } from "./flowModel";
+import { useState, type CSSProperties } from "react";
 import { StepPicker } from "./StepPicker";
 
 /** The endpoint geometry a routed edge is drawn from (see `routeEdge`). */
@@ -65,8 +65,25 @@ export type ErrorEdgeRender = RoutedGeometry & {
  */
 const addHit =
   "pointer-events-auto absolute grid h-[44px] w-[44px] place-items-center rounded-full bg-transparent text-sm leading-none outline-none focus-visible:ring-2 focus-visible:ring-accent";
+
 const addCircle =
   "grid h-[22px] w-[22px] place-items-center rounded-full border border-line-strong bg-surface text-ink-2 shadow-sm group-hover:border-accent group-hover:text-accent group-focus-within:border-accent group-focus-within:text-accent";
+
+/**
+ * Where the edge label copy sits: the "+" is a 44px target (`addHit`) centred on
+ * the line's midpoint and its label starts `EDGE_ADD_LABEL_OFFSET_PX` out from
+ * that midpoint. `flowModel` owns both numbers — the label seat it publishes is
+ * what places a route label beside the "+" — and they are re-exported here for
+ * the tests that read the rendered offsets back.
+ *
+ * The pass-1 overlap defect was the hover `insert step` word starting at +16,
+ * i.e. 6px INSIDE the invisible 44px target, which the checker measures as text
+ * painted over its own button (`1g inspector-edit` at 1280:
+ * `edge-add-survey-plan × span "insert step"`, 6×16px). The design's 9px gap is
+ * measured from the 22px CIRCLE (its ink stops at +11) while the hit box reaches
+ * +22, so the gap comes off the box: the word still reads as the "+" it names.
+ */
+export { EDGE_ADD_LABEL_OFFSET_PX, EDGE_ADD_TARGET_PX } from "./flowModel";
 
 /**
  * The path and its label point for one edge. When `toFlow` carried the
@@ -109,11 +126,31 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
   const preview = data.preview;
   const pillText = preview ? `Insert ${preview} here` : data.label;
 
-  // The "+" is centred ON the line at its midpoint; an edge label sits beside
-  // the line and never over the "+" — when the checked anchor landed on the
-  // line midpoint the button owns that spot, so the pill moves beside it.
-  const pillAtLine = Math.abs(labelX - midX) < 1 && Math.abs(labelY - midY) < 1;
-  const pillPos = pillAtLine ? { x: midX + 24, y: midY } : { x: labelX, y: labelY };
+  // The group's own origin IS the line midpoint (the group is drawn at
+  // `left: midX, top: midY`), so every child positions itself relative to the
+  // "+" and the collision-checked anchor arrives in absolute flow coordinates
+  // with the midpoint taken off it. `toFlow` seats a route label BESIDE the
+  // "+" (its own width and every other "+" square and node box cleared), so an
+  // anchored pill simply draws centred there. Without an anchor the seat is
+  // this file's own call: the "+" owns the midpoint on an editable canvas, so
+  // the pill — and the drag preview, whose text is wider than any label the
+  // seat was sized for — is anchored by its NEAR edge a full offset out; on a
+  // read-only canvas (no "+", nothing owns the midpoint) it centres on the line.
+  const anchorDx = labelX - midX;
+  const anchorDy = labelY - midY;
+  const pillOnLeft = anchorDx < -0.5;
+  const nearEdge = (side: boolean, top: number): CSSProperties =>
+    side
+      ? { left: -EDGE_ADD_LABEL_OFFSET_PX, top, transform: "translate(-100%, -50%)" }
+      : { left: EDGE_ADD_LABEL_OFFSET_PX, top, transform: "translate(0, -50%)" };
+  const pillStyle: CSSProperties =
+    preview !== null
+      ? nearEdge(pillOnLeft, anchorDy)
+      : data.labelAnchor
+        ? { left: anchorDx, top: anchorDy, transform: "translate(-50%, -50%)" }
+        : interactive
+          ? nearEdge(false, anchorDy)
+          : { left: anchorDx, top: anchorDy, transform: "translate(-50%, -50%)" };
 
   return (
     <>
@@ -195,11 +232,18 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
           )}
           {/* Design 1g: the "insert step" word sits immediately right of the
               "+" — single-line mono, no bubble, no wrap — and is hidden
-              until the "+" is hovered or focused. */}
+              until the "+" is hovered or focused (the a11y name is always on
+              the button). It starts a whole target width out from the line
+              (`EDGE_ADD_LABEL_OFFSET_PX`), so the word
+              never prints inside the "+"'s own 44px box: the design's 9px gap
+              is measured from the 22px circle, and the circle's ink stops at
+              +11 while its hit box reaches +22 — a real gap here would push the
+              word 30px+ off the circle and read as unrelated page text. */}
           {pillText === null && interactive && (
             <span
               className="pointer-events-none absolute whitespace-nowrap font-mono text-[10.5px] text-accent opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
-              style={{ left: 16, top: 0, transform: "translateY(-50%)" }}
+              style={{ left: EDGE_ADD_LABEL_OFFSET_PX, top: 0, transform: "translateY(-50%)" }}
+              data-testid={`edge-add-label-${data.edge.from}-${data.edge.to}`}
             >
               insert step
             </span>
@@ -210,7 +254,7 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
                 "pointer-events-none absolute rounded-full border bg-surface px-1.5 py-0.5 font-mono text-[10px] whitespace-nowrap text-ink-2 " +
                 (preview ? "border-accent text-accent" : "border-line")
               }
-              style={{ left: pillPos.x, top: pillPos.y, transform: "translate(-50%, -50%)" }}
+              style={pillStyle}
               data-testid={preview ? "insert-preview" : undefined}
               title={preview ? undefined : (data.labelTitle ?? pillText)}
             >

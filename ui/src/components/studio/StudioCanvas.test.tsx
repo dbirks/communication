@@ -26,6 +26,7 @@ import {
   type StudioCanvasProps,
 } from "./StudioCanvas";
 import { routeEdge, toFlow } from "./flowModel";
+import { EDGE_ADD_LABEL_OFFSET_PX, EDGE_ADD_TARGET_PX } from "./edges";
 
 class ResizeObserverStub {
   private readonly callback: (
@@ -120,6 +121,32 @@ const parsed = parseGraph(fixtureYaml);
 if (!parsed.ok) throw new Error(`fixture should parse: ${parsed.error}`);
 // Module-scope narrowing does not flow into closures: bind the model once.
 const fixtureModel = parsed.model;
+
+/** The same two steps with a GUARDED `plan→ship` route: the edge carries the
+ * design's label pill, which must dodge the "+" target the same way. */
+const guardedYaml = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: studio-guarded
+  description: one guarded route
+spec:
+  policies:
+    maxConcurrentNodes: 1
+  nodes:
+    - id: plan
+      kind: model.chat
+      config:
+        model: m
+        messages:
+          - { role: user, content: hi }
+    - id: ship
+      kind: process.exec
+      dependsOn: [plan]
+      when: nodes.plan.outputs.text == 'ok'
+      config:
+        executable: sh
+        args: []
+`;
 
 function renderCanvas(overrides: Partial<StudioCanvasProps> = {}) {
   const props: StudioCanvasProps = {
@@ -273,6 +300,45 @@ describe("StudioCanvas", () => {
     const afterCircle = after.querySelector("span[aria-hidden='true']");
     expect(afterCircle?.className).toContain("h-[22px]");
     expect(container.querySelector("[data-testid='add-after-plan']")).toBeNull();
+  });
+
+  it("keeps the edge label copy outside the “+” target box", async () => {
+    // The pass-1 overlap defect (`1g inspector-edit` at 1280:
+    // `edge-add-survey-plan × span "insert step"`, 6×16px): the hover word
+    // started 16px out from the line, i.e. INSIDE the invisible 44px target,
+    // so the emulated cursor's `findOverlaps` measured the word painting over
+    // its own button. jsdom lays nothing out and reports no rects, so the
+    // invariant is asserted on the offsets the browser positions by: the
+    // "+" is centred on the group origin, so any box that must sit beside it
+    // starts at or past the target's edge, and a label pill that crosses the
+    // target's band is anchored by its NEAR edge (`translate(0, -50%)`) so its
+    // own width can never reach back over it.
+    expect(EDGE_ADD_TARGET_PX).toBe(44);
+    expect(EDGE_ADD_LABEL_OFFSET_PX).toBeGreaterThan(EDGE_ADD_TARGET_PX / 2);
+    renderCanvas();
+    const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
+    const hover = screen.getByTestId("edge-add-label-plan-check") as HTMLElement;
+    // The word belongs to THIS button's group, and the box it must dodge is
+    // the full 44px target (the 22px circle is only the ink inside it).
+    expect(add.parentElement).toBe(hover.parentElement);
+    expect(add.className).toContain("h-[44px]");
+    // The design's word (1g): shown only on hover/focus, to the right, clear
+    // of the target.
+    expect(hover.textContent).toBe("insert step");
+    expect(hover.className).toContain("opacity-0");
+    expect(hover.className).toContain("group-hover:opacity-100");
+    expect(parseFloat(hover.style.left)).toBe(EDGE_ADD_LABEL_OFFSET_PX);
+
+    // A LABELED (guarded) edge has no hover word; its pill takes the same seat.
+    const guardedModel = parseGraph(guardedYaml);
+    expect(guardedModel.ok).toBe(true);
+    if (!guardedModel.ok) return;
+    renderCanvas({ model: guardedModel.model, document: parse(guardedYaml) });
+    const guardedAdd = (await screen.findByTestId("edge-add-plan-ship")) as HTMLElement;
+    const pill = guardedAdd.parentElement?.querySelector("span[title]") as HTMLElement;
+    expect(pill).toBeTruthy();
+    expect(pill.style.transform).toBe("translate(-50%, -50%)");
+    expect(parseFloat(pill.style.left)).toBeGreaterThan(EDGE_ADD_LABEL_OFFSET_PX / 2);
   });
 
   it("keeps the caption and the zoom/fit group in one flow band below the pane", () => {
