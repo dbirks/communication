@@ -11,10 +11,17 @@
  * (select), never per keystroke, so the YAML document only moves when the
  * user is done with a field. `readOnly` disables every widget and makes the
  * inspector display-only.
+ *
+ * With nothing selected the column is the WORKFLOW panel (design 1g): the
+ * workflow's name and run inputs. Two writes live there and they are not the
+ * same kind — the name is the workflow's own record (`PATCH /pipelines/{id}`,
+ * metadata only), the inputs are rows over the draft's `spec.inputs` JSON
+ * Schema (`runInputs.ts`), so the author never reads schema keywords to say
+ * what a run must be given.
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { isMap, parse, parseDocument, type YAMLMap } from "yaml";
-import { Link } from "react-router";
+import { Link, useParams } from "react-router";
 import {
   findNode,
   renameNode,
@@ -27,6 +34,9 @@ import { DEFERRED_KINDS, kindGlyph, kindWord } from "../../lib/pipeline/definiti
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "../../api/client";
 import { useAgentProfiles, useSystemSandbox } from "../../api/queries";
+import { usePipeline, useUpdatePipeline } from "../../api/pipelines";
+import type { Pipeline, PipelineUpdate } from "../../api/types";
+import { runInputFieldsOf } from "../m4/NewRunForm";
 import { nodeTemplateKeys, type NodeTemplate } from "../../api/nodeTemplates";
 import type { components } from "../../api/schema";
 
@@ -55,6 +65,7 @@ import {
   TextField,
   TextareaField,
 } from "./fields";
+import { readRunInputs, runInputNameProblem, writeRunInputs, type RunInputRow } from "./runInputs";
 import { Field, Input } from "../ds/Field";
 import { Button } from "../ds/Button";
 import { routes } from "../../lib/routes";
@@ -114,6 +125,286 @@ function setDocValue(text: string, path: string[], value: unknown): OpResult {
   return { ok: true, text: doc.toString(), changed: [path.join("/")] };
 }
 
+/**
+ * The NAME field of the workflow panel (design 1c/1e). It carries the
+ * workflow's display name — the words the index row, the workflow page header
+ * and the Studio breadcrumb print — never the slug: the pass-1 review found
+ * this field showing `emu-plan-pass-1-…`, which is the id, in a box labelled
+ * Name. The write is `PATCH /pipelines/{id}` (metadata only; a published
+ * revision stays immutable, ADR-0002), committed on blur/Enter like every
+ * other inspector field. The slug it was derived from prints under it as the
+ * read-only mono `id: …` line the workflow page header already uses.
+ */
+function WorkflowNameField({
+  pipelineId,
+  record,
+  fallbackName,
+  readOnly,
+}: {
+  pipelineId: string;
+  record: Pipeline | undefined;
+  /** What the document itself carries in `metadata.name` — shown while the
+   * workflow's own record has not been read (or could not be). */
+  fallbackName: string;
+  readOnly: boolean;
+}) {
+  const update = useUpdatePipeline();
+  const [problem, setProblem] = useState<string | null>(null);
+  const slug = record?.slug ?? fallbackName;
+  const current = record?.display_name && record.display_name !== "" ? record.display_name : slug;
+  const [draft, setDraft] = useState(current);
+  useEffect(() => setDraft(current), [current]);
+  // A name needs a workflow record to write to: no route id (a panel rendered
+  // outside the Studio route) or a failed read has no PATCH target, and a box
+  // that looks editable and silently drops the edit is the thing this review
+  // is about.
+  const canWrite = !readOnly && pipelineId !== "" && record !== undefined;
+  function commit() {
+    if (!canWrite || draft === current) return;
+    setProblem(null);
+    update.mutate(
+      { pipelineId, body: { display_name: draft.trim() } satisfies PipelineUpdate },
+      {
+        onError: (e: unknown) =>
+          setProblem(e instanceof ApiError ? `${e.status} ${e.message}` : String(e)),
+      },
+    );
+  }
+  return (
+    <Field
+      id="pipeline-name"
+      label="Name"
+      hint={
+        record === undefined
+          ? "read-only — this workflow's own record was not read, so this is the name its document carries"
+          : readOnly
+            ? "read-only — nothing here writes to the workflow"
+            : undefined
+      }
+    >
+      <Input
+        id="pipeline-name"
+        className="font-ui!"
+        disabled={!canWrite}
+        value={draft}
+        data-testid="insp-pipeline-name"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+        }}
+      />
+      <p className="font-mono text-[11px] text-muted" data-testid="insp-pipeline-id">
+        {`id: ${slug}`}
+      </p>
+      {update.isPending ? (
+        <p className="font-mono text-[11px] text-faint" data-testid="insp-pipeline-name-saving">
+          saving…
+        </p>
+      ) : null}
+      {problem !== null ? (
+        <p
+          className="font-mono text-[11px] text-st-failed-tag-fg"
+          data-testid="insp-pipeline-name-error"
+        >
+          {problem}
+        </p>
+      ) : null}
+    </Field>
+  );
+}
+
+/**
+ * What one declared input actually carries, said the way a person reads a form
+ * rather than the way JSON Schema spells it: the rows do not edit the type, so
+ * the row says what the run gets in words. `runInputFieldsOf` is the reader
+ * `New run`, the trigger dialogs and the hand-off dialog already build their
+ * controls from, so the kind named here is the control the author is looking
+ * at on the other side of Publish.
+ */
+const RUN_VALUE_WORDS: Record<string, string> = {
+  text: "a line of text",
+  textarea: "a block of text",
+  repository: "one of the project's repositories",
+  enum: "one choice from a list",
+  boolean: "a yes or a no",
+  integer: "a whole number",
+  number: "a number",
+};
+
+/**
+ * RUN INPUTS as rows (studio-inspector-r4). `spec.inputs` is a JSON Schema
+ * object, and the panel used to hand that object to the author as JSON —
+ * `"type": "object"`, `"required"`, `"minLength"` on screen where a person is
+ * deciding what a run must be given. Each input is now one row: its name in
+ * mono, what it is for in the UI font, and a `required` tick, with Add /
+ * Remove; every edit writes the same schema back (`runInputs.ts`). The
+ * readable shape of a row is the one `New run` builds its form from
+ * (`runInputFieldsOf`), so the author, the trigger dialog and the run form all
+ * say the same thing about one input. Raw JSON is reachable in the YAML tab —
+ * and, for a shape these rows would have to lie about, in the box below.
+ */
+function RunInputsEditor({
+  readOnly,
+  inputs,
+  commitValue,
+}: {
+  readOnly: boolean;
+  inputs: unknown;
+  commitValue: (value: unknown) => void;
+}) {
+  const model = readRunInputs(inputs);
+  const [rows, setRows] = useState<RunInputRow[]>(model?.rows ?? []);
+  const [problems, setProblems] = useState<Record<number, string>>({});
+  const sourceKey = JSON.stringify(model?.rows ?? null);
+  useEffect(() => {
+    const parsed = JSON.parse(sourceKey) as RunInputRow[] | null;
+    if (parsed === null) return;
+    setRows(parsed);
+    setProblems({});
+  }, [sourceKey]);
+  if (model === null) {
+    return (
+      <JsonField
+        id="pipeline-inputs-json"
+        label="Run inputs"
+        hint="This document's inputs are not a plain list of named values, so rows cannot edit them without changing what they declare — this box writes them as they are."
+        readOnly={readOnly}
+        value={inputs}
+        onCommit={commitValue}
+      />
+    );
+  }
+  // What a run of this input is handed, in the words the run form itself uses.
+  const root = model.root;
+  const declared = new Map(
+    (runInputFieldsOf({ spec: { inputs } }) ?? []).map((field) => [
+      field.name,
+      field.kind === "unsupported"
+        ? (field.unsupportedReason ?? "no declared type")
+        : (RUN_VALUE_WORDS[field.kind] ?? "a value"),
+    ]),
+  );
+
+  function write(next: RunInputRow[]) {
+    setRows(next);
+    const value = writeRunInputs({ rows: next, root });
+    if (JSON.stringify(value) === JSON.stringify(inputs)) return; // the document keeps its bytes
+    commitValue(value);
+  }
+
+  function commitCell(index: number, patch: Partial<RunInputRow>) {
+    const next = rows.map((row, i) => (i === index ? { ...row, ...patch } : row));
+    const problem = patch.name !== undefined ? runInputNameProblem(patch.name, next, index) : null;
+    if (problem !== null) {
+      setProblems((current) => ({ ...current, [index]: problem }));
+      return; // an unusable name never reaches the document
+    }
+    setProblems((current) => {
+      const copy = { ...current };
+      delete copy[index];
+      return copy;
+    });
+    write(next);
+  }
+
+  return (
+    <div className="space-y-[8px]" data-testid="insp-pipeline-inputs">
+      {rows.length === 0 ? (
+        <p className="text-[12.5px] text-muted" data-testid="insp-pipeline-inputs-none">
+          no inputs declared — a run of this workflow starts with nothing to fill in
+        </p>
+      ) : null}
+      {rows.map((row, index) => {
+        const line = `insp-pipeline-inputs-row-${index}`;
+        return (
+          <div
+            key={line}
+            className="space-y-[5px] rounded-[3px] border border-line bg-paper p-[8px]"
+            data-testid={line}
+          >
+            <TextField
+              className="min-w-0"
+              id={`pipeline-inputs-name-${index}`}
+              label="Input name"
+              hint={`the run reads it as {{ inputs.${row.name === "" ? "…" : row.name} }}`}
+              readOnly={readOnly}
+              mono
+              value={row.name}
+              placeholder="goal"
+              onCommit={(value) => commitCell(index, { name: value })}
+            />
+            <TextareaField
+              id={`pipeline-inputs-description-${index}`}
+              label="What it is for"
+              readOnly={readOnly}
+              mono={false}
+              rows={2}
+              value={row.description}
+              onCommit={(value) => commitCell(index, { description: value })}
+            />
+            {/* One line per input for the two facts that are not free text —
+                what the run gets (the declared type, in words: this is the
+                half the raw JSON Schema was trying to say) and whether it may
+                be missing — with the row's own Remove at the end of it. */}
+            <div className="flex items-center gap-[8px] border-t border-line-soft pt-[6px]">
+              <label
+                className="flex min-w-0 flex-1 items-center gap-[6px] font-mono text-[11px] text-ink"
+                data-testid={`${line}-row`}
+              >
+                <input
+                  type="checkbox"
+                  className="h-[14px] w-[14px] shrink-0 accent-ink"
+                  checked={row.required}
+                  disabled={readOnly}
+                  aria-label={`run input ${row.name === "" ? index + 1 : row.name} is required`}
+                  data-testid={`${line}-required`}
+                  onChange={(e) =>
+                    write(
+                      rows.map((r, i) => (i === index ? { ...r, required: e.target.checked } : r)),
+                    )
+                  }
+                />
+                required
+              </label>
+              <Button
+                variant="ghost"
+                className="shrink-0"
+                disabled={readOnly}
+                data-testid={`${line}-del`}
+                onClick={() => write(rows.filter((_, i) => i !== index))}
+              >
+                Remove
+              </Button>
+            </div>
+            <p className="font-mono text-[10.5px] text-faint" data-testid={`${line}-takes`}>
+              {`a run gets ${declared.get(row.name) ?? "a value"}`}
+            </p>
+            {problems[index] !== undefined ? (
+              <p
+                className="font-mono text-[11px] text-st-failed-tag-fg"
+                data-testid={`${line}-problem`}
+              >
+                {problems[index]}
+              </p>
+            ) : null}
+          </div>
+        );
+      })}
+      <Button
+        variant="secondaryPlain"
+        disabled={readOnly}
+        data-testid="insp-pipeline-inputs-add"
+        onClick={() =>
+          setRows([...rows, { name: "", description: "", required: false, schema: {} }])
+        }
+      >
+        Add input
+      </Button>
+    </div>
+  );
+}
+
 /** The workflow's own metadata panel: shown when nothing is selected on the
  * canvas. The product word is WORKFLOW (the design's 1g panel still read
  * PIPELINE, and the API route, the YAML `kind:` and the test ids keep that
@@ -127,7 +418,9 @@ function PipelinePanel({
   doc: Record<string, unknown>;
   apply: (op: (text: string) => OpResult) => void;
 }) {
-  const name = String(getAt(doc, ["metadata", "name"]) ?? "");
+  const { pipelineId = "" } = useParams();
+  const pipeline = usePipeline(pipelineId);
+  const docName = String(getAt(doc, ["metadata", "name"]) ?? "");
   const description = getAt(doc, ["metadata", "description"]);
   const inputs = getAt(doc, ["spec", "inputs"]);
   return (
@@ -135,39 +428,43 @@ function PipelinePanel({
       <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
         Workflow
       </p>
-      <Field
-        id="pipeline-name"
-        label="Name"
-        hint="read-only — the name is fixed when the workflow is created"
-      >
-        <Input
-          id="pipeline-name"
-          className="font-mono"
-          disabled
-          value={name}
-          data-testid="insp-pipeline-name"
-        />
-      </Field>
+      <WorkflowNameField
+        pipelineId={pipelineId}
+        record={pipeline.data}
+        fallbackName={docName}
+        readOnly={readOnly}
+      />
       <TextareaField
         id="pipeline-description"
         label="Description"
+        hint="one sentence on what this workflow does, shown on its page"
         readOnly={readOnly}
+        mono={false}
         value={description}
         onCommit={(v) => apply((t) => setDocValue(t, ["metadata", "description"], v || undefined))}
       />
-      {/* Pass-8 review, item 8: with nothing selected the inspector opened on
-          the document's own path — `SPEC.INPUTS` over a raw JSON schema. The
-          word a person uses for this is the inputs a RUN gets, so the field is
-          labelled `Run inputs` and one line says what the box is. The editor
-          itself stays (it is the only surface that edits `spec.inputs`). */}
-      <JsonField
-        id="pipeline-inputs"
-        label="Run inputs"
-        hint="What every run of this workflow must be given. This box is that list, written as JSON."
-        readOnly={readOnly}
-        value={inputs}
-        onCommit={(v) => apply((t) => setDocValue(t, ["spec", "inputs"], v))}
-      />
+      {/* The rows are the editor; the JSON Schema they write is only ever
+          printed as JSON in the YAML tab. One label for the group (the
+          Hand-to-workflow dialog's own section voice — a `<label htmlFor>`
+          here would name a control that is not one control), and the section's
+          sentence under the rows where the eye lands. */}
+      <section className="space-y-[6px]">
+        <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+          Run inputs
+        </span>
+        <RunInputsEditor
+          readOnly={readOnly}
+          inputs={inputs}
+          commitValue={(value) =>
+            apply((t) => setDocValue(t, ["spec", "inputs"], value ?? undefined))
+          }
+        />
+        <p className="text-[11.5px] leading-[16px] text-muted">
+          What every run of this workflow must be given. A step reads one as{" "}
+          <span className="font-mono">{`{{ inputs.goal }}`}</span>; the YAML tab is where the JSON
+          Schema itself shows.
+        </p>
+      </section>
     </div>
   );
 }

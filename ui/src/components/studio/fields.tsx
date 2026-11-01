@@ -33,6 +33,7 @@ export function TextField({
   onCommit,
   mono = false,
   placeholder,
+  className = "",
 }: {
   id: string;
   label: string;
@@ -42,12 +43,15 @@ export function TextField({
   onCommit: (value: string) => void;
   mono?: boolean;
   placeholder?: string;
+  /** Layout utilities for the field's own box (the run-input rows pass
+   * `min-w-0` so a long value cannot widen the inspector column). */
+  className?: string;
 }) {
   const current = show(value);
   const [draft, setDraft] = useState(current);
   useEffect(() => setDraft(current), [current]);
   return (
-    <Field id={id} label={label} hint={hint}>
+    <Field id={id} label={label} hint={hint} className={className}>
       <Input
         id={id}
         className={mono ? "font-mono" : undefined}
@@ -69,8 +73,10 @@ export function TextField({
   );
 }
 
-/** A UI-font textarea that grows with its content (design 1g: the prompt /
- * message-content fields are auto-growing textareas, never single-line). */
+/** A UI-font textarea that grows with its content (design 1g § 6: "Prompt
+ * fields are textareas in the UI font" — the pass-1 review of the Studio
+ * found this widget still overriding the ds `font-ui` default with mono, so
+ * every prompt read like a machine value). The size stays the inspector's. */
 export function AutoTextareaField({
   id,
   label,
@@ -95,9 +101,7 @@ export function AutoTextareaField({
       <Textarea
         id={id}
         rows={rows}
-        // Pass 2 #2/#4: inspector textareas read as values — mono 12px, the
-        // ds `font-ui` default overridden inline so the cascade cannot flip.
-        style={{ fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5 }}
+        style={{ fontSize: 12.5, lineHeight: 1.5 }}
         disabled={readOnly}
         value={draft}
         data-testid={`insp-${id}`}

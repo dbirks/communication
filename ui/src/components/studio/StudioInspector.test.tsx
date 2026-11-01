@@ -11,8 +11,8 @@
  * the "What should it do?" label and the "Also save as a reusable step"
  * POST to the node-template registry.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse, stringify } from "yaml";
@@ -119,7 +119,8 @@ const MockApiError = vi.hoisted(
     },
 );
 
-vi.mock("../../api/queries", () => ({
+vi.mock("../../api/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/queries")>()),
   useAgentProfiles: () => ({ data: { items: PROFILES } }),
   useSystemSandbox: () => ({ data: SANDBOX }),
 }));
@@ -155,12 +156,34 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/* The workflow record the NAME field reads and writes (routes 3 and 4). */
+const PIPELINE_ID = "01j-pipeline";
+const PIPELINE_SLUG = "feature-delivery";
+
+function pipelineRecord(path: string, displayName?: string): unknown {
+  if (path !== `/api/v1/pipelines/${PIPELINE_ID}`) throw new Error(`unexpected call ${path}`);
+  return {
+    id: PIPELINE_ID,
+    slug: PIPELINE_SLUG,
+    display_name: displayName ?? "Feature delivery",
+    archived: false,
+    revisions: [],
+  };
+}
+
 const BASE = {
   apiVersion: "communication.dev/v1alpha1",
   kind: "Pipeline",
   metadata: { name: "feature-delivery", description: "inspector fixture" },
   spec: {
-    inputs: { type: "object", properties: { repo: { type: "string" } } },
+    inputs: {
+      type: "object",
+      required: ["goal"],
+      properties: {
+        goal: { type: "string", minLength: 1, description: "What the plan should accomplish" },
+        repo: { type: "string" },
+      },
+    },
     nodes: [
       {
         id: "plan",
@@ -196,25 +219,41 @@ const BASE = {
 
 const baseYaml = () => stringify(BASE);
 
-function renderInspector(text: string, opts: { nodeId?: string | null; readOnly?: boolean } = {}) {
+function renderInspector(
+  text: string,
+  opts: { nodeId?: string | null; readOnly?: boolean; pipelineId?: string } = {},
+) {
   const parsed = parseGraph(text);
   if (!parsed.ok) throw new Error(`fixture is not a graph: ${parsed.error}`);
   const model = parsed.model;
   const ops: ((t: string) => OpResult)[] = [];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const inspector = (
+    <StudioInspector
+      model={model}
+      nodeId={opts.nodeId ?? null}
+      document={parse(text)}
+      text={text}
+      readOnly={opts.readOnly ?? false}
+      apply={(op) => {
+        ops.push(op);
+      }}
+    />
+  );
   const utils = render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <StudioInspector
-          model={model}
-          nodeId={opts.nodeId ?? null}
-          document={parse(text)}
-          text={text}
-          readOnly={opts.readOnly ?? false}
-          apply={(op) => {
-            ops.push(op);
-          }}
-        />
+      <MemoryRouter
+        initialEntries={
+          opts.pipelineId ? [`/workflows/${opts.pipelineId}/drafts/01j-draft`] : ["/"]
+        }
+      >
+        {opts.pipelineId ? (
+          <Routes>
+            <Route path="/workflows/:pipelineId/drafts/:draftId" element={inspector} />
+          </Routes>
+        ) : (
+          inspector
+        )}
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -377,11 +416,185 @@ describe("StudioInspector", () => {
     expect(getByTestId("insp-rename-error").textContent).toContain("already used");
   });
 
-  it("shows the pipeline panel when nothing is selected", () => {
-    renderInspector(baseYaml());
+  it("shows the workflow's own name, with the slug as a read-only id line", async () => {
+    apiFetchMock.mockImplementation(async (path: unknown) => pipelineRecord(String(path)));
+    renderInspector(baseYaml(), { pipelineId: PIPELINE_ID });
+    const name = (await screen.findByTestId("insp-pipeline-name")) as HTMLInputElement;
+    // The record arrives on its own tick; the field is only writable once it has.
+    await waitFor(() => expect(name.disabled).toBe(false));
+    // The review's defect: this box held `feature-delivery`, the id, because
+    // the panel only ever read the document's own `metadata.name`.
+    expect(name.value).toBe("Feature delivery");
+    expect(screen.getByTestId("insp-pipeline-id").textContent).toBe(`id: ${PIPELINE_SLUG}`);
     expect(screen.getByTestId("insp-pipeline")).toBeTruthy();
+  });
+
+  it("NAME writes the display name to the workflow, not to the draft", async () => {
+    apiFetchMock.mockImplementation(async (path: unknown, init?: unknown) => {
+      const call = init as { method?: string; json?: unknown } | undefined;
+      if (call?.method === "PATCH")
+        return pipelineRecord(String(path), (call.json as { display_name?: string }).display_name);
+      return pipelineRecord(String(path));
+    });
+    const { ops } = renderInspector(baseYaml(), { pipelineId: PIPELINE_ID });
+    const name = (await screen.findByTestId("insp-pipeline-name")) as HTMLInputElement;
+    await waitFor(() => expect(name.disabled).toBe(false));
+    fireEvent.change(name, { target: { value: "Feature delivery, take two" } });
+    fireEvent.blur(name);
+    await waitFor(() =>
+      expect(
+        apiFetchMock.mock.calls.some(
+          (call) => (call[1] as { method?: string } | undefined)?.method === "PATCH",
+        ),
+      ).toBe(true),
+    );
+    const patchCall = apiFetchMock.mock.calls.find(
+      (call) => (call[1] as { method?: string } | undefined)?.method === "PATCH",
+    ) as [string, { json: { display_name: string } }];
+    expect(patchCall[0]).toBe(`/api/v1/pipelines/${PIPELINE_ID}`);
+    expect(patchCall[1].json.display_name).toBe("Feature delivery, take two");
+    // A metadata write is not a draft edit: the YAML never moved.
+    expect(ops.length).toBe(0);
+  });
+
+  it("keeps NAME read-only with no workflow record to write to", () => {
+    renderInspector(baseYaml());
+    expect((screen.getByTestId("insp-pipeline-name") as HTMLInputElement).disabled).toBe(true);
+    // The document's own name is still on screen, and it is labelled as such.
     expect((screen.getByTestId("insp-pipeline-name") as HTMLInputElement).value).toBe(
       "feature-delivery",
     );
+    expect(screen.getByTestId("insp-pipeline-id").textContent).toBe("id: feature-delivery");
+  });
+
+  it("reads the run inputs as rows, not as the document's JSON Schema", () => {
+    const { getByTestId } = renderInspector(baseYaml());
+    const rows = getByTestId("insp-pipeline-inputs");
+    expect(rows.textContent).not.toContain('"type"');
+    expect(rows.textContent).not.toContain("minLength");
+    expect(rows.textContent).not.toContain("properties");
+    // One row per declared input, in the document's own order, carrying the
+    // sentence the author wrote for it.
+    expect((getByTestId("insp-pipeline-inputs-name-0") as HTMLInputElement).value).toBe("goal");
+    expect((getByTestId("insp-pipeline-inputs-description-0") as HTMLTextAreaElement).value).toBe(
+      "What the plan should accomplish",
+    );
+    expect((getByTestId("insp-pipeline-inputs-row-0-required") as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect((getByTestId("insp-pipeline-inputs-name-1") as HTMLInputElement).value).toBe("repo");
+    expect((getByTestId("insp-pipeline-inputs-row-1-required") as HTMLInputElement).checked).toBe(
+      false,
+    );
+    expect(getByTestId("insp-pipeline-inputs-add")).toBeTruthy();
+  });
+
+  it("adds an input and writes the same schema back", () => {
+    const text = baseYaml();
+    const { getByTestId, ops } = renderInspector(text);
+    fireEvent.click(getByTestId("insp-pipeline-inputs-add"));
+    const name = getByTestId("insp-pipeline-inputs-name-2") as HTMLInputElement;
+    fireEvent.change(name, { target: { value: "ticket" } });
+    fireEvent.blur(name);
+    expect(ops.length).toBe(1);
+    const res = ops[0](text);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const written = parse(res.text) as { spec: { inputs: Record<string, unknown> } };
+    expect(written.spec.inputs.properties).toEqual({
+      goal: { type: "string", minLength: 1, description: "What the plan should accomplish" },
+      repo: { type: "string" },
+      ticket: { type: "string" },
+    });
+    expect(written.spec.inputs.required).toEqual(["goal"]); // the new row is not required
+  });
+
+  it("edits an input's sentence and keeps the keywords the rows do not show", () => {
+    const text = baseYaml();
+    const { getByTestId, ops } = renderInspector(text);
+    const description = getByTestId("insp-pipeline-inputs-description-0") as HTMLTextAreaElement;
+    fireEvent.change(description, { target: { value: "What the run should achieve" } });
+    fireEvent.blur(description);
+    expect(ops.length).toBe(1);
+    const res = ops[0](text);
+    if (!res.ok) throw new Error("the op refused: " + ("error" in res ? res.error : ""));
+    const written = parse(res.text) as {
+      spec: { inputs: { properties: Record<string, Record<string, unknown>> } };
+    };
+    expect(written.spec.inputs.properties.goal).toEqual({
+      type: "string",
+      minLength: 1,
+      description: "What the run should achieve",
+    });
+  });
+
+  it("removes an input from both properties and required", () => {
+    const text = baseYaml();
+    const { getByTestId, ops } = renderInspector(text);
+    fireEvent.click(getByTestId("insp-pipeline-inputs-row-0-del"));
+    expect(ops.length).toBe(1);
+    const res = ops[0](text);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const written = parse(res.text) as { spec: { inputs: Record<string, unknown> } };
+    expect(written.spec.inputs.properties).toEqual({ repo: { type: "string" } });
+    expect(written.spec.inputs.required).toBeUndefined();
+  });
+
+  it("refuses an input name a run could not select, and leaves the document alone", () => {
+    const { getByTestId, ops } = renderInspector(baseYaml());
+    const name = getByTestId("insp-pipeline-inputs-name-1") as HTMLInputElement;
+    fireEvent.change(name, { target: { value: "Bad Name" } });
+    fireEvent.blur(name);
+    expect(getByTestId("insp-pipeline-inputs-row-1-problem").textContent).toContain(
+      "lower-case letter",
+    );
+    expect(ops.length).toBe(0);
+  });
+
+  it("refuses two inputs with one name", () => {
+    const { getByTestId, ops } = renderInspector(baseYaml());
+    const name = getByTestId("insp-pipeline-inputs-name-1") as HTMLInputElement;
+    fireEvent.change(name, { target: { value: "goal" } });
+    fireEvent.blur(name);
+    expect(getByTestId("insp-pipeline-inputs-row-1-problem").textContent).toContain(
+      "cannot share a name",
+    );
+    expect(ops.length).toBe(0);
+  });
+
+  it("says there is nothing to fill in when the workflow declares no inputs", () => {
+    const { getByTestId } = renderInspector(
+      stringify({
+        apiVersion: "communication.dev/v1alpha1",
+        kind: "Pipeline",
+        metadata: { name: "feature-delivery" },
+        spec: {
+          inputs: { type: "object", properties: {} },
+          nodes: [{ id: "plan", kind: "model.chat", config: { model: "gpt-x" } }],
+        },
+      }),
+    );
+    expect(getByTestId("insp-pipeline-inputs-none").textContent).toContain("no inputs declared");
+  });
+
+  it("keeps the JSON box for an inputs shape the rows would have to lie about", () => {
+    const { getByTestId } = renderInspector(
+      stringify({
+        apiVersion: "communication.dev/v1alpha1",
+        kind: "Pipeline",
+        metadata: { name: "feature-delivery" },
+        spec: {
+          inputs: {
+            type: "object",
+            properties: { goal: { oneOf: [{ type: "string" }, { type: "integer" }] } },
+          },
+          nodes: [{ id: "plan", kind: "model.chat", config: { model: "gpt-x" } }],
+        },
+      }),
+    );
+    // The rule is never a hidden field: this shape is not a list of named
+    // values, so the box that writes it verbatim stays.
+    expect(getByTestId("insp-pipeline-inputs-json")).toBeTruthy();
   });
 });
