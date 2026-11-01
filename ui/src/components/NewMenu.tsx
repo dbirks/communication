@@ -17,6 +17,20 @@ const MENU_ITEMS = [
   { id: "run", label: "Start run" },
 ] as const;
 
+/** Keep in sync with the menu's `w-[180px]` class: the clamp math runs
+ * before layout in jsdom (and every paint elsewhere), where measuring the
+ * open menu's box is unreliable. */
+const MENU_WIDTH_PX = 180;
+
+/** Smallest gap the clamped menu keeps from either viewport edge. */
+const VIEWPORT_MARGIN_PX = 8;
+
+/** AssistantPopover dispatches the first when it opens over a chord (the
+ * Ask buttons' synthetic ⌘K); CommandPalette dispatches the second. One
+ * menu open at a time (issue #62). */
+const CLOSE_OTHER_MENUS_EVENT = "communication:close-other-menus";
+const PALETTE_OPEN_EVENT = "communication:palette-open";
+
 type MenuItemId = (typeof MENU_ITEMS)[number]["id"];
 
 export default function NewMenu() {
@@ -29,6 +43,53 @@ export default function NewMenu() {
   useLayoutEffect(() => {
     if (!open) return;
     menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [open]);
+
+  // Anchor to the trigger's LEFT edge (the old `right-0` started the menu
+  // ~36px left of the button's own left edge — off-viewport in the phone
+  // drawer, measured live at issue #62). Shift back left only far enough to
+  // keep the right edge (and, at the other extreme, the left edge) inside
+  // the viewport.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const menu = menuRef.current;
+    const trigger = triggerRef.current;
+    if (!menu || !trigger) return;
+    menu.style.left = "0px";
+    const triggerRect = trigger.getBoundingClientRect();
+    const rightOverflow =
+      triggerRect.left + MENU_WIDTH_PX - (window.innerWidth - VIEWPORT_MARGIN_PX);
+    if (rightOverflow > 0) {
+      const maxShift = Math.max(0, triggerRect.left - VIEWPORT_MARGIN_PX);
+      const shift = Math.min(rightOverflow, maxShift);
+      if (shift > 0) menu.style.left = `${-shift}px`;
+    }
+  }, [open]);
+
+  // Clicking anywhere outside — the Ask box, another menu's trigger, the
+  // page — closes the menu, like every other menu in the app (#62).
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
+
+  // One menu open at a time: when the assistant popover or the jump palette
+  // opens, New gets out of the way immediately (#62).
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener(CLOSE_OTHER_MENUS_EVENT, close);
+    window.addEventListener(PALETTE_OPEN_EVENT, close);
+    return () => {
+      window.removeEventListener(CLOSE_OTHER_MENUS_EVENT, close);
+      window.removeEventListener(PALETTE_OPEN_EVENT, close);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -92,7 +153,7 @@ export default function NewMenu() {
             role="menu"
             aria-label="New"
             data-testid="new-menu-list"
-            className="absolute right-0 top-full z-40 mt-1 w-[180px] rounded-[3px] border border-line-strong bg-surface py-1 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
+            className="absolute left-0 top-full z-40 mt-1 w-[180px] rounded-[3px] border border-line-strong bg-surface py-1 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
           >
             {MENU_ITEMS.map((item) => (
               <button

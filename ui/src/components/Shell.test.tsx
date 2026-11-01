@@ -8,7 +8,7 @@
  * mocked at the fetch boundary; the page content under the shell is not the
  * subject here.
  */
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { meFixture, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
@@ -126,5 +126,24 @@ describe("the Ask box lives in the shell's header, never over the page", () => {
     expect(header!.querySelector('[data-testid="sidebar-open"]')).toBeTruthy();
     expect(box.closest('[class*="fixed"]')).toBeNull();
     expect(box.closest("main")).toBeNull();
+  });
+});
+
+describe("the phone header brand is a home link (issue #61)", () => {
+  it("wraps the mark and wordmark in a non-selectable, non-draggable link", async () => {
+    renderApp({ path: "/inbox", routes: signedIn });
+    const header = (await screen.findByTestId("ask-box", undefined, { timeout: READ_MS })).closest(
+      "header",
+    );
+    expect(header).toBeTruthy();
+    const brand = within(header!).getByTestId("brand-home");
+    expect(brand.tagName).toBe("A");
+    expect(brand.getAttribute("href")).toBe("/");
+    expect(brand.getAttribute("draggable")).toBe("false");
+    expect(brand.className).toContain("select-none");
+    expect(brand.textContent).toContain("Communication");
+    const mark = within(brand).getByRole("img", { name: "Communication" });
+    expect(mark.className).toContain("select-none");
+    expect(mark.getAttribute("draggable")).toBe("false");
   });
 });

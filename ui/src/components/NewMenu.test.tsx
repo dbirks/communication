@@ -9,7 +9,7 @@
  * actual POST to the project the picker selected. The API is mocked at the
  * fetch boundary.
  */
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
 import {
@@ -197,5 +197,90 @@ describe("NewMenu", () => {
     fireEvent.click(screen.getByTestId("new-menu-run"));
     await screen.findByTestId("projects-heading", undefined, { timeout: READ_MS });
     expect(screen.queryByTestId("new-menu-list")).toBeNull();
+  });
+});
+
+/** Issue #62: the menu anchors to the trigger's LEFT edge (the old
+ * right-alignment started it off the left edge of a 390px viewport —
+ * measured live: menuBox.left = -21 in the phone drawer), shifts back only
+ * when it would overflow the right edge, and never stands beside another
+ * open surface (opening Ask left New open before the fix — measured live:
+ * new-menu-list and assistant-popover both on screen). */
+describe("NewMenu placement and one-menu-at-a-time (issue #62)", () => {
+  /** Place the trigger at `left` in a `width`-wide viewport for the clamp
+   * math (jsdom lays nothing out, so the rect is the only input). */
+  function placeTrigger(left: number, width: number) {
+    const trigger = screen.getByTestId("new-menu");
+    trigger.getBoundingClientRect = () =>
+      ({
+        left,
+        right: left + 48,
+        width: 48,
+        height: 26,
+        top: 0,
+        bottom: 26,
+        x: left,
+        y: 0,
+      }) as DOMRect;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: width,
+    });
+  }
+
+  it("anchors the menu to the trigger's left edge when nothing overflows", async () => {
+    renderApp({ path: "/", routes: routes() });
+    await screen.findByTestId("new-menu");
+    placeTrigger(10, 1280);
+    fireEvent.click(screen.getByTestId("new-menu"));
+    const menu = await screen.findByTestId("new-menu-list", undefined, { timeout: READ_MS });
+    expect(menu.className).toContain("left-0");
+    expect(menu.style.left).toBe("0px");
+  });
+
+  it("shifts the menu back inside the viewport only as far as the right edge needs", async () => {
+    renderApp({ path: "/", routes: routes() });
+    await screen.findByTestId("new-menu");
+    // 250 + the 180px menu would end at 430 in a 300px viewport. With the
+    // 8px margin the menu may move at most 250 + 180 - (300 - 8) = 138px
+    // left; its right edge then sits exactly on the margin.
+    placeTrigger(250, 300);
+    fireEvent.click(screen.getByTestId("new-menu"));
+    const menu = await screen.findByTestId("new-menu-list", undefined, { timeout: READ_MS });
+    expect(menu.style.left).toBe("-138px");
+  });
+
+  it("closes on a pointerdown outside the menu (clicking Ask or another menu's trigger)", async () => {
+    renderApp({ path: "/", routes: routes() });
+    await openMenu();
+    // Inside the menu: stays open.
+    fireEvent.pointerDown(screen.getByTestId("new-menu-conversation"));
+    expect(screen.queryByTestId("new-menu-list")).not.toBeNull();
+    // Outside: closes.
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.queryByTestId("new-menu-list")).toBeNull());
+  });
+
+  it("closes the moment the assistant popover or the jump palette opens", async () => {
+    renderApp({ path: "/", routes: routes() });
+    await openMenu();
+    act(() => window.dispatchEvent(new CustomEvent("communication:close-other-menus")));
+    await waitFor(() => expect(screen.queryByTestId("new-menu-list")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("new-menu"));
+    await screen.findByTestId("new-menu-list", undefined, { timeout: READ_MS });
+    act(() => window.dispatchEvent(new CustomEvent("communication:palette-open")));
+    await waitFor(() => expect(screen.queryByTestId("new-menu-list")).toBeNull());
+  });
+
+  it("clicking Ask closes New and opens the assistant popover (one menu at a time)", async () => {
+    renderApp({ path: "/", routes: routes() });
+    await openMenu();
+    const ask = await screen.findByTestId("ask-sidebar", undefined, { timeout: READ_MS });
+    fireEvent.pointerDown(ask);
+    fireEvent.click(ask);
+    await waitFor(() => expect(screen.queryByTestId("new-menu-list")).toBeNull());
+    await screen.findByTestId("assistant-popover", undefined, { timeout: READ_MS });
   });
 });

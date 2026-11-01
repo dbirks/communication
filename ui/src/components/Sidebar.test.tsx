@@ -68,6 +68,25 @@ function baseRoutes({ runs, prefs, extra = [] }: StubOverrides = {}): RouteStub[
 }
 
 describe("the sidebar tree (the default placement)", () => {
+  // Issue #61: the brand (mark + wordmark) is a logo, not text — a link
+  // home that never highlights or drags. (Centring of the mark's box with
+  // the wordmark's is a layout property, verified live in the browser at
+  // 1280 and 390; jsdom lays nothing out.)
+  it("brands the column a non-selectable, non-draggable home link", async () => {
+    renderApp({ path: "/", routes: baseRoutes() });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const brand = within(sidebar).getByTestId("brand-home");
+    expect(brand.tagName).toBe("A");
+    expect(brand.getAttribute("href")).toBe("/");
+    expect(brand.getAttribute("draggable")).toBe("false");
+    expect(brand.className).toContain("select-none");
+    expect(brand.textContent).toContain("Communication");
+    // The C mark inside carries its own select-none/draggable guard.
+    const mark = within(brand).getByRole("img", { name: "Communication" });
+    expect(mark.className).toContain("select-none");
+    expect(mark.getAttribute("draggable")).toBe("false");
+  });
+
   it("lists the cross-project nav with the current row marked and the library rows", async () => {
     renderApp({ path: "/", routes: baseRoutes() });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });

@@ -15,12 +15,14 @@ export interface MarkProps {
 
 export function Mark({ size = 28, className = "", title }: MarkProps) {
   const inset = Math.round(size / 10);
+  const fontSize = Math.round(size * 0.61);
   return (
     <span
-      className={`relative inline-block shrink-0 ${className}`}
+      className={`relative inline-block shrink-0 select-none ${className}`}
       style={{ width: size, height: size }}
       role="img"
       aria-label={title ?? "Communication"}
+      draggable={false}
     >
       <span
         aria-hidden="true"
@@ -32,10 +34,17 @@ export function Mark({ size = 28, className = "", title }: MarkProps) {
         className="absolute inset-0 flex items-center justify-center rounded-[3px] border border-ink bg-surface font-mark text-ink"
         // The C sits optically centered: line-height 1 + cap/alphabetic trim
         // (text-box is a progressive enhancement; the fallback stays close).
+        // Kaisei Opti's `C` glyph ink hangs ~1px below its trimmed box
+        // (measured live at #61: ink center 13.5 vs 12.5 in a 26px box, so
+        // the mark read low against the wordmark); half of this bottom
+        // padding lifts the glyph back to the box's vertical centre — the
+        // bordered box itself never moves, keeping the mark's box centre
+        // within 0.5px of the wordmark's in every row that uses it.
         style={{
-          fontSize: Math.round(size * 0.61),
+          fontSize,
           lineHeight: 1,
           textBox: "trim-both cap alphabetic",
+          paddingBottom: Math.round(fontSize / 8),
         }}
       >
         C

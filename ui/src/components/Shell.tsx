@@ -122,7 +122,7 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
             aria-label="Communication"
             draggable={false}
             data-testid="brand-home"
-            className="flex min-w-0 select-none items-center gap-2"
+            className="flex min-w-0 select-none items-center gap-2 text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
           >
             <Mark size={22} />
             <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>

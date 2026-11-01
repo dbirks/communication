@@ -26,7 +26,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { NavLink, useNavigate } from "react-router";
+import { Link, NavLink, useNavigate } from "react-router";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
 import { useLayoutPrefs } from "../lib/prefs";
@@ -579,8 +579,19 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
       className="flex h-full w-[240px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-ink bg-surface px-[10px] py-3 text-ink"
     >
       <div className="flex items-center gap-[9px] px-1">
-        <Mark size={26} />
-        <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold">Communication</span>
+        {/* The brand is a logo, not text: it links home (issue #61) and must
+            never highlight or drag. `min-w-0 flex-1` keeps the wordmark's
+            truncate (and the drawer's close button) behaving as before. */}
+        <Link
+          to="/"
+          aria-label="Communication"
+          draggable={false}
+          data-testid="brand-home"
+          className={`flex min-w-0 flex-1 select-none items-center gap-[9px] text-ink ${FOCUS_RING}`}
+        >
+          <Mark size={26} />
+          <span className="min-w-0 truncate text-[13.5px] font-semibold">Communication</span>
+        </Link>
         {variant === "drawer" ? (
           <button
             ref={closeRef}
