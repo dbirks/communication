@@ -357,15 +357,19 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(tokens).toContain("[&_li.ml-auto>span.font-semibold]:sr-only");
   });
 
-  it("keeps the header one compact stack: no wrapped meta line, no stray separator dots", async () => {
-    // Pass review 1g defect 2 + 4: the meta line never wraps (at 1280 it
-    // broke mid-copy — "Claude / Code · 1s"; at 390 the compact header
-    // promises one line), and the status readout has no leading, trailing or
-    // empty dot-segments: at rest it read "· idle — no turn yet · •" — a
-    // queued `·` glyph, a separator over a wordless live-stream segment.
+  it("keeps the header one compact stack: no clipped meta words, no stray separator dots", async () => {
+    // Pass review 1g defect 2 + 4: the meta line never wraps mid-copy at
+    // 1280 (`lg:truncate` holds the one design row there), and repo-chain-r4
+    // review item 3 lifted the 390 ellipsis — below `lg` the line WRAPS, so
+    // "Claude Code" is never cut to "Claude C…". The status readout has no
+    // leading, trailing or empty dot-segments: at rest it read "· idle — no
+    // turn yet · •" — a queued `·` glyph, a separator over a wordless
+    // live-stream segment.
     renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
     const meta = await screen.findByTestId("conversation-meta");
-    expect(meta.className.split(/\s+/)).toContain("truncate");
+    const metaTokens = meta.className.split(/\s+/);
+    expect(metaTokens).toContain("lg:truncate");
+    expect(metaTokens).not.toContain("truncate");
 
     act(() => {
       FakeEventSource.last().open();
@@ -542,9 +546,9 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(rowTokens).toContain("[&>div:first-child>span:last-child>button:only-child]:w-full");
     expect(rowTokens).toContain("lg:[&>div:first-child>span:last-child>button:only-child]:w-auto");
 
-    // The meta line is one truncated row at every width (review 1g defects 2
-    // and 4) — plain block flow below `lg`, no floated narrow column; `lg:`
-    // restores the design's shape.
+    // The meta line is one truncated row from `lg` up (review 1g defects 2
+    // and 4; repo-chain-r4 item 3 wraps it below `lg`) — plain block flow
+    // below `lg`, no floated narrow column; `lg:` restores the design's shape.
     const meta = screen.getByTestId("conversation-meta");
     const metaRow = (meta.parentElement as HTMLElement).className.split(/\s+/);
     expect(metaRow).not.toContain("flex");

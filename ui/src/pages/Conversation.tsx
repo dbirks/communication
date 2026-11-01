@@ -548,16 +548,17 @@ export default function ConversationPage({
                 />
               </div>
             </div>
-            {/* The meta line is ONE line at every width (pass review defect 4:
-                at 1280 it wrapped mid-copy — "Claude / Code · 1s" — and at 390
-                the compact header promises one line, so the transcript gets
-                the screen): `truncate` keeps it one row, and the ellipsis is
-                the design's own intended truncation. The quiet state readout
-                shares its flow below `lg` (one line after the other) and sits
-                at the line's right at `lg+`. */}
+            {/* The meta line is ONE truncated row only from `lg` up (pass
+                review defect 4: at 1280 it wrapped mid-copy — "Claude / Code ·
+                1s"). Below `lg` it WRAPS instead of ellipsising
+                (repo-chain-r4 review item 3): at 390 the old `truncate` cut the
+                line mid-word ("Claude C…"), hiding the agent profile — two
+                full words beat one clipped row on the phone. The quiet state
+                readout shares its flow below `lg` (one line after the other)
+                and sits at the line's right at `lg+`. */}
             <div className="mt-[2px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
               <p
-                className="truncate font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1"
+                className="font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1 lg:truncate"
                 data-testid="conversation-meta"
               >
                 <span>{repoLabel}</span>

@@ -278,9 +278,9 @@ verbs — and, for the saved arms, the STARTS WHEN row with its switch and
 `Edit` on the repo page (2e.png puts `Edit` on the TRIGGER rows under
 STARTS WHEN, never on a workflow row — whose verbs are `+ Add trigger` and
 `Run`); the 2d tab with its revision select, Copy, download
-and line-numbered text; the 2e/repo-1e page verbs, REPO WORKFLOWS (ce8cfda:
-the bar used to read WORKFLOWS ON THIS REPO and ellipsised its own count away
-at 390)
+and line-numbered text; the 2e/repo-1e page verbs, WORKFLOWS ON THIS REPO
+(repo-chain-r4: the bar briefly read REPO WORKFLOWS so its count would not
+ellipsise away at 390 — the design's own words fit the one-line bar after all)
 with its library link, the row verbs, the STARTS WHEN box, and (Projects
 Review) OPEN ISSUES, WORK IN THIS REPO and RECENT RUNS; the project overview's
 title, two verbs, six tabs and RUNNING NOW / RECENT THREADS / REPOSITORIES /

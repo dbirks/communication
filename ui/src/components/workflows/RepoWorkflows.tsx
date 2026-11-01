@@ -180,17 +180,18 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
   const triggerReadsReady = !schedules.isPending && !issueTriggers.isPending;
   const triggerReadsFailed = schedules.isError || issueTriggers.isError;
 
-  // “WORKFLOWS ON THIS REPO · n” is what the bar USED to read at 390 — with the
-  // ellipsis eating the count (pass-8 review, item 5): the
-  // `+ use a library workflow` link keeps its full words at every width
-  // (reflow-390, 2c item 3), the bar is one line (ds/Panel), and the two do not
-  // fit in 390px. So the label is the shorter `REPO WORKFLOWS`, which says the
-  // same thing about the same repository, and the count — the part the reader
-  // cannot get any other way — survives.
+  // The bar reads what the design names it (repo-chain-r4 review): “WORKFLOWS
+  // ON THIS REPO · n”. The shorter `REPO WORKFLOWS` was a pass-8 workaround
+  // for an ellipsis eating the count at 390; the design's own words fit the
+  // bar alongside the `+ use a library workflow` link (the link keeps its full
+  // words at every width — reflow-390, 2c item 3 — and the bar is one line,
+  // ds/Panel), so the label no longer has to be shortened to spare the count.
   return (
     <Panel
       id="repo-workflows"
-      title={assignments.data ? `REPO WORKFLOWS · ${usable.length}` : "REPO WORKFLOWS"}
+      title={
+        assignments.data ? `WORKFLOWS ON THIS REPO · ${usable.length}` : "WORKFLOWS ON THIS REPO"
+      }
       headingId="repo-workflows-heading"
       headingLevel={2}
       className="max-w-[900px]"
@@ -427,15 +428,16 @@ function RepoWorkflowRow({
               </span>
             )}
           </div>
-          {/* The step chain is ONE line at every width, ellipsised (pass-8
-              review, item 6 — the same treatment reflow-390 gave the 1b rows).
-              A wrapped chain is what put a `›` at the start of three of the
-              four phone lines here, and split a `loop:` chip across two; one
-              line cannot do either. The whole chain rides the `title`, so the
-              full truth is one hover away. */}
+          {/* The step chain WRAPS onto further lines at every width — the
+              treatment the project's Workflows tab (`ProjectWorkflowsPanel`)
+              already gives the same rows, and what design 1e draws (repo-chain-r4
+              review item 1). The earlier one-line ellipsis hid most of every
+              workflow behind a `…`; the chain's whole truth must be on the page,
+              not on hover. Each cell carries the `›` that precedes it so the
+              separator rides with its step across a wrap, and a `loop:` chip
+              breaks its own words rather than its steps. */}
           <div
-            className="min-w-0 truncate pl-[22px] font-mono text-[10.5px]"
-            title={data.chain ? data.chain.map((cell) => cell.label).join(" › ") : undefined}
+            className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[4px] pl-[22px] font-mono text-[10.5px]"
             data-testid={`repo-workflow-chain-${key}`}
           >
             {data.chain === null ? (
@@ -444,10 +446,10 @@ function RepoWorkflowRow({
               <span className="text-muted">—</span>
             ) : (
               data.chain.map((cell, index) => (
-                <span key={index}>
+                <span key={index} className="flex items-center gap-[6px]">
                   {index > 0 ? (
                     <span aria-hidden="true" className="text-[10px] text-muted">
-                      {" › "}
+                      ›
                     </span>
                   ) : null}
                   <span

@@ -203,6 +203,17 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     expect(chain.textContent).toContain("approve");
     // A scope node folds to one shaded `loop:` cell — the document's own ids.
     expect(chain.textContent).toContain("loop:");
+    // repo-chain-r4 review item 1: the chain shows the WHOLE workflow — every
+    // cell's full text is in the DOM, and the container WRAPS (flex-wrap) —
+    // never one `truncate`d line hiding steps behind an ellipsis.
+    const chainTokens = chain.className.split(/\s+/);
+    expect(chainTokens).toContain("flex-wrap");
+    expect(chainTokens).not.toContain("truncate");
+    expect(chain.textContent).toContain("loop: implement · test · review");
+    // The cells the 390px ellipsis used to hide are all in the DOM.
+    expect(chain.textContent).toContain("verdict");
+    expect(chain.textContent).toContain("publish_verified");
+    expect(chain.textContent).toContain("publish_needs_attention");
 
     // 2e (reflow-390 review item 4): a row with NO triggers starts COLLAPSED
     // — design 2e draws it with `+ Add trigger` and `Run` in the row, not as
@@ -237,12 +248,13 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
   it("counts the workflows in the panel title and offers the library link to a maintainer", async () => {
     mount();
     await screen.findByTestId(`repo-workflow-row-${assignmentKey}`);
-    // Pass-8 review, item 5: the bar's words are short enough that 390px keeps
-    // the COUNT. It used to read `WORKFLOWS ON THIS REPO · n` and the ellipsis
-    // ate `· n` — the one number in the header that nothing else on the page
-    // states. The accessible name still says what the panel is.
-    expect(screen.getByRole("heading", { name: /REPO WORKFLOWS/ }).textContent).toContain(
-      "REPO WORKFLOWS · 1",
+    // Design 1e names the bar “WORKFLOWS ON THIS REPO · n” (repo-chain-r4
+    // review item 1): the shorter `REPO WORKFLOWS` was a pass-8 workaround for
+    // an ellipsis eating the count at 390 — the design's own words fit the bar
+    // alongside the library link, so the name is the design's and the count
+    // still rides with it.
+    expect(screen.getByRole("heading", { name: /WORKFLOWS ON THIS REPO/ }).textContent).toContain(
+      "WORKFLOWS ON THIS REPO · 1",
     );
     // One honest label at every width (reflow-390 review, 2c item 3): the
     // phone used to render a shortened `+ use workflow`; the panel shortens its

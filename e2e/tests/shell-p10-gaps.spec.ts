@@ -199,8 +199,8 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const stopWatching = watchPageErrors(page);
     const request = page.request;
     // ADR-0060/2e: triggers are authored where the workflow is USED — the
-    // repository page's REPO WORKFLOWS panel (ce8cfda: the bar used to read
-    // WORKFLOWS ON THIS REPO) — never on the library page. Design 2e (reflow-390 item 4): a row with NO triggers now starts
+    // repository page's WORKFLOWS ON THIS REPO panel (repo-chain-r4: the bar
+    // briefly read REPO WORKFLOWS) — never on the library page. Design 2e (reflow-390 item 4): a row with NO triggers now starts
     // COLLAPSED, so the journey asserts the default the served triggers imply
     // and OPENS the row with its own chevron instead of reading the box as if
     // it were open by default.
@@ -301,7 +301,7 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await evidence(
       page,
       "shell-p10-gaps-triggers-add",
-      `the repository page's REPO WORKFLOWS row for ${repoName} added a "weekdays 09:00 UTC" schedule through the 2c dialog: the trigger row shows the cron "0 9 * * 1-5" and the plain-English reading "every weekday at 09:00 UTC", and GET /api/v1/projects/{id}/schedules echoes the same cron`,
+      `the repository page's WORKFLOWS ON THIS REPO row for ${repoName} added a "weekdays 09:00 UTC" schedule through the 2c dialog: the trigger row shows the cron "0 9 * * 1-5" and the plain-English reading "every weekday at 09:00 UTC", and GET /api/v1/projects/{id}/schedules echoes the same cron`,
     );
 
     // Clean up: ADR-0032 exposes no DELETE — the off-switch for a scratch

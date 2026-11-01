@@ -707,12 +707,13 @@ const REPO_START_RUN: Landmark = {
 };
 const REPO_WORKFLOWS_PANEL: Landmark = {
   id: "repo-workflows-panel",
-  // ce8cfda: at 390 the old `WORKFLOWS ON THIS REPO · n` bar ellipsised away
-  // its COUNT, so the header is the shorter `REPO WORKFLOWS · n`. The testid is
-  // the stable hook; the heading is the copy it now draws (with or without the
+  // repo-chain-r4: the bar reads the design's own name, `WORKFLOWS ON THIS
+  // REPO · n` (it was briefly the shorter `REPO WORKFLOWS` while the chain
+  // ellipsised and the bar could not hold both). The testid is the stable
+  // hook; the heading is the copy it now draws (with or without the
   // count, which is data).
-  desc: "the REPO WORKFLOWS panel",
-  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^REPO WORKFLOWS/i }],
+  desc: "the WORKFLOWS ON THIS REPO panel",
+  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^WORKFLOWS ON THIS REPO/i }],
 };
 const REPO_LIBRARY_LINK: Landmark = {
   id: "repo-use-library-workflow",
