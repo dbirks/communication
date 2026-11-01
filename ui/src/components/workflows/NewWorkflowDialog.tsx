@@ -131,7 +131,7 @@ interface DialogBodyProps {
 
 function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }: DialogBodyProps) {
   const navigate = useNavigate();
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLFormElement>(null);
   const openerRef = useRef<Element | null>(null);
   const preset = templateById(presetTemplateId ?? "");
   // The template cards hand the dialog their own name: the id follows it, so
@@ -266,18 +266,30 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
     }
   }
 
+  /* The dialog is a flex column: header (fixed), body (the ONLY scroll
+     region — `flex-1 min-h-0 overflow-y-auto`) and footer (a sibling OUTSIDE
+     the scroll region). The 1c review first made the footer `sticky bottom-0`
+     INSIDE the scrolling form so Create stayed reachable at 390; at rest that
+     strip painted over the folder select (`span.font-mono FOLDER ×
+     new-workflow-cancel` in the pass-1 overlap record, shot
+     1c-server-error-390). A sticky overlay trades one defect for another —
+     the footer now lives in its own row of the column, so nothing paints
+     over the body, the last field is reachable by scrolling the body, and
+     Create/Cancel are always in view at 390 and 1280. The form IS the dialog
+     box, so the footer's submit button still submits it. */
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
-      <div
+      <form
         ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-workflow-title"
-        className="w-[520px] max-w-full rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
+        onSubmit={submit}
+        className="flex max-h-[calc(100vh-8rem)] w-[520px] max-w-full flex-col rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
         data-testid="new-workflow-dialog"
       >
         <div
-          className="flex items-baseline justify-between border-b border-line px-[14px] py-[10px]"
+          className="flex shrink-0 items-baseline justify-between border-b border-line px-[14px] py-[10px]"
           role="heading"
           aria-level={2}
         >
@@ -288,9 +300,8 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
             esc
           </span>
         </div>
-        <form
-          className="flex max-h-[calc(100vh-8rem)] flex-col gap-[14px] overflow-y-auto px-[16px] py-[16px]"
-          onSubmit={submit}
+        <div
+          className="flex min-h-0 flex-1 flex-col gap-[14px] overflow-y-auto px-[16px] py-[16px]"
           data-testid="new-workflow-form"
         >
           {/* The list read's failure belongs INSIDE the dialog: this
@@ -304,7 +315,7 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
               flex auto-min-size: without it the callout was squeezed to a
               fixed height at 390, its body line cut in half (pass-1 shot
               1c-server-error-390). With it the callout grows to fit and the
-              form's own `overflow-y-auto` scrolls the dialog body. The starter
+              body's own `overflow-y-auto` scrolls it with the rest. The starter
               itself still works — its document ships with the app — so the
               hint says what IS missing. */}
           {listError ? (
@@ -471,33 +482,34 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders, listError }
               </Button>
             </div>
           ) : null}
-          {/* The footer STICKS to the bottom of the form's scroll area (1c
-              review, index-row-r7 item 4: at 390 the Cancel/Create pair sat
-              below the fold INSIDE the scroll area — the create verb was
-              unreachable until the author scrolled). `bg-surface` is the
-              dialog's own background so scrolled content never shows through,
-              and the top border marks the seam; the negative margins bleed it
-              across the form's own 16px padding so the strip spans the card. */}
-          <div className="sticky bottom-0 -mx-[16px] -mb-[16px] flex justify-end gap-[8px] rounded-b-[4px] border-t border-line bg-surface px-[16px] pb-[16px] pt-[10px]">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              data-testid="new-workflow-cancel"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={!canCreate || busy || create.isPending || Boolean(seed) || !effectiveSlug}
-              data-testid="library-new-submit"
-            >
-              {busy || create.isPending || seed ? "Creating…" : "Create and open canvas"}
-            </Button>
-          </div>
-        </form>
-      </div>
+          {/* The footer is the column's LAST row, a SIBLING of the scroll
+              body above (1c review, index-row-r7 item 4: at 390 the
+              Cancel/Create pair sat below the fold inside the scrolling form
+              — the create verb was unreachable until the author scrolled;
+              pass-1 overlap review: sticky INSIDE the scroll area then
+              painted over the folder field at rest). `shrink-0` keeps its row
+              whole, `bg-surface` matches the card and the top border marks
+              the seam. */}
+        </div>
+        <div className="flex shrink-0 justify-end gap-[8px] rounded-b-[4px] border-t border-line bg-surface px-[16px] pb-[16px] pt-[10px]">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            data-testid="new-workflow-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={!canCreate || busy || create.isPending || Boolean(seed) || !effectiveSlug}
+            data-testid="library-new-submit"
+          >
+            {busy || create.isPending || seed ? "Creating…" : "Create and open canvas"}
+          </Button>
+        </div>
+      </form>
     </div>
   );
 }

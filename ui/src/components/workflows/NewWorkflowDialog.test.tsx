@@ -86,22 +86,32 @@ describe("NewWorkflowDialog tiles + failure surface (rendered)", () => {
     return screen.getByTestId("new-workflow-dialog");
   }
 
-  // Index-row-r7 item 4: at 390 the Cancel/Create footer sat below the fold
-  // INSIDE the form's scroll area — the dialog's only create verb needed a
-  // scroll to reach. The footer now sticks to the scroll area's bottom, on
-  // the dialog's own background with a top border, so `Create and open
-  // canvas` stays on screen at any height.
-  it("sticks the Cancel/Create footer to the bottom of the scroll area", () => {
-    mount();
+  // Index-row-r7 item 4 asked for the footer to stay in view at 390; the
+  // first answer (`sticky bottom-0` INSIDE the scroll area) painted the strip
+  // over the folder field at rest (pass-1 overlap record, shot
+  // 1c-server-error-390). The dialog is now a flex column: the body is its
+  // ONE scroll region (`flex-1 min-h-0 overflow-y-auto`) and the Cancel/Create
+  // footer is a SIBLING outside it (`shrink-0`, own border-t seam, card
+  // background) — always in view at 390 and 1280, painting over nothing.
+  it("keeps the Cancel/Create footer outside the body's scroll region, always in view", () => {
+    const dialog = mount();
+    const body = screen.getByTestId("new-workflow-form");
     const footer = screen.getByTestId("new-workflow-cancel").parentElement as HTMLElement;
-    const classes = footer.className.split(/\s+/);
-    expect(classes).toContain("sticky");
-    expect(classes).toContain("bottom-0");
-    expect(classes).toContain("bg-surface"); // the dialog's own background, no see-through
-    expect(classes).toContain("border-t"); // the seam above the sticky strip
+    const classes = (el: HTMLElement) => el.className.split(/\s+/);
+    // The body is the only scroll region…
+    for (const c of ["flex-1", "min-h-0", "overflow-y-auto"]) {
+      expect(classes(body)).toContain(c);
+    }
+    // …and the footer is not a sticky overlay inside it.
+    expect(classes(footer)).not.toContain("sticky");
+    expect(classes(footer)).toContain("shrink-0");
+    expect(classes(footer)).toContain("bg-surface"); // the dialog's own background, no see-through
+    expect(classes(footer)).toContain("border-t"); // the seam above the footer row
+    expect(body.contains(footer)).toBe(false); // nothing of the footer paints over the body
+    expect(dialog.contains(footer)).toBe(true);
     expect(footer.querySelector('[data-testid="library-new-submit"]')).toBeTruthy();
-    // and it still lives in the form that scrolls (submit must stay in it)
-    expect(footer.closest("form")).toBe(screen.getByTestId("new-workflow-form"));
+    // and it still lives in the form that owns the submit (the dialog IS the form)
+    expect(footer.closest("form")).toBe(dialog);
   });
 
   it("keeps every START FROM tile's text left-aligned at any width", () => {
