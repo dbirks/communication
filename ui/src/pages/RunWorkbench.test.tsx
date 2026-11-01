@@ -455,7 +455,7 @@ describe("the run header's meta line", () => {
     mount();
 
     const meta = await screen.findByTestId("run-header-meta");
-    // `feature-development · revision r<n> <digest> (pinned) · started <age>`.
+    // `feature-development · revision r<n> <digest> (pinned) · started <age> ago`.
     // Round-2 review item 3 (hide internal ids where a name exists): this run
     // serves a `goal` input, which IS its title, so the short id is not printed
     // in the copy — it rides the line's `title` and the URL in the address bar.
@@ -465,6 +465,10 @@ describe("the run header's meta line", () => {
     // The H1 says the same thing the meta used to spell with the handle.
     expect(screen.getByTestId("run-title").textContent).toBe("ship M4");
     expect(meta.textContent).toContain("(pinned) · started ");
+    // The age rides an "ago": a bare "started 14s by the system" reads as a
+    // truncation; the sentence is "started 14s ago by the system" (and the
+    // no-timestamp case stays the whole word "started unknown", no "ago").
+    expect(meta.textContent).toMatch(/\(pinned\) · started (\S+ ago|unknown)/);
     // § 7.2 W4: the page names the pin with its number AND the pinned digest — the
     // full 12 hex chars `shortDigest` prints everywhere else in the app (the runs
     // list, the newer-revision notice, the diagnostics pin). Six chars printed

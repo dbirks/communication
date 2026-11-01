@@ -418,7 +418,7 @@ def test_w4_pinned_and_notice():
     pinned, newer = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     assert w4_short(pinned) == "a" * 12 and w4_short("deadbeef" * 8) == "deadbeefdead"
     # Today's run page is the graph-first workbench: its header meta line reads
-    # `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age> …` and the
+    # `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age> ago …` and the
     # pin link's accessible name is `r<N> <12 hex>` — the FULL short digest, the same
     # spelling the runs list and the newer-revision notice use. (The pre-workbench
     # inspector spelled it `pinned r<N> · <digest>`; that spelling still lives on the
@@ -426,7 +426,7 @@ def test_w4_pinned_and_notice():
     pin = w4_pin_label(1, pinned)
     assert pin == f"r1 {'a' * 12}", pin
     header = lambda label, marked=True: (f"feature-development #9661b1b8 · app · revision {label}"
-                                         f"{' (pinned) · started 2m by alice' if marked else ''}")
+                                         f"{' (pinned) · started 2m ago by alice' if marked else ''}")
     page = (f'{header(pin)} · pinned r1 · {w4_short(pinned)} · 12 frames')
     v = _vmap(w4_pinned_verdicts(pinned, 1, newer, 2, page, page))
     assert all(ok is True for ok, _ in v.values()), v

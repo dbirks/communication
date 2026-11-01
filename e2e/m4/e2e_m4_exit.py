@@ -20589,7 +20589,7 @@ def w4_short(digest):
 def w4_pin_label(number, digest):
     """The pinned-revision label as the CURRENT run page writes it. The graph-first
     workbench header (`ui/src/components/workbench/RunHeader.tsx`, ADR-0043) spells the
-    meta line `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age>`,
+    meta line `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age> ago`,
     and the aria snapshot carries the pin link's own accessible name — `r<N> <12 hex>`.
     The pre-workbench inspector (`RunInspector.tsx`, today the Diagnostics tab) spelled
     the same fact `pinned r<N> · <digest>`; the WORD ORDER moved, the fact (the page

@@ -3,7 +3,8 @@
  * breadcrumb, the run's goal (the run's own `inputs` when the API serves
  * them, else the pipeline's slug and short id), the status chip, the meta
  * line `<workflow> #<short run id> · <repo> · revision r<n> <digest>
- * (pinned) · started <age>[ by <name>]`, the header verbs (Open pinned
+ * (pinned) · started <age> ago[ by <name>]` (or `started unknown` when the
+ * run carries no usable start time), the header verbs (Open pinned
  * workflow / Fix the workflow…) and the reused Pause/Resume/Cancel/Retry
  * actions. The "a newer revision was published" notice rides right under it,
  * worded exactly as the inspector always worded it.
@@ -105,6 +106,10 @@ export function RunHeader({
   // (the library role) starts a draft from a revision.
   const canAuthor = hasLibraryRole(me.data);
   const createDraft = useCreateDraft(run.pipeline_id);
+  // `formatAge` returns a bare age ("14s", "3m", "2h") or "unknown". In the
+  // sentence the age needs its "ago" ("started 14s ago by the system");
+  // "unknown" is already the whole honest answer, so it stands alone.
+  const startedAge = formatAge(run.started_at ?? run.created_at);
   const [draftError, setDraftError] = useState<string | null>(null);
 
   const startDraftFromRevision = () => {
@@ -186,7 +191,7 @@ export function RunHeader({
               ? `r${revision.revision_number} ${shortDigest(revision.revision_digest)}`
               : shortDigest(run.revision_digest)}
           </Link>{" "}
-          (pinned) · started {formatAge(run.started_at ?? run.created_at)}
+          (pinned) · started {startedAge === "unknown" ? "unknown" : `${startedAge} ago`}
           {startedBy ? <> by {startedBy}</> : null}
         </p>
       </div>
