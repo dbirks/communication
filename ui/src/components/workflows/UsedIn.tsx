@@ -182,7 +182,7 @@ export function usedInPanelTitle(count: number, loading: boolean, error: boolean
 
 /**
  * The `USED IN n REPOS` panel: one row per repo pin, grid
- * `200px 120px 1fr 150px 56px` (stacking to one column below `md`, where the
+ * `200px 150px 1fr 150px 56px` (stacking to one column below `md`, where the
  * fixed 686px of grid would otherwise scroll the page).
  *
  * A failed read is never a count: when one of the reads behind the list broke,
@@ -289,6 +289,12 @@ function UsedInRow({
     newestPublished.revision_digest === assignment.pinned_revision_digest;
   const behind = newestPublished !== null && !isLatest && newestPublished.status === "published";
   const lastRun = group.runs[0] ?? null;
+  const pin = pinLabel(
+    assignment.pinned_revision_digest,
+    assignment.pinned_version_label ?? null,
+    revisions,
+    newestPublished,
+  );
   const openHref = assignment.repository_name
     ? routes.repository(group.project.id, assignment.repository_name)
     : routes.projectTab(group.project.id, "pipelines");
@@ -303,7 +309,7 @@ function UsedInRow({
 
   return (
     <li
-      className="grid grid-cols-1 items-center gap-[10px] px-[12px] py-[12px] md:grid-cols-[200px_120px_minmax(0,1fr)_150px_56px] md:gap-[14px]"
+      className="grid grid-cols-1 items-center gap-[10px] px-[12px] py-[12px] md:grid-cols-[200px_150px_minmax(0,1fr)_150px_56px] md:gap-[14px]"
       data-testid={`used-in-row-${assignment.id}`}
     >
       <span className="min-w-0">
@@ -321,13 +327,16 @@ function UsedInRow({
         </span>
       </span>
       <span className="flex flex-col gap-[3px] font-mono text-[10.5px] text-ink-2">
-        <span data-testid={`used-in-pin-${assignment.id}`}>
-          {pinLabel(
-            assignment.pinned_revision_digest,
-            assignment.pinned_version_label ?? null,
-            revisions,
-            newestPublished,
-          )}
+        {/* One line (pass-1 review minor 2): at 1280 the pin read `pinned r1 ·`
+            over `latest` in the 120px column. The column is 150px and the label
+            does not wrap; the rare digest-fallback label (no r-number to show)
+            ellipsizes with its full text in the `title`. */}
+        <span
+          className="md:whitespace-nowrap md:overflow-hidden md:text-ellipsis"
+          title={pin}
+          data-testid={`used-in-pin-${assignment.id}`}
+        >
+          {pin}
         </span>
         {behind ? (
           <button

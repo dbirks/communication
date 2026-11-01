@@ -91,6 +91,30 @@ function heading(): HTMLElement {
   return screen.getByRole("heading", { level: 2 });
 }
 
+// The pin cell (pass-1 review minor 2): at 1280 `pinned r1 · latest` wrapped
+// onto two lines in the 120px column. The column is the design's widest
+// reading of itself (150px) and the label never breaks — the rare fallback
+// label without an r-number ellipsizes with its full text in the `title`.
+describe("the pin cell", () => {
+  it("keeps `pinned r2 · latest` on one line in a column wide enough for it", async () => {
+    mount({ groups: [group("a", "app")], loading: false, error: false });
+    const pin = await screen.findByTestId("used-in-pin-a");
+    expect(pin.textContent).toBe("pinned r2 · latest");
+    expect(pin.className.split(/\s+/)).toContain("md:whitespace-nowrap");
+    expect(pin.getAttribute("title")).toBe("pinned r2 · latest");
+    const row = screen.getByTestId("used-in-row-a");
+    expect(row.className).toContain("md:grid-cols-[200px_150px_minmax(0,1fr)_150px_56px]");
+  });
+
+  it("carries the cell's whole text in the title", async () => {
+    mount({ groups: [group("b", "app")], loading: false, error: false });
+    const pin = await screen.findByTestId("used-in-pin-b");
+    // Whatever the label resolves to (r-number, version label, or the rare
+    // `@digest` fallback), the `title` holds the whole of it.
+    expect(pin.getAttribute("title")).toBe(pin.textContent);
+  });
+});
+
 describe("usedInPanelTitle", () => {
   it("counts one repo as one repo, and two as two", () => {
     expect(usedInPanelTitle(1, false, false)).toBe("USED IN 1 REPO");

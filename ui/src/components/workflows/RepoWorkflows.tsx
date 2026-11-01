@@ -670,6 +670,25 @@ const TRIGGER_SWITCH_CELL =
 const TRIGGER_EDIT_CELL =
   "col-start-3 row-start-2 flex items-center justify-end min-[900px]:col-start-5 min-[900px]:row-span-2";
 
+/** The mono detail line (pass-1 review minor 1): 2e puts it under the
+ * sentence, inside the 1fr column — but at 1280 the column is ~290px and a
+ * line like `communication-lab/missing-pass-1-… · checked every minute` or
+ * the cron with its fixed inputs wrapped onto three lines. From 1024px the
+ * line therefore sits under the sentence across the sentence AND the
+ * bookkeeping column (grid-column 2 / -4): one line for the repo case, at
+ * most two for a schedule with long inputs, without touching 2e's five
+ * tracks. Below 1024 it stays 2e's narrow cell; the phone already gives it
+ * the full width. */
+const TRIGGER_DETAIL_CELL =
+  "w-full min-w-0 break-words font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2 min-[1024px]:col-end-4";
+
+/** The bookkeeping cell (next fire / last fired / polled). It keeps 2e's
+ * 160px column; only its row changes at 1024: it steps down from the
+ * both-rows span to the sentence's own row so the detail line can run
+ * beneath it (see TRIGGER_DETAIL_CELL). */
+const TRIGGER_META_CELL =
+  "shrink-0 font-mono text-[10.5px] text-muted min-[900px]:col-start-3 min-[900px]:max-[1023.98px]:row-span-2 min-[1024px]:row-start-1";
+
 /** The row's `Edit` — 2e draws it as the accent text button, not a boxed
  * secondary; the phone's touch floor still gives it its 44px tap target. */
 function TriggerEditButton({ testid, onEdit }: { testid: string; onEdit: () => void }) {
@@ -734,16 +753,23 @@ export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: Repo
       </span>
       <span className={TRIGGER_META_LINE}>
         <span
-          className="w-full min-w-0 break-words font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
+          className={TRIGGER_DETAIL_CELL}
           data-testid={`repo-workflow-trigger-detail-${testidOf(schedule.id)}`}
         >
           {schedule.cron_expr}
-          {inputs.length > 0
-            ? ` · ${inputs.map(([name, value]) => `${name}: ${formatInputValue(value)}`).join(" · ")}`
-            : ""}
+          {inputs.map(([name, value]) => {
+            const shown = formatInputValue(value);
+            const full = fullInputValue(value);
+            return (
+              <span key={name} title={shown === full ? undefined : full}>
+                {` · ${name}: `}
+                {shown}
+              </span>
+            );
+          })}
         </span>
         <span
-          className="shrink-0 font-mono text-[10.5px] text-muted min-[900px]:col-start-3 min-[900px]:row-span-2"
+          className={TRIGGER_META_CELL}
           data-testid={`repo-workflow-trigger-meta-${testidOf(schedule.id)}`}
         >
           {schedule.enabled ? (
@@ -856,13 +882,13 @@ export function RepoIssueRow({
       </span>
       <span className={TRIGGER_META_LINE}>
         <span
-          className="w-full min-w-0 break-words font-mono text-[10.5px] text-muted min-[900px]:col-start-2 min-[900px]:row-start-2"
+          className={TRIGGER_DETAIL_CELL}
           data-testid={`repo-workflow-trigger-detail-${testidOf(trigger.id)}`}
         >
           {repoRef} · checked every minute
         </span>
         <span
-          className="shrink-0 font-mono text-[10.5px] text-muted min-[900px]:col-start-3 min-[900px]:row-span-2"
+          className={TRIGGER_META_CELL}
           data-testid={`repo-workflow-trigger-meta-${testidOf(trigger.id)}`}
         >
           {trigger.last_polled_at
@@ -955,6 +981,20 @@ function formatInputValue(value: unknown): string {
   }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "…";
+}
+
+/** The same value as the line shows it, minus the ellipsis: what a cut value's
+ * `title` carries, so hovering the `…` reads the whole input (pass-1 review
+ * minor 1 — `goal: emu schedule pass-1-2026…` was cut with no way to see the
+ * rest). A non-string (shown as a bare `…`) keeps its JSON form. */
+function fullInputValue(value: unknown): string {
+  if (typeof value === "string") return value.replace(/\s+/g, " ").trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /* ------------------------------------------------------- library picker */

@@ -435,6 +435,50 @@ describe("RepoWorkflows — the STARTS WHEN box (2e)", () => {
     const edit = within(row).getByTestId(`repo-workflow-trigger-edit-${testidOf(SCHEDULE_ID)}`);
     expect(edit.className).toContain("text-accent-text");
     expect(edit.className).not.toContain("ds-btn");
+    // pass-1 review minor 1: from 1024px the mono detail line runs under the
+    // sentence ACROSS the bookkeeping column (grid-column 2 / end 4) instead
+    // of wrapping onto three lines inside the 1fr column, and the
+    // bookkeeping steps down to the sentence's own row. 2e's five 900px
+    // tracks themselves are untouched.
+    const detail = within(row).getByTestId(`repo-workflow-trigger-detail-${testidOf(SCHEDULE_ID)}`);
+    const meta = within(row).getByTestId(`repo-workflow-trigger-meta-${testidOf(SCHEDULE_ID)}`);
+    expect(detail.className.split(/\s+/)).toContain("min-[900px]:col-start-2");
+    expect(detail.className.split(/\s+/)).toContain("min-[1024px]:col-end-4");
+    expect(meta.className.split(/\s+/)).toContain("min-[900px]:max-[1023.98px]:row-span-2");
+    expect(meta.className.split(/\s+/)).toContain("min-[1024px]:row-start-1");
+  });
+
+  it("puts a cut fixed input's whole value in the detail line's title", async () => {
+    // pass-1 review minor 1: `goal: emu schedule pass-1-2026…` was cut with
+    // no way to read the rest; the `…` now carries the full value as a title.
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule()] },
+      },
+    ]);
+    const box = await screen.findByTestId(`repo-workflow-starts-${assignmentKey}`);
+    const row = within(box).getByTestId(`repo-workflow-trigger-${testidOf(SCHEDULE_ID)}`);
+    const detail = within(row).getByTestId(`repo-workflow-trigger-detail-${testidOf(SCHEDULE_ID)}`);
+    const cut = detail.querySelector("span[title]");
+    expect(cut?.getAttribute("title")).toBe("Plan this week's upgrades");
+    // The shown text keeps the old 24-char ellipsis and its ` · name: ` lead.
+    expect(cut?.textContent).toBe(" · goal: Plan this week's upgrade…");
+    // A value that is not cut carries no title.
+    cleanup();
+    mount([
+      {
+        path: `/api/v1/projects/${wireProjectId}/schedules`,
+        method: "GET",
+        body: { schedules: [wireSchedule({ inputs: { goal: "Ship it" } })] },
+      },
+    ]);
+    const shortDetail = await screen.findByTestId(
+      `repo-workflow-trigger-detail-${testidOf(SCHEDULE_ID)}`,
+    );
+    expect(shortDetail.querySelector("span[title]")).toBeNull();
+    expect(shortDetail.textContent).toContain("goal: Ship it");
   });
 
   it("says never triggered when the reader opens a trigger-less row", async () => {

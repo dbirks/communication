@@ -5,7 +5,7 @@
  * becomes spans; and a `javascript:` target is reduced to its label, because
  * this text is untrusted agent output.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { MarkdownBody, parseInline, parseMarkdown, renderInline } from "./markdown";
 
@@ -305,6 +305,34 @@ describe("<MarkdownBody>", () => {
     const code = screen.getByTestId("markdown-code");
     expect(code.getAttribute("style")).toContain("min-width: 100%");
     expect(code.className).toContain("overflow-x-auto");
+    // The scroll box now lives inside a positioning wrapper (the fade's
+    // anchor); the wrapper never outgrows its parent either.
+    const box = screen.getByTestId("markdown-code-box");
+    expect(box.className).toContain("max-w-full");
+  });
+
+  it("fades the code box's right edge only while content sits off to the right", () => {
+    // pass-1 review minor 3: the 2e gate plan's wide fences cut mid-token with
+    // no visible hint. The fade appears when the box overflows and clears
+    // when the reader has scrolled to the end of the line.
+    render(<MarkdownBody text={"```\n" + "const schedul = ".repeat(40) + "\n```"} />);
+    const code = screen.getByTestId("markdown-code");
+    const fade = screen.getByTestId("markdown-code-fade");
+    expect(fade.getAttribute("aria-hidden")).toBe("true");
+    // jsdom lays nothing out: nothing overflows, so the fade stands down.
+    expect(fade.getAttribute("data-more")).toBe("false");
+    const stub = (prop: string, value: number) =>
+      Object.defineProperty(code, prop, { configurable: true, value });
+    stub("scrollWidth", 640);
+    stub("clientWidth", 320);
+    stub("scrollLeft", 0);
+    fireEvent.scroll(code);
+    expect(fade.getAttribute("data-more")).toBe("true");
+    expect(fade.className).toContain("opacity-100");
+    stub("scrollLeft", 320);
+    fireEvent.scroll(code);
+    expect(fade.getAttribute("data-more")).toBe("false");
+    expect(fade.className).toContain("opacity-0");
   });
 
   it("renders no anchor for a link whose target is not http(s)", () => {

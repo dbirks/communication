@@ -37,6 +37,7 @@
  * sandboxed frame on another origin (`ADR-0020`, `components/Artifacts.tsx`);
  * this module never sees HTML, it emits React text nodes.
  */
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 /** One block of a markdown document. */
@@ -533,6 +534,62 @@ export function MarkdownBody({ text, className = "", paragraphClassName = "" }: 
 }
 
 /**
+ * One fenced code block. The box never grows with its longest line (see the
+ * `width:0` note inside), but a box whose lines are cut mid-word at the right
+ * edge gave no hint that anything lived past the fold (pass-1 review minor 3:
+ * the 2e gate plan's wide python fence ended at `…SCHEDUL` with no scrollbar
+ * in sight). The hint is a right-edge fade that stands only while there is
+ * more content off to the right: it is measured at mount, on every scroll of
+ * the box, and whenever the box or the window resizes, and it clears the
+ * moment the reader reaches the end of the line. The pre keeps keyboard
+ * scroll (`tabIndex`), and the fade never eats a click.
+ */
+function MarkdownCode({ text }: { text: string }) {
+  const preRef = useRef<HTMLPreElement | null>(null);
+  const [moreRight, setMoreRight] = useState(false);
+  useEffect(() => {
+    const el = preRef.current;
+    if (!el) return undefined;
+    const measure = () => setMoreRight(el.scrollWidth - el.clientWidth - el.scrollLeft > 1);
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, [text]);
+  return (
+    <div className="relative max-w-full" data-testid="markdown-code-box">
+      <pre
+        ref={preRef}
+        tabIndex={0}
+        data-testid="markdown-code"
+        // `width:0` + `min-width:100%`: a fence's longest line may be a 400-character
+        // JSON string, and a box with a definite width contributes nothing to an
+        // ancestor's max-content size — so the code scrolls inside its own box at
+        // 390 instead of pushing the page sideways (`artifact-plan-md-390.png`).
+        style={{ width: 0, minWidth: "100%" }}
+        className="max-w-full overflow-x-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
+      >
+        {text}
+      </pre>
+      <span
+        aria-hidden
+        data-testid="markdown-code-fade"
+        data-more={moreRight ? "true" : "false"}
+        className={`pointer-events-none absolute inset-y-[1px] right-[1px] w-[40px] rounded-r-[2px] bg-[linear-gradient(to_right,transparent,var(--color-paper))] transition-opacity duration-150 ${
+          moreRight ? "opacity-100" : "opacity-0"
+        }`}
+      />
+    </div>
+  );
+}
+
+/**
  * One block, keyed. A list item's own children come back through here, which is
  * what makes nesting real: the nested `- Files:` bullets are drawn inside their
  * step, so the numbered plan above them is never interrupted and never restarts
@@ -552,21 +609,7 @@ function renderBlock(block: MarkdownBlock, key: string, paragraphClassName: stri
     );
   }
   if (block.kind === "code") {
-    return (
-      <pre
-        key={key}
-        tabIndex={0}
-        data-testid="markdown-code"
-        // `width:0` + `min-width:100%`: a fence's longest line may be a 400-character
-        // JSON string, and a box with a definite width contributes nothing to an
-        // ancestor's max-content size — so the code scrolls inside its own box at
-        // 390 instead of pushing the page sideways (`artifact-plan-md-390.png`).
-        style={{ width: 0, minWidth: "100%" }}
-        className="max-w-full overflow-x-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
-      >
-        {block.text}
-      </pre>
-    );
+    return <MarkdownCode key={key} text={block.text} />;
   }
   if (block.kind === "quote") {
     return (
