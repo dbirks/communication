@@ -847,7 +847,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
       });
-      // The key is the compiled one: the root scope renders as `/approve`.
+      // a29d3ed (round-2 review item 3): the card prints the step LEAF
+      // (`stepWordOf`), not the compiled key — the root scope's `/approve`
+      // renders as `approve`, with the full key moved to the value's `title`.
+      // The leaf check holds under either reading.
       await expect(alice.getByTestId("approval-node")).toContainText("approve");
       await expect(alice.getByTestId("approval-roles")).toContainText("maintainer");
       const summary = alice.getByTestId("approval-summary");

@@ -726,13 +726,17 @@ const REPO_ADD_TRIGGER: Landmark = {
 };
 // No `Edit` landmark on a REPO WORKFLOWS row: 2e.png
 // (docs/design/handoff-workflows/png/2e.png) draws a workflow row with
-// `+ Add trigger` and `Run` and nothing else — see REPO_ADD_TRIGGER /
-// REPO_ROW_RUN. `Edit` is the TRIGGER rows' verb, inside the row's STARTS WHEN
-// box (2e.png's `An issue is labeled plan … on Edit` /
+// `+ Add trigger` and `Run` — see REPO_ADD_TRIGGER / REPO_ROW_RUN — and the
+// row carries no Edit LANDMARK of its own even though a29d3ed (round-2 review
+// item 2) put the handoff § 2 verb back on the row: the row's `Edit` is
+// `repo-workflow-edit-*`, a `.ds-btn`-styled react-router LINK (role=link),
+// the same destination the row's name already carries.
+// `Edit` as a BUTTON is still the TRIGGER rows' verb, inside the row's STARTS
+// WHEN box (2e.png's `An issue is labeled plan … on Edit` /
 // `Every Monday at 06:00 UTC … on Edit` lines), which is REPO_TRIGGER_EDIT
-// below. The design handoff's prose (README §2) says a row's buttons are
-// “`Edit` (secondary-plain) and `Run`”, but the render the review badges are
-// cut from does not, and the render is what a screen is matched against.
+// below — it matches `role: "button"` (TriggerEditButton is a <button>), and
+// an <a> never satisfies getByRole("button"), so the restored row link cannot
+// satisfy or shadow REPO_TRIGGER_EDIT in either direction.
 const REPO_ROW_RUN: Landmark = {
   id: "repo-row-run",
   desc: "a workflow row's 'Run' action",
@@ -1345,12 +1349,14 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2d server-error": [WF_TABS, WF_TAB_YAML_ACTIVE, YAML_FRAME, YAML_ERROR],
 
   /* ------------------------------------------------- 2e · the repo page */
-  // A workflow row's verbs are `+ Add trigger` and `Run` — 2e.png has no `Edit`
-  // on a workflow row (its `Edit` lives on the trigger rows under STARTS WHEN,
-  // asserted by REPO_TRIGGER_EDIT on `2c *-trigger-saved` and
-  // `2e triggers-paused`). Acceptance 32 filed this as a defect on every pass
-  // (`design landmark missing: a workflow row's 'Edit' action`) while 2e-repo's
-  // screenshots matched the render: the landmark was the bug, not the page.
+  // A workflow row's landmarked verbs are `+ Add trigger` and `Run` — 2e.png
+  // draws no `Edit` on a workflow row, so this screen has no row-Edit landmark
+  // even though a29d3ed restored the row's `Edit` as a `repo-workflow-edit-*`
+  // LINK (see the REPO_ROW_RUN note): landmarks are presence checks, and one
+  // more control on the row breaks none of them. The `Edit` BUTTON asserted by
+  // REPO_TRIGGER_EDIT on `2c *-trigger-saved` and `2e triggers-paused` is still
+  // the trigger rows' verb under STARTS WHEN — role=button, which the row's
+  // role=link Edit can never answer to.
   "2e repo": [
     REPO_PAGE,
     REPO_HEADING,

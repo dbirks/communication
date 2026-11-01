@@ -264,7 +264,21 @@ test.describe("run-gate-artifacts (alice)", () => {
         page.getByTestId("artifact-page-title"),
         "the artifact page names plan.md",
       ).toContainText(/plan\.md/i, { timeout: 30_000 });
-      const body = await page.evaluate(() => document.body.innerText);
+      // a29d3ed (round-2 review item 4): a small Markdown artifact is now READ
+      // on the page (`artifact-preview-markdown`), so the model's own words
+      // ride in `body.innerText` — and a plan sentence like “if the build
+      // failed to load …” would trip the error scan for a page state that did
+      // not happen. The scan is about the PAGE (its chrome, its failure
+      // sentences), so the preview's own text is cut out of the scanned body;
+      // the screenshot below still proves the preview itself rendered.
+      const body = await page.evaluate(() => {
+        const preview = document.querySelector('[data-testid="artifact-preview-markdown"]');
+        const own = preview instanceof HTMLElement ? preview.innerText : "";
+        // Media type now reads `Markdown` (`artifact-media-type`), never the
+        // wire's `text/markdown` — nothing here asserts either string, and the
+        // wire value only survives in the value's `title`.
+        return own ? document.body.innerText.split(own).join(" ") : document.body.innerText;
+      });
       expect(
         body.replace(/\s+/g, "").length,
         "the artifact page renders real content (non-empty, no error state)",

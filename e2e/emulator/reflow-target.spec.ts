@@ -4,8 +4,10 @@
 // new-workflow at 390, while `ui/src/components/workflows/WorkflowRow.tsx`
 // (`PHONE_HIT`, `PHONE_HIT_MENU_TRIGGER`) draws those 26px buttons on purpose
 // and extends the tappable area with an invisible absolutely positioned
-// `::after` (`after:inset-x-0 after:-top-[9px] after:-bottom-[9px]`, commented
-// "26 + 9 + 9 = 44"). `getBoundingClientRect()` alone could never see that
+// `::after` — `after:inset-x-0 after:-top-[10px] after:-bottom-[10px]` since
+// a29d3ed ("24 + 10 + 10 = 44": the pseudo lays out against the bordered 26px
+// button's PADDING box, so ±10px is what reaches 44; it used to be ±9px, and
+// case (a2) below is the measurement that moved it). `getBoundingClientRect()` alone could never see that
 // area — and reading the CSS on faith would be gullible, since a sibling parked
 // over the extension makes it unreachable. So the checker takes the union of
 // the rect and the element's OWN absolutely positioned pseudos (the element must
@@ -24,9 +26,12 @@ import { findSmallTargets, type TargetHit } from "./reflow.js";
 /**
  * A document whose MAIN holds `body`. The 26px box is the design's compact
  * button height (`docs/design/handoff-app-shell/README.md`: "Heights 26 / 30 /
- * 36; mobile 44–48") and `.hit` is WorkflowRow's treatment: the ±9px invisible
- * `::after`. Fixture controls are named by `aria-label` because that is the
- * label the checker reports.
+ * 36; mobile 44–48") and `.hit` reproduces WorkflowRow's FORMER treatment,
+ * the ±9px invisible `::after` — kept at ±9px on purpose so (a) shows it
+ * clearing 44px on a borderless 26px box and (a2) shows it failing to on the
+ * app's bordered one (the app now draws ±10px, which fixes that). Fixture
+ * controls are named by `aria-label` because that is the label the checker
+ * reports.
  */
 function doc(body: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -92,11 +97,13 @@ test.describe("findSmallTargets and the real hit area", () => {
     expect(await page.evaluate(findSmallTargets)).toEqual([]);
   });
 
-  test("(a2) the app's 26px BORDER-box button with ±9px gets 42px, not 44", async ({ page }) => {
+  test("(a2) a 26px BORDER-box button with the old ±9px gets 42px, not 44", async ({ page }) => {
     // The abspos containing block is the PADDING box: `.ds-btn` is 26px
     // border-box with a 1px border, so its padding box is 24px and Chrome lays
     // the ±9px `::after` out 8px past the visible box on each side (42px, the
-    // lab's own measured answer) — under the 44px phone floor.
+    // lab's own measured answer) — under the 44px phone floor. This is the
+    // measurement a29d3ed moved the app to ±10px over (`24 + 10 + 10 = 44`);
+    // the fixture stays at ±9px because short-of-44 is what this case proves.
     await page.setContent(
       doc(
         '<div style="padding-top:60px"><button data-testid="edit-a2" class="bordered hit" aria-label="edit-a2"></button></div>',
