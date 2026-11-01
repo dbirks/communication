@@ -1078,8 +1078,17 @@ function CanvasInner({
   //  • non-structural (preview/highlight/stale churn): carry the local
   //    nodes' current `selected` flags forward — they mirror the store's own
   //    gesture selection — so a rebuild never wipes or changes it.
+  // A THIRD flavor covers a remount, not a rebuild: the Studio page swaps its
+  // whole layout branch at the 767px phone rule, and the canvas (React Flow's
+  // store with it) remounts empty while the PAGE keeps its selection. Passing
+  // through with `selected` false on every node is what hid the selected
+  // step's ⋯ (issue #66) on the 390 reflow capture — and a phone has no
+  // right-click or Shift+F10, so the verbs became unreachable. A canvas that
+  // mounts with no local nodes therefore adopts the page's selection exactly
+  // like a structural rebuild does, filtered to ids the graph still holds.
   useEffect(() => {
-    const structural = lastBaseRef.current !== base;
+    const firstMount = nodes.length === 0;
+    const structural = lastBaseRef.current !== base || firstMount;
     lastBaseRef.current = base;
     const aliveSelection = structural
       ? new Set(pageSelRef.current.filter((id) => base.nodes.some((n) => n.data.nodeId === id)))

@@ -510,6 +510,32 @@ spec:
     expect(onDuplicate).toHaveBeenCalledWith("check");
   });
 
+  it("keeps the selected step's ⋯ across a canvas remount (the 767px layout swap)", () => {
+    // The 390 reflow defect: the Studio page swaps its whole layout branch at
+    // the 767px phone rule, React Flow remounts, and the store's selection
+    // dies with the old instance — while the PAGE still holds the selection
+    // ("1 step selected", the open inspector). The reader has a phone: no
+    // right-click, no Shift+F10. A canvas that mounts over an empty local node
+    // set therefore adopts the page's selection, so the ⋯ survives the swap.
+    const onDuplicate = vi.fn();
+    const onDelete = vi.fn();
+    const { unmount } = renderCanvas({ selectedId: "check", onDuplicate, onDelete });
+    fireEvent.click(screen.getByLabelText("Run command / tests step check"));
+    expect(screen.getByTestId("node-menu-button-check")).toBeTruthy();
+    unmount();
+    const second = renderCanvas({ selectedId: "check", onDuplicate, onDelete });
+    // No re-click: the freshly mounted canvas already carries the ring's ⋯…
+    const trigger = screen.getByTestId("node-menu-button-check");
+    // …and it opens the same menu: Duplicate works for a phone-width reader.
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId("studio-node-menu-duplicate"));
+    expect(onDuplicate).toHaveBeenCalledWith("check");
+    // A canvas mounting with no page selection draws no ⋯ (nothing adopted).
+    second.unmount();
+    renderCanvas({ onDuplicate, onDelete });
+    expect(screen.queryByTestId("node-menu-button-check")).toBeNull();
+  });
+
   it("draws no ⋯ and opens no menu on an uneditable canvas", () => {
     // Right-click is the canvas's only menu gesture that needs no selection,
     // so the read-only/stale refusal is asserted through it (the ⋯ rides the
