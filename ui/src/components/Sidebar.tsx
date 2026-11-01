@@ -197,7 +197,10 @@ function ProjectTree() {
         const href = routes.project(project.id);
         return (
           <div key={project.id}>
-            <div className="flex items-center gap-1 px-[6px] py-1">
+            {/* issue #68: `py-[6px]` (was `py-1`) — the row pitch must clear
+                the shared `.icon-hit` 30px hit box, or the next project's
+                chevron clips this row's hit area back below 28px. */}
+            <div className="flex items-center gap-1 px-[6px] py-[6px]">
               <button
                 type="button"
                 data-testid={`sidebar-project-toggle-${project.id}`}
@@ -206,7 +209,7 @@ function ProjectTree() {
                 onClick={() => {
                   setExpanded(project.id, !open);
                 }}
-                className={`grid size-4 shrink-0 place-items-center rounded-[3px] p-0 text-ink-2 hover:bg-fill ${FOCUS_RING}`}
+                className={`icon-hit grid size-4 shrink-0 place-items-center rounded-[3px] p-0 text-ink-2 hover:bg-fill ${FOCUS_RING}`}
               >
                 <Chevron open={open} className="text-ink-2" />
               </button>
@@ -437,7 +440,7 @@ function LibrarySection() {
                 },
               })
             }
-            className={`grid size-4 shrink-0 place-items-center rounded-[3px] p-0 text-ink-2 hover:bg-fill ${FOCUS_RING}`}
+            className={`icon-hit grid size-4 shrink-0 place-items-center rounded-[3px] p-0 text-ink-2 hover:bg-fill ${FOCUS_RING}`}
           >
             <Chevron open={workflowsOpen} size={14} />
           </button>
@@ -599,7 +602,7 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
             data-testid="sidebar-close"
             aria-label="Close sidebar"
             onClick={onClose}
-            className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface font-mono text-[13px] text-ink ${FOCUS_RING}`}
+            className={`icon-hit grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface font-mono text-[13px] text-ink ${FOCUS_RING}`}
           >
             ×
           </button>

@@ -155,6 +155,7 @@ export function RowMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         data-menu-trigger=""
+        className="icon-hit relative"
         onClick={() => setOpen((current) => !current)}
         data-testid={`workflow-menu-${slug}`}
       >

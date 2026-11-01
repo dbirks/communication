@@ -103,6 +103,9 @@ describe("the sidebar tree (the default placement)", () => {
     // Collapsed by default: the chevron is closed and no repository shows.
     const toggle = scope.getByTestId(`sidebar-project-toggle-${P}`);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // Issue #68: the 16px chevron stays painted as is; the shared `.icon-hit`
+    // utility gives it a ≥28×28 hit area at desktop.
+    expect(toggle.className.split(/\s+/)).toContain("icon-hit");
     expect(scope.queryByText("acme-widgets")).toBeNull();
 
     // The library rows: real counts for what the API counts, none for what it
@@ -229,6 +232,8 @@ describe("the sidebar workflow folders (ADR-0049 § 8)", () => {
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
     const scope = within(sidebar);
     const toggle = await scope.findByTestId("sidebar-workflows-toggle");
+    // Issue #68: desktop hit area ≥28×28 via the shared `.icon-hit` utility.
+    expect(toggle.className.split(/\s+/)).toContain("icon-hit");
     // The preferences read settles before the chevron honours it.
     await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"), {
       timeout: READ_MS,

@@ -381,7 +381,7 @@ function ProfileHistoryDrawer({ profileId, version, onClose }: ProfileHistoryDra
             data-testid="profile-history-drawer-close"
             aria-label="Close"
             onClick={onClose}
-            className="ml-auto rounded-[3px] px-1 text-[13px] font-semibold leading-[13px]"
+            className="icon-hit ml-auto rounded-[3px] px-1 text-[13px] font-semibold leading-[13px]"
           >
             ×
           </button>

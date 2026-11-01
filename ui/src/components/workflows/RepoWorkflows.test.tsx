@@ -222,6 +222,11 @@ describe("RepoWorkflows — the workflow row (2e)", () => {
     expect(
       screen.getByTestId(`repo-workflow-toggle-${assignmentKey}`).getAttribute("aria-expanded"),
     ).toBe("false");
+    // Issue #68: the 14px chevron stays painted as is; the shared `.icon-hit`
+    // utility gives it a ≥28×28 hit area at desktop.
+    expect(
+      screen.getByTestId(`repo-workflow-toggle-${assignmentKey}`).className.split(/\s+/),
+    ).toContain("icon-hit");
     // 2e item 6: still ONE `+ Add trigger` — in the row while the box is shut.
     expect(screen.getAllByTestId(`repo-workflow-add-${assignmentKey}`)).toHaveLength(1);
   });
@@ -396,8 +401,9 @@ describe("RepoWorkflows — the STARTS WHEN box (2e)", () => {
     const scheduleRow = within(box).getByTestId(`repo-workflow-trigger-${testidOf(SCHEDULE_ID)}`);
     expect(scheduleRow.textContent).toContain("weekly Monday 06:00 UTC");
     expect(scheduleRow.textContent).toContain("0 6 * * 1");
-    // The fixed inputs ride the mono detail line (a long value is trimmed).
-    expect(scheduleRow.textContent).toContain("goal: “Plan this week");
+    // The fixed inputs ride the mono detail line (a long value is trimmed;
+    // issue #68 review: strings print unquoted — `goal: Plan this week…`).
+    expect(scheduleRow.textContent).toContain("goal: Plan this week");
     expect(scheduleRow.textContent).toContain("next");
 
     expect(box.textContent).toContain("Or start it by hand with Run, or from an issue below.");

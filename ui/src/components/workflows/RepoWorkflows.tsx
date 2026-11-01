@@ -362,7 +362,7 @@ function RepoWorkflowRow({
               aria-expanded={open}
               aria-label={open ? "Collapse triggers" : "Expand triggers"}
               onClick={onToggle}
-              className="shrink-0 rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              className="icon-hit shrink-0 rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               data-testid={`repo-workflow-toggle-${key}`}
             >
               <svg
@@ -933,11 +933,13 @@ function LastRunLink({ id, lead = "" }: { id: string; lead?: string }) {
   );
 }
 
-/** A schedule's fixed input value, short enough to live on the mono line. */
+/** A schedule's fixed input value, short enough to live on the mono line
+ *  (issue #68 review: printed unquoted — `repository: app`, not
+ *  `repository: "app"`; the 24-char ellipsis is kept). */
 function formatInputValue(value: unknown): string {
   if (typeof value === "string") {
     const flat = value.replace(/\s+/g, " ").trim();
-    return flat.length > 24 ? `“${flat.slice(0, 24)}…”` : `“${flat}”`;
+    return flat.length > 24 ? `${flat.slice(0, 24)}…` : flat;
   }
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "…";

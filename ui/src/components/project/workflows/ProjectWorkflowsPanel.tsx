@@ -395,7 +395,7 @@ function ProjectWorkflowRow({
               aria-expanded={open}
               aria-label={open ? "Collapse triggers" : "Expand triggers"}
               onClick={onToggle}
-              className="shrink-0 rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              className="icon-hit shrink-0 rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               data-testid={`project-workflow-toggle-${key}`}
             >
               <svg

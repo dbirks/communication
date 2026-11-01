@@ -399,3 +399,43 @@
     align-items: center;
   }
 }
+
+/*
+ * ICON-HIT — the desktop hit-target floor for icon-only controls (issue #68:
+ * “expand button, and several other icon-only buttons, are too small to hit
+ * comfortably at desktop size”; the lab measured 14×14 row-expander chevrons
+ * and 16×16 sidebar toggles at 1280). Apply `icon-hit` to any button whose
+ * painted box is smaller than the target; the box itself never grows.
+ *
+ * The mechanism is WorkflowRow's `PHONE_HIT` pattern turned around: an
+ * invisible absolutely-positioned `::after` centred on the control, inset
+ * `50% − 14px` — NEGATIVE (so it reaches past the border box) whenever the
+ * control is smaller than 28px on that axis, positive (so it stays inside,
+ * changing nothing) whenever it is not. Hit testing counts the pseudo, so
+ * every `.icon-hit` control answers to at least a 30×30 area at 1280 —
+ * comfortably clears the 28 the issue demands, and the 2px slack is what
+ * makes the area survive sub-pixel rows (measured at ±14px, a toggle on a
+ * fractional row read 27px under half-pixel hit probes).
+ *
+ * Scoped to ≥560px on purpose: below it the APP-SHELL-PHONE floor already
+ * owns every control (44px), and WorkflowRow's phone `PHONE_HIT` rules
+ * retarget this element's own `::after` — an unlayered rule leaking under
+ * 560 would outrank those utilities and shrink the phone hit area back to
+ * 28px. Above 767px `main button` measures nothing new either; the floor is
+ * the same on tablets, which have no 44px contract yet.
+ *
+ * Unlayered like APP-SHELL-PHONE, so it outranks component-layer pseudo
+ * rules; the components that carry it (`Sidebar`, `RowMenu`, the repo and
+ * project workflow row expanders, the drawer `×` closes) add no `::after`
+ * of their own.
+ */
+@media (width >= 560px) {
+  .icon-hit {
+    position: relative;
+  }
+  .icon-hit::after {
+    content: "";
+    position: absolute;
+    inset: calc(50% - 15px);
+  }
+}

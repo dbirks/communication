@@ -276,7 +276,7 @@ export function RunDrawer({ runId, boardRun, onClose }: RunDrawerProps) {
             data-testid="run-drawer-close"
             aria-label="Close"
             onClick={onClose}
-            className="ml-auto rounded-[3px] px-1 text-[13px] font-semibold leading-5"
+            className="icon-hit ml-auto rounded-[3px] px-1 text-[13px] font-semibold leading-5"
           >
             <span aria-hidden="true">×</span>
             <span className="sr-only">esc to close</span>

@@ -152,7 +152,11 @@ function mount(
 
 /** Collapse the open-by-default row (2e item 7) to reach the collapsed shape. */
 async function collapseRow() {
-  fireEvent.click(await screen.findByTestId(`project-workflow-toggle-${rowKey}`));
+  const toggle = await screen.findByTestId(`project-workflow-toggle-${rowKey}`);
+  // Issue #68: the 14px chevron stays painted as is; the shared `.icon-hit`
+  // utility gives it a ≥28×28 hit area at desktop.
+  expect(toggle.className.split(/\s+/)).toContain("icon-hit");
+  fireEvent.click(toggle);
   await waitFor(() => expect(screen.queryByTestId(`project-workflow-starts-${rowKey}`)).toBeNull());
 }
 
