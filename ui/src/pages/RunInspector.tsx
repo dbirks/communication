@@ -641,10 +641,35 @@ export default function RunInspector({
  * back `succeeded` or `skipped` has no target and the API answers `409
  * run_not_retriable` (`internal/store/postgres/m4api_runs_write.go`). A
  * **rejected gate is a business outcome, not an execution failure** (contract
- * § 5.3, C9e): the gate row is `succeeded` with `outcome: rejected`, so the
- * honest UI is a disabled Retry that says why — not a button that 409s.
+ * § 5.3, C9e): the gate row is `succeeded` with `outcome: rejected`.
+ *
+ * `show` is “this finished run deserves an explanation about retrying”; the dock
+ * renders `reason` in full whenever that is true (`WorkbenchDock`'s
+ * `dock-retry-verdict`). `available` is “a Retry verb exists to press”, and it is
+ * the only one of the two the header acts on: pass-1 review item 3 called the grey
+ * `Retry` button in `run-gate-completed-1280.png` what it is — a control that
+ * cannot do anything — and the 100-character sentence beside it measured ~537px,
+ * which is how wide the action column became and how the run's own H1 came to
+ * print `pr…`. So the header shows the verbs that apply to the run and, when none
+ * apply, `short`: the same fact in fewer characters than the header's other
+ * affordance needs, with the full sentence in its `title`.
  */
-export type RetryVerdict = { show: boolean; available: boolean; reason: string };
+export type RetryVerdict = {
+  show: boolean;
+  available: boolean;
+  /** The whole explanation, for the surface with room for a sentence (the dock). */
+  reason: string;
+  /**
+   * The explanation in the header's own measure — short enough that the action
+   * column it lives in stays narrower than the `Open pinned workflow` verb beside
+   * it, so the run's title is never the thing that gives way. `RETRY_NOTE_MAX`
+   * is that budget, and the unit test reads it.
+   */
+  short: string;
+};
+
+/** The most characters a finished run's header note may cost the title column. */
+export const RETRY_NOTE_MAX = 28;
 
 const RETRIABLE_NODE_STATUSES: readonly string[] = ["failed", "interrupted", "cancelled"];
 const TERMINAL_RUN_STATUSES: readonly string[] = ["completed", "failed", "cancelled"];
@@ -653,7 +678,7 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
   // Only a terminal run is offered a way back: a live or paused run's next
   // step is its own (route 31 refuses a `running` run outright).
   if (!TERMINAL_RUN_STATUSES.includes(status)) {
-    return { show: false, available: false, reason: "" };
+    return { show: false, available: false, reason: "", short: "" };
   }
   const targets = nodes.filter((n) => RETRIABLE_NODE_STATUSES.includes(n.status));
   if (targets.length > 0) {
@@ -661,6 +686,9 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
     return {
       show: true,
       available: true,
+      // The verb is there, so the header needs no note: `reason` rides the
+      // button's `title`, where it costs no width at all.
+      short: "",
       reason:
         `Re-runs ${targets.length} ${targets.length === 1 ? "node" : "nodes"}: ${targets
           .map((n) => n.node_instance_key)
@@ -681,6 +709,7 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
     return {
       show: true,
       available: false,
+      short: "the gate answered rejected",
       reason:
         `${gate.node_instance_key} answered rejected — a rejection is a business outcome, ` +
         "not an execution failure. No node failed, was interrupted or " +
@@ -690,30 +719,32 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
   return {
     show: true,
     available: false,
+    short: "nothing to retry",
     reason: "Nothing failed, was interrupted or was cancelled, so there is nothing to retry.",
   };
 }
 
-/** The run's verbs, and the sentence explaining a verb that is not offered.
+/** The run's verbs. A terminal run has ONE of them, and only when it applies.
  *
  * What a reader gets depends on whether the run can still be moved at all:
  *
  * - a live or paused run gets its own verbs (Pause/Resume and Cancel);
- * - a **terminal** run gets only `Retry` (round-2 review item 3). Pause and
- *   Cancel answer to a run that exists to be paused, and route 31 refuses both
- *   on a completed/failed/cancelled run — drawing them grey beside a grey
- *   `Retry` and a sentence said three times over that nothing here works. The
- *   one verb that can still do something stays; when even it has no target the
- *   sentence below explains why rather than a dead button guessing at it.
+ * - a **terminal** run gets `Retry` when route 31 has a target (`available`),
+ *   and nothing at all when it does not. Round-2 review item 3 removed Pause and
+ *   Cancel from finished runs (both routes refuse them); pass-1 review item 3
+ *   removed the disabled `Retry` and the sentence under it for the same reason
+ *   stated the other way round — a grey button that answers 409 is not a verb,
+ *   and the ~930px of explainer beside it is what truncated the H1 at 1280.
+ * - the explanation is never lost, only moved: `retryVerdict` still computes it,
+ *   the button carries it as its `title`, and the dock says it in full under the
+ *   node it is about (`dock-retry-verdict`), where a long line has room to wrap.
  *
- * Layout: a column with the buttons in their own wrapping row, so the reason is
- * a line UNDER the verbs rather than a `w-full` flex item beside them. In a
- * single non-wrapping row, `w-full` on that sentence asks the row for 100% of
- * the header's width on top of the buttons, which is what forced the title/meta
- * column to collapse: the sentence's own length became the actions column's
- * demanded width. `max-w-full` lets it take the column's width and wrap inside
- * it instead. A run with no reason to show — the normal side-by-side case — has
- * one child in this column and renders exactly where it rendered before. */
+ * Layout: a column with the buttons in their own wrapping row. Nothing in this
+ * column may demand the header's width — the title/meta column sits beside it on
+ * a 20rem flex-basis floor, and anything wider than that floor makes the header
+ * wrap, which is correct, but a sentence inside this column was previously
+ * measured *before* the wrap decision, so it set the title's width. The rule the
+ * tests pin: `run-actions` holds buttons and a refusal error, never prose. */
 export function RunActions({
   runId,
   status,
@@ -747,7 +778,9 @@ export function RunActions({
       <div className="flex flex-wrap items-center justify-end gap-2">
         {/* A terminal run shows no Pause and no Cancel: both routes refuse it,
             so the two grey boxes said “not here” twice beside the sentence that
-            says it properly (round-2 review item 3). */}
+            says it properly (round-2 review item 3). `available` is the same
+            rule applied to the last verb: pass-1 review item 3, and the H1 the
+            disabled button's explanation cost. */}
         {terminal ? null : status === "paused" ? (
           <Button
             variant="primary"
@@ -778,10 +811,10 @@ export function RunActions({
             Cancel
           </Button>
         )}
-        {verdict.show ? (
+        {verdict.show && verdict.available ? (
           <Button
             variant="secondary"
-            disabled={!verdict.available || retry.isPending}
+            disabled={retry.isPending}
             title={verdict.reason}
             data-testid="run-retry"
             onClick={retryRun}
@@ -790,9 +823,18 @@ export function RunActions({
           </Button>
         ) : null}
       </div>
-      {verdict.show && !verdict.available ? (
-        <p className="max-w-full font-mono text-[11px] text-faint" data-testid="run-retry-reason">
-          {verdict.reason}
+      {verdict.show && !verdict.available && verdict.short !== "" ? (
+        /* The finished run's one note, and it is short on purpose: this column
+         * sits beside the title, so whatever is widest in here is what the title
+         * column is left with after it. The full sentence is the `title` (the
+         * app's standing rule for a long fact one hover away) and the dock prints
+         * it in prose under the node it is about. */
+        <p
+          className="max-w-full font-mono text-[10.5px] text-faint"
+          title={verdict.reason}
+          data-testid="run-retry-reason"
+        >
+          × {verdict.short}
         </p>
       ) : null}
       {conflict ? (

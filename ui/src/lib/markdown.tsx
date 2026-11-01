@@ -18,7 +18,8 @@
  * - a ``` fence is a code block: mono, whitespace kept, no inline markup;
  * - `#`…`######` at the start of a line is a heading (level kept);
  * - `-`/`*`/`+` start a bullet, `1.`/`2)` an ordered item, `>` a quote;
- *   a nested list item (indented 2+ spaces) stays a bullet, one level in;
+ *   a nested list item (indented) becomes a list INSIDE the item above it, so
+ *   the outer list stays one list and keeps counting (see `MarkdownListItem`);
  * - `---`, `***` and `___` on their own line are a rule;
  * - anything else is a paragraph; blank lines separate blocks.
  *
@@ -44,8 +45,43 @@ export type MarkdownBlock =
   | { kind: "paragraph"; text: string }
   | { kind: "code"; text: string }
   | { kind: "quote"; text: string }
-  | { kind: "list"; ordered: boolean; depth: number; items: string[] }
+  | MarkdownListBlock
   | { kind: "rule" };
+
+/**
+ * A list, with the number its first marker asked for.
+ *
+ * `start` is what an ordered list's numbering counts from (CommonMark reads it
+ * off the FIRST marker, so `3. a\n4. b` prints 3, 4). A bullet list carries 1
+ * and never shows it.
+ */
+export interface MarkdownListBlock {
+  kind: "list";
+  ordered: boolean;
+  /** Nesting level of this list: 0 at the document margin, 1 inside an item. */
+  depth: number;
+  /** The number of the first item (`1.` → 1, `3)` → 3). */
+  start: number;
+  items: MarkdownListItem[];
+}
+
+/**
+ * One item of a list: its own text, plus the blocks written UNDER it.
+ *
+ * This is the shape that keeps a numbered plan numbered. The scanner used to
+ * emit a step's nested `   - Files: …` bullet as a SIBLING block, and because a
+ * list only continues the block directly before it, the next `1.` opened a new
+ * list whose first number is 1 — so `run-gate-waiting-1280.png` printed
+ * “1. Confirm… 1. Execute… 1. Produce…” for a six-step plan. An author writes
+ * those indented lines as part of the step, so they are stored as part of the
+ * step (`children`), the outer list is never interrupted, and the numbers run
+ * 1…N like the author's own ordering. Blank lines between items are the same
+ * case: they separate the author's paragraphs, not two lists.
+ */
+export interface MarkdownListItem {
+  text: string;
+  children: MarkdownBlock[];
+}
 
 /** An inline span: plain text, code, strong, emphasis, or a link with a resolved href. */
 export type MarkdownInline =
@@ -66,32 +102,82 @@ const FENCE = /^[ \t]*(```+|~~~+)(.*)$/;
 function listItemMarker(text: string): string {
   return text.replace(/^[-*+]\s+/, "").replace(/^\d+[.)]\s+/, "");
 }
+/** A line's indentation in spaces (a tab counts as two). */
+function indentWidth(line: string): number {
+  return (/^[ \t]*/.exec(line) ?? [""])[0].replace(/\t/g, "  ").length;
+}
+/** A line with its indentation removed — what the block patterns match on. */
+function undented(line: string): string {
+  return line.replace(/^[ \t]+/, "");
+}
+
+/** One open list: how deep it is indented, the blocks it was written into, the
+ * list itself, and the item its deeper lines belong to. The scanner keeps a
+ * stack of these, outermost first, which is what lets `  - Files:` below
+ * `1. Confirm` be the step's own content instead of a rival list. */
+interface OpenList {
+  indent: number;
+  /** The block list this list was pushed into (the document's, or an item's). */
+  owner: MarkdownBlock[];
+  list: MarkdownListBlock;
+  item: MarkdownListItem;
+}
 
 /**
- * Split markdown into blocks. Consecutive list items of the same kind and
- * indent become one list; a paragraph is one block per source line-group, so
- * the author's line breaks survive (a plan's step-per-line shape is content).
+ * Split markdown into blocks. A list keeps going across its own items — with
+ * their nested lists, indented continuation lines and blank lines — until a
+ * block at its own margin says otherwise; a paragraph is one block per source
+ * line-group, so the author's line breaks survive (a plan's step-per-line shape
+ * is content).
  */
 export function parseMarkdown(source: string): MarkdownBlock[] {
   const lines = (source ?? "").replace(/\r\n?/g, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
   /** Lines of the paragraph being collected; flushed by a blank line. */
   let paragraph: string[] = [];
-  /** The open ``` fence, null while outside one. */
-  let fence: { marker: string; lines: string[] } | null = null;
+  /** The open ``` fence, null while outside one. `inItem` remembers whether the
+   * fence was opened inside a list item, so closing it can leave that item open. */
+  let fence: {
+    marker: string;
+    owner: MarkdownBlock[];
+    inItem: boolean;
+    lines: string[];
+  } | null = null;
+  const open: OpenList[] = [];
+  /** Whether the last content line was part of a list item: that is what lets
+   * an UNINDENTED line keep the item's sentence going (CommonMark's lazy
+   * continuation) instead of starting a paragraph beside the list. */
+  let itemIsRecent = false;
 
-  const flushParagraph = () => {
-    if (paragraph.length === 0) return;
-    blocks.push({ kind: "paragraph", text: paragraph.join("\n") });
-    paragraph = [];
+  const endLists = () => {
+    open.length = 0;
+    itemIsRecent = false;
   };
-  const pushList = (ordered: boolean, depth: number, items: string[]) => {
-    const last = blocks.at(-1);
-    if (last && last.kind === "list" && last.ordered === ordered && last.depth === depth) {
-      last.items.push(...items);
-      return;
-    }
-    blocks.push({ kind: "list", ordered, depth, items });
+  /** The blocks a line indented `indent` belongs to: the open item's own
+   * children when it is written deeper than that item, the document's root
+   * otherwise. Asking this before ending the lists is the whole trick — an
+   * indented block is *inside* the step, so the step's list does not end. */
+  const containerFor = (indent: number): MarkdownBlock[] => {
+    const level = open.at(-1);
+    return level && indent > level.indent ? level.item.children : blocks;
+  };
+  /** Hand the collected paragraph lines to `container` (the root paragraph also
+   * ends any list: prose at the margin is not a step's continuation). */
+  const flushParagraphInto = (container: MarkdownBlock[]) => {
+    if (paragraph.length === 0) return;
+    container.push({ kind: "paragraph", text: paragraph.join("\n") });
+    paragraph = [];
+    if (container === blocks) endLists();
+  };
+  const flushParagraph = () => flushParagraphInto(blocks);
+  /** A block line: its paragraph goes with it, and a block at the document's
+   * margin closes the open list rather than nesting inside its last item. */
+  const pushBlock = (indent: number, block: MarkdownBlock) => {
+    const container = containerFor(indent);
+    flushParagraphInto(container);
+    container.push(block);
+    if (container === blocks) endLists();
+    else itemIsRecent = true;
   };
 
   for (const line of lines) {
@@ -99,62 +185,137 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
     if (fence) {
       // Inside a fence everything is bytes: a `#` there is not a heading.
       if (fenceMatch && fenceMatch[1][0] === fence.marker[0]) {
-        blocks.push({ kind: "code", text: fence.lines.join("\n") });
+        const inItem = fence.inItem;
+        fence.owner.push({ kind: "code", text: fence.lines.join("\n") });
         fence = null;
+        // The list the fence sat inside is still the open one: a step that
+        // shows a command does not stop being step 2.
+        itemIsRecent = inItem;
       } else {
         fence.lines.push(line);
       }
       continue;
     }
     if (fenceMatch) {
-      flushParagraph();
-      fence = { marker: fenceMatch[1], lines: [] };
+      const indent = indentWidth(line);
+      const owner = containerFor(indent);
+      flushParagraphInto(owner);
+      fence = { marker: fenceMatch[1], owner, inItem: owner !== blocks, lines: [] };
       continue;
     }
     if (line.trim() === "") {
       flushParagraph();
+      // A blank line between two steps is the author's spacing, not a second
+      // list: the open list survives it, and only an indented-or-marker line
+      // that follows decides whether the item is still being written.
+      itemIsRecent = false;
       continue;
     }
-    const heading = HEADING.exec(line);
+    const indent = indentWidth(line);
+    const text = undented(line);
+    const heading = HEADING.exec(text);
     if (heading) {
-      flushParagraph();
-      blocks.push({ kind: "heading", level: heading[1].length, text: heading[2].trim() });
+      pushBlock(indent, { kind: "heading", level: heading[1].length, text: heading[2].trim() });
       continue;
     }
-    if (RULE.test(line) && !/\w/.test(line)) {
-      flushParagraph();
-      blocks.push({ kind: "rule" });
+    if (RULE.test(text) && !/\w/.test(text)) {
+      pushBlock(indent, { kind: "rule" });
+      continue;
+    }
+    const quote = QUOTE.exec(text);
+    if (quote) {
+      pushBlock(indent, { kind: "quote", text: quote[1] });
       continue;
     }
     const bullet = BULLET.exec(line);
-    if (bullet) {
+    const ordered = bullet ? null : ORDERED.exec(line);
+    if (bullet || ordered) {
+      // A list marker interrupts whatever prose came before it (`01` writes its
+      // steps as `prose` then `1.`), so the paragraph goes to the document
+      // first and the marker starts clean.
       flushParagraph();
-      pushList(false, indentDepth(bullet[1]), [listItemMarker(bullet[3])]);
+      addListItem({
+        open,
+        blocks,
+        indent,
+        ordered: ordered !== null,
+        start: ordered ? Number(ordered[2]) : 1,
+        text: listItemMarker(bullet ? bullet[3] : ordered![4]),
+      });
+      itemIsRecent = true;
       continue;
     }
-    const ordered = ORDERED.exec(line);
-    if (ordered) {
-      flushParagraph();
-      pushList(true, indentDepth(ordered[1]), [listItemMarker(ordered[4])]);
+    // Not a block start: either the open step's own sentence continuing, or a
+    // paragraph. Deeper than the step is always its continuation; at its own
+    // margin only straight after the step's line (no blank between).
+    const level = open.at(-1);
+    if (level && (indent > level.indent || (itemIsRecent && indent <= level.indent))) {
+      level.item.text = joinItemText(level.item.text, text);
+      itemIsRecent = true;
       continue;
     }
-    const quote = QUOTE.exec(line);
-    if (quote) {
-      flushParagraph();
-      blocks.push({ kind: "quote", text: quote[1] });
-      continue;
-    }
-    paragraph.push(line.trim());
+    // Prose at the document's margin, written after a blank line, is not the
+    // step's sentence: the list it follows is over. The paragraph buffer keeps
+    // its own lines — blank lines, not consecutive prose, separate paragraphs.
+    endLists();
+    paragraph.push(text);
   }
   // An unterminated fence (a truncated plan) still shows what it had.
-  if (fence) blocks.push({ kind: "code", text: fence.lines.join("\n") });
+  if (fence) fence.owner.push({ kind: "code", text: fence.lines.join("\n") });
   flushParagraph();
   return blocks;
 }
 
-/** Two spaces of list indent is one level; the scanner keeps two depths. */
-function indentDepth(indent: string): number {
-  return indent.replace(/\t/g, "  ").length >= 2 ? 1 : 0;
+/** Two written lines of one item are one sentence to a reader. */
+function joinItemText(before: string, after: string): string {
+  return before === "" ? after : `${before} ${after}`;
+}
+
+/** Place one list marker line on the open-list stack. */
+function addListItem(input: {
+  open: OpenList[];
+  blocks: MarkdownBlock[];
+  indent: number;
+  ordered: boolean;
+  start: number;
+  text: string;
+}): void {
+  const { open, blocks, indent, ordered, start, text } = input;
+  // Any list indented deeper than this line closed when the author dedented.
+  while (open.length > 0 && open.at(-1)!.indent > indent) open.pop();
+  const level = open.at(-1);
+  let owner: MarkdownBlock[];
+  let list: MarkdownListBlock;
+  if (level && level.indent === indent && level.list.ordered === ordered) {
+    // The same list, the next item: the number keeps counting from `list.start`.
+    owner = level.owner;
+    list = level.list;
+  } else {
+    // Either a deeper list (owned by the item above it — the nested `- Files:`
+    // under a step) or the marker kind changing at this indent (a bullet list
+    // starting where the numbered one ended, CommonMark's own split).
+    if (level && level.indent === indent) {
+      owner = level.owner;
+      list = newList(ordered, level.list.depth, start);
+    } else if (level) {
+      owner = level.item.children;
+      list = newList(ordered, level.list.depth + 1, start);
+    } else {
+      owner = blocks;
+      list = newList(ordered, 0, start);
+    }
+    owner.push(list);
+  }
+  const item: MarkdownListItem = { text, children: [] };
+  list.items.push(item);
+  // Truncate to this line's depth: a deeper level from an earlier branch of the
+  // tree is closed (`  - b` then `1. two` — the nested list is over).
+  while (open.length > 0 && open.at(-1)!.indent >= indent) open.pop();
+  open.push({ indent, owner, list, item });
+}
+
+function newList(ordered: boolean, depth: number, start: number): MarkdownListBlock {
+  return { kind: "list", ordered, depth, start: ordered ? start : 1, items: [] };
 }
 
 /**
@@ -366,78 +527,101 @@ export function MarkdownBody({ text, className = "", paragraphClassName = "" }: 
   const blocks = parseMarkdown(text);
   return (
     <div className={className} data-testid="markdown-body">
-      {blocks.map((block, index) => {
-        if (block.kind === "heading") {
-          const size = block.level <= 1 ? "text-[13.5px]" : "text-[12.5px]";
-          return (
-            <p
-              key={index}
-              data-testid="markdown-heading"
-              className={`${size} mt-[6px] font-bold first:mt-0`}
-            >
-              {renderInline(block.text)}
-            </p>
-          );
-        }
-        if (block.kind === "code") {
-          return (
-            <pre
-              key={index}
-              tabIndex={0}
-              data-testid="markdown-code"
-              className="overflow-x-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
-            >
-              {block.text}
-            </pre>
-          );
-        }
-        if (block.kind === "quote") {
-          return (
-            <p
-              key={index}
-              data-testid="markdown-quote"
-              className={`border-l-2 border-line pl-[8px] text-ink-2 ${paragraphClassName}`}
-            >
-              {renderInline(block.text)}
-            </p>
-          );
-        }
-        if (block.kind === "rule") {
-          return <hr key={index} data-testid="markdown-rule" className="border-t border-line" />;
-        }
-        if (block.kind === "list") {
-          const List = block.ordered ? "ol" : "ul";
-          return (
-            <List
-              key={index}
-              data-testid={block.ordered ? "markdown-list-ordered" : "markdown-list"}
-              className={`space-y-[2px] ${block.depth > 0 ? "ml-[16px]" : ""}`}
-            >
-              {block.items.map((item, itemIndex) => (
-                <li
-                  key={itemIndex}
-                  className="flex gap-[6px] break-words"
-                  data-testid="markdown-list-item"
-                >
-                  <span aria-hidden className="shrink-0 text-faint">
-                    {block.ordered ? `${itemIndex + 1}.` : "\u00b7"}
-                  </span>
-                  <span className="min-w-0">{renderInline(item)}</span>
-                </li>
-              ))}
-            </List>
-          );
-        }
-        return (
-          <p
-            key={index}
-            data-testid="markdown-paragraph"
-            className={`break-words whitespace-pre-line ${paragraphClassName}`}
-          >
-            {renderInline(block.text)}
-          </p>
-        );
-      })}
+      {blocks.map((block, index) => renderBlock(block, String(index), paragraphClassName))}
     </div>
+  );
+}
+
+/**
+ * One block, keyed. A list item's own children come back through here, which is
+ * what makes nesting real: the nested `- Files:` bullets are drawn inside their
+ * step, so the numbered plan above them is never interrupted and never restarts
+ * its numbering at 1 (the shape `run-gate-waiting-1280.png` showed).
+ */
+function renderBlock(block: MarkdownBlock, key: string, paragraphClassName: string): ReactNode {
+  if (block.kind === "heading") {
+    const size = block.level <= 1 ? "text-[13.5px]" : "text-[12.5px]";
+    return (
+      <p
+        key={key}
+        data-testid="markdown-heading"
+        className={`${size} mt-[6px] font-bold first:mt-0`}
+      >
+        {renderInline(block.text)}
+      </p>
+    );
+  }
+  if (block.kind === "code") {
+    return (
+      <pre
+        key={key}
+        tabIndex={0}
+        data-testid="markdown-code"
+        // `width:0` + `min-width:100%`: a fence's longest line may be a 400-character
+        // JSON string, and a box with a definite width contributes nothing to an
+        // ancestor's max-content size — so the code scrolls inside its own box at
+        // 390 instead of pushing the page sideways (`artifact-plan-md-390.png`).
+        style={{ width: 0, minWidth: "100%" }}
+        className="max-w-full overflow-x-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
+      >
+        {block.text}
+      </pre>
+    );
+  }
+  if (block.kind === "quote") {
+    return (
+      <p
+        key={key}
+        data-testid="markdown-quote"
+        className={`border-l-2 border-line pl-[8px] text-ink-2 ${paragraphClassName}`}
+      >
+        {renderInline(block.text)}
+      </p>
+    );
+  }
+  if (block.kind === "rule") {
+    return <hr key={key} data-testid="markdown-rule" className="border-t border-line" />;
+  }
+  if (block.kind === "list") {
+    const List = block.ordered ? "ol" : "ul";
+    return (
+      <List
+        key={key}
+        // The author's own first number is the list's start (`3.` begins at 3);
+        // every later item is numbered by the list, not by its marker, exactly
+        // as an `<ol>` does it — which is why a plan that writes `1.` for all
+        // six steps still reads 1…6.
+        start={block.ordered ? block.start : undefined}
+        data-testid={block.ordered ? "markdown-list-ordered" : "markdown-list"}
+        className={`space-y-[2px] ${block.depth > 0 ? "ml-[16px]" : ""}`}
+      >
+        {block.items.map((item, itemIndex) => (
+          <li
+            key={itemIndex}
+            className="flex gap-[6px] break-words"
+            data-testid="markdown-list-item"
+          >
+            <span aria-hidden className="shrink-0 text-faint">
+              {block.ordered ? `${block.start + itemIndex}.` : "\u00b7"}
+            </span>
+            <div className="min-w-0 space-y-[2px]">
+              {renderInline(item.text)}
+              {item.children.map((child, childIndex) =>
+                renderBlock(child, `${key}-${itemIndex}-${childIndex}`, paragraphClassName),
+              )}
+            </div>
+          </li>
+        ))}
+      </List>
+    );
+  }
+  return (
+    <p
+      key={key}
+      data-testid="markdown-paragraph"
+      className={`break-words whitespace-pre-line ${paragraphClassName}`}
+    >
+      {renderInline(block.text)}
+    </p>
   );
 }

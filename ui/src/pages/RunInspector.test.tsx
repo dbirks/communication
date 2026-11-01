@@ -26,6 +26,7 @@ import { routes as appRoutes } from "../lib/routes";
 import RunInspector, {
   attentionNodeId,
   diagnosticsLayoutFor,
+  RETRY_NOTE_MAX,
   retryVerdict,
   type DiagnosticsLayout,
 } from "./RunInspector";
@@ -1035,23 +1036,57 @@ const wireVerifyFailedNodes: NodeExecution[] = [
 const summaries = (nodes: NodeExecution[]): NodeExecutionSummary[] => nodes.map(viewNodeExecution);
 
 describe("the run page's Retry control", () => {
-  it("explains a business rejection instead of offering a Retry that would 409", async () => {
+  // Pass-1 design review item 3 (`run-gate-completed-1280.png`): the disabled
+  // `Retry` was not a verb, and the ~100-character sentence under it was wide
+  // enough to crush the run's H1 to `pr…` at 1280. A finished run now shows the
+  // verbs that apply to it — which, when nothing failed, is none — and the
+  // explanation stays in `retryVerdict`, where the dock renders it beside a node
+  // that really failed (`dock-retry-verdict`).
+  it("offers no Retry verb at all to a run whose gate was answered rejected", async () => {
     const { requests } = mountRun("", [
       { path: RUN_PATH, body: { ...wireRun, status: "completed" } },
       { path: `${RUN_PATH}/nodes`, body: { node_executions: wireRejectedGateNodes } },
     ]);
     await screen.findByTestId("run-title");
 
-    const retry = screen.getByTestId("run-retry") as HTMLButtonElement;
-    expect(retry.disabled).toBe(true);
-    const reason = screen.getByTestId("run-retry-reason").textContent ?? "";
-    expect(reason).toContain("/approve");
-    expect(reason).toContain("rejected");
-    expect(reason).toContain("business outcome");
-    // The honest sentence, not an invented "you can retry anyway".
-    expect(reason).toContain("no target");
-    fireEvent.click(retry);
+    expect(screen.queryByTestId("run-retry")).toBeNull();
+    // A finished run keeps no verbs at all when none of them apply…
+    const actions = screen.getByTestId("run-actions");
+    expect(actions.querySelectorAll("button")).toHaveLength(0);
+    // …but the fact the dead control stood for is still on screen, in the
+    // header's own measure, with the full sentence on its `title`.
+    const note = screen.getByTestId("run-retry-reason");
+    expect(note.textContent).toContain("answered rejected");
+    expect(note.getAttribute("title")).toContain("business outcome");
+    // The sentence itself is unchanged, and still refuses to invent a way back.
+    const reason = retryVerdict("completed", summaries(wireRejectedGateNodes));
+    expect(reason).toMatchObject({ show: true, available: false });
+    expect(reason.reason).toContain("/approve");
+    expect(reason.reason).toContain("rejected");
+    expect(reason.reason).toContain("business outcome");
+    expect(reason.reason).toContain("no target");
+    // …and no click can arm a request that would only 409.
     await waitFor(() => expect(requestsTo(requests, `${RUN_PATH}/retry`, "POST")).toHaveLength(0));
+  });
+
+  it("keeps the finished run's note inside the header's measure, so the title survives", async () => {
+    // The measurement the review made: prose inside the action column is measured
+    // before the header wraps, so its length became the title column's width and
+    // the H1 printed `pr…`. The note is therefore budgeted in CHARACTERS — the
+    // one rule jsdom can prove, and the reason it is not a CSS clamp.
+    mountRun("", [
+      { path: RUN_PATH, body: { ...wireRun, status: "completed" } },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireRejectedGateNodes } },
+    ]);
+    await screen.findByTestId("run-title");
+
+    const note = screen.getByTestId("run-retry-reason");
+    const visible = (note.textContent ?? "").replace(/^\s*\u00d7\s*/, "").trim();
+    expect(visible.length).toBeLessThanOrEqual(RETRY_NOTE_MAX);
+    // The summarised sentence did not shrink with it.
+    expect((note.getAttribute("title") ?? "").length).toBeGreaterThan(visible.length * 2);
+    expect(screen.getByTestId("run-title").textContent).toBe("ship M4");
+    inspectorHeaderWidthContract([]);
   });
 
   it("gives a run whose worker node failed a Retry that posts route 31", async () => {
@@ -1161,10 +1196,10 @@ describe("the run page's Retry control", () => {
  * zero flex-basis makes its width whatever the actions column leaves: a
  * completed run at 1280 with the `Retry` reason sentence showing left the meta
  * line and the title a ~54–66px column. The column now carries a 20rem basis
- * floor, the header wraps its lines at the right edge, and `RunActions` puts
- * that sentence UNDER its verbs instead of asking for the header's whole width
- * beside them (`w-full` on a non-wrapping row). A header that already fits side
- * by side is untouched — which is why the normal run asserts the same classes. */
+ * floor, the header wraps its lines at the right edge — and after the pass-1
+ * review the action column holds NO standing prose at all, because a sentence
+ * inside it is measured before the wrap decision and so set the title's width
+ * however the floor was spelled. */
 function inspectorHeaderWidthContract(
   verbsToShow: readonly string[] = ["run-pause", "run-cancel"],
 ) {
@@ -1187,9 +1222,10 @@ function inspectorHeaderWidthContract(
   expect(classes(actions)).not.toContain("flex-1");
   expect(header.children[1]).toBe(actions);
 
-  // The reason sentence is a line under the verbs, never a `w-full` flex item
-  // beside them: it may span the actions column, but it cannot demand the
-  // header's whole width and crush the meta line to afford it.
+  // The verbs are the only standing content of the actions column. A paragraph
+  // in here may only be the error a click just produced (`run-action-error`),
+  // and even that one wraps inside the column instead of demanding the header's
+  // width — which is what used to crush the meta line and the H1.
   const verbs = actions.children[0] as HTMLElement;
   expect(classes(verbs)).not.toContain("flex-col");
   for (const verb of verbsToShow) {
@@ -1199,24 +1235,36 @@ function inspectorHeaderWidthContract(
     expect(verbs.contains(line)).toBe(false);
     expect(classes(line)).not.toContain("w-full");
     expect(classes(line)).toContain("max-w-full");
+    if (line.getAttribute("data-testid") === "run-retry-reason") {
+      // The one standing sentence in the action column: short enough that the
+      // column stays no wider than the verbs beside it.
+      const visible = (line.textContent ?? "").replace(/^\s*\u00d7\s*/, "").trim();
+      expect(visible.length).toBeLessThanOrEqual(RETRY_NOTE_MAX);
+      expect((line.getAttribute("title") ?? "").toLowerCase()).toContain("retry");
+    } else {
+      expect(line.getAttribute("data-testid")).toBe("run-action-error");
+    }
   }
   return { meta, column, header, actions };
 }
 
 describe("the inspector header's width", () => {
-  it("puts the meta line on a flex-basis floor so a wide action column wraps below it", async () => {
-    // The crushed case: a completed run whose gate was answered rejected, so the
-    // long `Retry` reason sentence is showing. A terminal run now shows ONE verb
-    // (`run-retry`) — Pause and Cancel went with round-2 review item 3 — and the
-    // sentence is still the wide thing the floor exists to absorb.
+  it("gives a finished run's header back to its own title", async () => {
+    // The crushed case of `run-gate-completed-1280.png`: a completed run whose
+    // gate was answered rejected. It has no disabled `Retry`, no Pause and no
+    // Cancel (route 31 refuses all three), and the note that replaces them is the
+    // short one — so the header's width belongs to the run's title, not to a
+    // sentence about why nothing can be done.
     mountRun("", [
       { path: RUN_PATH, body: { ...wireRun, status: "completed" } },
       { path: `${RUN_PATH}/nodes`, body: { node_executions: wireRejectedGateNodes } },
     ]);
     await screen.findByTestId("run-title");
 
-    expect(screen.getByTestId("run-retry-reason").textContent).toContain("business outcome");
-    inspectorHeaderWidthContract(["run-retry"]);
+    const actions = screen.getByTestId("run-actions");
+    expect(actions.querySelectorAll("button")).toHaveLength(0);
+    expect((actions.textContent ?? "").trim()).toBe("× the gate answered rejected");
+    inspectorHeaderWidthContract([]);
     // …and the two verbs route 31 refuses on a terminal run are gone, not grey.
     expect(screen.queryByTestId("run-pause")).toBeNull();
     expect(screen.queryByTestId("run-cancel")).toBeNull();

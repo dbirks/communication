@@ -207,6 +207,49 @@ test.describe("run-gate-artifacts (alice)", () => {
         page.getByTestId("approval-node"),
         "design: the run view opens the gate card for the waiting approve node",
       ).toBeVisible({ timeout: 30_000 });
+      // Pass-1 design review item 2 (`run-gate-waiting-1280.png`): the plan runs
+      // ~1800px tall and Approve/Reject sat at the bottom of it with nothing
+      // pinned. The card is not clamped (round-2 review item 3 forbids that) — it
+      // carries a Decide verb at its TOP instead, above the plan.
+      const jump = page.getByTestId("approval-decide-jump");
+      await expect(jump, "the gate card offers the decision from its top").toBeVisible({
+        timeout: 30_000,
+      });
+      const [jumpBox, summaryBox, approveBox] = await Promise.all([
+        jump.boundingBox(),
+        page.getByTestId("approval-summary").boundingBox(),
+        page.getByTestId("approval-approve").boundingBox(),
+      ]);
+      expect(jumpBox, "the Decide verb is on screen").not.toBeNull();
+      expect(summaryBox, "the plan is on screen").not.toBeNull();
+      expect(approveBox, "the decision form is on screen").not.toBeNull();
+      // The jump sits above the plan, and the plan is what pushes the verbs down:
+      // the gap the reader used to have to scroll is the gap these two measure.
+      expect(jumpBox!.y).toBeLessThan(summaryBox!.y);
+      expect(approveBox!.y - summaryBox!.y).toBeGreaterThan(0);
+      // …and taking it moves the reader to the form (jsdom cannot measure a
+      // scroll; the live page can).
+      await jump.click();
+      expect(
+        await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? ""),
+        "the jump lands the reader in the decision form",
+      ).toBe("approval-comment");
+      // Pass-1 review item 1: the plan's steps are ONE ordered list, so the
+      // reader can count them — the renderer used to print “1.” for every step.
+      const stepNumbers = await page
+        .getByTestId("markdown-list-ordered")
+        .locator(":scope > li > span[aria-hidden]")
+        .allTextContents();
+      expect(stepNumbers.join(" "), "the plan's steps are numbered in order").toMatch(
+        /^(1\. 2\.|1\. 2\. 3\.|1\. 2\. 3\. 4\.|1\. 2\. 3\. 4\. 5\. 6\.)/,
+      );
+      // The run's own title is never the thing that gives way (item 3).
+      expect(
+        await page.evaluate(() => {
+          const title = document.querySelector('[data-testid="run-title"]');
+          return title instanceof HTMLElement ? title.scrollWidth - title.clientWidth : 9999;
+        }),
+      ).toBeLessThanOrEqual(0);
       // The run page offers the decision from the gate card itself or from
       // its attention drawer — whichever this build wires up.
       const approve = page.getByTestId("approval-approve");
@@ -247,6 +290,25 @@ test.describe("run-gate-artifacts (alice)", () => {
         "the run COMPLETES (not fails) after the approval — plan-with-approval with a real model.chat",
       ).toBe("completed");
       await page.reload();
+      // Pass-1 design review item 3 (`run-gate-completed-1280.png`): a finished
+      // run showed a disabled `Retry` plus a ~100-character sentence beside it,
+      // and that sentence was wide enough to truncate the run's H1 to `pr…`. The
+      // changed contract: no dead verb on a run that ended clean, the note in the
+      // header's own measure, and the title whole at 1280.
+      await expect(page.getByTestId("run-retry"), "no Retry verb on a finished run").toHaveCount(
+        0,
+        {
+          timeout: 30_000,
+        },
+      );
+      await expect(page.getByTestId("run-retry-reason")).toBeVisible();
+      expect(
+        await page.evaluate(() => {
+          const title = document.querySelector('[data-testid="run-title"]');
+          if (!(title instanceof HTMLElement)) return 9999;
+          return title.scrollWidth - title.clientWidth;
+        }),
+      ).toBeLessThanOrEqual(0);
       await emu.screen("run-gate", "completed");
     });
 
@@ -286,6 +348,44 @@ test.describe("run-gate-artifacts (alice)", () => {
       expect(body, "no error state on the artifact page").not.toMatch(
         /could not be (read|shown)|failed to load|artifact not found/i,
       );
+      // Pass-1 design review item 4 (`artifact-plan-md-1280.png`): the page used
+      // to print what was stored — the `model.chat` envelope's `{endpoint, model,
+      // text}` with the plan escaped inside a string — under a byline written for
+      // whoever runs the worker. The document reads as the document now, the
+      // payload is behind “show raw”, and the byline names the step and the run.
+      const prose = page.getByTestId("artifact-preview-prose");
+      await expect(prose, "the preview holds the plan, not its envelope").toBeVisible();
+      const firstHeading = prose.locator('[data-testid="markdown-heading"]').first();
+      await expect(firstHeading, "the plan's own heading leads the preview").toBeVisible();
+      expect(await firstHeading.textContent()).toMatch(/^Plan[:\s]/i);
+      await expect(prose, "no API field in the document").not.toContainText("endpoint");
+      await expect(prose, "no escaped markdown in the document").not.toContainText("\\n");
+      await expect(
+        page.getByTestId("artifact-published-by"),
+        "the byline is plain words",
+      ).toContainText(/Published by the .*publish_plan.* step of run/i);
+      await expect(page.getByTestId("artifact-published-by")).not.toContainText("artifact.publish");
+      const raw = page.getByTestId("artifact-preview-raw");
+      await expect(raw, "the stored payload starts hidden").toBeHidden();
+      await page.getByTestId("artifact-raw-toggle").click();
+      await expect(raw, "one click shows the stored payload").toBeVisible();
+      await expect(raw).toContainText("endpoint");
+      // The payload's long lines scroll inside their box at phone width instead of
+      // pushing the page sideways off the screen.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect
+        .poll(async () =>
+          page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+        )
+        .toBeLessThanOrEqual(0);
+      expect(
+        await page.evaluate(() => {
+          const box = document.querySelector('[data-testid="artifact-preview-raw"]');
+          if (!(box instanceof HTMLElement)) return 9999;
+          return box.getBoundingClientRect().right - document.documentElement.clientWidth;
+        }),
+      ).toBeLessThanOrEqual(0);
+      await page.setViewportSize({ width: 1280, height: 900 });
       await emu.screen("artifact", "plan-md");
     });
   });

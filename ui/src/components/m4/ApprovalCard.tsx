@@ -19,7 +19,7 @@
  * (`approval_expired`). The copy below says exactly that; the old
  * "rejecting fails this run" promise contradicted the engine and is gone.
  */
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { ApprovalDecision, ApprovalDetail } from "../../lib/pipeline/contract";
 import { deciderLabel, fallbackName } from "../../api/actors";
 import { Panel } from "../ds/Panel";
@@ -73,6 +73,21 @@ export function ApprovalCard({
   nameOf = fallbackName,
 }: ApprovalCardProps) {
   const [comments, setComments] = useState("");
+  /** The decision form is the end of a card that can run past a screenful of
+   * plan, so the card keeps a handle on it for the jump verb below. */
+  const decisionFormRef = useRef<HTMLDivElement | null>(null);
+  const decisionFormId = useId();
+  const jumpToDecision = () => {
+    const form = decisionFormRef.current;
+    if (!form) return;
+    // `scrollIntoView` is the only way to reach the target inside whichever pane
+    // scrolls it (the dock on the workbench, the page on a small screen), and it
+    // is missing from jsdom, so the focus below is what a test proves.
+    if (typeof form.scrollIntoView === "function") {
+      form.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    form.querySelector("textarea")?.focus();
+  };
   const state = stateOf(APPROVAL_STATE[approval.state]);
   // A summary can be prose, or a title line with the planner's JSON document
   // glued to it. The JSON is decoded rather than printed (`PlanView`).
@@ -117,6 +132,34 @@ export function ApprovalCard({
       className={className}
     >
       <div className="space-y-[10px] p-[10px]">
+        {/* The plan a gate asks you to approve can be sixty-odd lines (the
+         * pass-1 review measured `run-gate-waiting-1280.png`: Approve/Reject sat
+         * ~1800px down, off the bottom of the card with nothing pinned). The
+         * decision stays where the evidence ends — PlanView is not clamped, by
+         * design — but the card says so at the top and puts one verb there to get
+         * there: a click or a Enter/Space press lands the reader on the form. */}
+        {open && canDecide ? (
+          <div
+            className="flex flex-wrap items-center gap-[8px] rounded-[3px] border border-accent-mid bg-accent-wash p-[8px]"
+            data-testid="approval-decide-bar"
+          >
+            <p
+              className="min-w-0 grow text-[12.5px] leading-[17px] text-ink-2"
+              data-testid="approval-decide-hint"
+            >
+              The whole plan is below — the decision is at the end of it.
+            </p>
+            <button
+              type="button"
+              onClick={jumpToDecision}
+              aria-controls={decisionFormId}
+              className="shrink-0 rounded-[3px] border border-ink bg-surface px-[8px] py-[4px] text-[12px] font-semibold text-ink hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              data-testid="approval-decide-jump"
+            >
+              Decide ↓
+            </button>
+          </div>
+        ) : null}
         <div data-testid="approval-summary">
           {summary.title ? (
             <p className="text-[13.5px] leading-[20px]" data-testid="approval-summary-title">
@@ -203,7 +246,12 @@ export function ApprovalCard({
         )}
 
         {open && canDecide ? (
-          <div className="space-y-[8px]" data-testid="approval-decision-form">
+          <div
+            id={decisionFormId}
+            ref={decisionFormRef}
+            className="space-y-[8px]"
+            data-testid="approval-decision-form"
+          >
             <Field
               id="approval-comments"
               label="comments (optional)"

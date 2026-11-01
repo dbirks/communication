@@ -9,7 +9,7 @@
  * same-origin URL, and the token is held in this component's state only — never
  * in the query cache, never in a log line (ADR-0020 D5).
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { problemOf } from "../api/client";
 import { useCreatePreviewToken } from "../api/queries";
@@ -239,6 +239,13 @@ export function ArtifactPreview({ artifact, currentOrigin }: ArtifactPreviewProp
  * `lib/markdown.tsx` turns them into React text nodes: headings, lists, code
  * spans and emphasis, and never an HTML element, so the app's origin still
  * cannot run anything the artifact contains (`ADR-0020`).
+ *
+ * What the bytes say they are is read first and printed second
+ * (`artifactBodyDocument`): the pass-1 review's `artifact-plan-md-1280.png` was
+ * the model's answer envelope — `{"endpoint":…, "model":…, "text":"\n\n# Plan…"}`
+ * — fenced inside a cover note, so the reader saw escaped markdown and API
+ * fields where the plan should have been, and the note was written for whoever
+ * runs the worker.
  */
 function MarkdownArtifactBody({ artifact }: { artifact: Artifact }) {
   const content = useArtifactContent(artifact.id);
@@ -254,13 +261,216 @@ function MarkdownArtifactBody({ artifact }: { artifact: Artifact }) {
     );
   }
 
+  return <ArtifactMarkdownBody artifact={artifact} source={content.data} />;
+}
+
+/** What the bytes of a text artifact hold: the document to read, and the payload
+ * that produced it when the document is wrapped in one. */
+export interface ArtifactBodyDocument {
+  /** The markdown to show: the author's own words, unwrapped. */
+  markdown: string;
+  /** The stored payload behind “Show raw”, or null when the body IS the document. */
+  raw: string | null;
+  /** The step that published this, read off the worker's byline; null when the
+   * artifact carries no such line. */
+  publishedBy: string | null;
+}
+
+/** The worker's own byline (`worker/artifactpublish.go`'s `renderMarkdownDoc`):
+ * `Published by pipeline node \`publish_plan\` (instance \`/publish_plan\`, attempt
+ * 1) via \`artifact.publish\`.` The node's name is the only part a reader can use,
+ * so the pattern keeps it and drops the instance key, the attempt and the kind. */
+const PUBLISHED_BY = /^[ \t]*Published by pipeline node `?([A-Za-z0-9_./-]+)`?[^\n]*$/m;
+/** A ``` fence (any info string) whose body may or may not be JSON — the bytes
+ * decide, not the author's label. */
+const A_FENCE = /^[ \t]*```[^\n]*\r?\n([\s\S]*?)^[ \t]*```[ \t]*$/gm;
+
+/**
+ * The envelope's `text`, out of either packaging: the body is the JSON, or the
+ * body is a document holding the JSON in a fence.
+ */
+function unwrapModelText(body: string): { markdown: string; raw: string | null } {
+  A_FENCE.lastIndex = 0;
+  for (let match = A_FENCE.exec(body); match !== null; match = A_FENCE.exec(body)) {
+    const inner = modelChatText(match[1]);
+    if (inner === null) continue;
+    const markdown = `${body.slice(0, match.index)}${inner}${body.slice(
+      match.index + match[0].length,
+    )}`;
+    return { markdown: collapseBlankLines(markdown), raw: match[1].trim() };
+  }
+  const whole = modelChatText(body);
+  if (whole !== null) return { markdown: collapseBlankLines(whole), raw: body.trim() };
+  return { markdown: body, raw: null };
+}
+
+/**
+ * Read the artifact's text as the document it is.
+ *
+ * A `model.chat` node answers `{endpoint, model, text}`, and a pipeline that
+ * publishes that answer verbatim stores the envelope as an artifact (and
+ * `artifact.publish` wraps a `kind=markdown` payload in a title, a byline and a
+ * fenced JSON block — `worker/artifactpublish.go`). A `text` field holding a
+ * string is then the author's document wearing two layers of packaging, and the
+ * reader came for the document:
+ *
+ * - the envelope's `text` becomes the shown markdown, whether the envelope IS
+ *   the body or sits in the body's ```json fence;
+ * - the stored payload stays reachable under “Show raw” (never silently dropped
+ *   — the endpoint and model are facts about the answer);
+ * - the byline becomes the `publishedBy` words the screen owns, rather than a
+ *   sentence about instance keys and node kinds.
+ *
+ * Anything else — a real markdown document, a JSON report with no `text`, a log
+ * — is returned as it came in, so this rule cannot eat an artifact it does not
+ * recognise.
+ */
+export function artifactBodyDocument(source: string): ArtifactBodyDocument {
+  const text = source ?? "";
+  const publishedByMatch = PUBLISHED_BY.exec(text);
+  const publishedBy = publishedByMatch ? publishedByMatch[1].trim() : null;
+  const withoutByline = publishedByMatch
+    ? `${text.slice(0, publishedByMatch.index)}${text.slice(
+        publishedByMatch.index + publishedByMatch[0].length,
+      )}`
+    : text;
+
+  const unwrapped = unwrapModelText(withoutByline);
+  let markdown = unwrapped.markdown;
+  if (publishedBy !== null && unwrapped.raw !== null) {
+    // Both told: the byline AND an envelope in a fence. That pair is only ever
+    // written by `artifact.publish`, so the whole document is its wrapper — and
+    // the wrapper's own title heading repeats the artifact's name, which the page
+    // already prints as its H1 (`plan.md`). The reader's document starts at the
+    // author's first line.
+    markdown = markdown.replace(/^[ \t]*#{1,6}[ \t]+[^\n]*\n+/, "");
+  }
+  return {
+    markdown,
+    raw: unwrapped.raw,
+    publishedBy,
+  };
+}
+
+/**
+ * The `text` of a `model.chat` answer envelope, or null when this is not one.
+ *
+ * The envelope is an object with a string `text` — that is the whole test, and
+ * deliberately not the endpoint or the model name: a JSON artifact whose body
+ * happens to carry a `text` field is still a document whose words are the
+ * `text`, and the rest of it stays one click away under “Show raw”.
+ */
+function modelChatText(value: string): string | null {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed.startsWith("{") || !/"text"\s*:/.test(trimmed)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const candidate = (parsed as Record<string, unknown>).text;
+  return typeof candidate === "string" ? candidate : null;
+}
+
+/** The unwrapped text arrives with the packaging's blank lines; the reader has
+ * the document, not the envelope, so two in a row are one. */
+function collapseBlankLines(markdown: string): string {
+  return markdown.replace(/^\n+/, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
+/**
+ * The “Show raw” arm. `width:0` + `min-width:100%` is the point: the JSON's lines
+ * are long and unbroken, and a box with a definite width contributes nothing to
+ * an ancestor's max-content size, so the payload scrolls inside its own box at
+ * 390 instead of pushing the page sideways off the screen
+ * (`artifact-plan-md-390.png`).
+ */
+function RawPayload({ raw }: { raw: string }) {
+  const [open, setOpen] = useState(false);
+  const contentId = "artifact-preview-raw-payload";
+  return (
+    <div data-testid="artifact-raw-block">
+      <button
+        type="button"
+        onClick={() => setOpen((previous) => !previous)}
+        aria-expanded={open}
+        aria-controls={contentId}
+        className="flex items-center gap-[6px] font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid="artifact-raw-toggle"
+      >
+        <span aria-hidden>{open ? "\u25be" : "\u25b8"}</span>
+        {open ? "hide raw payload" : "show raw payload"}
+      </button>
+      <pre
+        id={contentId}
+        hidden={!open}
+        role="region"
+        tabIndex={0}
+        aria-label="stored artifact bytes (raw)"
+        style={{ width: 0, minWidth: "100%" }}
+        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid="artifact-preview-raw"
+      >
+        {raw}
+      </pre>
+    </div>
+  );
+}
+
+/** The document, its byline in the reader's words, and the payload behind a toggle. */
+function ArtifactMarkdownBody({ artifact, source }: { artifact: Artifact; source: string }) {
+  const doc = useMemo(() => artifactBodyDocument(source), [source]);
   return (
     <div
-      className="rounded-[3px] border border-line bg-surface p-[10px]"
+      className="min-w-0 space-y-[10px] rounded-[3px] border border-line bg-surface p-[10px]"
       data-testid="artifact-preview-markdown"
     >
-      <MarkdownBody text={content.data} />
+      {doc.publishedBy ? <PublishedBy artifact={artifact} step={doc.publishedBy} /> : null}
+      {/* The document on its own, so “what the reader sees” and “what is stashed
+       * behind the toggle” are two different things a test (or a screen reader)
+       * can name. */}
+      <div className="min-w-0" data-testid="artifact-preview-prose">
+        <MarkdownBody text={doc.markdown} />
+      </div>
+      {doc.raw !== null ? <RawPayload raw={doc.raw} /> : null}
     </div>
+  );
+}
+
+/**
+ * Who made this, in words. The generator's own line names a node instance key
+ * and an internal publish kind (`instance /publish_plan, attempt 1 via
+ * artifact.publish`), which is the worker's log, not the reader's sentence. What
+ * a reader can act on is the step and the run it ran in — and the run is the
+ * link, because “which run?” is the next question.
+ */
+function PublishedBy({ artifact, step }: { artifact: Artifact; step: string }) {
+  if (!artifact.run_id) {
+    return (
+      <p className="text-[12.5px] leading-[18px] text-ink-2" data-testid="artifact-published-by">
+        Published by the <code className="font-mono">{step}</code> step of this run.
+      </p>
+    );
+  }
+  return (
+    <p
+      className="text-[12.5px] leading-[18px] text-ink-2"
+      data-testid="artifact-published-by"
+      title={`published by the ${step} step`}
+    >
+      Published by the{" "}
+      <code className="rounded-[2px] bg-fill px-[3px] font-mono text-[.94em]">{step}</code> step of
+      run{" "}
+      <Link
+        to={routes.run(artifact.run_id)}
+        className="text-accent-text underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        data-testid="artifact-published-run-link"
+      >
+        {shortId(artifact.run_id)}
+      </Link>
+    </p>
   );
 }
 

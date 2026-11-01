@@ -11,8 +11,42 @@ import { MarkdownBody, parseInline, parseMarkdown, renderInline } from "./markdo
 
 afterEach(cleanup);
 
+/**
+ * The plan the pass-1 emulator's gate actually carried (`run-gate-waiting-1280.png`,
+ * the `text` field of the model's answer, trimmed to its shape): four steps, each
+ * with indented `- Files:` / `- Action:` / `- Verification:` bullets whose own
+ * sentences wrap over indented lines, and a blank line before one step. Read the
+ * old way, every step became its own list and printed “1.” — which is the
+ * regression this fixture guards.
+ */
+const REAL_GATE_PLAN = [
+  "**Plan for emu gate journey pass-1-20261101051222 — prove the gate and the plan artifact**",
+  "",
+  "1. **Confirm fixture integrity (read-only mount check)**",
+  "   - Files: `README.md`, `pytest.ini`, `hello.py`",
+  "     `tests/test_hello.py`",
+  "   - Action: Verify all four files exist and `pytest.ini` contains the expected",
+  "     `testpaths = tests` directive. Confirm the repo is mounted read-only at",
+  "     `/srv/m4/fixtures` (attempt a write, expect `EROFS`).",
+  "   - Verification: `ls -la` shows all files; `touch /srv/m4/fixtures/.write_test`",
+  '     returns "Read-only file system".',
+  "",
+  "1. **Execute the gate: run `pytest` on the clean checkout (expected FAIL)**",
+  "   - Files: `tests/test_hello.py`, `hello.py`",
+  "   - Action: Run `pytest --tb=short -q` from the fixture root. Per",
+  "     `docs/m4-contract.md` § 7.0, iteration 1 **must** exit non-zero.",
+  "",
+  "1. **Produce the plan artifact**",
+  "   - Files: `(new)` `artifacts/plan-pass-1-20261101051222.md`",
+  "   - Action: Write this very plan to the artifacts directory.",
+  "   - Verification: `sha256sum artifacts/plan-pass-1-20261101051222.md` is recorded.",
+  "",
+  "1. **Cross-link and seal**",
+  "   - Files: `artifacts/plan-pass-1-20261101051222.md`, `gate-proof.json`",
+].join("\n");
+
 describe("parseMarkdown", () => {
-  it("reads the shape the gate's plan document has", () => {
+  it("keeps a step's nested bullets INSIDE the step, in one list", () => {
     const blocks = parseMarkdown(
       [
         "## Implementation Plan — emu gate journey",
@@ -28,18 +62,77 @@ describe("parseMarkdown", () => {
       level: 2,
       text: "Implementation Plan — emu gate journey",
     });
-    expect(blocks[1]).toMatchObject({
+    // One list, and the nested bullet is the STEP's content (`children`) — the
+    // old sibling-block shape is what made the next `1.` open a new list and
+    // restart its numbering (pass-1 review item 1).
+    expect(blocks[1]).toEqual({
       kind: "list",
       ordered: true,
-      items: ["**Confirm repository binding**"],
+      depth: 0,
+      start: 1,
+      items: [
+        {
+          text: "**Confirm repository binding**",
+          children: [
+            {
+              kind: "list",
+              ordered: false,
+              depth: 1,
+              start: 1,
+              items: [{ text: "Files: `./README.md`, `./hello.py`", children: [] }],
+            },
+          ],
+        },
+      ],
     });
-    expect(blocks[2]).toMatchObject({
-      kind: "list",
-      ordered: false,
-      depth: 1,
-      items: ["Files: `./README.md`, `./hello.py`"],
-    });
-    expect(blocks[3]).toEqual({ kind: "paragraph", text: "Run `pytest` before publishing." });
+    // …and prose the author left after a blank line is still a paragraph, not a
+    // fourth step.
+    expect(blocks[2]).toEqual({ kind: "paragraph", text: "Run `pytest` before publishing." });
+  });
+
+  it("keeps ONE ordered list across nested bullets, indented lines and blank lines", () => {
+    const blocks = parseMarkdown(REAL_GATE_PLAN);
+    const lists = blocks.filter((block) => block.kind === "list");
+    expect(lists.length).toBe(1);
+    const plan = lists[0];
+    if (plan.kind !== "list") throw new Error("the plan's steps are a list");
+    expect(plan.ordered).toBe(true);
+    expect(plan.depth).toBe(0);
+    expect(plan.items.length).toBe(4);
+    // Every step still carries its own bullets (nothing was flattened away): one
+    // nested list per step, and they are bullets one level in, owned by the step.
+    expect(plan.items.map((item) => item.children.length)).toEqual([1, 1, 1, 1]);
+    const nested = plan.items[0].children[0];
+    if (nested.kind !== "list") throw new Error("the step's evidence is its own list");
+    expect([nested.ordered, nested.depth, nested.items.length]).toEqual([false, 1, 3]);
+    expect(
+      plan.items.map((item) => (item.children[0] as { items: unknown[] }).items.length),
+    ).toEqual([3, 2, 3, 1]);
+    // A wrapped sentence stayed the bullet's own text instead of becoming a
+    // paragraph beside it.
+    expect(nested.items[1].text).toContain("`testpaths = tests` directive.");
+  });
+
+  it("numbers a list from its own first marker", () => {
+    expect(parseMarkdown("3. one\n4. two")[0]).toMatchObject({ start: 3, ordered: true });
+    // A bullet list has no number to keep.
+    expect(parseMarkdown("- one\n- two")[0]).toMatchObject({ start: 1, ordered: false });
+  });
+
+  it("splits lists where the author's kind or margin changes", () => {
+    const blocks = parseMarkdown("1. step\n- bullet at the margin\n\ntail");
+    expect(
+      blocks.map((block) => [block.kind, block.kind === "list" ? block.ordered : undefined]),
+    ).toEqual([
+      ["list", true],
+      ["list", false],
+      ["paragraph", undefined],
+    ]);
+    // A dedented nested list closes the deeper level rather than nesting twice.
+    const nested = parseMarkdown("1. step\n   - inner\n  - shallower\n2. next");
+    const list = nested[0];
+    if (list.kind !== "list") throw new Error("two lists expected");
+    expect(list.items.length).toBe(2);
   });
 
   it("keeps a fenced block verbatim, with no markup applied inside it", () => {
@@ -58,9 +151,10 @@ describe("parseMarkdown", () => {
     expect(blocks.map((block) => block.kind)).toEqual(["list", "quote", "rule"]);
   });
 
-  it("leaves a table's rows as text instead of dropping them", () => {
-    const blocks = parseMarkdown("| a | b |\n| - | - |\n| 1 | 2 |");
-    expect(blocks).toEqual([{ kind: "paragraph", text: "| a | b |\n| - | - |\n| 1 | 2 |" }]);
+  it("keeps a table's rows as text instead of dropping them", () => {
+    expect(parseMarkdown("| a | b |\n| - | - |\n| 1 | 2 |")).toEqual([
+      { kind: "paragraph", text: "| a | b |\n| - | - |\n| 1 | 2 |" },
+    ]);
   });
 
   it("keeps an empty document empty", () => {
@@ -151,6 +245,30 @@ describe("parseInline", () => {
 });
 
 describe("<MarkdownBody>", () => {
+  /** The number each TOP-LEVEL step prints (nested bullets are not `ol > li`). */
+  const printedNumbers = (): string[] =>
+    Array.from(
+      document.querySelectorAll('[data-testid="markdown-list-ordered"] > li > span[aria-hidden]'),
+    ).map((node) => node.textContent ?? "");
+
+  it("numbers a real gate plan 1…N, not 1 for every step", () => {
+    render(<MarkdownBody text={REAL_GATE_PLAN} />);
+    // The pass-1 screenshot: `run-gate-waiting-1280.png` printed “1.” six times
+    // over. The steps are one list, so the reader can say which step is which.
+    expect(printedNumbers()).toEqual(["1.", "2.", "3.", "4."]);
+    expect(screen.getByTestId("markdown-list-ordered").getAttribute("start")).toBe("1");
+    // The nested evidence is still there, under its own step.
+    const nestedLists = screen.getAllByTestId("markdown-list");
+    expect(nestedLists).toHaveLength(4);
+    expect(nestedLists[0].textContent).toContain("README.md");
+  });
+
+  it("counts an ordered list from the number the author started it with", () => {
+    render(<MarkdownBody text={"3. third\n4. fourth\n   - nested\n5. fifth"} />);
+    expect(printedNumbers()).toEqual(["3.", "4.", "5."]);
+    expect(screen.getByTestId("markdown-list-ordered").getAttribute("start")).toBe("3");
+  });
+
   it("renders the raw gate body of the design review as markup, not markers", () => {
     render(
       <MarkdownBody
@@ -177,6 +295,16 @@ describe("<MarkdownBody>", () => {
     const link = screen.getByText("plan");
     expect(link.getAttribute("href")).toBe("https://example.com/plan.md");
     expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("scrolls a long fence inside its own box instead of widening the page", () => {
+    // `artifact-plan-md-390.png`: one 400-character JSON string on a line of its
+    // own pushed the whole page sideways. A definite width is what takes the
+    // fence's max-content size out of the ancestors' arithmetic.
+    render(<MarkdownBody text={'```json\n{"summary": "' + "x".repeat(400) + '"}\n```'} />);
+    const code = screen.getByTestId("markdown-code");
+    expect(code.getAttribute("style")).toContain("min-width: 100%");
+    expect(code.className).toContain("overflow-x-auto");
   });
 
   it("renders no anchor for a link whose target is not http(s)", () => {

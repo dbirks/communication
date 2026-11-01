@@ -76,6 +76,59 @@ describe("a pending gate you can decide", () => {
     expect(screen.getByTestId("approval-on-timeout").textContent).toContain("fail the node");
   });
 
+  // Pass-1 design review item 2: the plan the decision rests on ran ~1800px
+  // tall, so Approve/Reject were off the bottom of `run-gate-waiting-1280.png`
+  // with nothing pinned. The plan is NOT clamped (round-2 review item 3 forbids
+  // a clamp on a decidable body) — instead the card says the decision is further
+  // down and puts one verb at the top that lands the reader on the form.
+  it("offers a Decide jump at the top of the card, above the plan", () => {
+    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    const jump = screen.getByTestId("approval-decide-jump");
+    expect(jump.textContent).toContain("Decide");
+    // It sits ABOVE the plan, which is the whole point: a reader who can see the
+    // top of the card can see the way to the decision.
+    const card = screen.getByTestId("approval-summary").parentElement as HTMLElement;
+    expect(card.contains(jump)).toBe(true);
+    expect(
+      jump.compareDocumentPosition(screen.getByTestId("approval-summary")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // …and it names the form it controls.
+    const form = screen.getByTestId("approval-decision-form");
+    expect(jump.getAttribute("aria-controls")).toBe(form.id);
+    expect(form.id).not.toBe("");
+  });
+
+  it("moves the reader to the decision when they take the jump", () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      scrolled.push(this.getAttribute("data-testid") ?? "?");
+    };
+    try {
+      render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+      fireEvent.click(screen.getByTestId("approval-decide-jump"));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+    expect(scrolled).toEqual(["approval-decision-form"]);
+    // A keyboard user gets the caret where their next keystroke belongs.
+    expect(document.activeElement).toBe(screen.getByTestId("approval-comment"));
+  });
+
+  it("offers no jump verb where there is no decision to make", () => {
+    // W3's arm: the card is readable, and there is no form to jump to.
+    const { unmount } = render(
+      <ApprovalCard approval={pendingApproval} canDecide={false} now={now} />,
+    );
+    expect(screen.queryByTestId("approval-decide-jump")).toBeNull();
+    expect(screen.queryByTestId("approval-decide-bar")).toBeNull();
+    unmount();
+    // A closed gate has no decision either — the record is what it shows.
+    render(<ApprovalCard approval={rejectedApproval} canDecide now={now} />);
+    expect(screen.queryByTestId("approval-decide-jump")).toBeNull();
+  });
+
   it("lists the evidence, including what is restricted and why that matters", () => {
     render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     const evidence = screen.getByTestId("approval-evidence");

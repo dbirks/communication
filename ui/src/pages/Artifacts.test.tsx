@@ -392,6 +392,135 @@ describe("/artifacts/:artifactId", () => {
     expect(screen.getByTestId("artifact-media-type").textContent).toBe("Markdown");
   });
 
+  // Pass-1 design review item 4 (`artifact-plan-md-1280.png`, `-390.png`): the
+  // bytes behind `plan.md` were `artifact.publish`'s wrapper around a
+  // `model.chat` answer — a title, a developer byline, and the envelope
+  // `{endpoint, model, text}` in a fenced JSON block. The page printed the
+  // packaging (escaped markdown, API fields) and at 390 that block pushed the
+  // page sideways. The reader gets the document; the payload stays one click away.
+  const RUN_ID = "01987b24-7a1e-7000-8000-abcdef012345";
+  const modelAnswer =
+    "\n\n# Plan: emu gate journey pass-1-20261101051222 — prove the gate and the plan artifact\n\n" +
+    "1. **Confirm fixture integrity (read-only mount check)**\n" +
+    "   - Files: `README.md`, `pytest.ini`, `hello.py`\n\n" +
+    "1. **Execute the gate: run `pytest` on the clean checkout (expected FAIL)**\n" +
+    "   - Files: `tests/test_hello.py`, `hello.py`\n";
+  const envelopeJson = JSON.stringify(
+    {
+      endpoint: "llm-collective.e-gineering.com",
+      model: "david-birks/qwen3-8-flash-next",
+      text: modelAnswer,
+    },
+    null,
+    2,
+  );
+  /** What `worker/artifactpublish.go`'s `renderMarkdownDoc` writes for a
+   * `kind=markdown` payload whose value is a model answer. */
+  const publishedPlan =
+    "# plan\n\nPublished by pipeline node `publish_plan` (instance `/publish_plan`, " +
+    "attempt 1) via `artifact.publish`.\n\n```json\n" +
+    envelopeJson +
+    "\n```\n";
+  const planMd: Artifact = {
+    ...artifactFixture,
+    name: "plan.md",
+    kind: "markdown",
+    media_type: "text/markdown",
+    sensitivity: "standard",
+    preview_url: null,
+    size_bytes: publishedPlan.length,
+    conversation_id: null,
+    turn_id: null,
+    run_id: RUN_ID,
+  };
+
+  async function renderPublishedPlan(body: string, artifact: Artifact = planMd) {
+    renderApp({
+      path: `/artifacts/${artifactId}`,
+      routes: routes([
+        { path: detailPath, method: "GET", body: artifact },
+        { path: `${detailPath}/content`, method: "GET", body },
+      ]),
+    });
+    return screen.findByTestId("artifact-preview-markdown");
+  }
+
+  it("reads a published model answer as the plan it holds, not as its envelope", async () => {
+    await renderPublishedPlan(publishedPlan);
+    const prose = screen.getByTestId("artifact-preview-prose");
+    // The author's own heading leads, not the wrapper's `# plan`.
+    const headings = Array.from(prose.querySelectorAll('[data-testid="markdown-heading"]'));
+    expect(headings[0]?.textContent).toBe(
+      "Plan: emu gate journey pass-1-20261101051222 — prove the gate and the plan artifact",
+    );
+    const steps = prose.querySelectorAll('[data-testid="markdown-list-ordered"] > li');
+    expect(steps.length).toBe(2);
+    // No packaging leaks into the read: no API field, no escaped newline, and
+    // every list marker became a number.
+    expect(prose.textContent).not.toContain("endpoint");
+    expect(prose.textContent).not.toContain("\\n");
+    expect(prose.textContent).not.toContain("# Plan:");
+    expect(prose.textContent).not.toContain("```json");
+    expect(
+      Array.from(
+        prose.querySelectorAll('[data-testid="markdown-list-ordered"] > li > span[aria-hidden]'),
+      ).map((node) => node.textContent),
+    ).toEqual(["1.", "2."]);
+  });
+
+  it("says who published it in the reader's words, and links the run", async () => {
+    const preview = await renderPublishedPlan(publishedPlan);
+    const byline = screen.getByTestId("artifact-published-by");
+    expect(byline.textContent).toContain("Published by the");
+    expect(byline.textContent).toContain("publish_plan");
+    expect(byline.textContent).toContain("step of run");
+    expect(byline.textContent).not.toContain("artifact.publish");
+    expect(byline.textContent).not.toContain("instance");
+    const link = screen.getByTestId("artifact-published-run-link");
+    expect(link.getAttribute("href")).toBe(`/runs/${RUN_ID}`);
+    // The sentence is part of the preview card, not the metadata grid.
+    expect(preview.contains(byline)).toBe(true);
+  });
+
+  it("keeps the stored payload reachable under a raw toggle that scrolls in its box", async () => {
+    await renderPublishedPlan(publishedPlan);
+    const raw = screen.getByTestId("artifact-preview-raw");
+    // Closed by default: the reader saw the envelope for the first time because
+    // nothing asked them to, and the words “show raw” say who is asking.
+    expect(raw.hasAttribute("hidden")).toBe(true);
+    expect(screen.getByTestId("artifact-preview-prose").textContent).not.toContain("endpoint");
+    fireEvent.click(screen.getByTestId("artifact-raw-toggle"));
+    expect(raw.hasAttribute("hidden")).toBe(false);
+    expect(raw.textContent).toContain('"endpoint": "llm-collective.e-gineering.com"');
+    // The JSON's lines are long and unbroken; `width:0` + `min-width:100%` is what
+    // keeps them inside the box at 390 instead of widening the page.
+    expect(raw.getAttribute("style")).toContain("min-width: 100%");
+    expect(raw.className).toContain("overflow-auto");
+    fireEvent.click(screen.getByTestId("artifact-raw-toggle"));
+    expect(raw.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("reads an envelope that is the whole body, with no wrapper around it", async () => {
+    await renderPublishedPlan(envelopeJson);
+    const prose = screen.getByTestId("artifact-preview-prose");
+    expect(prose.textContent).toContain("Confirm fixture integrity");
+    expect(prose.textContent).not.toContain("qwen3-8-flash-next");
+    expect(screen.getByTestId("artifact-preview-raw").textContent).toContain("qwen3-8-flash-next");
+    // No byline to rewrite, so the screen invents none.
+    expect(screen.queryByTestId("artifact-published-by")).toBeNull();
+  });
+
+  it("leaves a markdown document that is not packaging alone", async () => {
+    const body =
+      '## Findings\n\n1. **Read the log**\n   - Files: `run.log`\n\n```json\n{"exit": 1}\n```\n';
+    const preview = await renderPublishedPlan(body, { ...planMd, name: "findings.md" });
+    expect(preview.textContent).toContain("Findings");
+    // A fence that is not an envelope is the author's own code block: it stays
+    // inline, and there is no raw payload to hide behind a toggle.
+    expect(screen.queryByTestId("artifact-raw-block")).toBeNull();
+    expect(screen.getByTestId("markdown-code").textContent).toBe('{"exit": 1}');
+  });
+
   it("leaves a markdown file too large to read on the page as a download", async () => {
     const bigArtifact: Artifact = {
       ...artifactFixture,

@@ -34,6 +34,37 @@ const PLAN = JSON.stringify({
   ],
 });
 
+/**
+ * The gate body the pass-1 emulator actually served (`run-gate-waiting-1280.png`):
+ * four numbered steps, each owning indented `- Files:` / `- Action:` /
+ * `- Verification:` bullets whose sentences wrap over further-indented lines, and
+ * a blank line before two of the steps. Every step marker is written `1.` — the
+ * numbering is the list's job, and the renderer used to reset it per item.
+ */
+const GATE_PLAN_MARKDOWN = [
+  "**Plan for emu gate journey pass-1-20261101051222 — prove the gate and the plan artifact**",
+  "",
+  "1. **Confirm fixture integrity (read-only mount check)**",
+  "   - Files: `README.md`, `pytest.ini`, `hello.py`",
+  "   - Action: Verify all four files exist and `pytest.ini` contains the expected",
+  "     `testpaths = tests` directive.",
+  "   - Verification: `ls -la` shows all files.",
+  "",
+  "1. **Execute the gate: run `pytest` on the clean checkout (expected FAIL)**",
+  "   - Files: `tests/test_hello.py`, `hello.py`",
+  "   - Action: Run `pytest --tb=short -q` from the fixture root.",
+  "   - Verification: Exit code ≠ 0.",
+  "",
+  "1. **Produce the plan artifact**",
+  "   - Files: `(new)` `artifacts/plan-pass-1-20261101051222.md`",
+  "   - Action: Write this very plan to the artifacts directory.",
+  "   - Verification: `sha256sum` of the file is recorded.",
+  "1. **Cross-link and seal**",
+  "   - Files: `artifacts/plan-pass-1-20261101051222.md`",
+  "   - Action: Append the gate-proof JSON's SHA-256 to the plan.",
+  "   - Verification: both artifacts reference each other.",
+].join("\n");
+
 describe("a plan served as JSON", () => {
   const show = () => render(<PlanView text={PLAN} />);
 
@@ -175,6 +206,23 @@ describe("a payload that is not a plan", () => {
     expect(screen.getByTestId("markdown-list").querySelector("code")?.textContent).toBe(
       "./README.md",
     );
+  });
+
+  // Pass-1 review item 1: the card printed “1.” for every step because each step
+  // became its own list the moment its nested bullet came between it and the
+  // next. This is that body, end to end.
+  it("numbers a real agent's plan 1…4, with its evidence under each step", () => {
+    render(<PlanView text={GATE_PLAN_MARKDOWN} />);
+    const list = screen.getByTestId("markdown-list-ordered");
+    const numbers = Array.from(list.querySelectorAll(":scope > li > span[aria-hidden]")).map(
+      (node) => node.textContent,
+    );
+    expect(numbers).toEqual(["1.", "2.", "3.", "4."]);
+    // Each step still owns its own three evidence bullets (nothing flattened into
+    // the outer list, nothing dropped beside it).
+    expect(list.querySelectorAll(":scope > li > div > ul").length).toBe(4);
+    expect(list.querySelectorAll(":scope > li > div > ul > li").length).toBe(12);
+    expect(screen.getByTestId("plan-plain-text").textContent).not.toContain("**");
   });
 
   it("keeps prose that carries no markdown markers verbatim", () => {

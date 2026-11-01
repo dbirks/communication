@@ -1423,14 +1423,31 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await shot(alice, "m5-09-rejected-run-completed");
     });
 
-    await test.step("and the run refuses to be retried — the rejection was final, and says why", async () => {
-      // The UI arm (already live in the lab image via `retryVerdict`): a
-      // rejected gate is not a retry target, so the control is disabled with
-      // the reason in words instead of arming a button that would only 409.
-      await expect(alice.getByTestId("run-retry")).toBeVisible({ timeout: 30_000 });
-      await expect(alice.getByTestId("run-retry")).toBeDisabled();
+    await test.step("and the finished run offers no Retry — the rejection was final, and says so", async () => {
+      // The UI arm, per the brief's CHANGED CONTRACT (pass-1 design review item
+      // 3): a rejected gate is a business outcome and leaves no retry target, so
+      // the header shows no `Retry` verb at all. The disabled button plus its
+      // ~100-character sentence beside it measured ~537px of action column, which
+      // is what truncated the run's H1 to `pr…` in `run-gate-completed-1280.png`.
+      // The note that replaces it says the same fact in the header's measure, with
+      // the full sentence one hover away (and in the dock beside a node that
+      // really failed).
+      await expect(alice.getByTestId("run-retry"), "no Retry verb on a finished run").toHaveCount(
+        0,
+        { timeout: 30_000 },
+      );
       await expect(alice.getByTestId("run-retry-reason")).toContainText("answered rejected");
-      await expect(alice.getByTestId("run-retry-reason")).toContainText("business outcome");
+      await expect(alice.getByTestId("run-retry-reason")).toHaveAttribute(
+        "title",
+        /business outcome/,
+      );
+      // The run's own sentence is whole at 1280 — the thing the disabled verb cost.
+      expect(
+        await alice.evaluate(() => {
+          const title = document.querySelector('[data-testid="run-title"]');
+          return title instanceof HTMLElement ? title.scrollWidth - title.clientWidth : 9999;
+        }),
+      ).toBeLessThanOrEqual(0);
       // And the API agrees, so the UI is not the only truth: route 31
       // refuses the completed run with a 409 whose problem type is
       // `run-not-retriable`; a rejection never re-opens the gate. (The
@@ -1450,12 +1467,11 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
 
   test("the run page itself offers a Retry control, and explains when it cannot", async () => {
     // The workbench header renders the same `RunActions` control the old run
-    // page had — it reads route 31's own target set and either arms the
-    // button or disables it with the reason (`run-retry-reason`). The dock's
-    // failure block below keeps `retryVerdict`'s target logic where the node
-    // is read: it either names the nodes a retry would re-run or says why it
-    // has no target — a rejected gate is a business outcome, so nothing
-    // failed and there is nothing to retry. Proven per-arm in
+    // page had — it reads route 31's own target set and either arms the verb or
+    // shows none (a finished run with no target gets no button and no sentence:
+    // pass-1 review item 3). The dock's failure block below keeps
+    // `retryVerdict`'s target logic where the node is read: it either names the
+    // nodes a retry would re-run or says why it has no target. Proven per-arm in
     // `ui/src/pages/RunInspector.test.tsx`; this is the live arm for a run
     // with a genuinely failed node.
     await gotoApp(alice, runPath);
