@@ -56,6 +56,10 @@ import {
   signIn,
   shortRefOf,
 } from "./helpers.js";
+import {
+  classifyTransientModelFailure,
+  type TransientModelFailure,
+} from "./transient-model-failure.js";
 
 const HOME_ENABLED = process.env.COMMUNICATION_E2E_HOME === "1";
 /** The target (default: the live cluster, docs/home-cluster.md § 1); overridable for the proof. */
@@ -192,14 +196,27 @@ const RUN_TIMEOUT_MS = Number(process.env.E2E_HOME_RUN_TIMEOUT_MS ?? 900_000);
 const AGENT_TIMEOUT_MS = Number(process.env.E2E_HOME_AGENT_TIMEOUT_MS ?? 900_000);
 /** A control-plane status change after a human decision is an advancer tick. */
 const DECISION_TIMEOUT_MS = Number(process.env.E2E_HOME_DECISION_TIMEOUT_MS ?? 180_000);
-/** Bounded retries for transient live-model failures on the home cluster: the
- * plan node's model.chat has its own 2-minute provider deadline
- * (llm-collective-engineering.com), and a run that timed out there is retried
- * through the UI's own Retry button — the product's own recovery path — not
- * a spec change. A run that fails WITHOUT that transient error class is a
- * genuine product finding and stops the suite. */
+/** Bounded retries for transient live-model failures (deadline or provider
+ * 5xx) on the home cluster: the plan node's model.chat has its own 2-minute
+ * provider deadline (llm-collective-engineering.com) and the gateway itself
+ * can answer 502/503/504 or refuse/reset the connection; a run that fails on
+ * either transient shape is retried through the UI's own Retry button — the
+ * product's own recovery path — not a spec change. A run that fails WITHOUT
+ * a transient live-model signature is a genuine product finding and stops
+ * the suite. */
 const PLAN_RETRY_MAX = Number(process.env.E2E_HOME_PLAN_RETRY_MAX ?? 3);
-const TRANSIENT_MODEL_FAILURE = /no completion from .* within .* the attempt's deadline/;
+/** Bounded budget for waiting out a provider outage before a Retry click.
+ * The lab exposes no model-reachability endpoint (GET /api/v1/system/
+ * readiness reports the datastore only, internal/api/health.go) and the
+ * suite must never hit the gateway directly with secrets, so recovery is
+ * proven by spacing the retries with growing waits (30s/60s/120s) under a
+ * hard 5-minute total budget — the observed outages cleared within minutes.
+ * Only provider-unavailable shapes wait; a deadline failure retries
+ * immediately, exactly as before. */
+const PROVIDER_RECOVERY_BUDGET_MS = Number(
+  process.env.E2E_HOME_PROVIDER_RECOVERY_BUDGET_MS ?? 300_000,
+);
+const PROVIDER_RECOVERY_BACKOFF_MS = [30_000, 60_000, 120_000];
 
 /** The suite's own test budget: gate + post-gate run + agent run, plus slack. */
 const TEST_TIMEOUT_MS = GATE_TIMEOUT_MS + RUN_TIMEOUT_MS + 1_800_000;
@@ -954,19 +971,28 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   }
 
   /**
-   * A failed run's nodes re-read: the live model's own deadline ("no
-   * completion from … within 2m0s (the attempt's deadline arm, § 4 step 8)")
-   * is the one transient this suite may retry through the UI's Retry button.
-   * Every failed node must carry that signature; anything else is a product
-   * finding the caller must report, not paper over.
+   * A failed run's nodes re-read, classified per tests/transient-model-
+   * failure.ts: the live model's own deadline ("no completion from … within
+   * 2m0s (the attempt's deadline arm, § 4 step 8)") and a provider that was
+   * temporarily unavailable (model.chat infra failure whose detail says the
+   * provider returned http 502/503/504 or refused/reset the connection) are
+   * the transient live-model failures (deadline or provider 5xx) this suite
+   * may retry through the UI's Retry button. Every failed node must carry one
+   * of those signatures; anything else is a product finding the caller must
+   * report, not paper over. When the nodes carry different shapes, the
+   * provider-unavailable shape wins — it is the one that needs a wait first.
    */
-  async function isTransientModelFailure(ctx: BrowserContext, runId: string): Promise<boolean> {
+  async function transientModelFailureOfRun(
+    ctx: BrowserContext,
+    runId: string,
+  ): Promise<TransientModelFailure> {
     const nodes = await getJson<{ node_executions: NodeExecutionView[] }>(
       ctx,
       `/api/v1/runs/${runId}/nodes`,
     );
     const failed = nodes.node_executions.filter((n) => n.status === "failed");
-    if (failed.length === 0) return false;
+    if (failed.length === 0) return null;
+    let shape: TransientModelFailure = null;
     for (const node of failed) {
       const detail = await getJson<NodeExecutionDetailView>(
         ctx,
@@ -977,9 +1003,16 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         .filter(Boolean)
         .join(" ");
       console.log(`  ${node.node_id} (${node.kind}): ${text}`);
-      if (!TRANSIENT_MODEL_FAILURE.test(text)) return false;
+      const classified = classifyTransientModelFailure(
+        node.kind,
+        node.error_class ?? newest?.error_class,
+        newest?.detail,
+      );
+      if (!classified) return null;
+      if (classified === "provider-unavailable") shape = classified;
+      else shape ??= classified;
     }
-    return true;
+    return shape;
   }
 
   test(`step 4 — start the run, approve the gate, terminal, ${TARGET_TITLE.toLowerCase()}-worker proof`, async () => {
@@ -1005,14 +1038,20 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       console.log(`plan run started: ${planRunId}`);
       await shot(page, "home-05-run-started");
     });
-    // The live model's own 2-minute provider deadline can fail a plan attempt
-    // transiently (run 5: model.chat TIMEOUT on both attempts, then Retry in
-    // the UI recovered). Each leg of the run is bounded: before the gate the
-    // leg ends when the run parks (the served status `waiting_human`), after
-    // the gate it ends when the run is terminal. A leg that fails with the
-    // transient live-model signature is retried through the UI's own Retry
-    // button; any other failure is a product finding the suite surfaces.
+    // The live model's own 2-minute provider deadline, or a provider that
+    // briefly answers 502/503/504 (or refuses/resets the connection), can
+    // fail a plan attempt transiently (run 5: model.chat TIMEOUT on both
+    // attempts; acceptance 37: http 503 on both attempts, gateway answering
+    // again minutes later — in both, Retry in the UI recovered). Each leg of
+    // the run is bounded: before the gate the leg ends when the run parks
+    // (the served status `waiting_human`), after the gate it ends when the
+    // run is terminal. A leg that fails with a transient live-model failure
+    // (deadline or provider 5xx) signature is retried through the UI's own
+    // Retry button — waiting out the provider first for the 5xx shape; any
+    // other failure is a product finding the suite surfaces.
     let afterGate = false;
+    let providerWaitsUsed = 0;
+    let providerRecoveryWaitedMs = 0;
     for (let retry = 0; ; retry++) {
       const leg = await pollAnyStatus(
         context,
@@ -1022,27 +1061,62 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       );
       if (leg === "completed") break;
       if (leg === "failed") {
-        if (!(await isTransientModelFailure(context, planRunId))) {
-          // isTransientModelFailure logged every failed node's error_class
+        const transient = await transientModelFailureOfRun(context, planRunId);
+        if (!transient) {
+          // transientModelFailureOfRun logged every failed node's error_class
           // and newest-attempt detail; that evidence is the product finding.
           throw new Error(
-            `plan run ${shortRefOf(planRunId)} failed without the transient live-model ` +
-              `deadline signature — reporting it as a product finding (node/attempt ` +
-              `evidence in the log above)`,
+            `plan run ${shortRefOf(planRunId)} failed without a transient live-model ` +
+              `failure (deadline or provider 5xx) signature — reporting it as a product ` +
+              `finding (node/attempt evidence in the log above)`,
           );
         }
         if (retry >= PLAN_RETRY_MAX) {
           throw new Error(
             `plan run ${shortRefOf(planRunId)} still transiently failing after ` +
-              `${PLAN_RETRY_MAX} retries (live model provider deadline)`,
+              `${PLAN_RETRY_MAX} retries (transient live-model failure: deadline or ` +
+              `provider 5xx)`,
           );
         }
         console.log(
-          `plan run ${shortRefOf(planRunId)} hit the live model's deadline — retrying through the UI's Retry (${retry + 1}/${PLAN_RETRY_MAX})`,
+          `plan run ${shortRefOf(planRunId)} hit a transient live-model failure ` +
+            `(${transient}) — retrying through the UI's Retry (${retry + 1}/${PLAN_RETRY_MAX})`,
         );
         evidence.push(
-          `plan run ${shortRefOf(planRunId)}: transient model.chat deadline failure, UI retry ${retry + 1}`,
+          `plan run ${shortRefOf(planRunId)}: transient live-model failure ` +
+            `(deadline or provider 5xx, shape=${transient}), UI retry ${retry + 1}`,
         );
+        if (transient === "provider-unavailable") {
+          // The provider was down when the attempt ran (the observed outages
+          // cleared within minutes). Space the retries with growing waits —
+          // 30s, then 60s, then 120s — under a hard budget, so the Retry
+          // click lands after the gateway plausibly answers again. No direct
+          // gateway probe from the test: it would need secrets (see the
+          // PROVIDER_RECOVERY_BUDGET_MS comment for why there is no cheap
+          // readiness signal to poll instead).
+          const stepMs =
+            PROVIDER_RECOVERY_BACKOFF_MS[
+              Math.min(providerWaitsUsed, PROVIDER_RECOVERY_BACKOFF_MS.length - 1)
+            ];
+          const waitMs = Math.max(
+            0,
+            Math.min(stepMs, PROVIDER_RECOVERY_BUDGET_MS - providerRecoveryWaitedMs),
+          );
+          providerWaitsUsed += 1;
+          if (waitMs > 0) {
+            providerRecoveryWaitedMs += waitMs;
+            console.log(
+              `  provider unavailable — waiting ${waitMs / 1000}s before the Retry click ` +
+                `(provider recovery budget ${providerRecoveryWaitedMs}/${PROVIDER_RECOVERY_BUDGET_MS} ms used)`,
+            );
+            evidence.push(
+              `plan run ${shortRefOf(planRunId)}: provider unavailable — waited ` +
+                `${waitMs / 1000}s before UI retry ${retry + 1} ` +
+                `(recovery budget ${providerRecoveryWaitedMs}/${PROVIDER_RECOVERY_BUDGET_MS} ms)`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+          }
+        }
         const retryButton = page.getByTestId("run-retry");
         await expect(retryButton).toBeVisible({ timeout: UI_TIMEOUT_MS });
         await expect(retryButton).toBeEnabled({ timeout: UI_TIMEOUT_MS });
