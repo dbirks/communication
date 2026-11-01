@@ -13,6 +13,23 @@ import { StepPicker } from "./StepPicker";
 afterEach(cleanup);
 
 describe("StepPicker", () => {
+  it("guards the WHOLE dialog from React Flow's drag/pan gestures (studio-a2)", () => {
+    // XYDrag asks `event.target.closest('.nodrag')` on pointerdown and the
+    // pane pan asks `.nopan` (d3-drag then swallows the click that opened a
+    // zero-movement-tolerance gesture — acceptance 41's missing second add).
+    // The guard lives on the dialog root, so no pixel of the picker — search
+    // box, title, padding, footer — can start a gesture in any canvas host.
+    render(<StepPicker onPick={vi.fn()} onClose={vi.fn()} />);
+    const picker = screen.getByTestId("step-picker");
+    for (const flowClass of ["nowheel", "nopan", "nodrag"]) {
+      expect(picker.classList.contains(flowClass), `dialog root carries ${flowClass}`).toBe(true);
+    }
+    for (const chrome of ["step-picker-search", "step-picker-item-process.exec"]) {
+      expect(screen.getByTestId(chrome).closest(".nodrag")).toBeTruthy();
+      expect(screen.getByTestId(chrome).closest(".nopan")).toBeTruthy();
+    }
+  });
+
   it("shows the five START A NEW STEP cards with the 4a copy", () => {
     render(<StepPicker onPick={vi.fn()} onClose={vi.fn()} />);
     const picker = screen.getByTestId("step-picker");

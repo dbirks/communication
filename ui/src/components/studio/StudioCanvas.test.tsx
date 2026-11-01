@@ -6,8 +6,10 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useMemo, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { parse } from "yaml";
-import { parseGraph } from "../../lib/pipeline/graphDoc";
+import { addNode, parseGraph, type OpResult } from "../../lib/pipeline/graphDoc";
 import {
   centerOnBox,
   chooseNodeMenuPlacement,
@@ -27,6 +29,7 @@ import {
 } from "./StudioCanvas";
 import { routeEdge, toFlow } from "./flowModel";
 import { EDGE_ADD_LABEL_OFFSET_PX, EDGE_ADD_TARGET_PX } from "./edges";
+import { StudioInspector } from "./StudioInspector";
 
 class ResizeObserverStub {
   private readonly callback: (
@@ -672,6 +675,115 @@ spec:
     // "+" itself is centred on it.
     expect(addAfter.parentElement).toBeTruthy();
     expect(addAfter.parentElement!.className).toContain("left-1/2");
+  });
+});
+
+/**
+ * studio-a2 regression (acceptance 41, cbe4ee8): the SECOND “+” picker add
+ * created no step. The live shape: after an add the new step is selected and
+ * the reader edits it in the inspector (fill executable, blur), then opens
+ * the next “+” — a pointer-down inside the unguarded picker started React
+ * Flow's node-drag/pan gesture (XYDrag filters on `closest('.nodrag')`,
+ * clickDistance 0), which swallowed the kind-card click (the failing run's
+ * snapshot still showed the open picker) or landed it seconds late. This
+ * harness is the Studio page in miniature — text as source of truth, the
+ * real `addNode` op, selection of the changed step, the real inspector —
+ * because the defect lives in the SEQUENCE add → edit → add, not in any one
+ * component. The pickers the canvas hosts are mounted inside React Flow's
+ * DOM, so the gesture guard is asserted exactly where the library reads it:
+ * `closest('.nodrag' / '.nopan')` from the pointer's target.
+ */
+function DraftHarness() {
+  const [text, setText] = useState(fixtureYaml);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const parsed = parseGraph(text);
+  const doc = useMemo(() => parse(text), [text]);
+  function apply(op: (t: string) => OpResult) {
+    const result = op(text);
+    if (!result.ok) return;
+    setText(result.text);
+    setSelectedId(result.changed[0] ?? null);
+  }
+  if (!parsed.ok) throw new Error(`the harness keeps the draft parseable: ${parsed.error}`);
+  return (
+    <>
+      <StudioCanvas
+        model={parsed.model}
+        document={doc}
+        layout={{}}
+        selectedId={selectedId}
+        readOnly={false}
+        stale={false}
+        onSelect={setSelectedId}
+        onAddAfter={(afterId, scope, kind) =>
+          apply((t) => addNode(t, { kind, scope, after: afterId }))
+        }
+      />
+      <StudioInspector
+        model={parsed.model}
+        nodeId={selectedId}
+        document={doc}
+        text={text}
+        readOnly={false}
+        apply={apply}
+      />
+      <span data-testid="harness-yaml" hidden>
+        {text}
+      </span>
+    </>
+  );
+}
+
+describe("two consecutive picker adds across an inspector edit (studio-a2)", () => {
+  afterEach(cleanup);
+
+  it("the second “+” add inserts its step too: add → edit → add, one step each", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <DraftHarness />
+      </QueryClientProvider>,
+    );
+
+    // 1) First add on the terminal step's “+”: exactly one new step, and the
+    // canvas answers with it selected (the page's runOp selects `changed[0]`).
+    fireEvent.click(await screen.findByTestId("add-after-check"));
+    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    await screen.findByTestId("canvas-step-process");
+
+    // 2) The reader edits the fresh step in the inspector (fill + blur is a
+    // commit), and it lands in the draft text.
+    fireEvent.click(screen.getByTestId("canvas-step-process"));
+    const exec = screen.getByTestId("insp-config-executable");
+    fireEvent.change(exec, { target: { value: "echo" } });
+    fireEvent.blur(exec);
+    await waitFor(() =>
+      expect(screen.getByTestId("harness-yaml").textContent).toContain("executable: echo"),
+    );
+
+    // 3) The second “+”: every pointer-down inside the picker must be off
+    // limits for the node-drag / canvas-pan gestures XYDrag and the pane
+    // install (a gesture started from the picker is how the real browser ate
+    // this click). Asserted from the two targets a reader hits: the search
+    // box and the kind card.
+    fireEvent.click(screen.getByTestId("add-after-process"));
+    const picker = screen.getByTestId("step-picker");
+    for (const flowClass of ["nowheel", "nopan", "nodrag"]) {
+      expect(picker.classList.contains(flowClass), `dialog carries ${flowClass}`).toBe(true);
+    }
+    for (const chrome of ["step-picker-search", "step-picker-item-process.exec"]) {
+      expect(screen.getByTestId(chrome).closest(".nodrag"), `${chrome} in .nodrag`).toBeTruthy();
+      expect(screen.getByTestId(chrome).closest(".nopan"), `${chrome} in .nopan`).toBeTruthy();
+    }
+
+    // 4) The pick lands: exactly ONE new step, named after the one before it.
+    fireEvent.click(screen.getByTestId("step-picker-item-process.exec"));
+    await screen.findByTestId("canvas-step-process_2");
+    // The outline row spells the edge the picker promised: after `process`.
+    expect(screen.getByTestId("canvas-step-row-process_2").textContent).toContain("after process");
+    const yaml = screen.getByTestId("harness-yaml").textContent ?? "";
+    expect(yaml).toContain("id: process_2");
+    expect(yaml).toContain("executable: echo");
   });
 });
 

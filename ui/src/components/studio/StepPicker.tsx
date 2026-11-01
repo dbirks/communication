@@ -158,11 +158,21 @@ export function StepPicker({
   };
 
   return (
+    // React Flow's own classes on the DIALOG ROOT (issue #67, the lab-e2e
+    // studio-a2 regression): XYDrag asks `event.target.closest('.nodrag')`
+    // and the pane pan asks `.nopan` — guarded here, every pixel of the
+    // picker (search box, title, padding, footer hint included) is off
+    // limits for a node drag or a canvas pan, in every picker the canvas
+    // hosts (edge “+”, terminal “+”, empty scope body, empty canvas). #67
+    // guarded only the list; a pointer-down on the dialog's own chrome still
+    // started the gesture, and d3-drag (clickDistance 0) then swallows the
+    // click that opened the gesture — the exact shape of "the second “+”
+    // picker add creates no step" (acceptance 41, cbe4ee8).
     <div
       role="dialog"
       aria-label={title ?? "Pick a step"}
       data-testid="step-picker"
-      className="w-[360px] rounded-lg border border-line-strong bg-surface p-2 shadow-[0_4px_16px_rgba(30,29,26,0.12)]"
+      className="nowheel nopan nodrag w-[360px] rounded-lg border border-line-strong bg-surface p-2 shadow-[0_4px_16px_rgba(30,29,26,0.12)]"
     >
       {title && <div className="mb-1.5 truncate text-[11px] font-semibold text-ink-2">{title}</div>}
       <input
@@ -178,11 +188,10 @@ export function StepPicker({
       />
       {/* tabindex=0 keeps the scrollable region keyboard reachable (AXE
           scrollable-region-focusable); the search input still owns the
-          picker's keyboard contract. Issue #67: React Flow's `nowheel` keeps a
-          wheel over this list scrolling the LIST (not the canvas), and
-          `nopan nodrag` keep a pointer-down inside the picker from dragging
-          the graph underneath — in every picker the canvas hosts (edge “+”,
-          terminal “+”, empty scope body, empty canvas). */}
+          picker's keyboard contract. Issue #67 put `nowheel nopan nodrag`
+          here; the dialog root now carries them too (above), so the list's
+          own classes are belt-and-braces for any host that re-parents it.
+        */}
       <div
         data-testid="step-picker-list"
         tabIndex={0}
