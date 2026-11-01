@@ -248,7 +248,14 @@ describe("DefinitionGraph", () => {
     expect(group.textContent).toContain("until \u00b7 build_until_verified \u00b7 max 4");
     expect(
       screen.getByTestId("definition-graph-scope-note-build_until_verified").textContent,
-    ).toContain("\u21bb");
+    ).toContain("until passWhen holds");
+    // The scope kind rides beside the words as the shared icon (#65), not a
+    // Unicode glyph baked into the string.
+    expect(
+      screen
+        .getByTestId("definition-graph-scope-note-build_until_verified")
+        .querySelector('svg[data-step-kind="until"]'),
+    ).not.toBeNull();
     // The children sit inside the box in the laid-out geometry, not beside it.
     const child = screen.getByTestId("definition-graph-node-build_until_verified-implement");
     expect(Number(child.style.left.replace("px", ""))).toBeGreaterThan(

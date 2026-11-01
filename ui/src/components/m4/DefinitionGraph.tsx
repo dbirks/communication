@@ -257,6 +257,13 @@ export function DefinitionGraph({
                           lineHeight: `${GROUP_LABEL_LINE}px`,
                         }}
                       >
+                        {/* The scope kind's icon rides beside the words (#65);
+                            the note string itself stays plain text. */}
+                        <StepKindIcon
+                          kind={group.kind}
+                          size={11}
+                          className="mr-[3px] inline-block align-[-1px]"
+                        />
                         {group.loopNote}
                       </span>
                     ) : null}

@@ -44,37 +44,6 @@ export const DEFERRED_KINDS: Partial<Record<NodeKind, string>> = {
   "integration.action": "M6",
 };
 
-/**
- * Kind glyphs. The handoff left graph nodes undesigned, so these follow its
- * rule for every status: a glyph **and** a word, never a shape alone. Glyphs
- * are drawn, not font-loaded (a missing glyph is an invisible node).
- * The mapping and the reasoning are in `docs/design/handoff/graph-nodes.md`.
- */
-export const KIND_GLYPH: Record<NodeKind, string> = {
-  "agent.acp": "◆",
-  "model.chat": "◇",
-  "process.exec": "▸",
-  condition: "⌄",
-  gate: "◉",
-  // `⊙`, not an emoji hand: U+270B defaults to *emoji presentation* on several
-  // platforms, which would drop a coloured pictogram into a system whose only
-  // colour is state. Same circle family as `gate`, dot inside rather than ring.
-  "human.approval": "⊙",
-  until: "↻",
-  for_each: "⊕",
-  parallel: "∥",
-  join: "≡",
-  // `⇒` and `↑` rather than `▶`/`⬆`: U+25B6 and U+2B06 are emoji-presentation
-  // capable, and a coloured pictogram would be the only colour on the canvas that
-  // does not mean a state.
-  "pipeline.invoke": "⇒",
-  "artifact.publish": "↑",
-  "git.commit": "◍",
-  "git.publish": "⇧",
-  "integration.query": "?",
-  "integration.action": "!",
-};
-
 export const SCOPE_KINDS: readonly NodeKind[] = ["until", "for_each", "parallel"];
 
 /**
@@ -112,15 +81,19 @@ export function isGateKind(kind: string): boolean {
 /**
  * The annotation a scope box carries under its children: what repeats, in the
  * document's own terms (`03` § 3), never a guessed branch name.
+ *
+ * Words only (#65): the scope kind's icon is `StepKindIcon` (lib/stepIcons),
+ * drawn beside this note by the renderers, so the string stays plain text for
+ * layout measurement and screen readers alike.
  */
 export function scopeLoopNote(node: DefinitionNode): string {
   if (node.kind === "until") {
     return typeof node.config?.passWhen === "string"
-      ? "\u21bb until passWhen holds"
-      : "\u21bb repeats until its bound";
+      ? "until passWhen holds"
+      : "repeats until its bound";
   }
-  if (node.kind === "for_each") return "\u2295 one place per item";
-  if (node.kind === "parallel") return "\u2225 branches run together";
+  if (node.kind === "for_each") return "one place per item";
+  if (node.kind === "parallel") return "branches run together";
   return "";
 }
 
@@ -130,10 +103,6 @@ export function isScopeKind(kind: string): boolean {
 
 export function isNodeKind(kind: string): kind is NodeKind {
   return (NODE_KINDS as readonly string[]).includes(kind);
-}
-
-export function kindGlyph(kind: string): string {
-  return isNodeKind(kind) ? KIND_GLYPH[kind] : "□";
 }
 
 /** One node of a definition document, as the canonical JSON carries it. */
