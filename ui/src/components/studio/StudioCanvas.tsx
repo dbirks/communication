@@ -189,19 +189,22 @@ export interface MenuBoxPx {
 }
 
 /**
- * Where the selected step's menu goes (design 1g: right of the node, top-
- * aligned). A menu that lands on ANOTHER step or on the pane's own edge is the
+ * Where the selected step's menu goes (design 1g: right of the node,
+ * VERTICALLY CENTRED on the step — the issue #66 place pass moved the popover
+ * off the old top-aligned anchor so it reads as a popover centred on its
+ * step). A menu that lands on ANOTHER step or on the pane's own edge is the
  * defect — `Duplicate`/`Delete` painted over `approve` and the chain read as a
  * mess (pass-2), and at 390 the row dropped under its node, printed across the
  * connector edge and the next card, and hugged the canvas' right border
  * (pass-8, defect 1). So the candidates run in this order:
  *
- *  1. right of the node (the design's slot),
+ *  1. right of the node (the design's slot), centred on the step's mid-line
+ *     and clamped into a measured pane,
  *  2. below the node,
  *  3. ABOVE the node — the menu opens upward when there is no room below,
  *  4. right of the node again, but slid back into the pane: it is still
- *     anchored to its own step's right edge, and the only card it can cover
- *     there is the one it belongs to,
+ *     anchored to its own step's right edge (and stays centred on its row),
+ *     and the only card it can cover there is the one it belongs to,
  *  5. ONE ROW centred in the clear air between its step and its neighbour
  *     (below, then above) — the gap is measured, not assumed, because the
  *     canvas is zoomed to fit and a constant would be wrong at every width,
@@ -246,9 +249,16 @@ export function chooseNodeMenuPlacement(input: {
   ): MenuBoxPx & { compact: boolean; docked: boolean } => ({ ...box, compact, docked: false });
   const cw = input.compact?.w ?? MENU_COMPACT_W_PX;
   const ch = input.compact?.h ?? MENU_COMPACT_H_PX;
+  // The menu's y in the design's right-hand slot: CENTRED on the step's mid-
+  // line. With a measured pane it is clamped inside — the menu is taller than
+  // a 52px step, so beside a step near the pane's top or bottom edge the
+  // centre is nudged until the whole popover fits, and it stays beside its
+  // own step either way.
+  const centerY = node.y + node.h / 2 - input.menu.h / 2;
+  const sideY = pane.h > 0 ? Math.max(0, Math.min(centerY, pane.h - input.menu.h - gap)) : centerY;
 
   for (const box of [
-    { x: node.x + node.w + gap, y: node.y, w: input.menu.w, h: input.menu.h },
+    { x: node.x + node.w + gap, y: sideY, w: input.menu.w, h: input.menu.h },
     { x: node.x, y: node.y + node.h + gap, w: input.menu.w, h: input.menu.h },
     // Opens upward instead of covering the step below (the phone chain, and any
     // step whose next sibling is crowded).
@@ -261,7 +271,7 @@ export function chooseNodeMenuPlacement(input: {
   if (pane.w > 0 && pane.h > 0) {
     const side: MenuBoxPx = {
       x: Math.max(gap, Math.min(node.x + node.w + gap, pane.w - input.menu.w - gap)),
-      y: Math.max(gap, Math.min(node.y, pane.h - input.menu.h - gap)),
+      y: Math.max(gap, Math.min(sideY, pane.h - input.menu.h - gap)),
       w: input.menu.w,
       h: input.menu.h,
     };
@@ -825,9 +835,10 @@ function CanvasInner({
   }, [menu, selectionKey, selectedId, selectedIds]);
 
   // Where the menu of `nodeId` opens from the node itself (⋯ button,
-  // keyboard): the design-1g slot at the step's RIGHT EDGE, top-aligned — the
-  // same anchor the plain-click menu used before #66 moved the verbs off the
-  // selection. `updateMenuScreen` re-derives the pane position (and falls back
+  // keyboard): the design-1g slot at the step's RIGHT EDGE, vertically
+  // centred by `chooseNodeMenuPlacement` — the same anchor the plain-click
+  // menu used before #66 moved the verbs off the selection. `updateMenuScreen`
+  // re-derives the pane position (and falls back
   // below/upward/one-row through `chooseNodeMenuPlacement`) from this box.
   const openMenuForNode = useCallback(
     (nodeId: string) => {

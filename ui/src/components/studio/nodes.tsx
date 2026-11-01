@@ -142,6 +142,12 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   };
 
   const keyFact = keyFactFor(data.kind, data.config);
+  // Issue #66 place fix: the ⋯ rides the SELECTED step's top-right corner, and
+  // the truncated text lines stop short of it (pr) so nothing hides under the
+  // button's opaque box at any width (at 390 the phone floor grows the button
+  // to 44px tall, spanning both lines' right ends).
+  const showMenu = Boolean(selected && interactive && data.onMenu);
+  const menuPad = showMenu ? " pr-[24px]" : "";
   // Issue #65: the kind's icon rides in front of the line (aria-hidden); the
   // line's text is the accessible content, so `title` and `textContent` stay
   // the same string.
@@ -179,14 +185,14 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         style={{ width: 200, height: 52 }}
       >
         <div
-          className="truncate text-[13.5px] font-semibold leading-none text-ink"
+          className={`truncate text-[13.5px] font-semibold leading-none text-ink${menuPad}`}
           title={`${data.id} (${data.label})`}
         >
           {data.id}
         </div>
         {data.status && (
           <div
-            className="flex min-w-0 items-start gap-1 text-[11px] leading-tight text-ink-2"
+            className={`flex min-w-0 items-start gap-1 text-[11px] leading-tight text-ink-2${menuPad}`}
             aria-label={`status: ${data.status.label}`}
             data-testid={`step-status-${data.id}`}
             title={data.status.label}
@@ -200,7 +206,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
             <span className="min-w-0 truncate">{data.status.label}</span>
           </div>
         )}
-        <div className="flex min-w-0 items-center gap-1.5">
+        <div className={`flex min-w-0 items-center gap-1.5${menuPad}`}>
           <span
             className="min-w-0 truncate font-mono text-[11px] leading-none text-ink-2"
             data-testid={`canvas-step-fact-${data.id}`}
@@ -232,14 +238,26 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           selected, so the touch user who has no right-click reaches the verbs
           from the step they just selected. The shared `.icon-hit` utility
           (#68) grows the desktop hit area to 30×30 without growing the painted
-          dot; the phone band's `main button` floor gives it 44px there. */}
-      {selected && interactive && data.onMenu && (
+          dot; the phone band's `main button` floor gives it 44px there.
+
+          Issue #66 place: the ⋯ sits in the step's TOP-RIGHT corner, INSIDE
+          the card — clear of the outgoing edge (which leaves the bottom-centre
+          handle) and of every edge “+”. The pass-1 review caught it drawn at
+          the card's BOTTOM-LEFT, ON the edge line, even though the class read
+          `absolute right-[2px] top-[2px]`: `.icon-hit` lives OUTSIDE Tailwind
+          v4's `@layer utilities` (by design — it must outrank component-layer
+          pseudo rules) and its `position: relative` therefore beat the plain
+          `absolute` utility, dropping the button into FLOW under the 200×52
+          card. `absolute!` compiles to `position:absolute !important`, which
+          the unlayered rule cannot outrank (the same trick as `items-stretch!`
+          below against the phone band's `main [role="button"]` rule). */}
+      {showMenu && (
         <button
           type="button"
           data-testid={`node-menu-button-${data.id}`}
           aria-label={`Actions for step ${data.id}`}
           aria-haspopup="menu"
-          className="icon-hit absolute right-[2px] top-[2px] z-20 grid h-[20px] w-[20px] place-items-center rounded-[3px] border border-line bg-surface text-[12px] leading-none text-ink-2 hover:border-accent hover:text-accent"
+          className="icon-hit absolute! right-[2px] top-[2px] z-20 grid h-[20px] w-[20px] place-items-center rounded-[3px] border border-line bg-surface text-[12px] leading-none text-ink-2 hover:border-accent hover:text-accent"
           // Same guard as every canvas affordance: the pointerdown must not
           // reach React Flow (node drag / selection churn) or the menu's own
           // click-away, and the click must not re-trigger the step's select.

@@ -495,6 +495,16 @@ spec:
     expect(screen.queryByTestId("node-menu-button-plan")).toBeNull();
     const trigger = screen.getByTestId("node-menu-button-check");
     expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    // Issue #66 place: the ⋯ is ABSOLUTE in the step's top-right corner, never
+    // a flow child under the card (that bottom-left spot on the edge line is
+    // what the pass-1 review caught). `.icon-hit` lives outside Tailwind's
+    // utility layer and sets `position: relative`, so only the IMPORTANT
+    // `absolute!` keeps the button out of flow — the regression this pins.
+    const triggerClasses = trigger.className.split(/\s+/);
+    expect(triggerClasses).toContain("icon-hit");
+    expect(triggerClasses).toContain("absolute!");
+    expect(triggerClasses).toContain("right-[2px]");
+    expect(triggerClasses).toContain("top-[2px]");
     // The ⋯ opens the menu and does NOT re-trigger the step's selection.
     fireEvent.click(trigger);
     expect(screen.getByTestId("studio-node-menu")).toBeTruthy();
@@ -1038,7 +1048,7 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
   const step = { x: 95, y: 100, w: 200, h: 52 };
   const menu = { w: 110, h: 58 };
 
-  it("sits right of the node, as 1g draws it, when the slot is clear", () => {
+  it("sits right of the node, vertically centred on it, when the slot is clear", () => {
     const place = chooseNodeMenuPlacement({
       node: step,
       others: [],
@@ -1047,7 +1057,9 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
     });
     expect(place.docked).toBe(false);
     expect(place.compact).toBe(false);
-    expect(place).toMatchObject({ x: 303, y: 100 });
+    // issue #66 place: the popover is centred on the step's mid-line (58px
+    // menu on a 52px step → 3px above the step's top), not hung off its top.
+    expect(place).toMatchObject({ x: 303, y: 100 + 52 / 2 - 58 / 2 });
   });
 
   it("drops below the node when the right slot lands on another step", () => {
@@ -1114,7 +1126,9 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
     });
     expect(place.docked).toBe(false);
     expect(place.compact).toBe(false);
-    expect(place.y).toBe(step.y); // its own row, not a strip of its own
+    // Vertically centred on the step's row (the design slot's y), not hung on
+    // the step's top — the pass-8 promise, now with the popover centred.
+    expect(place.y).toBe(100 + 52 / 2 - 58 / 2); // its own row, not a strip of its own
     expect(place.x + place.w).toBeLessThanOrEqual(390 - 8);
     for (const other of [
       { x: 95, y: 30, w: 200, h: 52 },
@@ -1205,7 +1219,9 @@ describe("chooseNodeMenuPlacement (the selected step's menu never covers a step)
       pane: { w: 0, h: 0 },
     });
     expect(place.docked).toBe(false);
-    expect(place).toMatchObject({ x: 303, y: 100 });
+    // The unmeasured pane says nothing, so the design slot keeps its x AND
+    // its centred y (no clamping was possible).
+    expect(place).toMatchObject({ x: 303, y: 100 + 52 / 2 - 58 / 2 });
   });
 });
 
