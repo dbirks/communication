@@ -57,7 +57,9 @@ import {
   findClippedText,
   findOverlaps,
   findSmallTargets,
+  missingParityItems,
   type OverlapHit,
+  type ReflowItem,
   type TargetHit,
 } from "./reflow.js";
 
@@ -393,6 +395,11 @@ test.describe("findSmallTargets and the real hit area", () => {
  *
  * which is pass-1's defect line, 57×12px and all.
  *
+ * The block after it is pass-1 `out/pass-1-20261101121548`'s parity fix: the
+ * Studio edge `+`'s `insert step` hover word, allowlisted as a desktop-only
+ * affordance whose touch path is the `+`'s own accessible name — with the
+ * pattern resolving per pair, so a sibling `+` never excuses it.
+ *
  * `folded` reproduces that block with the app's own geometry — the folded line
  * and the action row occupy the SAME band while the disclosure is shut — and
  * keeps it identical when open by parking the button absolutely. That is the
@@ -541,6 +548,150 @@ test.describe("what the user cannot see is not measured", () => {
     ]);
   });
 });
+/**
+ * pass-1 (`out/pass-1-20261101121548`, screen `1g inspector-edit` at
+ * 390×844) recorded:
+ *
+ *   reflow: 390 lost 1 of the 1280 items: edge-add-label-survey-plan "insert step"
+ *
+ * That word is the Studio edge `+`'s hover/focus label
+ * (`ui/src/components/studio/edges.tsx`): `opacity-0` until the `+` is
+ * hovered or keyboard-focused, so the 1280 inventory can hold it while the
+ * 390 capture never paints it — touch has no hover. It is not lost content:
+ * the `+` button itself (`edge-add-<from>-<to>`) renders at 390 and carries
+ * the same words as its accessible name ("Insert a step between survey and
+ * plan"). So `REFLOW_ALLOWLIST` carries the `edge-add-label-*` pattern entry
+ * whose reach is `edge-add-*`, RESOLVED PER PAIR: the word is excused only
+ * while its own `+` renders at 390. These cases pin all three arms —
+ * allowed (word lost, its `+` kept), defective (word and its `+` both lost),
+ * and the resolution itself (a sibling's `+` kept does NOT excuse this
+ * pair's word when its own `+` is gone).
+ *
+ * The fixture reproduces the edge group's hover cascade in plain CSS
+ * (`.group:hover .add-word, .group:focus-within .add-word { opacity: 1 }`, no
+ * `transition` so the collected opacity is never mid-flight). The inventories
+ * come from the real `collectReflowItems`, so the `checkVisibility` rule that
+ * keeps an unpainted word out of the 390 set is measured, not asserted from
+ * the app's Tailwind classes.
+ */
+
+/** One Studio edge group as `edges.tsx` renders it: the 44px invisible `+`
+ * hit square with its 22px painted circle, and the `insert step` word that
+ * paints only on hover / focus-within. */
+function edgeGroup(from: string, to: string): string {
+  return [
+    `<div class="group" style="position:absolute;left:120px;top:140px">`,
+    `<button type="button" data-testid="edge-add-${from}-${to}" class="add-hit"`,
+    ` aria-label="Insert a step between ${from} and ${to}">`,
+    '<span aria-hidden="true" class="add-circle">+</span></button>',
+    `<span data-testid="edge-add-label-${from}-${to}" class="add-word">insert step</span>`,
+    "</div>",
+  ].join("");
+}
+
+function edgeDoc(groups: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    body { margin: 0; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    main { position: relative; height: 400px; }
+    /* addHit / addCircle / the label's geometry (EDGE_ADD_LABEL_OFFSET_PX
+       ~= the 44px box edge): the word starts a target-width out and is a leaf
+       span the hover group lights up. No transition: a mid-flight opacity
+       would be a fact about WHEN the collector ran, not about the rule. */
+    .add-hit { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 44px; height: 44px; display: grid; place-items: center;
+      background: transparent; border: 0; padding: 0; }
+    .add-circle { display: grid; place-items: center; width: 22px; height: 22px;
+      border-radius: 999px; border: 1px solid #888; background: #fff; }
+    .add-word { position: absolute; left: 22px; top: 0; transform: translateY(-50%);
+      opacity: 0; white-space: nowrap; font-size: 10.5px; pointer-events: none; }
+    .group:hover .add-word, .group:focus-within .add-word { opacity: 1; }
+  </style></head><body><main>${groups}</main></body></html>`;
+}
+
+/**
+ * One capture's inventory: `hover` puts the pointer on that `+` (what the
+ * 1280 inspector-edit beat had, and what touch never has), `focus` parks
+ * TAB focus inside another pair's group (`:focus-within` lights that word
+ * too, which is how two words are painted in ONE 1280 inventory).
+ */
+async function edgeInventory(
+  page: import("@playwright/test").Page,
+  width: number,
+  body: string,
+  opts: { hover?: string; focus?: string } = {},
+): Promise<ReflowItem[]> {
+  await page.setViewportSize({ width, height: 844 });
+  await page.setContent(edgeDoc(body));
+  // A touch capture has NO hover position: the pointer is parked in the
+  // far corner first, or a previous capture's hover would ride the same
+  // coordinates into this document and paint the word at 390.
+  await page.mouse.move(width - 5, 839);
+  if (opts.focus !== undefined) await page.focus(`[data-testid="${opts.focus}"]`);
+  if (opts.hover !== undefined) await page.hover(`[data-testid="${opts.hover}"]`);
+  return page.evaluate(collectReflowItems);
+}
+
+const keysOf = (items: ReflowItem[]): string[] => items.map((item) => item.key);
+
+test.describe("the edge + hover word is a desktop-only affordance", () => {
+  const oneEdge = edgeGroup("survey", "plan");
+
+  test("(w1) word painted at 1280, unpainted at 390 with its + kept: no parity defect", async ({
+    page,
+  }) => {
+    const desktop = await edgeInventory(page, 1280, oneEdge, {
+      hover: "edge-add-survey-plan",
+    });
+    // The fixture really is the 1280 shape: hovering the + painted the word.
+    expect(keysOf(desktop)).toContain("testid:edge-add-label-survey-plan");
+    const phone = await edgeInventory(page, 390, oneEdge);
+    const keys = keysOf(phone);
+    // …and at 390 with no hover the word is out of the inventory while the +
+    // (whose accessible name carries the same words) is in it.
+    expect(keys).not.toContain("testid:edge-add-label-survey-plan");
+    expect(keys).toContain("testid:edge-add-survey-plan");
+    expect(missingParityItems(desktop, phone)).toEqual([]);
+  });
+
+  test("(w2) word and its own + both gone at 390: the defect files again", async ({ page }) => {
+    const desktop = await edgeInventory(page, 1280, oneEdge, {
+      hover: "edge-add-survey-plan",
+    });
+    // The read-only canvas shape (edges.tsx without `interactive`): neither
+    // the word nor its + renders. The allowlist must not excuse the pair.
+    const phone = await edgeInventory(page, 390, '<p data-testid="canvas-readonly">read only</p>');
+    expect(keysOf(phone)).toEqual(["testid:canvas-readonly"]);
+    const missing = missingParityItems(desktop, phone).map((item) => item.key);
+    expect(missing).toContain("testid:edge-add-survey-plan");
+    expect(missing).toContain("testid:edge-add-label-survey-plan");
+  });
+
+  test("(w3) a sibling pair's + does not excuse this pair's lost word", async ({ page }) => {
+    const twoEdges = edgeGroup("survey", "plan") + edgeGroup("build", "ship");
+    // ONE 1280 inventory with BOTH words painted: focus-within lights
+    // survey→plan's, the hovered pointer lights build→ship's — exactly the
+    // two hover/focus paths the app offers.
+    const desktop = await edgeInventory(page, 1280, twoEdges, {
+      focus: "edge-add-survey-plan",
+      hover: "edge-add-build-ship",
+    });
+    const desktopKeys = keysOf(desktop);
+    expect(desktopKeys).toContain("testid:edge-add-label-survey-plan");
+    expect(desktopKeys).toContain("testid:edge-add-label-build-ship");
+    // At 390 the build→ship edge is gone entirely and survey→plan kept its +:
+    // survey→plan's word is excused by ITS OWN +, and build→ship's word is
+    // NOT excused by the sibling's — the pattern resolves per pair.
+    const phone = await edgeInventory(page, 390, edgeGroup("survey", "plan"));
+    expect(keysOf(phone)).toContain("testid:edge-add-survey-plan");
+    const missing = missingParityItems(desktop, phone).map((item) => item.key);
+    expect(missing).not.toContain("testid:edge-add-label-survey-plan");
+    expect(missing).toEqual([
+      "testid:edge-add-build-ship",
+      "testid:edge-add-label-build-ship",
+    ]);
+  });
+});
+
 /**
  * `plan-steps.ts` — pass-1 defect 2, `run-gate waiting`.
  *

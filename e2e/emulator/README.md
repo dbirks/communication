@@ -129,7 +129,11 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   MAIN content only — the app shell's sidebar/phone strip is excluded) must
   all be rendered at 390 too, or sit behind an explicit, per-testid
   `REFLOW_ALLOWLIST` entry with a one-line reason (must stay empty unless a
-  real phone-only collapse forces one — every entry gets reported). A tab's
+  real phone-only collapse forces one — every entry gets reported). A key (or
+  reach) ending in `*` is a prefix pattern for dynamic testids: it covers
+  items whose own testid matches the stem, and the reach resolves per item —
+  `edge-add-label-survey-plan` is excused only while *its own*
+  `edge-add-survey-plan` renders at 390. A tab's
   identity name ignores a live count badge inside it (a run can add
   `Artifacts 1` between the two captures — see dbirks/communication#22).
   Missing items are recorded as `kind: reflow`;

@@ -96,6 +96,11 @@ export interface ReflowAllowEntry {
    * the hidden content's one-tap path (a back control, the phone sheet that
    * carries the same content). An entry whose reach is missing never
    * excuses anything: the hidden side would be unreachable.
+   *
+   * On a `*` pattern entry (see `REFLOW_ALLOWLIST`) the reach may end in `*`
+   * too: the matched item's remainder substitutes for it, so the entry applies
+   * only while THAT item's own counterpart renders — the pair's own `+`, not
+   * just any `+`.
    */
   reach: string;
   /** When true, items that sit INSIDE the allowlisted container (at 1280)
@@ -110,6 +115,14 @@ export interface ReflowAllowEntry {
  * no phone meaning, whose CONTENT is reachable the same way. Every entry
  * names its reach control; the check applies the entry only while that
  * control renders at 390.
+ *
+ * A key ending in `*` is a PREFIX pattern: it covers every desktop testid with
+ * that stem (dynamic ids like `edge-add-label-<from>-<to>` cannot each get an
+ * exact entry). Pattern entries match the item's OWN testid — `subtree` is not
+ * read for them, so keep them narrow — and a `reach` ending in `*` resolves
+ * per item with the matched remainder, so a sibling's control never excuses
+ * this item's absence. `reflow-target.spec.ts` (the edge `+` word block) pins
+ * that resolution.
  */
 export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
   "thread-list-pane": {
@@ -142,28 +155,65 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
     reason: "desktop-only affordance (drag resizer for the side dock); the phone sheet replaces it",
     reach: "workbench-dock-panel",
   },
+  // The Studio edge "+"'s hover word (`ui/src/components/studio/edges.tsx`):
+  // `opacity-0` until the "+" is hovered or keyboard-focused, so the 1280
+  // capture can paint `insert step` while the 390 capture never does — touch
+  // has no hover. Not lost content: the "+" button itself
+  // (`edge-add-<from>-<to>`) renders at 390 and carries the same words as its
+  // accessible name ("Insert a step between …"). The pattern resolves per
+  // pair: the word is excused only while ITS OWN "+" renders at 390, so a
+  // screen that lost both (read-only canvas, regression) still files the
+  // defect (pass-1 `out/pass-1-20261101121548`, 1g inspector-edit).
+  "edge-add-label-*": {
+    reason:
+      "the edge + word is a desktop hover/focus label; touch has no hover and the + carries the same words as its accessible name",
+    reach: "edge-add-*",
+  },
 };
 
 /**
  * The 1280 items that vanished at 390: each must be present (same key) in
  * the 390 inventory or be covered by an allowlist entry whose reach testid
  * renders at 390 (the entry covers its container itself and, with
- * `subtree`, everything inside it).
+ * `subtree`, everything inside it; a `*` key covers items whose testid
+ * matches the stem AND whose resolved reach testid renders — see
+ * `REFLOW_ALLOWLIST`).
  */
 export function missingParityItems(desktop: ReflowItem[], phone: ReflowItem[]): ReflowItem[] {
   const present = new Set(phone.map((item) => item.key));
   // An entry applies only while its reach control actually renders at 390.
   const liveContainers = new Set<string>();
+  // `*` keys are prefix patterns: their reach can only be resolved per item
+  // (the remainder substitutes into the reach), so they stay out of the
+  // container set and are asked directly below.
+  const patterns: { stem: string; entry: ReflowAllowEntry }[] = [];
   for (const [testid, entry] of Object.entries(REFLOW_ALLOWLIST)) {
+    if (testid.endsWith("*")) {
+      patterns.push({ stem: testid.slice(0, -1), entry });
+      continue;
+    }
     if (!present.has("testid:" + entry.reach)) continue;
     liveContainers.add(testid);
     if (entry.subtree) liveContainers.add(testid + ":*");
   }
+  const patternCovers = (testid: string): boolean => {
+    for (const { stem, entry } of patterns) {
+      if (!testid.startsWith(stem)) continue;
+      // Resolve the reach against THIS item: `edge-add-*` + `survey-plan`
+      // must be the pair's own `+` at 390, not any `+`.
+      const reach = entry.reach.endsWith("*")
+        ? entry.reach.slice(0, -1) + testid.slice(stem.length)
+        : entry.reach;
+      if (present.has("testid:" + reach)) return true;
+    }
+    return false;
+  };
   return desktop.filter((item) => {
     if (present.has(item.key)) return false;
     if (item.key.startsWith("testid:")) {
       const testid = item.key.slice("testid:".length);
       if (liveContainers.has(testid)) return false;
+      if (patternCovers(testid)) return false;
     }
     for (const container of item.containers) {
       if (liveContainers.has(container + ":*")) return false;
