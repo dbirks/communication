@@ -177,15 +177,31 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           // past both edges of its own box. Stretch keeps each line the box's
           // full width, so `truncate` has something to truncate against and
           // the words stay left-aligned at every width.
+          // Step-clip fix (measured on :15173 at 1280 and 390): every line's
+          // box must be at least as tall as the glyph run it holds, or
+          // `truncate`'s overflow:hidden cuts the descenders off — a 13.5px
+          // name in a 13.5px leading-needed 15px and showed 10. The lines now
+          // measure title 17px (leading-[17px]) + kind/fact 15px
+          // (leading-[15px]) + status 13.75/14px (leading-tight), and the
+          // three status lines fit the 50px content box of the design's
+          // 200×52 card (1 + 17 + 1 + 13.75 + 1 + 16 ≤ 50 — the kind line is
+          // 16 tall: its 14px icon rides 2px under the baseline) only with
+          // this trim spacing — so the status variant drops `py-1`, keeps a
+          // 1px `pt` for the name and lets 1px gaps do the rest. The two-line
+          // (Studio) variant: 17 + 2 + 16 + 8 (`py-[4px]`) = 43 ≤ 50, and
+          // even the deferred-chip line (a 22px pill) fits: 4 + 17 + 2 + 22
+          // + 4 = 49 — at `py-[6px]` the chip case overflowed and flex-shrink
+          // clipped the title again (ch 14 < sh 17, observed on a git.commit
+          // card).
           "flex h-full flex-col items-stretch! rounded-md border bg-surface px-2.5 text-left outline-none",
-          data.status ? "gap-[2px] py-1" : "gap-0.5 py-2",
+          data.status ? "gap-[1px] pt-[1px]" : "gap-0.5 py-[4px]",
           selected ? "border-accent shadow-[0_0_0_2px_var(--color-accent-ring)]" : "border-line",
           data.stale ? "opacity-70" : "",
         ].join(" ")}
         style={{ width: 200, height: 52 }}
       >
         <div
-          className={`truncate text-[13.5px] font-semibold leading-none text-ink${menuPad}`}
+          className={`truncate text-[13.5px] font-semibold leading-[17px] text-ink${menuPad}`}
           title={`${data.id} (${data.label})`}
         >
           {data.id}
@@ -208,7 +224,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         )}
         <div className={`flex min-w-0 items-center gap-1.5${menuPad}`}>
           <span
-            className="min-w-0 truncate font-mono text-[11px] leading-none text-ink-2"
+            className="min-w-0 truncate font-mono text-[11px] leading-[15px] text-ink-2"
             data-testid={`canvas-step-fact-${data.id}`}
             // The full text the ellipsis stands for — kind word and the
             // kind's own key fact (`model · david-birks/qwen3-8-flash-next`),
