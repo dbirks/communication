@@ -487,7 +487,7 @@ function ProjectWorkflowRow({
               <span className="font-mono text-[10.5px] text-muted">—</span>
             ) : (
               data.chain.map((cell, index) => (
-                <span key={index} className="flex items-center gap-[6px]">
+                <span key={index} className="flex items-baseline gap-[6px]">
                   {index > 0 ? (
                     <span aria-hidden="true" className="font-mono text-[10px] text-muted">
                       ›

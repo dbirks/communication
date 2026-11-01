@@ -42,6 +42,7 @@ import { Button } from "../ds/Button";
 import { Input } from "../ds/Field";
 import { CONVERSATION_STATE, STATES, stateOf, type StateName } from "../ds/states";
 import { formatAge, shortId } from "../../lib/format";
+import { previewLine } from "../../lib/preview";
 import { routes } from "../../lib/routes";
 
 type CrossProjectConversations = components["schemas"]["CrossProjectConversationList"];
@@ -231,6 +232,10 @@ function ThreadItem({
   const spec = STATES[state];
   const word = ROW_STATUS_WORDS[conversation.status];
   const repo = conversation.repository_name ?? null;
+  // The served line is the agent's own text; the ONE shared preview helper
+  // strips its leading markdown markers and inline emphasis, so the row
+  // leads with the sentence, not a bullet (pass-1 review).
+  const preview = previewLine(conversation.last_agent_line);
   return (
     <li>
       <Link
@@ -259,12 +264,12 @@ function ThreadItem({
           {repo ? `${projectName} / ${repo}` : projectName} · {profileName}
           {word ? ` · ${word}` : ""}
         </span>
-        {conversation.last_agent_line ? (
+        {preview ? (
           <span
             className="block truncate pl-[17px] text-[12px] text-muted"
             data-testid={`thread-last-line-${conversation.id}`}
           >
-            {conversation.last_agent_line}
+            {preview}
           </span>
         ) : null}
       </Link>

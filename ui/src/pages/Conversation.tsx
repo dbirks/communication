@@ -480,17 +480,24 @@ export default function ConversationPage({
     // title — pill first, then the act, a lone `Take control` filling the
     // line — never a shrink-to-fit block parked against the right edge with
     // nothing beside it. Two acts (Return control + Stop) still share one
-    // inline line.
+    // inline line. The unheld thread's badge is a bare glyph (1g: “status
+    // shows as a glyph”); pass-1 review: at 390 that lone `○` sat on its own
+    // line above a full-width `Take control` and read as stray ink. The acts
+    // span therefore GROWS into the line next to the glyph (`grow`, basis
+    // auto) instead of forcing its own line (`w-full`): the glyph sits
+    // inline, immediately before the button, and the lone act still fills
+    // what is left of the line. When pill + acts cannot share a line the
+    // `flex-wrap` gives the acts their own full-width line, as before.
     const pillRow =
       "[&>div:first-child]:flex [&>div:first-child]:w-full [&>div:first-child]:flex-wrap " +
       "[&>div:first-child]:items-center [&>div:first-child]:gap-[6px] [&>div:first-child]:space-y-0! " +
-      "[&>div:first-child>span:last-child]:w-full [&>div:first-child>span:last-child]:shrink-0 " +
+      "[&>div:first-child>span:last-child]:grow [&>div:first-child>span:last-child]:min-w-0 " +
       "[&>div:first-child>span:last-child>button]:px-[10px] " +
       "[&>div:first-child>span:last-child>button:only-child]:w-full " +
       "[&>div:first-child>span:last-child>button]:font-mono [&>div:first-child>span:last-child>button]:text-[11px] " +
       "[&>div:not(:first-child)]:basis-full " +
       "lg:[&>div:first-child]:w-auto lg:[&>div:first-child]:justify-end " +
-      "lg:[&>div:first-child>span:last-child]:w-auto " +
+      "lg:[&>div:first-child>span:last-child]:w-auto lg:[&>div:first-child>span:last-child]:grow-0 " +
       "lg:[&>div:first-child>span:last-child>button:only-child]:w-auto";
     const pillSkin = session.isController
       ? "[&>div:first-child>span:first-child]:h-[24px] " +
@@ -676,17 +683,27 @@ export default function ConversationPage({
                 }
               />
             </div>
-            <details
-              className="mt-4 min-w-0 max-w-[720px] rounded-[3px] border border-line bg-surface"
-              data-testid="thread-context-block"
-            >
+            {/* Pass-4 review: the rail's collapsed form was a BOXED mono-caps
+                bar (`THREAD DETAILS — WORKSPACE, ARTIFACTS, NEXT`) sitting
+                between the transcript and the composer — not in design 1g, and
+                reading like a developer label. The design's thread column is
+                the transcript alone (pass review defect 6), and the facts the
+                bar named at a glance — workspace, branch, agent — are already
+                the header's mono meta line (README § 3), so what this
+                disclosure holds is the rail's INTERACTIVE parts (handoff,
+                artifacts, draft PR), one click away. It is restyled to the
+                design's quiet disclosure: a sentence-case line in the
+                transcript column's own voice — no box, no caps bar — that
+                opens in place. Both testids and the `details` semantics are
+                unchanged. */}
+            <details className="mt-4 min-w-0 max-w-[720px]" data-testid="thread-context-block">
               <summary
-                className="flex min-h-[44px] cursor-pointer items-center px-[10px] py-[8px] font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted min-[560px]:min-h-[26px]"
+                className="flex min-h-[44px] cursor-pointer items-center text-[11.5px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent min-[560px]:min-h-[24px]"
                 data-testid="thread-context-disclosure"
               >
                 Thread details — workspace, artifacts, next
               </summary>
-              <div className="border-t border-line px-[10px] py-[10px]">{rail}</div>
+              <div className="mt-[8px] border-t border-line pt-[10px]">{rail}</div>
             </details>
           </div>
           {/* The composer pins to the bottom of the pane (1g): the last thing

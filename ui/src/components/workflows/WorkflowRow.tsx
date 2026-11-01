@@ -236,7 +236,13 @@ export function WorkflowRow({
             keeps the ONE ellipsized line (reflow-390 item 1: a wrapping chain
             turned a row into four lines of loop pills at 390), and the full
             chain rides the `title` at every width, so the whole truth is never
-            further than a hover. */}
+            further than a hover. Pass-4 review, item 2: on the desktop wrap the
+            `›` is now part of the FOLLOWING step's non-breaking unit (an
+            inline-flex of `›` + step, baselines aligned) — printed as free
+            text with spaces around it, ` › ` was a line-break point, so a
+            wrapped line could end with the arrow or start with a bare one.
+            The break points are now between units, and a unit always carries
+            its arrow with its step. */}
         <div
           className="min-w-0 font-mono text-[10.5px] max-[899px]:truncate min-[900px]:overflow-visible min-[900px]:text-clip min-[900px]:whitespace-normal"
           title={cells.map((cell) => cell.label).join(" › ")}
@@ -245,10 +251,13 @@ export function WorkflowRow({
             <span className="text-muted">—</span>
           ) : (
             cells.map((cell, index) => (
-              <span key={index}>
+              <span
+                key={index}
+                className="inline-flex items-baseline gap-[5px] whitespace-nowrap align-baseline mr-[6px]"
+              >
                 {index > 0 ? (
                   <span aria-hidden="true" className="text-[10px] text-muted">
-                    {" › "}
+                    ›
                   </span>
                 ) : null}
                 <span

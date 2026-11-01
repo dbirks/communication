@@ -192,6 +192,11 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
       title={
         assignments.data ? `WORKFLOWS ON THIS REPO · ${usable.length}` : "WORKFLOWS ON THIS REPO"
       }
+      // Pass-4 review, item 4: at 390 the one-line bar ellipsised to
+      // “WORKFLOWS ON THIS REPO…” — the count, a fact of the header’s own
+      // copy, fell off the page. This title WRAPS instead (ds/Panel
+      // `titleWraps`); the `· n` stays on screen at every width.
+      titleWraps
       headingId="repo-workflows-heading"
       headingLevel={2}
       className="max-w-[900px]"
@@ -435,7 +440,12 @@ function RepoWorkflowRow({
               workflow behind a `…`; the chain's whole truth must be on the page,
               not on hover. Each cell carries the `›` that precedes it so the
               separator rides with its step across a wrap, and a `loop:` chip
-              breaks its own words rather than its steps. */}
+              breaks its own words rather than its steps. Pass-4 review, item 2:
+              that ride is on the STEP'S FIRST LINE (`items-baseline`) — against
+              a two-line `loop:` chip, the old `items-center` parked the `›` in
+              the middle of the chip and the continuation line read as starting
+              with an orphan `›`. It now sits inline, immediately before its
+              step's own text, on the line that step begins on. */}
           <div
             className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[4px] pl-[22px] font-mono text-[10.5px]"
             data-testid={`repo-workflow-chain-${key}`}
@@ -446,7 +456,7 @@ function RepoWorkflowRow({
               <span className="text-muted">—</span>
             ) : (
               data.chain.map((cell, index) => (
-                <span key={index} className="flex items-center gap-[6px]">
+                <span key={index} className="flex items-baseline gap-[6px]">
                   {index > 0 ? (
                     <span aria-hidden="true" className="text-[10px] text-muted">
                       ›

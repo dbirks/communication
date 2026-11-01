@@ -20,6 +20,13 @@ export interface PanelProps {
   headingId?: string;
   /** Render the title-bar text as a heading element (document outline). */
   headingLevel?: 2 | 3;
+  /**
+   * Let the title WRAP (count included) instead of ellipsising at the bar's
+   * edge. Default false keeps the 2e/repo-1e one-line rule; panels whose full
+   * title is short copy the reader must not lose (the repo page's
+   * “WORKFLOWS ON THIS REPO · n”, pass-4 review) opt in.
+   */
+  titleWraps?: boolean;
   className?: string;
   children: ReactNode;
 }
@@ -31,6 +38,7 @@ export function Panel({
   id,
   headingId,
   headingLevel,
+  titleWraps = false,
   className = "",
   children,
 }: PanelProps) {
@@ -57,7 +65,7 @@ export function Panel({
             right slot never shrinks or wraps — the alternative was
             “WORKFLOWS ON THIS REPO” with its `· 4` alone on a second bar
             row, and a two-line `+ use a library workflow` link. */}
-        <Title id={headingId} className="min-w-0 truncate">
+        <Title id={headingId} className={titleWraps ? "min-w-0 break-words" : "min-w-0 truncate"}>
           {spec ? (
             <span aria-hidden="true" className="mr-1.5">
               {spec.glyph}{" "}

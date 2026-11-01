@@ -71,6 +71,48 @@ export interface ProjectTabsProps {
   flags?: ProjectTabFlags;
 }
 
+/**
+ * Park the strip on a WHOLE-LABEL boundary. Every candidate offset is a
+ * tab edge (the only places a viewport edge can sit without cutting a label):
+ * each tab's left, and each tab's right minus the viewport. Of those that
+ * keep the ACTIVE tab fully visible, take the one with the fewest tabs
+ * straddling either edge — ties broken toward not moving at all. A strip
+ * where tabs simply cannot tile the viewport width takes the cleanest
+ * compromise: whole at the left edge, the right edge clipped UNDER its fade
+ * (which is what the fade is for). No layout, no snap — in jsdom every box
+ * measures 0×0, so this is a no-op there by construction.
+ */
+function snapToWholeLabels(nav: HTMLElement): void {
+  const w = nav.clientWidth;
+  const max = nav.scrollWidth - w;
+  if (w <= 0 || max <= 0) return;
+  const tabs = Array.from(nav.querySelectorAll<HTMLElement>('[data-testid^="project-tab-"]'));
+  const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
+  if (!active || !tabs.includes(active) || active.offsetWidth <= 0) return;
+  const bounds = tabs.map((t) => ({ l: t.offsetLeft, r: t.offsetLeft + t.offsetWidth }));
+  const a = bounds[tabs.indexOf(active)];
+  const cuts = (x: number): number => {
+    let cut = 0;
+    for (const b of bounds) {
+      if ((b.l < x - 1 && b.r > x + 1) || (b.l < x + w - 1 && b.r > x + w + 1)) cut += 1;
+    }
+    return cut;
+  };
+  const at = nav.scrollLeft;
+  const candidates: number[] = [at, a.l, a.r - w];
+  for (const b of bounds) candidates.push(b.l, b.r - w);
+  let best: { x: number; cut: number; dist: number } | null = null;
+  for (const raw of candidates) {
+    if (!Number.isFinite(raw)) continue;
+    const x = Math.min(Math.max(raw, 0), max);
+    if (a.l < x - 1 || a.r > x + w + 1) continue; // the active tab must be whole
+    const cut = cuts(x);
+    const dist = Math.abs(x - at);
+    if (!best || cut < best.cut || (cut === best.cut && dist < best.dist)) best = { x, cut, dist };
+  }
+  if (best && Math.abs(best.x - at) > 1) nav.scrollLeft = best.x;
+}
+
 /** One tab's mono count. */
 function Count({ value, urgent }: { value: number | null | undefined; urgent?: boolean }) {
   if (value === null || value === undefined) return null;
@@ -121,6 +163,17 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
     // Scrolls the nearest scrollable ancestor — this `overflow-x-auto` nav —
     // not the page. Guarded because jsdom has no `scrollIntoView`.
     tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    // `inline: "nearest"` moves as little as it must, which is what leaves a
+    // NEIGHBOUR half off at the other edge: pass-4 review again saw `Overview`
+    // cut mid-word at 390 while `Workflows 3` sat fully in view. The rest of
+    // the pull therefore re-reads the geometry and parks the strip on a
+    // WHOLE-LABEL boundary: of all the offsets where the active tab stays
+    // fully visible, pick one where no tab straddles the strip's left or
+    // right edge (a clean exit when one exists — every tab whole, the fade
+    // covering the rest), else the closest with only the LEFT edge whole;
+    // the right edge then shows its fade as the honest “more”. (If even that
+    // conflicts — a tab wider than the strip — the active tab wins.)
+    snapToWholeLabels(nav);
     measure();
   }, [measure]);
 
@@ -221,14 +274,18 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
         <span
           aria-hidden="true"
           data-testid="project-tabs-fade-left"
-          className="pointer-events-none absolute inset-y-0 left-0 flex w-[26px] items-center"
+          className="pointer-events-none absolute inset-y-0 left-0 flex w-[34px] items-center"
           style={{
+            // Pass-4 review, item 3: at 16% the shadow was barely inkable on
+            // the white band — “make the edge fade visible enough to read as
+            // ‘more’”. A deeper ramp and a dark chevron make the cue seen,
+            // not just present.
             background:
-              "linear-gradient(to left, transparent, color-mix(in srgb, var(--color-ink) 16%, transparent))",
+              "linear-gradient(to left, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",
           }}
         >
           <svg
-            className="ml-[6px] text-surface"
+            className="ml-[8px] text-ink-2"
             width="8"
             height="12"
             viewBox="0 0 8 12"
@@ -249,14 +306,14 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
         <span
           aria-hidden="true"
           data-testid="project-tabs-fade-right"
-          className="pointer-events-none absolute inset-y-0 right-0 flex w-[26px] items-center justify-end"
+          className="pointer-events-none absolute inset-y-0 right-0 flex w-[34px] items-center justify-end"
           style={{
             background:
-              "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 16%, transparent))",
+              "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",
           }}
         >
           <svg
-            className="mr-[6px] text-surface"
+            className="mr-[8px] text-ink-2"
             width="8"
             height="12"
             viewBox="0 0 8 12"

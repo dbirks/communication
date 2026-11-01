@@ -39,6 +39,7 @@ import { Button } from "../ds/Button";
 import { CONVERSATION_STATE, STATES, stateOf } from "../ds/states";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { formatAge, testidOf } from "../../lib/format";
+import { previewLine } from "../../lib/preview";
 import { routes } from "../../lib/routes";
 import { repoSegment, useProjectRepoIndex } from "./useProjectRepoIndex";
 
@@ -138,6 +139,11 @@ export function RecentThreads({
         <ul className="divide-y divide-line-soft" data-testid="project-threads">
           {rows.map((thread) => {
             const state = stateOf(CONVERSATION_STATE[thread.status]);
+            // The served line is the agent's own text; its markdown markers
+            // are stripped by the ONE shared preview helper (a bullet leaking
+            // into the row read as markup, pass-1 review). Markup-only lines
+            // preview as nothing, and the row then omits the line honestly.
+            const preview = previewLine(thread.last_agent_line);
             // ADR-0065: the served repository wins; a null (unbound thread,
             // or a server predating the fields) falls back to what the live
             // workspaces say, exactly as before.
@@ -169,13 +175,13 @@ export function RecentThreads({
                   {/* Phone: the stacked lines under the title, indented clear
                       of the glyph. `md`: cells 3 and 4 of the one line. */}
                   <span className="flex min-w-0 flex-col gap-[2px] pl-[21px] md:contents md:pl-0">
-                    {thread.last_agent_line ? (
+                    {preview ? (
                       <span
                         className="min-w-0 truncate text-[12.5px] text-muted md:col-start-3"
-                        title={thread.last_agent_line}
+                        title={preview}
                         data-testid={`project-thread-last-line-${testidOf(thread.id)}`}
                       >
-                        {thread.last_agent_line}
+                        {preview}
                       </span>
                     ) : null}
                     <span className="min-w-0 truncate font-mono text-[10.5px] text-muted md:col-start-4">
