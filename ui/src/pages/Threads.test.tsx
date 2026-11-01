@@ -534,8 +534,11 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     // shrink-to-fit block right-aligned against the pane's edge, which is what
     // made "No controller — take control to drive" and its button look like
     // they were floating over the thread. `lg:` puts the design's right-hand
-    // placement back, and a lone act (`Take control`) fills the phone line while
-    // the controller's two acts (Return control + Stop) stay side by side.
+    // placement back. Pass-1 review (threads-1g-not-controller-390) changed
+    // the lone act's shape: at 390 `Take control` is a COMPACT button (auto
+    // width, 44px touch height) on the same line as its `○` glyph, not the
+    // full-width primary bar it used to stretch into; the controller's two
+    // acts (Return control + Stop) still share one inline line.
     const rowTokens = controls?.className.split(/\s+/) ?? [];
     expect(rowTokens).toContain("justify-start");
     expect(rowTokens).toContain("lg:justify-end");
@@ -543,8 +546,8 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(rowTokens).toContain("lg:[&>div:first-child]:w-auto");
     expect(rowTokens).not.toContain("[&>div:first-child]:justify-end");
     expect(rowTokens).toContain("lg:[&>div:first-child]:justify-end");
-    expect(rowTokens).toContain("[&>div:first-child>span:last-child>button:only-child]:w-full");
-    expect(rowTokens).toContain("lg:[&>div:first-child>span:last-child>button:only-child]:w-auto");
+    expect(rowTokens).not.toContain("[&>div:first-child>span:last-child>button:only-child]:w-full");
+    expect(rowTokens).toContain("max-lg:[&>div:first-child>span:last-child>button]:h-[44px]");
 
     // The meta line is one truncated row from `lg` up (review 1g defects 2
     // and 4; repo-chain-r4 item 3 wraps it below `lg`) — plain block flow

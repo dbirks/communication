@@ -142,13 +142,20 @@ export function RunHeader({
           <span aria-hidden>/</span>
           <span className="text-ink-2">run</span>
         </nav>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {/* Pass-1 review (run-gate-waiting-390 / run-gate-completed-390): at
+              390 the single-line `truncate` cut the run's sentence to
+              “emu gate journey pass-1-20261101113…” — the ellipsis ate the one
+              fact that told the reader WHICH pass this run belongs to. Below
+              `lg` the H1 now WRAPS instead (`wrap-anywhere` =
+              overflow-wrap:anywhere, so a long unbroken slug never hangs past
+              the phone either); `lg+` keeps the design's one-line title, and
+              there the `title` attribute carries the whole sentence — plus the
+              short-id handle, which round-2 review item 3 still keeps out of
+              the visible copy. */}
           <h1
-            className="truncate text-[19px] font-bold"
-            // The short id is an internal handle, so it is not the headline when
-            // the run has a name (round-2 review item 3): the goal sentence, or
-            // the title the server serves, leads, and the handle rides `title`.
-            title={`run ${shortId(run.id)}`}
+            className="min-w-0 wrap-anywhere text-[19px] font-bold lg:truncate"
+            title={`${goal ?? runTitle ?? `Run #${shortId(run.id)}`} · run ${shortId(run.id)}`}
             data-testid="run-title"
           >
             {goal ?? runTitle ?? `Run #${shortId(run.id)}`}

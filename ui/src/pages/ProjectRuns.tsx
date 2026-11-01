@@ -9,11 +9,14 @@
  * Honesty rules this page obeys: since ADR-0064 the wire carries each run's own
  * `title` and repository, so a row titles itself with that title when the run
  * has one and with the workflow slug from the library when it does not — never
- * an invented title, and never an upper-cased hex id standing in for a name
- * (pass-2 review: `#30OABCBF` was the row's headline). The row's second line
- * is the repository the server names and the wall clock it derives from
- * `started_at`/`finished_at` — no unlabelled digest; the revision the run is
- * pinned to is said on the run's own page. Its status is the app's short state
+ * an invented title, and never an upper-cased hex id standing INSTEAD of a
+ * name (pass-2 review: `#30OABCBF` was the row's headline). The row's second
+ * line is the repository the server names, the run's `#short id` handle
+ * riding ALONGSIDE the name (pass-1 review project-1b-runs: two unnamed runs
+ * of one workflow showed identical rows; the README's Running now rows print
+ * `#id` on every row for exactly this reason) and the wall clock it derives
+ * from `started_at`/`finished_at` — no unlabelled digest; the revision the
+ * run is pinned to is said on the run's own page. Its status is the app's short state
  * word (`SHORT_WORD`, one table with the run pages), never the wire's
  * `waiting_human` spelled out.
  *
@@ -223,11 +226,16 @@ export function RunsListColumn({
 }
 
 /**
- * One run. Two truncating lines — the readable title and its state, then
- * `repo · age` in mono — so the row survives 390: nothing here is a
- * fixed-width chip row that eats the title, and nothing is a hex string
- * standing where a name should be. The run's own page carries the pinned
- * digest, the `#short-id` handle and the failure cause in full.
+ * One run. Two truncating lines — the readable title and its state (the chip
+ * carries the app's STATES glyph with its short word — rule 06, never
+ * colour/word alone), then `repo · #short id · age` in mono — so the row
+ * survives 390: nothing here is a fixed-width chip row that eats the title,
+ * and nothing is a hex string standing alone where a name should be. The
+ * `#short id` rides ALONGSIDE the name, never instead of it (pass-1 review
+ * project-1b-runs: two unnamed runs of one workflow showed byte-identical
+ * rows — the handle is what tells them apart, per the README's Running now
+ * rows, whose mono line carries `#id` on every row). The run's own page
+ * carries the pinned digest and the failure cause in full.
  */
 function RunRow({
   run,
@@ -252,7 +260,8 @@ function RunRow({
         <span className="flex min-w-0 flex-wrap items-center gap-[6px]">
           {/* ADR-0064: the run's own title when the wire serves one; the
               workflow slug from the library when it does not. Never an
-              upper-cased id — an id is a handle, not a subject line. */}
+              upper-cased id INSTEAD of a name — the handle rides the mono
+              line under the name. */}
           <span className="min-w-0 truncate text-[13px] font-semibold text-ink">
             {run.title ?? slug}
           </span>
@@ -262,7 +271,7 @@ function RunRow({
           ) : null}
         </span>
         <span className="block truncate font-mono text-[10.5px] text-muted">
-          {run.repository_name ? `${run.repository_name} · ` : ""}
+          {run.repository_name ? `${run.repository_name} · ` : ""}#{shortId(run.id)} ·{" "}
           {elapsed(run)}
           {run.failed_cause ? ` · ${run.failed_cause}` : ""}
         </span>

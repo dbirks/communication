@@ -484,6 +484,25 @@ describe("the run header's meta line", () => {
     expect(meta.textContent).not.toContain("worker");
   });
 
+  it("wraps the H1 below lg instead of ellipsis-cutting the sentence (pass-1 review run-gate-*-390)", async () => {
+    // At 390 the one-line `truncate` cut “emu gate journey
+    // pass-1-20261101113830” to one ellipsised line — the meaningful half of
+    // the run's own title was lost on the phone. jsdom performs no layout,
+    // so the classes ARE the contract: wrap-anywhere (overflow-wrap:
+    // anywhere) below lg, one truncated line from lg up, and the FULL title
+    // riding `title` where the line can still ellipsise. The revision chip
+    // beside it is untouched — the pinned digest stays visible text (§ 7.2
+    // W4, asserted by the meta-line test above).
+    mount();
+    const title = await screen.findByTestId("run-title");
+    const tokens = title.className.split(/\s+/);
+    expect(tokens).toContain("wrap-anywhere");
+    expect(tokens).toContain("min-w-0");
+    expect(tokens).toContain("lg:truncate");
+    expect(tokens).not.toContain("truncate"); // the ellipsis is a lg+ shape only
+    expect(title.getAttribute("title")).toBe(`ship M4 · run ${shortId(WIRE_RUN_ID)}`);
+  });
+
   it("still prints the pinned digest when the revision read cannot name its number", async () => {
     // The run row always carries the pinned digest; the NUMBER arrives with the
     // separate revision read. When that read fails the honest header is the

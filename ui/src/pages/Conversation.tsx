@@ -476,29 +476,28 @@ export default function ConversationPage({
     // restyled from here because the component itself is shared. At `lg+`
     // that row sits right of the title, as design 1g draws it. Below `lg` the
     // title owns its full-width line and the row REFLOWS AS THE SAME ROW
-    // turned sideways (pass-3 review): full width, LEFT-aligned under the
-    // title — pill first, then the act, a lone `Take control` filling the
-    // line — never a shrink-to-fit block parked against the right edge with
-    // nothing beside it. Two acts (Return control + Stop) still share one
-    // inline line. The unheld thread's badge is a bare glyph (1g: “status
-    // shows as a glyph”); pass-1 review: at 390 that lone `○` sat on its own
-    // line above a full-width `Take control` and read as stray ink. The acts
-    // span therefore GROWS into the line next to the glyph (`grow`, basis
-    // auto) instead of forcing its own line (`w-full`): the glyph sits
-    // inline, immediately before the button, and the lone act still fills
-    // what is left of the line. When pill + acts cannot share a line the
-    // `flex-wrap` gives the acts their own full-width line, as before.
+    // turned sideways (pass-3 review defect 5): full width, LEFT-aligned
+    // under the title — pill first, then the acts — never a shrink-to-fit
+    // block parked against the right edge with nothing beside it. Two acts
+    // (Return control + Stop) share one inline line. Pass-1 review
+    // (threads-1g-not-controller-390): a lone `○` and its `Take control` sit
+    // on ONE line at 390 — the glyph inline, immediately before the button,
+    // and the button COMPACT (auto width, 44px touch height), not the
+    // full-width primary bar that stretched edge to edge and read like the
+    // page's main column. The acts span still GROWS into the line (`grow`,
+    // basis auto) so the glyph never sits alone above it, and when pill +
+    // acts cannot share a line the `flex-wrap` gives the acts their own
+    // left-aligned line, glyph and all.
     const pillRow =
       "[&>div:first-child]:flex [&>div:first-child]:w-full [&>div:first-child]:flex-wrap " +
       "[&>div:first-child]:items-center [&>div:first-child]:gap-[6px] [&>div:first-child]:space-y-0! " +
       "[&>div:first-child>span:last-child]:grow [&>div:first-child>span:last-child]:min-w-0 " +
       "[&>div:first-child>span:last-child>button]:px-[10px] " +
-      "[&>div:first-child>span:last-child>button:only-child]:w-full " +
+      "max-lg:[&>div:first-child>span:last-child>button]:h-[44px] " +
       "[&>div:first-child>span:last-child>button]:font-mono [&>div:first-child>span:last-child>button]:text-[11px] " +
       "[&>div:not(:first-child)]:basis-full " +
       "lg:[&>div:first-child]:w-auto lg:[&>div:first-child]:justify-end " +
-      "lg:[&>div:first-child>span:last-child]:w-auto lg:[&>div:first-child>span:last-child]:grow-0 " +
-      "lg:[&>div:first-child>span:last-child>button:only-child]:w-auto";
+      "lg:[&>div:first-child>span:last-child]:w-auto lg:[&>div:first-child>span:last-child]:grow-0";
     const pillSkin = session.isController
       ? "[&>div:first-child>span:first-child]:h-[24px] " +
         "[&>div:first-child>span:first-child]:border-accent-edge " +

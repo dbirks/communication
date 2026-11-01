@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
 import { queryKeys } from "../api/queries";
+import { STATES } from "../components/ds/states";
 import {
   WIRE_RUN_ID,
   wirePipelineList,
@@ -17,7 +18,7 @@ import {
   wireRun,
   wireRunList,
 } from "../test/fixtures/m4/wire";
-import { RunsListColumn, defaultRunsFilter } from "./ProjectRuns";
+import { RunsListColumn, defaultRunsFilter, shortId } from "./ProjectRuns";
 
 const RUNS_PATH = `/api/v1/projects/${wireProjectId}/runs`;
 const childRun = { ...wireRun, id: "01987b11-0000-0000-8000-00000000000c", depth: 1 };
@@ -44,9 +45,13 @@ describe("/projects/:projectId/runs", () => {
     const row = await within(list).findByTestId(`run-row-${WIRE_RUN_ID}`);
     // The row titles itself with the workflow slug from the library: this row
     // carries no `title` (a pre-ADR-0064 server or an unnamed run), and an id
-    // is never a subject line (pass-2 review: `#30OABCBF …` was).
+    // never stands IN PLACE OF a name (pass-2 review: `#30OABCBF …` was).
     expect(row.textContent).toContain("feature-development");
     expect(within(row).getByTestId("run-status").textContent).toContain("running");
+    // Rule 06: the chip carries the app's STATES glyph with its short word.
+    expect(within(row).getByTestId("run-status").parentElement?.textContent).toContain(
+      STATES.running.glyph,
+    );
     // No unlabelled hex digest on the row: the revision the run is pinned to
     // is said on the run's own page, not as noise here.
     expect(row.textContent).not.toContain("3f2f3f2f3f2f");
@@ -147,9 +152,14 @@ describe("/projects/:projectId/runs", () => {
   it("says the state in the app's short word, not the wire's status", async () => {
     mountRuns({ runs: [{ ...wireRun, status: "waiting_human" }] });
     const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
-    // `waiting_human` is the stage's "need you" here, as it is on the overview
-    // and the stage strip — one table (`SHORT_WORD`), never "WAITING HUMAN".
+    // A run's state is the app's short word — the same table the overview's
+    // rows and the stage strip print. Rule 06 (pass-1 review
+    // project-1b-runs): the chip carries the STATES glyph beside the word,
+    // so the state is never word/colour alone.
     expect(within(row).getByTestId("run-status").textContent).toBe("need you");
+    expect(within(row).getByTestId("run-status").parentElement?.textContent).toContain(
+      STATES.waiting.glyph,
+    );
     expect(row.textContent).not.toContain("waiting human");
   });
 
@@ -169,9 +179,12 @@ describe("/projects/:projectId/runs", () => {
     mountRuns();
     const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
     expect(row.getAttribute("href")).toBe(`/runs/${WIRE_RUN_ID}`);
-    // The title is the workflow slug, not an upper-cased id-handle.
+    // The title is the workflow slug, not an upper-cased id-handle — but the
+    // handle rides the mono line BESIDE the name (pass-1 review
+    // project-1b-runs: two unnamed runs of one workflow were
+    // indistinguishable), README-style.
     expect(row.textContent).toContain("feature-development");
-    expect(row.textContent).not.toMatch(/#\w{8}/);
+    expect(row.textContent).toContain(`#${shortId(WIRE_RUN_ID)}`);
   });
 });
 
