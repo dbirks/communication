@@ -555,10 +555,21 @@ export function findOverlaps(): OverlapHit[] {
  * horizontal centre — `top+2` and `bottom-2`; the element counts as ≥44 only if
  * both probes resolve to the element itself or a descendant of it. A sibling or
  * overlay parked over the extension means the extension is unreachable, so the
- * target keeps its measured (small) height. A probe point outside the viewport
- * is skipped when the element is outside it too (nothing is provable about a
- * row that is not on screen); when the element IS on screen and its extension
- * is not, the extension does not count either.
+ * target keeps its measured (small) height.
+ *
+ * A probe point outside the viewport is not a verdict either — it is a fact
+ * about where the page HAPPENED to be scrolled (row-hit-390: with the journey
+ * measuring from the top, the first /workflows row parks its `Edit` / `⋯` at
+ * y≈831..857 of a 390×844 viewport, so a genuinely 44px target failed only the
+ * bottom probe and was reported at 26 — on a page one flick short of the whole
+ * band). So a failed probe on an on-screen element is retried at the
+ * element's BEST scroll: the element is centred in everything that scrolls it
+ * (the window and each scrollable ancestor), the probes run again, and every
+ * scroll position is restored exactly. `block:"center"` is a no-op where
+ * nothing scrolls, so an extension parked off the top of a non-scrollable
+ * page stays unreachable, and an occlusion that moves with the control (or
+ * floats over it at any scroll) still fails the re-probe — the checker
+ * follows the scroll a finger can make, never the CSS it hopes for.
  */
 export function findSmallTargets(): TargetHit[] {
   const main = document.querySelector("main") ?? document.body;
@@ -675,6 +686,54 @@ export function findSmallTargets(): TargetHit[] {
     const hit = document.elementFromPoint(x, y);
     return hit !== null && (hit === el || el.contains(hit));
   };
+  /** Does any part of `rect` answer to a touch on the screen right now? */
+  const rectOnScreen = (rect: Box): boolean =>
+    rect.top < window.innerHeight &&
+    rect.bottom > 0 &&
+    rect.left < window.innerWidth &&
+    rect.right > 0;
+  /** Do BOTH end probes of `effective`, at the current scroll, land on `el`
+   * (or inside it)? */
+  const reach = (el: Element, rect: Box, effective: Box): boolean => {
+    const cx = (effective.left + effective.right) / 2;
+    return (
+      probe(el, rect, cx, effective.top + PROBE_INSET) &&
+      probe(el, rect, cx, effective.bottom - PROBE_INSET)
+    );
+  };
+  /**
+   * Centre `el` vertically in everything that scrolls it — the window and
+   * every scrollable ancestor — and hand back a restore that puts every
+   * scroll position (both axes) back exactly as found. Used to re-probe an
+   * extension at the scroll a finger can actually reach; on a page with
+   * nothing to scroll, `scrollIntoView` cannot move the document and the
+   * best scroll IS the current one.
+   */
+  const centreForProbe = (el: Element): (() => void) => {
+    interface Spot {
+      node: HTMLElement;
+      top: number;
+      left: number;
+    }
+    const spots: Spot[] = [];
+    for (let a = el.parentElement; a !== null; a = a.parentElement) {
+      const acs = window.getComputedStyle(a);
+      if (/auto|scroll|overlay/.test(`${acs.overflowY} ${acs.overflowX}`)) {
+        spots.push({ node: a as HTMLElement, top: a.scrollTop, left: a.scrollLeft });
+      }
+    }
+    const root = document.scrollingElement as HTMLElement | null;
+    if (root !== null && !spots.some((s) => s.node === root)) {
+      spots.push({ node: root, top: root.scrollTop, left: root.scrollLeft });
+    }
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    return () => {
+      for (const s of spots) {
+        s.node.scrollTop = s.top;
+        s.node.scrollLeft = s.left;
+      }
+    };
+  };
   const hits: TargetHit[] = [];
   const nodes = main.querySelectorAll(
     'button, [role="button"], [role="tab"], select, input, textarea',
@@ -692,19 +751,30 @@ export function findSmallTargets(): TargetHit[] {
         box = el.closest("label") ?? el;
       }
     }
-    const rect = toBox(box.getBoundingClientRect());
+    let rect = toBox(box.getBoundingClientRect());
     if (widthOf(rect) <= 0 || heightOf(rect) <= 0) continue;
     let measured = heightOf(rect);
     if (measured < MIN) {
       // The hit area the CSS CLAIMS: own rect ∪ own hosting pseudos.
-      const effective = pseudoBoxes(box, rect).reduce(union, rect);
+      let effective = pseudoBoxes(box, rect).reduce(union, rect);
       if (heightOf(effective) > measured) {
-        // …and the hit area a finger actually GETS, probed through the top and
-        // bottom of that extension at the box's horizontal centre.
-        const cx = (effective.left + effective.right) / 2;
-        const reachable =
-          probe(box, rect, cx, effective.top + PROBE_INSET) &&
-          probe(box, rect, cx, effective.bottom - PROBE_INSET);
+        // …and the hit area a finger actually GETS, probed through the top
+        // and bottom of that extension at the box's horizontal centre. A
+        // failure at the CURRENT scroll is retried once at the element's
+        // best scroll (centred, then restored): the band a scrollable page
+        // can bring on screen belongs to the target; the band a
+        // non-scrollable page parks off screen does not.
+        let reachable = reach(box, rect, effective);
+        if (!reachable && rectOnScreen(rect)) {
+          const restore = centreForProbe(box);
+          try {
+            rect = toBox(box.getBoundingClientRect());
+            effective = pseudoBoxes(box, rect).reduce(union, rect);
+            reachable = heightOf(effective) > measured && reach(box, rect, effective);
+          } finally {
+            restore();
+          }
+        }
         if (reachable) measured = heightOf(effective);
       }
     }

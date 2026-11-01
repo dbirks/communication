@@ -13,7 +13,10 @@
 // the rect and the element's OWN absolutely positioned pseudos (the element must
 // host them, i.e. not be `position:static`; the abspos containing block is the
 // element's PADDING box) and then PROVES the extension answers to a touch with
-// `document.elementFromPoint` at the extension's top and bottom.
+// `document.elementFromPoint` at the extension's top and bottom. A failed probe
+// is retried once with the element centred in everything that scrolls it (then
+// every scroll restored) — see the `fold` cases below, which are the lab's own
+// 390×844 shape.
 //
 // This spec is the checker's own unit test: no lab, no server, no app build —
 // `page.setContent` fixtures, run by the config's `reflow` project (no `setup`
@@ -45,6 +48,11 @@ function doc(body: string): string {
     .hit::after { content: ''; position: absolute; left: 0; right: 0; top: -9px; bottom: -9px; }
     .hit5 { position: relative; }
     .hit5::after { content: ''; position: absolute; left: 0; right: 0; top: -5px; bottom: -5px; }
+    /* .bordered .hit10 is WorkflowRow's CURRENT phone treatment exactly: the
+       bordered 26px compact button with the ±10px invisible ::after that
+       clears 44px off the padding box (24 + 10 + 10). */
+    .hit10 { position: relative; }
+    .hit10::after { content: ''; position: absolute; left: 0; right: 0; top: -10px; bottom: -10px; }
     .stat::after { content: ''; position: absolute; left: 0; right: 0; top: -9px; bottom: -9px; }
   </style></head><body><main>${body}</main></body></html>`;
 }
@@ -189,5 +197,50 @@ test.describe("findSmallTargets and the real hit area", () => {
     expect(await page.evaluate(painted, "edge-f")).toEqual({ top: 2, bottom: 28 });
     const hits = await page.evaluate(findSmallTargets);
     expect(hitFor("edge-f", hits)).toEqual({ name: "edge-f", height: 26 });
+  });
+
+  // row-hit-390: on the REAL page the app's extension was genuine (a centred
+  // `Edit` probes SELF top and bottom at 44px) yet every 390 pass still
+  // reported `Edit:26px, ⋯:26px`, because the journeys measure from the top
+  // and the first workflow row parks its 26px box at y≈831..857 of the
+  // 390×844 viewport — the bottom probe fell below the fold and the checker
+  // read the page's SCROLL as the control's height. These two cases pin both
+  // halves of the fix: (g) the checker follows the scroll a finger can make
+  // and clears a clipped-but-real extension, (h) a control that really is
+  // 26px is still reported at the fold — no scroll excuse for a short box.
+  test.describe("at the fold of the lab's own 390×844", () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    /** main's 8px pad + an 828px spacer puts the button at 836..862: on
+     * screen at the top scroll, its ±10px band below the 844px fold, with a
+     * long tail of page making the scroll possible (the /workflows shape). */
+    const atTheFold = (testid: string, cls: string): string =>
+      `<div style="height:828px"></div><button data-testid="${testid}" class="${cls}" aria-label="${testid}"></button><div style="height:900px"></div>`;
+
+    test("(g) the app's ±10px extension clipped at the viewport bottom counts at 44", async ({
+      page,
+    }) => {
+      await page.setContent(doc(atTheFold("fold-g", "bordered hit10")));
+      const before = await page.evaluate(() => {
+        const r = document.querySelector('[data-testid="fold-g"]')!.getBoundingClientRect();
+        return {
+          top: Math.round(r.top),
+          bottom: Math.round(r.bottom),
+          innerHeight: window.innerHeight,
+          scrollY: window.scrollY,
+        };
+      });
+      // The defect's exact shape: the box on screen, its bottom band not.
+      expect(before).toEqual({ top: 836, bottom: 862, innerHeight: 844, scrollY: 0 });
+      expect(await page.evaluate(findSmallTargets)).toEqual([]);
+      // …and the checker leaves no trace: the page is back where it was.
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    });
+
+    test("(h) a plain 26px button at the same fold is still reported at 26", async ({ page }) => {
+      await page.setContent(doc(atTheFold("fold-h", "bordered")));
+      const hits = await page.evaluate(findSmallTargets);
+      expect(hitFor("fold-h", hits)).toEqual({ name: "fold-h", height: 26 });
+    });
   });
 });
