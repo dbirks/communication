@@ -43,11 +43,14 @@ import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
 import { scrollToTopForCapture } from "../tests/helpers.js";
 import {
   collectReflowItems,
+  collectStateFingerprint,
   findClippedText,
   findOverlaps,
   findSmallTargets,
+  judgeParityPair,
   missingParityItems,
   type EmuChecks,
+  type ParityCapture,
   type ReflowItem,
 } from "./reflow.js";
 import { landmarksFor, missingLandmarks, type Landmark } from "./design.js";
@@ -172,6 +175,16 @@ export function designPngFor(badge: string): string | null {
   return null;
 }
 
+/** The persisted half of a capture: the screen record WITHOUT the parity
+ * working data — the inventory and the state fingerprint stay in memory
+ * (results.json keeps the shape it has always had). */
+function screenRecord(capture: EmuScreen & ParityCapture): EmuScreen {
+  const record: EmuScreen & Partial<ParityCapture> = { ...capture };
+  delete record.items;
+  delete record.stateFingerprint;
+  return record;
+}
+
 const MAX_DETAIL = 500;
 
 /**
@@ -206,6 +219,10 @@ class EmuRecorder {
   /** `net::ERR_ABORTED` on an event stream: held until finish(), when the
    * navigation timestamps around it are all known, then dropped or recorded. */
   private deferredAborts: { at: number; defect: EmuDefect }[] = [];
+  /** What a check chose NOT to file (e.g. a parity pair skipped for state
+   * drift). Never a defect, never silent: finish() writes these to
+   * results.json as `type: "note"` and note() echoes them to the pass log. */
+  private notes: { screen: string; detail: string }[] = [];
   private isExpected(urlPath: string, status?: number): boolean {
     return this.expected.some(
       (entry) =>
@@ -284,6 +301,13 @@ class EmuRecorder {
     this.expected.push({ re, status });
   }
 
+  /** Record a NOTE: not a defect, not a failure — a fact about the CHECK
+   * (a parity pair that could not be judged). Logged, and written out. */
+  private note(detail: string): void {
+    this.notes.push({ screen: this.currentScreen, detail });
+    console.log(`[emu] NOTE ${this.journey} @ ${this.currentScreen}: ${detail}`);
+  }
+
   /** The page's current viewport, e.g. "390x844". */
   private viewport(): string {
     return this.currentViewport;
@@ -299,6 +323,15 @@ class EmuRecorder {
    * reflow/clip/target defects (reflow.ts) — one aggregated defect per kind
    * per screen, so fingerprints stay stable. 390-only checks trivially pass
    * on the 1280 record (they are defined against the phone reflow). The
+   * PARITY diff runs only between captures of the SAME page state: each
+   * capture reads a state fingerprint (reflow.ts `collectStateFingerprint`)
+   * and a moved state RE-CAPTURES the 1280 side at the 390 moment (its
+   * screenshot and screen record replace the stale ones, so the report's
+   * pair shows one state); a pair still moving after that is SKIPPED with a
+   * note in the pass log and results.json — never a defect (pass-2
+   * `2e schedule-run-approved` compared a `● RUNNING` 1280 header with a
+   * `✓ DONE` 390 one and filed Pause/Cancel “lost” on a run that had simply
+   * finished), never silent. The
    * overlap check (reflow.ts `findOverlaps`) is NOT 390-only: content painting
    * over content is a defect at either width, so it runs on every screen at
    * 1280 and 390. The design landmarks (design.ts) run at both widths too: a
@@ -331,11 +364,26 @@ class EmuRecorder {
     // Same dedupe rule for made-up-data hits: one string on the page at both
     // widths is one problem, filed once.
     const reportedMockHits = new Set<string>();
-    let desktopItems: ReflowItem[] | null = null;
-    for (const [width, height] of [
-      [1280, 900],
-      [390, 844],
-    ] as const) {
+    // A state re-capture (see below) re-runs one width's checks on the SAME
+    // screen: a finding already recorded for this kind+viewport+detail must
+    // not file twice, so every width check records through this dedupe.
+    const reportedFindings = new Set<string>();
+    const recordOnce = (kind: EmuDefectKind, detail: string): void => {
+      const dedupeKey = `${kind}|${this.currentViewport}|${detail}`;
+      if (reportedFindings.has(dedupeKey)) return;
+      reportedFindings.add(dedupeKey);
+      this.record(kind, detail);
+    };
+    const labels = (items: ReflowItem[]): string =>
+      items
+        .slice(0, 5)
+        .map((item) => item.label)
+        .join("; ");
+    // One width's capture: settle, screenshot and every width-local check,
+    // PLUS the parity inventory and the page-state fingerprint read at that
+    // SAME moment. The parity diff itself belongs to the caller: it may only
+    // run between two captures of the same state.
+    const capture = async (width: number, height: number): Promise<EmuScreen & ParityCapture> => {
       await this.page.setViewportSize({ width, height });
       this.currentViewport = `${width}x${height}`;
       await this.page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {}); // SSE keeps the page alive; settle, don't hang
@@ -371,7 +419,7 @@ class EmuRecorder {
       this.lastShot = shot;
       if (geometry.scrollWidth > geometry.innerWidth) {
         checks.sidescroll = false;
-        this.record(
+        recordOnce(
           "sidescroll",
           `sideways scroll on ${new URL(geometry.href).pathname}: scrollWidth ` +
             `${geometry.scrollWidth}px > innerWidth ${geometry.innerWidth}px`,
@@ -387,7 +435,7 @@ class EmuRecorder {
         const pair = (hit: (typeof overlaps)[number]): string =>
           `${hit.a} × ${hit.b} (${hit.dx}×${hit.dy}px)`;
         const extra = overlaps.length > 3 ? ` (+${overlaps.length - 3} more)` : "";
-        this.record(
+        recordOnce(
           "overlap",
           `${overlaps.length} overlapping pair(s): ${overlaps.slice(0, 3).map(pair).join("; ")}${extra}`,
         );
@@ -401,7 +449,7 @@ class EmuRecorder {
       for (const hit of mockHits) {
         if (reportedMockHits.has(hit)) continue;
         reportedMockHits.add(hit);
-        this.record(
+        recordOnce(
           "made-up-data",
           `made-up data: the mock's sample value "${hit}" is visible on this screen ` +
             `— mock source: ${sourcesFor(hit)}`,
@@ -413,34 +461,21 @@ class EmuRecorder {
         for (const landmark of absent) {
           if (reportedLandmarks.has(landmark.id)) continue;
           reportedLandmarks.add(landmark.id);
-          this.record("design", `design landmark missing: ${landmark.desc}`);
+          recordOnce("design", `design landmark missing: ${landmark.desc}`);
         }
       }
-      if (width === 1280) {
-        desktopItems = items;
-      } else {
-        const missing = missingParityItems(desktopItems ?? [], items);
-        checks.parity = missing.length === 0;
-        if (!checks.parity) {
-          this.record(
-            "reflow",
-            `390 lost ${missing.length} of the 1280 items: ` +
-              `${missing
-                .slice(0, 5)
-                .map((item) => item.label)
-                .join("; ")}`,
-          );
-        }
+      const stateFingerprint = await this.page.evaluate(collectStateFingerprint);
+      if (width !== 1280) {
         const clips = await this.page.evaluate(findClippedText);
         checks.clip = clips.length === 0;
         if (!checks.clip) {
           const extra = clips.length > 1 ? ` (+${clips.length - 1} more)` : "";
-          this.record("clip", `clipped text: ${clips[0].label} "${clips[0].text}"${extra}`);
+          recordOnce("clip", `clipped text: ${clips[0].label} "${clips[0].text}"${extra}`);
         }
         const targets = await this.page.evaluate(findSmallTargets);
         checks.target = targets.length === 0;
         if (!checks.target) {
-          this.record(
+          recordOnce(
             "target",
             `${targets.length} touch targets under 44px: ` +
               `${targets
@@ -450,7 +485,7 @@ class EmuRecorder {
           );
         }
       }
-      this.screens.push({
+      return {
         badge,
         name,
         width,
@@ -459,8 +494,45 @@ class EmuRecorder {
         designPng: design,
         designRel: design ? path.relative(EMU_OUT_DIR, design) : null,
         checks,
-      });
+        items,
+        stateFingerprint,
+      };
+    };
+    let desktop = await capture(1280, 900);
+    const phone = await capture(390, 844);
+    let verdict = judgeParityPair(desktop, phone);
+    if (!verdict.comparable) {
+      // The page moved between the widths. Preferred repair: re-capture the
+      // 1280 side at the 390 moment (the screenshot name is stable, so the
+      // report's pair then shows ONE state) and retry the diff.
+      this.note(
+        "state moved between the 1280 and the 390 capture — re-capturing the " +
+          "1280 side at the 390 moment so the parity pair sees one page state",
+      );
+      desktop = await capture(1280, 900);
+      verdict = judgeParityPair(desktop, phone);
+      if (!verdict.comparable) {
+        // Still moving (a run ticking through its stages between widths):
+        // the diff could say nothing true. Skip the pair — LOUDLY: a note in
+        // the pass log and in results.json, never a defect, never silently.
+        this.note(
+          `parity diff SKIPPED for this pair — the page is still changing between widths ` +
+            `(would-be missing: ${labels(missingParityItems(desktop.items, phone.items)) || "nothing"}); ` +
+            `a state drift, not a product defect`,
+        );
+      }
     }
+    if (verdict.comparable && verdict.missing.length > 0) {
+      // Attribute the defect to the 390 capture, wherever the viewport last was.
+      this.currentViewport = "390x844";
+      this.lastShot = phone.shot;
+      phone.checks.parity = false;
+      this.record(
+        "reflow",
+        `390 lost ${verdict.missing.length} of the 1280 items: ${labels(verdict.missing)}`,
+      );
+    }
+    this.screens.push(screenRecord(desktop), screenRecord(phone));
     // Restore the desktop viewport: journeys act at 1280×900; the 390×844
     // capture was for the report.
     await this.page.setViewportSize({ width: 1280, height: 900 });
@@ -518,6 +590,9 @@ class EmuRecorder {
     const lines = [
       ...this.screens.map((screen) =>
         JSON.stringify({ type: "screen", pass: EMU_PASS_ID, ...screen }),
+      ),
+      ...this.notes.map((note) =>
+        JSON.stringify({ type: "note", pass: EMU_PASS_ID, journey: this.journey, ...note }),
       ),
       ...this.defects.map((defect) =>
         JSON.stringify({ type: "defect", pass: EMU_PASS_ID, ...defect }),

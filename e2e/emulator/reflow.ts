@@ -223,6 +223,123 @@ export function missingParityItems(desktop: ReflowItem[], phone: ReflowItem[]): 
 }
 
 /**
+ * One width's capture, as the parity diff needs it: the inventory PLUS the
+ * page-state fingerprint read at the SAME moment. The two belong together —
+ * `2e schedule-run-approved` (pass-2 `out/pass-2-20261101125732`, 390×844)
+ * filed `390 lost 2 of the 1280 items: run-pause Pause; run-cancel Cancel`
+ * by comparing a RUNNING 1280 capture with a DONE 390 capture taken seconds
+ * later: the run finished between the widths, and a finished run rightly has
+ * no Pause/Cancel. A parity diff may only ever compare two captures of the
+ * SAME page state (`judgeParityPair` refuses when the fingerprints differ). */
+export interface ParityCapture {
+  items: ReflowItem[];
+  stateFingerprint: string;
+}
+
+/** The parity verdict for one 1280/390 pair. `comparable: false` is NOT a
+ * pass and NOT a defect — it is "these captures are different pages"; the
+ * caller re-captures the 1280 side (or, failing that, skips the pair and
+ * records a note). */
+export interface ParityVerdict {
+  comparable: boolean;
+  /** Always empty when `comparable` is false — nothing may be concluded. */
+  missing: ReflowItem[];
+}
+
+/**
+ * The content-parity diff, guarded by the state fingerprints: the 1280 items
+ * that vanished at 390 (see `missingParityItems`) — but only when both
+ * captures saw the same page state. A moved state yields no defect list at
+ * all, so the RUNNING→DONE flake can never reach `missingParityItems`.
+ */
+export function judgeParityPair(desktop: ParityCapture, phone: ParityCapture): ParityVerdict {
+  if (desktop.stateFingerprint !== phone.stateFingerprint) {
+    return { comparable: false, missing: [] };
+  }
+  return { comparable: true, missing: missingParityItems(desktop.items, phone.items) };
+}
+
+/**
+ * The page-state fingerprint: a canonical string over the STATUS surfaces a
+ * page moves through while a capture pair is being taken. Runs in the page;
+ * see the file header for the self-containment rule.
+ *
+ * Why a fingerprint and not a wait: a run finishing between the 1280 and the
+ * 390 capture is the page behaving correctly — parity may not file it, and
+ * (per the goal: fix flakes, never retry them) the journeys must not freeze
+ * live state to dodge it. The fingerprint says "same page" or "different
+ * page", and the caller acts on that.
+ *
+ * Two shapes, chosen so the string is WIDTH-INDEPENDENT and VOLATILE-FREE:
+ *
+ * • `testid=text` for the header-level status chips — the words that flip a
+ *   whole button set (`run-header-status` goes `● RUNNING` → `✓ DONE` and
+ *   takes Pause/Cancel with it). Text is read whether or not the element is
+ *   painted, and over the whole document, NOT just painted MAIN content: a
+ *   master-detail pane hidden at 390 keeps its DOM text, and the fingerprint
+ *   must not change merely because the width did.
+ * • `testid#on/off` (presence only) for the verbs/outcome blocks whose very
+ *   presence is state — `run-pause`/`run-cancel` disappearing is exactly the
+ *   parity item this guards — and whose TEXT is volatile
+ *   (`approval-countdown` ticks, `approval-decided-at` says `8m ago`) or
+ *   empty, so only presence may be compared.
+ *
+ * Deliberately NOT fingerprinted: anything that moves without changing what
+ * a person can operate — `run-stream-status` (an SSE reconnect flicker),
+ * relative timestamps, node-level progress lines. A false "state moved" costs
+ * parity coverage (the pair is re-captured or skipped with a note); the
+ * curated surface keeps that cost rare.
+ */
+export function collectStateFingerprint(): string {
+  const norm = (value: string | null | undefined): string =>
+    (value ?? "").replace(/\s+/g, " ").trim();
+  const inShell = (el: Element): boolean =>
+    el.closest(
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+    ) !== null;
+  // The status chips whose WORD flips a control set (ui/src/pages/ProjectRuns.tsx
+  // `RunStateChip` as `run-header-status` in RunHeader.tsx/RunInspector.tsx;
+  // the thread controller pill in AgentConversationPanel/AttemptDetail; the
+  // gate card's step line in ApprovalCard.tsx).
+  const TEXT_STATE: RegExp[] = [
+    /^run-header-status$/,
+    /^controller-badge$/,
+    /^attempt-controller$/,
+    /^approval-node$/,
+  ];
+  // Presence-only state surfaces (same files + RunInspector.tsx's
+  // `RunActions`, ApprovalCard.tsx's decision bar and outcomes, the thread
+  // panel's control verbs).
+  const PRESENCE_STATE: string[] = [
+    "run-pause",
+    "run-resume",
+    "run-cancel",
+    "run-retry",
+    "run-waiting-for-worker",
+    "approval-decided",
+    "approval-decide-bar",
+    "approval-re-requested",
+    "approval-denied-reason",
+    "approval-expired-reason",
+    "take-control",
+    "return-control",
+  ];
+  const entries = new Set<string>();
+  for (const el of Array.from(document.querySelectorAll("[data-testid]"))) {
+    if (inShell(el)) continue;
+    const testid = el.getAttribute("data-testid") ?? "";
+    if (TEXT_STATE.some((re) => re.test(testid))) {
+      entries.add(`${testid}=${norm(el.textContent)}`);
+    }
+  }
+  for (const testid of PRESENCE_STATE) {
+    const on = document.querySelector(`[data-testid="${testid}"]`) !== null;
+    entries.add(`${testid}#${on ? "on" : "off"}`);
+  }
+  return Array.from(entries).sort().join("\n");
+}
+
+/**
  * The parity inventory of the page's MAIN content (the app shell — sidebar,
  * phone strip, Ask surfaces — lives outside `<main>` and is excluded).
  * Runs in the page; see the file header for the self-containment rule.

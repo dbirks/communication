@@ -54,11 +54,14 @@ import {
 } from "./plan-steps.js";
 import {
   collectReflowItems,
+  collectStateFingerprint,
   findClippedText,
   findOverlaps,
   findSmallTargets,
+  judgeParityPair,
   missingParityItems,
   type OverlapHit,
+  type ParityCapture,
   type ReflowItem,
   type TargetHit,
 } from "./reflow.js";
@@ -685,10 +688,121 @@ test.describe("the edge + hover word is a desktop-only affordance", () => {
     expect(keysOf(phone)).toContain("testid:edge-add-survey-plan");
     const missing = missingParityItems(desktop, phone).map((item) => item.key);
     expect(missing).not.toContain("testid:edge-add-label-survey-plan");
-    expect(missing).toEqual([
-      "testid:edge-add-build-ship",
-      "testid:edge-add-label-build-ship",
+    expect(missing).toEqual(["testid:edge-add-build-ship", "testid:edge-add-label-build-ship"]);
+  });
+});
+
+/**
+ * pass-2 (`out/pass-2-20261101125732`, screen `2e schedule-run-approved` at
+ * 390×844) filed the check's own flake as a product defect:
+ *
+ *   reflow: 390 lost 2 of the 1280 items: run-pause Pause; run-cancel Cancel
+ *
+ * The two captures showed different pages: the 1280 header read `● RUNNING`
+ * with Pause/Cancel, the 390 header (seconds later) read `✓ DONE` — the run
+ * FINISHED between the widths, and a finished run rightly has no Pause/
+ * Cancel. Pass 1 of the same build never filed it: the flake is a race, not
+ * a regression. The fix (goal: fix flakes, never retry them) is the state
+ * fingerprint — `collectStateFingerprint` reads the run/approval/thread
+ * STATUS surfaces (`run-header-status`, the gate card, the controller pill,
+ * the pause/cancel/resume/retry verbs by presence) at the SAME moment as
+ * each inventory, and `judgeParityPair` refuses to diff two captures whose
+ * fingerprints differ (the fixture then re-captures the 1280 side, or skips
+ * the pair with a note — `fixtures.ts`). These cases pin the judge on the
+ * flake's own shapes, no lab:
+ *
+ *   identical state + a missing item → still a defect (the guard must not
+ *   swallow real reflow losses);
+ *   RUNNING vs DONE + missing Pause → NOT a defect (comparable: false).
+ */
+function runStateDoc(status: "RUNNING" | "DONE", opts: { keepLog?: boolean } = {}): string {
+  const running = status === "RUNNING";
+  return [
+    // The header exactly as RunInspector.tsx draws it: the RunStateChip word,
+    // the verbs that exist only while the run is live, and one stable content
+    // item that must survive the reflow either way.
+    '<div data-testid="run-inspector-title">',
+    `<h1 data-testid="run-title">Gate run</h1>`,
+    `<span data-testid="run-header-status">${running ? "● RUNNING" : "✓ DONE"}</span>`,
+    "</div>",
+    '<div data-testid="run-actions">',
+    running ? '<button data-testid="run-pause">Pause</button>' : "",
+    running ? '<button data-testid="run-cancel">Cancel</button>' : "",
+    "</div>",
+    opts.keepLog === false ? "" : '<h2 data-testid="run-log-heading">Run log</h2>',
+  ].join("");
+}
+
+async function runCapture(
+  page: import("@playwright/test").Page,
+  width: number,
+  body: string,
+): Promise<ParityCapture> {
+  await page.setViewportSize({ width, height: 844 });
+  await page.setContent(doc(body));
+  return {
+    items: await page.evaluate(collectReflowItems),
+    stateFingerprint: await page.evaluate(collectStateFingerprint),
+  };
+}
+
+test.describe("parity only compares captures of the same page state", () => {
+  test("(x1) identical state with a lost item: comparable, and the diff still files", async ({
+    page,
+  }) => {
+    const desktop = await runCapture(page, 1280, runStateDoc("RUNNING"));
+    // The RUNNING fingerprints must AGREE — otherwise this case would only
+    // be proving the guard skips everything.
+    const phoneSame = await runCapture(page, 390, runStateDoc("RUNNING"));
+    expect(phoneSame.stateFingerprint).toBe(desktop.stateFingerprint);
+    expect(missingParityItems(desktop.items, phoneSame.items)).toEqual([]);
+    // The real reflow loss at 390: the log heading is gone, the state is not.
+    const phone = await runCapture(page, 390, runStateDoc("RUNNING", { keepLog: false }));
+    expect(phone.stateFingerprint).toBe(desktop.stateFingerprint);
+    const verdict = judgeParityPair(desktop, phone);
+    expect(verdict.comparable, "same state: the diff runs").toBe(true);
+    expect(verdict.missing.map((item) => item.key)).toEqual([
+      "heading:Run log",
+      "testid:run-log-heading",
     ]);
+  });
+
+  test("(x2) RUNNING at 1280, DONE at 390 with Pause/Cancel gone: NOT comparable — no defect", async ({
+    page,
+  }) => {
+    const desktop = await runCapture(page, 1280, runStateDoc("RUNNING"));
+    const phone = await runCapture(page, 390, runStateDoc("DONE"));
+    // The fingerprints really do differ, on the words the flake turned:
+    // the chip text and the pause/cancel presence.
+    expect(desktop.stateFingerprint).toContain("run-header-status=● RUNNING");
+    expect(desktop.stateFingerprint).toContain("run-pause#on");
+    expect(phone.stateFingerprint).toContain("run-header-status=✓ DONE");
+    expect(phone.stateFingerprint).toContain("run-pause#off");
+    expect(desktop.stateFingerprint).not.toBe(phone.stateFingerprint);
+    const verdict = judgeParityPair(desktop, phone);
+    expect(verdict.comparable, "different pages: the diff may not judge").toBe(false);
+    expect(
+      verdict.missing,
+      "the guard returns nothing to file — the caller re-captures or notes",
+    ).toEqual([]);
+    // The same pair fed to the RAW diff is the pass-2 flake, item for item
+    // (the empty actions row collapses too): this is exactly what must never
+    // reach the defect log again — `judgeParityPair` above is what keeps it
+    // out.
+    expect(missingParityItems(desktop.items, phone.items).map((item) => item.key)).toEqual([
+      "testid:run-actions",
+      "testid:run-pause",
+      "testid:run-cancel",
+    ]);
+  });
+
+  test("(x3) two DONE captures agree: the settled pair is comparable again", async ({ page }) => {
+    const desktop = await runCapture(page, 1280, runStateDoc("DONE"));
+    const phone = await runCapture(page, 390, runStateDoc("DONE"));
+    expect(phone.stateFingerprint).toBe(desktop.stateFingerprint);
+    const verdict = judgeParityPair(desktop, phone);
+    expect(verdict.comparable).toBe(true);
+    expect(verdict.missing).toEqual([]);
   });
 });
 

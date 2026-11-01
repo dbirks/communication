@@ -39,7 +39,13 @@ try {
 const pass = process.env.EMU_PASS_ID ?? path.basename(dir);
 const screens = lines.filter((entry) => entry.type === "screen");
 const defects = lines.filter((entry) => entry.type === "defect");
-const summary = `PASS ${pass}: ${screens.length} screens, ${defects.length} defects`;
+// Notes: what a check chose NOT to file (e.g. a parity pair skipped because
+// the page state moved between the widths). Not defects — the pass verdict
+// does not move on them — but never silent: they are printed and rendered.
+const notes = lines.filter((entry) => entry.type === "note");
+const summary =
+  `PASS ${pass}: ${screens.length} screens, ${defects.length} defects` +
+  (notes.length > 0 ? `, ${notes.length} note(s)` : "");
 
 const escape = (value) =>
   String(value ?? "")
@@ -126,6 +132,16 @@ const defectRows = defects
   )
   .join("\n");
 
+const noteRows = notes
+  .map(
+    (note) => `    <tr>
+      <td>${escape(note.journey)}</td>
+      <td>${escape(note.screen)}</td>
+      <td>${escape(note.detail)}</td>
+    </tr>`,
+  )
+  .join("\n");
+
 const screenRows = screens
   .map((screen) => {
     const design = screen.designRel
@@ -184,7 +200,20 @@ ${resultRows.length > 0 ? resultRows : '    <tr><td colspan="5" class="muted">no
 ${defectRows.length > 0 ? defectRows : '    <tr><td colspan="7" class="muted">none</td></tr>'}
     </tbody>
   </table>
-  <h2>Screens (app vs. design)</h2>
+${
+  notes.length > 0
+    ? `  <h2>Notes (not defects — checks that abstained)</h2>
+  <table>
+    <thead>
+      <tr><th>journey</th><th>screen</th><th>note</th></tr>
+    </thead>
+    <tbody>
+${noteRows}
+    </tbody>
+  </table>
+`
+    : ""
+}  <h2>Screens (app vs. design)</h2>
   <table>
     <thead>
       <tr><th>screen</th><th>app (this pass)</th><th>design render</th></tr>
