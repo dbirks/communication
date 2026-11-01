@@ -36,11 +36,28 @@ import type { TranscriptItem } from "../../api/transcript";
 import { automationViaWords, submitterCopy, turnStatusText } from "../../api/transcript";
 
 /**
- * Copy for the controller badge — ownership is always written in words.
+ * The glyph the badge wears when nobody holds the conversation.
+ *
+ * Projects Review 1g drops the "controller: nobody" sentence: an unheld thread
+ * is stated by a glyph and its accessible label alone, and `Take control` next
+ * to it is the way forward. `○` is the ring the held states fill in (`●`), so
+ * the shape — not a printed sentence — carries the fact.
+ */
+export const NO_CONTROLLER_GLYPH = "○";
+
+/** The name the unheld glyph wears for assistive tech (never printed). */
+export const NO_CONTROLLER_LABEL = "No controller";
+
+/**
+ * Copy for the controller badge — ownership someone holds is written in words.
  *
  * The design's pill is the lower-case `● you're in control` (Projects Review
  * 1g), so the controller's own line reads that way on every surface; the pane
  * header draws the leading glyph, this string is the words.
+ *
+ * Nobody holding it is the exception 1g carves out: it returns the short label
+ * `No controller`, which is the glyph's accessible name — `AgentConversation-
+ * Controls` draws `NO_CONTROLLER_GLYPH` rather than printing it.
  *
  * `control.display_name` is server-resolved and usually present, but the API may
  * omit it (an older replica, a member the projection did not name). The session
@@ -62,7 +79,7 @@ export function controllerCopy(
       ? `Controlled by ${named}`
       : "Controlled by another member";
   }
-  return "No controller — take control to drive";
+  return NO_CONTROLLER_LABEL;
 }
 
 /**
@@ -155,16 +172,34 @@ export function AgentConversationControls({
   const [confirmOpen, setConfirmOpen] = useState(false);
   if (!data || !control) return null;
 
+  // 1g: an unheld thread is the glyph and its label with no pill of its own,
+  // never a sentence; every other state (a member, a pipeline run, you) keeps
+  // the design's worded pill.
+  const unheld = control.kind === "none" && !isController;
+
   const badge = (
     <span
       data-testid={ids.badge}
       className={
         ids.controlBanner
           ? "min-w-0 text-[12px] font-semibold"
-          : "inline-flex h-[22px] items-center rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[10.5px] font-medium text-ink-2"
+          : unheld
+            ? "inline-flex h-[22px] items-center font-mono text-[13px] leading-none text-ink-2"
+            : "inline-flex h-[22px] items-center rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[10.5px] font-medium text-ink-2"
       }
     >
-      {controllerCopy(control, isController, nameOf)}
+      {unheld ? (
+        <span
+          role="img"
+          aria-label={NO_CONTROLLER_LABEL}
+          title={NO_CONTROLLER_LABEL}
+          data-testid={`${ids.badge}-glyph`}
+        >
+          <span aria-hidden="true">{NO_CONTROLLER_GLYPH}</span>
+        </span>
+      ) : (
+        controllerCopy(control, isController, nameOf)
+      )}
       {watching ? <span className="ml-1 font-normal text-muted">· you are watching</span> : null}
     </span>
   );

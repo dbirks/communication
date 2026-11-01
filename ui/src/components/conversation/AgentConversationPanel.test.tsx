@@ -14,7 +14,12 @@ import { render as renderDom, cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ReactNode } from "react";
 import { setCsrfToken } from "../../api/client";
-import { AgentConversationPanel } from "./AgentConversationPanel";
+import {
+  AgentConversationPanel,
+  NO_CONTROLLER_GLYPH,
+  NO_CONTROLLER_LABEL,
+  controllerCopy,
+} from "./AgentConversationPanel";
 import {
   FakeEventSource,
   claudeProfile,
@@ -73,6 +78,26 @@ const runControlled: Conversation = {
   ...conversationFixture,
   origin: "run",
   control: { kind: "run_attempt", version: 2 },
+};
+
+/** A thread nobody holds (control `kind: "none"`) — Projects Review 1g's
+ * glyph-only state. */
+const unheld: Conversation = {
+  ...conversationFixture,
+  control: { kind: "none", version: 4 },
+};
+
+/** The attempt pane's historical ids, worn over the shared surface. */
+const ATTEMPT_IDS = {
+  controlBanner: "attempt-control-banner",
+  stream: "attempt-work-stream",
+  badge: "attempt-controller",
+  takeControl: "attempt-take-control",
+  returnControl: "attempt-return-control",
+  stopTurn: "attempt-stop-turn",
+  composerInput: "attempt-composer-input",
+  composerSend: "attempt-composer-send",
+  composerExplainer: "attempt-composer-explainer",
 };
 
 const dock = (props: Record<string, unknown> = {}) => (
@@ -420,5 +445,44 @@ describe("AgentConversationPanel (dock)", () => {
     await waitFor(() =>
       expect(screen.getByTestId("controller-badge").textContent).toBe("you're in control"),
     );
+  });
+});
+
+describe("controller status with no controller (Projects Review 1g)", () => {
+  it("labels the state in words only — the badge itself prints no sentence", () => {
+    // 1g drops "controller: nobody": `controllerCopy` keeps the words as the
+    // accessible name, and the surface draws `NO_CONTROLLER_GLYPH` instead.
+    expect(controllerCopy({ kind: "none", version: 4 }, false)).toBe("No controller");
+    expect(controllerCopy({ kind: "none", version: 4 }, false)).not.toContain("take control");
+    // The states that name a holder are untouched.
+    expect(controllerCopy({ kind: "run_attempt", version: 2 }, false)).toBe(
+      "Controlled by a pipeline run",
+    );
+  });
+
+  it("draws the page badge as a glyph whose accessible name is the state", async () => {
+    renderPanel(dock(), routes(unheld));
+    const badge = await screen.findByTestId("controller-badge");
+    // What a member reads is the glyph — no sentence, and no pill of words.
+    expect(badge.textContent).toBe("○");
+    expect(badge.textContent).not.toMatch(/no controller|take control/i);
+    // What a screen reader reads is the state, in words.
+    expect(badge.textContent).toContain(NO_CONTROLLER_GLYPH);
+    expect(badge.querySelector("[role='img']")?.getAttribute("aria-label")).toBe(
+      NO_CONTROLLER_LABEL,
+    );
+    // Take control is the way forward, and it stays visible.
+    expect(screen.getByTestId("take-control").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps the attempt pane's glyph inside its control banner and its own ids", async () => {
+    renderPanel(dock({ ids: ATTEMPT_IDS, watching: true }), routes(unheld));
+    const banner = await screen.findByTestId("attempt-control-banner");
+    const badge = banner.querySelector("[data-testid='attempt-controller']");
+    expect(badge?.textContent).toBe(`○· you are watching`);
+    expect(
+      banner.querySelector("[data-testid='attempt-controller-glyph']")?.getAttribute("aria-label"),
+    ).toBe(NO_CONTROLLER_LABEL);
+    expect(screen.getByTestId("attempt-take-control")).toBeTruthy();
   });
 });
