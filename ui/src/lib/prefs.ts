@@ -342,7 +342,14 @@ export function repoViewExpandedKey(repositoryName: string): string {
 
 /** The List | Lanes choice for one repository, remembered per repo in the
  * user's layout prefs (3a). `saved` is false when the server lacks the
- * endpoint: the choice then lives for the session only. */
+ * endpoint: the choice then lives for the session only.
+ *
+ * The choice is WRITTEN AS AN EXPLICIT BOOLEAN, not by deleting the key:
+ * the server's preferences PATCH merges the `expanded` map key-by-key and
+ * never drops one (observed live: a PATCH whose `expanded` omitted
+ * `repo-view:app` answered 200 with the stored `true` still in the map), so
+ * a delete-based List would never stick and the toggle would be one-way.
+ * `false` says List in a word the merge cannot lose. */
 export function useRepoView(repositoryName: string): {
   view: RepoView;
   setView: (view: RepoView) => void;
@@ -354,9 +361,7 @@ export function useRepoView(repositoryName: string): {
   const view: RepoView = prefs.expanded[key] === true ? "lanes" : "list";
   const setView = (next: RepoView) => {
     if (next === view) return;
-    const expanded = { ...prefs.expanded };
-    if (next === "lanes") expanded[key] = true;
-    else delete expanded[key];
+    const expanded = { ...prefs.expanded, [key]: next === "lanes" };
     update({ expanded });
   };
   return { view, setView, saved, loaded };

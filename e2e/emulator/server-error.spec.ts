@@ -545,15 +545,29 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       expect(assignmentId, "the pin has an id").toMatch(/^[0-9a-f-]{36}$/);
     });
 
-    // `lib/format.ts`'s testidOf: the row (and its `+ Add trigger`) carry the
-    // assignment id's first 13 alphanumeric characters.
+    // `lib/format.ts`'s testidOf: the row, its `⋯` menu button and the menu's
+    // `Add trigger…` item all carry the assignment id's first 13 alphanumeric
+    // characters. cf699ce (design 3a): the inline `+ Add trigger` left the
+    // repo page — the row's `⋯` menu is the row's only door to the dialog.
     const rowKey = assignmentId.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
     armServerFailure(page, emu, new RegExp(`/api/v1/revisions/${made.revisionId}$`));
     await page.goto(`/p/${projectId}/app`);
-    const add = page.getByTestId(`repo-workflow-add-${rowKey}`);
-    await expect(add, "design 2c: the pinned workflow row offers `+ Add trigger`").toBeVisible({
+    const row = page.getByTestId(`repo-workflow-row-${rowKey}`);
+    await expect(row, "design 3a: the pinned workflow shows its row").toBeVisible({
       timeout: 30_000,
     });
+    await row
+      .locator(`[data-testid="repo-workflow-menu-${rowKey}"]`)
+      .click({ timeout: 15_000 });
+    await expect(
+      page.getByTestId("repo-workflow-row-menu"),
+      "design 3a: the row's ⋯ menu opens",
+    ).toBeVisible({ timeout: 15_000 });
+    const add = page.getByTestId(`repo-workflow-menu-add-${rowKey}`);
+    await expect(
+      add,
+      "design 2c: the pinned workflow row's ⋯ menu offers `Add trigger…`",
+    ).toBeVisible({ timeout: 30_000 });
     await add.click({ timeout: 15_000 });
     const dialog = page.getByTestId("trigger-dialog");
     await expect(dialog, "design 2c: the dialog opens").toBeVisible();

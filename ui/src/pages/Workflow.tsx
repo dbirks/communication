@@ -155,12 +155,39 @@ export function PipelinePage() {
       current && current.offset === offset && current.width === width ? current : { offset, width },
     );
   }, []);
+  // A window resize is NOT the only thing that changes this column: the
+  // 220px sidebar mounts/unmounts with the phone frame and collapses to the
+  // 52px rail (handoff 2c/3c), and the `window` resize event can land while
+  // the shell still has the width of the OTHER frame (measured live: a
+  // 390→1280 viewport change pinned the page at `width:1280` left of a
+  // remounted sidebar — scrollWidth 1500 in a 1280 window, emulator
+  // #125–#127). So the column itself is watched, exactly as
+  // `pages/RunInspector.tsx` watches its host — the column is `flex-1`
+  // (basis 0, `min-w-0`), never content-sized, so measuring it cannot feed
+  // back into its own width.
+  const spaceWatcher = useRef<ResizeObserver | null>(null);
   const attachRoot = useCallback(
     (node: HTMLDivElement | null) => {
       rootRef.current = node;
-      if (node) measureBleed();
+      spaceWatcher.current?.disconnect();
+      spaceWatcher.current = null;
+      if (!node) return;
+      measureBleed();
+      const column = node.closest("main")?.parentElement ?? null;
+      if (column && typeof ResizeObserver !== "undefined") {
+        const watcher = new ResizeObserver(() => measureBleed());
+        watcher.observe(column);
+        spaceWatcher.current = watcher;
+      }
     },
     [measureBleed],
+  );
+  useEffect(
+    () => () => {
+      spaceWatcher.current?.disconnect();
+      spaceWatcher.current = null;
+    },
+    [],
   );
   useEffect(() => {
     window.addEventListener("resize", measureBleed);

@@ -59,12 +59,21 @@ test.describe("findOverlaps and wrapped inline text", () => {
   });
 
   test("an absolutely positioned span printed over another is a collision", async ({ page }) => {
+    // The geometry is deliberately generous (≥7px on every containment edge).
+    // The first cut of this fixture parked the absolute span 2px below the
+    // inline one and 0px beside it — INSIDE the checker's own 1px containment
+    // slack once a font's ink box starts 2px below the line box (what every
+    // Actions pass of run 41423602047 observed: 0 hits, whole suite red),
+    // while this machine's ui-monospace match kept it at 0 and passed. The
+    // rule under test — an abs-positioned run printed OVER its neighbour is
+    // a collision — does not change with the geometry.
     await page.setContent(
       doc(
         [
-          '<div style="position:relative;width:400px;height:80px">',
+          '<div style="position:relative;width:400px;height:120px">',
+          '<div style="height:30px"></div>',
           '<span data-testid="over-a">short line</span>',
-          '<span data-testid="over-b" style="position:absolute;left:0px;top:2px">',
+          '<span data-testid="over-b" style="position:absolute;left:8px;top:36px;width:260px">',
           "printed over the whole line by someone who meant it",
           "</span>",
           "</div>",

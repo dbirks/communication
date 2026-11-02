@@ -8,7 +8,7 @@
 // evidence() per step; zero page errors. Scratch schedules / threads / steps
 // are created through the API where the journey needs them and are left clean.
 
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
 import { BASE_URL } from "./env.js";
 import { openProjectBySlug, signIn } from "./helpers.js";
@@ -37,13 +37,6 @@ interface ScheduleRow {
   assignment_id: string;
   cron_expr: string;
   enabled: boolean;
-}
-
-/** One issue trigger of GET /api/v1/projects/{projectId}/issue-triggers — the
- * only field this spec reads beyond the id. */
-interface IssueTriggerRow {
-  id: string;
-  assignment_id: string;
 }
 
 /** GET /api/v1/projects/{projectId}/schedules — the list the Triggers
@@ -112,6 +105,7 @@ async function openRepoWorkflowRow(
   const key = (assignment?.id ?? "").replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
   await page.goto(`${BASE_URL}${projectPath}/${repoName}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
+  await ensureRepoListView(page);
   await expect(page.getByTestId("repo-workflows")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId(`repo-workflow-row-${key}`)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId(`repo-workflow-name-${key}`)).toContainText(slug, {
@@ -120,71 +114,85 @@ async function openRepoWorkflowRow(
   return { projectId, repoName, key, assignmentId: assignment?.id ?? "", pipelineId: pipeline.id };
 }
 
-/** How many triggers the server serves for ONE assignment. The repo panel
- * opens a row exactly when this is non-zero (design 2e, reflow-390 item 4), so
- * the journey derives the row's default from the API instead of assuming the
- * seeded workflow never kept a trigger from an earlier pass. */
-async function apiTriggerCount(
-  request: APIRequestContext,
-  projectId: string,
-  assignmentId: string,
-): Promise<number> {
-  const [schedulesRes, issuesRes] = await Promise.all([
-    request.get(`${BASE_URL}/api/v1/projects/${projectId}/schedules`),
-    request.get(`${BASE_URL}/api/v1/projects/${projectId}/issue-triggers`),
-  ]);
-  expect(schedulesRes.status(), `GET schedules -> ${schedulesRes.status()}`).toBe(200);
-  expect(issuesRes.status(), `GET issue-triggers -> ${issuesRes.status()}`).toBe(200);
-  const schedules = (await schedulesRes.json()) as { schedules?: ScheduleRow[] };
-  const issues = (await issuesRes.json()) as { issue_triggers?: IssueTriggerRow[] };
-  return (
-    (schedules.schedules ?? []).filter((row) => row.assignment_id === assignmentId).length +
-    (issues.issue_triggers ?? []).filter((row) => row.assignment_id === assignmentId).length
-  );
+/**
+ * Put the repository page in its LIST view (design 3a) and wait for it.
+ *
+ * The List | Lanes choice (2e5c648, design 3b) is a SERVER-saved per-user
+ * layout preference (`repo-view:<repo>` in the prefs' expanded map), and this
+ * lab shares one admin across every journey — an earlier screen (or an
+ * emulator pass that clicked Lanes) can leave the page opening on Lanes,
+ * where the WORKFLOWS panel and the chat box this journey reads do not
+ * exist. A journey that names one view must choose it, not inherit it.
+ */
+async function ensureRepoListView(page: Page): Promise<void> {
+  const toggle = page.getByTestId("repo-view-toggle");
+  await expect(toggle, "design 3b: the List | Lanes toggle stands in the header").toBeVisible({
+    timeout: 30_000,
+  });
+  const list = page.getByTestId("repo-view-list");
+  if ((await list.getAttribute("aria-pressed")) !== "true") {
+    await list.click({ timeout: 10_000 });
+  }
+  await expect(list).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
 }
 
 /**
- * Assert a repo workflow row's STARTS WHEN default and OPEN it.
- *
- * Design 2e (reflow-390 item 4, this round's UI change): a row with NO
- * triggers starts COLLAPSED — the always-open box used to stack a “Never
- * triggered” rectangle down the whole panel — while a row that has triggers
- * still opens on its box. So the journey can no longer read the box as if it
- * were open by default: it checks the chevron against the served trigger
- * count, closes an already-open row, then opens the row with the same
- * `repo-workflow-toggle-<key>` chevron and asserts the box appears. A
- * background refetch can re-render the panel mid-click (the emulator learned
- * this), so opening is a bounded loop rather than one click.
+ * Open a repo workflow row's `⋯` menu and its `Add trigger…` item, returning
+ * the trigger dialog (design 3a/cf699ce, handoff-repo-chat-nav: the inline
+ * STARTS WHEN box and its `+ Add trigger` left the repository page — the
+ * row's `⋯` menu is the row's only door to the 2c dialog, with one
+ * `Edit <trigger>` item per existing trigger). A background refetch can
+ * re-render the panel mid-click (the emulator learned this), so opening is a
+ * bounded loop rather than one click.
  */
-async function openRowStartsBox(page: Page, key: string, triggerCount: number): Promise<void> {
-  const toggle = page.getByTestId(`repo-workflow-toggle-${key}`);
-  const starts = page.getByTestId(`repo-workflow-starts-${key}`);
-  // The default follows the trigger reads, which land after the row paints.
-  await expect
-    .poll(async () => (await toggle.getAttribute("aria-expanded")) === "true", {
-      message: `design 2e: a row with ${triggerCount} trigger(s) settles on its own default`,
-      timeout: 30_000,
-    })
-    .toBe(triggerCount > 0);
-  if (triggerCount > 0) {
-    // Hand the journey the collapsed row every trigger-less use starts on.
-    await toggle.click({ timeout: 15_000 });
-    await expect(starts, "the chevron closes an open row").toBeHidden({ timeout: 30_000 });
-  } else {
-    await expect(
-      starts,
-      "design 2e: a workflow with no triggers keeps its STARTS WHEN box closed",
-    ).toBeHidden({ timeout: 30_000 });
-  }
+async function openTriggerMenu(page: Page, key: string): Promise<Locator> {
+  const menu = page.getByTestId("repo-workflow-row-menu");
+  const row = page.getByTestId(`repo-workflow-row-${key}`);
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    if ((await toggle.getAttribute("aria-expanded")) === "true") break;
-    await toggle.click({ timeout: 15_000 }).catch(() => undefined);
+    if (await menu.isVisible().catch(() => false)) break;
+    await row
+      .locator(`[data-testid="repo-workflow-menu-${key}"]`)
+      .click({ timeout: 15_000 })
+      .catch(() => undefined);
     await page.waitForTimeout(400);
   }
-  await expect(toggle).toHaveAttribute("aria-expanded", "true", { timeout: 30_000 });
-  await expect(starts, "the row's chevron opens its STARTS WHEN box").toBeVisible({
-    timeout: 30_000,
+  await expect(menu, "design 3a: the row's ⋯ menu opens").toBeVisible({ timeout: 15_000 });
+  return menu;
+}
+
+/** ⋯ → `Add trigger…` → the 2c dialog. */
+async function addTriggerViaRowMenu(page: Page, key: string): Promise<Locator> {
+  const menu = await openTriggerMenu(page, key);
+  const add = menu.getByTestId(`repo-workflow-menu-add-${key}`);
+  await expect(add, "design 3a: the row's ⋯ menu offers `Add trigger…`").toBeVisible({
+    timeout: 15_000,
   });
+  await add.click({ timeout: 15_000 });
+  const dialog = page.getByTestId("trigger-dialog");
+  await expect(
+    dialog,
+    "design 3a: the row's ⋯ → Add trigger… opens the trigger dialog",
+  ).toBeVisible({ timeout: 30_000 });
+  return dialog;
+}
+
+/** The repo page's row trigger line (`Schedule · every weekday at 09:00
+ * UTC`, a paused one ending in ` · paused`) reads from the trigger queries,
+ * which the panel caches hard (reloadTime off) — so the journey reloads and
+ * waits for the line to stop saying `· loading` (design 3a, same path the
+ * emulator's repo-triggers journey reads).
+ */
+async function reloadRowTriggerLine(page: Page, key: string): Promise<string> {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId(`repo-workflow-row-${key}`)).toBeVisible({ timeout: 30_000 });
+  const line = page.getByTestId(`repo-workflow-triggers-${key}`);
+  await expect
+    .poll(
+      async () => ((await line.textContent().catch(() => null)) ?? "").replace(/\s+/g, " ").trim(),
+      { message: "the row's trigger line has read its triggers", timeout: 30_000 },
+    )
+    .not.toBe("· loading");
+  return String(await line.textContent());
 }
 
 test.describe("shell p10 gaps — workflow triggers, repository page, usage, thread artifacts", () => {
@@ -199,28 +207,13 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const stopWatching = watchPageErrors(page);
     const request = page.request;
     // ADR-0060/2e: triggers are authored where the workflow is USED — the
-    // repository page's WORKFLOWS ON THIS REPO panel (repo-chain-r4: the bar
-    // briefly read REPO WORKFLOWS) — never on the library page. Design 2e (reflow-390 item 4): a row with NO triggers now starts
-    // COLLAPSED, so the journey asserts the default the served triggers imply
-    // and OPENS the row with its own chevron instead of reading the box as if
-    // it were open by default.
-    const {
-      projectId: labProjectId,
-      repoName,
-      key,
-      assignmentId,
-    } = await openRepoWorkflowRow(page, "feature-development");
-    const triggerCount = await apiTriggerCount(request, labProjectId, assignmentId);
-    await openRowStartsBox(page, key, triggerCount);
-    // In an open row the `+ Add trigger` sits in the STARTS WHEN header under
-    // the same `repo-workflow-add-<key>` testid the collapsed row's action
-    // uses — the two never render side by side.
-    const addTrigger = page.getByTestId(`repo-workflow-add-${key}`);
-    await expect(addTrigger).toBeVisible({ timeout: 30_000 });
-
-    await addTrigger.click();
-    const dialog = page.getByTestId("trigger-dialog");
-    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    // repository page's WORKFLOWS panel — never on the library page.
+    // cf699ce (design 3a, handoff-repo-chat-nav): the inline STARTS WHEN box
+    // and its `+ Add trigger` left the page; the row's `⋯` menu is now the
+    // row's only door to the 2c dialog, and the row's ONE trigger line is
+    // where its triggers are read back.
+    const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
+    const dialog = await addTriggerViaRowMenu(page, key);
     // The dialog is opened FROM a repository row: no repo select — the
     // repository is fixed by the page and echoed back in THE RUN GETS.
     await expect(page.getByTestId("trigger-dialog-context")).toContainText(repoName, {
@@ -269,13 +262,10 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await expect(dialog).toBeHidden({ timeout: 30_000 });
 
     const rowKey = scheduleId.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
-    const row = page.getByTestId(`repo-workflow-trigger-${rowKey}`);
-    await expect(row).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId(`repo-workflow-trigger-detail-${rowKey}`)).toContainText(
-      "0 9 * * 1-5",
-    );
-    await expect(row).toContainText("every weekday at 09:00 UTC");
-
+    // Design 3a: the trigger is read back on the row's ONE trigger line
+    // (`Schedule · every weekday at 09:00 UTC`), not an inline STARTS WHEN
+    // row — and the panel caches the trigger queries hard, so the journey
+    // reloads to re-read the truth. The cron itself stays proven by the API.
     const schedules = await apiSchedules(request, projectId);
     const createdRow = schedules.find((schedule) => schedule.id === scheduleId);
     expect(
@@ -285,13 +275,53 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     expect(createdRow?.cron_expr).toBe("0 9 * * 1-5");
     expect(createdRow?.enabled).toBe(true);
 
-    const enabledBox = page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}`);
-    await expect(enabledBox).toBeChecked();
-    await enabledBox.click();
-    await expect(page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}-state`)).toHaveText(
-      "paused",
+    const line0 = await reloadRowTriggerLine(page, key);
+    expect(line0.replace(/\s+/g, " ")).toContain("every weekday at 09:00 UTC");
+
+    // The 3a pause path: ⋯ → `Edit <trigger>` → the dialog's Active/Paused
+    // switch → `Save trigger`. The flip rides the same PATCH every other
+    // answer spends; it replaces the retired inline enabled checkbox.
+    const menu = await openTriggerMenu(page, key);
+    const editItem = menu.getByTestId(`repo-workflow-menu-schedule-${rowKey}`);
+    await expect(
+      editItem,
+      "design 3a: the ⋯ menu lists one Edit item per trigger, named by its words",
+    ).toContainText("every weekday at 09:00 UTC", { timeout: 15_000 });
+    await editItem.click({ timeout: 15_000 });
+    const editDialog = page.getByTestId("trigger-dialog");
+    await expect(editDialog, "the edit dialog opens on the schedule").toBeVisible({
+      timeout: 30_000,
+    });
+    // The cron the dialog read back is the cron the server stored — the same
+    // proof the retired `repo-workflow-trigger-detail` row carried.
+    await expect(page.getByTestId("trigger-dialog-cron")).toHaveValue("0 9 * * 1-5", {
+      timeout: 30_000,
+    });
+    const pauseSwitch = editDialog.getByRole("switch", { name: /pause this trigger/i });
+    await expect(pauseSwitch, "design 3a: the edit dialog exposes the pause switch").toBeChecked({
+      timeout: 30_000,
+    });
+    await pauseSwitch.click({ timeout: 10_000 });
+    await expect(
+      editDialog.getByTestId("trigger-dialog-enabled-state"),
+      "the switch reads Paused before the save",
+    ).toHaveText("Paused", { timeout: 10_000 });
+    const patch = page.waitForResponse(
+      (response) =>
+        response.url().includes("/schedules") && response.request().method() === "PATCH",
       { timeout: 30_000 },
     );
+    const save = editDialog.getByTestId("trigger-dialog-submit");
+    // Design 3a (cf699ce): an existing trigger's verb is `Save trigger`.
+    await expect(save).toHaveText("Save trigger", { timeout: 10_000 });
+    await save.click({ timeout: 10_000 });
+    expect((await patch).status(), "the pause saves through PATCH").toBeLessThan(300);
+    await expect(editDialog, "the saved pause closes the dialog").toBeHidden({ timeout: 30_000 });
+
+    // Proof after the pause: the row's line says `· paused` and the server
+    // agrees.
+    const line1 = await reloadRowTriggerLine(page, key);
+    expect(line1.replace(/\s+/g, " ")).toMatch(/·\s*paused/i);
     const pausedRow = (await apiSchedules(request, projectId)).find(
       (schedule) => schedule.id === scheduleId,
     );
@@ -301,16 +331,12 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await evidence(
       page,
       "shell-p10-gaps-triggers-add",
-      `the repository page's WORKFLOWS ON THIS REPO row for ${repoName} added a "weekdays 09:00 UTC" schedule through the 2c dialog: the trigger row shows the cron "0 9 * * 1-5" and the plain-English reading "every weekday at 09:00 UTC", and GET /api/v1/projects/{id}/schedules echoes the same cron`,
+      `the repository page's WORKFLOWS row for ${repoName} added a "weekdays 09:00 UTC" schedule through the row's ⋯ → Add trigger… 2c dialog: the row's trigger line reads "every weekday at 09:00 UTC" and GET /api/v1/projects/{id}/schedules echoes the cron "0 9 * * 1-5"`,
     );
 
     // Clean up: ADR-0032 exposes no DELETE — the off-switch for a scratch
-    // schedule is the enabled flag, so the journey disables what it added.
-    const cleanupBox = page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}`);
-    if (await cleanupBox.isChecked().catch(() => false)) await cleanupBox.click();
-    await expect(page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}-state`)).toHaveText(
-      "paused",
-    );
+    // schedule is the enabled flag, and the dialog pause this journey just
+    // performed IS the cleanup: the scratch schedule ends disabled.
     const endRow = (await apiSchedules(request, projectId)).find(
       (schedule) => schedule.id === scheduleId,
     );
@@ -319,7 +345,7 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await evidence(
       page,
       "shell-p10-gaps-triggers-pause",
-      `toggling the schedule's pause flipped the server's enabled flag to false (GET /api/v1/projects/{id}/schedules: enabled=false, state "paused") and the scratch schedule was cleaned up disabled`,
+      `pausing through ⋯ → Edit <trigger> → the Active/Paused switch flipped the server's enabled flag to false (GET /api/v1/projects/{id}/schedules: enabled=false, the row's trigger line ends \"· paused\") and the scratch schedule was cleaned up disabled`,
     );
   });
 
@@ -349,6 +375,9 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await repoRow.getByRole("link", { name: repoName }).click();
     await expect(page).toHaveURL(new RegExp(`/p/${projectId}/${repoName}$`));
     await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
+    // The sections below are design 3a's LIST view — the choice is a saved
+    // preference, so the journey presses List rather than inheriting one.
+    await ensureRepoListView(page);
     // Design 3a (handoff-repo-chat-nav): the page's sections are the header,
     // the chat box, the activity feed (runs and chats mixed — the successor
     // of WORK IN THIS REPO and RECENT RUNS), and the side column's WORKFLOWS
@@ -514,23 +543,11 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     // Same move as the schedule arm (ADR-0060/2e): the issue trigger is
     // added from the repository page's row, where the repository is fixed —
     // the lab's one repository is a file:// remote, so this is exactly the
-    // surface that must answer the server's not-a-GitHub 422 inline. The row
-    // is opened through its chevron first (design 2e: no triggers means a
-    // collapsed row), then the STARTS WHEN header's `+ Add trigger` is the door.
-    const {
-      projectId: labProjectId,
-      repoName,
-      key,
-      assignmentId,
-    } = await openRepoWorkflowRow(page, "feature-development");
-    await openRowStartsBox(
-      page,
-      key,
-      await apiTriggerCount(page.request, labProjectId, assignmentId),
-    );
-    await page.getByTestId(`repo-workflow-add-${key}`).click();
-    const dialog = page.getByTestId("trigger-dialog");
-    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    // surface that must answer the server's not-a-GitHub 422 inline.
+    // cf699ce (design 3a): the row's `⋯` menu → `Add trigger…` is the door
+    // (the STARTS WHEN header's `+ Add trigger` left the page).
+    const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
+    const dialog = await addTriggerViaRowMenu(page, key);
     // A fresh dialog starts on the issue arm, bound to THIS repository.
     await expect(page.getByTestId("trigger-dialog-mode-issue")).toHaveAttribute(
       "aria-pressed",

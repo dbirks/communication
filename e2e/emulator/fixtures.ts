@@ -38,7 +38,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { test as base } from "@playwright/test";
-import type { APIResponse, Page, Request } from "@playwright/test";
+import type { APIResponse, Page } from "@playwright/test";
 import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
 import { scrollToTopForCapture } from "../tests/helpers.js";
 import {
@@ -188,20 +188,56 @@ function screenRecord(capture: EmuScreen & ParityCapture): EmuScreen {
 const MAX_DETAIL = 500;
 
 /**
- * A `net::ERR_ABORTED` on an event stream is the browser cancelling an SSE
- * subscription because the page navigated away or closed — normal behaviour,
- * not a defect — but ONLY when a navigation/close actually happened around
- * it. Any other abort (server went away mid-journal, the socket died for a
- * reason the page did not cause) still counts.
+ * A `net::ERR_ABORTED` on a journal feed (SSE `EventSource` or a
+ * `text/event-stream` fetch) is the BROWSER cancelling an already-open
+ * subscription — the only ways such a request end in `ERR_ABORTED` are
+ * client-side teardowns: the page navigating away or closing, and the app
+ * replacing a socket (React Query/StrictMode remounts, the hook's own
+ * reconnect ladder, an org-stream consumer unmounting on a route change).
+ * None of those says anything about the API. A real break on `/api/v1/events`
+ * still counts through the other doors: an error STATUS is recorded by the
+ * `response` handler (4xx/5xx are statuses, not aborts), and a dead server
+ * mid-stream fails with its own net error (`ERR_CONNECTION_RESET`,
+ * `ERR_EMPTY_RESPONSE`, …), never `ERR_ABORTED`.
+ *
+ * The first cut of this filter (ABORT_NAV_GRACE_MS) tried to drop only the
+ * aborts within a second of a `framenavigated`, and leaked: the app keeps
+ * more than one consumer of the org stream (the sidebar's flag hook and the
+ * page-level reads both call `useOrgEvents`), and a route change that
+ * unmounts one of them closes its socket ~0.5–2s AFTER the navigation —
+ * outside any grace window, dozens of times per pass (issues #103–#128,
+ * acceptance run 41423602047: 20+ filed defects, every one of them
+ * `GET /api/v1/events failed: net::ERR_ABORTED`).
  */
-const ABORT_NAV_GRACE_MS = 1_000;
+export function isBenignStreamAbort(input: {
+  errorText: string;
+  resourceType: string;
+  accept: string;
+  url: string;
+}): boolean {
+  return input.errorText.trim() === "net::ERR_ABORTED" && isEventStreamRequest(input);
+}
 
-/** The request is one of the app's journal feeds (SSE or a fetch reading a
- * `text/event-stream` body). */
-function isEventStreamRequest(request: Request): boolean {
-  if (request.resourceType() === "eventsource") return true;
-  if ((request.headers()["accept"] ?? "").toLowerCase().includes("text/event-stream")) return true;
-  const pathname = new URL(request.url()).pathname;
+/**
+ * The request is one of the app's journal feeds (SSE or a fetch reading a
+ * `text/event-stream` body). The path test is deliberately suffix-strict:
+ * `/api/v1/events`, `/api/v1/projects/{id}/events`,
+ * `/api/v1/conversations/{id}/events`, `/api/v1/runs/{id}/events`, … — an
+ * abort on any OTHER endpoint is a real failed request and still files.
+ */
+function isEventStreamRequest(request: {
+  resourceType: string;
+  accept: string;
+  url: string;
+}): boolean {
+  if (request.resourceType === "eventsource") return true;
+  if ((request.accept ?? "").toLowerCase().includes("text/event-stream")) return true;
+  let pathname: string;
+  try {
+    pathname = new URL(request.url).pathname;
+  } catch {
+    return false;
+  }
   return pathname.endsWith("/events") || pathname.endsWith("/stream");
 }
 
@@ -212,16 +248,10 @@ class EmuRecorder {
   private currentScreen = "(before first screen)";
   private lastShot: string | null = null;
   private currentViewport = "";
-  /** Timestamps of main-frame navigations, and of the page closing — the
-   * events that make an event-stream abort legitimate. */
-  private navTimes: number[] = [];
-  private closedAt: number | null = null;
-  /** `net::ERR_ABORTED` on an event stream: held until finish(), when the
-   * navigation timestamps around it are all known, then dropped or recorded. */
-  private deferredAborts: { at: number; defect: EmuDefect }[] = [];
-  /** What a check chose NOT to file (e.g. a parity pair skipped for state
-   * drift). Never a defect, never silent: finish() writes these to
-   * results.json as `type: "note"` and note() echoes them to the pass log. */
+  /** What a check chose NOT to file (an event-stream abort explained by a
+   * subscription teardown, or a parity pair skipped for state drift). Never
+   * a defect, never silent: finish() writes these to results.json as
+   * `type: "note"` and note() echoes them to the pass log. */
   private notes: { screen: string; detail: string }[] = [];
   private isExpected(urlPath: string, status?: number): boolean {
     return this.expected.some(
@@ -235,14 +265,6 @@ class EmuRecorder {
     private page: Page,
     private journey: string,
   ) {
-    this.page.on("framenavigated", (frame) => {
-      if (frame !== this.page.mainFrame()) return;
-      this.navTimes.push(Date.now());
-      if (this.navTimes.length > 100) this.navTimes.shift();
-    });
-    this.page.on("close", () => {
-      this.closedAt ??= Date.now();
-    });
     this.page.on("pageerror", (error) => {
       this.record(
         "pageerror",
@@ -277,24 +299,25 @@ class EmuRecorder {
     this.page.on("requestfailed", (request) => {
       const url = new URL(request.url());
       if (this.isExpected(url.pathname, undefined)) return;
-      const failure = request.failure()?.errorText ?? "request failed";
-      if (failure.trim() === "net::ERR_ABORTED" && isEventStreamRequest(request)) {
-        this.deferredAborts.push({
-          at: Date.now(),
-          defect: this.defectFor("api", `${request.method()} ${url.pathname} failed: ${failure}`),
-        });
+      const failure = request.failure()?.errorText ?? " request failed";
+      if (
+        isBenignStreamAbort({
+          errorText: failure,
+          resourceType: request.resourceType(),
+          accept: request.headers()["accept"] ?? "",
+          url: request.url(),
+        })
+      ) {
+        // Dropped, but loud: the pass log and results.json carry the note.
+        this.note(
+          `event-stream abort dropped: ${request.method()} ${url.pathname} failed: ` +
+            `${failure.trim()} — a journal feed the client closed (navigation, unload or ` +
+            `reconnect), not an API failure`,
+        );
         return;
       }
       this.record("api", `${request.method()} ${url.pathname} failed: ${failure}`);
     });
-  }
-
-  /** True when a navigation (or the page closing) happened within the grace
-   * window of `at` — in either direction, since the abort and the navigation
-   * event do not race each other in a fixed order. */
-  private nearNavigation(at: number): boolean {
-    if (this.closedAt !== null && Math.abs(this.closedAt - at) <= ABORT_NAV_GRACE_MS) return true;
-    return this.navTimes.some((nav) => Math.abs(nav - at) <= ABORT_NAV_GRACE_MS);
   }
 
   expectFailure(re: RegExp, status?: number): void {
@@ -580,12 +603,6 @@ class EmuRecorder {
       const message = raw.split("\n").slice(0, 3).join(" ").trim();
       this.record("assertion", `assertion: ${message}`);
     }
-    // Decide the held event-stream aborts now: dropped when a navigation or
-    // the page close happened within the grace window, recorded otherwise.
-    for (const held of this.deferredAborts) {
-      if (!this.nearNavigation(held.at)) this.defects.push(held.defect);
-    }
-    this.deferredAborts = [];
     await mkdir(EMU_OUT_DIR, { recursive: true });
     const lines = [
       ...this.screens.map((screen) =>

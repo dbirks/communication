@@ -243,7 +243,11 @@ export default function RunInspector({
   // Embedded, it also watches `<main>` itself: the workbench dock is resized
   // with the pointer and collapsed with a button, and neither is a window
   // resize, so a window listener alone would leave the columns on the width
-  // the host had when the page first painted.
+  // the host had when the page first painted. Standalone the watched box is
+  // `<main>`'s parent column, for the same reason as
+  // `pages/Workflow.tsx`: the sidebar mounting, unmounting or collapsing is
+  // not a window resize either, and the `window` resize event can land while
+  // the shell still has the other frame's width.
   const spaceWatcher = useRef<ResizeObserver | null>(null);
   const attachRoot = useCallback(
     (node: HTMLDivElement | null) => {
@@ -252,7 +256,8 @@ export default function RunInspector({
       spaceWatcher.current = null;
       if (!node) return;
       measureBleed();
-      const column = embedded ? node.closest("main") : null;
+      const main = node.closest("main");
+      const column = embedded ? main : (main?.parentElement ?? null);
       if (column && typeof ResizeObserver !== "undefined") {
         const watcher = new ResizeObserver(() => measureBleed());
         watcher.observe(column);

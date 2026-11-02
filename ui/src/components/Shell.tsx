@@ -186,7 +186,17 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
             </Link>
             <CommandPalette context={sectionOf(location.pathname)} className="ml-auto shrink-0" />
           </header>
-        ) : null}
+        ) : (
+          /* Desktop: the strip — the box's only DRAWN home — does not mount,
+             but the palette engine still must: the assistant popover hands
+             the second ⌘K to the jump palette (ADR-0050) through a window
+             event this component listens for, and a shell that never mounts
+             it silently swallows the chord (lab-e2e: `palette-input` never
+             appeared). `hidden` hides the wrapper and the `Ask… Ctrl K` box
+             inside it; the open panel is portalled to the body, so it paints
+             exactly where the phone one does. */
+          <CommandPalette context={sectionOf(location.pathname)} className="hidden" />
+        )}
 
         <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
           {/* gh-69: navigation clears a caught render error through `resetKey`

@@ -37,18 +37,19 @@ export default defineConfig({
     {
       name: "reflow",
       // The harness's own unit tests (reflow-overlap.spec.ts,
-      // reflow-target.spec.ts): fixtures built with `page.setContent`, so they
-      // need NO lab and no signed-in state —
-      // hence no `setup` dependency, and they pass on a machine with no stack.
-      testMatch: /reflow-.*\.spec\.ts/,
+      // reflow-target.spec.ts, fixtures-abort.spec.ts): pure functions and
+      // fixtures built with `page.setContent`, so they need NO lab and no
+      // signed-in state — hence no `setup` dependency, and they pass on a
+      // machine with no stack.
+      testMatch: [/reflow-.*\.spec\.ts/, /fixtures-abort\.spec\.ts/],
     },
     {
       name: "journeys",
-      // Every journey spec except the setup one and the no-lab reflow specs
+      // Every journey spec except the setup one and the no-lab unit specs
       // (which run in their own project). One shared lab: serial, one worker,
       // no retries — see the header.
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/setup\.spec\.ts/, /reflow-.*\.spec\.ts/],
+      testIgnore: [/setup\.spec\.ts/, /reflow-.*\.spec\.ts/, /fixtures-abort\.spec\.ts/],
       dependencies: ["setup"],
     },
   ],
