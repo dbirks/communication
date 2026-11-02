@@ -207,12 +207,38 @@ jobs:
           printf '%s' "$COMMUNICATION_LLM_API_KEY" > "$d/llm-api-key"
           chmod 600 "$d/llm-api-key"
           echo "COMMUNICATION_LLM_API_KEY_HOST_FILE=$d/llm-api-key" >> "$GITHUB_ENV"
+      - name: write the GitHub read-token file (ADR-0061 credential for m5gh-*)
+        env:
+          # The job's own token — any valid GITHUB_TOKEN reads PUBLIC repo
+          # data (api.github.com), and an authenticated read costs 5000
+          # requests/hour instead of the anonymous 60 this egress IP shares
+          # with every other workflow. e2e/tests/m5-issue-run.spec.ts reads
+          # this file and attaches it to its m5gh-* repository row as an
+          # integration_broker secret credential (ADR-0061), so the issue
+          # picker's live read is authenticated and the leg never skips.
+          GH_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          [ -n "$GH_READ_TOKEN" ] \
+            || { echo "::error::the run's GITHUB_TOKEN is empty — the lab cannot read GitHub authenticated"; exit 1; }
+          d="$RUNNER_TEMP/comm-secrets"; mkdir -p "$d"; chmod 700 "$d"
+          # printf is the bash builtin: the value never enters an argv word
+          # and is never echoed; only the file PATH is exported (the *_FILE
+          # indirection the lab scripts already use everywhere else).
+          printf '%s' "$GH_READ_TOKEN" > "$d/github-read-token"
+          chmod 600 "$d/github-read-token"
+          echo "E2E_GITHUB_READ_TOKEN_FILE=$d/github-read-token" >> "$GITHUB_ENV"
       - name: bring the lab up
         run: bash scripts/lab-up.sh
       - name: seed (§ 7.0 contract)
         run: bash docs/compatibility/probes/m4/seed.sh
       - name: run the lab-gated suites
         env:
+          # Named explicitly at the consumer (same idiom as the launcher
+          # knob below): the m5gh-* repo row's ADR-0061 GitHub credential,
+          # so the issue picker reads api.github.com authenticated and the
+          # leg is deterministic on shared runner egress IPs.
+          E2E_GITHUB_READ_TOKEN_FILE: ${{ env.E2E_GITHUB_READ_TOKEN_FILE }}
           # The four real-agent specs (home-cluster, m2-journey, m5-inbox,
           # shell-journey) read this same knob (e2e/tests/lab-launcher.ts):
           # under pi they pick the pi launcher card and seed their profiles
@@ -240,10 +266,28 @@ jobs:
           fi
       - name: dump compose state
         if: failure()
-        run: ${{ env.M4_COMPOSE }} ps -a || true
+        run: |
+          set -uo pipefail
+          # compose.real.yml interpolates ${LLMC_API_KEY:?} at config render,
+          # so `ps` and `logs` need it too — lab-up.sh exported it only inside
+          # its own step. Read it back from the key file (a shell assignment:
+          # never an argv word, never printed); skipped when the key step
+          # itself failed, where there is no file to read.
+          if [ -n "${COMMUNICATION_LLM_API_KEY_HOST_FILE:-}" ] && [ -r "$COMMUNICATION_LLM_API_KEY_HOST_FILE" ]; then
+            LLMC_API_KEY="$(cat "$COMMUNICATION_LLM_API_KEY_HOST_FILE")"; export LLMC_API_KEY
+          fi
+          ${{ env.M4_COMPOSE }} ps -a || true
       - name: capture compose logs
         if: always()
-        run: ${{ env.M4_COMPOSE }} logs --no-color --timestamps > lab-compose.log 2>&1 || true
+        run: |
+          set -uo pipefail
+          # Same render-time requirement as the step above: without this the
+          # capture died on "services.worker-a…LLMC_API_KEY is missing" and
+          # lab-compose.log held the interpolation error, not the lab logs.
+          if [ -n "${COMMUNICATION_LLM_API_KEY_HOST_FILE:-}" ] && [ -r "$COMMUNICATION_LLM_API_KEY_HOST_FILE" ]; then
+            LLMC_API_KEY="$(cat "$COMMUNICATION_LLM_API_KEY_HOST_FILE")"; export LLMC_API_KEY
+          fi
+          ${{ env.M4_COMPOSE }} logs --no-color --timestamps > lab-compose.log 2>&1 || true
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v7
