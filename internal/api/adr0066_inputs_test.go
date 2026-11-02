@@ -141,8 +141,13 @@ func a66ValidOutcome() ValidationOutcome {
 
 var a66ScheduleFact = TriggerFillFacts{Kind: "schedule", ID: "s-1", ProjectID: "p-1",
 	Name: "* * * * *", Fills: []string{}}
+
+// a66IssueTriggerFact is the UNMAPPED arm of the read the store answers today:
+// the trigger carries no explicit issue_input, so it fills the single
+// github_issue input of whatever specs the warning is computed against, plus
+// nothing else (the seeded fixture templates no input names).
 var a66IssueTriggerFact = TriggerFillFacts{Kind: "issue", ID: "t-1", ProjectID: "p-1",
-	Name: "octo/widgets #opened", Fills: []string{"issue"}}
+	Name: "octo/widgets #opened", Fills: []string{}}
 
 // a66GoalRepoPlan is the reviewed 1j document: `goal` (long_text) and
 // `repository` (text) are required with no default next to the required
@@ -399,6 +404,138 @@ func TestADR0066IssueTriggerMappingRefusals(t *testing.T) {
 	})
 }
 
+// a66LabDraftPlan is the rcn-1j lab's DRAFT (r2): the published r1 declared
+// `goal` and `repository`; the author has added the required `issue`
+// (github_issue) and a required `ticket` no trigger names.
+const a66LabDraftPlan = `{"version":"v1alpha1-plan-1","nodes":[],"inputs":{` +
+	`"type":"object","required":["goal","issue","repository","ticket"],"properties":{` +
+	`"goal":{"type":"string","x-communication-input":{"type":"long_text","label":"Goal"}},` +
+	`"issue":{"type":"object","x-communication-input":{"type":"github_issue","label":"GitHub issue"}},` +
+	`"repository":{"type":"string","x-communication-input":{"type":"text","label":"Repository"}},` +
+	`"revision":{"type":"string","default":"main","x-communication-input":{"type":"branch","label":"Branch"}},` +
+	`"ticket":{"type":"string","x-communication-input":{"type":"text","label":"Ticket"}}}}}`
+
+// a66LabIssueFact is the assignment's issue trigger in that lab: the seeded
+// `inputs` map templates `goal` and `repository`, and it carries NO explicit
+// issue_input — the default rule (the single github_issue input) applies.
+func a66LabIssueFact() TriggerFillFacts {
+	return TriggerFillFacts{Kind: "issue", ID: "t-1", ProjectID: "p-1",
+		Name: "server #labeled", Label: "labeled", Fills: []string{"goal", "repository"}}
+}
+
+func a66DraftWithPlan(t *testing.T, fx *m4Fixture, plan string) {
+	t.Helper()
+	fx.pipes.draft = DraftView{ID: m4UUID2, PipelineID: m4UUID, Status: "draft",
+		DocumentYAML: "kind: Pipeline\n", SourceKind: "manual",
+		SourceSHA256: strings.Repeat("0", 64), Version: 1}
+	outcome := a66ValidOutcome()
+	outcome.CompiledPlan = json.RawMessage(plan)
+	fx.defs.outcome = outcome
+}
+
+func a66Validate(t *testing.T, fx *m4Fixture) ValidateResponse {
+	t.Helper()
+	rec := fx.call(t, "POST", "http://localhost:8080/api/v1/drafts/"+m4UUID2+"/validate", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("validate = %d: %s", rec.Code, rec.Body)
+	}
+	var body ValidateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode validate body: %v", err)
+	}
+	if !body.Valid {
+		t.Errorf("valid = false; a warning must not flip the verdict: %s", rec.Body)
+	}
+	return body
+}
+
+// The rcn-1j defect, pinned at the HTTP boundary: the assignment is pinned to
+// r1, which declared no github_issue input, and the DRAFT (r2) has just added
+// one. The warning is computed against the draft's specs with the trigger's
+// mapping rule applied to THEM — so the draft's `issue` is filled by the issue
+// trigger and only `ticket`, which nothing templates or maps, is short. The
+// answer used to be two warnings, because the read resolved the mapping against
+// the pinned revision, where no issue input exists to resolve to.
+func TestADR0066DraftIssueInputIsFilledByTheIssueTriggerNotThePin(t *testing.T) {
+	fx := a66Server(t, []TriggerFillFacts{a66LabIssueFact()}, nil)
+	a66DraftWithPlan(t, fx, a66LabDraftPlan)
+
+	body := a66Validate(t, fx)
+	got := make([]string, 0, len(body.Warnings))
+	for _, w := range body.Warnings {
+		got = append(got, w.Code+" "+w.TriggerID+"/"+w.Input)
+	}
+	want := []string{CodeInputUnfillableByTrigger + " t-1/ticket"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("warnings = %v, want only the ticket finding", got)
+	}
+	w := body.Warnings[0]
+	if w.TriggerKind != "issue" || w.TriggerLabel != "labeled" {
+		t.Errorf("warning = %+v, want it named by the issue trigger's own word (labeled)", w)
+	}
+	// `goal` and `repository` are templated by the trigger and `revision` has
+	// a default: none of them earns a line, and neither does the draft's issue.
+	for _, w := range body.Warnings {
+		for _, name := range []string{"goal", "repository", "revision", "issue"} {
+			if w.Input == name {
+				t.Errorf("warning names %q, which this trigger fills or which has a default: %+v", name, w)
+			}
+		}
+	}
+}
+
+// The other honest half: a trigger whose EXPLICIT issue_input names an input
+// the draft does not declare as github_issue. The mapped input is then NOT
+// filled by the default rule (the fire would refuse the same mapping), so the
+// draft's issue input earns the ordinary unfillable warning, and the dead
+// mapping earns its OWN code naming the name the trigger pointed at.
+func TestADR0066ExplicitIssueInputTheDraftLacksIsItsOwnWarning(t *testing.T) {
+	fact := a66LabIssueFact()
+	fact.IssueInput = "issue"
+	fx := a66Server(t, []TriggerFillFacts{fact}, nil)
+	a66DraftWithPlan(t, fx, `{"version":"v1alpha1-plan-1","nodes":[],"inputs":{`+
+		`"type":"object","required":["ticket"],"properties":{`+
+		`"ticket":{"type":"string","x-communication-input":{"type":"text"}}}}}`)
+
+	body := a66Validate(t, fx)
+	type part struct{ code, trigger, input, label string }
+	got := map[part]bool{}
+	for _, w := range body.Warnings {
+		got[part{w.Code, w.TriggerID, w.Input, w.TriggerLabel}] = true
+	}
+	for _, want := range []part{
+		{CodeTriggerIssueInputUnmapped, "t-1", "issue", "labeled"},
+		{CodeInputUnfillableByTrigger, "t-1", "ticket", "labeled"},
+	} {
+		if !got[want] {
+			t.Errorf("no warning for %+v; got %+v", want, body.Warnings)
+		}
+	}
+	if len(body.Warnings) != 2 {
+		t.Errorf("warnings = %d, want the dead mapping and the unfilled ticket: %+v",
+			len(body.Warnings), body.Warnings)
+	}
+}
+
+// An explicit mapping that DOES name a github_issue input of the draft fills
+// it — the panel's ✓ and the server's silence must agree on the same name.
+func TestADR0066ExplicitIssueInputOfTheDraftFillsIt(t *testing.T) {
+	fact := a66LabIssueFact()
+	fact.IssueInput = "issue"
+	fx := a66Server(t, []TriggerFillFacts{fact}, nil)
+	a66DraftWithPlan(t, fx, a66LabDraftPlan)
+
+	body := a66Validate(t, fx)
+	if len(body.Warnings) != 1 || body.Warnings[0].Input != "ticket" {
+		t.Fatalf("warnings = %+v, want only the ticket finding", body.Warnings)
+	}
+	for _, w := range body.Warnings {
+		if w.Code != CodeInputUnfillableByTrigger {
+			t.Errorf("unexpected code %q: %+v", w.Code, w)
+		}
+	}
+}
+
 // --- the run start keeps the named refusal, not a crash -------------------
 
 func TestADR0066RunStartMissingRequiredInputIsTheNamed422(t *testing.T) {
@@ -428,13 +565,14 @@ func TestADR0066RunStartMissingRequiredInputIsTheNamed422(t *testing.T) {
 // repository-free word the row heading already uses.
 func TestADR0066WarningsCarryTheirPartsAsFields(t *testing.T) {
 	fx := a66Server(t, []TriggerFillFacts{
-		// The production read: Name is `<repo> #<event>`, Label is the event.
+		// The production read: Name is `<repo> #<event>`, Label is the event,
+		// and the trigger carries its mapping explicitly.
 		{Kind: "issue", ID: "t-1", ProjectID: "p-1", Name: "server #labeled",
-			Label: "labeled", Fills: []string{"issue"}},
+			Label: "labeled", IssueInput: "issue"},
 		// A fact table that fills no Label still yields the event word, read
 		// off the handle it did provide.
 		{Kind: "issue", ID: "t-2", ProjectID: "p-1", Name: "widgets #opened",
-			Fills: []string{"issue"}},
+			IssueInput: "issue"},
 		a66ScheduleFact,
 	}, nil)
 	fx.pipes.draft = DraftView{ID: m4UUID2, PipelineID: m4UUID, Status: "draft",

@@ -374,7 +374,11 @@ type ValidateResponse struct {
 // ValidateWarning is one publish-time/validate-time WARNING (ADR-0066 §
 // Decision): it refuses nothing — assignments stay editable after publish, so
 // a hard failure would refuse a workflow one edit from complete — and it
-// names the assigned trigger and the input the trigger cannot fill.
+// names the assigned trigger and the input the trigger cannot fill. The two
+// codes the body carries today are `input_unfillable_by_trigger` (a required
+// input with no default this trigger cannot fill) and
+// `trigger_issue_input_unmapped` (this trigger's explicit issue_input names an
+// input the revision under validation does not declare as github_issue).
 //
 // The named parts are FIELDS, not just prose (rcn-1j review defect): the
 // Inputs tab printed the operator's `message` whole —
@@ -404,16 +408,35 @@ type ValidateWarning struct {
 // required input with no default that this assigned trigger cannot fill.
 const CodeInputUnfillableByTrigger = "input_unfillable_by_trigger"
 
+// CodeTriggerIssueInputUnmapped is the sibling WARNING of
+// CodeInputUnfillableByTrigger (rcn-1j): the trigger CARRIES an explicit
+// `issue_input` mapping, but the revision under validation declares no such
+// github_issue input, so the mapping points at nothing. It is a separate code
+// because it is a separate fact to tell: the sentence a reader needs is
+// "the trigger names an input this workflow doesn't have", not "some required
+// input is short". `input` carries the mapped name, so the UI groups the line
+// under the trigger row that owns the mapping.
+const CodeTriggerIssueInputUnmapped = "trigger_issue_input_unmapped"
+
 // TriggerFillFacts is one assigned trigger's ADR-0066 fill facts: which run
 // inputs it can put a value behind when it fires. An issue trigger fills its
 // mapped github_issue input (explicit issue_input or the single-issue-input
 // default) plus every name its template inputs carry; a schedule fills only
 // the literal names of its own inputs object — a schedule fills no issue.
+//
+// The read carries the trigger's MAPPING (`IssueInput`), not a resolution of
+// it: which input that mapping names depends on the input specs it is being
+// applied to, and the warning is computed against the specs under validation
+// (the draft on the Inputs tab, the revision at publish), not against the
+// revision the assignment happens to be pinned to — see InputUnfillableWarnings.
 type TriggerFillFacts struct {
 	Kind      string // "issue" | "schedule"
 	ID        string
 	ProjectID string
-	Name      string // human handle for the warning message (cron expr, repo#event)
+	// IssueInput is an issue trigger's explicit mapping ("" = the default
+	// single-github-issue-input rule). It is a mapping, resolved per call.
+	IssueInput string
+	Name       string // human handle for the warning message (cron expr, repo#event)
 	// Label is the trigger's own word WITHOUT the repository prefix — the
 	// warning's `trigger_label`. Optional: a fact table that does not fill it
 	// falls back to `triggerLabel`, which reads the event off Name.
@@ -463,29 +486,74 @@ func InputSpecsFromPlan(plan json.RawMessage) []compiler.InputSpec {
 	return specs
 }
 
-// inputUnfillableWarnings is the ADR-0066 publish rule: for every REQUIRED
-// input with no default, EACH assigned trigger that cannot fill it — of ANY
-// kind the fact table answers (issue and schedule today) — produces one
+// issueTriggerFillForSpecs applies an issue trigger's MAPPING to the input
+// specs being warned about — the same two arms the fire resolves (ADR-0066 §
+// Decision): the named input when the trigger names one, else the single
+// github_issue input when these specs declare exactly one. `unmapped` is the
+// honest no for the first arm: the trigger points at a name these specs do
+// not declare as github_issue, which is a finding of its own rather than a
+// silently missing fill. Zero or several issue inputs with no mapping fill
+// nothing (the fire would refuse to guess), which is not a mapping fault —
+// those inputs just earn the ordinary unfillable warning.
+func issueTriggerFillForSpecs(specs []compiler.InputSpec, fact TriggerFillFacts) (fill string, unmapped bool) {
+	if fact.Kind != "issue" {
+		return "", false
+	}
+	var issueNames []string
+	for _, spec := range specs {
+		if spec.Type == compiler.InputTypeGithubIssue {
+			issueNames = append(issueNames, spec.Name)
+		}
+	}
+	if fact.IssueInput != "" {
+		for _, name := range issueNames {
+			if name == fact.IssueInput {
+				return name, false
+			}
+		}
+		return "", true
+	}
+	if len(issueNames) == 1 {
+		return issueNames[0], false
+	}
+	return "", false
+}
+
+// InputUnfillableWarnings is the ADR-0066 publish/validate rule: for every
+// REQUIRED input with no default, EACH assigned trigger that cannot fill it —
+// of ANY kind the fact table answers (issue and schedule today) — produces one
 // WARNING naming the trigger and the input. The repository the assignment
 // pins is NOT an implicit filler: it sets the run's repository, never a
 // `repository` input the plan happens to declare (ADR-0066 § note 2026-11-02),
 // so a required `repository` warns exactly like any other unfilled name.
+//
+// `specs` is the SCOPE of the answer: the inputs the caller is asking about,
+// and the one the trigger mappings are applied to. On the Inputs tab that is
+// the DRAFT being authored — an author adding the workflow's single
+// github_issue input has just made the assigned issue trigger able to fill it,
+// and the revision the assignment is pinned to not declaring that input yet is
+// not a reason to say the draft's input cannot be filled (rcn-1j); at publish
+// it is the new revision's own specs. Exported because the fill facts come
+// from the store and the scope from the document under validation, and
+// integration tests prove the pair against a real PostgreSQL.
+//
 // Sorted by (trigger, input) for a stable body.
-func inputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFacts) []ValidateWarning {
+func InputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFacts) []ValidateWarning {
 	warnings := []ValidateWarning{}
 	for _, fact := range facts {
+		fill, unmapped := issueTriggerFillForSpecs(specs, fact)
+		fillable := map[string]bool{}
+		for _, name := range fact.Fills {
+			fillable[name] = true
+		}
+		if fill != "" {
+			fillable[fill] = true
+		}
 		for _, spec := range specs {
 			if !spec.Required || spec.Default != nil {
 				continue
 			}
-			fillable := false
-			for _, name := range fact.Fills {
-				if name == spec.Name {
-					fillable = true
-					break
-				}
-			}
-			if fillable {
+			if fillable[spec.Name] {
 				continue
 			}
 			warnings = append(warnings, ValidateWarning{
@@ -499,14 +567,31 @@ func inputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFact
 				Input:        spec.Name,
 			})
 		}
+		if unmapped {
+			warnings = append(warnings, ValidateWarning{
+				Code:         CodeTriggerIssueInputUnmapped,
+				Source:       "trigger",
+				Message:      fmt.Sprintf("trigger %s (%s, %s) maps issue_input %q, which this revision declares no github_issue input of; a run it fires stamps no issue object (ADR-0066)", fact.Name, fact.Kind, fact.ID, fact.IssueInput),
+				TriggerID:    fact.ID,
+				TriggerKind:  fact.Kind,
+				TriggerLabel: triggerLabel(fact),
+				ProjectID:    fact.ProjectID,
+				Input:        fact.IssueInput,
+			})
+		}
 	}
-	// (trigger, input): the UI groups warning lines under the trigger row the
-	// warning names, so the trigger — not the input — is the major key.
+	// (trigger, input, code): the UI groups warning lines under the trigger row
+	// the warning names, so the trigger — not the input — is the major key, and
+	// the code breaks the one tie a trigger can earn on a single name (a
+	// required non-issue input the trigger also maps as its issue input).
 	sort.SliceStable(warnings, func(i, j int) bool {
 		if warnings[i].TriggerID != warnings[j].TriggerID {
 			return warnings[i].TriggerID < warnings[j].TriggerID
 		}
-		return warnings[i].Input < warnings[j].Input
+		if warnings[i].Input != warnings[j].Input {
+			return warnings[i].Input < warnings[j].Input
+		}
+		return warnings[i].Code < warnings[j].Code
 	})
 	return warnings
 }
@@ -932,7 +1017,7 @@ func (h *plHandlers) validateDraft(w http.ResponseWriter, r *http.Request) {
 		// degrades to no warnings, loudly logged — the verdict a fix-all
 		// diagnostic must never hinge on a trigger-table read.
 		if facts, ok := h.triggerFacts(r.Context(), c, draft.PipelineID); ok {
-			body.Warnings = inputUnfillableWarnings(InputSpecsFromPlan(outcome.CompiledPlan), facts)
+			body.Warnings = InputUnfillableWarnings(InputSpecsFromPlan(outcome.CompiledPlan), facts)
 		} else {
 			body.Warnings = []ValidateWarning{}
 		}
@@ -1058,7 +1143,7 @@ func (h *plHandlers) publishDraft(w http.ResponseWriter, r *http.Request) {
 		// sees it even when the validation body predates a trigger edit. The
 		// publish itself still succeeded — it is a warning.
 		if facts, ok := h.triggerFacts(r.Context(), c, rev.PipelineID); ok {
-			rev.Warnings = inputUnfillableWarnings(InputSpecsFromPlan(rev.CompiledPlan), facts)
+			rev.Warnings = InputUnfillableWarnings(InputSpecsFromPlan(rev.CompiledPlan), facts)
 		}
 	}
 	w.Header().Set("Location", "/api/v1/revisions/"+rev.ID)

@@ -326,8 +326,9 @@ func a66CheckSpecs(t *testing.T, specs []compiler.InputSpec) {
 
 // TestADR0066TriggerFillFactsBackThePublishWarning: the store-side read the
 // validate/publish WARNING computes from — the pipeline's assigned triggers,
-// their fills (a schedule's literals, an issue trigger's literals PLUS its
-// resolved issue mapping, explicit or default), and a disabled trigger out.
+// the names each trigger's own inputs carry, the issue trigger's mapping
+// carried UNRESOLVED (api.InputUnfillableWarnings applies it to the specs
+// under validation), and a disabled trigger out.
 func TestADR0066TriggerFillFactsBackThePublishWarning(t *testing.T) {
 	ctx := testCtx(t)
 	f := itSetup(t)
@@ -380,8 +381,9 @@ func TestADR0066TriggerFillFactsBackThePublishWarning(t *testing.T) {
 	if !ok {
 		t.Fatalf("no issue fact in %+v", facts)
 	}
-	if strings.Join(iss.Fills, ",") != "goal,issue" || iss.ID != it.ID {
-		t.Errorf("issue fact = %+v, want fills [goal,issue] (template + resolved mapping)", iss)
+	if strings.Join(iss.Fills, ",") != "goal" || iss.ID != it.ID || iss.IssueInput != "" {
+		t.Errorf("issue fact = %+v, want fills [goal] (the trigger's own template) and the default "+
+			"issue_input carried for the warning to resolve against the specs under validation", iss)
 	}
 	if !strings.Contains(iss.Name, "octo/widgets") {
 		t.Errorf("issue trigger name = %q, want it to name the watched repository", iss.Name)

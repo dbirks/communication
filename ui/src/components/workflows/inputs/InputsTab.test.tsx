@@ -152,6 +152,20 @@ function unfillable(kind: "schedule" | "issue", triggerId: string, input: string
   } as const;
 }
 
+/** One server-shaped `trigger_issue_input_unmapped` warning: this trigger's
+ * own mapping points at an input the document under validation lacks. */
+function unmapped(kind: "schedule" | "issue", triggerId: string, input: string) {
+  return {
+    code: "trigger_issue_input_unmapped",
+    source: "trigger",
+    message: `trigger server #opened (issue, ${triggerId}) maps issue_input "${input}", which this revision declares no github_issue input of; a run it fires stamps no issue object (ADR-0066)`,
+    trigger_id: triggerId,
+    trigger_kind: kind,
+    trigger_label: kind === "issue" ? "opened" : "* * * * *",
+    input,
+  } as const;
+}
+
 /** The 1j review's document: goal and repository join `issue` as required
  * inputs with no default — the labeled-issue trigger can fill only one. */
 const GOAL_REPO_YAML = DRAFT_YAML.replace(
@@ -166,6 +180,14 @@ const GOAL_REPO_YAML = DRAFT_YAML.replace(
         type: string
         x-communication-input: {type: text, label: Repository}
       issue:`,
+);
+
+/** The same workflow with its `issue` input NOT typed github_issue (plain
+ * text): the trigger's mapping then points at a name this document does not
+ * declare as an issue, which is the server's finding, never the panel's ✓. */
+const NO_ISSUE_TYPE_YAML = DRAFT_YAML.replace(
+  "x-communication-input: {type: github_issue, label: Issue to work on, help: The issue becomes the goal; the PR links back to it.}",
+  "x-communication-input: {type: text, label: Issue to work on}",
 );
 
 function wireDraft(overrides: Partial<Draft> = {}): Draft {
@@ -559,12 +581,10 @@ describe("InputsTab — who fills the inputs (1j)", () => {
   });
 
   it("never claims an input filled and unfilled on the same row", async () => {
-    // rcn-1j review defect 3, second half: the reviewed row printed
-    // "✓ issue ← the labeled issue" directly above a server warning that the
-    // SAME input is unfilled. The ✓ is this panel reading the DRAFT's mapping;
-    // the warning is the server's answer about the revision the assignment is
-    // PINNED to, and the server is the authority (ADR-0066) — so the ✓ for
-    // that input goes quiet and the warning stands.
+    // One row may not print "✓ issue ← …" above a server warning that the SAME
+    // input is unfilled. The server now answers against the DRAFT's specs, so
+    // the two disagree only when the control plane is older than the rule; the
+    // ✓ is then the part that goes quiet — the server is the authority.
     const issueDraft = wireDraft({
       document_yaml: GOAL_REPO_YAML,
       validation: {
@@ -579,9 +599,91 @@ describe("InputsTab — who fills the inputs (1j)", () => {
     const row = await screen.findByTestId(`who-fills-issue-${TRIGGER_ID}`);
     expect(row.textContent).not.toContain("\u2713");
     expect(screen.getByTestId(`who-fills-issue-line-${TRIGGER_ID}`).textContent).toContain(
-      "issue is not filled by the pinned revision",
+      "issue — the server says this trigger can't fill it",
+    );
+    expect(screen.getByTestId(`who-fills-issue-line-${TRIGGER_ID}`).textContent).not.toContain(
+      "pinned revision",
     );
     expect(await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-issue`)).toBeTruthy();
+  });
+
+  it("the draft's own issue input earns the ✓, ticket alone warns (rcn-1j)", async () => {
+    // The reviewed contradiction: the assignment is pinned to a revision that
+    // predates the issue input, so the server used to warn that the DRAFT's
+    // `issue` "can't be filled" — beside the panel's ✓ for the same input.
+    // The warning is computed against the draft now, so the only `!` left on
+    // this row is `ticket`, the input nothing names.
+    const ticketOnly = GOAL_REPO_YAML.replace(
+      "required: [issue, goal, repository]",
+      "required: [issue, goal, repository, ticket]",
+    ).replace(
+      "      issue:",
+      `      ticket:
+        type: string
+        x-communication-input: {type: text, label: Ticket}
+      issue:`,
+    );
+    mountTab({
+      routes: [
+        {
+          path: DRAFT_PATH,
+          method: "GET",
+          body: wireDraft({
+            document_yaml: ticketOnly,
+            validation: {
+              valid: true,
+              warnings: [unfillable("issue", TRIGGER_ID, "ticket")],
+              digest_scope: "v1alpha1-canonical-1",
+              errors: [],
+              notes: [],
+            },
+          }),
+        },
+      ],
+    });
+    const row = await screen.findByTestId(`who-fills-issue-${TRIGGER_ID}`);
+    expect(screen.getByTestId(`who-fills-issue-line-${TRIGGER_ID}`).textContent).toBe(
+      "✓ issue ← the labeled issue",
+    );
+    expect(await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-ticket`)).toBeTruthy();
+    // The server named one short input; the row shows one warning — never an
+    // invented second one for the input it does fill.
+    expect(within(row).getAllByTestId(/^who-fills-warn-/)).toHaveLength(1);
+    expect(row.textContent).not.toContain("issue is required and");
+  });
+
+  it("a trigger mapped at an input this draft does not have gets no ✓", async () => {
+    // The honest sibling of the fix: the mapping points at a name this draft
+    // declares as plain text, so the row promises nothing and says what the
+    // server said — the dead mapping, not a missing required input.
+    mountTab({
+      routes: [
+        {
+          path: DRAFT_PATH,
+          method: "GET",
+          body: wireDraft({
+            document_yaml: NO_ISSUE_TYPE_YAML,
+            validation: {
+              valid: true,
+              warnings: [unmapped("issue", TRIGGER_ID, "issue")],
+              digest_scope: "v1alpha1-canonical-1",
+              errors: [],
+              notes: [],
+            },
+          }),
+        },
+      ],
+    });
+    const row = await screen.findByTestId(`who-fills-issue-${TRIGGER_ID}`);
+    expect(row.textContent).not.toContain("\u2713");
+    expect(screen.getByTestId(`who-fills-issue-line-${TRIGGER_ID}`).textContent).toContain(
+      "maps issue, which this draft has no GitHub issue input for",
+    );
+    const line = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-issue`);
+    expect(line.textContent).toBe(
+      "! the issue trigger 'opened' maps issue input 'issue', which this workflow doesn't declare",
+    );
+    expect(line.getAttribute("title")).toContain("ADR-0066");
   });
 
   it("a warning whose trigger no longer reads is shown, not dropped", async () => {
