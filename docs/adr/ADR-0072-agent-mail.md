@@ -49,7 +49,7 @@ At the end of a **completed** turn, the whole coalesced answer (secret-redacted,
 
 ### 4. Read-only enforcement on the target
 
-The target turn carries `conversation_turns.permission_override = 'ask'` — a column whose CHECK admits *only* `'ask'`, so a mailed turn can never be upgraded, and the claim resolves `COALESCE(t.permission_override, ap.permission_mode)`: the profile's own mode (even `preapproved_within_sandbox` or `autonomous_within_sandbox`) cannot leak into a mailed answer. `ask` is the existing approval machinery: reads that need no permission run; every edit the harness thinks twice about becomes a durable `permission_requests` row on the *linked* chat that a person answers in that chat's own UI — take control first (controller starts `none`), and only that controller's yes lets an edit run (ADR-0016 §5; ADR-0039 keeps the verdict durable). Nobody answers = the prompt expires = refusal, by the rule already shipped for ask turns. On a never-asks launcher the `ask` mode has no verified prompting mode to honour, and the turn fails closed rather than running never-asks under a read-only claim (ADR-0069). The sandbox axis (a read-only *filesystem* for the mailed target) is deliberately not claimed here: nono read-only workspace mounts for the conversation path are a **Spike required** item (spec 05, `docs/compatibility/`); the permission arm is what this ADR enforces, and the ADR says so rather than dressing an intention as a boundary.
+The target turn carries `conversation_turns.permission_override = 'ask'` — a column whose CHECK admits *only* `'ask'`, so a mailed turn can never be upgraded, and the claim resolves `COALESCE(t.permission_override, ap.permission_mode)`: the profile's own mode (even `preapproved_within_sandbox` or `autonomous_within_sandbox`) cannot leak into a mailed answer. `ask` is the existing approval machinery: reads that need no permission run; every edit the harness thinks twice about becomes a durable `permission_requests` row on the *linked* chat that a person answers in that chat's own UI — take control first (controller starts `none`), and only that controller's yes lets an edit run (ADR-0016 §5; ADR-0039 keeps the verdict durable). Nobody answers = the prompt expires = refusal, by the rule already shipped for ask turns — and, since § 11, a prompt raised while the chat has no controller at all is refused at once instead of holding the turn for the full TTL. On a never-asks launcher the `ask` mode has no verified prompting mode to honour, and the turn fails closed rather than running never-asks under a read-only claim (ADR-0069). The sandbox axis (a read-only *filesystem* for the mailed target) is deliberately not claimed here: nono read-only workspace mounts for the conversation path are a **Spike required** item (spec 05, `docs/compatibility/`); the permission arm is what this ADR enforces, and the ADR says so rather than dressing an intention as a boundary.
 
 ### 5. Answering, looping, and the caps
 
@@ -91,6 +91,64 @@ Actions run `41503571017` (job *verification (emulator loop)*) failed **every pa
 - **The journey was the bug.** `e2e/emulator/repo-chat-nav.spec.ts` started its chats on `GET /api/v1/agent-profiles`' `items[0]`. That list is organization-wide and `ORDER BY name`: migration `00003` seeds `Claude Code` and `Codex` into the default org, and they sort **before** the `COMMUNICATION_LAB_LAUNCHER=pi` lab profiles (`m4-*`). So the chain was born on launcher `claude`, § 2 faithfully carried `Claude Code` into the linked chat, and `claude-agent-acp` — which has no login on a runner — answered with its own `-32000 Authentication required`. One launcher per conversation chain is what § 2 buys; a chain must therefore START on the launcher it means to keep: the rcn journeys (2e's chat-box chat, 2f's carrier chat, 3d's mail chat, and the seed chat) now pick the first profile whose `launcher_id` is `COMMUNICATION_LAB_LAUNCHER` (the `labProfiles` helper, keyed off `e2e/tests/lab-launcher.ts`' `LAB_LAUNCHER`), and the 2e switch stays **within** that launcher. Under the historical unset default (`claude`) the first lab profile IS the migration `Claude Code` row, so local behaviour is unchanged.
 - **The honest cost of ADR-0069 on that chain.** The § 4 read-only arm stamps `ask`, and launcher `pi` has no verified prompting mode (`docs/compatibility/ACP.md`: the refusal "stays" — ADR-0069). A mailed answer turn inherited onto `pi` therefore fails **closed** — `the answering turn ended failed: worker: permission mode ask needs a prompting mode for launcher pi; none is verified` — it does not run never-asks under a read-only label. Consequence for Actions: `rcn-3d`'s `answered` leg is only claimable on a launcher that can honestly prompt; until `pi-acp` grows a verified prompting mode or the read-only-sandbox spike (spike required, spec 05) lands, a pi-launched 3d run must settle `failed` with that named reason, and no PASS row may be prefilled for it either way (AGENTS.md: no capability claim without a real test).
 
+### 11. A prompt nobody can answer is refused now, not after two minutes (note, 2026-11-02)
+
+Design review round 4 reported the 3d leg as "the ASKING chat's follow-up turn
+sits at *starting — a worker has the turn* for minutes and never replies", and
+asked whether the claim, the controller or a lease was at fault. The journal of
+the pass in question (`rcn-rev4-1793649032`, lab at `45d40ea`) says none of
+them:
+
+- **The follow-up turn starts immediately.** `conversation.mail.answered` at
+  `19:55:35.719`; the asking chat's `workspace.prepared` at `19:55:36.159`,
+  `agent.session.connected` at `19:55:37.495`, `conversation.turn.started` at
+  `19:55:37.522` — 1.8 s end to end, on the first claim, with the lease current
+  and the fencing token moving normally. § 5 delivered the notice as written.
+- **The minutes were permission prompts.** The asked chat raised
+  `conversation.permission.requested` at `19:51:27` and again at `19:53:29`, and
+  both were closed `expired` exactly 120 s later (`DefaultPermissionTTL`,
+  `internal/worker/turnloop.go`) before the answer landed at `19:55:35`; the
+  asking chat then parked once more (`19:55:40` → `19:57:40`) before it answered
+  at `19:57:46`. Four minutes of a five-minute leg was a read-only agent asking
+  whether it could run `git ls-files`, twice, in a chat with
+  `control.kind = 'none'`.
+- **§ 4's `ask` arm cannot be answered in that state.** Only the controller may
+  answer a prompt (`POST /permissions/{requestId}` is controller-only, ADR-0016
+  § 5), and a mailed chat is born with no controller (§ 2). Parking the turn was
+  therefore a two-minute wait for a verdict that was already decided — and on
+  the page it is indistinguishable from a wedge.
+
+The rule now: an `ask` prompt raised while the conversation has no controller is
+closed **immediately**, `decided` with the harness's own `reject_once` option
+(and `cancelled` when the prompt offers nothing to refuse with), journalled as a
+policy verdict — `decided_by_kind='policy'`, `decided_by_policy =
+'ask_without_controller'` — the same ADR-0039 Option A shape that already answers
+`deny` and `preapproved_within_sandbox` without consulting a human. Silence
+still never edits; it just stops pretending to be an unanswered question.
+
+The affordance § 4 promises is unchanged: a person who wants an asked agent to
+edit takes control of that chat first (the panel says so), and every prompt
+raised while they hold the wheel still waits the full TTL for their answer —
+`TestPermissionBridge`'s `deadline` leg is exactly that case, and it still
+expires. What changed is only the case where no answer is legally possible. Proven
+by `internal/worker/turns_unattended_ask_test.go` (a controller-less `ask` prompt
+is refused at once, with the rule named, and never enters the wait loop; a prompt
+with no reject option closes `cancelled`).
+
+One fact this leg's inspection also settled: § 5's follow-up INSERT is a turn
+writer, and ADR-0068 § 1 asks every writer to stamp the profile rather than let
+the claim guess it. Both mail writers (this arm and `EnqueueMailNotice`, which
+carries a rejected ask's notice) now stamp the asking chat's pointer at enqueue,
+so a switch made between the answer landing and a worker asking for the turn
+changes which agent answers the *next* turn — never which agent this notice
+was written for. `TestAgentMailFollowUpTurnClaimsLikeATurn` pins the stamp and
+the claim that resolves it.
+
+The same pass also showed the § 5 notice's own failure arm working: a pi-launched
+3d run settles `failed — worker: permission mode ask needs a prompting mode for
+launcher pi` (§ 10), and the asking agent relays that refusal rather than
+inventing an answer.
+
 ## Consequences
 
 - A new cross-repository path exists, but every step of it is an existing, fenced, journalled conversation turn; no second transcript, claim machine, or permission bridge was built.
@@ -113,6 +171,8 @@ Actions run `41503571017` (job *verification (emulator loop)*) failed **every pa
 - `internal/store/postgres` `TestAgentMail*` (migration `00026` head via `migHeadVersion`): setting default-false + claim gating; dispatch re-checks the setting; membership re-check drops a lost member to `rejected` with no link; unknown repo → `rejected`; the linked chat is born bound to the target repo with controller `none`; `permission_override='ask'` outranks a profile raised to `preapproved_within_sandbox` on the claim, and a mailed chat's claim is never mail-eligible (depth 1); per-chat cap of 2 rejects the third ask with the cap reason; `DispatchMail` from a stale fencing token refuses and writes nothing; the answer arm settles the link + journals both chats + queues the asking follow-up atomically in `FinishTurn`; a failed target fails the link; the reconciler expires an overdue link, journals `expired` and notices only an idle asking chat (the failure notice already queued proves the no-stacking rule); detail `linked_chats` in both directions with state; `TestAgentMailProfileInheritance` (§ 10: both arms inherit the asking chat's current/turn-stamped profile onto the linked chat and its answer turn, and the `ask` override outranks the inherited profile's mode on a real claim).
 - `internal/api` `TestPatchProjectAgentMail`: maintainer-only 200/403, CAS 409 that never reaches the write, 422 validation; `Project` wire shape pins `agent_mail_enabled` false-by-default.
 - § 9 (the composer @-ask): `internal/api` `TestPostMessageMailTo*` — the mention dispatches through the store's mail arm (and queues no turn), a non-controller and a mail-off project are 403, a foreign repository is 400, body bounds are 422 before the store is asked; `internal/store/postgres` `TestAgentMailComposerAsk` (off is refused with nothing written; the accepted ask builds the linked chat — repo-bound, controller `none`, `permission_override='ask'`, `from_turn_id` NULL, `asked_by` the caller, `mail.asked` journalled with the human actor and an empty `turn_id` — and the § 5 answer arm then settles the link and queues the follow-up unchanged) and `TestAgentMailComposerDepthAndCap` (a taken-over mailed chat cannot ask; the eighth ask lands and the ninth is the cap refusal; archived is refused).
+- § 11 (the prompt nobody can answer): `internal/worker` `turns_unattended_ask_test.go` — an `ask` prompt raised while the conversation has no controller is opened (so it is visible) and closed `decided` at once with the harness's own `reject_once` option and `decided_by_policy = 'ask_without_controller'`, never entering the wake/poll wait loop; with no reject option it closes `cancelled` rather than holding the turn. ADR-0016 § 5's human path is untouched: `TestPermissionBridge`'s three legs now name their controller (that is what makes the prompt answerable) and still prove the decision, the deadline expiry and the cancel-while-pending close.
+- § 5's follow-up prompt as claimable work: `internal/store/postgres` `TestAgentMailFollowUpTurnClaimsLikeATurn` (the queued notice is taken by `ClaimTurn`, resolves the asking chat's profile/launcher/mode, and stays mail-eligible because depth 1 binds the target) and `TestAgentMailFollowUpTurnPinnedToTheAskingChatsWorker` (while the asking chat has a live session on another worker this worker cannot take the notice — ADR-0016 § 3's affinity is what keeps ADR-0068's "same workspace and branch" true; the session's own worker takes it immediately).
 - `internal/worker` `TestParseMailCommands` / `TestMail*`: cross-chunk-boundary parse, 4-ask cap, preamble on the wire and never in the journal, `mail.asked` dispatched before the terminal write, rejection notices queued after the finish, and no dispatch when the claim disallows it or the turn did not complete.
 - `redocly lint` clean; `pnpm --dir ui gen:api:check` passes; `vitest run src/components/conversation src/pages` (605 tests) green, incl. the 3d card from journal frames through the real page (ask cuts the transcript under the answer; answered folds by link id; `open chat ›` href), LINKED CHATS rows, and the composer hint appearing only with the setting on.
 

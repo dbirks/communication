@@ -986,6 +986,8 @@ func TestPermissionBridge(t *testing.T) {
 	t.Run("decided", func(t *testing.T) {
 		st := newFakeStore()
 		st.claims = []worker.Claim{testClaim2(t, "ask")}
+		st.controller = "user-1" // someone is driving: the prompt has an answerer
+
 		sess := newFakeSession(domain.SessionInfo{})
 		result := make(chan domain.PermissionChoice, 1)
 		perr := make(chan error, 1)
@@ -1035,6 +1037,7 @@ func TestPermissionBridge(t *testing.T) {
 	t.Run("deadline", func(t *testing.T) {
 		st := newFakeStore()
 		st.claims = []worker.Claim{testClaim2(t, "ask")}
+		st.controller = "user-1" // a controller who never answers: the deadline is the answer
 		cfg := fastCfg()
 		cfg.PermissionTTL = 40 * time.Millisecond
 		sess := newFakeSession(domain.SessionInfo{})
@@ -1068,6 +1071,8 @@ func TestPermissionBridge(t *testing.T) {
 	t.Run("cancel-while-pending", func(t *testing.T) {
 		st := newFakeStore()
 		st.claims = []worker.Claim{testClaim2(t, "ask")}
+		st.controller = "user-1" // the cancel comes from the person driving
+
 		sess := newFakeSession(domain.SessionInfo{})
 		result := make(chan error, 1)
 		sess.promptFn = func(ctx context.Context, s *fakeSession) (domain.StopReason, error) {

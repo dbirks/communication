@@ -399,6 +399,38 @@ func (rt *runningTurn) decidePermission(ctx context.Context, p domain.Permission
 		return domain.PermissionChoice{}, nil
 	}
 
+	// ADR-0016 § 5: an `ask` verdict belongs to this conversation's
+	// controller, and the answer route is controller-only (a prompt raised
+	// while control is held by `none` has nobody who can legally answer it).
+	// Parking it for the full PermissionTTL anyway is what made a mailed chat
+	// look wedged — the design-3d leg watched `git ls-files` prompts expire
+	// twice, two minutes apiece, before the asked agent answered a one-sentence
+	// question. Nobody driving IS the answer "no", so it is said now, and
+	// journalled with the rule that said it.
+	//
+	// A person who means to approve an edit takes control first — that is
+	// ADR-0072 § 4's own instruction — and every prompt raised while they hold
+	// the wheel keeps waiting the whole TTL for their answer.
+	if !l.someoneIsDriving(ctx, c) {
+		if optionID := pickPolicyOption(p.Options, policyOptionKinds("deny")); optionID != "" {
+			final, _, cerr := l.store.DecidePermissionByPolicy(ctx, c, requestID, optionID, policyNobodyDriving)
+			if cerr != nil {
+				l.log.Warn("recording the no-controller refusal failed",
+					slog.String("request_id", requestID), slog.String("error", cerr.Error()))
+				return domain.PermissionChoice{}, nil
+			}
+			return domain.PermissionChoice{OptionID: final.OptionID}, nil
+		}
+		// The harness offered nothing to refuse with. That is the same honest
+		// "nobody said yes" the policy branch already closes with, never a
+		// fabricated option.
+		if _, _, cerr := l.store.ClosePermission(ctx, c, requestID, events.PermissionStatusCancelled); cerr != nil {
+			l.log.Warn("closing the unanswerable prompt failed",
+				slog.String("request_id", requestID), slog.String("error", cerr.Error()))
+		}
+		return domain.PermissionChoice{}, nil
+	}
+
 	wake := l.turnWake(ctx)
 	tick := l.clock.After(l.cfg.PermissionPoll)
 	for {
@@ -462,6 +494,27 @@ func (rt *runningTurn) decidePermission(ctx context.Context, p domain.Permission
 // now is clock-adjacent: durations come from Clock.After, instants for
 // deadlines from the wall clock (tests pin TTLs, not times).
 func (l *TurnLoop) now() time.Time { return time.Now() }
+
+// policyNobodyDriving is the `decided_by_policy` name on a prompt the worker
+// closed because the conversation had no controller: ADR-0039 keeps a policy
+// verdict as durable as a human one, and this names the rule, never a person.
+const policyNobodyDriving = "ask_without_controller"
+
+// someoneIsDriving reports whether a person holds the wheel on this turn's
+// conversation — the only party the answer route accepts (ADR-0016 § 5, and
+// `POST …/permissions/{requestId}` is controller-only). A control read that
+// failed answers as if someone IS driving: a database blip must not refuse an
+// agent's tool call on a human's behalf, and the prompt then simply waits the
+// deadline it was opened with.
+func (l *TurnLoop) someoneIsDriving(ctx context.Context, c Claim) bool {
+	uid, _, err := l.store.ControllerUser(ctx, c.ConversationID)
+	if err != nil {
+		l.log.Warn("permission prompt: control read failed; waiting the deadline out",
+			slog.String("conversation_id", c.ConversationID), slog.String("error", err.Error()))
+		return true
+	}
+	return uid != ""
+}
 
 // pickPolicyOption mirrors the attempt path's pickKind
 // (internal/store/postgres/agentturn_seams.go): choose by KIND, never label

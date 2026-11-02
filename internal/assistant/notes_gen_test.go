@@ -295,8 +295,9 @@ func TestNotesGenerateDropsMetaNotesAboutItsOwnGuard(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 	got := writer.snapshot()
-	if len(got) != 2 {
-		t.Fatalf("kept %+v, want the meta note dropped and the two work notes kept", got)
+	if len(got) != 1 {
+		t.Fatalf("kept %+v, want the meta note dropped and the one note this rail can "+
+			"actually perform kept", got)
 	}
 	for _, w := range got {
 		if strings.Contains(strings.ToLower(w.Text), "untrusted") ||
@@ -307,12 +308,34 @@ func TestNotesGenerateDropsMetaNotesAboutItsOwnGuard(t *testing.T) {
 	if got[0].Text != "This thread has stalled after one turn." {
 		t.Fatalf("first kept = %+v", got[0])
 	}
-	// The filter reads the note's text only: an honest start_chat payload
-	// that happens to use the word "prompt" is the note's action, not its
-	// sentence, and survives.
-	if got[1].Action.Kind != NoteActionStartChat ||
-		!strings.Contains(got[1].Action.Prompt, "prompt") {
-		t.Fatalf("second kept = %+v, want the start_chat note kept", got[1])
+	// A `start_chat` offer inside the chat it is already about is not an
+	// action: the thread's rail performs make_workflow and open_run and draws
+	// every other kind with nothing but `dismiss` under the sentence. ADR-0071
+	// § Decision 4 says a note with nothing to do is not a note, so this one is
+	// dropped here rather than shown as a dead end (the same sentence keeps
+	// its note on a repository scope, where the chat box is one click away).
+	for _, w := range got {
+		if w.Action.Kind == NoteActionStartChat {
+			t.Fatalf("a start_chat note survived on a conversation scope: %+v", w)
+		}
+	}
+
+	// …and the payload is still not the sentence: an honest start_chat action
+	// whose PROMPT text uses the word "prompt" survives on the repository
+	// scope, which performs that kind.
+	model.answer = `[
+		{"text":"Ask why the checkout test is flaky.","action":{"kind":"start_chat","prompt":"write a prompt that reproduces the flaky checkout test"}}
+	]`
+	repoWriter := &fakeNotesWriter{}
+	g = newNotesGen(t, model, &fakeNotesReader{repo: repoFacts()}, repoWriter, nil)
+	if _, err := g.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo}); err != nil {
+		t.Fatalf("generate (repository): %v", err)
+	}
+	kept := repoWriter.snapshot()
+	if len(kept) != 1 || kept[0].Action.Kind != NoteActionStartChat ||
+		!strings.Contains(kept[0].Action.Prompt, "prompt") {
+		t.Fatalf("repository-scope kept = %+v, want the start_chat note kept", kept)
 	}
 	// And the tightened prompt says both new rules in the model's face.
 	system, _, _ := model.snapshot()
@@ -360,6 +383,88 @@ func TestNotesGenerateDropsNarrationAndIdNotes(t *testing.T) {
 	}
 	if got[0].Text != useful {
 		t.Fatalf("kept = %q, want %q", got[0].Text, useful)
+	}
+}
+
+// The note the lab's 2e side panel served (design review round 4): a sentence
+// that grades the reader's own thread, offered with nothing but `dismiss` under
+// it, two lines above a `Make a workflow…` link for that same thread. The
+// generator may not write it, and the action it came with is one this rail
+// cannot perform either.
+func TestNotesGenerateDropsTheNoteThatJudgesTheThread(t *testing.T) {
+	const judged = "The thread is a placeholder with no actual work, so there is " +
+		"nothing to do here; start a new chat with the real task instead."
+	if !noteTextJudgesTheWork(judged) {
+		t.Fatal("the sentence that judged the lab's thread escaped the judgment filter")
+	}
+	model := &fakeNotesModel{answer: `[
+		{"text":"` + judged + `","action":{"kind":"start_chat","prompt":"EMU-RCN task: describe the actual work to be done"}},
+		{"text":"This thread asked for one reply and no agent has made it.","action":{"kind":"make_workflow","conversation_id":"` + genConv + `"}}
+	]`}
+	writer := &fakeNotesWriter{}
+	chat := NoteChatFacts{
+		ConversationID: genConv, Conversation: "reply with exactly OK", Repository: "web",
+		Lines: []ChatLine{{Author: "alice", Text: "reply with exactly OK"}},
+	}
+	g := newNotesGen(t, model, &fakeNotesReader{chat: chat}, writer, nil)
+	written, err := g.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeConversation, ProjectID: genProject, ScopeID: genConv})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	got := writer.snapshot()
+	if written != 1 || len(got) != 1 {
+		t.Fatalf("written = %d, store saw %+v, want the judging note dropped", written, got)
+	}
+	if got[0].Text == judged {
+		t.Fatal("the note that judged the thread was stored")
+	}
+	// The judgment filter runs on the sentence alone: even an action this rail
+	// performs cannot buy a grading note a place on the panel.
+	model.answer = `[{"text":"` + judged + `","action":{"kind":"make_workflow","conversation_id":"` + genConv + `"}}]`
+	second := &fakeNotesWriter{}
+	g = newNotesGen(t, model, &fakeNotesReader{chat: chat}, second, nil)
+	if _, err := g.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeConversation, ProjectID: genProject, ScopeID: genConv}); err != nil {
+		t.Fatalf("generate (with a performable action): %v", err)
+	}
+	if got := second.snapshot(); len(got) != 0 {
+		t.Fatalf("a grading note survived behind a real action: %+v", got)
+	}
+}
+
+// The judgment filter names a verdict about the subject, not every sentence
+// that mentions a gap in the work — the notes this panel exists to write are
+// exactly the ones that say something is missing.
+func TestNoteJudgmentFilterIsNarrow(t *testing.T) {
+	judged := []string{
+		"The thread is a placeholder with no actual work.",
+		"This chat is just a test, so there is nothing to do here.",
+		"The conversation seems like a dummy with no real task.",
+		"This thread does not contain any real work; start a new chat with the real task.",
+		"The repository is empty of purpose; open a genuine question instead.",
+		"That request looks like a stub; there is nothing here.",
+		"The thread is worthless; close it.",
+	}
+	for _, s := range judged {
+		if !noteTextJudgesTheWork(s) {
+			t.Fatalf("a verdict escaped the judgment filter: %q", s)
+		}
+	}
+	advice := []string{
+		"This thread settled on a fix that no run has made yet.",
+		"Nobody has answered the question about the flaky checkout test.",
+		"The last run failed at review with an agent error.",
+		"Issue 12 is still open since the last run.",
+		"Ask what the review step should check before the next run.",
+		"The thread's two open questions are still waiting on an agent.",
+		"The README has no tests, and the last run never checked it.",
+		"Run the checkout test again on the fix branch.",
+	}
+	for _, s := range advice {
+		if noteTextJudgesTheWork(s) {
+			t.Fatalf("advice was dropped as a verdict: %q", s)
+		}
 	}
 }
 
@@ -524,12 +629,13 @@ func TestNotesPromptExamplesPassTheFiltersTheyAreShownBy(t *testing.T) {
 			len(good), len(bad))
 	}
 	for _, s := range good {
-		if noteTextIsMeta(s) || noteTextCarriesID(s) || noteTextIsNarration(s) {
+		if noteTextIsMeta(s) || noteTextCarriesID(s) || noteTextIsNarration(s) || noteTextJudgesTheWork(s) {
 			t.Fatalf("a good example the prompt shows is dropped by the filters: %q", s)
 		}
 	}
 	for _, s := range bad {
-		if !noteTextIsMeta(s) && !noteTextCarriesID(s) && !noteTextIsNarration(s) {
+		if !noteTextIsMeta(s) && !noteTextCarriesID(s) && !noteTextIsNarration(s) &&
+			!noteTextJudgesTheWork(s) {
 			t.Fatalf("a bad example the prompt shows would be stored as a note: %q", s)
 		}
 	}

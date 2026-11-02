@@ -168,6 +168,54 @@ launches with no `LoadSessionID` and the same work dir. API contract:
 403/409/404 + CSRF) and the detail read's new members against a policy fake.
 `go build ./... && go vet ./internal/...`, `redocly lint api/openapi.yaml`.
 
+## Notes
+
+### The 2e lab pass: what the switch really did (note, 2026-11-02)
+
+Design review round 4 read the switched Codex turn's failure line — *"This chat
+couldn't start its workspace: the repository's git address could not be read
+from this worker"* — as evidence that a switched turn prepares its workspace
+differently, or lands on a worker without the file:// mirror. The journal of
+that pass (`rcn-rev4-1793649032`, lab at `45d40ea`) says the switch did exactly
+what Decision 1-3 promise, and that the sentence was a lie about something else:
+
+- `conversation.agent.switched` at `19:51:01`, then the next turn's
+  `workspace.prepared` at `19:51:02` with the **same `volume_id`**
+  (`sha256:247ea68…`), the **same conversation-scoped `run_ref`s**
+  (`01a19dd0-848e-74a0-a1ad-5caa7f2abfc2/{server,web}`) and the same worker
+  (`worker-a`, `01a19dd0-1b4c-…`) as the Claude Code turn before it; then
+  `sandbox.verified`. ADR-0016 §3's claim pins a conversation's turns to the
+  worker holding its live binding, and the binding is still `connected` when
+  the switched turn is claimed (Decision 3 closes it *inside* the new
+  session's path, not before), so the switched turn cannot drift to another
+  worker's mirror while the conversation has a session to return to.
+- The turn then closed `conversation.turn.failed` with
+  `acp: session/new: {"code":-32000,"message":"Authentication required"}` — the
+  Codex adapter refusing to start because that launcher's harness sign-in does
+  not reach the worker. Nothing on the git path failed. The chat rendered it as
+  a repository fault because the UI's failure-copy table matches the bare
+  phrase `authentication required` (case-insensitively) in its *mirror-creation*
+  arm, which is armed before the ACP arm; git and the ACP adapters use those
+  two words for different things.
+- The worker now owns its half of that sentence. `internal/worker/launchfailure.go`
+  recognises a session-path authentication refusal and journals who refused and
+  what to look at — the launcher and its credential directory, with the
+  JSON-RPC code — instead of relaying an error string that reads like a
+  repository fault. The adapter's raw line still reaches the worker's log.
+  Proven by `launchfailure_internal_test.go` and
+  `turns_launch_failure_test.go`. A launcher that has no usable sign-in on the
+  worker running the turn stays an environment fact: which launcher a journey or
+  a deployment switches *to* is the same choice ADR-0072 § 10 records for the
+  chain's start, and the compatibility table owns its rows.
+- *"AGENTS IN THIS CHAT lists Codex turn 2 though the turn failed"* is not a
+  wrong fact either: the `agents` ranges are derived from the turn rows and say
+  which profile ran which turns, and turn 2 really did run on Codex. The
+  terminal state of those turns is already in the same transcript the panel is
+  drawn from (`conversation.turn.failed` carries `turn_id`), so the range's
+  failed glyph is a rendering of frames the client holds; the server invents no
+  second, drift-prone copy of them. Drawing it is the UI rail's work (design
+  handoff 2e), not a schema change.
+
 ## Migration/rollback
 
 Forward-only migration `00023` (backfills turn/binding profile ids from the

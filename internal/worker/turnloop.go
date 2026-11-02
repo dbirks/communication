@@ -569,7 +569,10 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 
 	sess, err := l.spawn.NewSession(ctx, req)
 	if err != nil {
-		return nil, err
+		// A harness that will not start without a sign-in is not a workspace
+		// failure: say which component refused, in words a reader cannot
+		// mistake for the repository's git address (launchfailure.go).
+		return nil, describeLaunchFailure(c.LauncherID, err)
 	}
 	info := sess.Info()
 

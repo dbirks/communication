@@ -262,10 +262,15 @@ func (s *TurnStore) EnqueueMailNotice(ctx context.Context, conversationID, promp
 	if len([]rune(prompt)) > 65536 {
 		prompt = string([]rune(prompt)[:65536])
 	}
+	// ADR-0068 § 1: the profile is stamped by EVERY turn writer from the
+	// conversation's next-turn pointer, a notice's turn included — an unstamped
+	// row would let whoever the chat points at by the time a worker asks for it
+	// decide which agent received the answer.
 	tag, err := s.Pool.Exec(ctx, `
-		INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)
-		SELECT $1::uuid, $2, $3::uuid
-		WHERE EXISTS (SELECT 1 FROM conversations WHERE id = $1::uuid AND status <> 'archived')
+		INSERT INTO conversation_turns (conversation_id, prompt, submitted_by, agent_profile_id)
+		SELECT $1::uuid, $2, $3::uuid, c.agent_profile_id
+		FROM conversations c
+		WHERE c.id = $1::uuid AND c.status <> 'archived'
 		  AND NOT EXISTS (SELECT 1 FROM conversation_turns
 		                  WHERE conversation_id = $1::uuid AND status IN ('queued', 'leased', 'running'))`,
 		conversationID, prompt, submittedBy)
@@ -379,10 +384,13 @@ func trnResolveMailTx(ctx context.Context, tx pgx.Tx, c worker.Claim, o worker.T
 	if len([]rune(notice)) > 65536 {
 		notice = string([]rune(notice)[:65536])
 	}
+	// Stamped like every other turn row (ADR-0068 § 1): the asking chat's
+	// current pointer, read in this same transaction.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)
-		SELECT $1::uuid, $2, $3::uuid
-		WHERE EXISTS (SELECT 1 FROM conversations WHERE id = $1::uuid AND status <> 'archived')
+		INSERT INTO conversation_turns (conversation_id, prompt, submitted_by, agent_profile_id)
+		SELECT $1::uuid, $2, $3::uuid, c.agent_profile_id
+		FROM conversations c
+		WHERE c.id = $1::uuid AND c.status <> 'archived'
 		  AND NOT EXISTS (SELECT 1 FROM conversation_turns
 		                  WHERE conversation_id = $1::uuid AND status IN ('queued', 'leased', 'running'))`,
 		fromConv, notice, askedBy); err != nil && !isUniqueViolation(err) {
