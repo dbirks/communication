@@ -50,6 +50,12 @@
  * Accessible-modal contract (the ImportYamlDialog pattern): `role="dialog"`
  * + `aria-modal`, labelled by its own title, focus trapped while open, Escape
  * closes, focus returns to the opener.
+ *
+ * Design 3a: an EXISTING trigger's pause lives here — the repository page's
+ * inline switch retired with the STARTS WHEN boxes, so the edit dialog carries
+ * the same `ToggleSwitch` (`Active` / `Paused`) and the flip rides the ONE
+ * PATCH the Save verb already spends (`enabled` on the schedule/issue update
+ * route). A paused trigger keeps every other answer; pausing is not deleting.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Clock, createLucideIcon } from "lucide-react";
@@ -72,6 +78,7 @@ import { hasCredential } from "../repo/GitHubAccess";
 import { useCreateIssueTrigger, usePatchIssueTrigger } from "../../api/useIssueTriggers";
 import type { IssueTrigger } from "../../api/useIssueTriggers";
 import { cronInWords } from "../../lib/cronText";
+import { ToggleSwitch } from "./ToggleSwitch";
 import type { Assignment, Repository } from "../../api/types";
 
 const FOCUSABLE =
@@ -376,6 +383,16 @@ function TriggerDialogBody({
   const [cron, setCron] = useState(
     editing?.kind === "schedule" ? editing.schedule.cron_expr : "0 9 * * *",
   );
+  // The pause control's value (design 3a): the edited trigger's own `enabled`,
+  // saved through the SAME update route the Save verb spends. A new trigger is
+  // born active, as it was before the switch existed.
+  const [enabled, setEnabled] = useState(
+    editing === null
+      ? true
+      : editing.kind === "schedule"
+        ? editing.schedule.enabled
+        : editing.trigger.enabled,
+  );
   const [values, setValues] = useState<Record<string, InputValue>>({});
   // Which text inputs the author has opened as RAW template text. A value made
   // only of fire-time placeholders is shown in words, not as `{{issue.title}}`
@@ -521,7 +538,7 @@ function TriggerDialogBody({
               event,
               labels,
               inputs,
-              enabled: editing.trigger.enabled,
+              enabled,
             },
           },
           { onSuccess: () => onClose() },
@@ -549,7 +566,7 @@ function TriggerDialogBody({
             version: editing.schedule.version,
             cron_expr: cron.trim(),
             inputs,
-            enabled: editing.schedule.enabled,
+            enabled,
           },
         },
         { onSuccess: () => onClose() },
@@ -671,6 +688,29 @@ function TriggerDialogBody({
                 </button>
               </div>
             </div>
+
+            {/* Design 3a: the pause control for an EXISTING trigger — the
+                successor to the retired inline switch. It sits with the arm it
+                governs (an edit that moved to the other arm is authoring a NEW
+                trigger, which is born active), and its flip is saved by the
+                same PATCH as every other answer: no second write, no silent
+                save. `Active` / `Paused` are the words the row will show. */}
+            {editing !== null && mode === editing.kind ? (
+              <div className="flex items-center gap-[10px]">
+                <ToggleSwitch
+                  checked={enabled}
+                  testid="trigger-dialog-enabled"
+                  stateWords={["Active", "Paused"]}
+                  onChange={setEnabled}
+                />
+                <span
+                  className="font-mono text-[10.5px] text-faint"
+                  data-testid="trigger-dialog-enabled-hint"
+                >
+                  a paused trigger keeps its answers and stops firing
+                </span>
+              </div>
+            ) : null}
 
             {mode === "issue" ? (
               <>

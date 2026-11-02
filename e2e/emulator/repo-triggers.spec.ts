@@ -1,5 +1,5 @@
-// Journey: repo triggers (design 2e → 2c) — the two triggers, and the run the
-// schedule fires.
+// Journey: repo triggers (design 2e → 2c, re-homed by design 3a) — the two
+// triggers, and the run the schedule fires.
 //
 // Self-contained per pass, and it LEAVES THE LAB AS IT FOUND IT:
 //   admin publishes a fresh "Emu sched <passId>" from the plan-with-approval
@@ -14,9 +14,12 @@
 //   repository IS a github.com remote — outside M4 Exit, because the worker
 //   mirrors every repository of a run's project when it prepares a run
 //   workspace, so an unreachable remote there would fail the runs this journey
-//   exists to prove — pins the same workflow on its repo page
-//   (`+ use a library workflow`), authors the issue trigger there (labeled,
-//   label `emu-<passId>`), proves the row and pauses it on the spot;
+//   exists to prove — pins the same workflow on its repo page (`+ add` in the
+//   WORKFLOWS bar), authors the issue trigger there through the row's ⋯ menu
+//   (`Add trigger…`: labeled, label `emu-<passId>`), proves the row's trigger
+//   line, and PAUSES it through the dialog's Active/Paused switch (design 3a:
+//   the inline STARTS WHEN box and its switch are gone — the row's ⋯ menu is
+//   the door to add, edit and pause, and the trigger line carries the word);
 //   she waits ≤ 4 min for the schedule to start a run and opens it.
 //
 // Then the cleanup, because an assignment allows ONE run at a time
@@ -169,35 +172,104 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
     emu.expectFailure(new RegExp(`/api/v1/projects/[0-9a-f-]{36}/repos$`), 409);
 
     const projectId = await m4ExitId(page);
-    // The repo panel keys its workflow rows `repo-workflow-row-<key>` (the key
-    // is the compacted assignment id). .last(): if the panel ever shows the pin
-    // twice (optimistic insert + refetch), act on the freshest.
+    // The 3a repo panel keys its workflow rows `repo-workflow-row-<key>` (the
+    // key is the compacted assignment id). .last(): if the panel ever shows
+    // the pin twice (optimistic insert + refetch), act on the freshest.
     const wfRow = (name = SCHED_NAME) =>
       page.locator('[data-testid^="repo-workflow-row-"]').filter({ hasText: name }).last();
+    // The row's ONE trigger line lists every trigger of that assignment
+    // (design 3a): `GitHub · issue labeled …`, `Schedule · every minute`, a
+    // paused one ending in ` · paused`.
+    const triggerLine = (row: Locator) => row.locator('[data-testid^="repo-workflow-triggers-"]');
     // The repo panel's trigger queries cache hard (reloadTime off): after a
-    // trigger POST lands, the journey reloads the page to re-read the truth.
+    // trigger POST or PATCH lands, the journey reloads the page to re-read
+    // the truth.
     const reloadRepo = async (expectName = SCHED_NAME) => {
       await page.reload();
       const row = wfRow(expectName);
       await expect(row, `the '${expectName}' row is on the repo page after the reload`).toBeVisible(
         { timeout: 30_000 },
       );
-      await expandTriggers(row);
-      await expect(row.getByText(/STARTS WHEN/i)).toBeVisible({ timeout: 20_000 });
+      await expect
+        .poll(
+          async () =>
+            (
+              (await triggerLine(row)
+                .textContent()
+                .catch(() => null)) ?? ""
+            ).trim(),
+          { message: "the row's trigger line has read its triggers", timeout: 30_000 },
+        )
+        .not.toBe("· loading");
       return row;
     };
-    // Rows render collapsed and a background refetch can re-render the panel
-    // mid-click, so expanding is a loop, not a single click.
-    const expandTriggers = async (row: Locator) => {
+    // design 3a: triggers are edited from the row's `⋯` menu — `Add trigger…`
+    // plus one `Edit <trigger>` item per existing trigger. A background
+    // refetch can re-render the panel mid-click, so opening is a loop.
+    const openTriggersMenu = async (row: Locator): Promise<void> => {
       for (let attempt = 0; attempt < 4; attempt += 1) {
-        const box = row.locator('[data-testid^="repo-workflow-starts-"]');
-        if (await box.isVisible().catch(() => false)) return;
-        const expand = row.getByRole("button", { name: "Expand triggers" });
-        if (await expand.isVisible().catch(() => false)) {
-          await expand.click({ timeout: 10_000 }).catch(() => undefined);
+        if (
+          await page
+            .getByTestId("repo-workflow-row-menu")
+            .isVisible()
+            .catch(() => false)
+        ) {
+          return;
         }
-        await page.waitForTimeout(500);
+        await row
+          .locator('[data-testid^="repo-workflow-menu-"]')
+          .first()
+          .click({ timeout: 10_000 })
+          .catch(() => undefined);
+        await page.waitForTimeout(400);
       }
+      await expect(
+        page.getByTestId("repo-workflow-row-menu"),
+        "the row's ⋯ menu opens",
+      ).toBeVisible({ timeout: 10_000 });
+    };
+    /** ⋯ → `Add trigger…` → the dialog. */
+    const addTriggerViaMenu = async (row: Locator): Promise<Locator> => {
+      await openTriggersMenu(row);
+      await page
+        .locator('[data-testid^="repo-workflow-menu-add-"]')
+        .first()
+        .click({ timeout: 10_000 });
+      const dialog = page.getByTestId("trigger-dialog");
+      await expect(
+        dialog,
+        "design 3a: the row's ⋯ → Add trigger… opens the trigger dialog",
+      ).toBeVisible({ timeout: 20_000 });
+      return dialog;
+    };
+    /** The 3a pause path: ⋯ → `Edit <trigger>` → the dialog's Active/Paused
+     * switch → `Save trigger` (the flip rides the same PATCH every other
+     * answer spends). The caller reloads and reads the row's trigger line for
+     * the proof. */
+    const pauseThroughDialog = async (row: Locator, editItemTestId: string): Promise<void> => {
+      await openTriggersMenu(row);
+      await page.locator(`[data-testid="${editItemTestId}"]`).first().click({ timeout: 10_000 });
+      const dialog = page.getByTestId("trigger-dialog");
+      await expect(dialog, `the dialog opens on '${editItemTestId}'`).toBeVisible({
+        timeout: 20_000,
+      });
+      const pauseSwitch = dialog.getByRole("switch", { name: /pause this trigger/i });
+      await expect(pauseSwitch, "design 3a: the edit dialog exposes the pause switch").toBeVisible({
+        timeout: 30_000,
+      });
+      // The OPEN edit dialog is a design 2c screen like the add dialogs — the
+      // 3a successor to the old inline switch, recorded before the save.
+      await emu.screen("2c", "trigger-edit-pause");
+      await pauseSwitch.click({ timeout: 10_000 });
+      await expect(
+        dialog.getByTestId("trigger-dialog-enabled-state"),
+        "the switch reads Paused before the save",
+      ).toHaveText("Paused", { timeout: 10_000 });
+      const error = await submitTrigger(dialog);
+      expect(error, `the pause saved through the dialog (error: ${JSON.stringify(error)})`).toBe(
+        "",
+      );
+      await expect(dialog, "the saved pause closes the dialog").toBeHidden({ timeout: 15_000 });
     };
 
     let pipelineId = "";
@@ -352,9 +424,7 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       const before = new Set(
         (await listJson(page, `projects/${projectId}/schedules`)).map((s) => String(s.id)),
       );
-      await row.getByRole("button", { name: "+ Add trigger" }).first().click({ timeout: 15_000 });
-      const dialog = page.getByTestId("trigger-dialog");
-      await expect(dialog, "design 2c: '+ Add trigger' opens the trigger dialog").toBeVisible();
+      const dialog = await addTriggerViaMenu(row);
       await dialog.getByTestId("trigger-dialog-mode-schedule").click({ timeout: 15_000 });
       // One verb for both arms (pass-2 review): even on the schedule arm the
       // primary button reads `Add trigger` — it used to read `Add schedule`,
@@ -406,9 +476,9 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
 
       await reloadRepo();
       await expect(
-        row.getByTestId(`repo-workflow-trigger-${testidOf(scheduleId)}`),
-        "design 2c: the schedule trigger shows under STARTS WHEN",
-      ).toBeVisible({ timeout: 30_000 });
+        triggerLine(row),
+        "design 3a: the row's trigger line lists the schedule trigger",
+      ).toContainText("Schedule · every minute", { timeout: 30_000 });
       await emu.screen("2c", "schedule-trigger-saved");
     });
 
@@ -484,9 +554,7 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       const before = new Set(
         (await listJson(page, `projects/${ghProjectId}/issue-triggers`)).map((t) => String(t.id)),
       );
-      await row.getByRole("button", { name: "+ Add trigger" }).first().click({ timeout: 15_000 });
-      const dialog = page.getByTestId("trigger-dialog");
-      await expect(dialog).toBeVisible();
+      const dialog = await addTriggerViaMenu(row);
       // The dialog inherits the project AND the repository it was opened from —
       // the watched repo is this one, so there is nothing to pick.
       await expect(dialog.getByTestId("trigger-dialog-context")).toContainText(
@@ -540,28 +608,24 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
         .toMatch(/^[0-9a-f-]{36}$/);
 
       await reloadRepo();
-      const issueRow = row.getByTestId(`repo-workflow-trigger-${testidOf(issueTriggerId)}`);
-      await expect(issueRow, "design 2c: the issue trigger shows under STARTS WHEN").toBeVisible({
-        timeout: 30_000,
-      });
       await expect(
-        issueRow.getByTestId(`repo-workflow-trigger-label-${testidOf(issueTriggerId)}`),
-        "design 2c: the row carries its label",
-      ).toContainText(EMU_LABEL);
+        triggerLine(row),
+        "design 3a: the row's trigger line lists the issue trigger, with its label",
+      ).toContainText(`GitHub · issue labeled ${EMU_LABEL}`, { timeout: 30_000 });
       await emu.screen("2c", "issue-trigger-saved");
 
       // Pause it HERE, not at the end: its remote cannot be polled, so an
       // enabled trigger would log a failed poll every minute for the rest of
       // the lab's life — and every failed poll holds the project's journal
       // lock for its 30 s bound, which is time the schedule tick cannot use.
-      await issueRow.getByRole("switch", { name: /pause this trigger/i }).click({
-        timeout: 10_000,
-        force: true,
-      });
+      // The 3a pause path is the dialog's switch (the inline switch retired
+      // with the STARTS WHEN boxes).
+      await pauseThroughDialog(row, `repo-workflow-menu-issue-${testidOf(issueTriggerId)}`);
+      await reloadRepo();
       await expect(
-        issueRow.getByTestId(`repo-workflow-trigger-enabled-${testidOf(issueTriggerId)}-state`),
-        "the issue trigger is paused once its design line is proven",
-      ).toHaveText("paused", { timeout: 30_000 });
+        triggerLine(row),
+        "the issue trigger's line says paused once the dialog saved the flip",
+      ).toContainText(" · paused", { timeout: 30_000 });
     });
 
     await test.step("wait for the schedule to fire a run (≤ 4 min)", async () => {
@@ -605,38 +669,22 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       await page.goto(`/p/${projectId}/app`);
       const appRow = wfRow();
       await expect(appRow).toBeVisible({ timeout: 30_000 });
-      await expandTriggers(appRow);
-      const schedRow = appRow.getByTestId(`repo-workflow-trigger-${testidOf(scheduleId)}`);
-      await expect(schedRow, "the schedule trigger row is on the repo page").toBeVisible({
-        timeout: 20_000,
-      });
       // A `Run ready` toast can hover the row after the schedule fires.
       await page
         .getByRole("button", { name: /close|dismiss/i })
         .first()
         .click({ timeout: 3_000 })
         .catch(() => undefined);
-      await schedRow.getByRole("switch", { name: /pause this trigger/i }).click({
-        timeout: 10_000,
-        force: true,
-      });
+      await pauseThroughDialog(appRow, `repo-workflow-menu-schedule-${testidOf(scheduleId)}`);
+      await reloadRepo();
+      // design 3a: the row's trigger line carries the state the dialog saved.
+      // (The old inline row's `last fired … · #<id>` bookkeeping retired with
+      // the STARTS WHEN box; the run the trigger fired is proven by the
+      // schedule's own `last_run_id` and its `repo-run-*` line above.)
       await expect(
-        schedRow.getByTestId(`repo-workflow-trigger-enabled-${testidOf(scheduleId)}-state`),
-        "the schedule trigger reads `paused` after the journey ends",
-      ).toHaveText("paused", { timeout: 30_000 });
-      // design 2e names the run in the bookkeeping cell — `last fired 2h ago ·
-      // #9c1e` — never a bare hex (pass-1 review, item 4): the word says what
-      // the number is, the age comes from the schedule's own `last_run_at`, and
-      // the cell links to the run the trigger started.
-      const schedMeta = schedRow.getByTestId(`repo-workflow-trigger-meta-${testidOf(scheduleId)}`);
-      await expect(
-        schedMeta,
-        "design 2e: the paused schedule's bookkeeping cell says `last fired … · #<id>`",
-      ).toContainText(/last fired .* · #/i, { timeout: 30_000 });
-      await expect(
-        schedMeta.locator(`a[href="/runs/${firedRunId}"]`),
-        "the run the trigger fired is the link, not a bare id in text",
-      ).toBeVisible();
+        triggerLine(appRow),
+        "the schedule trigger reads paused on the row after the journey ends",
+      ).toContainText("Schedule · every minute · paused", { timeout: 30_000 });
       await emu.screen("2e", "triggers-paused");
     });
 

@@ -395,6 +395,88 @@ describe("TriggerDialog — a saved trigger closes the dialog (2c)", () => {
   });
 });
 
+describe("TriggerDialog — pausing an existing trigger (design 3a)", () => {
+  it("carries no pause switch in add mode — a new trigger is born active", async () => {
+    mount();
+    await screen.findByTestId("trigger-dialog-context");
+    expect(screen.queryByTestId("trigger-dialog-enabled")).toBeNull();
+    // The add-mode write still says so to the server.
+    expect(screen.queryByTestId("trigger-dialog-enabled-hint")).toBeNull();
+  });
+
+  it("shows Active/Paused on the edited issue trigger and saves enabled through its PATCH", async () => {
+    const { requests } = mount({ kind: "issue", trigger: wireIssueTrigger({ labels: ["plan"] }) }, [
+      {
+        path: `/api/v1/issue-triggers/${ISSUE_TRIGGER_ID}`,
+        method: "PATCH",
+        body: wireIssueTrigger({ labels: ["plan"], enabled: false, version: 6 }),
+      },
+    ]);
+    await screen.findByTestId("trigger-dialog-run-gets-goal");
+    const tog = screen.getByRole("switch", { name: "pause this trigger" }) as HTMLInputElement;
+    expect(tog.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("trigger-dialog-enabled-state").textContent).toBe("Active");
+
+    fireEvent.click(tog);
+    // The flip is local until Save: pausing rides the ONE PATCH the verb
+    // already spends, not a silent write of its own.
+    expect(
+      requestsTo(requests, `/api/v1/issue-triggers/${ISSUE_TRIGGER_ID}`, "PATCH"),
+    ).toHaveLength(0);
+    expect(tog.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("trigger-dialog-enabled-state").textContent).toBe("Paused");
+    expect((screen.getByTestId("trigger-dialog-submit") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/issue-triggers/${ISSUE_TRIGGER_ID}`, "PATCH"),
+      ).toHaveLength(1),
+    );
+    expect(
+      JSON.parse(
+        requestsTo(requests, `/api/v1/issue-triggers/${ISSUE_TRIGGER_ID}`, "PATCH")[0].body!,
+      ),
+    ).toMatchObject({ version: 5, enabled: false });
+  });
+
+  it("opens a paused schedule as Paused and turning it on saves enabled: true", async () => {
+    const { requests } = mount({ kind: "schedule", schedule: wireSchedule({ enabled: false }) }, [
+      {
+        path: `/api/v1/schedules/${SCHEDULE_ID}`,
+        method: "PATCH",
+        body: wireSchedule({ enabled: true, version: 4 }),
+      },
+    ]);
+    await screen.findByTestId("trigger-dialog-run-gets-goal");
+    // An already-paused trigger names the other way back.
+    const tog = screen.getByRole("switch", { name: "turn this trigger on" }) as HTMLInputElement;
+    expect(tog.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("trigger-dialog-enabled-state").textContent).toBe("Paused");
+
+    fireEvent.click(tog);
+    expect(screen.getByTestId("trigger-dialog-enabled-state").textContent).toBe("Active");
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")).toHaveLength(1),
+    );
+    expect(
+      JSON.parse(requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")[0].body!),
+    ).toMatchObject({ version: 3, enabled: true });
+  });
+
+  it("leaves the switch with the trigger it edits when the form moves to the other arm", async () => {
+    // Moving to the other segment is authoring a NEW trigger (a create, born
+    // active) — the pause switch belongs to the edited one, so it steps aside
+    // rather than promising a state no create will carry.
+    mount({ kind: "schedule", schedule: wireSchedule() });
+    await screen.findByTestId("trigger-dialog-enabled");
+    fireEvent.click(screen.getByTestId("trigger-dialog-mode-issue"));
+    expect(screen.queryByTestId("trigger-dialog-enabled")).toBeNull();
+    expect(screen.queryByTestId("trigger-dialog-enabled-hint")).toBeNull();
+  });
+});
+
 describe("TriggerDialog — the 2c contract", () => {
   it("names the workflow, project and repository in mono, with nothing to pick", async () => {
     mount();

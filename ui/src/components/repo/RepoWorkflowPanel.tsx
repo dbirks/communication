@@ -12,11 +12,13 @@
  *   `✓ last 6h ago` / `× last failed 1d ago` for the newest finished run;
  * - a `Run` button that opens the page's run-start form.
  *
- * Triggers are EDITED from the row's `⋯` menu, which opens today's
- * TriggerDialog (add or edit) — the same dialog the 2e panel used, only
- * reached from a menu instead of an inline box. `+ add` in the bar opens the
- * same "use a library workflow" dialog (`RepoLibraryPicker`) the page has
- * always used.
+ * Triggers are EDITED from the row's `⋯` menu, which lists `Add trigger…`
+ * plus one `Edit <trigger>` item per existing trigger and opens today's
+ * TriggerDialog — the same dialog the 2e panel used, only reached from a menu
+ * instead of an inline box. The dialog is also where a trigger is PAUSED now
+ * (design 3a): the row's trigger line carries the word, e.g. `GitHub · issue
+ * labeled factory · paused`. `+ add` in the bar opens the same "use a library
+ * workflow" dialog (`RepoLibraryPicker`) the page has always used.
  *
  * Honesty: the row claims no trigger before both trigger reads have landed
  * (a failure says "triggers unavailable", never "By hand"), and no result
@@ -258,7 +260,7 @@ function RepoWorkflowSideRow({
   const menuItems: MenuEntry[] = [
     {
       id: "add",
-      label: "+ Add trigger",
+      label: "Add trigger…",
       onSelect: () => {
         onCloseMenu();
         onAddTrigger();
@@ -268,7 +270,7 @@ function RepoWorkflowSideRow({
     ...(schedules.length + issueTriggers.length > 0 ? ([{ separator: true }] as MenuEntry[]) : []),
     ...issueTriggers.map((trigger) => ({
       id: trigger.id,
-      label: `Edit trigger: ${issueTriggerWords(trigger)}`,
+      label: `Edit ${issueTriggerWords(trigger)}`,
       onSelect: () => {
         onCloseMenu();
         onEdit({ kind: "issue" as const, trigger });
@@ -277,7 +279,7 @@ function RepoWorkflowSideRow({
     })),
     ...schedules.map((schedule) => ({
       id: schedule.id,
-      label: `Edit trigger: ${scheduleWords(schedule)}`,
+      label: `Edit ${scheduleWords(schedule)}`,
       onSelect: () => {
         onCloseMenu();
         onEdit({ kind: "schedule" as const, schedule });
@@ -369,16 +371,20 @@ function RepoWorkflowSideRow({
 /* The trigger and result copy ------------------------------------------------ */
 
 /** The row's ONE trigger line: `GitHub · issue labeled factory`,
- * `Schedule · daily at 02:00`, … — several triggers join with ` · `, none
- * means `By hand`. Paused triggers keep their words (2e's copy rule: a
- * switch-off is not a deletion), marked with a mono `(off)`. */
-function triggerLine(issueTriggers: IssueTrigger[], schedules: Schedule[]): string {
+ * `Schedule · daily 09:00 UTC`, … — several triggers join with ` · `, none
+ * means `By hand`. A paused trigger is named, then marked (`GitHub · issue
+ * labeled factory · paused`): a pause is not a deletion (2e's copy rule), so
+ * the words stay readable and the state rides at the end — the same word the
+ * dialog's switch shows, since the dialog is where it is paused now. */
+// Exported for the 3b WORKFLOWS chip row: the same fact, said the same way
+// on one page.
+export function triggerLine(issueTriggers: IssueTrigger[], schedules: Schedule[]): string {
   const parts: string[] = [
     ...issueTriggers.map(
-      (trigger) => `GitHub · ${issueTriggerWords(trigger)}${trigger.enabled ? "" : " (off)"}`,
+      (trigger) => `GitHub · ${issueTriggerWords(trigger)}${trigger.enabled ? "" : " · paused"}`,
     ),
     ...schedules.map(
-      (schedule) => `Schedule · ${scheduleWords(schedule)}${schedule.enabled ? "" : " (off)"}`,
+      (schedule) => `Schedule · ${scheduleWords(schedule)}${schedule.enabled ? "" : " · paused"}`,
     ),
   ];
   return parts.length > 0 ? parts.join(" · ") : "By hand";

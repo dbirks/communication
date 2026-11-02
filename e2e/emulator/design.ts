@@ -632,6 +632,14 @@ const TRIG_CANCEL: Landmark = {
   desc: "the dialog's Cancel action",
   any: [{ testid: "trigger-dialog-cancel" }, { role: "button", name: /^cancel$/i }],
 };
+const TRIG_ENABLED: Landmark = {
+  id: "trigger-enabled",
+  // design 3a: the edit dialog carries the trigger's pause — the Active/
+  // Paused switch that succeeds the retired inline switch, saved through the
+  // same PATCH the Save verb spends.
+  desc: "the edit dialog's Active/Paused switch",
+  any: [{ testid: "trigger-dialog-enabled" }, { role: "switch" }],
+};
 const TRIG_SUBMIT: Landmark = {
   id: "trigger-submit",
   desc: "the dialog's 'Add trigger' action",
@@ -711,61 +719,61 @@ const REPO_CHAT_BOX: Landmark = {
 };
 const REPO_WORKFLOWS_PANEL: Landmark = {
   id: "repo-workflows-panel",
-  // repo-chain-r4: the bar reads the design's own name, `WORKFLOWS ON THIS
-  // REPO · n` (it was briefly the shorter `REPO WORKFLOWS` while the chain
-  // ellipsised and the bar could not hold both). The testid is the stable
-  // hook; the heading is the copy it now draws (with or without the
-  // count, which is data).
-  desc: "the WORKFLOWS ON THIS REPO panel",
-  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^WORKFLOWS ON THIS REPO/i }],
+  // repo-chain-r4 drew it as `WORKFLOWS ON THIS REPO · n`; design 3a
+  // (handoff-repo-chat-nav) shortens the side panel's bar to `WORKFLOWS · n`.
+  // The testid is the stable hook; the heading regex carries both names (the
+  // count is data).
+  desc: "the WORKFLOWS panel of the repo page",
+  any: [{ testid: "repo-workflows" }, { role: "heading", name: /^WORKFLOWS/i }],
 };
 const REPO_LIBRARY_LINK: Landmark = {
   id: "repo-use-library-workflow",
   desc: "the panel's 'use a library workflow' control",
   any: [{ testid: "repo-workflow-library" }],
 };
-const REPO_ADD_TRIGGER: Landmark = {
-  id: "repo-add-trigger",
-  desc: "a workflow row's '+ Add trigger' action",
-  any: [{ role: "button", name: /\+ add trigger$/i }, { text: /^\+ (Add trigger|use workflow)/i }],
+const REPO_ROW_MENU: Landmark = {
+  id: "repo-row-menu",
+  // design 3a (handoff-repo-chat-nav): the inline STARTS WHEN box and its
+  // `+ Add trigger` leave the repo page. Each workflow row carries a `⋯`
+  // menu instead — `Add trigger…` plus one `Edit <trigger>` item per trigger
+  // — and that menu is the row's only door to the trigger dialog (2c).
+  desc: "the workflow row's ⋯ triggers menu (3a's door to add/edit/pause)",
+  any: [
+    { testid: "repo-workflow-menu-*" },
+    { role: "button", name: /\+ add trigger$/i },
+    { text: /^\+ (Add trigger|use workflow)/i },
+  ],
 };
-// No `Edit` landmark on a REPO WORKFLOWS row: 2e.png
-// (docs/design/handoff-workflows/png/2e.png) draws a workflow row with
-// `+ Add trigger` and `Run` — see REPO_ADD_TRIGGER / REPO_ROW_RUN — and the
-// row carries no Edit LANDMARK of its own even though a29d3ed (round-2 review
-// item 2) put the handoff § 2 verb back on the row: the row's `Edit` is
-// `repo-workflow-edit-*`, a `.ds-btn`-styled react-router LINK (role=link),
-// the same destination the row's name already carries.
-// `Edit` as a BUTTON is still the TRIGGER rows' verb, inside the row's STARTS
-// WHEN box (2e.png's `An issue is labeled plan … on Edit` /
-// `Every Monday at 06:00 UTC … on Edit` lines), which is REPO_TRIGGER_EDIT
-// below — it matches `role: "button"` (TriggerEditButton is a <button>), and
-// an <a> never satisfies getByRole("button"), so the restored row link cannot
-// satisfy or shadow REPO_TRIGGER_EDIT in either direction.
+// 2e.png drew a workflow row with `+ Add trigger` and `Run`, and the row's
+// `Edit` was never a landmark of its own. From 3a the row's verbs are `Run`
+// (REPO_ROW_RUN) and the `⋯` menu (REPO_ROW_MENU); the per-trigger `Edit`
+// lives inside that menu as a `menuitem`, so the old REPO_TRIGGER_EDIT (the
+// STARTS WHEN rows' `Edit` BUTTON) has no repo-page carrier any more.
 const REPO_ROW_RUN: Landmark = {
   id: "repo-row-run",
   desc: "a workflow row's 'Run' action",
-  any: [{ testid: "repo-workflow-run" }, { role: "button", name: /^Run$/i }],
+  any: [{ testid: "repo-workflow-run-*" }, { role: "button", name: /^Run$/i }],
 };
 const REPO_WORKFLOWS_EMPTY: Landmark = {
   id: "repo-workflows-empty",
   desc: "the honest 'this repo uses no workflow yet' line",
   any: [{ testid: "repo-workflows-empty" }],
 };
-const REPO_STARTS_WHEN: Landmark = {
-  id: "repo-starts-when",
-  desc: "the STARTS WHEN box under a workflow row",
-  any: [{ text: /^STARTS WHEN$/i }],
+const REPO_TRIGGER_LINE: Landmark = {
+  id: "repo-trigger-line",
+  // 3a: the row's ONE trigger line lists every trigger of the assignment
+  // (`GitHub · issue labeled … · Schedule · every minute`, or `By hand`) —
+  // what the STARTS WHEN box drew as rows, the line now says in mono.
+  desc: "the workflow row's trigger line listing its triggers",
+  any: [{ testid: "repo-workflow-triggers-*" }],
 };
-const REPO_TRIGGER_TOGGLE: Landmark = {
-  id: "repo-trigger-toggle",
-  desc: "a trigger row's on/paused switch",
-  any: [{ role: "switch" }],
-};
-const REPO_TRIGGER_EDIT: Landmark = {
-  id: "repo-trigger-edit",
-  desc: "a trigger row's 'Edit' action",
-  any: [{ role: "button", name: /^Edit$/ }],
+const REPO_TRIGGER_PAUSED: Landmark = {
+  id: "repo-trigger-paused",
+  // A paused trigger keeps its words and ends in ` · paused` — the same word
+  // the dialog's switch shows, since the dialog is where a trigger is paused
+  // now (3a; the inline switch retired with the STARTS WHEN boxes).
+  desc: "the paused state named on the row's trigger line",
+  any: [{ text: /·\s*paused/i }],
 };
 const REPO_ISSUES_PANEL: Landmark = {
   id: "repo-issues-panel",
@@ -1356,18 +1364,24 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     REPO_HEADING,
     REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
-    REPO_STARTS_WHEN,
-    REPO_TRIGGER_TOGGLE,
-    REPO_TRIGGER_EDIT,
+    REPO_TRIGGER_LINE,
   ],
   "2c issue-trigger-saved": [
     REPO_PAGE,
     REPO_HEADING,
     REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
-    REPO_STARTS_WHEN,
-    REPO_TRIGGER_TOGGLE,
-    REPO_TRIGGER_EDIT,
+    REPO_TRIGGER_LINE,
+  ],
+  // The 3a pause path open on the edit dialog: the same 2c dialog, reached
+  // from the row's ⋯ menu, now carrying the trigger's Active/Paused switch.
+  "2c trigger-edit-pause": [
+    REPO_PAGE,
+    TRIG_DIALOG,
+    TRIG_MODE,
+    TRIG_ENABLED,
+    TRIG_CANCEL,
+    TRIG_SUBMIT,
   ],
   "2c server-error": [REPO_PAGE, TRIG_DIALOG, TRIG_MODE, ERROR_PANEL],
 
@@ -1385,21 +1399,19 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2d server-error": [WF_TABS, WF_TAB_YAML_ACTIVE, YAML_FRAME, YAML_ERROR],
 
   /* ------------------------------------------------- 2e · the repo page */
-  // A workflow row's landmarked verbs are `+ Add trigger` and `Run` — 2e.png
-  // draws no `Edit` on a workflow row, so this screen has no row-Edit landmark
-  // even though a29d3ed restored the row's `Edit` as a `repo-workflow-edit-*`
-  // LINK (see the REPO_ROW_RUN note): landmarks are presence checks, and one
-  // more control on the row breaks none of them. The `Edit` BUTTON asserted by
-  // REPO_TRIGGER_EDIT on `2c *-trigger-saved` and `2e triggers-paused` is still
-  // the trigger rows' verb under STARTS WHEN — role=button, which the row's
-  // role=link Edit can never answer to.
+  // design 3a: a workflow row's landmarked verbs are the `⋯` triggers menu
+  // (REPO_ROW_MENU — `Add trigger…` and one `Edit <trigger>` per trigger
+  // live INSIDE it, as menuitems, asserted by the journey itself) and `Run`
+  // (REPO_ROW_RUN). The STARTS WHEN box, its rows and their switch/Edit left
+  // the page with it: what a trigger IS and whether it PAUSES are now the
+  // row's mono trigger line's words (REPO_TRIGGER_LINE / REPO_TRIGGER_PAUSED).
   "2e repo": [
     REPO_PAGE,
     REPO_HEADING,
     REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_LIBRARY_LINK,
-    REPO_ADD_TRIGGER,
+    REPO_ROW_MENU,
     REPO_ROW_RUN,
   ],
   "2e repo-empty": [
@@ -1414,9 +1426,8 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     REPO_PAGE,
     REPO_HEADING,
     REPO_WORKFLOWS_PANEL,
-    REPO_STARTS_WHEN,
-    REPO_TRIGGER_TOGGLE,
-    REPO_TRIGGER_EDIT,
+    REPO_TRIGGER_LINE,
+    REPO_TRIGGER_PAUSED,
   ],
   // `2e schedule-run-<run id>`: the repo page showing the run the schedule
   // started (the run's own row is data; the panels that hold it are design).
