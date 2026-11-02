@@ -67,6 +67,15 @@ export interface ConversationSidePanelProps {
   projectId: string;
   /** The resolved repository name, or null when no read names one. */
   repoName?: string | null;
+  /**
+   * The workspace's own state beside the repository name (the WORKS-IN
+   * contradiction, error-details-r6): a thread created in a repository IS
+   * attached to it (ADR-0067), and the checkout is a second fact — so when
+   * the header says `web · workspace not prepared`, this rail says the same
+   * words rather than letting one screen deny the other. Null = nothing to
+   * say (a live checkout, or no repository named).
+   */
+  worksInNote?: string | null;
   /** The workspace's run ref for this thread, or null before one exists. */
   branch?: string | null;
   /** Files the workspace manifest records as modified; null when the read
@@ -112,6 +121,7 @@ function SectionTitle({ htmlFor, children }: { htmlFor: string; children: ReactN
 export function ConversationSidePanel({
   projectId,
   repoName,
+  worksInNote,
   branch,
   filesChanged,
   pullRequest,
@@ -168,6 +178,14 @@ export function ConversationSidePanel({
             >
               {repoName}
             </Link>
+            {/* The workspace state rides the same line: one section, one
+                sentence, the same words the header's meta line prints. */}
+            {worksInNote ? (
+              <span className="text-muted" data-testid="side-panel-works-in-state">
+                {" · "}
+                {worksInNote}
+              </span>
+            ) : null}
           </p>
           <p
             className="mt-1 text-[11.5px] leading-[1.5] text-faint"

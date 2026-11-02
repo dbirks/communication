@@ -32,6 +32,7 @@ import { Textarea } from "../ds/Field";
 import Transcript from "../Transcript";
 import { TakeControlCard } from "../workbench/TakeControlCard";
 import { useConversationSession, type ConversationSession } from "./useConversationSession";
+import { renderSplitAtTurnFailures } from "./TurnFailureNotice";
 import type { ConversationControl, ConversationTurn } from "../../api/types";
 import type { TranscriptItem } from "../../api/transcript";
 import { automationViaWords, submitterCopy, turnStatusText } from "../../api/transcript";
@@ -621,28 +622,35 @@ function PanelInner({
     ? session.transcript.items.filter((item) => "turnId" in item && item.turnId === turnFilter)
     : markTurns(session.transcript.items, attemptTurnId, session.nameOf, session.turnRows);
 
+  const transcriptFor = (list: TranscriptItem[]) => (
+    <Transcript
+      items={list}
+      agentName={data.agent_profile_name ?? "agent"}
+      canDecide={session.isController}
+      controllerName={
+        data.control.display_name ??
+        (data.control.user_id ? session.nameOf(data.control.user_id) : null)
+      }
+      nameOf={session.nameOf}
+      onDecide={session.onDecide}
+      decidingRequestId={session.decidingRequestId}
+      decisionError={session.decide.error}
+      decisionErrorRequestId={
+        session.decide.isError ? (session.decide.variables?.requestId ?? null) : null
+      }
+    />
+  );
+
+  // A failed turn cuts this list too (error-details-r6): the dock and the
+  // attempt pane read the journal, and `Turn failed: worker: prepare
+  // workspace for project <uuid>: …` is the worker's text, not the reader's.
   const transcriptBlock =
     empty && items.length === 0 ? (
       <p className="text-[12px] text-muted" data-testid={empty.testid}>
         {empty.copy}
       </p>
     ) : (
-      <Transcript
-        items={items}
-        agentName={data.agent_profile_name ?? "agent"}
-        canDecide={session.isController}
-        controllerName={
-          data.control.display_name ??
-          (data.control.user_id ? session.nameOf(data.control.user_id) : null)
-        }
-        nameOf={session.nameOf}
-        onDecide={session.onDecide}
-        decidingRequestId={session.decidingRequestId}
-        decisionError={session.decide.error}
-        decisionErrorRequestId={
-          session.decide.isError ? (session.decide.variables?.requestId ?? null) : null
-        }
-      />
+      renderSplitAtTurnFailures(items, session.events, "panel", transcriptFor)
     );
 
   const composerBlock = (

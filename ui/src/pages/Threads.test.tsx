@@ -390,18 +390,22 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
   });
 
   it("keeps the header one compact stack: no clipped meta words, no stray separator dots", async () => {
-    // Pass review 1g defect 2 + 4: the meta line never wraps mid-copy at
-    // 1280 (`lg:truncate` holds the one design row there), and repo-chain-r4
-    // review item 3 lifted the 390 ellipsis — below `lg` the line WRAPS, so
-    // "Claude Code" is never cut to "Claude C…". The status readout has no
-    // leading, trailing or empty dot-segments: at rest it read "· idle — no
-    // turn yet · •" — a queued `·` glyph, a separator over a wordless
-    // live-stream segment.
+    // rcn-2e review defect 1 REPLACED pass review 1g's `lg:truncate`: with the
+    // Threads list column and the 280px rail, the meta line at 1280 was cut to
+    // “C…”, hiding the agent and the age. The contract now holds at every
+    // width — the line WRAPS onto a second row (`lg:basis-full`) and names no
+    // `truncate` anywhere, because two full lines of facts beat one clipped
+    // row. repo-chain-r4 review item 3's 390 rule is unchanged and now covers
+    // the desktop too. The status readout keeps its own row with no leading,
+    // trailing or empty dot-segments: at rest it read "· idle — no turn yet · •"
+    // — a queued `·` glyph, a separator over a wordless live-stream segment.
     renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
     const meta = await screen.findByTestId("conversation-meta");
     const metaTokens = meta.className.split(/\s+/);
-    expect(metaTokens).toContain("lg:truncate");
+    expect(metaTokens).not.toContain("lg:truncate");
     expect(metaTokens).not.toContain("truncate");
+    expect(metaTokens).toContain("lg:flex-1");
+    expect(metaTokens).toContain("min-w-0");
 
     act(() => {
       FakeEventSource.last().open();
@@ -540,10 +544,13 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
 
   it("stacks the header below the pane breakpoint: full-width title and meta, the acts on their own row", async () => {
     // The phone shape (390x844): the title owns a full-width row and wraps
-    // (two lines at most) instead of truncating to a word under the pill;
-    // the meta line runs the full width with the quiet readout in its flow,
-    // and only `lg+` pulls the pill back onto the title row and the readout
-    // to the line's right (the 1280 design shape must not change).
+    // instead of truncating to a word under the pill; the meta line runs the
+    // full width with the quiet readout in its flow, and only `lg+` pulls the
+    // pill back onto the title row and the readout to the line's right.
+    // rcn-2e review defect 1 took the two-line clamp out at `lg+` as well —
+    // the thread's own name is never the thing that gives way (the same rule
+    // a68240c set for run titles), so the H1 WRAPS at every width and names no
+    // truncate or clamp anywhere.
     renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
     const title = await screen.findByTestId("conversation-title");
     const titleRow = (title.parentElement as HTMLElement).className.split(/\s+/);
@@ -551,9 +558,19 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(titleRow).toContain("lg:flex-row");
 
     const titleTokens = title.className.split(/\s+/);
-    expect(titleTokens).toContain("line-clamp-2");
-    expect(titleTokens).not.toContain("truncate"); // clamps only from lg up
-    expect(titleTokens).toContain("lg:truncate");
+    expect(titleTokens).toContain("wrap-anywhere"); // a long slug breaks inside
+    expect(titleTokens).not.toContain("truncate");
+    expect(titleTokens).not.toContain("lg:truncate");
+    expect(titleTokens).not.toContain("line-clamp-2");
+    // The title keeps a MEASURE (`basis-[16rem] grow`) rather than `flex-1`:
+    // with `flex-1` (basis 0) a 412px pane gave the 45-character name 138px —
+    // seven lines — because the control row beside it is `lg:shrink-0`. A basis
+    // the row cannot shrink past makes the control row wrap onto its own line
+    // instead, which is what design 1g's narrow pane looks like.
+    expect(titleTokens).toContain("lg:basis-[16rem]");
+    expect(titleTokens).toContain("lg:grow");
+    expect(titleTokens).not.toContain("lg:flex-1");
+    expect((title.parentElement as HTMLElement).className.split(/\s+/)).toContain("lg:flex-wrap");
 
     // The pill and the acts share their own row below `lg` (a sibling of the
     // title in the stacked row container).
@@ -581,9 +598,10 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(rowTokens).not.toContain("[&>div:first-child>span:last-child>button:only-child]:w-full");
     expect(rowTokens).toContain("max-lg:[&>div:first-child>span:last-child>button]:h-[44px]");
 
-    // The meta line is one truncated row from `lg` up (review 1g defects 2
-    // and 4; repo-chain-r4 item 3 wraps it below `lg`) — plain block flow
-    // below `lg`, no floated narrow column; `lg:` restores the design's shape.
+    // The meta line never ellipsises (review 1g defects 2 and 4; repo-chain-r4
+    // item 3; rcn-2e defect 1 took the `lg` ellipsis out too) — plain block
+    // flow that wraps at every width, no floated narrow column; `lg:` gives
+    // the design's shape back.
     const meta = screen.getByTestId("conversation-meta");
     const metaRow = (meta.parentElement as HTMLElement).className.split(/\s+/);
     expect(metaRow).not.toContain("flex");
@@ -591,6 +609,7 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(metaRow).not.toContain("justify-between");
     expect(metaRow).toContain("lg:justify-between");
     expect(meta.className.split(/\s+/)).not.toContain("flex-1");
+    expect(meta.className.split(/\s+/)).not.toContain("truncate");
     // The readout flows after the meta line as one inline group, carrying
     // the turn word and (only when it is not live) the stream state.
     const readout = screen.getByTestId("turn-status").parentElement as HTMLElement;

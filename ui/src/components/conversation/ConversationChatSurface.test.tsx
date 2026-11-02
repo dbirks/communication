@@ -402,6 +402,152 @@ describe("the header's breadcrumb and participants", () => {
   });
 });
 
+describe("the failed turn (error-details-r6)", () => {
+  /** The exact diagnostic the rcn-2e review caught on screen: a project uuid, a
+   * mirror path and an ADR number, quoted at a person who can act on none of
+   * them. */
+  const RAW =
+    "worker: prepare workspace for project 01a19c73-99be-72da-b92b-4a74716530b2: " +
+    "workspace: mirror /repos/01a19c73-99be-72da-b92b-4a74716530b2/server.git has no " +
+    'branch "main" to base server on (ADR-0017 D2 refuses a branch-name guess)';
+
+  it("prints one plain sentence and keeps the server's words behind Details", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: turnId,
+          submitted_by: meFixture.id,
+          text: "Start the workspace.",
+        }),
+      );
+      source.emit(conversationEvent("conversation.turn.failed", { turn_id: turnId, message: RAW }));
+    });
+
+    const notice = await screen.findByTestId("turn-failed");
+    expect(within(notice).getByTestId("turn-failed-plain").textContent).toBe(
+      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+    );
+    // The reading line names no uuid, no path and no ADR number.
+    expect(within(notice).getByTestId("turn-failed-plain").textContent).not.toMatch(
+      /01a19c73|\/repos\/|ADR-0017/,
+    );
+    // The fold's raw `Turn failed: worker: prepare workspace …` line is GONE
+    // from the transcript — the notice replaces it, it does not sit beside it.
+    for (const item of screen.queryAllByTestId("transcript-item")) {
+      expect(item.textContent).not.toContain("worker: prepare workspace");
+    }
+
+    // The evidence survives, collapsed: in the DOM, reachable, not on the line.
+    const details = notice.querySelector("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(within(notice).getByTestId("turn-failed-server").textContent).toBe(
+      `server said: ${RAW}`,
+    );
+    fireEvent.click(details.querySelector("summary") as HTMLElement);
+    expect((notice.querySelector("details") as HTMLDetailsElement).open).toBe(true);
+  });
+});
+
+describe("one repository fact for the header and the rail (ADR-0067)", () => {
+  /** The contradiction the review caught: the rail read the summary row's
+   * `repository_name` and said `web`, while the header read the thread's own
+   * workspace and said “no repository attached”. The workspace is a second
+   * fact, never a denial of the first. */
+  const workspaceWithoutRepo: RouteStub = {
+    path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+    body: {
+      workspaces: [
+        {
+          id: workspaceId,
+          project_id: projectFixture.id,
+          scope_kind: "conversation",
+          conversation_id: conversationId,
+          worker_id: workerId,
+          volume_id: "vol-1",
+          workspace_mode: "worktree",
+          // The prepare failed before any repository was bound: `preparing`,
+          // no repos — the honest state the header used to read as “no
+          // repository attached”.
+          state: "preparing",
+          repos: [],
+          created_at: "2026-10-14T18:01:00Z",
+        },
+      ],
+    },
+  };
+
+  it("names the repository in BOTH and says the workspace did not prepare", async () => {
+    renderApp({
+      path: `/threads/${conversationId}`,
+      routes: routes(conversationFixture, [
+        summaryWithRepo,
+        workspaceWithoutRepo,
+        { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
+      ]),
+    });
+    const meta = await screen.findByTestId("conversation-meta");
+    await waitFor(() => expect(meta.textContent).toContain("storefront"));
+    expect(meta.textContent).toContain("workspace not prepared");
+    expect(meta.textContent).not.toContain("no repository attached");
+
+    const panel = await screen.findByTestId("conversation-side-panel");
+    const works = within(panel).getByTestId("side-panel-works-in");
+    expect(works.textContent).toContain("storefront");
+    expect(within(works).getByTestId("side-panel-works-in-state").textContent).toContain(
+      "workspace not prepared",
+    );
+  });
+
+  it("says nothing extra once the workspace really is attached", async () => {
+    renderApp({
+      path: `/threads/${conversationId}`,
+      routes: routes(conversationFixture, [
+        summaryWithRepo,
+        workspaceWithBranch,
+        { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
+      ]),
+    });
+    const meta = await screen.findByTestId("conversation-meta");
+    await waitFor(() => expect(meta.textContent).toContain("storefront"));
+    expect(meta.textContent).not.toContain("workspace not prepared");
+    const panel = await screen.findByTestId("conversation-side-panel");
+    expect(
+      within(within(panel).getByTestId("side-panel-works-in")).queryByTestId(
+        "side-panel-works-in-state",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("the header's two facts at a narrow pane width", () => {
+  it("wraps the title and the meta line instead of ellipsising either", async () => {
+    // rcn-2e review defect 1: inside the `/threads` pane (320px list + 280px
+    // rail) the title cut to “EMU-R…” and the meta line to “C…”. The run title
+    // settled this rule in a68240c — a name is never the thing that gives way.
+    renderApp({
+      path: `/threads/${conversationId}`,
+      routes: routes(switchedConversation, [
+        { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
+      ]),
+    });
+    const title = await screen.findByTestId("conversation-title");
+    const titleTokens = title.className.split(/\s+/);
+    expect(titleTokens).toContain("wrap-anywhere"); // overflow-wrap:anywhere
+    expect(titleTokens).not.toContain("truncate");
+    expect(titleTokens).not.toContain("lg:truncate");
+    expect(titleTokens).not.toContain("line-clamp-2");
+
+    const meta = screen.getByTestId("conversation-meta");
+    const metaTokens = meta.className.split(/\s+/);
+    expect(metaTokens).toContain("wrap-anywhere");
+    expect(metaTokens).not.toContain("truncate");
+    expect(metaTokens).not.toContain("lg:truncate");
+  });
+});
+
 describe("the side panel follows the width", () => {
   it("mounts as the 280px right column at desktop widths", async () => {
     renderApp({

@@ -29,6 +29,7 @@ import type { TranscriptItem } from "../../api/transcript";
 import type { EventEnvelope } from "../../api/types";
 import { AgentSwitchDivider, agentSwitchFromEvent } from "./AgentSwitchDivider";
 import { MailCard, mailAskedFromEvent, mergeMailAnswered, type MailCardData } from "./MailCard";
+import { renderSplitAtTurnFailures } from "./TurnFailureNotice";
 import type { ConversationSession } from "./useConversationSession";
 
 /** `Codex · gpt-5`, or just `Codex` when the profile names no model. */
@@ -210,6 +211,17 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
     />
   );
 
+  /**
+   * One run's items, with a failed turn cut out of the list and printed as
+   * `TurnFailureNotice` in its place (error-details-r6): the fold's own
+   * `Turn failed: worker: prepare workspace for project 01a19c73-…` line is
+   * developer text, and the reader gets one plain sentence with the server's
+   * words behind `Details` instead. A run with no failure renders exactly one
+   * `Transcript`, as before.
+   */
+  const runFor = (items: TranscriptItem[], agentName: string, keyBase: string) =>
+    renderSplitAtTurnFailures(items, events, keyBase, (list) => transcriptFor(list, agentName));
+
   return (
     <>
       {parts.map((part, index) => {
@@ -236,7 +248,9 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
                 ))}
               </ul>
             ) : null}
-            {part.items.length > 0 || parts.length === 1 ? transcriptFor(part.items, label) : null}
+            {part.items.length > 0 || parts.length === 1
+              ? runFor(part.items, label, `segment-${index}`)
+              : null}
           </div>
         );
       })}

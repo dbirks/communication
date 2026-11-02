@@ -298,23 +298,45 @@ export default function ConversationPage({
     (workspace) => workspace.conversation_id === conversationId,
   );
   const workspaceRepos = threadWorkspace?.repos ?? [];
-  const repoLabel = workspaces.error
+  // The pane's ONE repository fact, read the way the list reads it: the
+  // summary row resolves ADR-0067's whole chain (declared binding → workspace
+  // → linked run) server-side into a single name, so a chat CREATED in a
+  // repository is attached to it even before, and even without, a worker ever
+  // preparing a checkout. The thread's own workspace repository is the
+  // fallback arm for a thread beyond the list's first page or an older control
+  // plane — never a guess.
+  const summaryRow = (summaries.data?.items ?? []).find((row) => row.id === conversationId);
+  const repositoryName = summaryRow?.repository_name ?? workspaceRepos[0]?.name ?? null;
+  // The workspace is a SEPARATE fact from the binding (error-details-r6 / the
+  // WORKS-IN contradiction): "no repository attached" beside a panel naming
+  // `web` is two sources disagreeing on one screen. The repository is named
+  // once; the workspace then says whether it came up.
+  const worksInNote = workspaces.error
     ? "workspace unavailable"
     : !workspaces.data
       ? "workspace…"
-      : !threadWorkspace
-        ? "no workspace yet"
-        : workspaceRepos.length === 0
-          ? "no repository attached"
-          : workspaceRepos.length === 1
-            ? workspaceRepos[0].name
-            : `${workspaceRepos[0].name} +${workspaceRepos.length - 1}`;
+      : repositoryName !== null && workspaceRepos.length === 0
+        ? "workspace not prepared"
+        : null;
+  const repoLabel = repositoryName
+    ? [
+        workspaceRepos.length > 1
+          ? `${repositoryName} +${workspaceRepos.length - 1}`
+          : repositoryName,
+        // A thread that HAS a repository and a live checkout says nothing
+        // extra; anything else is the honest state beside the name.
+        worksInNote,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" · ")
+    : workspaces.error
+      ? "workspace unavailable"
+      : !workspaces.data
+        ? "workspace…"
+        : !threadWorkspace
+          ? "no workspace yet"
+          : "no repository attached";
   const threadBranch = workspaceRepos[0]?.run_ref ?? "";
-  // The side panel's repository: the summary row's resolved name first
-  // (ADR-0067's chain, resolved server-side), the thread's own workspace
-  // repository as the fallback arm, null when neither names one.
-  const summaryRow = (summaries.data?.items ?? []).find((row) => row.id === conversationId);
-  const repositoryName = summaryRow?.repository_name ?? workspaceRepos[0]?.name ?? null;
   // Honest file count: the workspace manifest's modified paths, or nothing.
   const filesChanged = workspaceRepos[0]?.modified_paths?.length ?? null;
 
@@ -322,6 +344,7 @@ export default function ConversationPage({
     <ConversationSidePanel
       projectId={projectId}
       repoName={repositoryName}
+      worksInNote={worksInNote}
       branch={threadBranch || null}
       filesChanged={filesChanged}
       agents={data.agents ?? null}
@@ -697,11 +720,19 @@ export default function ConversationPage({
             {/* Below the pane's `lg` stack breakpoint the header is a
                 column: title (full width, wrapping rather than truncating to
                 a word), then the pill and the acts on their own row. At
-                `lg+` they share one row again — the design's shape. */}
-            <div className="mt-[2px] flex flex-col gap-x-4 lg:flex-row lg:items-center">
+                `lg+` they share one row again — the design's shape.
+                rcn-2e review defect 1: `lg:truncate` was the wrong promise at
+                1280 — with the Threads list column and the 280px rail the
+                title row is ~500px, and the thread's own name cut to
+                “EMU-R…”. The run title learned this in a68240c and the rule
+                is the same here: a name is NEVER the thing that gives way,
+                so the H1 WRAPS (`wrap-anywhere` = overflow-wrap:anywhere, so
+                a long unbroken slug stays inside the box at a phone's 390 as
+                well) and no `truncate`/`whitespace-nowrap` rides it. */}
+            <div className="mt-[2px] flex flex-col gap-x-4 lg:flex-row lg:flex-wrap lg:items-center">
               <h1
                 data-testid="conversation-title"
-                className="line-clamp-2 text-title-m font-semibold lg:min-w-0 lg:flex-1 lg:line-clamp-none lg:truncate"
+                className="min-w-0 wrap-anywhere text-title-m font-semibold lg:min-w-0 lg:basis-[16rem] lg:grow"
               >
                 {data.title}
               </h1>
@@ -723,17 +754,23 @@ export default function ConversationPage({
                 />
               </div>
             </div>
-            {/* The meta line is ONE truncated row only from `lg` up (pass
-                review defect 4: at 1280 it wrapped mid-copy — "Claude / Code ·
-                1s"). Below `lg` it WRAPS instead of ellipsising
-                (repo-chain-r4 review item 3): at 390 the old `truncate` cut the
-                line mid-word ("Claude C…"), hiding the agent profile — two
-                full words beat one clipped row on the phone. The quiet state
-                readout shares its flow below `lg` (one line after the other)
-                and sits at the line's right at `lg+`. */}
+            {/* The meta line is ONE row at `lg+`, and it WRAPS onto a second
+                row instead of ellipsising (rcn-2e review defect 1): the old
+                `lg:truncate` cut the whole line to “C…” once the Threads list
+                and the 280px rail narrowed the pane, hiding the agent and the
+                age — two facts the reader needed. repo-chain-r4 review item 3
+                had already lifted the ellipsis below `lg` for the same reason
+                (“Claude C…”); one rule now holds at every width.
+                `wrap-anywhere` (overflow-wrap:anywhere) is what keeps a long
+                branch slug inside the box rather than hanging past it, and the
+                separator segments are inline, so the wrapped row breaks at a
+                space — the reader never gets “Claude / Code”. The quiet
+                readout keeps its place at the line's right (`lg:flex-wrap`
+                already on the pair), so the narrowest pane drops it to its own
+                row rather than clipping either half. */}
             <div className="mt-[2px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
               <p
-                className="font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1 lg:truncate"
+                className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1"
                 data-testid="conversation-meta"
               >
                 <span>{repoLabel}</span>
