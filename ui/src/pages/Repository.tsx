@@ -37,7 +37,7 @@
  *   renders the upstream's own answer, never an invented list.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { useAgentProfiles, useMe, useProject, useRepositories } from "../api/queries";
 import { useProjectRuns } from "../api/runs";
 import { useAssignments, usePipelines } from "../api/pipelines";
@@ -58,6 +58,19 @@ import { RepoWorkflowPanel } from "../components/repo/RepoWorkflowPanel";
 import { RepoLanes, RepoWorkflowChips } from "../components/repo/RepoLanes";
 import { useRepoConversations } from "../components/repo/useRepoConversations";
 import { AssistantNotes, type AssistantNote } from "../components/repo/AssistantNotes";
+import { openAssistantWorkflowDraft } from "../components/assistant/AssistantPopover";
+import {
+  chatPromptFor,
+  handOffIssueNumbers,
+  noteActionKind,
+  noteActionLabel,
+  runIdFor,
+  useDismissAssistantNote,
+  useRepoAssistantNotes,
+  visibleAssistantNotes,
+  workflowConversationIdFor,
+  type AssistantNote as AssistantNoteRow,
+} from "../api/notes";
 import { useRepoView } from "../lib/prefs";
 import { routes } from "../lib/routes";
 
@@ -166,10 +179,73 @@ export default function Repository() {
   // the same RepoChatBox, in a modal.
   const [chatFormOpen, setChatFormOpen] = useState(false);
 
-  // ASSISTANT NOTICED has no notes backend yet: the assistant's notes will
-  // arrive through their own read and be handed to `AssistantNotes` here.
-  // With no source there is nothing to render — no placeholder, no rule.
-  const assistantNotes: readonly AssistantNote[] = [];
+  // ASSISTANT NOTICED (ADR-0071): this user's notes about THIS repository.
+  // The GET is also the server's generation trigger: it answers with whatever
+  // is stored now and never waits for a model, so the first visit to a fresh
+  // repository shows nothing and the notes are there on the next look. With no
+  // notes the panel renders nothing at all — there are no rules here to fall
+  // back to, which is the design's own refusal of them.
+  const navigate = useNavigate();
+  const notes = useRepoAssistantNotes(id, repositoryData?.id ?? "");
+  const dismissNote = useDismissAssistantNote();
+  // A `start_chat` note fills the chat box (and, in Lanes, opens the modal
+  // that holds it); the person still presses `Start` — a model writing a
+  // prompt has not been allowed to send one (ADR-0052's rule).
+  const [chatPrefill, setChatPrefill] = useState<{ text: string } | null>(null);
+  const noteRows = visibleAssistantNotes(notes.data?.notes);
+  const noteById = new Map(noteRows.map((row) => [row.id, row]));
+  const assistantNotes: readonly AssistantNote[] = noteRows.map((row) => {
+    const label = noteActionLabel(row.action);
+    return {
+      id: row.id,
+      text: row.text,
+      // An action this build cannot perform renders no button: the note still
+      // says what it said, and a note is never a link to follow.
+      action: label ? { label, onSelect: () => actOnAssistantNote(row) } : undefined,
+    };
+  });
+
+  /** Each note offers at most one kind, and every kind lands on a route this
+   * page already owns — never on anything the note itself supplied. */
+  function actOnAssistantNote(row: AssistantNoteRow) {
+    switch (noteActionKind(row.action)) {
+      case "start_chat":
+        // A fresh object each time: the same words offered again still refill
+        // a line the person may have cleared.
+        setChatPrefill({ text: chatPromptFor(row.action) });
+        if (view === "lanes") setChatFormOpen(true);
+        break;
+      case "hand_off": {
+        const wanted = new Set(handOffIssueNumbers(row.action));
+        const items = issues.data?.items ?? [];
+        // The issue travels when this page can see it; the form is the
+        // answer either way, and an issue GitHub no longer lists is not a
+        // reason to leave the person with a button that does nothing.
+        setRunFormIssue(items.find((issue) => wanted.has(issue.number)) ?? null);
+        setRunFormOpen(true);
+        break;
+      }
+      case "make_workflow": {
+        const chat = workflowConversationIdFor(row.action);
+        if (chat) openAssistantWorkflowDraft({ id: chat });
+        break;
+      }
+      case "open_run": {
+        const run = runIdFor(row.action);
+        if (run) navigate(routes.run(run));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /** Dismissal is this user's, and it is instant: the row leaves the cache
+   * before the 204 answers (`useDismissAssistantNote`). */
+  function dismissAssistantNote(note: AssistantNote) {
+    const row = noteById.get(note.id);
+    if (row) dismissNote.mutate(row);
+  }
 
   if (project.isPending) return <Spinner label="Loading project" />;
   if (project.error || !project.data) {
@@ -402,7 +478,11 @@ export default function Repository() {
            they stack below 1024px so a 390px viewport never scrolls sideways. */
         <div className="grid grid-cols-1 items-start gap-5 min-[1024px]:grid-cols-[minmax(0,1fr)_290px]">
           <div className="min-w-0 space-y-4">
-            <RepoChatBox projectId={id} repositoryName={repositoryData.name} />
+            <RepoChatBox
+              projectId={id}
+              repositoryName={repositoryData.name}
+              prefill={chatPrefill ?? undefined}
+            />
             <RepoActivity
               rows={activityRows}
               nameFor={(pipelineId) => names.get(pipelineId) ?? null}
@@ -422,7 +502,7 @@ export default function Repository() {
             />
           </div>
           <div className="min-w-0 space-y-4">
-            <AssistantNotes notes={assistantNotes} />
+            <AssistantNotes notes={assistantNotes} onDismiss={dismissAssistantNote} />
             <RepoWorkflowPanel
               projectId={id}
               project={projectData}
@@ -459,6 +539,7 @@ export default function Repository() {
         <ChatFormModal
           projectId={id}
           repositoryName={repositoryData.name}
+          prefill={chatPrefill ?? undefined}
           onClose={() => setChatFormOpen(false)}
         />
       ) : null}
@@ -535,10 +616,14 @@ function RunFormModal({
 function ChatFormModal({
   projectId,
   repositoryName,
+  prefill,
   onClose,
 }: {
   projectId: string;
   repositoryName: string;
+  /** An assistant note's `start_chat` prompt (ADR-0071), same rule as the
+   * List view's chat box: filled, never sent. */
+  prefill?: { text: string };
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -583,7 +668,7 @@ function ChatFormModal({
           </button>
         </div>
         <div className="p-[10px]" data-testid="repo-new-chat-body">
-          <RepoChatBox projectId={projectId} repositoryName={repositoryName} />
+          <RepoChatBox projectId={projectId} repositoryName={repositoryName} prefill={prefill} />
         </div>
       </div>
     </div>

@@ -1063,6 +1063,35 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// assistant's per-turn trust read above.)
 	api.RegisterPreferences(handler, asstPrefs)
 
+	// ADR-0071: the assistant's notes — per-user suggestions about one
+	// repository or one thread, dismissible by their owner. The two reads and
+	// the one write are the store's own authorization (membership, or the
+	// organization's admin) and the store audits every refusal. The optional
+	// third argument is step 2's generator: the same broker the assistant
+	// speaks through, reading through the routes the caller already has, and
+	// writing through the store's insert — there is still no write route.
+	// With no egress triple the builder answers nil and these routes are the
+	// pure reads they were without it.
+	api.RegisterAssistantNotes(handler,
+		postgres.APIAssistantNotesStore{
+			S:       &postgres.AssistantNotesStore{Pool: d.Pool},
+			Denials: projectStore,
+		},
+		api.BuildAssistantNotesGenerator(api.AssistantNotesGenDeps{
+			Broker:      asstBroker,
+			Notes:       &postgres.AssistantNotesStore{Pool: d.Pool},
+			Runs:        postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
+			Pipelines:   postgres.APIPipelineStore{S: pipelineStore},
+			Repos:       apiProjects,
+			Lister:      github.New(),
+			Credentials: secretStore,
+			Threads:     apiConversations,
+			Chats: api.NewAssistantChatTranscript(apiConversations,
+				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
+				apiProjects),
+			Logger: d.API.Logger,
+		}))
+
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
 	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled
 	// stack so an unauthenticated /api/v1 request carrying the preview Host

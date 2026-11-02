@@ -212,8 +212,10 @@ export interface paths {
     /**
      * Update my display preferences
      * @description Deep-merges any subset of the document, per section: an absent member
-     *     is unchanged, and `expanded` merges key-by-key. The answer is the
-     *     full document with the new `updated_at`. Unknown keys at any level
+     *     is unchanged, and `expanded` merges key-by-key — an explicit
+     *     `true`/`false` sets a key and a key set to `null` deletes it (the
+     *     merge never drops keys otherwise). The answer is the full document
+     *     with the new `updated_at`. Unknown keys at any level
      *     and unknown enum values are `400` problem+json naming the field
      *     (stable code `invalid_preferences`); the `expanded` map takes at most
      *     500 keys, each at most 120 characters. Subject to the same
@@ -5847,7 +5849,7 @@ export interface components {
     };
     /**
      * UserPreferencesPatch
-     * @description The PATCH body: any subset of the document, deep-merged per section. An absent member is unchanged; `expanded` merges key-by-key. Unknown keys and unknown enum values are `400` problem+json naming the field.
+     * @description The PATCH body: any subset of the document, deep-merged per section. An absent member is unchanged; `expanded` merges key-by-key, where a `true`/`false` value sets the key and a `null` value deletes it (deleting an absent key is a no-op). Unknown keys and unknown enum values are `400` problem+json naming the field.
      */
     UserPreferencesPatch: {
       layout?: {
@@ -5857,7 +5859,7 @@ export interface components {
         ask_placement?: "sidebar" | "floating";
         show_workflow_folders?: boolean;
         expanded?: {
-          [key: string]: boolean;
+          [key: string]: boolean | null;
         };
       };
       assistant?: {

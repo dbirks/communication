@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useLocation, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { useConversations, useProject, useTurnSandbox, useWorkspaces } from "../api/queries";
 import {
@@ -22,6 +22,18 @@ import {
 } from "../components/conversation/AgentConversationPanel";
 import { ComposerAgentChip } from "../components/conversation/ComposerAgentChip";
 import { ConversationSidePanel } from "../components/conversation/ConversationSidePanel";
+import { AssistantNote } from "../components/conversation/AssistantNote";
+import { openAssistantWorkflowDraft } from "../components/assistant/AssistantPopover";
+import {
+  noteActionKind,
+  noteActionLabel,
+  runIdFor,
+  useConversationAssistantNotes,
+  useDismissAssistantNote,
+  visibleAssistantNotes,
+  workflowConversationIdFor,
+  type AssistantNote as AssistantNoteRow,
+} from "../api/notes";
 import { ConversationTranscript } from "../components/conversation/ConversationTranscript";
 import { ThreadListPane } from "../components/threads/ThreadListPane";
 import { useConversationSession } from "../components/conversation/useConversationSession";
@@ -150,6 +162,69 @@ export default function ConversationPage({
   const [draftPrError, setDraftPrError] = useState<string | null>(null);
   const [draftPrSent, setDraftPrSent] = useState(false);
 
+  // The rail's ASSISTANT slot (design 2e), now fed by the notes store
+  // (ADR-0071): this user's notes about THIS thread, each dismissible, each
+  // offering at most one kind of the union. The GET also triggers the
+  // server's generation and never waits for it, so a thread that has never
+  // been looked at shows nothing until the next look.
+  const navigate = useNavigate();
+  const chatNotes = useConversationAssistantNotes(conversationId);
+  const dismissNote = useDismissAssistantNote();
+  const noteRows = visibleAssistantNotes(chatNotes.data?.notes);
+
+  /** A chat note can honestly name only the thread it was written about, so
+   * the kinds this rail performs are `make_workflow` and `open_run`; any
+   * other kind renders the sentence with no button rather than a guess. */
+  function actOnChatNote(row: AssistantNoteRow) {
+    switch (noteActionKind(row.action)) {
+      case "make_workflow":
+        openAssistantWorkflowDraft({
+          id: workflowConversationIdFor(row.action) || row.scope_id,
+          title: conversation.data?.title ?? null,
+        });
+        break;
+      case "open_run": {
+        const run = runIdFor(row.action);
+        if (run) navigate(routes.run(run));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  function chatNoteActionable(row: AssistantNoteRow): boolean {
+    const kind = noteActionKind(row.action);
+    return kind === "make_workflow" || kind === "open_run";
+  }
+
+  const assistantNotes = (
+    <>
+      {noteRows.map((row) => {
+        const label = noteActionLabel(row.action);
+        return (
+          <AssistantNote
+            key={row.id}
+            testId={`assistant-note-${row.id}`}
+            text={row.text}
+            actions={
+              label && chatNoteActionable(row)
+                ? [
+                    {
+                      id: noteActionKind(row.action) ?? "note",
+                      label,
+                      onSelect: () => actOnChatNote(row),
+                    },
+                  ]
+                : []
+            }
+            onDismiss={() => dismissNote.mutate(row)}
+          />
+        );
+      })}
+    </>
+  );
+
   const sendDraftPrPrompt = () => {
     setDraftPrError(null);
     session.sendMessage.mutate(
@@ -257,7 +332,13 @@ export default function ConversationPage({
       // `Make a workflow…`, which opens the assistant with THIS chat as
       // context — the id travels as data in the ask; authorizing the
       // transcript read stays the server's job (chat.transcript).
+      //
+      // The notes store's own notes ride the same slot (ADR-0071). The panel
+      // keeps one note surface per rail, so a real note takes it and the
+      // generator's `make_workflow` note is the design's replacement for this
+      // standing one — not a second button beside it.
       workflowChat={{ id: conversationId, title: conversation.data?.title ?? null }}
+      assistantNote={noteRows.length > 0 ? assistantNotes : undefined}
     />
   );
   const agentPicker = <ComposerAgentChip session={session} />;

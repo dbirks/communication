@@ -1,13 +1,15 @@
 /**
  * ASSISTANT NOTICED (design 3a, final decision): a small panel at the TOP of
- * the repo page's side panel, bar in the accent wash so it stands out more
- * than the plain section the mock draws. Up to three one-sentence notes, each
- * with ONE action link and a `dismiss`.
+ * the repo page's side panel. The bar is the accent wash with an accent edge
+ * down the panel's left side — the design's "more prominent than the plain
+ * section the mock draws", and the only thing here that says "the assistant
+ * spoke". Up to three one-sentence notes, each with ONE action link and a
+ * `dismiss`.
  *
- * The notes are model-written; there is no notes backend yet. This component
- * renders ONLY what the caller hands it — with no notes it renders nothing at
- * all (no placeholder, no hard-coded rule). The notes store plugs in by
- * passing `notes` here.
+ * The notes are model-written, per user (ADR-0071). This component renders
+ * ONLY what the caller hands it — with no notes it renders nothing at all (no
+ * placeholder, no hard-coded rule): there are no rules here to fall back to,
+ * by the design's own refusal of them.
  */
 export interface AssistantNote {
   /** Stable id — the dismiss/action keys on it. */
@@ -34,20 +36,25 @@ export function AssistantNotes({ notes, onDismiss }: AssistantNotesProps) {
   return (
     <section
       aria-labelledby="repo-assistant-notes-heading"
-      className="overflow-hidden rounded-[3px] border border-accent-ring bg-surface"
+      className="overflow-hidden rounded-[3px] border border-accent-ring border-l-2 border-l-accent bg-surface shadow-(--shadow-raised)"
       data-testid="repo-assistant-notes"
     >
-      <div className="border-b border-accent-ring bg-accent-wash px-[10px] py-1 font-mono text-[10px] font-semibold tracking-[.04em] text-accent-text">
+      <div className="flex items-baseline justify-between gap-2 border-b border-accent-ring bg-accent-wash px-[10px] py-[6px] font-mono text-[10.5px] font-bold tracking-[.06em] text-accent-edge">
         <h2 id="repo-assistant-notes-heading">ASSISTANT NOTICED</h2>
+        {/* The count is what the store capped, not what this drew: three is the
+            most one person is ever shown about one thing. */}
+        <span data-testid="repo-assistant-notes-count" className="font-semibold text-accent-text">
+          {shown.length}
+        </span>
       </div>
       <ul>
         {shown.map((note) => (
           <li
             key={note.id}
-            className="space-y-1 border-t border-line-soft px-3 py-[10px] first:border-t-0"
+            className="space-y-[6px] border-t border-line-soft px-3 py-[11px] first:border-t-0"
             data-testid={`repo-assistant-note-${note.id}`}
           >
-            <p className="text-[12.5px] leading-[17px] text-ink">{note.text}</p>
+            <p className="text-[13px] leading-[18px] text-ink">{note.text}</p>
             <p className="flex items-center gap-3">
               {note.action ? (
                 <button

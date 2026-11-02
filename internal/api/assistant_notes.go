@@ -33,10 +33,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/dbirks/communication/internal/assistant"
+	"github.com/dbirks/communication/internal/integrations/github"
 )
 
 // The scope vocabulary: what a note is about. `repository` notes are read
@@ -299,9 +304,408 @@ type AssistantNotesStore interface {
 // the store cannot resolve (a path id that is not a uuid at all) never reaches
 // a row, so there is nothing to audit — the 422 says it plainly instead.
 
-// RegisterAssistantNotes mounts the three ADR-0071 routes.
-func RegisterAssistantNotes(s *Server, store AssistantNotesStore) {
+// AssistantNotesTrigger is the generator seam the two list routes call once
+// they have answered (ADR-0071 § Decision 6). It is a notification, not a
+// request: the caller has already been served, and whatever this does must
+// never change that answer or make it wait. A deployment with no assistant
+// egress passes nil and the routes are pure reads.
+type AssistantNotesTrigger interface {
+	// NotesListed reports the notes just served for one scope, so the
+	// generator can decide (on its own clock, off this request) whether to
+	// produce more. projectID is empty for a conversation scope: the thread
+	// names itself and its project is resolved from the thread, never from a
+	// path the caller chose.
+	NotesListed(ctx context.Context, c Caller, scopeKind, projectID, scopeID string, notes []AssistantNoteView)
+}
+
+// AssistantNotesWriter is the generator's store seam: the same
+// InsertAssistantNote the server's own assistant calls (there is still no
+// write route — ADR-0071 § Decision 5). *postgres.AssistantNotesStore
+// implements it; the signature is the store's own.
+type AssistantNotesWriter interface {
+	InsertAssistantNote(ctx context.Context, in AssistantNoteInput) (AssistantNoteView, error)
+}
+
+// The read seams the DATA block is built from. Every one of them is an
+// existing route's store method, taken as an interface here because api owns
+// its seams and the generator must not see more than the browser can.
+type (
+	assistantNotesRunReader interface {
+		ListProjectRunsFiltered(ctx context.Context, c Caller, projectID string, f RunListFilter) ([]RunSummaryView, error)
+	}
+	assistantNotesPipelineReader interface {
+		ListPipelines(ctx context.Context, c Caller) ([]PipelineSummaryView, error)
+	}
+	assistantNotesRepoReader interface {
+		ListRepositories(ctx context.Context, c Caller, projectID string) ([]RepositoryView, error)
+	}
+	assistantNotesThreadReader interface {
+		GetConversation(ctx context.Context, c Caller, conversationID string) (ConversationView, error)
+	}
+)
+
+// AssistantNotesGenDeps is step 2's wiring: the model client, the reads the
+// factual summary is built from, and the store the notes are written to.
+type AssistantNotesGenDeps struct {
+	// Broker is the assistant's egress (ADR-0034). nil, or an unconfigured
+	// one, means no generation — the routes stay pure reads.
+	Broker    *assistant.Broker
+	Notes     AssistantNotesWriter
+	Runs      assistantNotesRunReader
+	Pipelines assistantNotesPipelineReader
+	Repos     assistantNotesRepoReader
+	// Lister + Credentials are the ADR-0031/0061 issue read, the same pair
+	// the repository's issues route uses: open issues live in GitHub, and
+	// this generator is not about to invent a mirror.
+	Lister      github.IssueLister
+	Credentials RepositoryCredentialResolver
+	// Threads resolves a conversation's own project (the conversation route
+	// has no project id in its path) and Chats is the caller-checked
+	// transcript read the chat summary is folded from.
+	Threads assistantNotesThreadReader
+	Chats   assistant.ChatTranscriptReader
+	Logger  *slog.Logger
+}
+
+// BuildAssistantNotesGenerator returns the trigger, or nil when this
+// deployment cannot generate: no egress triple, no store, or none of the reads.
+// A nil trigger is the honest absence, not a failure — the same answer the ask
+// route gives with 503 assistant_not_configured, minus the error, because here
+// the feature being absent changes nothing the caller asked for.
+func BuildAssistantNotesGenerator(deps AssistantNotesGenDeps) AssistantNotesTrigger {
+	log := deps.Logger
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	// The broker's nil-ness IS the deployment's answer: BuildAssistantBroker
+	// returns nil when the egress triple is unset, and a notes turn needs no
+	// store handle, only the endpoint (CompleteText is a text-only call).
+	if deps.Broker == nil || deps.Notes == nil || deps.Runs == nil ||
+		deps.Repos == nil || deps.Threads == nil || deps.Chats == nil {
+		return nil
+	}
+	reader := &assistantNotesReader{
+		runs: deps.Runs, pipelines: deps.Pipelines, repos: deps.Repos,
+		lister: deps.Lister, creds: deps.Credentials,
+		chats: deps.Chats, log: log,
+	}
+	g := assistant.NewNotesGenerator(assistant.NotesDeps{
+		Model:    deps.Broker,
+		Reader:   reader,
+		Writer:   &assistantNotesWriter{store: deps.Notes},
+		Projects: &assistantNotesProjectResolver{threads: deps.Threads},
+		// Dismissals is deliberately unwired: honouring it needs a read of
+		// dismissed rows, which no route serves and no store method exists
+		// for (the generator says so in its own log line).
+		Log: log,
+	})
+	if g == nil {
+		return nil
+	}
+	return &assistantNotesTrigger{gen: g, log: log}
+}
+
+// assistantNotesTrigger carries api's Caller and views across the package
+// boundary (assistant may not import api, so the conversion lives here).
+type assistantNotesTrigger struct {
+	gen *assistant.NotesGenerator
+	log *slog.Logger
+}
+
+func (t *assistantNotesTrigger) NotesListed(ctx context.Context, c Caller,
+	scopeKind, projectID, scopeID string, notes []AssistantNoteView) {
+	// The newest served note is the freshness evidence: a scope whose newest
+	// row is inside the TTL was generated recently enough. An empty list is
+	// the zero time, which is never fresh.
+	var newest time.Time
+	for _, n := range notes {
+		if n.CreatedAt.After(newest) {
+			newest = n.CreatedAt
+		}
+	}
+	t.gen.NotesListed(ctx, assistant.Caller{UserID: c.UserID,
+		OrganizationID: c.OrganizationID, IsOrgAdmin: c.IsOrgAdmin},
+		assistant.NoteScope{Kind: scopeKind, ProjectID: projectID, ScopeID: scopeID},
+		newest, len(notes))
+}
+
+// assistantNotesWriter stores one generated note through the store's own
+// insert, which re-checks every rule below independently.
+type assistantNotesWriter struct {
+	store AssistantNotesWriter
+}
+
+func (w *assistantNotesWriter) WriteNote(ctx context.Context, n assistant.NoteWrite) error {
+	_, err := w.store.InsertAssistantNote(ctx, AssistantNoteInput{
+		ProjectID: n.ProjectID,
+		UserID:    n.UserID,
+		ScopeKind: assistantNoteScopeKind(n.ScopeKind),
+		ScopeID:   n.ScopeID,
+		Text:      n.Text,
+		Action:    assistantNoteAction(n.Action),
+		ExpiresAt: &n.ExpiresAt,
+	})
+	return err
+}
+
+func assistantNoteScopeKind(kind string) string {
+	switch kind {
+	case assistant.NoteScopeRepository:
+		return AssistantNoteScopeRepository
+	case assistant.NoteScopeConversation:
+		return AssistantNoteScopeConversation
+	default:
+		// The union has no third member; the insert's own validation refuses it.
+		return kind
+	}
+}
+
+func assistantNoteAction(a *assistant.NoteActionDraft) *AssistantNoteAction {
+	if a == nil {
+		return nil
+	}
+	return &AssistantNoteAction{
+		Kind:           assistantNoteActionKind(a.Kind),
+		Prompt:         a.Prompt,
+		IssueNumbers:   a.IssueNumbers,
+		ConversationID: a.ConversationID,
+		RunID:          a.RunID,
+	}
+}
+
+func assistantNoteActionKind(kind string) string {
+	switch kind {
+	case assistant.NoteActionStartChat:
+		return AssistantNoteActionStartChat
+	case assistant.NoteActionHandOff:
+		return AssistantNoteActionHandOff
+	case assistant.NoteActionMakeWorkflow:
+		return AssistantNoteActionMakeWorkflow
+	case assistant.NoteActionOpenRun:
+		return AssistantNoteActionOpenRun
+	default:
+		return kind
+	}
+}
+
+// assistantNotesProjectResolver answers the one question the conversation
+// route cannot: which project is this thread in. It is the caller-checked
+// conversation read, so a thread the caller cannot see produces no project and
+// therefore no notes — the generator never gets further than the panel did.
+type assistantNotesProjectResolver struct {
+	threads assistantNotesThreadReader
+}
+
+func (r *assistantNotesProjectResolver) ProjectOfConversation(ctx context.Context,
+	c assistant.Caller, conversationID string) (string, error) {
+	view, err := r.threads.GetConversation(ctx, Caller{UserID: c.UserID,
+		OrganizationID: c.OrganizationID, IsOrgAdmin: c.IsOrgAdmin}, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return view.ProjectID, nil
+}
+
+// assistantNotesReader folds a scope's rows into the generator's factual
+// summary. Every read is issued AS THE CALLER; every failure that is not a
+// missing scope degrades to "that section says nothing" rather than losing the
+// panel's generation, because a spent GitHub budget is not a reason a
+// repository cannot have notes.
+type assistantNotesReader struct {
+	runs      assistantNotesRunReader
+	pipelines assistantNotesPipelineReader
+	repos     assistantNotesRepoReader
+	lister    github.IssueLister
+	creds     RepositoryCredentialResolver
+	chats     assistant.ChatTranscriptReader
+	log       *slog.Logger
+}
+
+func (r *assistantNotesReader) ReadRepoFacts(ctx context.Context, c assistant.Caller,
+	projectID, repositoryID string) (assistant.NoteRepoFacts, error) {
+	caller := apiNotesCaller(c)
+	facts := assistant.NoteRepoFacts{}
+	repos, err := r.repos.ListRepositories(ctx, caller, projectID)
+	if err != nil {
+		return assistant.NoteRepoFacts{}, err
+	}
+	var gitURL string
+	for _, repo := range repos {
+		if repo.ID == repositoryID {
+			facts.Repository = repo.Name
+			gitURL = repo.GitURL
+			break
+		}
+	}
+	runs, err := r.runs.ListProjectRunsFiltered(ctx, caller, projectID,
+		RunListFilter{RepositoryID: repositoryID})
+	if err != nil {
+		return assistant.NoteRepoFacts{}, err
+	}
+	names := map[string]string{}
+	if r.pipelines != nil {
+		if pipes, perr := r.pipelines.ListPipelines(ctx, caller); perr == nil {
+			for _, p := range pipes {
+				if p.DisplayName != "" {
+					names[p.ID] = p.DisplayName
+				} else {
+					names[p.ID] = p.Slug
+				}
+			}
+		} else {
+			r.log.Warn("assistant notes: workflow names unavailable",
+				slog.String("error", perr.Error()))
+		}
+	}
+	for _, run := range runs {
+		if len(facts.Runs) >= assistant.NoteGenMaxRuns {
+			break
+		}
+		if run.RepositoryID != nil && *run.RepositoryID != repositoryID {
+			continue
+		}
+		facts.Runs = append(facts.Runs, assistant.NoteRunFact{
+			ID:           run.ID,
+			Workflow:     names[run.PipelineID],
+			Title:        derefString(run.Title),
+			Status:       run.Status,
+			FailureClass: derefString(run.FailedCause),
+			FailingStep:  failingStep(run),
+			Age:          noteAge(run.CreatedAt),
+		})
+	}
+	facts.Issues = r.openIssues(ctx, caller, repositoryID, gitURL)
+	return facts, nil
+}
+
+// openIssues reads the repository's open issues where the issues route would:
+// the same remote parse, the same per-repository credential, and the same
+// silence when any of it fails. A non-GitHub remote is not a note problem — it
+// is a repository with no tracker here.
+func (r *assistantNotesReader) openIssues(ctx context.Context, c Caller,
+	repositoryID, gitURL string) []assistant.NoteIssueFact {
+	if r.lister == nil || strings.TrimSpace(gitURL) == "" {
+		return nil
+	}
+	repo, err := github.ParseRepository(gitURL)
+	if err != nil {
+		return nil
+	}
+	token := ""
+	if r.creds != nil {
+		got, cerr := r.creds.ResolveRepositoryCredential(ctx, repositoryID, ghConsumerIssueRead, c.UserID)
+		if cerr != nil {
+			// Anonymous is the honest fallback only for a repository that names
+			// no credential; one whose credential will not open answers nothing
+			// rather than pretending to have read the private tracker.
+			r.log.Warn("assistant notes: issue credential unavailable",
+				slog.String("repository_id", repositoryID), slog.String("error", cerr.Error()))
+			return nil
+		}
+		token = got
+	}
+	issues, err := r.lister.ListIssues(ctx, repo, github.IssueQuery{State: github.StateOpen}, token)
+	if err != nil {
+		r.log.Warn("assistant notes: open issues unavailable",
+			slog.String("repository_id", repositoryID), slog.String("error", err.Error()))
+		return nil
+	}
+	out := make([]assistant.NoteIssueFact, 0, assistant.NoteGenMaxIssues)
+	for _, is := range issues {
+		if len(out) >= assistant.NoteGenMaxIssues {
+			break
+		}
+		if is.Number < 1 {
+			continue
+		}
+		out = append(out, assistant.NoteIssueFact{Number: is.Number, Title: is.Title})
+	}
+	return out
+}
+
+func (r *assistantNotesReader) ReadChatFacts(ctx context.Context, c assistant.Caller,
+	conversationID string) (assistant.NoteChatFacts, error) {
+	transcript, err := r.chats.ReadChatTranscript(ctx, c, conversationID)
+	if err != nil {
+		return assistant.NoteChatFacts{}, err
+	}
+	facts := assistant.NoteChatFacts{
+		ConversationID: conversationID,
+		Conversation:   transcript.Title,
+		Repository:     transcript.RepoName,
+	}
+	for _, line := range transcript.Lines {
+		if len(facts.Lines) >= assistant.NoteGenMaxLines {
+			break
+		}
+		facts.Lines = append(facts.Lines, assistant.ChatLine{Author: line.Author, Text: line.Text})
+	}
+	return facts, nil
+}
+
+// failingStep names the run's first failed top-level step, from the progress
+// strip the run list already carries (ADR-0070) — never a per-run node read, so
+// one summary is a bounded number of statements whatever the repository holds.
+func failingStep(run RunSummaryView) string {
+	if run.Progress == nil {
+		return ""
+	}
+	for _, step := range run.Progress.Steps {
+		if step.State == RunStepFailed {
+			return step.NodeID
+		}
+	}
+	return ""
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// apiNotesCaller carries a caller across the assistant boundary (the two
+// Caller types are the same three fields; internal/assistant may not import
+// this package, so it has its own copy).
+func apiNotesCaller(c assistant.Caller) Caller {
+	return Caller{UserID: c.UserID, OrganizationID: c.OrganizationID, IsOrgAdmin: c.IsOrgAdmin}
+}
+
+// noteAge renders how long ago a run began, coarsely: the model needs "3h", not
+// a timestamp it cannot compare against its own clock.
+func noteAge(at time.Time) string {
+	if at.IsZero() {
+		return "unknown"
+	}
+	d := time.Since(at)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// RegisterAssistantNotes mounts the three ADR-0071 routes. `gen` is optional:
+// with a trigger, a GET whose scope has no fresh generation schedules one in
+// the background (and still answers immediately with what is stored); without
+// one, the routes are the pure reads step 1 shipped.
+func RegisterAssistantNotes(s *Server, store AssistantNotesStore, gen ...AssistantNotesTrigger) {
 	h := &assistantNoteHandlers{store: store, srv: s}
+	for _, g := range gen {
+		if g != nil {
+			h.gen = g
+			break
+		}
+	}
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/repos/{repositoryId}/notes",
 		http.HandlerFunc(h.listRepoNotes))
 	s.HandleAuthed("GET /api/v1/conversations/{conversationId}/notes",
@@ -313,6 +717,8 @@ func RegisterAssistantNotes(s *Server, store AssistantNotesStore) {
 type assistantNoteHandlers struct {
 	store AssistantNotesStore
 	srv   *Server
+	// gen is nil on a deployment with no assistant egress.
+	gen AssistantNotesTrigger
 }
 
 func (h *assistantNoteHandlers) listRepoNotes(w http.ResponseWriter, r *http.Request) {
@@ -336,6 +742,7 @@ func (h *assistantNoteHandlers) listRepoNotes(w http.ResponseWriter, r *http.Req
 		return
 	}
 	h.serve(w, notes)
+	h.trigger(r.Context(), c, AssistantNoteScopeRepository, projectID, repoID, notes)
 }
 
 func (h *assistantNoteHandlers) listConversationNotes(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +764,10 @@ func (h *assistantNoteHandlers) listConversationNotes(w http.ResponseWriter, r *
 		return
 	}
 	h.serve(w, notes)
+	// No project id travels: the conversation route's own rule is that the
+	// thread is the scope, so the generator resolves the project from the
+	// thread rather than from anything the caller put in a path.
+	h.trigger(r.Context(), c, AssistantNoteScopeConversation, "", convID, notes)
 }
 
 func (h *assistantNoteHandlers) dismiss(w http.ResponseWriter, r *http.Request) {
@@ -387,6 +798,17 @@ func (h *assistantNoteHandlers) dismiss(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// trigger hands the served answer to the generator. It runs after the response
+// is written and cannot change it: the GET never blocks on a model, and a
+// generation that goes wrong costs the caller nothing (ADR-0071 § Decision 6).
+func (h *assistantNoteHandlers) trigger(ctx context.Context, c Caller,
+	scopeKind, projectID, scopeID string, notes []AssistantNoteView) {
+	if h.gen == nil {
+		return
+	}
+	h.gen.NotesListed(ctx, c, scopeKind, projectID, scopeID, notes)
 }
 
 // serve answers the two list routes. `notes` is always an array, never null:

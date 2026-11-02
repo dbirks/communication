@@ -24,6 +24,13 @@ export interface RepoChatBoxProps {
   projectId: string;
   /** The repository's own name — the wire's `repository` member (ADR-0067). */
   repositoryName: string;
+  /**
+   * Text to drop into the line, from an assistant note's `start_chat` action
+   * (ADR-0071): the note names the prompt, the person still presses `Start`.
+   * A new object is a new request — the same words offered twice refill the
+   * box rather than being ignored as an unchanged value.
+   */
+  prefill?: { text: string };
 }
 
 /** The conversation title the wire demands, from the text the person typed:
@@ -35,7 +42,7 @@ export function titleFromPrompt(text: string): string {
   return line.slice(0, 200);
 }
 
-export function RepoChatBox({ projectId, repositoryName }: RepoChatBoxProps) {
+export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxProps) {
   const navigate = useNavigate();
   const profiles = useAgentProfiles();
   const create = useCreateConversation(projectId);
@@ -43,6 +50,17 @@ export function RepoChatBox({ projectId, repositoryName }: RepoChatBoxProps) {
   const [profileId, setProfileId] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // A note's prefill arrives while the page is already on screen: fill the
+  // line and focus it, so the action lands where the person was sent. It never
+  // starts anything — the design's rule is that a person confirms what the
+  // assistant does (ADR-0052), and `Start` is that confirmation.
+  useEffect(() => {
+    if (!prefill) return;
+    setText(prefill.text);
+    inputRef.current?.focus();
+  }, [prefill]);
 
   const items = useMemo(() => profiles.data?.items ?? [], [profiles.data]);
   // First read arms the default pick; a later list change keeps the choice
@@ -80,6 +98,7 @@ export function RepoChatBox({ projectId, repositoryName }: RepoChatBoxProps) {
     <div data-testid="repo-chat-box">
       <div className="flex items-stretch gap-2 rounded-[3px] border border-ink bg-surface p-[5px] shadow-(--shadow-raised)">
         <input
+          ref={inputRef}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
