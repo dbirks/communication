@@ -546,6 +546,64 @@ class C1cUnattendedPermissionTest(unittest.TestCase):
             "failed", "node_execution_failed:/plan", []))
 
 
+class C1cLauncherPiRefusalTest(unittest.TestCase):
+    """The OTHER decided agent-arm failure (Actions runs 41423602047 onward,
+    e.g. 41447122534 C1c/C2a): launcher pi is gated autonomous_within_sandbox
+    (ADR-0069), so the attempt reaches pi-acp — and the m4 stack composes no
+    compose.real.yml, so the worker carries no pi gateway key and pi-acp
+    answers session/new with -32000 'Authentication required'. Per
+    docs/testing/acceptance-ci.md that leg lands FAIL/GAP NAMING launcher pi,
+    never a pass; the GAP wording must say exactly that."""
+
+    PI_DETAIL = ("agent session unavailable: acp: session/new: {\"code\":-32000,"
+                 "\"message\":\"Authentication required: Configure an API key or log "
+                 "in with an OAuth provider.\",\"data\":{\"authMethods\":[{\"_meta\":"
+                 "{\"terminal-auth\":{\"args\":[\"--terminal-login\"],\"command\":"
+                 "\"pi-acp\",\"label\":\"Launch pi\"}}}]}}")
+    ATTEMPTS = [["/plan", "infra", PI_DETAIL], ["/plan", "infra", PI_DETAIL],
+                ["/plan", "infra", PI_DETAIL]]
+
+    def test_every_plan_attempt_a_pi_session_new_refusal_is_a_gap(self):
+        why = m.c1_launcher_pi_refusal_gap("failed", "node_execution_failed:/plan",
+                                           self.ATTEMPTS)
+        self.assertIsNotNone(why)
+        self.assertIn("launcher pi", why)
+        self.assertIn("compose.real.yml", why)
+        self.assertIn("docs/testing/acceptance-ci.md", why)
+        self.assertIn("never a pass", why)
+
+    def test_the_same_words_without_the_pi_fingerprint_stay_a_fail(self):
+        """A CLAUDE leg that died on a stale login says 'Authentication
+        required' too (ADR-0040) — that one is not the launcher-pi decision and
+        must stay the honest FAIL."""
+        claude = [["/plan", "infra", 'acp: session/prompt: {"message":"Authentication '
+                                     'required"} (claude-agent-acp)']]
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", claude))
+
+    def test_a_mixed_attempt_history_stays_a_fail(self):
+        mixed = [["/plan", "infra", self.PI_DETAIL],
+                 ["/plan", "invalid_output", "schema said no"]]
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", mixed))
+
+    def test_only_the_plan_node_and_failed_status_qualify(self):
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/build_until_verified[1]/implement",
+            self.ATTEMPTS))
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "completed", "", self.ATTEMPTS))
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap("failed", "", self.ATTEMPTS))
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", [["/verdict", "infra", "x"]]))
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", []))
+        business = [["/plan", "invalid_output", self.PI_DETAIL]]
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", business),
+            "only the infra-classed session refusal is the environment's no")
+
+
 MIG05 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
                      "internal", "store", "postgres", "migrations", "00005_m4_pipelines.sql")
 _SKIP_PREFIX = ("constraint", "check", "unique", "primary", "foreign", "exclude")

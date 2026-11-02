@@ -460,7 +460,28 @@ class EmuRecorder {
             `${geometry.scrollWidth}px > innerWidth ${geometry.innerWidth}px`,
         );
       }
-      const items = await this.page.evaluate(collectReflowItems);
+      // The parity inventory AND the page-state fingerprint go in ONE
+      // `page.evaluate` — the same JavaScript task — so they can never read
+      // two different page states. Actions run 41447122534 (journey `thread`)
+      // and the local re-run after the PRESENCE_STATE fix both showed why
+      // the split reads were wrong: the 1280 capture's inventory caught the
+      // turn RUNNING, the overlap/mock/design checks that followed burned a
+      // few seconds, the turn FAILED, and the fingerprint — read LAST —
+      // caught the finished state. Both widths then agreed on
+      // `stop-turn#off`, looked comparable, and the running-state inventory
+      // was diffed against a finished one: “390 lost stop-turn”.
+      // Playwright refuses to serialize a FUNCTION inside the argument, so
+      // the collectors travel as their transpiled source strings and are
+      // restored with `new Function` — still the file's rule that each
+      // collector is self-contained (DOM only, no module references).
+      const parity = await this.page.evaluate(
+        (srcs) => ({
+          items: (new Function(`return (${srcs.items})`)())(),
+          stateFingerprint: (new Function(`return (${srcs.fingerprint})`)())(),
+        }),
+        { items: collectReflowItems.toString(), fingerprint: collectStateFingerprint.toString() },
+      );
+      const items = parity.items;
       // (e) overlap: runs at BOTH widths — two things painting over each other
       // is a defect on the desk too, and this is the check that would have
       // caught the canvas caption over the last step card.
@@ -499,7 +520,7 @@ class EmuRecorder {
           recordOnce("design", `design landmark missing: ${landmark.desc}`);
         }
       }
-      const stateFingerprint = await this.page.evaluate(collectStateFingerprint);
+      const stateFingerprint = parity.stateFingerprint;
       if (width !== 1280) {
         const clips = await this.page.evaluate(findClippedText);
         checks.clip = clips.length === 0;

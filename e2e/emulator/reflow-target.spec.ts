@@ -636,6 +636,87 @@ async function edgeInventory(
 
 const keysOf = (items: ReflowItem[]): string[] => items.map((item) => item.key);
 
+/**
+ * 2174d36 moved the repo feed's per-row meta column under the title at phone
+ * width: the desktop column (`repo-run-workflow-<id>`, `repo-chat-agent-<id>`,
+ * `hidden … sm:block`) and the mobile line (`repo-run-meta-<id>`,
+ * `repo-chat-meta-<id>`, `block … sm:hidden`) carry the SAME words — a
+ * column-to-line swap the parity check must read as content that stayed,
+ * per-row (the `*` allowlist pattern resolves each item's reach against its
+ * OWN row's meta). The local re-run of Actions run 41447122534's server-error
+ * journey filed `2e/2c server-error 390 lost 16 items` the moment that commit
+ * landed in the tree — every one of them a row whose column had moved, not
+ * vanished. These are the shapes, with the same `sm` (640px) media rule the
+ * app's Tailwind emits.
+ */
+function repoFeedDoc(rows: [id: string, meta: string | null][]): string {
+  const cell = (id: string, meta: string | null): string =>
+    `<li data-testid="repo-row-${id}">` +
+    `<span class="title">Run ${id}</span>` +
+    (meta === null
+      ? ""
+      : `<span class="mob" data-testid="repo-run-meta-${id}">${meta}</span>` +
+        `<span class="desk" data-testid="repo-run-workflow-${id}">${meta}</span>`) +
+    "</li>";
+  return rows.map(([id, meta]) => cell(id, meta)).join("");
+}
+
+async function repoFeedInventory(
+  page: import("@playwright/test").Page,
+  width: number,
+  body: string,
+): Promise<ReflowItem[]> {
+  await page.setViewportSize({ width, height: 844 });
+  await page.setContent(
+    `<!doctype html><html><head><meta charset="utf-8"><style>
+      body { margin: 0; font: 13px ui-sans-serif, system-ui, sans-serif; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      .desk { display: none; }
+      .mob { display: block; }
+      @media (min-width: 640px) { .desk { display: block; } .mob { display: none; } }
+    </style></head><body><main><ul data-testid="repo-feed">${body}</ul></main></body></html>`,
+  );
+  return page.evaluate(collectReflowItems);
+}
+
+test.describe("the repo feed's column-to-line swap is not lost content", () => {
+  test("(r1) workflow column at 1280, meta line under the title at 390: no defect", async ({
+    page,
+  }) => {
+    const desktop = await repoFeedInventory(page, 1280, repoFeedDoc([["aa11", "feature-development"]]));
+    expect(keysOf(desktop)).toContain("testid:repo-run-workflow-aa11");
+    const phone = await repoFeedInventory(page, 390, repoFeedDoc([["aa11", "feature-development"]]));
+    const phoneKeys = keysOf(phone);
+    expect(phoneKeys).not.toContain("testid:repo-run-workflow-aa11");
+    expect(phoneKeys).toContain("testid:repo-run-meta-aa11");
+    expect(missingParityItems(desktop, phone)).toEqual([]);
+  });
+
+  test("(r2) a row that lost BOTH the column and its meta line files", async ({ page }) => {
+    const desktop = await repoFeedInventory(
+      page,
+      1280,
+      repoFeedDoc([
+        ["aa11", "feature-development"],
+        ["bb22", "m4-planner"],
+      ]),
+    );
+    // Row bb22 keeps its workflow column at 1280 but the phone build loses
+    // its meta line entirely (the swap breaks for that row): bb22's item may
+    // NOT be excused by the SIBLING row's meta.
+    const phone = await repoFeedInventory(
+      page,
+      390,
+      '<li data-testid="repo-row-aa11"><span class="title">Run aa11</span>' +
+        '<span class="mob" data-testid="repo-run-meta-aa11">feature-development</span></li>' +
+        '<li data-testid="repo-row-bb22"><span class="title">Run bb22</span></li>',
+    );
+    const missing = missingParityItems(desktop, phone).map((item) => item.key);
+    expect(missing).not.toContain("testid:repo-run-workflow-aa11");
+    expect(missing).toContain("testid:repo-run-workflow-bb22");
+  });
+});
+
 test.describe("the edge + hover word is a desktop-only affordance", () => {
   const oneEdge = edgeGroup("survey", "plan");
 
@@ -747,6 +828,58 @@ async function runCapture(
 }
 
 test.describe("parity only compares captures of the same page state", () => {
+  test("(x0) the turn-running control set enters the fingerprint, and the fixture's atomic read runs", async ({
+    page,
+  }) => {
+    // Actions run 41447122534, journey `thread`: the 1280 capture caught the
+    // turn RUNNING (Stop painted, the composer's running copy), the 390
+    // capture caught it FINISHED — and the pair still compared, because the
+    // fingerprint at the time watched only the badge and the take/return
+    // verbs. `stop-turn` and the breadcrumb pair are in PRESENCE_STATE now.
+    const turnDoc = (running: boolean, repoBound: boolean): string =>
+      [
+        '<div data-testid="thread-pane-page">',
+        '<span data-testid="controller-badge">● you\'re in control</span>',
+        '<button data-testid="return-control">Return control</button>',
+        running ? '<button data-testid="stop-turn">Stop</button>' : "",
+        repoBound
+          ? '<a data-testid="conversation-breadcrumb-repo">web</a>'
+          : '<span data-testid="conversation-breadcrumb-unbound">chats</span>',
+        '<h2 data-testid="stable-heading">Thread</h2>',
+        "</div>",
+      ].join("");
+    const desktopRunning = await runCapture(page, 1280, turnDoc(true, false));
+    expect(desktopRunning.stateFingerprint).toContain("stop-turn#on");
+    expect(desktopRunning.stateFingerprint).toContain("conversation-breadcrumb-unbound#on");
+    const phoneFinished = await runCapture(page, 390, turnDoc(false, true));
+    expect(phoneFinished.stateFingerprint).toContain("stop-turn#off");
+    expect(phoneFinished.stateFingerprint).toContain("conversation-breadcrumb-repo#on");
+    const verdict = judgeParityPair(desktopRunning, phoneFinished);
+    expect(verdict.comparable, "a turn that ended between widths is a state move, not a loss")
+      .toBe(false);
+    // The fixture's REAL capture read (fixtures.ts): items + fingerprint in
+    // ONE page.evaluate, the collectors passed as source strings (Playwright
+    // refuses to serialize a function nested in the argument — exactly how
+    // the first atomic-read fix died on every screen). If this call ever
+    // breaks, every emu.screen() journey fails with it, so it is pinned here
+    // without a lab.
+    const pair = await page.evaluate(
+      (srcs) => ({
+        items: (new Function(`return (${srcs.items})`)())(),
+        stateFingerprint: (new Function(`return (${srcs.fingerprint})`)())(),
+      }),
+      { items: collectReflowItems.toString(), fingerprint: collectStateFingerprint.toString() },
+    );
+    expect(pair.items.map((item: ReflowItem) => item.key)).toContain(
+      "testid:conversation-breadcrumb-repo",
+    );
+    expect(pair.stateFingerprint).toContain("stop-turn#off");
+    // The same state read by the two paths agrees — the atomic read is the
+    // collectors' own answer, not a reimplementation.
+    const split = await runCapture(page, 390, turnDoc(false, true));
+    expect(pair.stateFingerprint).toBe(split.stateFingerprint);
+  });
+
   test("(x1) identical state with a lost item: comparable, and the diff still files", async ({
     page,
   }) => {

@@ -685,20 +685,26 @@ test.describe("server-error (alice: 2a, 2e, 2c, repo-1e, project-1b, threads-1g)
       page.getByRole("alert").filter({ hasText: PROBLEM_LINE }).first(),
       "design 1g: the thread column carries the loud banner",
     ).toBeVisible();
-    // Pass review 1g defect 5: hiding the thread column on a failed read left a
-    // BLANK pane beside the banner at 1280, and an empty screen reads as a
-    // broken app. The column's at-rest truth is still "No thread selected" —
-    // none is — so the failed read KEEPS the prompt, and the refusal stays the
-    // ONE loud banner in the list column above (asserted just here). Below `lg`
-    // the phone's path to a thread is tapping a row, so the column is
-    // allowlisted as the documented 390 collapse (reflow.ts).
+    // Pass review 1g defect 5 said the layout must never collapse to a BLANK
+    // pane beside the banner; the independent review of 1g server-error then
+    // fixed WHAT the column may say: with the read failed there are no rows to
+    // pick, so an at-rest “Pick a thread on the left” contradicted the refusal
+    // beside it. The shipped contract (ui/src/pages/Threads.tsx
+    // `ThreadsDetailColumn listError`): the column STAYS DRAWN as empty paper —
+    // the layout stands — and holds NO prompt while the read failed; the
+    // refusal is said once, in the list column. Below `lg` the column is the
+    // documented master-detail collapse (reflow.ts allowlist).
     await expect(
-      page.getByTestId("threads-no-selection"),
-      "design 1g: at 1280 the thread column keeps its honest at-rest prompt beside the banner",
+      page.getByTestId("threads-detail-column"),
+      "design 1g: at 1280 the thread column still stands beside the banner — the failed read never collapses the layout to a blank screen",
     ).toBeVisible({ timeout: 30_000 });
     await expect(
-      page.getByTestId("threads-no-selection").getByRole("alert"),
-      "design 1g: the refusal is said ONCE — the at-rest prompt draws no second banner",
+      page.getByTestId("threads-no-selection"),
+      "design 1g (independent review): with the read failed the column invites NO pick — there are no rows to pick, so the at-rest prompt is not drawn over a refusal",
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId("threads-detail-column").getByRole("alert"),
+      "design 1g: the refusal is said ONCE — the thread column draws no second banner",
     ).toHaveCount(0);
     await expect(
       page.getByTestId(/^thread-row-/),

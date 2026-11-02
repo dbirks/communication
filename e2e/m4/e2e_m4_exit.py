@@ -1672,6 +1672,88 @@ def c1_unattended_permission_gap(status, cause, perm_rows, plan_key="/plan"):
             "engine in the meantime")
 
 
+# docs/testing/acceptance-ci.md names the second known agent-arm shape. On CI
+# the lab's profiles run on launcher `pi` (COMMUNICATION_LAB_LAUNCHER=pi, no
+# Claude token on runners by operator decision). Since ADR-0069 pi is gated as
+# `autonomous_within_sandbox` — it no longer fail-closes on the prompting-mode
+# check, so the attempt reaches `pi-acp`, which then answers `session/new`
+# with -32000 "Authentication required" when the stack carries no pi gateway
+# config. The m4 exit driver's own stack is [compose.yml, compose.harness.yml,
+# compose.m4.yml]: compose.real.yml is the ONLY layer that mounts
+# COMMUNICATION_PI_API_KEY_FILE into the workers, and it is deliberately not
+# among them (the workflow header says so). The leg therefore cannot complete
+# on a runner — and the doc's verdict for it is FAIL/GAP NAMING launcher pi,
+# NEVER a pass. These two helpers tell that refusal apart from a real engine
+# failure; the twin leg keeps measuring the engine.
+C1_PI_REFUSAL_DOC = "docs/testing/acceptance-ci.md"
+
+
+def c1_launcher_pi_refusal_gap(status, cause, fail_rows, plan_key="/plan"):
+    """GAP reason when the agent arm failed because launcher `pi` had no
+    gateway credential — every {plan_key} attempt died at acp `session/new`
+    with the launcher's own "Authentication required" (infra) — else None (the
+    caller prints the honest FAIL). `fail_rows` are [node_key, error_class,
+    detail] lines for the run's node.attempt.failed events. Pure.
+
+    Keys on the PI launcher's fingerprint inside the refusal (pi-acp /
+    Launch pi / --terminal-login): a claude leg that died on a stale login
+    says "Authentication required" too and must stay a FAIL — the doc's
+    promise is about launcher pi, not about the words."""
+    if status != "failed":
+        return None
+    cause = str(cause or "")
+    if "node_execution_failed" not in cause:
+        return None
+    node = cause.split(":", 1)[-1].strip().lstrip("/")
+    if node != plan_key.strip("/"):
+        return None
+    plan_rows = [r for r in fail_rows or [] if str(r[0]).strip("/") == plan_key.strip("/")]
+    if not plan_rows:
+        return None
+
+    def is_pi_refusal(row):
+        detail = str(row[2] or "").lower()
+        return (str(row[1] or "").strip().lower() == "infra"
+                and "session/new" in detail
+                and "authentication required" in detail
+                and ("pi-acp" in detail or "launch pi" in detail or "--terminal-login" in detail))
+
+    if not all(is_pi_refusal(r) for r in plan_rows):
+        return None
+    return (f"known environment refusal, not a new engine failure: the agent arm's "
+            f"{plan_key} attempt(s) reached launcher pi and {len(plan_rows)} "
+            "node.attempt.failed row(s) all carry the launcher's own refusal — acp "
+            "session/new -32000 'Authentication required: Configure an API key or "
+            "log in with an OAuth provider' (error_class=infra, pi-acp terminal "
+            "login). This stack composes [compose.yml, compose.harness.yml, "
+            "compose.m4.yml]; compose.real.yml is the only layer that mounts the "
+            "pi gateway key (COMMUNICATION_PI_API_KEY_FILE, ADR-0069) and CI runs "
+            f"without a Claude token by operator decision ({C1_PI_REFUSAL_DOC}): "
+            "launcher pi legs land FAIL/GAP naming launcher pi, never a pass. The "
+            "deterministic twin leg measures the engine in the meantime")
+
+
+def c1_attempt_failure_rows(run_id):
+    """[node_instance_key, error_class, detail] per node.attempt.failed event of """
+    try:
+        return psql_rows(psql(
+            "SELECT coalesce(payload->>'node_instance_key','-') || '|' || "
+            "coalesce(payload->>'error_class','-') || '|' || left(regexp_replace("
+            "coalesce(payload->>'detail',''), '\\s+', ' ', 'g'), 400) "
+            "FROM domain_events WHERE run_id = '" + run_id + "' "
+            "AND type = 'node.attempt.failed' ORDER BY global_seq"), 3)
+    except RuntimeError as e:
+        show("failed attempt rows (launcher-pi check)", str(e)[:200])
+        return []
+
+
+def run_failed_cause(run_id):
+    try:
+        return psql(f"SELECT COALESCE(failed_cause,'-') FROM runs WHERE id = '{run_id}'").strip()
+    except RuntimeError:
+        return ""
+
+
 def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
     """Poll to terminal via the ledger with the SSE stream watched alongside;
     alice's gate lands the moment the run waits. Returns (terminal status,
@@ -1701,6 +1783,10 @@ def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
     dump_run_evidence(client, run_id)
     cause, perms = c1_failure_evidence(run_id)
     reason = c1_unattended_permission_gap(status, cause, perms) if allow_unattended else None
+    if reason is None and allow_unattended:
+        # the other decided arm of the agent leg: launcher pi with no gateway
+        # credential on this stack (see c1_launcher_pi_refusal_gap's note).
+        reason = c1_launcher_pi_refusal_gap(status, cause, c1_attempt_failure_rows(run_id))
     if reason:
         gap(f"{label}: terminal status completed (§ 7.1 C1c)", reason)
     else:
@@ -2656,19 +2742,28 @@ def c2_hold_proof_verdicts(posted, held_s, fixture_state, floor_s=C2_HOLD_PROVEN
                      "attempt rather than after one"))]
 
 
-def c2_no_live_attempt_verdict(status, why=""):
+def c2_no_live_attempt_verdict(status, why="", launcher_gap=None):
     """Grade C2a's 'nothing was ever held at the target' outcome: an abnormally ended
     run is the product's own failure (it died before its implement node leased), while
     a completed/still-running run with no held attempt is a GAP — the window the
     contract asks about simply was not there to measure. Never a PASS by absence.
-    `why` is the hold diagnosis (hold_diagnosis/fault_hold_evidence). Returns
-    (kind, label, detail) with kind in ('check', 'gap'); pure."""
+    `why` is the hold diagnosis (hold_diagnosis/fault_hold_evidence).
+    `launcher_gap` is the c1_launcher_pi_refusal_gap reason for THIS run: when the
+    run died because launcher pi had no gateway credential (docs/testing/
+    acceptance-ci.md: that leg lands FAIL/GAP naming launcher pi, never a pass —
+    and the implement attempt it never reached is unmeasurable by construction),
+    the honest verdict is the GAP that names it, not a product FAIL. A failed run
+    WITHOUT that witness stays the check below. Returns (kind, label, detail) with
+    kind in ('check', 'gap'); pure."""
     st = str(status or "").strip().lower()
     detail = (f"no attempt was ever HELD by a worker at {C2_LIVE_TARGET_KEY} within the "
               f"poll window (run status={st!r}) — the gate was put through C1b's decide "
               "route first and the wait was aimed at the post-gate implement node, so with "
               "nothing running there is no live process environment and 'exactly one place' "
               "is unmeasurable (evidence dumped above)" + (f"; {why}" if why else ""))
+    if launcher_gap:
+        return ("gap", "C2a a live implement attempt to read",
+                detail + f" — {launcher_gap}")
     if st in ("failed", "cancelled", "interrupted"):
         return ("check", "C2a a live implement attempt to read",
                 f"the run is {st!r} without ever holding an implement attempt — there was "
@@ -2919,9 +3014,12 @@ def c2():
         target=C2_LIVE_TARGET_KEY))
     if live is None:
         dump_run_evidence(alice, run_id)
+        c2_st = run_status(run_id)
         kind, label, detail = c2_no_live_attempt_verdict(
-            run_status(run_id),
-            fault_hold_evidence(alice, run_id, "C2a", expected=0))
+            c2_st,
+            fault_hold_evidence(alice, run_id, "C2a", expected=0),
+            launcher_gap=c1_launcher_pi_refusal_gap(
+                c2_st, run_failed_cause(run_id), c1_attempt_failure_rows(run_id)))
         if kind == "check":
             check(label, False, detail)
         else:
@@ -20767,16 +20865,26 @@ def w_input_expectations(doc):
 # that query is what mounts `NewRunForm` over the list (ProjectRuns.tsx's
 # `RunsTabBody`). The RUNS panel's own `New run` BUTTON was the same verb twice
 # and is retired — a driver that still clicks it opens nothing, then reads a run
-# list with no form on it and fails every field arm for the wrong reason. The
-# accessible names below are the ones the components actually render today:
-# `new-run-heading` prints "New run", `Field id="new-run-assignment"` labels the
-# assignment `select` "Pipeline assignment", a declared input is labelled
-# `<name>` + ` *` when required, and the submit Button says "Start run" (so the
-# door and the submit share a NAME and are told apart by ROLE).
+# list with no form on it and fails every field arm for the wrong reason.
+#
+# Design 1k (commit 2e5c648) raised that form into `RunFormDialog` when the
+# pinned revision carries typed `input_specs` — and every published revision
+# does, since ADR-0066 derives them from spec.inputs: the heading reads
+# `Run <workflow>` (never the words “New run”), the assignment select is
+# labelled `Workflow` (not `Pipeline assignment`), a required field carries
+# its state as `required`/`aria-required` ON THE CONTROL with the visual `*`
+# kept out of the accessible name, and `Start run` moved to the dialog
+# footer. The flat form remains the shape for a revision with no input_specs
+# at all, so every arm below accepts BOTH spellings — and “required” is
+# proven by the accessible marker OR the DOM attribute (a playwright-cli a11y
+# snapshot renders neither `[required]` nor a hidden star), read through
+# `w_dom_field_states` below.
 W_DOOR_ROLE = "link"
 W_DOOR_NAME = "Start run"
 W_FORM_HEADING = "New run"
+W_FORM_HEADING_1K = "Run "  # design 1k: `Run <workflow>`
 W_ASSIGNMENT_LABEL = "Pipeline assignment"
+W_ASSIGNMENT_LABEL_1K = "Workflow"
 W_SUBMIT_NAME = "Start run"
 # The roles a declared `spec.inputs` entry can render as (NewRunForm's
 # InputFieldControl: textarea/text -> textbox, repository/enum -> combobox,
@@ -20795,14 +20903,19 @@ def w_field_control_hits(nodes, want, name=None):
 
 
 def w_form_opened_verdict(nodes, expected=()):
-    """(ok, detail): is `NewRunForm` on the page? The click on the band's
-    `Start run` is only the door — the form proves itself with its own heading
-    (`new-run-heading`) AND a control under it: the `Pipeline assignment`
-    selector, or one of the inputs the pinned revision declares. A page that
+    """(ok, detail): is `NewRunForm` on the page — in EITHER of its shipped
+    shapes? The click on the band's `Start run` is only the door — the form
+    proves itself with its own heading (`new-run-heading` reads "New run" on
+    the flat form; the 1k dialog reads `Run <workflow>`) AND a control under
+    it: the assignment selector (`Pipeline assignment`, or `Workflow` in the
+    1k chrome) or one of the inputs the pinned revision declares. A page that
     took the `?new=1` URL and shows only the run list opened nothing."""
-    heading = any(n["role"] == "heading" and (n["name"] or "").strip() == W_FORM_HEADING
+    heading = any(n["role"] == "heading"
+                  and ((n["name"] or "").strip() == W_FORM_HEADING
+                       or (n["name"] or "").strip().startswith(W_FORM_HEADING_1K))
                   for n in nodes)
-    assignment = bool(pw_refs(nodes, role="combobox", name=W_ASSIGNMENT_LABEL))
+    assignment = bool(pw_refs(nodes, role="combobox", name=W_ASSIGNMENT_LABEL)
+                      or pw_refs(nodes, role="combobox", name=W_ASSIGNMENT_LABEL_1K))
     labels = set()
     for field in expected or ():
         labels.add(field.get("label") or field.get("name"))
@@ -20810,15 +20923,56 @@ def w_form_opened_verdict(nodes, expected=()):
     shown = sorted({n["name"] for n in nodes
                     if n["role"] in W_CONTROL_ROLES and (n["name"] or "") in labels})
     ok = bool(heading and (assignment or shown))
-    return ok, (f"heading {W_FORM_HEADING!r}={'yes' if heading else 'no'}, "
-                f"{W_ASSIGNMENT_LABEL!r} combobox={'yes' if assignment else 'no'}, "
+    return ok, (f"heading {W_FORM_HEADING!r}/1k={'yes' if heading else 'no'}, "
+                f"{W_ASSIGNMENT_LABEL!r}/{W_ASSIGNMENT_LABEL_1K!r} "
+                f"combobox={'yes' if assignment else 'no'}, "
                 f"declared input controls={shown or 'none'}")
 
 
-def w_form_field_verdicts(expected, nodes):
-    """One verdict per declared input: rendered, with the required marker the
-    schema asked for. Field controls are matched by accessible name (`goal *`),
-    which is where the schema's required-ness surfaces in the a11y tree."""
+W_DOM_FIELD_STATES_JS = (
+    "() => [...document.querySelectorAll('[data-testid^=new-run-input-]')].map(el => "
+    "el.getAttribute('data-testid') + '|' + "
+    "(el.required === true || el.getAttribute('aria-required') === 'true') + '|' + "
+    "el.tagName).join('\\n')"
+)
+
+
+def w_parse_dom_field_states(text):
+    """The `w_dom_field_states` eval output -> {testid: {required, tag}}. Pure;
+    a ragged line is dropped, never verdicted (a control the probe could not
+    read stays absent and the required arm says its state is unprobed). The
+    page prints JavaScript's lowercase `true`/`false` through `join` — match
+    that exactly."""
+    states = {}
+    for m in re.finditer(r"(new-run-input-[A-Za-z0-9_]+)\|(true|false)\|([A-Za-z]+)",
+                         text or ""):
+        states[m.group(1)] = {"required": m.group(2) == "true", "tag": m.group(3)}
+    return states
+
+
+def w_submit_enabled_state(text):
+    """True/False when the probe read `new-run-submit`'s disabled state from the
+    page, None when it did not (no verdict may invent one). Pure."""
+    m = re.search(r"new-run-submit\|(true|false|missing)", text or "")
+    if not m or m.group(1) == "missing":
+        return None
+    return m.group(1) == "false"  # the JS reports the DISABLED state
+
+
+W_SUBMIT_STATE_JS = (
+    "() => { const b = document.querySelector('[data-testid=new-run-submit]'); "
+    "return b ? 'new-run-submit|' + (b.disabled ? 'true' : 'false') : 'new-run-submit|missing'; }"
+)
+
+
+def w_form_field_verdicts(expected, nodes, dom_states=None):
+    """One verdict per declared input: rendered, with the required-ness the
+    schema asked for proven ONE OF TWO WAYS: the marker the flat form puts in
+    the accessible name (`goal *`), or the `required`/`aria-required` state the
+    1k form carries on the control itself (`dom_states`, read from the DOM).
+    A required field proven by NEITHER is the defect this arm exists for — and
+    a field the form gates as required that the schema does NOT name is its
+    twin (an invented gate)."""
     verdicts = []
     for field in expected:
         want = field["label"]
@@ -20830,14 +20984,22 @@ def w_form_field_verdicts(expected, nodes):
             continue
         n = hits[0]
         star = "*" in (n["name"] or "")
-        if field["required"] and not star:
+        state = (dom_states or {}).get(field["testid"])
+        dom_required = None if state is None else state["required"]
+        if field["required"] and not star and dom_required is not True:
             verdicts.append((f"field {field['name']}", False,
                              f"required by spec.inputs but rendered without the marker "
-                             f"(accessible name {n['name']!r})"))
+                             f"(accessible name {n['name']!r}, required attr={dom_required!r})"))
+            continue
+        if not field["required"] and dom_required is True:
+            verdicts.append((f"field {field['name']}", False,
+                             f"optional in spec.inputs but rendered required "
+                             f"(required attr=True on {field['testid']})"))
             continue
         verdicts.append((f"field {field['name']}", True,
                          f"role={n['role']} name={n['name']!r} "
-                         f"required={field['required']}"))
+                         f"required={field['required']} "
+                         f"required-attr={dom_required if dom_required is not None else 'unprobed'}"))
     return verdicts
 
 
@@ -22555,10 +22717,14 @@ def w1():
         return
     # the form renders the FIRST assignment's revision; pin the arm to the exit
     # pipeline whose spec.inputs the manifest named, so the comparison is honest
-    pw_poll(lambda ns: bool(pw_refs(ns, role="combobox", name=W_ASSIGNMENT_LABEL)),
+    # (the 1k dialog labels that selector `Workflow`, the flat form `Pipeline
+    # assignment` — accept either spelling of the same control).
+    pw_poll(lambda ns: bool(pw_refs(ns, role="combobox", name=W_ASSIGNMENT_LABEL)
+                            or pw_refs(ns, role="combobox", name=W_ASSIGNMENT_LABEL_1K)),
             session="m4w1", tries=6, delay=2)
     rc, snap = pw_snapshot(session="m4w1")
-    arefs = pw_refs(pw_snapshot_nodes(snap), role="combobox", name=W_ASSIGNMENT_LABEL)
+    arefs = (pw_refs(pw_snapshot_nodes(snap), role="combobox", name=W_ASSIGNMENT_LABEL)
+             or pw_refs(pw_snapshot_nodes(snap), role="combobox", name=W_ASSIGNMENT_LABEL_1K))
     picked = ""
     if arefs:
         rc2, opts = pw("snapshot", arefs[0], session="m4w1")
@@ -22569,10 +22735,16 @@ def w1():
             picked = label.group("name")
             pw("select", arefs[0], picked, session="m4w1")
     show("New run: pipeline assignment selected", picked or "(left on the default)")
-    landed, nodes = pw_poll(lambda ns: bool(w_field_control_hits(ns, "goal *", "goal")),
+    landed, nodes = pw_poll(lambda ns: bool(w_field_control_hits(ns, "goal *", "goal")
+                                            or w_field_control_hits(ns, "goal", "goal")),
                             session="m4w1", tries=8, delay=2)
     shot = pw_shot("w1-form", session="m4w1")
-    for label, ok, detail in w_form_field_verdicts(expected, nodes):
+    # required-ness lives in the accessible name on the flat form and in the
+    # control's `required`/`aria-required` state on the 1k dialog — read the
+    # DOM attribute too, so the arm asks the same question of both shapes.
+    rc_dom, dom_text = pw("eval", W_DOM_FIELD_STATES_JS, session="m4w1")
+    dom_states = w_parse_dom_field_states(dom_text)
+    for label, ok, detail in w_form_field_verdicts(expected, nodes, dom_states):
         check(f"W1 {label}", ok, f"{detail} [{shot}]")
     # the declared default arrives in the control, not in a hard-coded placeholder
     ac = next((f for f in expected if f["name"] == "acceptance_criteria"), None)
@@ -22584,29 +22756,48 @@ def w1():
     else:
         gap("W1 declared default prefilled",
             "the pinned revision declares no default to render")
-    # repository select carries the project's repositories, from the API
+    # the repository control: the flat form renders `repository` as a select
+    # of the project's repositories (from the API); the 1k form builds it
+    # straight from the schema as a text field (ADR-0066 has no repository
+    # picker — design 1k: "Fields are built from the inputs"). Ask the right
+    # question of each shape: the option list when there is one, else the
+    # declared default/value the control carries — and in BOTH shapes the
+    # arm below proves the repository the run actually received.
+    repo_field = next((f for f in expected if f["name"] == "repository"), None)
+    repo_hits = (w_field_control_hits(nodes, repo_field["label"], repo_field["name"])
+                 if repo_field else [])
+    repo_is_select = bool(repo_hits and repo_hits[0]["role"] in ("combobox", "listbox"))
     repo_nodes = [n for n in nodes if n["role"] == "option"]
     repos = client.get(LB, f"/api/v1/projects/{project_id}/repos")
     repo_json = repos.json() if repos.status == 200 else {}
     rows = repo_json.get("items") or repo_json.get("repos") or repo_json.get("repositories") or []
     want = sorted({r.get("name") for r in rows if isinstance(r, dict) and r.get("name")})
     shown = sorted({n["name"] for n in repo_nodes if n["name"] and n["name"] != "— choose —"})
-    if want:
-        check("W1 repository select lists the project's repositories",
-              all(any(w in s for s in shown) for w in want),
-              f"api={want} rendered={shown} [{shot}]")
+    if repo_is_select:
+        if want:
+            check("W1 repository select lists the project's repositories",
+                  all(any(w in s for s in shown) for w in want),
+                  f"api={want} rendered={shown} [{shot}]")
+        else:
+            gap("W1 repository select lists the project's repositories",
+                f"GET repositories -> {repos.status}; nothing to compare the select against")
+    elif repo_hits:
+        check("W1 repository renders as the text field the schema declares (design 1k builds fields from inputs)",
+              True, f"role={repo_hits[0]['role']} name={repo_hits[0]['name']!r} [{shot}]")
     else:
-        gap("W1 repository select lists the project's repositories",
-            f"GET repositories -> {repos.status}; nothing to compare the select against")
+        gap("W1 repository control", "no repository control in the snapshot — there is nothing to fill or compare")
 
     # fill it and double-click Submit: one run, whatever the click count
-    def fill(name, value):
+    def fill(name, value, bare=None):
         rc, s = pw_snapshot(session="m4w1")
         ns = pw_snapshot_nodes(s)
         # a control first: the field's LABEL carries the same words and is not
-        # something playwright-cli can fill.
-        refs = ([n["ref"] for n in w_field_control_hits(ns, name, name)]
-                or pw_refs(ns, name=name) or pw_refs(ns, contains=name))
+        # something playwright-cli can fill. `bare` is the schema name — on the
+        # 1k dialog the accessible name is just that (the `*` marker rides the
+        # control's required state, not the name).
+        refs = ([n["ref"] for n in w_field_control_hits(ns, name, bare or name)]
+                or pw_refs(ns, name=name) or pw_refs(ns, contains=name)
+                or ([n["ref"] for n in w_field_control_hits(ns, bare, bare)] if bare else []))
         if not refs:
             return False, f"no control for {name!r}"
         rc2, out = pw("fill", refs[0], value, session="m4w1")
@@ -22614,21 +22805,32 @@ def w1():
 
     for f in expected:
         if f["name"] == "goal":
-            fill(f["label"], "W1 exit leg: prove the form is schema-driven")
+            fill(f["label"], "W1 exit leg: prove the form is schema-driven", bare=f["name"])
         elif f["name"] == "repository":
             rc, s = pw_snapshot(session="m4w1")
             refs = [n["ref"] for n in w_field_control_hits(pw_snapshot_nodes(s),
                                                            f["label"], f["name"])]
             if refs:
-                pw("select", refs[0], (want or ["app"])[0], session="m4w1")
+                if repo_is_select:
+                    pw("select", refs[0], (want or ["app"])[0], session="m4w1")
+                else:
+                    # the typed form's repository is a text field — fill it
+                    # with the same repository the select would have offered.
+                    pw("fill", refs[0], (want or ["app"])[0], session="m4w1")
         elif f["name"] == "acceptance_criteria" and f["required"]:
-            fill(f["label"], "hello.py adds")
+            fill(f["label"], "hello.py adds", bare=f["name"])
     shot2 = pw_shot("w1-filled", session="m4w1")
     # `Start run` again — this time the form's submit BUTTON (NewRunForm's
-    # `new-run-submit`), told apart from the header's door LINK by role.
-    ok_submit, sref, _ = pw_click(role="button", name=W_SUBMIT_NAME, session="m4w1")
-    check("W1 Submit is enabled once the required inputs are filled", ok_submit,
-          f"ref={sref} [{shot2}]")
+    # `new-run-submit`), told apart from the header's door LINK by role. The
+    # ENABLED state is read from the DOM first: a click on a still-disabled
+    # verb would time out and name the wrong defect.
+    rc_st, st_text = pw("eval", W_SUBMIT_STATE_JS, session="m4w1")
+    enabled = w_submit_enabled_state(st_text)
+    ok_submit, sref, submit_detail = pw_click(role="button", name=W_SUBMIT_NAME, session="m4w1")
+    check("W1 Submit is enabled once the required inputs are filled",
+          (enabled if enabled is not None else ok_submit),
+          f"ref={sref} dom-probe-disabled={enabled is False if enabled is not None else 'unprobed'} "
+          f"click-ok={ok_submit} [{shot2}]")
     if sref:
         pw("click", sref, session="m4w1", timeout=30)   # the second click, same key
     time.sleep(6)
@@ -22643,6 +22845,21 @@ def w1():
           f"[{shot3}]")
     check("W1 the POST carried an idempotency key the server stored", keys.strip() == "1",
           f"run_idempotency_keys rows for this submit={keys} [{shot3}]")
+    # the started run carries WHAT THE FORM WAS FILLED WITH — the strongest
+    # remaining read that the fields are real inputs, not decoration (and the
+    # W1 claim that the leg STARTED a run and can SEE it, end to end).
+    new_run = psql(f"SELECT id FROM runs WHERE project_id = '{project_id}' "
+                   f"AND created_at > to_timestamp({before}::double precision) "
+                   f"ORDER BY created_at DESC LIMIT 1")
+    inputs = parse_run_inputs(run_inputs_read(new_run)) if new_run else []
+    got = {r["name"]: (r["origin"], r["value"]) for r in inputs}
+    goal_ok = "goal" in got and "W1 exit leg: prove the form is schema-driven" in got["goal"][1]
+    repo_ok = ("repository" in got and got["repository"][0] == "submitted"
+               and (want or ["app"])[0].strip('"') in got["repository"][1])
+    check("W1 the run the form started carries the inputs it was filled with",
+          goal_ok and repo_ok,
+          f"run={new_run[:13] + '…' if new_run else '(none)'} goal={got.get('goal')} "
+          f"repository={got.get('repository')} [{shot3}]")
     pw("close", session="m4w1")
 
 

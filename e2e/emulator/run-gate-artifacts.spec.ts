@@ -80,11 +80,38 @@ test.describe("run-gate-artifacts (alice)", () => {
         const appOption = repoInput.locator("option").filter({ hasText: /^app$/ }).first();
         if (await appOption.count()) {
           await repoInput.selectOption({ label: (await appOption.textContent())?.trim() ?? "app" });
+        } else if (await repoInput.evaluate((el) => (el as HTMLInputElement).readOnly)) {
+          // e211688: run-by-hand opened FROM a repo carries that repo — the
+          // field arrives prefilled and read-only (never an empty free-text
+          // box). Prove the carry rather than typing over it.
+          await expect(
+            repoInput,
+            "design 1k (e211688): a repo-page run carries its repository, prefilled",
+          ).toHaveValue("app");
+        } else {
+          // design 1k: an unannotated `repository` string is a plain text
+          // field (ADR-0066 types are github_issue/branch/agent_profile/
+          // text/long_text — there is no repository picker in the typed form)
+          // and it is REQUIRED by the pinned plan-with-approval document, so
+          // the journey must type the binding name or `Start run` stays
+          // disabled and nothing starts.
+          await repoInput.fill("app");
         }
       }
-      // Remember the run rows that already exist — the newest NEW row (by
-      // id, not by list position: other agents share this lab) is ours.
-      await form.getByTestId("new-run-submit").click({ timeout: 20_000 });
+      // design 1k (commit 2e5c648) raised the form into RunFormDialog: the
+      // fields stay inside `new-run-form` but `Start run` moved to the
+      // dialog's FOOTER band — a sibling of the field column, not a member of
+      // it (RunFormDialog.tsx puts `submit` beside `new-run-cancel`, outside
+      // the children slot). Scoping the verb inside the form is what timed
+      // out on Actions run 41447122534 (run-gate pass-6, fingerprint
+      // 1e834db816afb354). Ask for it at page level, exactly like rcn-1k
+      // (repo-chat-nav.spec.ts) does, and prove it renders before clicking.
+      const submit = page.getByTestId("new-run-submit");
+      await expect(
+        submit,
+        "design 1k: the dialog's footer carries the Start run verb",
+      ).toBeVisible({ timeout: 20_000 });
+      await submit.click({ timeout: 20_000 });
       // A start the ceiling refuses must say so on screen — the form answers
       // the `409` with the reason AND a link to the run that holds the slot.
       // Reaching this branch means the journey before this one left its own

@@ -1067,7 +1067,16 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
             new URL(res.url()).pathname === `/api/v1/projects/${ids.projectId}`,
           { timeout: 20_000 },
         );
-        await toggle.check();
+        // The switch is deliberately server-confirmed: `checked` only flips
+        // when the PATCH lands (the label reads `Saving…` meanwhile —
+        // ADR-0072's optimistic-version write), so Playwright's strict
+        // `check()` (an immediate flip demanded in the same tick) is not
+        // what the design asks for. Click, then assert it LANDS checked —
+        // with the PATCH status and the state line still asserted below.
+        await toggle.click();
+        await expect(toggle, "the switch lands on once the PATCH is accepted").toBeChecked({
+          timeout: 20_000,
+        });
         const res = await patched;
         const body = await res.text();
         expect(

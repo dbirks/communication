@@ -423,6 +423,21 @@ class HoldWiringTest(unittest.TestCase):
                              f"{st} is the product's own failure, not an unmeasurable state")
         self.assertEqual(m.c2_no_live_attempt_verdict("running")[0], "gap")
 
+    def test_a_run_that_died_on_the_launcher_pi_refusal_is_the_named_gap(self):
+        """Actions run 41447122534 C2a: the run failed at /plan on pi-acp's
+        no-credential session refusal (docs/testing/acceptance-ci.md — that arm
+        lands FAIL/GAP naming launcher pi), so the implement window never
+        existed BY THE DECISION, not by engine failure. With the witness the
+        verdict is the GAP that says so; without it a dead run stays a FAIL."""
+        witness = ("known environment refusal, not a new engine failure: launcher "
+                   "pi never got a credential (compose.real.yml is not in this stack)")
+        kind, label, detail = m.c2_no_live_attempt_verdict(
+            "failed", "no live process", launcher_gap=witness)
+        self.assertEqual((kind, label), ("gap", "C2a a live implement attempt to read"))
+        self.assertIn("launcher pi", detail)
+        self.assertIn(witness, detail)
+        self.assertEqual(m.c2_no_live_attempt_verdict("failed", "no witness")[0], "check")
+
 
 class EvidenceRedactionTest(unittest.TestCase):
     """C2's own rule: the sentinel's VALUE never enters the report — presence and

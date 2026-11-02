@@ -72,6 +72,8 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_counter_verdicts,
     w_form_field_verdicts,
     w_form_opened_verdict,
+    w_parse_dom_field_states,
+    w_submit_enabled_state,
     W_ASSIGNMENT_LABEL,
     W_DOOR_NAME,
     W_DOOR_ROLE,
@@ -322,6 +324,108 @@ def test_w1_form_opened_verdict_needs_the_card_not_just_the_url():
     ok4, detail4 = w_form_opened_verdict(no_inputs, expected)
     _assert("the assignment selector alone is enough to call the card open", ok4 is True,
             detail4)
+
+
+# Design 1k (commit 2e5c648) raised the form into RunFormDialog: the heading
+# reads `Run <workflow>`, the assignment select is labelled `Workflow`, the
+# accessible names of required fields LOSE the ` *` (the marker is aria-hidden
+# and the required state rides the control as required/aria-required — which a
+# playwright-cli a11y snapshot does not print), and `Start run` lives in the
+# dialog footer. This is the real snapshot shape observed on the dev server for
+# the m4 exit project; the arms must grade it, not the retired flat card.
+W1_RUNS_FORM_1K = """
+### Page
+- Page URL: http://localhost:15173/p/01a1/runs?new=1
+### Snapshot
+```yaml
+- main [ref=f3e2]:
+  - generic [ref=f3e120]:
+    - link "Start run" [ref=f3e124] [cursor=pointer]:
+      - /url: /p/01a1/runs?new=1
+  - generic [ref=f3e140]:
+    - heading "Run feature-development" [level=2] [ref=f3e205]
+    - paragraph [ref=f3e206]: app · pinned r4
+    - combobox "Workflow" [ref=f3e212]:
+      - option "feature-development-deterministic · 1.0.0" [ref=f3e213]
+      - option "feature-development · 4.0.0" [ref=f3e214]
+    - textbox "goal" [ref=f3e216]
+    - textbox "repository" [ref=f3e220]
+    - textbox "acceptance_criteria" [ref=f3e224]: Tests pass, the plan is followed.
+    - paragraph [ref=f3e234]: Required fields are marked *; the rest start on their defaults.
+    - button "Cancel" [ref=f3e236] [cursor=pointer]
+    - button "Start run" [disabled] [ref=f3e237]
+```
+"""
+
+
+def test_w1_form_opened_verdict_reads_the_raised_1k_dialog():
+    """Actions run 41447122534/W1: the click opened the dialog, but the verdict
+    asked for the FLAT card's words (`New run`, `Pipeline assignment`) and
+    called a raised form 'nothing opened'. The dialog heading `Run <workflow>`
+    plus the `Workflow` select is the same claim in the new chrome."""
+    doc = {"spec": {"inputs": {"required": ["goal", "repository"], "properties": {
+        "goal": {"type": "string"}, "repository": {"type": "string"},
+        "acceptance_criteria": {"type": "string", "default": "hello.py works"}}}}}
+    expected = w_input_expectations(doc)
+    nodes = pw_snapshot_nodes(W1_RUNS_FORM_1K)
+    ok, detail = w_form_opened_verdict(nodes, expected)
+    _assert("the raised dialog IS the form opened", ok is True, detail)
+    _assert("the declared fields are named in the detail",
+            "goal" in detail and "repository" in detail, detail)
+    # the door and the footer verb still share the name and differ by role
+    _assert("the door stays a link",
+            pw_refs(nodes, role=W_DOOR_ROLE, name=W_SUBMIT_NAME) == ["f3e124"],
+            pw_refs(nodes, role=W_DOOR_ROLE, name=W_SUBMIT_NAME))
+    _assert("the submit stays a button",
+            pw_refs(nodes, role="button", name=W_SUBMIT_NAME) == ["f3e237"],
+            pw_refs(nodes, role="button", name=W_SUBMIT_NAME))
+    # required-ness on this shape is the CONTROL's state, read from the DOM:
+    # the a11y name carries no star and the snapshot prints no [required].
+    dom_states = {"new-run-input-goal": {"required": True, "tag": "INPUT"},
+                  "new-run-input-repository": {"required": True, "tag": "INPUT"},
+                  "new-run-input-acceptance_criteria": {"required": False, "tag": "INPUT"}}
+    v = {lbl: ok2 for lbl, ok2, _ in w_form_field_verdicts(expected, nodes, dom_states)}
+    _assert("required fields proven by the control's required state pass",
+            v.get("field goal") is True and v.get("field repository") is True, v)
+    _assert("an optional field is not flagged", v.get("field acceptance_criteria") is True, v)
+    # and the same arm FAILs when NEITHER spelling of required-ness is there
+    v2 = {lbl: ok2 for lbl, ok2, _ in w_form_field_verdicts(expected, nodes, {})}
+    _assert("a required field with no marker and no required attr FAILs",
+            v2.get("field goal") is False and v2.get("field repository") is False, v2)
+    # an invented gate (control required, schema optional) FAILs too
+    v3 = {lbl: ok2 for lbl, ok2, _ in w_form_field_verdicts(
+        expected, nodes, {"new-run-input-acceptance_criteria": {"required": True,
+                                                                "tag": "INPUT"}})}
+    _assert("a field the form gates that the schema does not FAILs",
+            v3.get("field acceptance_criteria") is False, v3)
+    # the flat card keeps working UNCHANGED (name-star, no dom probe)
+    flat = pw_snapshot_nodes(W1_RUNS_FORM_OPEN)
+    v4 = {lbl: ok2 for lbl, ok2, _ in w_form_field_verdicts(expected, flat)}
+    _assert("the retired-shaped flat card still passes on its name-star",
+            all(ok2 is True for ok2 in v4.values()), v4)
+
+
+def test_w1_dom_probes_parse():
+    """The eval probes are the only place the dialog's required/enabled state
+    can be read — the parsers must be strict about what the page answered.
+    The page prints JavaScript's lowercase true/false (verified against the
+    dev server: `new-run-input-goal|true|INPUT`)."""
+    states = w_parse_dom_field_states(
+        "### Result\n\"new-run-input-goal|true|INPUT\\n"
+        "new-run-input-acceptance_criteria|false|TEXTAREA\"\n")
+    _assert("field states parse",
+            states.get("new-run-input-goal") == {"required": True, "tag": "INPUT"}
+            and states.get("new-run-input-acceptance_criteria") == {"required": False,
+                                                                    "tag": "TEXTAREA"},
+            states)
+    _assert("ragged lines drop", w_parse_dom_field_states("new-run-input-x|maybe|INPUT") == {},
+            "")
+    _assert("an enabled submit reads True",
+            w_submit_enabled_state("new-run-submit|false") is True, "")
+    _assert("a disabled submit reads False",
+            w_submit_enabled_state("new-run-submit|true") is False, "")
+    _assert("a missing verb reads nothing", w_submit_enabled_state("new-run-submit|missing") is None,
+            "")
 
 
 def test_counter_verdicts():
@@ -2340,6 +2444,8 @@ if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_w1_door_is_the_header_bands_start_run_link,
                test_w1_form_opened_verdict_needs_the_card_not_just_the_url,
+               test_w1_form_opened_verdict_reads_the_raised_1k_dialog,
+               test_w1_dom_probes_parse,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,

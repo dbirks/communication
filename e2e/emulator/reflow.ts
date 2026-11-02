@@ -170,6 +170,28 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
       "the chat side panel reflows under the transcript below 1024px as thread-side-panel-stack (ConversationChatSurface.test.tsx pins the swap; the panel's content renders inside the stack)",
     reach: "thread-side-panel-stack",
   },
+  // The repo feed's per-row meta swap (2174d36, ui/src/components/repo/
+  // RepoActivity.tsx `RowMetaMobile`): below `sm` the run's workflow-name
+  // column (`repo-run-workflow-<id>`) and the chat's agent column
+  // (`repo-chat-agent-<id>`) hide (`hidden … sm:block`) and the SAME words
+  // reappear under the row's title as `repo-run-meta-<id>` /
+  // `repo-chat-meta-<id>` (`block … sm:hidden`) so title and status read in
+  // full at 390. Not lost content — a column-to-line swap, one row at a
+  // time: the `*` pattern resolves each item's reach against ITS OWN row, so
+  // a row that lost the desktop column AND grew no meta line still files.
+  // First filed by the local re-run of Actions run 41447122534's server-error
+  // journey (screens 2e/2c server-error, 390, 16 items) — the acceptance run
+  // itself predates the swap.
+  "repo-run-workflow-*": {
+    reason:
+      "the run row's workflow column moves under the title at phone width (RowMetaMobile); the same row's repo-run-meta-* carries the same words",
+    reach: "repo-run-meta-*",
+  },
+  "repo-chat-agent-*": {
+    reason:
+      "the chat row's agent column moves under the title at phone width (RowMetaMobile); the same row's repo-chat-meta-* carries the same words",
+    reach: "repo-chat-meta-*",
+  },
   // The Studio edge "+"'s hover word (`ui/src/components/studio/edges.tsx`):
   // `opacity-0` until the "+" is hovered or keyboard-focused, so the 1280
   // capture can paint `insert step` while the 390 capture never does — touch
@@ -325,6 +347,19 @@ export function collectStateFingerprint(): string {
   // Presence-only state surfaces (same files + RunInspector.tsx's
   // `RunActions`, ApprovalCard.tsx's decision bar and outcomes, the thread
   // panel's control verbs).
+  //
+  // `stop-turn` and the breadcrumb pair joined for Actions run 41447122534
+  // (journey `thread`, screen threads-1g thread): the pass sends a real turn
+  // seconds before `screen()`, and the 1280 capture caught the turn RUNNING
+  // (`stop-turn Stop`, the composer's running-copy explainer, the chip reason)
+  // while the 390 capture caught it FINISHED — a fingerprint that only knew
+  // the controller badge called those two captures ONE page state and filed
+  // four items “lost at 390”. `stop-turn` is a danger CONTROL that appears
+  // with the turn; `conversation-breadcrumb-repo`/`-unbound` is the repo read
+  // landing after the first capture and turning the honest “chats” fallback
+  // into a link. All three change what a person can operate, which is exactly
+  // this guard's stated bar (file header): the pair now re-captures at the
+  // 390 moment instead of diffing two different page states.
   const PRESENCE_STATE: string[] = [
     "run-pause",
     "run-resume",
@@ -338,6 +373,9 @@ export function collectStateFingerprint(): string {
     "approval-expired-reason",
     "take-control",
     "return-control",
+    "stop-turn",
+    "conversation-breadcrumb-repo",
+    "conversation-breadcrumb-unbound",
   ];
   const entries = new Set<string>();
   for (const el of Array.from(document.querySelectorAll("[data-testid]"))) {
