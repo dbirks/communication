@@ -2,7 +2,8 @@
  * The repo page's chat box (design 3a): one line with an ink border and the
  * hard `2px 2px 0` shadow — a placeholder that names the repository, an
  * agent-profile chip (secondary, 26px) that opens the `ds/Menu` picker, and a
- * primary `Start`.
+ * primary `Start`. Below 640px the placeholder shortens to just the
+ * repository's name — the same prefix, never a mid-word clip.
  *
  * Start creates a conversation BORN BOUND to this repository (ADR-0067: the
  * POST carries `repository` — the name — plus the chosen profile and the typed
@@ -33,6 +34,29 @@ export interface RepoChatBoxProps {
   prefill?: { text: string };
 }
 
+/** Below 640px the line's own box shrinks to (almost) nothing beside the
+ * profile chip and `Start`, and the long placeholder clips mid-word — the
+ * one width question this component asks, asked the same way `Shell` asks
+ * its own (`matchMedia`, so CSS and mount logic never disagree). */
+const PHONE_WIDTH_QUERY = "(max-width: 639.98px)";
+
+function usePhoneWidth(): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(PHONE_WIDTH_QUERY).matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(PHONE_WIDTH_QUERY);
+    const onChange = () => setNarrow(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
 /** The conversation title the wire demands, from the text the person typed:
  * its first non-blank line, trimmed, capped at the server's own 200-rune
  * bound. Nothing is invented — the thread is named by its opening words. */
@@ -51,6 +75,7 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
   const [menuOpen, setMenuOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const phoneWidth = usePhoneWidth();
 
   // A note's prefill arrives while the page is already on screen: fill the
   // line and focus it, so the action lands where the person was sent. It never
@@ -108,7 +133,11 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
             }
           }}
           aria-label={`Chat in ${repositoryName}`}
-          placeholder={`Chat in ${repositoryName}… ask, plan, or paste an issue`}
+          placeholder={
+            phoneWidth
+              ? `Chat in ${repositoryName}…`
+              : `Chat in ${repositoryName}… ask, plan, or paste an issue`
+          }
           className="min-w-0 flex-1 bg-transparent px-2 text-[13px] text-ink outline-none placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           data-testid="repo-chat-input"
         />

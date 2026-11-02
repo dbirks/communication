@@ -117,6 +117,78 @@ function initialsOf(name: string): string {
     .join("");
 }
 
+/** Characterwise longest shared prefix of a group of names. */
+function commonPrefix(names: readonly string[]): string {
+  let prefix = names[0] ?? "";
+  for (const name of names.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < name.length && prefix[i] === name[i]) i += 1;
+    prefix = prefix.slice(0, i);
+  }
+  return prefix;
+}
+
+/**
+ * The rail tiles' initials — unique within the rail wherever the names
+ * allow, and a pure function of the list (so a reload never re-shuffles
+ * them). Pass 1 is the plain two-word initials. Where those collide the
+ * tile keeps the first letter and takes the shortest head (1–2 characters,
+ * so at most 3 on the tile) of what the colliding names have after the
+ * part they share — the distinguishing token starts there, turning three
+ * “Emu rcn rcn-labA-…/-devA-…/rcnA-…” projects into `EL`/`ED`/`EA`.
+ * Names too alike for that fall back to 2–3 characters of the whole name;
+ * truly identical names cannot be told apart by ink alone, so they keep
+ * the same tile and the flyout's full name carries the difference.
+ */
+export function railInitials(names: readonly string[]): string[] {
+  const out = names.map((name) => initialsOf(name) || "?");
+  const groups = new Map<string, number[]>();
+  out.forEach((initials, index) => {
+    const group = groups.get(initials);
+    if (group) group.push(index);
+    else groups.set(initials, [index]);
+  });
+  const assignable = (candidates: readonly string[], indexes: readonly number[]): boolean =>
+    new Set(candidates).size === candidates.length &&
+    candidates.every(
+      (candidate) => !out.some((value, i) => !indexes.includes(i) && value === candidate),
+    );
+  for (const [initials, indexes] of groups) {
+    if (indexes.length < 2) continue;
+    const memberNames = indexes.map((index) => names[index]);
+    const shared = commonPrefix(memberNames);
+    const letter = (initials[0] ?? "?").toUpperCase();
+    const tails = memberNames.map((name) =>
+      name
+        .slice(shared.length)
+        .replace(/^[^A-Za-z0-9]+/, "")
+        .toUpperCase(),
+    );
+    let resolved = false;
+    for (let take = 1; take <= 2 && !resolved; take += 1) {
+      const candidates = tails.map((tail) => letter + (tail.slice(0, take) || "?"));
+      if (assignable(candidates, indexes)) {
+        candidates.forEach((candidate, i) => {
+          out[indexes[i]] = candidate;
+        });
+        resolved = true;
+      }
+    }
+    for (let take = 2; take <= 3 && !resolved; take += 1) {
+      const candidates = memberNames.map((name) => name.trim().slice(0, take).toUpperCase());
+      if (assignable(candidates, indexes)) {
+        candidates.forEach((candidate, i) => {
+          out[indexes[i]] = candidate;
+        });
+        resolved = true;
+      }
+    }
+    // Still unresolved (identical, or case-only differences): the members
+    // keep the shared base initials; the flyout names each one in full.
+  }
+  return out;
+}
+
 function InitialsTile({ name, className = "" }: { name: string; className?: string }) {
   return (
     <span
@@ -728,6 +800,11 @@ const RAIL_LABEL =
  * initials tile per project, Library, the expand control and the avatar.
  * A tile's flyout is the honest replacement for the labels: it names the
  * project, states its worst flag and links its repositories.
+ * Tiles carry the project's worst-state flag (design 3c) as a corner
+ * badge — glyph + count from the very data the expanded rows read
+ * (`useSidebarFlags`), never colour alone — and their initials are made
+ * unique within the rail (`railInitials`), so three “Emu rcn …” projects
+ * are three distinguishable tiles.
  */
 function Rail({
   signedIn,
@@ -743,6 +820,9 @@ function Rail({
   const location = useLocation();
   const items = projects.data?.items ?? [];
   const activeProjectId = projectIdFromPath(location.pathname);
+  // One pass over the whole list: a tile's letters depend on its
+  // neighbours', so they are computed together, deterministically.
+  const tiles = useMemo(() => railInitials(items.map((project) => project.name)), [items]);
 
   // One flyout at a time, anchored to whichever tile opened it. The popover
   // is a child of the column's host (outside the scrolling list), so the
@@ -820,25 +900,40 @@ function Rail({
             under them) and only scroll when there is not enough of it: a
             growing `flex-1` would push Library down to the bottom group. */}
         <div className="flex w-full min-h-0 shrink flex-col items-center gap-[8px] overflow-y-auto">
-          {items.map((project) => {
+          {items.map((project, index) => {
             const active = project.id === activeProjectId;
+            const flag = flags.projects[project.id] ?? { kind: "none", count: 0 };
+            const style = flag.kind === "none" || flag.count === 0 ? null : FLAG_STYLE[flag.kind];
             return (
               <NavLink
                 key={project.id}
                 to={routes.project(project.id)}
                 data-testid={`sidebar-rail-project-${project.id}`}
-                aria-label={project.name}
+                aria-label={style ? `${project.name} · ${flag.count} ${style.word}` : project.name}
                 onMouseEnter={(event) => openFlyoutFor(event.currentTarget, project.id)}
                 onMouseLeave={scheduleClose}
                 onFocus={(event) => openFlyoutFor(event.currentTarget, project.id)}
                 onBlur={scheduleClose}
-                className={`grid size-[30px] shrink-0 place-items-center rounded-[3px] border font-mono text-[10px] no-underline ${FOCUS_RING} ${
+                className={`relative grid size-[30px] shrink-0 place-items-center rounded-[3px] border font-mono text-[10px] no-underline ${FOCUS_RING} ${
                   active
                     ? "border-ink bg-accent-tint text-ink"
                     : "border-fill-edge bg-surface text-muted hover:bg-fill hover:text-ink"
                 }`}
               >
-                {initialsOf(project.name) || "?"}
+                {tiles[index] || "?"}
+                {/* The worst-state flag, design 3c's corner badge: the same
+                    data the expanded row prints (one `FlagBadge`'s worth),
+                    glyph + count at rail size. */}
+                {style ? (
+                  <span
+                    aria-hidden="true"
+                    data-testid={`sidebar-rail-flag-${project.id}`}
+                    className={`absolute -bottom-[5px] -right-[5px] rounded-[3px] border border-line-strong bg-surface px-[2px] font-mono text-[8.5px] font-semibold leading-[11px] ${style.fg}`}
+                  >
+                    {style.glyph}
+                    {flag.count}
+                  </span>
+                ) : null}
               </NavLink>
             );
           })}

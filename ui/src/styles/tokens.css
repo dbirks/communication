@@ -19,9 +19,18 @@
 @theme {
   /* Families (02 Type): Red Hat Text for anything a person reads or acts on,
      Red Hat Mono for anything a machine produced, Kaisei Opti 500 only in the
-     Mark. */
-  --font-ui: "Red Hat Text", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Red Hat Mono", ui-monospace, "SF Mono", monospace;
+     Mark. Each stack ends in system-fallback-only tails (no new web fonts):
+     the emoji faces, then a sans-serif CJK run — the self-hosted Latin
+     subsets carry neither, so without these an emoji or a CJK issue title
+     (GitHub's trackers have both) renders as tofu boxes. */
+  --font-ui:
+    "Red Hat Text", ui-sans-serif, system-ui, sans-serif, "Noto Color Emoji", "Apple Color Emoji",
+    "Segoe UI Emoji", "Noto Sans CJK SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
+    "Hiragino Kaku Gothic ProN", sans-serif;
+  --font-mono:
+    "Red Hat Mono", ui-monospace, "SF Mono", monospace, "Noto Color Emoji", "Apple Color Emoji",
+    "Segoe UI Emoji", "Noto Sans CJK SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
+    "Hiragino Kaku Gothic ProN", monospace;
   --font-mark: "Kaisei Opti", serif;
 
   /* 01 Color — neutrals */

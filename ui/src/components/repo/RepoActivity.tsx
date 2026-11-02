@@ -9,6 +9,12 @@
  * body background. A running run shows the ds ProgressStrip under its title
  * ONLY when the run data really carries per-step states — nothing is ever
  * invented. Every row links to its run or thread.
+ *
+ * Below 640px the 120px workflow/agents column would squeeze the title to
+ * a stub, so it drops out of the grid and re-prints as the row's second
+ * line, under the title (design 3a reflow); and the status word after the
+ * title is `shrink-0` at every width — a long title truncates before the
+ * status is lost, never through it.
  */
 import { useState } from "react";
 import type { ConversationSummary, RunSummary } from "../../api/types";
@@ -286,8 +292,27 @@ export function RepoActivity({
   );
 }
 
+/** Desktop: the five columns. Below `sm` the fourth (workflow/agents) leaves
+ * the grid — `hidden`, not merely narrowed — and the age takes its place, so
+ * the title keeps the whole remaining line; the fourth column's words re-enter
+ * as the row's second line. One element per copy, each inert where it does not
+ * belong. */
 const ROW_GRID =
-  "grid grid-cols-[16px_44px_minmax(0,1fr)_120px_36px] items-center gap-x-2 border-t border-line-soft px-3 py-[8px] first:border-t-0 hover:bg-paper";
+  "grid grid-cols-[16px_44px_minmax(0,1fr)_36px] items-center gap-x-2 border-t border-line-soft px-3 py-[8px] first:border-t-0 hover:bg-paper sm:grid-cols-[16px_44px_minmax(0,1fr)_120px_36px]";
+
+/** The same words as the 120px column, as the row's second line on phones. */
+function RowMetaMobile({ testid, meta }: { testid: string; meta: string }) {
+  if (!meta) return null;
+  return (
+    <span
+      className="block truncate font-mono text-[10.5px] text-muted sm:hidden"
+      title={meta}
+      data-testid={testid}
+    >
+      {meta}
+    </span>
+  );
+}
 
 function ActivityRowView({
   row,
@@ -322,11 +347,12 @@ function ActivityRowView({
           </span>
           <span className="font-mono text-[10px] text-muted">RUN</span>
           <span className="min-w-0">
-            <span className="block truncate text-[12.5px] text-ink">
-              <span className="font-semibold">
+            {/* The status word never clips: the title truncates before it. */}
+            <span className="flex min-w-0 items-baseline gap-[3px] text-[12.5px] text-ink">
+              <span className="min-w-0 truncate font-semibold">
                 {run.title ?? name ?? `Run #${shortId(run.id)}`}
               </span>
-              {` · ${SHORT_WORD[state]}`}
+              <span className="shrink-0">{`· ${SHORT_WORD[state]}`}</span>
             </span>
             {state === "running" && segments ? (
               <ProgressStrip
@@ -335,8 +361,13 @@ function ActivityRowView({
                 className="mt-[3px] max-w-[200px]"
               />
             ) : null}
+            <RowMetaMobile testid={`repo-run-meta-${testidOf(run.id)}`} meta={name ?? ""} />
           </span>
-          <span className="min-w-0 truncate font-mono text-[10.5px] text-muted" title={name ?? ""}>
+          <span
+            className="hidden min-w-0 truncate font-mono text-[10.5px] text-muted sm:block"
+            title={name ?? ""}
+            data-testid={`repo-run-workflow-${testidOf(run.id)}`}
+          >
             {name ?? ""}
           </span>
           <span className="truncate text-right font-mono text-[10.5px] text-faint">
@@ -363,13 +394,20 @@ function ActivityRowView({
         </span>
         <span className="sr-only">{SHORT_WORD[state]}</span>
         <span className="font-mono text-[10px] font-semibold text-accent-text">CHAT</span>
-        <span className="block min-w-0 truncate text-[12.5px] text-ink">
-          <span className="font-semibold">{conversation.title}</span>
-          {` · ${SHORT_WORD[state]}`}
+        <span className="min-w-0">
+          <span className="flex min-w-0 items-baseline gap-[3px] text-[12.5px] text-ink">
+            <span className="min-w-0 truncate font-semibold">{conversation.title}</span>
+            <span className="shrink-0">{`· ${SHORT_WORD[state]}`}</span>
+          </span>
+          <RowMetaMobile
+            testid={`repo-chat-meta-${testidOf(conversation.id)}`}
+            meta={agent ?? ""}
+          />
         </span>
         <span
-          className="min-w-0 truncate font-mono text-[10.5px] text-muted"
+          className="hidden min-w-0 truncate font-mono text-[10.5px] text-muted sm:block"
           title={agent ?? conversation.agent_profile_id}
+          data-testid={`repo-chat-agent-${testidOf(conversation.id)}`}
         >
           {agent ?? ""}
         </span>

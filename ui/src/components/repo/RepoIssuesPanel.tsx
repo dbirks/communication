@@ -7,6 +7,10 @@
  * issue already has a live run says so with the run's own state word. The
  * bar's `all ›` walks to GitHub's own issue list.
  *
+ * The panel lists at most `MAX_PANEL_ISSUES` of them (the bar still counts
+ * them all): a busy tracker is 18-plus rows deep and turns the page into a
+ * scroll — the rest belong to GitHub, one click behind `all ›`.
+ *
  * Honesty rules carried over from design 1e: the list is GitHub's read
  * answer (rate-limit, private-repo and not-a-GitHub refusals each say their
  * own sentence); a run only counts as "from this issue" when the ADR-0056
@@ -48,6 +52,10 @@ export interface RepoIssuesPanelProps {
  * activity feed uses; kept local so the panel never claims "in progress"
  * for a closed run. */
 const TERMINAL_RUN_STATUSES = new Set<string>(["completed", "failed", "cancelled", "interrupted"]);
+
+/** How many open issues the side panel lists before `all ›` takes the rest
+ * to GitHub (the design's meta link). */
+const MAX_PANEL_ISSUES = 8;
 
 export function RepoIssuesPanel({
   repository,
@@ -141,7 +149,7 @@ export function RepoIssuesPanel({
           ) : null}
           {list && !issues.isPending && !issues.isError && list.items.length > 0 ? (
             <ul data-testid="repo-issues-list">
-              {list.items.map((issue) => (
+              {list.items.slice(0, MAX_PANEL_ISSUES).map((issue) => (
                 <IssueRow
                   key={issue.number}
                   issue={issue}

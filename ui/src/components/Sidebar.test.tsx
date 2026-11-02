@@ -17,7 +17,8 @@ import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
 import { meFixture, projectFixture, repositoryId, requestsTo, type RouteStub } from "../test/fakes";
 import { wirePipelineList, wireRun } from "../test/fixtures/m4/wire";
-import type { Repository } from "../api/types";
+import { railInitials } from "./Sidebar";
+import type { Project, Repository } from "../api/types";
 
 /** Wait budget for the first round trips the sidebar waits on. */
 const READ_MS = 5_000;
@@ -51,16 +52,27 @@ function prefsDoc(
 }
 
 interface StubOverrides {
+  projects?: unknown;
   runs?: unknown;
   prefs?: unknown;
   extra?: RouteStub[];
 }
 
+/** Per-project reads one more fixture project needs (repos, flags, chats). */
+function projectReads(project: Project): RouteStub[] {
+  return [
+    { path: `/api/v1/projects/${project.id}/repos`, body: { items: [] } },
+    { path: `/api/v1/projects/${project.id}/approvals`, body: { approvals: [] } },
+    { path: `/api/v1/projects/${project.id}/runs`, body: { runs: [] } },
+    { path: `/api/v1/projects/${project.id}/conversations`, body: { items: [] } },
+  ];
+}
+
 /** Everything the column reads, against the one fixture project. */
-function baseRoutes({ runs, prefs, extra = [] }: StubOverrides = {}): RouteStub[] {
+function baseRoutes({ projects, runs, prefs, extra = [] }: StubOverrides = {}): RouteStub[] {
   return [
     { path: "/api/v1/me", body: meFixture },
-    { path: "/api/v1/projects", body: { items: [projectFixture] } },
+    { path: "/api/v1/projects", body: projects ?? { items: [projectFixture] } },
     { path: `/api/v1/projects/${P}/repos`, body: { items: [repoFixture] } },
     { path: `/api/v1/projects/${P}/approvals`, body: { approvals: [] } },
     { path: `/api/v1/projects/${P}/runs`, body: runs ?? { runs: [] } },
@@ -458,14 +470,106 @@ describe("the sidebar flags read off the same reduction as Inbox", () => {
   });
 });
 
+describe("railInitials (the tiles are distinguishable)", () => {
+  it("keeps the plain initials when nothing collides", () => {
+    // Today's rule unchanged for names that do not need help: one letter
+    // per leading word, up to two words.
+    expect(railInitials(["Northwind", "Acme", "M4 Exit"])).toEqual(["N", "A", "ME"]);
+  });
+  it("picks the distinguishing token when the first letters collide", () => {
+    expect(
+      railInitials([
+        "Emu rcn rcn-labA-1793626180",
+        "Emu rcn rcn-devA-1793626180",
+        "Emu rcn rcnA-1793626180",
+      ]),
+    ).toEqual(["EL", "ED", "EA"]);
+  });
+  it("widens within the tail before falling back to name characters", () => {
+    // The tails collide letter-for-letter at one character (`B`/`B`) and
+    // only part at the second: the tile widens to three characters.
+    expect(railInitials(["Emu rcn rcn-labA-1", "Emu rcn rcn-laBB-2"])).toEqual(["EBA", "EBB"]);
+  });
+  it("keeps the shared initials for names nothing can separate", () => {
+    // Identical names cannot be told apart by ink; the flyout carries the
+    // full name. Nothing else changes.
+    expect(railInitials(["Emu rcn dup", "Emu rcn dup"])).toEqual(["ER", "ER"]);
+  });
+  it("is deterministic", () => {
+    const names = ["Emu rcn x-1", "Emu rcn x-2", "Emu rcn x-3"];
+    expect(railInitials(names)).toEqual(railInitials([...names]));
+  });
+});
+
 describe("the collapsed rail (handoff 2c/3c)", () => {
   /** The layout-prefs key the rail's state rides (see `lib/prefs.ts`). */
   const COLLAPSED = "sidebar:collapsed";
 
   /** The column's reads with the rail already saved as the preference. */
-  function railRoutes(extra: RouteStub[] = []): RouteStub[] {
-    return baseRoutes({ prefs: prefsDoc({ [COLLAPSED]: true }), extra });
+  function railRoutes(extra: RouteStub[] = [], projects?: unknown): RouteStub[] {
+    return baseRoutes({ prefs: prefsDoc({ [COLLAPSED]: true }), projects, extra });
   }
+
+  // Design-3a rail review: three “Emu rcn …” projects that all INITIALise
+  // “ER” must not collapse into three identical tiles.
+  it("gives same-first-letter projects distinct tiles", async () => {
+    const emuA: Project = {
+      ...projectFixture,
+      id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b81",
+      name: "Emu rcn rcn-labA-1793626180",
+    };
+    const emuB: Project = {
+      ...projectFixture,
+      id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b82",
+      name: "Emu rcn rcn-devA-1793626180",
+    };
+    const emuC: Project = {
+      ...projectFixture,
+      id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b83",
+      name: "Emu rcn rcnA-1793626180",
+    };
+    const projects: Project[] = [emuA, emuB, emuC, projectFixture];
+    renderApp({
+      path: "/",
+      routes: railRoutes(
+        projects.flatMap((project) => projectReads(project)),
+        { items: projects },
+      ),
+    });
+
+    const tiles = await Promise.all(
+      projects.map((project) =>
+        screen.findByTestId(`sidebar-rail-project-${project.id}`, undefined, { timeout: READ_MS }),
+      ),
+    );
+    // The plain names keep their two-word initials; the colliding trio
+    // takes the letter that tells the projects apart.
+    expect(tiles.map((tile) => tile.textContent)).toEqual(["EL", "ED", "EA", "W"]);
+    expect(new Set(tiles.map((tile) => tile.textContent)).size).toBe(4);
+  });
+
+  it("prints the project's worst-state flag on the tile (design 3c)", async () => {
+    const failedRun = {
+      ...wireRun,
+      status: "failed",
+      failed_cause: "node_execution_failed:/implement",
+    } as unknown as typeof wireRun;
+    renderApp({
+      path: `/p/${P}`,
+      routes: baseRoutes({
+        prefs: prefsDoc({ [COLLAPSED]: true }),
+        runs: { runs: [failedRun] },
+      }),
+    });
+    // The same reduction the expanded row reads, at rail size: glyph +
+    // count, and the tile's accessible name states it too.
+    const badge = await screen.findByTestId(`sidebar-rail-flag-${P}`, undefined, {
+      timeout: READ_MS,
+    });
+    expect(badge.textContent).toBe("×1");
+    const tile = screen.getByTestId(`sidebar-rail-project-${P}`);
+    expect(tile.getAttribute("aria-label")).toBe(`${projectFixture.name} · 1 failed`);
+  });
 
   it("collapses on the brand row's control and saves it in the layout prefs", async () => {
     const { requests } = renderApp({
