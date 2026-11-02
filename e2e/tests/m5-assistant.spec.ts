@@ -92,6 +92,53 @@ interface ServedMessage {
   payload: Record<string, unknown>;
 }
 
+/**
+ * The prose one line of the served markdown turns into on screen.
+ *
+ * AnswerProse renders `answer_markdown` through the app's own reader
+ * (ui/src/lib/markdown.tsx since 45d40ea, design 2f: `**Adapter swap → PR**`
+ * reached the person as literal asterisks), so every marker the reader
+ * consumes — code fences, `**strong**`, `*emphasis*`, a link's target, a
+ * heading or list marker — is markup, not text, and never appears in the
+ * rendered answer. This strips exactly those, and nothing else: a marker the
+ * reader leaves alone (the `*` of `2 * 3`, the underscores of `run_pytest_now`,
+ * an unclosed `**`) stays here too, and a raw-markdown regression still fails
+ * the assertion below because the expected prose has no room for the markers
+ * the DOM would then carry.
+ */
+function renderedProseOf(line: string): string {
+  let text = line.trim();
+  // A fence line is not prose at all: the reader opens a code block on it and
+  // prints only what follows, so its info string never reaches the screen.
+  if (/^(?:`{3,}|~{3,})/.test(text)) return "";
+  text = text.replace(/^#{1,6}\s+/, ""); // ATX heading: the weight renders, the hashes do not
+  text = text.replace(/^>+\s?/, ""); // blockquote
+  text = text.replace(/^(?:[-*+]|\d+[.)])\s+/, ""); // list marker (the <li> draws its own)
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1"); // an image keeps its alt text
+  text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"); // a link renders its label
+  text = text.replace(/`{1,3}([^`]*)`{1,3}/g, "$1"); // code span: mono, no backticks
+  // A marker only disappears when it PAIRS: `**x**`, `*x*`, `_x_`, `~~x~~`.
+  // An unpaired one is literal text in markdown and stays literal here, which
+  // is why `2 * 3`, `**unclosed` and the underscores of `run_pytest_now` reach
+  // the screen (and this projection) unchanged.
+  text = text.replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, "$2");
+  text = text.replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, "$1$2");
+  text = text.replace(/(^|[^\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])/g, "$1$2");
+  text = text.replace(/~~(.+?)~~/g, "$1");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * What the answer element really shows, with nothing collapsed but the
+ * whitespace HTML reflows. Compared against `renderedProseOf` of a served line
+ * this asks the review's question and nothing looser: the served words, in the
+ * served order, with the served punctuation — and no markup characters left
+ * sitting in the prose.
+ */
+async function visibleProse(locator: import("@playwright/test").Locator): Promise<string> {
+  return (await locator.innerText()).replace(/\s+/g, " ").trim();
+}
+
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
 test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
@@ -225,15 +272,43 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
         .last()
         .getByTestId("assistant-answer");
       await expect(answerEl).toContainText(ALICE.projectName);
-      // The rendered prose is the served markdown as text (code spans set in
-      // mono, everything else verbatim), so the first line must be readable
-      // off the served body and present on screen.
+      // THE ANSWER IS RENDERED MARKDOWN (45d40ea, design 2f review: the
+      // draft's `**Adapter swap → PR**` reached the person as asterisks, so the
+      // transcript now runs `answer_markdown` through the app's own reader).
+      // The markers are weight, slope and mono on screen, never glyphs — so the
+      // served line is put through that same reading before it is compared:
+      // every word of the first line the broker served must be on screen, in
+      // order. An answer that was dropped, reworded, cut off, or left
+      // un-rendered (markers between the words) still fails here.
       const firstLine = answer.answer_markdown
         .split(/\r?\n/)
-        .map((line) => line.replace(/`/g, "").trim())
-        .find((line) => line.length > 0);
+        .map((line) => line.trim())
+        .find((line) => renderedProseOf(line).length > 0);
       expect(firstLine, "the served answer carries no text line").toBeTruthy();
-      await expect(answerEl).toContainText(firstLine!.slice(0, 40));
+      const expected = renderedProseOf(firstLine!);
+      expect(
+        expected.length,
+        `first line ${JSON.stringify(firstLine)} carries prose`,
+      ).toBeGreaterThan(0);
+      // The served prose, word by word: every character of it has to be on
+      // screen in order, and only the whitespace between its words may differ
+      // (a flex step row can render `✓` and its text with or without a space).
+      const prosePattern = new RegExp(
+        expected
+          .split(" ")
+          .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("\\s*"),
+      );
+      await expect
+        .poll(() => visibleProse(answerEl), {
+          message: `the served answer's first line (${JSON.stringify(firstLine)}) is not the prose on screen`,
+        })
+        .toMatch(prosePattern);
+      // And the markup stayed markup: nothing the first line wrapped in
+      // `**strong**` reaches the reader as asterisks.
+      for (const strong of firstLine!.matchAll(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g)) {
+        await expect(answerEl).not.toContainText(`**${strong[1]}**`);
+      }
     });
     await test.step("the tool transparency list renders what the broker reported", async () => {
       const answer = served[served.length - 1];
