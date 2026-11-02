@@ -100,6 +100,10 @@ services:
       COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
+      # The broker's default is 30s per model call (internal/assistant/broker.go);
+      # the real gateway is slower, so the lab's assistant journeys timed out.
+      # Parsed with time.ParseDuration (cmd/communication/serve.go).
+      COMMUNICATION_ASSISTANT_TIMEOUT: 180s
 
   api-b:
     volumes:
@@ -108,3 +112,4 @@ services:
       COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
+      COMMUNICATION_ASSISTANT_TIMEOUT: 180s

@@ -279,9 +279,82 @@ export function wireInputsOf(
 
 /* ------------------------------------ ADR-0066 typed run-by-hand (design 1k) */
 
-/** A typed field's value: plain text for the string types, a picked issue
- * (with the `owner/repo` it came from) for `github_issue`. */
-export type TypedInputValue = string | IssueSelection;
+/** A typed field's value: the JSON value its schema declares — text for the
+ * string types, a checkbox's `true`/`false` for a boolean, a number for an
+ * integer/number — or a picked issue (with the `owner/repo` it came from) for
+ * `github_issue`. The wire type must be the one `spec.inputs` declares: the
+ * control plane answers `{"fanout": "true"}` with `422 expected a boolean`. */
+export type TypedInputValue = string | number | boolean | IssueSelection;
+
+/**
+ * An `InputSpec` plus the JSON Schema type its property declares.
+ *
+ * The wire's `type` is ADR-0066 PRESENTATION: a property with no
+ * `x-communication-input` annotation is reported as `text` however it is typed
+ * in the schema (`fanout: {type: boolean}` in the lab's own seed). `json_type`
+ * is the shape `POST /runs` validates, read off the revision's own
+ * `spec.inputs.properties` — the same document the free-form fields are built
+ * from, so no new wire member is needed to send the right JSON type.
+ */
+export type TypedInputSpec = InputSpec & { json_type?: string };
+
+/** The JSON Schema `type` declared for each `spec.inputs.properties` member.
+ * A type union (`["string", "null"]`) answers with its non-null member, the
+ * reading `kindOf` already uses; an absent or unusable declaration answers "". */
+export function inputJsonTypesOf(canonicalDocument: unknown): Record<string, string> {
+  const inputs = (canonicalDocument as { spec?: { inputs?: unknown } } | null)?.spec?.inputs as {
+    properties?: unknown;
+  } | null;
+  const properties = inputs?.properties;
+  const types: Record<string, string> = {};
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return types;
+  for (const [name, raw] of Object.entries(properties as Record<string, unknown>)) {
+    const declared = (raw as { type?: unknown } | null)?.type;
+    const type =
+      typeof declared === "string"
+        ? declared
+        : Array.isArray(declared)
+          ? String(declared.find((entry) => entry !== "null") ?? "")
+          : "";
+    if (type !== "") types[name] = type;
+  }
+  return types;
+}
+
+/** The JSON type one input travels as: what `spec.inputs` declares, or — when
+ * the revision's document carries no declaration for it — the shape of its own
+ * declared `default`. "" means “no evidence but the annotation”, which is the
+ * string the text control sends. */
+export function jsonTypeOfInput(spec: InputSpec, types: Record<string, string>): string {
+  const declared = types[spec.name];
+  if (typeof declared === "string" && declared !== "") return declared;
+  if (typeof spec.default === "boolean") return "boolean";
+  if (typeof spec.default === "number")
+    return Number.isInteger(spec.default) ? "integer" : "number";
+  return "";
+}
+
+/** The specs as the form reads them: the wire's declaration merged with the
+ * JSON Schema type behind it. */
+export function withJsonTypes(
+  specs: readonly InputSpec[],
+  types: Record<string, string>,
+): TypedInputSpec[] {
+  return specs.map((spec) => {
+    const json_type = jsonTypeOfInput(spec, types);
+    return json_type === "" ? { ...spec } : { ...spec, json_type };
+  });
+}
+
+/** The input's value is a JSON boolean → the control is a checkbox. */
+function isBooleanSpec(spec: TypedInputSpec): boolean {
+  return spec.json_type === "boolean";
+}
+
+/** The input's value is a JSON integer/number → the control is a number field. */
+function isNumericSpec(spec: TypedInputSpec): boolean {
+  return spec.json_type === "integer" || spec.json_type === "number";
+}
 
 /** `owner/repo` out of a GitHub git remote — the `repo` member of the issue
  * object the ADR's runtime shape names; "" when the URL is not GitHub's. */
@@ -290,12 +363,19 @@ export function ownerRepoFromGitUrl(gitUrl: string): string {
   return match ? match[1] : "";
 }
 
-/** A fresh typed form carries declared string defaults and nothing else —
- * never a guess (the same honesty rule as `defaultValuesOf`). */
-export function typedDefaultsOf(specs: readonly InputSpec[]): Record<string, TypedInputValue> {
+/** A fresh typed form carries declared defaults in their own JSON types and
+ * nothing else — never a guess (the same honesty rule as `defaultValuesOf`).
+ * A boolean is the one exception the rule cannot cover: a checkbox always
+ * shows an answer, so it always carries one — the declared default, else
+ * `false`, exactly as the free-form fields seed it. */
+export function typedDefaultsOf(specs: readonly TypedInputSpec[]): Record<string, TypedInputValue> {
   const values: Record<string, TypedInputValue> = {};
   for (const spec of specs) {
-    if (typeof spec.default === "string") values[spec.name] = spec.default;
+    if (isBooleanSpec(spec))
+      values[spec.name] = typeof spec.default === "boolean" ? spec.default : false;
+    else if (isNumericSpec(spec)) {
+      if (typeof spec.default === "number") values[spec.name] = spec.default;
+    } else if (typeof spec.default === "string") values[spec.name] = spec.default;
   }
   return values;
 }
@@ -303,13 +383,15 @@ export function typedDefaultsOf(specs: readonly InputSpec[]): Record<string, Typ
 function typedIsEmpty(value: TypedInputValue | undefined): boolean {
   if (value === undefined) return true;
   if (typeof value === "string") return value.trim() === "";
+  if (typeof value === "number") return !Number.isFinite(value);
+  if (typeof value === "boolean") return false;
   return value.issue === undefined || value.issue === null;
 }
 
 /** Required-and-unfilled, in the form's own words; the control plane stays
  * the authority and its `422` renders verbatim if this ever lets one slip. */
 export function typedProblemsOf(
-  specs: readonly InputSpec[],
+  specs: readonly TypedInputSpec[],
   values: Record<string, TypedInputValue | undefined>,
 ): Record<string, string> {
   const problems: Record<string, string> = {};
@@ -320,17 +402,21 @@ export function typedProblemsOf(
   return problems;
 }
 
-/** The wire `inputs` object: filled values only; a `github_issue` rides as
- * the ADR's runtime shape `{number, title, body, url, repo}`. */
+/** The wire `inputs` object: filled values only, each in the JSON type the
+ * schema declares; a `github_issue` rides as the ADR's runtime shape
+ * `{number, title, body, url, repo}`. The numeric and boolean branches are the
+ * bug this exists to fix — the schema says `boolean`/`integer`, so the body
+ * carries `true` and `3`, never `"true"` and `"3"` (which `POST /runs` refuses
+ * with `422 expected a boolean` / `expected an integer`). */
 export function typedWireInputsOf(
-  specs: readonly InputSpec[],
+  specs: readonly TypedInputSpec[],
   values: Record<string, TypedInputValue | undefined>,
 ): Record<string, unknown> {
   const inputs: Record<string, unknown> = {};
   for (const spec of specs) {
     const value = values[spec.name];
     if (typedIsEmpty(value)) continue;
-    if (spec.type === "github_issue" && typeof value !== "string") {
+    if (spec.type === "github_issue" && typeof value === "object" && value !== null) {
       const picked = value as IssueSelection;
       inputs[spec.name] = {
         number: picked.issue.number,
@@ -339,6 +425,11 @@ export function typedWireInputsOf(
         url: picked.issue.html_url,
         repo: picked.repository,
       };
+    } else if (isBooleanSpec(spec)) {
+      inputs[spec.name] = typeof value === "boolean" ? value : value === "true";
+    } else if (isNumericSpec(spec)) {
+      const numeric = typeof value === "number" ? value : Number(value);
+      if (Number.isFinite(numeric)) inputs[spec.name] = numeric;
     } else if (typeof value === "string") {
       inputs[spec.name] = value;
     }
@@ -506,7 +597,23 @@ export function NewRunForm({
 
   /* -------------------------------------------------- typed mode (1k) */
 
-  const typedSpecs: InputSpec[] = useMemo(() => revision.data?.input_specs ?? [], [revision.data]);
+  const typedDeclared: InputSpec[] = useMemo(
+    () => revision.data?.input_specs ?? [],
+    [revision.data],
+  );
+  // The wire declares PRESENTATION (`text` for an un-annotated boolean); the
+  // revision's own `spec.inputs` declares the JSON type. Merge them here so one
+  // lookup covers every typed helper: the control and the wire value follow the
+  // schema, not the annotation (lab probe: `fanout`/`fanout_count` were sent as
+  // strings and `POST /runs` answered `422 expected a boolean`).
+  const typedJsonTypes = useMemo(
+    () => (revision.data ? inputJsonTypesOf(revision.data.canonical_document) : {}),
+    [revision.data],
+  );
+  const typedSpecs: TypedInputSpec[] = useMemo(
+    () => withJsonTypes(typedDeclared, typedJsonTypes),
+    [typedDeclared, typedJsonTypes],
+  );
   const typedMode = typedSpecs.length > 0;
   // The repo this form carries: the assignment's own pin wins (an ADR-0060
   // repo-scoped pin), then the repository the page opened the form from (1k:
@@ -568,7 +675,7 @@ export function NewRunForm({
     const out: Record<string, TypedInputValue | undefined> = {};
     for (const [name, value] of Object.entries(typedValues)) {
       out[name] =
-        value !== undefined && typeof value !== "string" && value.repository === ""
+        value !== undefined && typeof value === "object" && value.repository === ""
           ? { ...value, repository: repoName }
           : value;
     }
@@ -602,7 +709,7 @@ export function NewRunForm({
     // which is exactly when the picker could read the tracker at all.
     const picked = typedSpecs
       .map((spec) => resolved[spec.name])
-      .find((value): value is IssueSelection => typeof value !== "string" && value !== undefined);
+      .find((value): value is IssueSelection => typeof value === "object" && value !== null);
     if (picked && active.repositoryId && pickerRepo && isGitHubRepository(pickerRepo.git_url))
       body.issue = { number: picked.issue.number };
     createRun.mutate(
@@ -1336,7 +1443,7 @@ function IssueRow({ issue, onFill }: IssueRowProps) {
 
 interface TypedFieldsProps {
   projectId: string;
-  specs: readonly InputSpec[];
+  specs: readonly TypedInputSpec[];
   values: Record<string, TypedInputValue | undefined>;
   problems: Record<string, string>;
   pickerRepo: Repository | null;
@@ -1348,12 +1455,14 @@ interface TypedFieldsProps {
 }
 
 /**
- * One control per declared type — the widget the ADR names, never a guess:
- * `github_issue` is the searchable picker (a number field would invite a
- * number the tracker never issued), `branch` a mono text field seeded with
- * its default, `agent_profile` a select of the library's profiles (the id
- * rides the wire, the name is for reading), `text` an input and `long_text`
- * a textarea. A type the UI has not met renders as a plain input rather
+ * One control per declared input — the widget the ADR names for its
+ * presentation type and the JSON type the schema declares for its value, never
+ * a guess: `github_issue` is the searchable picker (a number field would invite
+ * a number the tracker never issued), a `boolean` schema a checkbox, an
+ * `integer`/`number` schema a number field, `branch` a mono text field seeded
+ * with its default, `agent_profile` a select of the library's profiles (the id
+ * rides the wire, the name is for reading), `text` an input and `long_text` a
+ * textarea. A type the UI has not met renders as a plain input rather
  * than vanishing — an unknown type is still a declared, maybe required,
  * input the run needs.
  */
@@ -1372,6 +1481,14 @@ export function TypedFields({
         const id = `new-run-input-${spec.name}`;
         const value = values[spec.name];
         const text = typeof value === "string" ? value : "";
+        // A number field that answered with a string (an empty box, a partial
+        // keystroke) shows what the person typed, never `NaN`.
+        const numeric =
+          typeof value === "number" && Number.isFinite(value)
+            ? String(value)
+            : typeof value === "string"
+              ? value
+              : "";
         const problem = problems[spec.name];
         const label = spec.label ?? spec.name;
         const locked = lockedRepositoryValue(spec);
@@ -1398,9 +1515,40 @@ export function TypedFields({
                   repository={pickerRepo}
                   id={id}
                   required={spec.required}
-                  value={typeof value === "string" || value === undefined ? undefined : value}
+                  value={typeof value === "object" && value !== null ? value : undefined}
                   invalid={Boolean(problem)}
                   onSelect={(picked) => onChange(spec.name, picked)}
+                />
+              ) : isBooleanSpec(spec) ? (
+                /* The schema says `boolean`, so this is a checkbox and the wire
+                   carries `true`/`false` — a text box here typed "true" and the
+                   control plane refused the run (`422 expected a boolean`). */
+                <input
+                  id={id}
+                  type="checkbox"
+                  checked={value === true}
+                  aria-required={spec.required || undefined}
+                  aria-invalid={Boolean(problem) || undefined}
+                  onChange={(event) => onChange(spec.name, event.target.checked)}
+                  className="size-3 accent-accent"
+                  data-testid={id}
+                />
+              ) : isNumericSpec(spec) ? (
+                <Input
+                  id={id}
+                  type="number"
+                  inputMode={spec.json_type === "integer" ? "numeric" : "decimal"}
+                  step={spec.json_type === "integer" ? 1 : "any"}
+                  value={numeric}
+                  placeholder={spec.help ?? undefined}
+                  invalid={Boolean(problem)}
+                  required={spec.required || undefined}
+                  aria-required={spec.required || undefined}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    onChange(spec.name, next === "" ? "" : Number(next));
+                  }}
+                  data-testid={id}
                 />
               ) : spec.type === "agent_profile" ? (
                 <ProfileField

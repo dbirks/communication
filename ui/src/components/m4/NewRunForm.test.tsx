@@ -559,13 +559,17 @@ const profilesList = {
   ],
 };
 
-function mountTyped(extra: RouteStub[] = [], props: Record<string, unknown> = {}) {
+function mountTyped(
+  extra: RouteStub[] = [],
+  props: Record<string, unknown> = {},
+  revision: unknown = typedRevision,
+) {
   const { requests } = mockFetch([
     ...extra,
     { path: ASSIGNMENTS_PATH, body: typedAssignments },
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: REPOS_PATH, body: { items: repos } },
-    { path: REVISION_PATH, body: typedRevision },
+    { path: REVISION_PATH, body: revision },
     { path: RUNS_PATH, method: "GET", body: { runs: [] } },
     { path: ISSUES_PATH, method: "GET", body: issueList },
     { path: "/api/v1/agent-profiles", body: profilesList },
@@ -722,5 +726,108 @@ describe("NewRunForm — the typed form builds one widget per input (1k)", () =>
     expect(await screen.findByTestId("new-run-form")).toBeTruthy();
     expect(screen.queryByTestId("run-form-dialog")).toBeNull();
     expect(await screen.findByTestId("new-run-input-goal")).toBeTruthy();
+  });
+});
+
+/* --------------- ADR-0066: typed inputs keep the JSON types spec.inputs says */
+
+/**
+ * The live probe's 422: `fanout: expected a boolean / fanout_count: expected an
+ * integer`. ADR-0066 reports an UN-ANNOTATED property as `text` for presentation
+ * only — `input_specs.type` never says the property is a boolean — so the form
+ * read the annotation, rendered a text box, and sent `"true"`/`"3"` strings the
+ * control plane refused. The JSON type comes from the revision's own
+ * `spec.inputs`: the right control (a checkbox, a number field) and the right
+ * wire value (`true`, `3`).
+ *
+ * The fixture is the lab's own declaration (docs/compatibility/probes/m4/
+ * pipeline.yaml): an un-annotated `boolean` with a default and an un-annotated,
+ * required `integer` with bounds and no default.
+ */
+const scalarDocument = {
+  spec: {
+    inputs: {
+      type: "object",
+      required: ["goal", "fanout_count"],
+      properties: {
+        goal: { type: "string", minLength: 1 },
+        fanout: {
+          type: "boolean",
+          default: false,
+          description: "Arms the fan-out branch (runs only when true).",
+        },
+        fanout_count: { type: "integer", minimum: 0, maximum: 1000 },
+      },
+    },
+  },
+};
+const scalarSpecs = [
+  { name: "goal", type: "long_text", required: true },
+  // The un-annotated pair: ADR-0066 says `text`, the schema says boolean/integer.
+  { name: "fanout", type: "text", required: false, default: false },
+  { name: "fanout_count", type: "text", required: true },
+];
+const scalarRevision = {
+  ...wireRevision,
+  revision_number: 9,
+  canonical_document: scalarDocument,
+  input_specs: scalarSpecs,
+};
+
+describe("NewRunForm — typed inputs send the JSON type the schema declares", () => {
+  it("renders a checkbox for the boolean and a number field for the integer", async () => {
+    mountTyped([], {}, scalarRevision);
+    const fanout = (await screen.findByTestId("new-run-input-fanout")) as HTMLInputElement;
+    expect(fanout.type).toBe("checkbox");
+    // The declared default is on the box, not in a text box's placeholder.
+    expect(fanout.checked).toBe(false);
+
+    const count = screen.getByTestId("new-run-input-fanout_count") as HTMLInputElement;
+    expect(count.type).toBe("number");
+    expect(count.step).toBe("1");
+    expect(count.inputMode).toBe("numeric");
+    // The un-annotated string stays the string field it always was.
+    expect((screen.getByTestId("new-run-input-goal") as HTMLTextAreaElement).tagName).toBe(
+      "TEXTAREA",
+    );
+  });
+
+  it('sends true and 3 — not "true" and "3" — for a boolean and an integer', async () => {
+    const { requests } = mountTyped([], {}, scalarRevision);
+    await screen.findByTestId("new-run-input-fanout");
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), { target: { value: "ship it" } });
+    fireEvent.change(screen.getByTestId("new-run-input-fanout_count"), { target: { value: "3" } });
+    fireEvent.click(screen.getByTestId("new-run-input-fanout"));
+    fireEvent.click(await screen.findByTestId("new-run-submit"));
+    await waitFor(() => expect(requestsTo(requests, RUNS_PATH, "POST")).toHaveLength(1));
+
+    const inputs = JSON.parse(requestsTo(requests, RUNS_PATH, "POST")[0].body ?? "{}").inputs;
+    expect(inputs.fanout).toBe(true);
+    expect(inputs.fanout_count).toBe(3);
+    expect(typeof inputs.fanout).toBe("boolean");
+    expect(typeof inputs.fanout_count).toBe("number");
+    expect(inputs.goal).toBe("ship it");
+  });
+
+  it("a required integer holds the start until it validates, then carries the number", async () => {
+    const { requests } = mountTyped([], {}, scalarRevision);
+    const submit = () => screen.getByTestId("new-run-submit") as HTMLButtonElement;
+    await screen.findByTestId("new-run-input-fanout");
+
+    // The string input alone does not clear the required integer.
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), { target: { value: "ship it" } });
+    expect(submit().disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId("new-run-input-fanout_count"), { target: { value: "3" } });
+    await waitFor(() => expect(submit().disabled).toBe(false));
+    expect(screen.queryByTestId("new-run-problem-fanout_count")).toBeNull();
+    fireEvent.click(submit());
+    await waitFor(() => expect(requestsTo(requests, RUNS_PATH, "POST")).toHaveLength(1));
+
+    const inputs = JSON.parse(requestsTo(requests, RUNS_PATH, "POST")[0].body ?? "{}").inputs;
+    expect(inputs.fanout_count).toBe(3);
+    // The boolean left on its default travels as the JSON false it is, never an
+    // empty string (which is what made the same body 422 twice over).
+    expect(inputs.fanout).toBe(false);
   });
 });
