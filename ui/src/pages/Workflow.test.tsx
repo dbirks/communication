@@ -1115,6 +1115,106 @@ describe("legacy and layout", () => {
   });
 });
 
+describe("/workflows/:pipelineId — the Inputs tab (1j)", () => {
+  /** The open draft carries the 1j input document; without a stub the draft
+   * read would honestly 404. */
+  const draftDoc = wireRevision.document_text;
+  const openDraftBody = {
+    id: WIRE_DRAFT_ID,
+    pipeline_id: WIRE_PIPELINE_ID,
+    status: "invalid",
+    document_yaml: draftDoc,
+    source_kind: "manual",
+    source_sha256: "0".repeat(64),
+    ui_layout: {},
+    digest_scope: "v1alpha1-canonical-1",
+    version: 12,
+    edited_by: wireUserId,
+    created_at: "2026-07-31T08:00:00Z",
+    updated_at: "2026-07-31T08:12:00Z",
+  };
+  const draftRoutes: RouteStub[] = [
+    { path: `/api/v1/drafts/${WIRE_DRAFT_ID}`, body: openDraftBody },
+  ];
+
+  it("the tab row runs Overview · Inputs · YAML · Used in · History and swaps the body", async () => {
+    mount(detail, draftRoutes);
+    const tabs = await screen.findByTestId("workflow-tabs");
+    expect(tabs.textContent).toContain("Inputs");
+    expect(tabs.textContent.indexOf("Inputs")).toBeGreaterThan(
+      tabs.textContent.indexOf("Overview"),
+    );
+    expect(tabs.textContent.indexOf("Inputs")).toBeLessThan(tabs.textContent.indexOf("YAML"));
+
+    fireEvent.click(screen.getByTestId("workflow-tab-inputs"));
+    expect(await screen.findByTestId("inputs-tab")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-overview")).toBeNull();
+    // The sample revision's declared inputs, presented as text (ADR-0066:
+    // an un-annotated property is a presentation default, not an error).
+    expect(screen.getByTestId("input-row-goal").textContent).toContain("Text");
+    expect(screen.getByTestId("input-row-goal").textContent).toContain("required");
+    expect(screen.getByTestId("input-row-acceptance_criteria").textContent).toContain(
+      "Tests pass, the plan is followed",
+    );
+    // The header stays up across the swap.
+    expect(screen.getByTestId("pipeline-customize")).toBeTruthy();
+  });
+
+  it("`?tab=inputs` deep-links the tab", async () => {
+    mount(`${detail}?tab=inputs`, draftRoutes);
+    const tab = await screen.findByTestId("workflow-tab-inputs");
+    expect(tab.getAttribute("aria-current")).toBe("page");
+    expect(await screen.findByTestId("inputs-tab")).toBeTruthy();
+  });
+
+  it("the header names the open draft and gates `Publish rN` on the server's verdict", async () => {
+    mount(detail, draftRoutes);
+    const state = await screen.findByTestId("workflow-draft-state");
+    // r7 is the newest revision — the draft will produce r8.
+    expect(state.textContent).toBe("draft r8 · unpublished");
+    const publish = screen.getByTestId("workflow-publish-draft") as HTMLButtonElement;
+    expect(publish.textContent).toBe("Publish r8");
+    // The drafts list says `invalid` — publish only takes a valid draft.
+    expect(publish.disabled).toBe(true);
+  });
+
+  it("Publish rN posts the open draft's version once the server called it valid", async () => {
+    const { requests } = mount(detail, [
+      {
+        path: draftsPath,
+        body: { drafts: [{ ...wireDraftSummaries.drafts[0], status: "valid" }] },
+      },
+      {
+        path: `/api/v1/drafts/${WIRE_DRAFT_ID}/publish`,
+        method: "POST",
+        body: { ...wireRevision, revision_number: 8 },
+      },
+      ...draftRoutes,
+    ]);
+    const publish = (await screen.findByTestId("workflow-publish-draft")) as HTMLButtonElement;
+    expect(publish.disabled).toBe(false);
+    fireEvent.click(publish);
+    await waitFor(() =>
+      expect(requestsTo(requests, `/api/v1/drafts/${WIRE_DRAFT_ID}/publish`, "POST")).toHaveLength(
+        1,
+      ),
+    );
+  });
+
+  it("a workflow with no open draft promises nothing in the header", async () => {
+    mount(detail, [{ path: draftsPath, body: { drafts: [] } }]);
+    await screen.findByTestId("workflow-overview");
+    expect(screen.queryByTestId("workflow-draft-state")).toBeNull();
+    expect(screen.queryByTestId("workflow-publish-draft")).toBeNull();
+  });
+
+  it("a reader without the library role reads the inputs and writes nothing", async () => {
+    mount(`${detail}?tab=inputs`, [{ path: "/api/v1/me", body: member }, ...draftRoutes]);
+    expect(await screen.findByTestId("input-row-goal")).toBeTruthy();
+    expect(screen.queryByTestId("input-add")).toBeNull();
+  });
+});
+
 describe("/workflows/:pipelineId — the page cannot be read (1e)", () => {
   it("a 404 shows an honest not-found state, not the id as a title", async () => {
     const { requests } = mount(detail, [

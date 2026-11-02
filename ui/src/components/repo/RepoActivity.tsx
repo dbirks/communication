@@ -73,26 +73,56 @@ const STEP_TO_SEGMENT: Record<string, ProgressSegment["kind"]> = {
   pending: "open",
 };
 
-/**
- * The run's real per-step segments, or null. The project run list does not
- * carry `steps`; the cross-project row (ADR-0047) does. When the data has no
- * steps the caller omits the strip — a strip with made-up segments would
- * break the honesty rule the whole page is written under.
- */
-export function runStepSegments(run: RunSummary): ProgressSegment[] | null {
-  const steps = (run as { steps?: { state?: string }[] }).steps;
-  if (!Array.isArray(steps) || steps.length === 0) return null;
-  const counts = new Map<ProgressSegment["kind"], number>();
-  for (const step of steps) {
-    const kind = STEP_TO_SEGMENT[step?.state ?? ""];
-    if (!kind) continue;
-    counts.set(kind, (counts.get(kind) ?? 0) + 1);
-  }
+/** ADR-0070: the project run list's `progress.steps[].state` is already
+ * projected onto the strip's five coarse states, so it rides straight
+ * through; `progress.more` counts steps whose state the wire never says, so
+ * they join no segment. */
+const PROGRESS_STATE_TO_SEGMENT: Record<string, ProgressSegment["kind"]> = {
+  done: "done",
+  running: "running",
+  waiting: "waiting",
+  failed: "failed",
+  open: "open",
+};
+
+function countedSegments(counts: Map<ProgressSegment["kind"], number>): ProgressSegment[] | null {
   if (counts.size === 0) return null;
   const order: ProgressSegment["kind"][] = ["done", "running", "waiting", "failed", "open"];
   return order
     .filter((kind) => counts.has(kind))
     .map((kind) => ({ kind, count: counts.get(kind) ?? 0 }));
+}
+
+/**
+ * The run's real per-step segments, or null. Two served shapes, whichever
+ * the row carries: ADR-0070's `progress` (the project run list's bounded
+ * top-level steps) or ADR-0047's finer `steps` (the cross-project row).
+ * When the data has no steps the caller omits the strip — a strip with
+ * made-up segments would break the honesty rule the whole page is written
+ * under.
+ */
+export function runStepSegments(run: RunSummary): ProgressSegment[] | null {
+  const row = run as RunSummary & {
+    progress?: { steps?: { state?: string }[] };
+    steps?: { state?: string }[];
+  };
+  if (row.progress && Array.isArray(row.progress.steps)) {
+    const counts = new Map<ProgressSegment["kind"], number>();
+    for (const step of row.progress.steps) {
+      const kind = PROGRESS_STATE_TO_SEGMENT[step?.state ?? ""];
+      if (!kind) continue;
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return countedSegments(counts);
+  }
+  if (!Array.isArray(row.steps) || row.steps.length === 0) return null;
+  const counts = new Map<ProgressSegment["kind"], number>();
+  for (const step of row.steps) {
+    const kind = STEP_TO_SEGMENT[step?.state ?? ""];
+    if (!kind) continue;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return countedSegments(counts);
 }
 
 export interface RepoActivityProps {

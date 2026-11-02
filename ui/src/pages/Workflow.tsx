@@ -46,10 +46,12 @@ import {
   usePipeline,
   usePipelineDrafts,
   usePipelineRevisions,
+  usePublishDraft,
   useRevision,
 } from "../api/pipelines";
 import { hasLibraryRole, LIBRARY_AUTHORING_HINT } from "../lib/pipeline/authoring";
 import { ValidatePanel } from "../components/m4/ValidatePanel";
+import { InputsTab } from "../components/workflows/inputs/InputsTab";
 import { BLANK_SKELETON_YAML, withMetadataName } from "../lib/pipeline/templates";
 import { routes, type WorkflowTab } from "../lib/routes";
 import { WorkflowHistoryTab } from "./workflow/HistoryTab";
@@ -57,14 +59,29 @@ import { WorkflowOverview } from "./workflow/Overview";
 import { WorkflowYamlTab } from "./workflow/YamlTab";
 import { usePipelineRuns, useUsedIn } from "./workflow/useUsedIn";
 
-/** The header tabs, in design order. Counts trail the label where the count
- * means something (the Used-in n). */
-const TABS: { key: WorkflowTab; label: string }[] = [
+/** The header tabs, in design order (1j: Overview · Inputs · YAML · Used in ·
+ * History). Counts trail the label where the count means something (the
+ * Used-in n). The Inputs tab rides `?tab=inputs` — the route table (`App.tsx`)
+ * is not this brief's file, so the tab is a query on the page route rather
+ * than a new path; a future `/workflows/:id/inputs` route is also honoured
+ * where this page reads its tab from the path. */
+type WorkflowPageTab = WorkflowTab | "inputs";
+
+const TABS: { key: WorkflowPageTab; label: string }[] = [
   { key: "overview", label: "Overview" },
+  { key: "inputs", label: "Inputs" },
   { key: "yaml", label: "YAML" },
   { key: "used-in", label: "Used in" },
   { key: "history", label: "History" },
 ];
+
+/** Where a tab link points: every existing tab keeps its own route; Inputs
+ * rides the page route with `?tab=inputs`. */
+function tabHref(pipelineId: string, key: WorkflowPageTab): string {
+  return key === "inputs"
+    ? `${routes.workflow(pipelineId)}?tab=inputs`
+    : routes.workflowTab(pipelineId, key);
+}
 
 /**
  * One pipeline: graph-first Overview, YAML, Used in, History — the page the
@@ -94,12 +111,16 @@ export function PipelinePage() {
   }, [redirectDraft, pipelineId, navigate, location.pathname]);
 
   // The tab is the route: the third path segment (works under both
-  // `/workflows/:id/…` and a direct `/library/:id` mount).
+  // `/workflows/:id/…` and a direct `/library/:id` mount). Inputs is the one
+  // tab without its own route (see `tabHref`): a path segment if the route
+  // table ever lands one, else the `?tab=inputs` query on this page.
   const segments = location.pathname.split("/").filter(Boolean);
-  const tab: WorkflowTab =
+  const tab: WorkflowPageTab =
     segments[2] === "yaml" || segments[2] === "used-in" || segments[2] === "history"
       ? segments[2]
-      : "overview";
+      : segments[2] === "inputs" || draftParams.get("tab") === "inputs"
+        ? "inputs"
+        : "overview";
 
   // Same bleed as `pages/RunInspector.tsx`: the shell's centred reading
   // column is ~64rem, and a graph plus a 300px rail squeezed into it clips
@@ -177,6 +198,18 @@ export function PipelinePage() {
     () => sortedDrafts.find((draft) => draft.status !== "published") ?? null,
     [sortedDrafts],
   );
+  // The r-number the draft will produce: one past the newest revision the
+  // page read (design 1j's `draft r5` over `✓ r4`) — 1 when nothing has
+  // published. Server truth wins the moment the publish lands; this is the
+  // label of the draft itself.
+  const draftRevisionNumber = useMemo(
+    () => revisionRows.reduce((max, row) => Math.max(max, row.revision_number), 0) + 1,
+    [revisionRows],
+  );
+  // The header's `Publish rN` — the same gated verb the Studio's toolbar
+  // offers (`valid` is the only status publish accepts, ADR-0021 § 2.2),
+  // bound to the newest open draft this page already names.
+  const publishDraft = usePublishDraft(openDraft?.id ?? "");
 
   // The graph and the rail read the newest revision (the YAML tab can select
   // another one itself).
@@ -468,6 +501,47 @@ export function PipelinePage() {
               auto-margin keeps it flush right instead of drifting to the
               middle of the header (pass-2 review, 1e MINOR). */}
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-[8px] md:ml-auto">
+            {/* The draft state, in the design's own words (1j): `draft r5 ·
+                unpublished` beside the one verb that ends it. Publish keeps
+                the Studio's gate — the server's `valid` verdict, not the
+                editor's hope — and a refusal lands in the page's own failure
+                banner with the server's words. */}
+            {openDraft ? (
+              <>
+                <span
+                  className="font-mono text-[11px] text-faint"
+                  data-testid="workflow-draft-state"
+                  title="the newest open draft — nothing it contains runs until it publishes"
+                >
+                  {`draft r${draftRevisionNumber} · unpublished`}
+                </span>
+                {canAuthor ? (
+                  <Button
+                    variant="primary"
+                    compact
+                    className="h-[30px]"
+                    disabled={openDraft.status !== "valid" || publishDraft.isPending}
+                    title={
+                      openDraft.status === "valid"
+                        ? "publish the open draft as a new immutable revision"
+                        : `the server reports this draft as “${openDraft.status}” — publish needs a valid draft`
+                    }
+                    onClick={() =>
+                      publishDraft.mutate(
+                        { version: openDraft.version },
+                        {
+                          onSuccess: () => setFailure(null),
+                          onError: (error) => setFailure(error),
+                        },
+                      )
+                    }
+                    data-testid="workflow-publish-draft"
+                  >
+                    {publishDraft.isPending ? "Publishing…" : `Publish r${draftRevisionNumber}`}
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
             {newestPublished ? (
               <Button
                 variant="secondary"
@@ -545,7 +619,7 @@ export function PipelinePage() {
             return (
               <Link
                 key={key}
-                to={routes.workflowTab(pipelineId, key)}
+                to={tabHref(pipelineId, key)}
                 aria-current={active ? "page" : undefined}
                 className={`shrink-0 whitespace-nowrap rounded-t-[3px] border px-[12px] pt-[6px] pb-[7px] text-[13px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                   active
@@ -636,6 +710,23 @@ export function PipelinePage() {
                     />
                   ) : null
                 }
+              />
+            </div>
+          ) : null}
+          {tab === "inputs" ? (
+            <div className="mx-auto w-full max-w-[1120px]">
+              <InputsTab
+                pipelineId={pipelineId}
+                slug={pipeline.data?.slug ?? pipelineId}
+                canAuthor={canAuthor}
+                revision={revision.data}
+                revisionLoading={revision.isPending && selectedRevisionKey !== null}
+                revisionError={revision.isError ? revision.error : null}
+                onRevisionRetry={() => void revision.refetch()}
+                openDraft={openDraft}
+                groups={usedIn.groups}
+                groupsLoading={usedIn.loading}
+                groupsError={usedIn.error}
               />
             </div>
           ) : null}

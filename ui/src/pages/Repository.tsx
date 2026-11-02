@@ -1,11 +1,12 @@
 /**
- * `/p/:projectId/:repo` — the repository page, List view (design 3a).
+ * `/p/:projectId/:repo` — the repository page, in one of two views that
+ * share the header (design 3a List, design 3b Lanes — the choice remembered
+ * per repo in lib/prefs via `RepoViewToggle`).
  *
  * Header: mono breadcrumb (`Project / repo`), the repository's H1, the mono
- * `git_url · branch` line with its GitHub-access state (ADR-0061), and on the
- * right the segmented **List | Lanes** control (the choice remembered per
- * repo in lib/prefs; Lanes is a disabled segment until the 3b page exists —
- * no fake placeholder).
+ * `git_url · branch` line with its GitHub-access state (ADR-0061), and on
+ * the right the segmented **List | Lanes** control; in Lanes, a `New chat`
+ * button opens today's chat box in a modal.
  *
  * Two columns (`minmax(0,1fr) 290px`, stacking below 1024px):
  * - left: the CHAT BOX (one line, ink border, hard shadow — Start creates a
@@ -40,10 +41,13 @@ import { Link, useParams } from "react-router";
 import { useAgentProfiles, useMe, useProject, useRepositories } from "../api/queries";
 import { useProjectRuns } from "../api/runs";
 import { useAssignments, usePipelines } from "../api/pipelines";
+import { useProjectApprovals } from "../api/approvals";
 import { isGitHubRepository, useRepoIssues } from "../api/issues";
-import type { Repository, RunSummary } from "../api/types";
+import type { GitHubIssue } from "../api/issues";
+import type { Approval, Repository, RunSummary } from "../api/types";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
+import { Button } from "../components/ds/Button";
 import { NewRunForm } from "../components/m4/NewRunForm";
 import { GitHubAccess, type GitHubAccessHandle } from "../components/repo/GitHubAccess";
 import { RepoChatBox } from "../components/repo/RepoChatBox";
@@ -51,8 +55,10 @@ import { RepoViewToggle } from "../components/repo/RepoViewToggle";
 import { buildActivityRows, RepoActivity } from "../components/repo/RepoActivity";
 import { RepoIssuesPanel } from "../components/repo/RepoIssuesPanel";
 import { RepoWorkflowPanel } from "../components/repo/RepoWorkflowPanel";
+import { RepoLanes, RepoWorkflowChips } from "../components/repo/RepoLanes";
 import { useRepoConversations } from "../components/repo/useRepoConversations";
 import { AssistantNotes, type AssistantNote } from "../components/repo/AssistantNotes";
+import { useRepoView } from "../lib/prefs";
 import { routes } from "../lib/routes";
 
 /** The statuses after which a run is no longer "in progress" (the terminal
@@ -135,6 +141,11 @@ export default function Repository() {
   );
   const repositoryData = repository;
   const conversations = useRepoConversations(id, repositoryData?.name ?? "");
+  // The List | Lanes choice (design 3a/3b), remembered per repo.
+  const { view } = useRepoView(repositoryData?.name ?? "");
+  // The lanes' `Approve` is a link onto an OBSERVED pending gate (ADR-0052's
+  // approval route): the approvals read names it, or the card has only Open.
+  const approvals = useProjectApprovals(id);
 
   // The GitHub-ness of this repository's remote is decided from the `git_url`
   // the payload already carries: a local/file remote never asks the issues
@@ -146,8 +157,14 @@ export default function Repository() {
   const ghAccess = useRef<GitHubAccessHandle | null>(null);
   // The OPEN ISSUES row expanded inline (the `Hand off` form) — one at a time.
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
-  // The one run-start form, opened from any workflow row's `Run`.
+  // The one run-start form, opened from any workflow row's `Run` — and, in
+  // Lanes, from a drop whose workflow has required inputs the issue cannot
+  // fill; that route carries the issue in as the form's prefill (1k).
   const [runFormOpen, setRunFormOpen] = useState(false);
+  const [runFormIssue, setRunFormIssue] = useState<GitHubIssue | null>(null);
+  // Lanes has no left-column chat box, so its header carries `New chat` —
+  // the same RepoChatBox, in a modal.
+  const [chatFormOpen, setChatFormOpen] = useState(false);
 
   // ASSISTANT NOTICED has no notes backend yet: the assistant's notes will
   // arrive through their own read and be handed to `AssistantNotes` here.
@@ -283,6 +300,19 @@ export default function Repository() {
     (profiles.data?.items ?? []).map((profile) => [profile.id, profile.name]),
   );
 
+  // Lanes data, computed plain like the rest below the early returns:
+  // pending gates by run (first pending row wins — the list is pending-
+  // first), the enabled pins the start menu reads, and the default agent
+  // profile the seeded chat rides (RepoChatBox's own first-profile rule).
+  const pendingGateByRun = new Map<string, Approval>();
+  for (const approval of approvals.data?.approvals ?? []) {
+    if (approval.state === "pending" && !pendingGateByRun.has(approval.run_id)) {
+      pendingGateByRun.set(approval.run_id, approval);
+    }
+  }
+  const enabledAssignments = usableAssignments.filter((assignment) => assignment.enabled);
+  const profileDefaultId = profiles.data?.items?.[0]?.id ?? null;
+
   return (
     <div className="min-w-0 space-y-4" data-testid="repo-page">
       <header
@@ -321,21 +351,33 @@ export default function Repository() {
           </div>
           <GitHubAccess ref={ghAccess} project={projectData} repository={repositoryData} />
         </div>
-        <RepoViewToggle repositoryName={repositoryData.name} />
+        <div className="flex shrink-0 items-center gap-2">
+          <RepoViewToggle repositoryName={repositoryData.name} />
+          {/* Lanes mode has no left-column chat box — its New chat opens the
+              same RepoChatBox in a modal (design 3b header). */}
+          {view === "lanes" ? (
+            <Button
+              variant="primary"
+              onClick={() => setChatFormOpen(true)}
+              data-testid="repo-new-chat"
+            >
+              New chat
+            </Button>
+          ) : null}
+        </div>
       </header>
 
-      {/* The design's two columns: chat + activity left, side panel right;
-          they stack below 1024px so a 390px viewport never scrolls sideways. */}
-      <div className="grid grid-cols-1 items-start gap-5 min-[1024px]:grid-cols-[minmax(0,1fr)_290px]">
+      {view === "lanes" ? (
+        /* Design 3b: the WORKFLOWS chip row over the four lanes. */
         <div className="min-w-0 space-y-4">
-          <RepoChatBox projectId={id} repositoryName={repositoryData.name} />
-          <RepoActivity
-            rows={activityRows}
-            nameFor={(pipelineId) => names.get(pipelineId) ?? null}
-            profileNameFor={(agentProfileId) => profileNames.get(agentProfileId) ?? null}
-            meId={me.data?.id ?? null}
-            repositoryName={repositoryData.name}
+          <RepoWorkflowChips projectId={id} assignments={enabledAssignments} names={names} />
+          <RepoLanes
             projectId={id}
+            repositoryName={repositoryData.name}
+            issues={issues}
+            githubHosted={githubHosted}
+            runs={repoRuns}
+            conversations={conversations.data?.items ?? []}
             runsPending={runs.isPending}
             runsError={runs.error}
             onRetryRuns={() => void runs.refetch()}
@@ -344,45 +386,99 @@ export default function Repository() {
             chatsError={conversations.error}
             onRetryChats={() => void conversations.refetch()}
             retryingChats={conversations.isFetching}
-            showProjectNote={repoRuns.length > 0 && !attributable}
-          />
-        </div>
-        <div className="min-w-0 space-y-4">
-          <AssistantNotes notes={assistantNotes} />
-          <RepoWorkflowPanel
-            projectId={id}
-            project={projectData}
-            repository={repositoryData}
-            runs={runs.data?.runs}
-            runsPending={runs.isPending}
-            runsError={runs.error}
-            onRun={() => setRunFormOpen(true)}
-          />
-          <RepoIssuesPanel
-            repository={repositoryData}
-            projectId={id}
-            issues={issues}
-            githubHosted={githubHosted}
-            assignments={usableAssignments}
+            gateFor={(runId) => pendingGateByRun.get(runId) ?? null}
+            assignments={enabledAssignments}
             names={names}
-            activeRunsByIssue={activeIssueRuns(runs.data, issues.data)}
-            expandedIssue={expandedIssue}
-            onExpand={setExpandedIssue}
-            canManageGitHub={projectData.my_role === "maintainer"}
-            onAddGitHubAccess={() => ghAccess.current?.open()}
+            profileDefaultId={profileDefaultId}
+            profilesPending={profiles.isPending}
+            onOpenRunForm={(issue) => {
+              setRunFormIssue(issue);
+              setRunFormOpen(true);
+            }}
           />
         </div>
-      </div>
+      ) : (
+        /* The design's two columns: chat + activity left, side panel right;
+           they stack below 1024px so a 390px viewport never scrolls sideways. */
+        <div className="grid grid-cols-1 items-start gap-5 min-[1024px]:grid-cols-[minmax(0,1fr)_290px]">
+          <div className="min-w-0 space-y-4">
+            <RepoChatBox projectId={id} repositoryName={repositoryData.name} />
+            <RepoActivity
+              rows={activityRows}
+              nameFor={(pipelineId) => names.get(pipelineId) ?? null}
+              profileNameFor={(agentProfileId) => profileNames.get(agentProfileId) ?? null}
+              meId={me.data?.id ?? null}
+              repositoryName={repositoryData.name}
+              projectId={id}
+              runsPending={runs.isPending}
+              runsError={runs.error}
+              onRetryRuns={() => void runs.refetch()}
+              retryingRuns={runs.isFetching}
+              chatsPending={conversations.isPending}
+              chatsError={conversations.error}
+              onRetryChats={() => void conversations.refetch()}
+              retryingChats={conversations.isFetching}
+              showProjectNote={repoRuns.length > 0 && !attributable}
+            />
+          </div>
+          <div className="min-w-0 space-y-4">
+            <AssistantNotes notes={assistantNotes} />
+            <RepoWorkflowPanel
+              projectId={id}
+              project={projectData}
+              repository={repositoryData}
+              runs={runs.data?.runs}
+              runsPending={runs.isPending}
+              runsError={runs.error}
+              onRun={() => {
+                setRunFormIssue(null);
+                setRunFormOpen(true);
+              }}
+            />
+            <RepoIssuesPanel
+              repository={repositoryData}
+              projectId={id}
+              issues={issues}
+              githubHosted={githubHosted}
+              assignments={usableAssignments}
+              names={names}
+              activeRunsByIssue={activeIssueRuns(runs.data, issues.data)}
+              expandedIssue={expandedIssue}
+              onExpand={setExpandedIssue}
+              canManageGitHub={projectData.my_role === "maintainer"}
+              onAddGitHubAccess={() => ghAccess.current?.open()}
+            />
+          </div>
+        </div>
+      )}
 
-      {runFormOpen ? <RunFormModal projectId={id} onClose={() => setRunFormOpen(false)} /> : null}
+      {runFormOpen ? (
+        <RunFormModal projectId={id} issue={runFormIssue} onClose={() => setRunFormOpen(false)} />
+      ) : null}
+      {chatFormOpen ? (
+        <ChatFormModal
+          projectId={id}
+          repositoryName={repositoryData.name}
+          onClose={() => setChatFormOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
 
 /** The page's one run-start form (3a): a raised modal over the current page,
  * carrying today's `NewRunForm` — same assignment select, same declared
- * inputs, same receipts. `esc` closes and returns focus to the page. */
-function RunFormModal({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+ * inputs, same receipts; the 3b drop-to-Running route hands the form its
+ * issue prefill (1k). `esc` closes and returns focus to the page. */
+function RunFormModal({
+  projectId,
+  issue,
+  onClose,
+}: {
+  projectId: string;
+  issue: GitHubIssue | null;
+  onClose: () => void;
+}) {
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -425,7 +521,69 @@ function RunFormModal({ projectId, onClose }: { projectId: string; onClose: () =
           </button>
         </div>
         <div className="p-[10px]">
-          <NewRunForm projectId={projectId} onCancel={onClose} />
+          <NewRunForm projectId={projectId} issue={issue ?? undefined} onCancel={onClose} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The Lanes header's `New chat` (3b): the same raised-modal shell as the
+ * run form, carrying today's `RepoChatBox` — one line, profile chip,
+ * `Start` creating a repo-bound conversation (ADR-0067) and navigating to
+ * the thread. `esc` closes and returns focus to the page. */
+function ChatFormModal({
+  projectId,
+  repositoryName,
+  onClose,
+}: {
+  projectId: string;
+  repositoryName: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="repo-chat-form-title"
+        className="w-[540px] max-w-full rounded-[4px] border border-ink bg-surface shadow-(--shadow-raised)"
+        data-testid="repo-new-chat-dialog"
+      >
+        <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+          <h2 id="repo-chat-form-title" className="min-w-0 flex-1 text-[15px] font-semibold">
+            New chat in {repositoryName}
+          </h2>
+          <span aria-hidden="true" className="font-mono text-[11px] text-faint">
+            esc
+          </span>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="icon-hit rounded-[3px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            data-testid="repo-new-chat-close"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+        <div className="p-[10px]" data-testid="repo-new-chat-body">
+          <RepoChatBox projectId={projectId} repositoryName={repositoryName} />
         </div>
       </div>
     </div>

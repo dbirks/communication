@@ -1,10 +1,8 @@
 /**
- * `/p/:projectId/:repo` — the repository page, List view (design 3a): the
- * chat box, the mixed runs+chats activity feed (order, filters, empty and
- * error states), Start creating a repo-bound conversation (ADR-0067), the
- * side panel (assistant notes absent without a source, workflow rows with
- * their trigger line and latest result, OPEN ISSUES with `Hand off`), and
- * the honest GitHub refusals carried over from design 1e.
+ * `/p/:projectId/:repo` — the repository page: the List view (design 3a —
+ * the chat box, the mixed runs+chats activity feed, the side panel) and the
+ * Lanes view (design 3b — the workflow chip row, four lanes, drag-an-issue-
+ * into-Running), plus the honest GitHub refusals both share.
  */
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -20,9 +18,10 @@ import {
 } from "../test/fakes";
 import type { ConversationSummary } from "../api/types";
 import type { GitHubIssue } from "../api/issues";
-import type { Assignment, Repository, RunSummary } from "../api/types";
+import type { Approval, Assignment, PipelineRevision, Repository, RunSummary } from "../api/types";
 import type { IssueTrigger } from "../api/useIssueTriggers";
 import type { Schedule } from "../api/pipelines";
+import { buildLanes, issueChatSeed, type LaneEntry } from "../components/repo/RepoLanes";
 import {
   WIRE_CHILD_PIPELINE_ID,
   WIRE_PIPELINE_ID,
@@ -143,6 +142,31 @@ const runningRun: RunSummary = {
   triggered_by: meFixture.id,
   created_at: "2026-10-31T10:00:00Z",
   started_at: "2026-11-01T08:30:00Z",
+  // ADR-0070: the project run list row carries the bounded step progress —
+  // the List row's strip and the Lanes card's strip both read this.
+  progress: {
+    steps: [
+      { node_id: "plan", state: "done" },
+      { node_id: "implement", state: "done" },
+      { node_id: "review", state: "running" },
+      { node_id: "pr", state: "open" },
+      { node_id: "merge", state: "open" },
+    ],
+    more: 0,
+  },
+} as RunSummary;
+
+/** A terminal row for the FINISHED lane (and the failed pale edge). */
+const failedRun: RunSummary = {
+  ...waitingRun,
+  id: "01987c11-0003-7000-8000-abcdef012345",
+  title: "Order notes field",
+  status: "failed",
+  failed_cause: "node_execution_failed:/review",
+  assignment_id: projectAssignment.id,
+  created_at: "2026-10-31T11:00:00Z",
+  started_at: "2026-10-31T11:01:00Z",
+  finished_at: "2026-11-01T07:00:00Z",
 };
 
 const doneRun: RunSummary = {
@@ -181,6 +205,93 @@ function createdConversation(): ConversationSummary & Partial<typeof conversatio
     title: "fix the flaky checkout test",
     created_at: "2026-11-02T08:00:00Z",
     updated_at: "2026-11-02T08:00:00Z",
+  };
+}
+
+/** A chat whose session dropped with a turn open — the NEEDS YOU arm. */
+const stalledChat: ConversationSummary = {
+  ...repoChat,
+  id: "01987c33-0001-7000-8000-abcdef012345",
+  title: "Session dropped mid-review",
+  status: "disconnected",
+  updated_at: "2026-11-01T09:30:00Z",
+};
+
+/** An archived chat — the FINISHED arm. */
+const endedChat: ConversationSummary = {
+  ...repoChat,
+  id: "01987c33-0002-7000-8000-abcdef012345",
+  title: "Why is CI flaky?",
+  status: "archived",
+  updated_at: "2026-11-01T06:00:00Z",
+};
+
+/** The pending gate of the waiting run — the lanes' `Approve` is a link
+ * onto this observed gate's route, never an invented one. */
+const pendingGate: Approval = {
+  id: "01987c44-0000-7000-8000-abcdef012345",
+  project_id: projectFixture.id,
+  run_id: waitingRun.id,
+  node_execution_id: "01987c44-0001-7000-8000-abcdef012345",
+  node_instance_key: "plan",
+  kind: "pipeline_gate",
+  summary: "Approve plan",
+  artifact_refs: [],
+  approver_roles: ["maintainer"],
+  approver_user_ids: [],
+  deadline_at: "2026-11-02T18:00:00Z",
+  on_timeout: "fail",
+  re_requested: false,
+  state: "pending",
+  version: 1,
+  created_at: "2026-11-01T09:01:00Z",
+};
+
+/** The repo pin's revision, ADR-0066: a required `github_issue` input and
+ * an optional branch with a default — a drag can start it directly. */
+const issueAcceptingRevision: PipelineRevision = {
+  ...wireRevision,
+  input_specs: [
+    { name: "base", type: "branch", required: false, default: "main" },
+    { name: "issue", type: "github_issue", required: true },
+  ],
+};
+
+/** Same, but a SECOND required input with no default — the drop must hand
+ * over to the run-by-hand form, not post a doomed run.
+ */
+const needsFormRevision: PipelineRevision = {
+  ...issueAcceptingRevision,
+  input_specs: [
+    ...issueAcceptingRevision.input_specs!,
+    { name: "goal", type: "text", required: true },
+  ],
+};
+
+/** The whole-project pin rides its OWN pinned revision — the one that
+ * declares no inputs, so the start menu must not list it. */
+const plainAssignment: Assignment = {
+  ...projectAssignment,
+  pinned_revision_id: "01987b21-7777-7000-8000-abcdef012345",
+  pinned_revision_digest: `sha256:${"9d9d".repeat(32)}`,
+};
+
+function dataTransferStub(): {
+  data: Record<string, string>;
+  effectAllowed: string;
+  dropEffect: string;
+  setData: (kind: string, value: string) => void;
+  getData: (kind: string) => string;
+} {
+  const data: Record<string, string> = {};
+  return {
+    data,
+    effectAllowed: "none",
+    dropEffect: "none",
+    setData: (kind, value) => {
+      data[kind] = value;
+    },
+    getData: (kind) => data[kind] ?? "",
   };
 }
 
@@ -223,12 +334,65 @@ function renderFeed(overrides: RouteStub[] = []) {
   });
 }
 
+/** The same page with the Lanes fixtures: a pending gate for the waiting
+ * run, the repo pin's revision declaring a `github_issue` input (ADR-0066),
+ * a second pin whose revision declares none, the stalled and ended chats,
+ * and the two POSTs the drop can make. `overrides` win over all of it. */
+function lanesRoutes(overrides: RouteStub[] = []): RouteStub[] {
+  const projectPath = `/api/v1/projects/${projectFixture.id}`;
+  return feedRoutes([
+    ...overrides,
+    {
+      path: `${projectPath}/assignments`,
+      body: { assignments: [repoAssignment, plainAssignment] },
+    },
+    { path: `${projectPath}/approvals`, body: { approvals: [pendingGate] } },
+    { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, body: issueAcceptingRevision },
+    { path: `/api/v1/revisions/${plainAssignment.pinned_revision_id}`, body: wireRevision },
+    {
+      method: "GET",
+      path: `${projectPath}/conversations`,
+      body: { items: [repoChat, stalledChat, endedChat] },
+    },
+    {
+      method: "POST",
+      path: `${projectPath}/conversations`,
+      status: 201,
+      body: createdConversation(),
+    },
+    {
+      method: "POST",
+      path: `${projectPath}/runs`,
+      status: 201,
+      body: { run_id: "01987c99-0000-7000-8000-abcdef012345", status: "queued" },
+    },
+    { path: `${projectPath}/runs`, body: { runs: [waitingRun, runningRun, doneRun, failedRun] } },
+  ]);
+}
+
+function renderLanes(overrides: RouteStub[] = []) {
+  return renderApp({
+    path: `/p/${projectFixture.id}/communication`,
+    routes: lanesRoutes(overrides),
+  });
+}
+
+/** Open the Lanes view (the choice is a session pref; the toggle stands). */
+async function openLanes(): Promise<HTMLElement> {
+  await screen.findByTestId("repo-page");
+  fireEvent.click(screen.getByTestId("repo-view-lanes"));
+  return screen.findByTestId("repo-lanes");
+}
+
+const laneIds = (entries: LaneEntry[]): string[] =>
+  entries.map((entry) => (entry.kind === "run" ? entry.run.id : entry.conversation.id));
+
 function testid(id: string): string {
   return id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
 }
 
 describe("/p/:projectId/:repo — 3a header", () => {
-  it("renders the breadcrumb, the H1 and the List | Lanes control (Lanes disabled, unbuilt)", async () => {
+  it("renders the breadcrumb, the H1 and the List | Lanes control (both arms built)", async () => {
     renderFeed();
     expect(await screen.findByTestId("repo-page")).toBeTruthy();
     expect(screen.getByTestId("repo-name").textContent).toBe("communication");
@@ -236,8 +400,16 @@ describe("/p/:projectId/:repo — 3a header", () => {
     const list = screen.getByTestId("repo-view-list");
     const lanes = screen.getByTestId("repo-view-lanes") as HTMLButtonElement;
     expect(list.getAttribute("aria-pressed")).toBe("true");
-    expect(lanes.disabled).toBe(true);
-    expect(lanes.title).toBe("Lanes view arrives next");
+    // Lanes is built (3b): the segment is enabled and switches the page.
+    expect(lanes.disabled).toBe(false);
+    fireEvent.click(lanes);
+    expect(await screen.findByTestId("repo-lanes")).toBeTruthy();
+    expect(screen.getByTestId("repo-view-lanes").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("repo-activity")).toBeNull();
+    // …and back to List.
+    fireEvent.click(screen.getByTestId("repo-view-list"));
+    expect(await screen.findByTestId("repo-activity")).toBeTruthy();
+    expect(screen.queryByTestId("repo-lanes")).toBeNull();
   });
 
   it("keeps the server-error screen when the repositories read fails", async () => {
@@ -300,9 +472,13 @@ describe("the activity feed", () => {
     expect(chat.textContent).toContain("Search revamp spike");
     expect(chat.textContent).toContain(claudeProfile.name);
     expect(waiting.textContent).toContain("Feature development");
-    // The project run list carries no per-step states, so no strip is drawn
-    // for the running row — never invented segments.
-    expect(running.querySelector("[role='img']")).toBeNull();
+    // ADR-0070: the project run list row carries `progress`, so the running
+    // row draws the strip from the served steps — and only from those (the
+    // rows whose data carries none, like the waiting one, carry no strip).
+    const strip = running.querySelector("[role='img']");
+    expect(strip).toBeTruthy();
+    expect(strip?.getAttribute("aria-label")).toBe("2 done, 1 running, 2 open");
+    expect(waiting.querySelector("[role='img']")).toBeNull();
   });
 
   it("filters with the All · Runs · Chats · Mine chips", async () => {
@@ -528,5 +704,267 @@ describe("the side panel", () => {
     expect(line.textContent).toBe("private repo? add GitHub access");
     fireEvent.click(screen.getByTestId("repo-issues-add-github-access"));
     expect(await screen.findByTestId("github-access-dialog")).toBeTruthy();
+  });
+});
+
+describe("/p/:projectId/:repo — 3b Lanes", () => {
+  it("buckets the runs and chats into the four lanes", async () => {
+    renderLanes();
+    await openLanes();
+
+    // The WORKFLOWS chip row: name · trigger, the same words the panel uses.
+    const chips = screen.getByTestId("repo-lane-workflows");
+    expect(chips.textContent).toContain("Feature development");
+    expect(chips.textContent).toContain("Module check");
+    expect(
+      screen.getByTestId(`repo-lane-workflow-trigger-${testid(repoAssignment.id)}`).textContent,
+    ).toBe("GitHub · issue labeled factory");
+
+    // ISSUES: the draggable cards, `#num` + title, with the keyboard path.
+    const issuesLane = screen.getByTestId("repo-lane-issues");
+    expect(issuesLane.textContent).toContain("#512");
+    expect(issuesLane.textContent).toContain("The build is red");
+    expect(screen.getByTestId(`repo-lane-issue-start-${issue.number}`)).toBeTruthy();
+
+    // NEEDS YOU: the waiting run with its observed gate — Approve is the
+    // gate route, Open the run — and the disconnected chat.
+    const needsYou = screen.getByTestId("repo-lane-needs-you");
+    expect(needsYou.textContent).toContain("Checkout rounds tax wrong");
+    expect(needsYou.textContent).toContain("Approve plan");
+    const approve = screen.getByTestId(`repo-lane-approve-${testid(waitingRun.id)}`);
+    expect(approve.getAttribute("href")).toBe(`/approvals/${pendingGate.id}`);
+    expect(
+      screen.getByTestId(`repo-lane-runbutton-${testid(waitingRun.id)}`).getAttribute("href"),
+    ).toBe(`/runs/${waitingRun.id}`);
+    expect(needsYou.textContent).toContain("Session dropped mid-review");
+    expect(screen.getByTestId(`repo-lane-run-${testid(waitingRun.id)}`).className).toContain(
+      "border-st-waiting-pale-edge",
+    );
+
+    // RUNNING: the running run with its ADR-0070 strip, plus the live chat.
+    const running = screen.getByTestId("repo-lane-running");
+    const runningCard = screen.getByTestId(`repo-lane-run-${testid(runningRun.id)}`);
+    expect(runningCard.textContent).toContain("Add Apple Pay");
+    expect(runningCard.querySelector("[role='img']")).toBeTruthy();
+    expect(running.textContent).toContain("Search revamp spike");
+    expect(screen.getByTestId(`repo-lane-chat-${testid(repoChat.id)}`)).toBeTruthy();
+
+    // FINISHED · 7 DAYS: the done run, the failed run on the failed pale
+    // edge, and the ended chat.
+    const finished = screen.getByTestId("repo-lane-finished");
+    expect(finished.textContent).toContain("Nightly deps");
+    expect(finished.textContent).toContain("Why is CI flaky?");
+    expect(screen.getByTestId(`repo-lane-run-${testid(failedRun.id)}`).className).toContain(
+      "border-st-failed-pale-edge",
+    );
+    // The waiting run is nowhere else, the live chat nowhere else either.
+    expect(running.querySelector(`[data-testid='repo-lane-run-${testid(waitingRun.id)}']`));
+    expect(
+      screen
+        .getByTestId("repo-lane-needs-you")
+        .querySelector(`[data-testid='repo-lane-run-${testid(runningRun.id)}']`),
+    ).toBeNull();
+  });
+
+  it("drags an issue into Running: the lane lights, the drop opens the start menu", async () => {
+    renderLanes();
+    await openLanes();
+
+    const card = await screen.findByTestId(`repo-lane-issue-${issue.number}`);
+    fireEvent.dragStart(card, { dataTransfer: dataTransferStub() });
+    const lane = screen.getByTestId("repo-lane-running");
+    fireEvent.dragOver(lane);
+    // Dashed accent border over an accent-tint fill, and the caught preview.
+    expect(lane.className).toContain("outline-dashed");
+    expect(lane.className).toContain("outline-accent");
+    expect(lane.className).toContain("bg-accent-tint");
+    const preview = screen.getByTestId("repo-lane-drop-preview");
+    expect(preview.textContent).toContain("#512 · dragging");
+    expect(preview.textContent).toContain("The build is red");
+
+    fireEvent.drop(lane);
+    const menu = await screen.findByTestId("repo-start-issue-menu");
+    // The caption rides ds/Menu's mono caps (CSS uppercase on the DOM text).
+    expect(menu.textContent?.toUpperCase()).toContain("START #512 WITH");
+    // Only the workflow whose pinned revision declares a github_issue input
+    // is offered; the input-less pin stays out of the menu.
+    const startable = await screen.findByTestId(
+      `repo-start-issue-workflow-${testid(repoAssignment.id)}`,
+    );
+    expect(startable.textContent).toContain("Feature development");
+    expect(menu.textContent).not.toContain("Module check");
+    expect(screen.getByTestId("repo-start-issue-chat").textContent).toContain(
+      "Chat about it instead",
+    );
+    // The caught card is the menu's anchor (3b's dropped card).
+    expect(screen.getByTestId("repo-lane-drop-card").textContent).toContain("#512");
+
+    // Esc closes the menu and the drop card with it.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("repo-start-issue-menu")).toBeNull());
+    expect(screen.queryByTestId("repo-lane-drop-card")).toBeNull();
+  });
+
+  it("starting from the menu posts the run with the ADR-0066 issue object", async () => {
+    const projectPath = `/api/v1/projects/${projectFixture.id}`;
+    const { requests } = renderLanes();
+    await openLanes();
+    fireEvent.dragStart(screen.getByTestId(`repo-lane-issue-${issue.number}`), {
+      dataTransfer: dataTransferStub(),
+    });
+    fireEvent.drop(screen.getByTestId("repo-lane-running"));
+    const item = await screen.findByTestId(
+      `repo-start-issue-workflow-${testid(repoAssignment.id)}`,
+    );
+    fireEvent.click(item);
+
+    const posted = await waitFor(() => {
+      const hits = requestsTo(requests, `${projectPath}/runs`, "POST");
+      expect(hits.length).toBeGreaterThan(0);
+      return hits[0];
+    });
+    const body = JSON.parse(posted.body ?? "{}") as Record<string, unknown>;
+    expect(body).toEqual({
+      assignment_id: repoAssignment.id,
+      inputs: {
+        issue: {
+          number: 512,
+          title: "The build is red",
+          body: "CI is failing on main.",
+          url: "https://github.com/example/communication/issues/512",
+          repo: "example/communication",
+        },
+      },
+      title: "The build is red",
+      issue: { number: 512 },
+      idempotency: expect.stringMatching(/^lanedrop-/),
+    });
+    // The same key rides the header (ADR-023 § 12: a replay is one run).
+    expect(posted.headers.get("Idempotency-Key")).toBe(body.idempotency);
+    // …and the page lands on the new run.
+    await waitFor(() => expect(screen.queryByTestId("repo-lane-running")).toBeNull());
+  });
+
+  it("a workflow with other required inputs opens the run-by-hand form instead", async () => {
+    const projectPath = `/api/v1/projects/${projectFixture.id}`;
+    const { requests } = renderLanes([
+      { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, body: needsFormRevision },
+    ]);
+    await openLanes();
+    fireEvent.dragStart(screen.getByTestId(`repo-lane-issue-${issue.number}`), {
+      dataTransfer: dataTransferStub(),
+    });
+    fireEvent.drop(screen.getByTestId("repo-lane-running"));
+    fireEvent.click(
+      await screen.findByTestId(`repo-start-issue-workflow-${testid(repoAssignment.id)}`),
+    );
+    // `goal` is required and no default covers it: 1k takes over — opened
+    // with the issue prefilled — and no run is posted here.
+    expect(await screen.findByTestId("repo-run-form")).toBeTruthy();
+    expect(
+      requestsTo(requests, `${projectPath}/runs`, "POST").filter((request) =>
+        (request.body ?? "").includes('"issue"'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("the keyboard `Start…` opens the same menu, and `Chat about it instead` seeds a repo chat", async () => {
+    const projectPath = `/api/v1/projects/${projectFixture.id}`;
+    const { requests } = renderLanes();
+    await openLanes();
+
+    fireEvent.click(screen.getByTestId(`repo-lane-issue-start-${issue.number}`));
+    const menu = await screen.findByTestId("repo-start-issue-menu");
+    expect(menu.textContent?.toUpperCase()).toContain("START #512 WITH");
+    await screen.findByTestId(`repo-start-issue-workflow-${testid(repoAssignment.id)}`);
+
+    fireEvent.click(screen.getByTestId("repo-start-issue-chat"));
+    const posted = await waitFor(() => {
+      const hits = requestsTo(requests, `${projectPath}/conversations`, "POST");
+      expect(hits.length).toBeGreaterThan(0);
+      return hits[0];
+    });
+    // Born bound to the repository (ADR-0067), seeded with the issue's own
+    // words — the heading line and the body, never a paraphrase.
+    expect(JSON.parse(posted.body ?? "{}")).toEqual({
+      title: "#512 The build is red",
+      agent_profile_id: claudeProfile.id,
+      prompt: "#512 The build is red\n\nCI is failing on main.",
+      repository: repository.name,
+    });
+    await waitFor(() => expect(screen.queryByTestId("repo-lane-running")).toBeNull());
+  });
+
+  it("New chat opens today's chat box in a modal", async () => {
+    renderLanes();
+    await openLanes();
+    fireEvent.click(screen.getByTestId("repo-new-chat"));
+    expect(await screen.findByTestId("repo-new-chat-dialog")).toBeTruthy();
+    expect(screen.getByTestId("repo-chat-input")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("repo-new-chat-close"));
+    expect(screen.queryByTestId("repo-new-chat-dialog")).toBeNull();
+  });
+
+  it("says so when a lane has nothing", async () => {
+    renderLanes([
+      { path: `/api/v1/projects/${projectFixture.id}/runs`, body: { runs: [] } },
+      {
+        method: "GET",
+        path: `/api/v1/projects/${projectFixture.id}/conversations`,
+        body: { items: [] },
+      },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/repos/${repositoryId}/issues`,
+        body: { repository: "example/communication", state: "open", items: [] },
+      },
+    ]);
+    await openLanes();
+    expect(screen.getByTestId("repo-lane-issues-empty")).toBeTruthy();
+    expect(screen.getByTestId("repo-lane-needs-you-empty")).toBeTruthy();
+    expect(screen.getByTestId("repo-lane-running-empty")).toBeTruthy();
+    expect(screen.getByTestId("repo-lane-finished-empty")).toBeTruthy();
+  });
+
+  it("keeps bucketing the chats when the runs read fails, and offers retry", async () => {
+    renderLanes([
+      {
+        path: `/api/v1/projects/${projectFixture.id}/runs`,
+        status: 500,
+        body: { type: "x", title: "Runs are down", status: 500, detail: "" },
+      },
+    ]);
+    await openLanes();
+    expect(await screen.findByTestId("repo-lanes-runs-retry")).toBeTruthy();
+    // The chats the read still answers are bucketed despite the failed runs.
+    expect(screen.getByTestId(`repo-lane-chat-${testid(repoChat.id)}`)).toBeTruthy();
+  });
+});
+
+describe("buildLanes (3b bucketing, fixed clock)", () => {
+  it("puts each status in its lane and keeps the seven-day window honest", () => {
+    const now = Date.parse("2026-11-02T12:00:00Z");
+    const stale = {
+      ...doneRun,
+      id: "01987c11-0004-7000-8000-abcdef012345",
+      finished_at: "2026-10-01T10:00:00Z",
+    };
+    const lanes = buildLanes(
+      [waitingRun, runningRun, doneRun, failedRun, stale],
+      [repoChat, stalledChat, endedChat],
+      now,
+    );
+    // Newest activity first inside each lane: the stalled chat (09:30)
+    // beats the waiting run (09:01); the failed run (Nov 1, 07:00) leads
+    // FINISHED, then the ended chat (06:00), then last night's done run.
+    expect(laneIds(lanes.needsYou)).toEqual([stalledChat.id, waitingRun.id]);
+    expect(laneIds(lanes.running)).toEqual([runningRun.id, repoChat.id]);
+    // The run finished 2026-10-01 is outside the FINISHED · 7 DAYS window
+    // the header names — it lives on the project's run list, not here.
+    expect(laneIds(lanes.finished)).toEqual([failedRun.id, endedChat.id, doneRun.id]);
+  });
+
+  it("seeds the chat with the issue's own heading and body", () => {
+    expect(issueChatSeed(issue)).toBe("#512 The build is red\n\nCI is failing on main.");
+    expect(issueChatSeed({ ...issue, body: "  " })).toBe("#512 The build is red");
   });
 });

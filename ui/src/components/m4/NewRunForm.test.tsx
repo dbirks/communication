@@ -4,12 +4,14 @@
  * controls swap with it — and that submitting honours idempotency (one POST,
  * one key) and the run route on success.
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
-import { runCeilingConflictOf, runCeilingSentence } from "./NewRunForm";
+import { NewRunForm, runCeilingConflictOf, runCeilingSentence } from "./NewRunForm";
 import type { RunSummary } from "../../api/types";
-import { meFixture, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
+import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
 import { renderApp } from "../../test/render";
 import {
   WIRE_ASSIGNMENT_ID,
@@ -508,5 +510,217 @@ describe("NewRunForm — start from a GitHub issue", () => {
     expect(note.textContent).toContain("Issue triggers need a GitHub repository");
     expect(screen.queryByTestId("issue-section-toggle")).toBeNull();
     expect(requestsTo(requests, LAB_ISSUES_PATH, "GET")).toHaveLength(0);
+  });
+});
+
+/* ---------------------------- ADR-0066: the typed run-by-hand form (1k) */
+
+/**
+ * A revision that declares typed inputs (ADR-0066) swaps the free-form
+ * fields for the 1k modal: a searchable issue picker (not a number field),
+ * a mono branch field on its default, a profile select, an input and a
+ * textarea; the required star; and a POST whose `github_issue` value is the
+ * `{number, title, body, url, repo}` object. The prefill is the repo page's
+ * `Hand off`.
+ */
+const typedSpecs = [
+  {
+    name: "issue",
+    type: "github_issue",
+    label: "Issue to work on",
+    help: "The issue becomes the goal; the PR links back to it.",
+    required: true,
+  },
+  { name: "base_branch", type: "branch", label: "Base branch", required: false, default: "main" },
+  { name: "reviewer", type: "agent_profile", label: "Reviewer", required: false },
+  { name: "notes", type: "long_text", label: "Notes", required: false },
+];
+const typedRevision = { ...wireRevision, revision_number: 4, input_specs: typedSpecs };
+const typedAssignments = {
+  assignments: [
+    {
+      ...wireAssignmentList.assignments[0],
+      repository_id: APP_REPO_ID,
+      repository_name: "storefront",
+    },
+  ],
+};
+const profilesList = {
+  items: [
+    {
+      id: "prof-codex",
+      name: "Codex",
+      launcher_id: "codex",
+      permission_mode: "ask",
+      created_at: "2026-07-01T09:00:00Z",
+      version: 1,
+      model: "gpt-5",
+    },
+  ],
+};
+
+function mountTyped(extra: RouteStub[] = [], props: Record<string, unknown> = {}) {
+  const { requests } = mockFetch([
+    ...extra,
+    { path: ASSIGNMENTS_PATH, body: typedAssignments },
+    { path: "/api/v1/pipelines", body: wirePipelineList },
+    { path: REPOS_PATH, body: { items: repos } },
+    { path: REVISION_PATH, body: typedRevision },
+    { path: RUNS_PATH, method: "GET", body: { runs: [] } },
+    { path: ISSUES_PATH, method: "GET", body: issueList },
+    { path: "/api/v1/agent-profiles", body: profilesList },
+    createResponse(),
+  ]);
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+        })
+      }
+    >
+      <MemoryRouter>
+        <NewRunForm projectId={wireProjectId} {...props} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { requests };
+}
+
+describe("NewRunForm — the typed form builds one widget per input (1k)", () => {
+  it("renders the modal with a field per declared type and its labels", async () => {
+    mountTyped();
+    expect(await screen.findByTestId("run-form-dialog")).toBeTruthy();
+    expect(screen.getByTestId("run-form-title").textContent).toBe("Run Feature development");
+    expect(screen.getByTestId("run-form-subtitle").textContent).toBe("storefront · pinned r4");
+
+    // Required inputs lead the form (1k: the issue picker is the first thing
+    // the hand start is asked for), and the rest follow in name order.
+    expect(
+      [...document.querySelectorAll("[data-testid^='new-run-field-']")].map((el) =>
+        el.getAttribute("data-testid"),
+      ),
+    ).toEqual([
+      "new-run-field-issue",
+      "new-run-field-base_branch",
+      "new-run-field-notes",
+      "new-run-field-reviewer",
+    ]);
+
+    // `github_issue` → the searchable picker (an input + listbox), not a number field.
+    expect((await screen.findByTestId("new-run-input-issue")).tagName).toBe("INPUT");
+    expect(screen.getByTestId("new-run-input-issue-picker")).toBeTruthy();
+    // `branch` → a mono text field carrying its default.
+    const branch = screen.getByTestId("new-run-input-base_branch") as HTMLInputElement;
+    expect(branch.tagName).toBe("INPUT");
+    expect(branch.value).toBe("main");
+    expect(branch.className).toContain("font-mono");
+    // `agent_profile` → the select of profiles (the id rides the wire).
+    const reviewer = screen.getByTestId("new-run-input-reviewer");
+    expect(reviewer.tagName).toBe("SELECT");
+    expect(within(reviewer).getByRole("option", { name: "Codex · gpt-5" })).toBeTruthy();
+    // `long_text` → a textarea.
+    expect(screen.getByTestId("new-run-input-notes").tagName).toBe("TEXTAREA");
+
+    // Required is marked `*`; the help text is the spec's own sentence.
+    const label = document.querySelector('label[for="new-run-input-issue"]');
+    expect(label?.textContent).toBe("Issue to work on*");
+    expect(screen.getByTestId("new-run-help-issue").textContent).toBe(
+      "The issue becomes the goal; the PR links back to it.",
+    );
+
+    // The required issue gates the start.
+    expect((screen.getByTestId("new-run-submit") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("searches the tracker and badges the issues that already run", async () => {
+    mountTyped([
+      {
+        path: RUNS_PATH,
+        method: "GET",
+        body: {
+          runs: [
+            {
+              id: "01987b30-2222-7000-8000-abcdef012345",
+              status: "running",
+              trigger: { kind: "issue", ref: "example/app#9" },
+            },
+          ],
+        },
+      },
+    ]);
+    const box = (await screen.findByTestId("new-run-input-issue")) as HTMLInputElement;
+    fireEvent.focus(box);
+    expect(screen.getByTestId("new-run-input-issue-running-9").textContent).toBe(
+      "● run in progress",
+    );
+
+    fireEvent.change(box, { target: { value: "add" } });
+    expect(await screen.findByTestId("new-run-input-issue-option-12")).toBeTruthy();
+    expect(screen.queryByTestId("new-run-input-issue-option-9")).toBeNull();
+  });
+
+  it("posts the issue object, records the issue start, and keeps one idempotency key", async () => {
+    const { requests } = mountTyped();
+    const box = await screen.findByTestId("new-run-input-issue");
+    fireEvent.focus(box);
+    fireEvent.click(await screen.findByTestId("new-run-input-issue-option-12"));
+
+    const submit = screen.getByTestId("new-run-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    await waitFor(() => expect(requestsTo(requests, RUNS_PATH, "POST")).toHaveLength(1));
+
+    const [post] = requestsTo(requests, RUNS_PATH, "POST");
+    const body = JSON.parse(post.body ?? "{}");
+    expect(body.assignment_id).toBe(wireAssignmentList.assignments[0].id);
+    expect(body.inputs.issue).toEqual({
+      number: 12,
+      title: "add() swallows negative inputs",
+      body: "Repro: add(-1, 2) returns 0.\n\nExpected 1.",
+      url: "https://github.com/example/app/issues/12",
+      repo: "example/app",
+    });
+    // The branch default rides along; the untouched optional inputs do not
+    // (the server records those as `origin: default`).
+    expect(body.inputs.base_branch).toBe("main");
+    expect("notes" in body.inputs).toBe(false);
+    // ADR-0064: the hand start from an issue names the issue.
+    expect(body.issue).toEqual({ number: 12 });
+    expect(post.headers.get("idempotency-key")).toMatch(/^newrun-/);
+  });
+
+  it("honours the `Hand off` prefill: the issue arrives picked and the run can start", async () => {
+    const { requests } = mountTyped([], { issue: issueList.items[0] });
+    const box = (await screen.findByTestId("new-run-input-issue")) as HTMLInputElement;
+    expect(box.value).toBe("#12");
+    const submit = screen.getByTestId("new-run-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(requestsTo(requests, RUNS_PATH, "POST")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, RUNS_PATH, "POST")[0].body ?? "{}");
+    expect(body.inputs.issue.number).toBe(12);
+    expect(body.inputs.issue.repo).toBe("example/app");
+    expect(body.issue).toEqual({ number: 12 });
+  });
+
+  it("esc closes through the caller's Cancel", async () => {
+    const onCancel = vi.fn();
+    mountTyped([], { onCancel });
+    await screen.findByTestId("run-form-dialog");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("new-run-cancel"));
+    expect(onCancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("a free-form revision still gets the old form, unchanged", async () => {
+    await openForm();
+    // Legacy mode is the lab's reality until revisions carry `input_specs`:
+    // no modal, the same card, the same fields.
+    expect(await screen.findByTestId("new-run-form")).toBeTruthy();
+    expect(screen.queryByTestId("run-form-dialog")).toBeNull();
+    expect(await screen.findByTestId("new-run-input-goal")).toBeTruthy();
   });
 });

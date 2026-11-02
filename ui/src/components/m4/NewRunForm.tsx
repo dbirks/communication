@@ -21,15 +21,31 @@
  * links every run that holds a slot, because the problem names no run (there
  * is no run yet to name).
  *
+/**
  * Submission carries one idempotency key per form instance (ADR-0023 § 12):
  * the key is minted once on mount, so a double click, a retry after a network
  * failure, or a `max_concurrent_runs` retry re-answers with the same run
  * rather than creating a second one.
+ *
+ * **ADR-0066 typed mode (design 1k).** A revision whose read carries
+ * `input_specs` (the typed declaration derived from `spec.inputs`) replaces
+ * the free-form fields with the run-by-hand MODAL: one widget per declared
+ * type — a searchable issue picker, a mono branch field, a profile select,
+ * an input, a textarea — required fields starred in the failed color, and a
+ * footer with `Cancel`/`Start run`. The submission is the same
+ * `POST /projects/{id}/runs` call; a `github_issue` value rides as the
+ * `{number, title, body, url, repo}` object the ADR's runtime shape names,
+ * and the body also names `issue: {number}` (ADR-0064) so the run records
+ * the start the way a trigger fire does — the badge and the repo page's
+ * “run in progress” both read that fact. A revision WITHOUT `input_specs`
+ * (every document written before ADR-0066, and every revision the lab
+ * predates) keeps the free-form form above, unchanged — the old contract
+ * stays byte-for-byte what its suites assert.
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { useAssignments, usePipelines, useRevision } from "../../api/pipelines";
-import { useRepositories } from "../../api/queries";
+import { useAgentProfiles, useRepositories } from "../../api/queries";
 import { useCreateRun, useProjectRuns } from "../../api/runs";
 import { shortId } from "../../api/names";
 import {
@@ -39,12 +55,18 @@ import {
   type GitHubIssue,
 } from "../../api/issues";
 import { problemOf } from "../../api/client";
+import type { components } from "../../api/schema";
 import type { Repository, RunCreate } from "../../api/types";
 import { formatAge } from "../../lib/format";
 import { Button } from "../ds/Button";
-import { Field, Input, Select, Textarea } from "../ds/Field";
+import { Field, Input, labelClass, Select, Textarea } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { routes } from "../../lib/routes";
+import { IssuePicker, type IssueSelection } from "../workflows/inputs/IssuePicker";
+import { RunFormDialog } from "../workflows/inputs/RunFormDialog";
+
+/** The wire's typed input declaration (ADR-0066). */
+export type InputSpec = components["schemas"]["InputSpec"];
 
 /** Value types a run input can carry on the wire. */
 export type InputValue = string | number | boolean;
@@ -247,6 +269,75 @@ export function wireInputsOf(
   return inputs;
 }
 
+/* ------------------------------------ ADR-0066 typed run-by-hand (design 1k) */
+
+/** A typed field's value: plain text for the string types, a picked issue
+ * (with the `owner/repo` it came from) for `github_issue`. */
+export type TypedInputValue = string | IssueSelection;
+
+/** `owner/repo` out of a GitHub git remote — the `repo` member of the issue
+ * object the ADR's runtime shape names; "" when the URL is not GitHub's. */
+export function ownerRepoFromGitUrl(gitUrl: string): string {
+  const match = /^(?:https?:\/\/|git@)github\.com[:/](.+?\/.+?)(?:\.git)?\/?$/.exec(gitUrl.trim());
+  return match ? match[1] : "";
+}
+
+/** A fresh typed form carries declared string defaults and nothing else —
+ * never a guess (the same honesty rule as `defaultValuesOf`). */
+export function typedDefaultsOf(specs: readonly InputSpec[]): Record<string, TypedInputValue> {
+  const values: Record<string, TypedInputValue> = {};
+  for (const spec of specs) {
+    if (typeof spec.default === "string") values[spec.name] = spec.default;
+  }
+  return values;
+}
+
+function typedIsEmpty(value: TypedInputValue | undefined): boolean {
+  if (value === undefined) return true;
+  if (typeof value === "string") return value.trim() === "";
+  return value.issue === undefined || value.issue === null;
+}
+
+/** Required-and-unfilled, in the form's own words; the control plane stays
+ * the authority and its `422` renders verbatim if this ever lets one slip. */
+export function typedProblemsOf(
+  specs: readonly InputSpec[],
+  values: Record<string, TypedInputValue | undefined>,
+): Record<string, string> {
+  const problems: Record<string, string> = {};
+  for (const spec of specs) {
+    if (spec.required && typedIsEmpty(values[spec.name]))
+      problems[spec.name] = `${spec.name} is required`;
+  }
+  return problems;
+}
+
+/** The wire `inputs` object: filled values only; a `github_issue` rides as
+ * the ADR's runtime shape `{number, title, body, url, repo}`. */
+export function typedWireInputsOf(
+  specs: readonly InputSpec[],
+  values: Record<string, TypedInputValue | undefined>,
+): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {};
+  for (const spec of specs) {
+    const value = values[spec.name];
+    if (typedIsEmpty(value)) continue;
+    if (spec.type === "github_issue" && typeof value !== "string") {
+      const picked = value as IssueSelection;
+      inputs[spec.name] = {
+        number: picked.issue.number,
+        title: picked.issue.title,
+        body: picked.issue.body,
+        url: picked.issue.html_url,
+        repo: picked.repository,
+      };
+    } else if (typeof value === "string") {
+      inputs[spec.name] = value;
+    }
+  }
+  return inputs;
+}
+
 /**
  * The values an issue writes into a revision's declared inputs — and nothing
  * else. Matching is by the name the revision declares, never by inventing a
@@ -285,10 +376,13 @@ export interface NewRunFormProps {
   /** Called with the created run id; the form then navigates to the run. */
   onCreated?: (runId: string) => void;
   onCancel?: () => void;
+  /** Design 1k's prefill — the repo page's `Hand off` opens the form with
+   * this issue already picked into the first `github_issue` input. */
+  issue?: GitHubIssue | null;
 }
 
 /** The run-input form for a project: fields come from the pinned revision. */
-export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) {
+export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: NewRunFormProps) {
   const navigate = useNavigate();
   const assignments = useAssignments(projectId);
   const pipelines = usePipelines();
@@ -297,6 +391,7 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
 
   const [assignmentId, setAssignmentId] = useState("");
   const [values, setValues] = useState<Record<string, InputValue>>({});
+  const [typedValues, setTypedValues] = useState<Record<string, TypedInputValue | undefined>>({});
   const [showProblems, setShowProblems] = useState(false);
   const idempotencyKey = useRef<string>(newRunKey());
   // A second click before React can repaint the disabled button is still one
@@ -305,17 +400,23 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
 
   const options = useMemo(() => {
     const slugs = new Map(
-      (pipelines.data?.pipelines ?? []).map((pipeline) => [pipeline.id, pipeline.slug]),
+      (pipelines.data?.pipelines ?? []).map((pipeline) => [
+        pipeline.id,
+        { slug: pipeline.slug, displayName: pipeline.display_name },
+      ]),
     );
     return (assignments.data?.assignments ?? [])
       .filter((assignment) => assignment.enabled)
       .map((assignment) => ({
         id: assignment.id,
-        pipelineSlug: slugs.get(assignment.pipeline_id) ?? assignment.pipeline_id,
+        pipelineSlug: slugs.get(assignment.pipeline_id)?.slug ?? assignment.pipeline_id,
+        displayName: slugs.get(assignment.pipeline_id)?.displayName ?? "",
         versionLabel:
           assignment.pinned_version_label ?? assignment.pinned_revision_digest.slice(0, 19),
         pinnedRevisionId: assignment.pinned_revision_id,
         maxConcurrentRuns: assignment.max_concurrent_runs,
+        repositoryId: assignment.repository_id ?? null,
+        repositoryName: assignment.repository_name ?? null,
       }));
   }, [assignments.data, pipelines.data]);
 
@@ -374,6 +475,89 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
   const setValue = (name: string, value: InputValue) =>
     setValues((current) => ({ ...current, [name]: value }));
 
+  /* -------------------------------------------------- typed mode (1k) */
+
+  const typedSpecs: InputSpec[] = useMemo(() => revision.data?.input_specs ?? [], [revision.data]);
+  const typedMode = typedSpecs.length > 0;
+  // The repository the issue picker reads: the assignment's own repo (an
+  // ADR-0060 pin). A project-wide pin names none — the picker says so.
+  const pickerRepo: Repository | null = active?.repositoryId
+    ? (repos.find((repo) => repo.id === active.repositoryId) ?? null)
+    : null;
+
+  // Seed once per assignment: declared string defaults, plus the `Hand off`
+  // prefill into the first `github_issue` input. Nothing else is guessed.
+  const typedSeeded = useRef<string | null>(null);
+  useEffect(() => {
+    if (!typedMode || !active || typedSeeded.current === active.id) return;
+    typedSeeded.current = active.id;
+    const initial = typedDefaultsOf(typedSpecs);
+    if (issue) {
+      const first = typedSpecs.find((spec) => spec.type === "github_issue");
+      if (first)
+        initial[first.name] = {
+          issue,
+          repository: ownerRepoFromGitUrl(pickerRepo?.git_url ?? ""),
+        };
+    }
+    setTypedValues(initial);
+    setShowProblems(false);
+  }, [typedMode, active, typedSpecs, issue, pickerRepo]);
+
+  /** Prefill patch: an issue picked before the repository list landed (or
+   * handed in by `Hand off`) gets its `repo` from the assignment's remote. */
+  const resolvedTypedValues = (): Record<string, TypedInputValue | undefined> => {
+    const repoName = ownerRepoFromGitUrl(pickerRepo?.git_url ?? "");
+    const out: Record<string, TypedInputValue | undefined> = {};
+    for (const [name, value] of Object.entries(typedValues)) {
+      out[name] =
+        value !== undefined && typeof value !== "string" && value.repository === ""
+          ? { ...value, repository: repoName }
+          : value;
+    }
+    return out;
+  };
+
+  const typedProblems = typedProblemsOf(typedSpecs, typedValues);
+  const typedBlocked =
+    createRun.isPending || active === null || Object.keys(typedProblems).length > 0;
+  const typedRequired = typedSpecs.filter((spec) => spec.required && spec.default === undefined);
+
+  function startTyped() {
+    if (!active || createRun.isPending || inFlight.current) return;
+    setShowProblems(true);
+    if (Object.keys(typedProblemsOf(typedSpecs, typedValues)).length > 0) return;
+    inFlight.current = true;
+    const resolved = resolvedTypedValues();
+    const body: RunCreate = {
+      assignment_id: active.id,
+      inputs: typedWireInputsOf(typedSpecs, resolved),
+      idempotency: idempotencyKey.current,
+    };
+    // A hand start from an issue records the same trigger fact a trigger fire
+    // does (ADR-0064) — legal only on a repo-scoped pin to a GitHub remote,
+    // which is exactly when the picker could read the tracker at all.
+    const picked = typedSpecs
+      .map((spec) => resolved[spec.name])
+      .find((value): value is IssueSelection => typeof value !== "string" && value !== undefined);
+    if (picked && active.repositoryId && pickerRepo && isGitHubRepository(pickerRepo.git_url))
+      body.issue = { number: picked.issue.number };
+    createRun.mutate(
+      { body, idempotencyKey: idempotencyKey.current },
+      {
+        onSuccess: (run) => {
+          onCreated?.(run.run_id);
+          navigate(routes.run(run.run_id));
+        },
+        onError: () => {
+          // The key is unchanged: the retry re-answers with the same run (or
+          // the same 409), it never mints a second one.
+          inFlight.current = false;
+        },
+      },
+    );
+  }
+
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!active || !fields || createRun.isPending || inFlight.current) return;
@@ -400,6 +584,72 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
       },
     );
   };
+
+  if (typedMode && active) {
+    return (
+      <RunFormDialog
+        title={`Run ${active.displayName || active.pipelineSlug}`}
+        subtitle={`${active.repositoryName ?? "whole project"} · pinned r${revision.data?.revision_number ?? "?"}`}
+        helper={
+          typedRequired.length > 0
+            ? "Required fields are marked *; the rest start on their defaults."
+            : "Nothing is required — every input starts on its default."
+        }
+        onCancel={onCancel}
+        submit={
+          <Button
+            type="button"
+            variant="primary"
+            disabled={typedBlocked}
+            onClick={startTyped}
+            data-testid="new-run-submit"
+          >
+            {createRun.isPending ? "Starting run…" : "Start run"}
+          </Button>
+        }
+      >
+        <div className="space-y-[12px]" data-testid="new-run-form">
+          {options.length > 1 ? (
+            <Field id="new-run-assignment" label="Workflow">
+              <Select
+                id="new-run-assignment"
+                value={active.id}
+                onChange={(event) => setAssignmentId(event.target.value)}
+                data-testid="new-run-assignment"
+              >
+                {options.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {(option.displayName || option.pipelineSlug) +
+                      ` · ${option.versionLabel}` +
+                      (option.repositoryName ? ` · ${option.repositoryName}` : "")}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : null}
+          <TypedFields
+            projectId={projectId}
+            specs={[...typedSpecs].sort(
+              (a, b) =>
+                Number(Boolean(b.required)) - Number(Boolean(a.required)) ||
+                a.name.localeCompare(b.name),
+            )}
+            values={typedValues}
+            problems={showProblems ? typedProblems : {}}
+            pickerRepo={pickerRepo}
+            onChange={(name, value) => setTypedValues((current) => ({ ...current, [name]: value }))}
+          />
+          {createRun.isError ? (
+            <RunCreateError
+              error={createRun.error}
+              projectId={projectId}
+              assignmentId={active?.id ?? null}
+            />
+          ) : null}
+        </div>
+      </RunFormDialog>
+    );
+  }
 
   return (
     <form onSubmit={onSubmit} aria-labelledby="new-run-heading" data-testid="new-run-form">
@@ -1015,5 +1265,151 @@ function IssueRow({ issue, onFill }: IssueRowProps) {
         </a>
       </div>
     </li>
+  );
+}
+
+/* ------------------------------------------- typed fields (design 1k) */
+
+interface TypedFieldsProps {
+  projectId: string;
+  specs: readonly InputSpec[];
+  values: Record<string, TypedInputValue | undefined>;
+  problems: Record<string, string>;
+  pickerRepo: Repository | null;
+  onChange(name: string, value: TypedInputValue | undefined): void;
+}
+
+/**
+ * One control per declared type — the widget the ADR names, never a guess:
+ * `github_issue` is the searchable picker (a number field would invite a
+ * number the tracker never issued), `branch` a mono text field seeded with
+ * its default, `agent_profile` a select of the library's profiles (the id
+ * rides the wire, the name is for reading), `text` an input and `long_text`
+ * a textarea. A type the UI has not met renders as a plain input rather
+ * than vanishing — an unknown type is still a declared, maybe required,
+ * input the run needs.
+ */
+export function TypedFields({
+  projectId,
+  specs,
+  values,
+  problems,
+  pickerRepo,
+  onChange,
+}: TypedFieldsProps) {
+  return (
+    <>
+      {specs.map((spec) => {
+        const id = `new-run-input-${spec.name}`;
+        const value = values[spec.name];
+        const text = typeof value === "string" ? value : "";
+        const problem = problems[spec.name];
+        const label = spec.label ?? spec.name;
+        return (
+          <div key={spec.name} data-testid={`new-run-field-${spec.name}`}>
+            <label className={labelClass} htmlFor={id}>
+              {label}
+              {spec.required ? (
+                <span aria-hidden="true" className="ml-[3px] font-semibold text-st-failed-tag-fg">
+                  *
+                </span>
+              ) : null}
+            </label>
+            <div className="mt-[3px]">
+              {spec.type === "github_issue" ? (
+                <IssuePicker
+                  projectId={projectId}
+                  repository={pickerRepo}
+                  id={id}
+                  value={typeof value === "string" || value === undefined ? undefined : value}
+                  invalid={Boolean(problem)}
+                  onSelect={(picked) => onChange(spec.name, picked)}
+                />
+              ) : spec.type === "agent_profile" ? (
+                <ProfileField
+                  id={id}
+                  value={text}
+                  invalid={Boolean(problem)}
+                  onChange={(next) => onChange(spec.name, next)}
+                />
+              ) : spec.type === "long_text" ? (
+                <Textarea
+                  id={id}
+                  rows={3}
+                  value={text}
+                  placeholder={spec.help ?? undefined}
+                  invalid={Boolean(problem)}
+                  onChange={(event) => onChange(spec.name, event.target.value)}
+                  data-testid={id}
+                />
+              ) : (
+                <Input
+                  id={id}
+                  type="text"
+                  value={text}
+                  invalid={Boolean(problem)}
+                  onChange={(event) => onChange(spec.name, event.target.value)}
+                  data-testid={id}
+                />
+              )}
+            </div>
+            {problem ? (
+              <p
+                className="mt-[3px] font-mono text-[11px] text-st-failed-tag-fg"
+                role="alert"
+                data-testid={`new-run-problem-${spec.name}`}
+              >
+                {problem}
+              </p>
+            ) : spec.help && spec.type !== "long_text" ? (
+              <p
+                className="mt-[3px] text-[12px] text-muted"
+                data-testid={`new-run-help-${spec.name}`}
+              >
+                {spec.help}
+              </p>
+            ) : null}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+interface ProfileFieldProps {
+  id: string;
+  value: string;
+  invalid: boolean;
+  onChange(next: string): void;
+}
+
+/** The `agent_profile` select. The profile's id is the value (ADR-0066's
+ * `agent_profile` is an id, never a credential); its name and pinned display
+ * model are what a person reads. A default naming an unknown profile stays
+ * selectable — the server judges ids, this control does not invent them. */
+function ProfileField({ id, value, invalid, onChange }: ProfileFieldProps) {
+  const profiles = useAgentProfiles();
+  const items = profiles.data?.items ?? [];
+  const known = value === "" || items.some((profile) => profile.id === value);
+  return (
+    <Select
+      id={id}
+      value={value}
+      invalid={invalid}
+      onChange={(event) => onChange(event.target.value)}
+      data-testid={id}
+    >
+      <option value="">
+        {items.length === 0 && profiles.data !== undefined
+          ? "the library has no profiles"
+          : "— choose —"}
+      </option>
+      {items.map((profile) => (
+        <option key={profile.id} value={profile.id}>
+          {profile.model ? `${profile.name} · ${profile.model}` : profile.name}
+        </option>
+      ))}
+      {!known ? <option value={value}>{value}</option> : null}
+    </Select>
   );
 }
