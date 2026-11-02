@@ -68,13 +68,48 @@ describe("QuestionCard", () => {
     expect(onFreeText).toHaveBeenCalledTimes(1);
   });
 
-  it("marks an answered question and no longer offers answers", () => {
+  it("keeps an answered question's options on screen, inert, the chosen one inked (2f)", () => {
     const onAnswer = vi.fn();
+    render(
+      <QuestionCard
+        question={question({ answered_by: "01K1user-msg" })}
+        onAnswer={onAnswer}
+        answeredLabel="Add an OWASP checklist to its instructions"
+      />,
+    );
+    expect(screen.getByTestId("assistant-question-answered").textContent).toBe("✓ answered");
+    // 2f: the selected option keeps its place with an ink border and
+    // bold — the history reads as the decision it was. Nothing is
+    // clickable any more: the answer already travelled as plain text.
+    const options = screen.getAllByTestId("assistant-question-option");
+    expect(options).toHaveLength(3);
+    const chosen = options[1];
+    expect(chosen.getAttribute("data-selected")).toBe("true");
+    expect(chosen.hasAttribute("disabled")).toBe(true);
+    expect(chosen.style.fontWeight).toBe("600");
+    expect(chosen.style.borderColor).toBe("var(--color-ink)");
+    fireEvent.click(chosen);
+    expect(onAnswer).not.toHaveBeenCalled();
+    // an answered card with an unknown reply (typed, not tapped) marks nothing
+    // selected but stays inert the same way.
+    cleanup();
     render(
       <QuestionCard question={question({ answered_by: "01K1user-msg" })} onAnswer={onAnswer} />,
     );
-    expect(screen.getByTestId("assistant-question-answered").textContent).toBe("✓ answered");
-    expect(screen.queryAllByTestId("assistant-question-option")).toEqual([]);
-    expect(onAnswer).not.toHaveBeenCalled();
+    expect(
+      screen.queryAllByTestId("assistant-question-option")[0]?.getAttribute("data-selected"),
+    ).toBeNull();
+    expect(
+      screen.getAllByTestId("assistant-question-option").every((o) => o.hasAttribute("disabled")),
+    ).toBe(true);
+  });
+
+  it("carries the 2f card header when the transcript numbers the questions", () => {
+    const { rerender } = render(
+      <QuestionCard question={question()} onAnswer={() => {}} ordinal={1} total={2} />,
+    );
+    expect(screen.getByTestId("assistant-question-header").textContent).toBe("Question 1 of 2");
+    rerender(<QuestionCard question={question()} onAnswer={() => {}} />);
+    expect(screen.queryByTestId("assistant-question-header")).toBeNull();
   });
 });

@@ -53,7 +53,7 @@ import type { AssistantChange, AssistantMessage } from "./types";
 import type { ComposerRestore } from "./AssistantPanel";
 
 /** The palette's Ask row opens the popover (and carries its question). */
-const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
+export const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
 
 /** The jump palette's open event; ⌘K while the assistant is up dispatches it. */
 const PALETTE_OPEN_EVENT = "communication:palette-open";
@@ -70,6 +70,22 @@ function closeOtherMenus(): void {
 /** Open the assistant popover; `text`, when given, is sent as a question. */
 export function openAssistantPopover(text?: string): void {
   window.dispatchEvent(new CustomEvent(ASSISTANT_OPEN_EVENT, { detail: text }));
+}
+
+/**
+ * Thread → workflow (design 2f): `Make a workflow…` opens the assistant
+ * panel with the chat as context — the ask is the canned drafting
+ * instruction, carrying the conversation id as data (the assistant reads
+ * the transcript through its caller-checked `chat.transcript` tool; the
+ * id alone authorizes nothing). Same open path as the palette's Ask row.
+ */
+export function openAssistantWorkflowDraft(chat: { id: string; title?: string | null }): void {
+  const label = chat.title ? `"${chat.title}"` : `conversation ${chat.id}`;
+  openAssistantPopover(
+    `Turn this chat into a workflow (${label}, conversation id ${chat.id}). ` +
+      "Read the chat transcript first, then post the draft step list, " +
+      "ask one question for each real fork, and finally save a library draft. Never publish.",
+  );
 }
 
 /** The "FOR THIS PAGE" suggestions, keyed by the page section. Every one is

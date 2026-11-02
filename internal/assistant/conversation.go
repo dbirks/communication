@@ -32,13 +32,16 @@ const (
 
 // contextEntityKinds is ADR-0050 decision 6's closed entity reference set.
 // A context entity is a starting point for part-2 tools; it authorizes
-// nothing on its own.
+// nothing on its own. "conversation" (thread → workflow, design 2f) names
+// the chat on screen: the chat.transcript tool re-authorizes the read as
+// the caller, and a chat the caller cannot see answers the 404 rule.
 var contextEntityKinds = map[string]bool{
 	"pipeline":      true,
 	"draft":         true,
 	"run":           true,
 	"node_template": true,
 	"profile":       true,
+	"conversation":  true,
 }
 
 // TurnContext is the per-message page context (ADR-0050 decision 6): the

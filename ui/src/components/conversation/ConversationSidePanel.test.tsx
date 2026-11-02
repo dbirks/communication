@@ -3,10 +3,11 @@
  * panel with no data at all renders nothing — empty boxes are not sections.
  */
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
 import { AssistantNote } from "./AssistantNote";
+import { ASSISTANT_OPEN_EVENT } from "../assistant/AssistantPopover";
 import { claudeProfile, codexProfile, projectFixture } from "../../test/fakes";
 import type { ConversationChatAgent } from "./ConversationSidePanel";
 
@@ -138,5 +139,72 @@ describe("AssistantNote", () => {
   it("shows no action row when the note offers none", () => {
     render(<AssistantNote text="Just a note." />);
     expect(screen.queryByTestId("assistant-note-dismiss")).toBeNull();
+  });
+});
+
+/**
+ * Thread → workflow (design 2f): the rail's ASSISTANT slot offers `Make a
+ * workflow…` for the thread's own chat. The click-through opens the
+ * assistant panel with the chat as context — the conversation id travels
+ * as data in the ask; authorizing the read stays the server's job.
+ */
+describe("ConversationSidePanel make-a-workflow note (2f)", () => {
+  const chat = { id: "c-42", title: "Search revamp spike" };
+
+  it("offers Make a workflow… when the host names the thread's chat", () => {
+    panel({ projectId: projectFixture.id, workflowChat: chat });
+    const note = screen.getByTestId("assistant-note-workflow");
+    expect(note.textContent).toContain("Search revamp spike");
+    const action = screen.getByTestId("assistant-note-workflow-action-make_workflow");
+    expect(action.textContent).toBe("Make a workflow…");
+  });
+
+  it("the plain button opens the assistant panel with the chat as context", () => {
+    const seen: Event[] = [];
+    const listener = (event: Event) => seen.push(event);
+    window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
+    try {
+      panel({ projectId: projectFixture.id, workflowChat: chat });
+      screen.getByTestId("assistant-note-workflow-action-make_workflow").click();
+    } finally {
+      window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
+    }
+    expect(seen).toHaveLength(1);
+    const ask = (seen[0] as CustomEvent<string>).detail;
+    expect(ask).toContain("c-42");
+    expect(ask).toContain("Search revamp spike");
+    expect(ask).toContain("Read the chat transcript first");
+    expect(ask).toContain("Never publish");
+  });
+
+  it("a host-supplied handler replaces the default open", () => {
+    const onMakeWorkflow = vi.fn();
+    const seen: Event[] = [];
+    const listener = (event: Event) => seen.push(event);
+    window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
+    try {
+      panel({ projectId: projectFixture.id, workflowChat: chat, onMakeWorkflow });
+      screen.getByTestId("assistant-note-workflow-action-make_workflow").click();
+    } finally {
+      window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
+    }
+    expect(onMakeWorkflow).toHaveBeenCalledWith(chat);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("one note per slot: the host's own assistant note keeps its surface", () => {
+    panel({
+      projectId: projectFixture.id,
+      assistantNote: <AssistantNote text="A real note from the notes store." />,
+      workflowChat: chat,
+    });
+    const slot = screen.getByTestId("side-panel-assistant-slot");
+    expect(slot.textContent).toContain("A real note from the notes store.");
+    expect(slot.textContent).not.toContain("Make a workflow");
+  });
+
+  it("no chat named, no note — the component never invents one", () => {
+    panel({ projectId: projectFixture.id });
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
   });
 });

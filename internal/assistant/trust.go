@@ -44,22 +44,24 @@ const (
 // six names plus draft.get and the workflow.draft lookup, the navigation
 // tool, the draft-edit tool and the five risky actions.
 var toolClasses = map[string]ToolClass{
-	"project.list":       ClassRead,
-	"run.list":           ClassRead,
-	"run.nodes":          ClassRead,
-	"approval.pending":   ClassRead,
-	"pipeline.revisions": ClassRead,
-	"palette.search":     ClassRead,
-	"draft.get":          ClassRead,
-	"workflow.draft":     ClassRead,
-	"ui.navigate":        ClassNavigate,
-	"ui.question":        ClassNavigate,
-	"draft.apply":        ClassDraftEdit,
-	"run.retry":          ClassRisky,
-	"run.start":          ClassRisky,
-	"approval.decide":    ClassRisky,
-	"permission.allow":   ClassRisky,
-	"pipeline.publish":   ClassRisky,
+	"project.list":          ClassRead,
+	"run.list":              ClassRead,
+	"run.nodes":             ClassRead,
+	"approval.pending":      ClassRead,
+	"pipeline.revisions":    ClassRead,
+	"palette.search":        ClassRead,
+	"draft.get":             ClassRead,
+	"workflow.draft":        ClassRead,
+	"chat.transcript":       ClassRead,
+	"ui.navigate":           ClassNavigate,
+	"ui.question":           ClassNavigate,
+	"draft.apply":           ClassDraftEdit,
+	"workflow.create_draft": ClassDraftEdit,
+	"run.retry":             ClassRisky,
+	"run.start":             ClassRisky,
+	"approval.decide":       ClassRisky,
+	"permission.allow":      ClassRisky,
+	"pipeline.publish":      ClassRisky,
 }
 
 // ClassOf reports the class of a registry tool name; the bool is false for
@@ -117,6 +119,8 @@ func riskText(tool string) string {
 		return "grants the permission the agent asked for on this run"
 	case "pipeline.publish":
 		return "publishes the draft as a new revision of the pipeline"
+	case "workflow.create_draft":
+		return "creates a NEW workflow library draft (it never publishes — publishing stays a separate action you take yourself)"
 	default:
 		return "performs a state-changing pipeline action"
 	}
@@ -128,17 +132,18 @@ func riskText(tool string) string {
 // supplied, bounded like every other tool arg.
 func actionSummary(tool string, args map[string]string) string {
 	verb := map[string]string{
-		"run.start":        "Start a run",
-		"run.retry":        "Retry node",
-		"approval.decide":  "Record decision",
-		"permission.allow": "Grant permission",
-		"pipeline.publish": "Publish draft",
+		"run.start":             "Start a run",
+		"run.retry":             "Retry node",
+		"approval.decide":       "Record decision",
+		"permission.allow":      "Grant permission",
+		"pipeline.publish":      "Publish draft",
+		"workflow.create_draft": "Save library draft",
 	}[tool]
 	if verb == "" {
 		verb = "Run"
 	}
 	var bits []string
-	for _, k := range []string{"project_id", "run_id", "node_id", "pipeline_id", "approval_id", "request_id", "draft_id", "decision"} {
+	for _, k := range []string{"project_id", "run_id", "node_id", "pipeline_id", "approval_id", "request_id", "draft_id", "decision", "slug"} {
 		if v := bounded(strings.TrimSpace(args[k]), 64); v != "" {
 			bits = append(bits, v)
 		}

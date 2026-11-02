@@ -30,6 +30,23 @@ export interface AssistantNoteProps {
   testId?: string;
 }
 
+/**
+ * The action kind the assistant-notes backend names for design 2f
+ * (`make_workflow`; the notes store's action shape, ADR-0071 pending).
+ * Kept as one constant so the note, the side panel and the notes client
+ * agree on the id while that ADR lands.
+ */
+export const MAKE_WORKFLOW_ACTION_ID = "make_workflow";
+
+/**
+ * The `Make a workflow…` action of a thread → workflow note (design 2f).
+ * Plain button until ADR-0071 fixes the notes action payload — the id is
+ * the part that will already match the notes backend.
+ */
+export function makeWorkflowNoteAction(onSelect: () => void): AssistantNoteAction {
+  return { id: MAKE_WORKFLOW_ACTION_ID, label: "Make a workflow…", onSelect };
+}
+
 export function AssistantNote({
   text,
   actions = [],

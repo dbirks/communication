@@ -161,6 +161,103 @@ describe("MessageList", () => {
     expect(list.querySelector('[data-testid="assistant-msg-change"]')).toBeNull();
     expect(screen.queryAllByTestId("assistant-question-option").length).toBeGreaterThan(0);
   });
+
+  it("numbers the question cards from the transcript and inks the tapped answer (2f)", () => {
+    const second = (): AssistantMessage => ({
+      ...questionMessage(),
+      id: "m-q2",
+      payload: {
+        ...questionMessage().payload,
+        prompt: "What starts it?",
+      } as AssistantMessage["payload"],
+    });
+    const reply = (): AssistantMessage => ({
+      id: "m-reply",
+      kind: "user",
+      payload: { kind: "user", text: "Add an OWASP checklist" },
+      created_at: "2026-10-20T10:01:00Z",
+    });
+    const answeredFirst = (): AssistantMessage => ({
+      ...questionMessage(),
+      payload: {
+        ...questionMessage().payload,
+        answered_by: "m-reply",
+      } as AssistantMessage["payload"],
+    });
+    render(
+      <MessageList
+        messages={[answeredFirst(), second(), reply()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const headers = screen.getAllByTestId("assistant-question-header");
+    expect(headers.map((h) => h.textContent)).toEqual(["Question 1 of 2", "Question 2 of 2"]);
+    const options = screen.getAllByTestId("assistant-question-option");
+    // first card: the reply quoted its second option verbatim → inked
+    const chosen = options.find((o) => o.getAttribute("data-selected") === "true");
+    expect(chosen?.textContent).toBe("Add an OWASP checklist");
+    // the unanswered card still offers its options
+    expect(options.some((o) => !o.hasAttribute("disabled"))).toBe(true);
+  });
+
+  it("renders a draft step list with its progress glyphs (2f)", () => {
+    const steps = (): AssistantMessage => ({
+      id: "m-steps",
+      kind: "assistant",
+      payload: {
+        kind: "assistant",
+        answer_markdown:
+          "I read the chat. Drafting Adapter swap → PR in the library:\n\n" +
+          "✓ Plan — Claude Code · opus\n✓ Approval — maintainer\n● Review — Codex · skill review\n· Open draft PR",
+        links: [{ label: "Open draft", route: "/workflows/pl-9" }],
+        tool_calls: [],
+      },
+      created_at: "2026-10-20T10:00:05Z",
+    });
+    const onGo = vi.fn();
+    render(
+      <MessageList
+        messages={[steps()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={onGo}
+      />,
+    );
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows).toHaveLength(4);
+    expect(rows[0].getAttribute("data-state")).toBe("done");
+    expect(rows[2].getAttribute("data-state")).toBe("current");
+    expect(rows[3].getAttribute("data-state")).toBe("later");
+    expect(rows[0].textContent).toContain("Plan — Claude Code · opus");
+    // the saved draft's `Open draft` link navigates through the caller
+    fireEvent.click(screen.getByTestId("assistant-link"));
+    expect(onGo).toHaveBeenCalledWith("/workflows/pl-9");
+  });
+
+  it("leaves a stray ✓ line as prose (a step list needs ≥ 2 marked lines)", () => {
+    render(
+      <MessageList
+        messages={[
+          {
+            ...assistantMessage(),
+            payload: {
+              ...assistantMessage().payload,
+              answer_markdown: "✓ done.\n\nAll clear.",
+            } as AssistantMessage["payload"],
+          },
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId("assistant-step-list")).toBeNull();
+  });
 });
 
 /**

@@ -37,6 +37,26 @@ export function MessageList({
   onGo,
   onRetrySend,
 }: MessageListProps) {
+  // Design 2f numbers the question cards the transcript really holds:
+  // the ordinal is the row's position among the conversation's question
+  // rows and the total is how many it has asked so far ("QUESTION 1 OF
+  // 2" as honest transcript data, not a model-invented count). An
+  // answered card also learns WHICH label the reply quoted, so the
+  // chosen option can carry its ink border and bold.
+  const questionIds = messages
+    .map((message) => (message.payload.kind === "question" ? message.id : null))
+    .filter((id): id is string => id !== null);
+  const answeredLabelFor = (
+    payload: Extract<AssistantMessage["payload"], { kind: "question" }>,
+  ) => {
+    if (payload.answered_by == null) return null;
+    const reply = messages.find((message) => message.id === payload.answered_by);
+    if (!reply || reply.payload.kind !== "user") return null;
+    const text = reply.payload.text.trim();
+    return (
+      payload.options.slice(0, 4).find((option) => option.label.trim() === text)?.label ?? null
+    );
+  };
   return (
     <div data-testid="assistant-messages" className="flex flex-col gap-[8px]">
       {messages.map((message) => {
@@ -124,6 +144,9 @@ export function MessageList({
                 question={message.payload}
                 onAnswer={onAnswerQuestion}
                 onFreeText={onFreeText}
+                ordinal={questionIds.indexOf(message.id) + 1}
+                total={questionIds.length}
+                answeredLabel={answeredLabelFor(message.payload)}
               />
             );
           case "approval_request":
@@ -174,6 +197,71 @@ function CodeSpans({ text }: { text: string }) {
   );
 }
 
+/**
+ * step glyphs the assistant's draft step list is built from (design 2f:
+ * ✓ done in the chat, ● the step drafted to run next, · a later step).
+ */
+const STEP_GLYPHS = ["✓", "●", "·"] as const;
+
+function stepGlyphOf(line: string): (typeof STEP_GLYPHS)[number] | null {
+  const head = line.trimStart().charAt(0);
+  return (STEP_GLYPHS as readonly string[]).includes(head)
+    ? (head as (typeof STEP_GLYPHS)[number])
+    : null;
+}
+
+/** A paragraph is a step list when every line opens with a step glyph
+ * and the list carries at least two steps (a stray ✓ line stays prose). */
+function splitStepList(paragraph: string): string[] | null {
+  const lines = paragraph
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 2) return null;
+  return lines.every((line) => stepGlyphOf(line) !== null) ? lines : null;
+}
+
+/**
+ * The draft step list (design 2f "posts a DRAFT STEP LIST … marked with
+ * progress ✓ / ● / ·"): one line per step, the glyph paired with its
+ * word (never colour alone, per states.ts) — done, next, later.
+ */
+function StepList({ lines }: { lines: string[] }) {
+  return (
+    <div data-testid="assistant-step-list" className="flex flex-col gap-[2px] py-[2px]">
+      {lines.map((line, index) => {
+        const glyph = stepGlyphOf(line) ?? "·";
+        const rest = line.slice(line.indexOf(glyph) + 1).trim();
+        return (
+          <p
+            key={index}
+            data-testid="assistant-step-row"
+            data-state={glyph === "✓" ? "done" : glyph === "●" ? "current" : "later"}
+            className="m-0 flex items-baseline gap-[6px] text-[12.5px] leading-[1.5] text-ink"
+          >
+            <span
+              aria-hidden="true"
+              className={`w-[12px] flex-shrink-0 text-center ${
+                glyph === "✓"
+                  ? "text-st-done-pale-fg"
+                  : glyph === "●"
+                    ? "text-accent"
+                    : "text-faint"
+              }`}
+            >
+              {glyph}
+            </span>
+            <span className="min-w-0">{rest}</span>
+            <span className="sr-only">
+              {glyph === "✓" ? " (done)" : glyph === "●" ? " (next)" : " (later)"}
+            </span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function AnswerProse({ text }: { text: string }) {
   const paragraphs = text
     .split(/\n\s*\n/)
@@ -181,11 +269,15 @@ function AnswerProse({ text }: { text: string }) {
     .filter((paragraph) => paragraph.length > 0);
   return (
     <div data-testid="assistant-answer" className="space-y-[6px]">
-      {paragraphs.map((paragraph, index) => (
-        <p key={index} className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-ink">
-          <CodeSpans text={paragraph} />
-        </p>
-      ))}
+      {paragraphs.map((paragraph, index) => {
+        const steps = splitStepList(paragraph);
+        if (steps) return <StepList key={index} lines={steps} />;
+        return (
+          <p key={index} className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-ink">
+            <CodeSpans text={paragraph} />
+          </p>
+        );
+      })}
     </div>
   );
 }

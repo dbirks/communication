@@ -22,11 +22,15 @@
  *   section renders only what a host hands it.
  * - LINKED CHATS — omitted until agent mail (3d).
  * - ASSISTANT — the note slot at the bottom, rendered only from a real
- *   source (`assistantNote`).
+ *   source (`assistantNote`), plus the thread → workflow note (design 2f)
+ *   when the host names this thread's chat (`workflowChat`): `Make a
+ *   workflow…` opens the assistant panel with the chat as context.
  */
 import { Link } from "react-router";
 import type { ReactNode } from "react";
 import { routes } from "../../lib/routes";
+import { AssistantNote, makeWorkflowNoteAction } from "./AssistantNote";
+import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { agentLabel } from "./ConversationTranscript";
 import type { components } from "../../api/schema";
 
@@ -54,6 +58,19 @@ export interface ConversationSidePanelProps {
   skills?: string[] | null;
   /** The assistant note slot; a host with no real source passes nothing. */
   assistantNote?: ReactNode;
+  /**
+   * The thread's own chat for the thread → workflow note (design 2f):
+   * present → the ASSISTANT slot offers `Make a workflow…`. A host that
+   * also passes `assistantNote` keeps its own note in the slot; the
+   * workflow action rides on it as an extra action instead.
+   */
+  workflowChat?: { id: string; title?: string | null } | null;
+  /**
+   * Override for the note's click-through (tests, or a host with its own
+   * assistant surface). Defaults to opening the assistant popover with
+   * the chat as context.
+   */
+  onMakeWorkflow?: (chat: { id: string; title?: string | null }) => void;
 }
 
 function SectionTitle({ htmlFor, children }: { htmlFor: string; children: ReactNode }) {
@@ -76,15 +93,38 @@ export function ConversationSidePanel({
   agents,
   skills,
   assistantNote,
+  workflowChat,
+  onMakeWorkflow,
 }: ConversationSidePanelProps) {
   const agentRows = agents ?? [];
   const skillList = (skills ?? []).filter((skill) => skill.trim() !== "");
+  const workflowNote = workflowChat ? (
+    <AssistantNote
+      testId="assistant-note-workflow"
+      text={`Turn “${workflowChat.title || "this chat"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
+      actions={[
+        makeWorkflowNoteAction(() =>
+          onMakeWorkflow ? onMakeWorkflow(workflowChat) : openAssistantWorkflowDraft(workflowChat),
+        ),
+      ]}
+    />
+  ) : null;
+  const slot = assistantNote ? (
+    <>
+      {assistantNote}
+      {workflowChat
+        ? null // one note per slot today: the host's note keeps its surface
+        : workflowNote}
+    </>
+  ) : (
+    workflowNote
+  );
   const hasContent =
     Boolean(repoName) ||
     Boolean(branch) ||
     agentRows.length > 0 ||
     skillList.length > 0 ||
-    Boolean(assistantNote);
+    Boolean(slot);
   if (!hasContent) return null;
 
   return (
@@ -178,7 +218,7 @@ export function ConversationSidePanel({
           </ul>
         </section>
       ) : null}
-      {assistantNote ? <div data-testid="side-panel-assistant-slot">{assistantNote}</div> : null}
+      {slot ? <div data-testid="side-panel-assistant-slot">{slot}</div> : null}
     </div>
   );
 }
