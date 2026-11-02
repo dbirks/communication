@@ -183,7 +183,22 @@ export const wireRun: Run = {
 };
 
 export const wireRunList: RunSummaryList = {
-  runs: [{ ...wireRun } satisfies RunSummary] as RunSummary[],
+  // ADR-0070: every project-run-list row carries the bounded step
+  // progress — the pinned plan's top-level steps in definition order.
+  // This mirrors the fixture run's own node executions: the gate
+  // succeeded, the loop is in flight (its body node never surfaces).
+  runs: [
+    {
+      ...wireRun,
+      progress: {
+        steps: [
+          { node_id: "plan", state: "done" },
+          { node_id: "build_until_verified", state: "running" },
+        ],
+        more: 0,
+      },
+    },
+  ],
 };
 
 const ref = (name: string) => ({ id: artifactId, name, kind: "json", size_bytes: 2048 });

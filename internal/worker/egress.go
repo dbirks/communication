@@ -2,9 +2,11 @@ package worker
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
+	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/sandbox/nono"
 )
 
@@ -33,9 +35,20 @@ var egressOpenValues = map[string]bool{"open": true, "none": true, "off": true, 
 // profile kind's shipped default" (allowlisted with nono.DefaultEgressHosts()).
 // It returns the enforcement and the list separately because "open" and "no
 // opinion" are different answers that both carry no hosts.
+//
+// ADR-0069: whatever list resolves, the launcher registry's *operator-configured*
+// provider hosts (launcherProviderEgressHosts) join it whenever the axis is or
+// defaults to allowlisted — they are worker operator config like this
+// environment variable is, and a launcher configured to talk to a gateway must
+// be able to reach it or the turn can only egress-fail. An explicit `open`
+// needs no addition.
 func agentEgressAllow(configured []string) (nono.NetworkEnforcement, []string, error) {
+	providers, err := launcherProviderEgressHosts()
+	if err != nil {
+		return "", nil, err
+	}
 	if len(configured) > 0 {
-		hosts, err := nono.NormalizeEgressHosts(configured)
+		hosts, err := nono.NormalizeEgressHosts(append(append([]string(nil), configured...), providers...))
 		if err != nil {
 			return "", nil, err
 		}
@@ -43,9 +56,71 @@ func agentEgressAllow(configured []string) (nono.NetworkEnforcement, []string, e
 	}
 	raw, ok := os.LookupEnv(EnvAgentEgressAllow)
 	if !ok {
-		return "", nil, nil
+		if len(providers) == 0 {
+			return "", nil, nil
+		}
+		// No operator allowlist, but a provider host was configured: publish
+		// the shipped default *plus* the provider host explicitly, so the
+		// digest says exactly what the profile carries.
+		hosts, err := nono.NormalizeEgressHosts(append(nono.DefaultEgressHosts(), providers...))
+		if err != nil {
+			return "", nil, err
+		}
+		return nono.NetworkAllowlisted, hosts, nil
 	}
-	return ParseEgressAllow(raw)
+	net, hosts, err := ParseEgressAllow(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	if net == nono.NetworkAllowlisted && len(providers) > 0 {
+		hosts, err = nono.NormalizeEgressHosts(append(append([]string(nil), hosts...), providers...))
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	return net, hosts, nil
+}
+
+// launcherProviderEgressHosts returns the hosts implied by the launcher
+// registry's operator-configured provider base URLs (ADR-0059: pi's
+// COMMUNICATION_PI_BASE_URL). A base URL the operator named is operator
+// configuration, not node content: ADR-0035's rule that the allowlist cannot
+// come from a pipeline document or a profile row is untouched — nothing an
+// agent or a project author edits reaches this list. A configured-but-malformed
+// base URL fails closed (the host a turn is supposed to reach must not be a
+// silent miss).
+func launcherProviderEgressHosts() ([]string, error) {
+	var out []string
+	for _, l := range acp.KnownLaunchers() {
+		if l.ApiBaseURL == "" {
+			continue
+		}
+		raw := strings.TrimSpace(os.Getenv(l.ApiBaseURL))
+		if raw == "" {
+			continue
+		}
+		host, err := providerURLHostname(raw)
+		if err != nil {
+			return nil, fmt.Errorf("worker: %s: %w", l.ApiBaseURL, err)
+		}
+		out = append(out, host)
+	}
+	return out, nil
+}
+
+// providerURLHostname extracts the lowercase hostname of a provider base URL
+// (scheme required, path/port ignored — the allowlist entry is the hostname
+// tunnel, ADR-0035).
+func providerURLHostname(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("%q is not a parseable provider base URL", raw)
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("%q names no host", raw)
+	}
+	return host, nil
 }
 
 // ParseEgressAllow reads one raw allowlist value ("api.anthropic.com,*.example.com").

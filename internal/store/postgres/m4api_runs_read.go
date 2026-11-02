@@ -337,15 +337,115 @@ func (a APIRunStore) listProjectRuns(ctx context.Context, c api.Caller, projectI
 	if err != nil {
 		return nil, err
 	}
+	// ADR-0070: the progress strip's step states, read for the WHOLE page in
+	// one set-based query over the page's run ids (ADR-0063: the list pays
+	// one statement, never one per row).
+	stepStatuses := map[string]map[string][]string{}
+	if len(runs) > 0 {
+		runIDs := make([]string, 0, len(runs))
+		for _, r := range runs {
+			runIDs = append(runIDs, r.ID)
+		}
+		if stepStatuses, err = xpRunSteps(ctx, pool, runIDs); err != nil {
+			return nil, err
+		}
+	}
 	out := make([]api.RunSummaryView, 0, len(runs))
 	for _, r := range runs {
 		name := ""
 		if r.RepositoryID != "" {
 			name = repoNames[r.RepositoryID]
 		}
-		out = append(out, m4RunSummary(r, name))
+		v := m4RunSummary(r, name)
+		v.Progress = m4RunProgress(r.PlanSnapshot, stepStatuses[r.ID])
+		out = append(out, v)
 	}
 	return out, nil
+}
+
+// runProgressStepCap is ADR-0070's bound: a list row's strip draws at most
+// twelve segments; every top-level step beyond the cap is only a count.
+const runProgressStepCap = 12
+
+// m4RunProgressState folds one node execution status onto the strip's five
+// coarse states. done is a settled non-problem (succeeded, and skipped — the
+// step is over and nothing asks for attention); running counts a leased node
+// as visibly started work; failed is any stop that did not complete (failed,
+// interrupted, cancelled — the ADR-0047 table's own attention-drawing arm);
+// pending and ready (and any status the CHECK gains later) are open.
+func m4RunProgressState(status string) string {
+	switch status {
+	case "succeeded", "skipped":
+		return api.RunStepDone
+	case "leased", "running":
+		return api.RunStepRunning
+	case "waiting":
+		return api.RunStepWaiting
+	case "failed", "interrupted", "cancelled":
+		return api.RunStepFailed
+	default: // pending, ready — and anything new the CHECK adds
+		return api.RunStepOpen
+	}
+}
+
+// m4RunProgressRank is the aggregation precedence for one step's several
+// execution rows (a loop's instances): the state that most needs attention
+// wins, same rule as ADR-0047's seven-state table, folded to five. A
+// top-level node carries one row today (UNIQUE (run_id, node_instance_key));
+// the precedence is the contract for a future writer that adds rows.
+var m4RunProgressRank = map[string]int{
+	api.RunStepFailed:  4,
+	api.RunStepRunning: 3,
+	api.RunStepWaiting: 2,
+	api.RunStepDone:    1,
+	api.RunStepOpen:    0,
+}
+
+// m4RunProgress projects one run's progress: the pinned plan's root-scope
+// nodes in definition order (the compiler appends as it walks the document,
+// ADR-0047 § 4), each folded from that run's top-level execution statuses —
+// a planned node with no row is open, exactly as a queued run's board draws
+// it. A snapshot that does not decode answers no steps rather than
+// crashing the list (same rule as xpProjectSteps).
+func m4RunProgress(planSnapshot []byte, statuses map[string][]string) *api.RunProgressView {
+	steps := []api.RunProgressStepView{}
+	var plan xpPlanNodes
+	if len(planSnapshot) > 0 {
+		if err := json.Unmarshal(planSnapshot, &plan); err != nil {
+			return &api.RunProgressView{Steps: steps, More: 0}
+		}
+	}
+	total := 0
+	for _, n := range plan.Nodes {
+		if n.Scope != "/" {
+			continue // a loop body node never surfaces; the loop's own row carries its fate
+		}
+		if total < runProgressStepCap {
+			steps = append(steps, api.RunProgressStepView{
+				NodeID: n.ID, State: m4RunProgressAggregate(statuses[n.ID]),
+			})
+		}
+		total++
+	}
+	more := total - runProgressStepCap
+	if more < 0 {
+		more = 0
+	}
+	return &api.RunProgressView{Steps: steps, More: more}
+}
+
+// m4RunProgressAggregate folds one top-level node's execution statuses into
+// its single coarse step state: the highest-ranked one wins; no executions
+// = open.
+func m4RunProgressAggregate(execStatuses []string) string {
+	best, bestRank := api.RunStepOpen, m4RunProgressRank[api.RunStepOpen]
+	for _, s := range execStatuses {
+		st := m4RunProgressState(s)
+		if m4RunProgressRank[st] > bestRank {
+			best, bestRank = st, m4RunProgressRank[st]
+		}
+	}
+	return best
 }
 
 // m4RunRepositoryNames resolves the display names of the repositories a run

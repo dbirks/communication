@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/dbirks/communication/internal/authz"
@@ -44,6 +45,14 @@ var (
 	// repository-scoped assignment must watch that same repository; the
 	// mismatch is a 422 refusal, never a silently mis-firing trigger.
 	ErrIssueTriggerRepositoryMismatch = errors.New("api: issue trigger repository does not match its assignment")
+	// ErrIssueTriggerInputAmbiguous (ADR-0066): the pinned revision declares
+	// several github_issue-typed inputs, so the trigger must name with
+	// issue_input which one its matched issue fills — a guess here would
+	// silently wire the wrong input.
+	ErrIssueTriggerInputAmbiguous = errors.New("api: issue trigger must name which input the issue fills")
+	// ErrIssueTriggerInputUnmappable (ADR-0066): the named issue_input is not
+	// a github_issue-typed input of the pinned revision.
+	ErrIssueTriggerInputUnmappable = errors.New("api: issue trigger issue_input is not a github_issue input of the pinned revision")
 )
 
 // Problem codes this surface emits. The 422s ride the m4WriteTypedProblem
@@ -59,6 +68,9 @@ const (
 	IssueTriggerCodeFieldRequired      = "field_required"
 	IssueTriggerCodeInputsInvalid      = "invalid_inputs"
 	IssueTriggerCodeRepositoryMismatch = "repository_mismatch"
+	IssueTriggerCodeIssueInputShape    = "invalid_issue_input"
+	IssueTriggerCodeInputAmbiguous     = "issue_input_ambiguous"
+	IssueTriggerCodeInputUnmappable    = "issue_input_unmappable"
 )
 
 // IssueTriggerView is one issue_triggers row as the API presents it. The
@@ -72,17 +84,22 @@ type IssueTriggerView struct {
 	Event        string          `json:"event"`
 	Labels       []string        `json:"labels"`
 	Inputs       json.RawMessage `json:"inputs"`
-	Enabled      bool            `json:"enabled"`
-	CursorAt     *time.Time      `json:"cursor_at"`
-	LastPolledAt *time.Time      `json:"last_polled_at"`
-	LastError    string          `json:"last_error"`
-	LastFiredAt  *time.Time      `json:"last_fired_at"`
-	LastRunID    *string         `json:"last_run_id"`
-	Version      int             `json:"version"`
-	CreatedBy    string          `json:"created_by"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	MyRole       string          `json:"my_role,omitempty"`
+	// IssueInput (ADR-0066) names the github_issue-typed run input this
+	// trigger fills with the matched issue object. "" means "not explicitly
+	// mapped": the single github_issue input of the pinned revision is
+	// implied when there is exactly one, and several make the write a 400.
+	IssueInput   string     `json:"issue_input,omitempty"`
+	Enabled      bool       `json:"enabled"`
+	CursorAt     *time.Time `json:"cursor_at"`
+	LastPolledAt *time.Time `json:"last_polled_at"`
+	LastError    string     `json:"last_error"`
+	LastFiredAt  *time.Time `json:"last_fired_at"`
+	LastRunID    *string    `json:"last_run_id"`
+	Version      int        `json:"version"`
+	CreatedBy    string     `json:"created_by"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	MyRole       string     `json:"my_role,omitempty"`
 }
 
 // IssueTriggerListView is GET /projects/{id}/issue-triggers' envelope.
@@ -98,6 +115,7 @@ type IssueTriggerCreateInput struct {
 	Event        string          `json:"event"`
 	Labels       []string        `json:"labels"`
 	Inputs       json.RawMessage `json:"inputs"`
+	IssueInput   string          `json:"issue_input,omitempty"`
 	Enabled      *bool           `json:"enabled"`
 }
 
@@ -111,6 +129,7 @@ type IssueTriggerPatchInput struct {
 	Event        *string          `json:"event"`
 	Labels       *[]string        `json:"labels"`
 	Inputs       *json.RawMessage `json:"inputs"`
+	IssueInput   *string          `json:"issue_input"`
 	Enabled      *bool            `json:"enabled"`
 }
 
@@ -232,6 +251,10 @@ func (h *issueTriggerHandlers) createIssueTriggers(w http.ResponseWriter, r *htt
 		issueTriggerProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeInputsInvalid, "inputs", err.Error())
 		return
 	}
+	if err := issueTriggerCheckIssueInputShape(body.IssueInput); err != nil {
+		issueTriggerProblem(w, http.StatusBadRequest, IssueTriggerCodeIssueInputShape, "issue_input", err.Error())
+		return
+	}
 	item, err := h.store.CreateIssueTrigger(r.Context(), c, projectID, body)
 	if err != nil {
 		h.fail(w, r, c, projectID, "issue_trigger.create", err)
@@ -273,7 +296,7 @@ func (h *issueTriggerHandlers) patchIssueTrigger(w http.ResponseWriter, r *http.
 		return
 	}
 	if body.AssignmentID == nil && body.RepositoryID == nil && body.Event == nil && body.Labels == nil &&
-		body.Inputs == nil && body.Enabled == nil {
+		body.Inputs == nil && body.IssueInput == nil && body.Enabled == nil {
 		issueTriggerProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodePatchEmpty, "",
 			"At least one editable member must be present.")
 		return
@@ -299,6 +322,12 @@ func (h *issueTriggerHandlers) patchIssueTrigger(w http.ResponseWriter, r *http.
 	if body.Inputs != nil {
 		if err := issueTriggerCheckInputsShape(*body.Inputs); err != nil {
 			issueTriggerProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeInputsInvalid, "inputs", err.Error())
+			return
+		}
+	}
+	if body.IssueInput != nil {
+		if err := issueTriggerCheckIssueInputShape(*body.IssueInput); err != nil {
+			issueTriggerProblem(w, http.StatusBadRequest, IssueTriggerCodeIssueInputShape, "issue_input", err.Error())
 			return
 		}
 	}
@@ -362,6 +391,23 @@ func issueTriggerCheckInputsShape(raw json.RawMessage) error {
 	return nil
 }
 
+// issueTriggerCheckIssueInputShape is the handler-side shape half of the
+// ADR-0066 mapping: a run input name (the same vocabulary schedule inputs
+// use) or absent. Whether that name is a github_issue input of the pinned
+// revision is the pinned plan's fact, and only the store can answer it —
+// that arm travels as ErrIssueTriggerInputUnmappable/Ambiguous.
+func issueTriggerCheckIssueInputShape(name string) error {
+	if name == "" {
+		return nil
+	}
+	if !issueTriggerInputNamePattern.MatchString(name) {
+		return errors.New("issue_input must be a run input name (^[a-z][a-z0-9_]{0,62}$)")
+	}
+	return nil
+}
+
+var issueTriggerInputNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
 // fail maps an issue-trigger store error onto the HTTP contract: 404 (never a
 // peek), 409 named codes for the stale-version and cannot-fire races, the
 // not-a-GitHub-repository 422, and 500 for everything else.
@@ -390,6 +436,14 @@ func (h *issueTriggerHandlers) fail(w http.ResponseWriter, r *http.Request, c Ca
 		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeRepositoryMismatch,
 			"Issue Trigger Repository Mismatch",
 			"The issue trigger's repository does not match the repository its assignment uses; fix the trigger or the assignment.")
+	case errors.Is(err, ErrIssueTriggerInputAmbiguous):
+		m4WriteTypedProblem(w, http.StatusBadRequest, IssueTriggerCodeInputAmbiguous,
+			"Issue Input Ambiguous",
+			"The workflow declares several github_issue inputs, so the trigger must name which one its issue fills: set issue_input to one of them.")
+	case errors.Is(err, ErrIssueTriggerInputUnmappable):
+		m4WriteTypedProblem(w, http.StatusBadRequest, IssueTriggerCodeInputUnmappable,
+			"Issue Input Unmappable",
+			"The named issue_input is not a github_issue input of the revision the assignment pins; pick one of the workflow's issue-typed inputs.")
 	case errors.Is(err, github.ErrNotGitHubRepository):
 		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeNotGitHubRepo,
 			"Not A GitHub Repository",

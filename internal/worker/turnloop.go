@@ -484,6 +484,24 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 			// mode property).
 			return nil, errNoAskMode{launcher: c.LauncherID, mode: c.PermissionMode}
 		}
+	case "autonomous_within_sandbox":
+		// ADR-0069: the never-asks launcher's only honest mode. modeID stays
+		// empty — the adapter's never-asks default IS what this mode says it
+		// runs, and the mode makes no review claim: no prompt, no verdict
+		// row, and the journal/UI wording is "runs without asking; the
+		// sandbox is the boundary". That sentence is only true when the
+		// launch really runs inside a verified nono sandbox: on this path
+		// that is the unit's `required` enforcement chain (launchPlanFor →
+		// Unit.Verify, ADR-0019 D6 — an unverified launch fails the turn,
+		// there is no fallback branch). A loop without the unit service, or
+		// a worker configured below `required`, has no boundary to point at
+		// and refuses before any spawn.
+		if l.units == nil {
+			return nil, errAutonomousWithoutSandbox{launcher: c.LauncherID, mode: "none (no unit service)"}
+		}
+		if mode := l.units.enforcement(); mode != domain.EnforceRequired {
+			return nil, errAutonomousWithoutSandbox{launcher: c.LauncherID, mode: string(mode)}
+		}
 	default:
 		return nil, errors.New("worker: unknown permission mode " + c.PermissionMode)
 	}
@@ -637,4 +655,17 @@ func (e errNoAskMode) Error() string {
 		mode = "ask"
 	}
 	return "worker: permission mode " + mode + " needs a prompting mode for launcher " + e.launcher + "; none is verified (docs/compatibility/ACP.md)"
+}
+
+// errAutonomousWithoutSandbox reports an autonomous_within_sandbox profile on
+// a worker that has no enforced sandbox to be its boundary (ADR-0069). The
+// mode deliberately makes no review claim, so the refusal names the missing
+// sandbox, not a missing prompt.
+type errAutonomousWithoutSandbox struct {
+	launcher string
+	mode     string
+}
+
+func (e errAutonomousWithoutSandbox) Error() string {
+	return "worker: permission mode autonomous_within_sandbox is only honest under sandbox enforcement \"required\" (ADR-0069); launcher " + e.launcher + " runs on a worker with enforcement " + e.mode + ", so the attempt is refused"
 }

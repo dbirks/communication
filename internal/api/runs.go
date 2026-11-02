@@ -189,6 +189,39 @@ type RunSummaryView struct {
 	// `owner/repo#<number>`, or null for a manual/thread start — the thread is
 	// the trigger context, ADR-0053).
 	Trigger *RunTriggerView `json:"trigger"`
+	// Progress (ADR-0070) is the bounded step projection the run list's
+	// progress strip draws. It rides the PROJECT run list row only — the run
+	// detail, the tree and the cross-project board do not carry it (the board
+	// carries ADR-0047's finer `steps`) — so it is omitempty: a producer that
+	// does not compute it says nothing rather than saying "empty".
+	Progress *RunProgressView `json:"progress,omitempty"`
+}
+
+// Run progress step states (ADR-0070): the coarse five the strip renders,
+// folded from the node execution statuses by the store read.
+const (
+	RunStepDone    = "done"
+	RunStepRunning = "running"
+	RunStepWaiting = "waiting"
+	RunStepFailed  = "failed"
+	RunStepOpen    = "open"
+)
+
+// RunProgressStepView is one top-level step of a run: the node id (the plan
+// carries no separate display label, so the id is the strip's label) and the
+// step's coarse state.
+type RunProgressStepView struct {
+	NodeID string `json:"node_id"`
+	State  string `json:"state"`
+}
+
+// RunProgressView is the RunProgress schema: the run's TOP-LEVEL steps in
+// definition order, capped at 12, with `More` counting the steps beyond the
+// cap. Empty steps with More 0 is the honest "no top-level plan readable" —
+// never a fabricated segment.
+type RunProgressView struct {
+	Steps []RunProgressStepView `json:"steps"`
+	More  int                   `json:"more"`
 }
 
 // RunTriggerView is the run JSON's `trigger` member (ADR-0056): the kind how

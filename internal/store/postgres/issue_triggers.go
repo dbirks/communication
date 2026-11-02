@@ -50,6 +50,7 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/integrations/github"
+	"github.com/dbirks/communication/internal/pipelines/compiler"
 	"github.com/dbirks/communication/internal/secrets"
 )
 
@@ -152,6 +153,16 @@ var ErrIssueTriggerStaleVersion = errors.New("postgres: issue trigger version is
 // never ran", and a tick cannot report the first.
 var ErrIssueTriggerNotFireable = errors.New("postgres: issue trigger assignment cannot fire")
 
+// ErrIssueTriggerInputAmbiguous (ADR-0066): the pinned revision declares
+// several github_issue-typed inputs and the trigger names none, so the write
+// refuses rather than guessing which one the issue fills.
+var ErrIssueTriggerInputAmbiguous = errors.New("postgres: issue trigger must name the github_issue input its issue fills")
+
+// ErrIssueTriggerInputUnmappable (ADR-0066): the named issue_input is not a
+// github_issue-typed input of the pinned revision — the fire could not put an
+// issue object behind it, so the write says no out loud.
+var ErrIssueTriggerInputUnmappable = errors.New("postgres: issue trigger issue_input is not a github_issue input of the pinned revision")
+
 // IssueTriggerStore owns the issue_triggers table and the due-row tick. A
 // nil Log discards (a store built in a test must not write to stderr); Runs is
 // the shared create path and defaults to one over Pool.
@@ -221,6 +232,10 @@ type IssueTrigger struct {
 	Event        string
 	Labels       []string
 	Inputs       json.RawMessage
+	// IssueInput (ADR-0066) is the explicitly mapped github_issue input name,
+	// "" when the row relies on the single-issue-input default (or fills no
+	// issue at all).
+	IssueInput   string
 	Enabled      bool
 	CursorAt     *time.Time
 	LastPolledAt *time.Time
@@ -242,7 +257,7 @@ type IssueTrigger struct {
 // last_error and github_created_at are nullable, so the scan goes through
 // pointers; version is the config-edit counter (a fire never bumps it).
 const issueTriggerColumns = `id, project_id, assignment_id, repository_id, event, labels,
-	inputs::text, enabled, cursor_at, last_polled_at, last_error, version, created_by, created_at, updated_at, github_created_at`
+	inputs::text, COALESCE(issue_input, ''), enabled, cursor_at, last_polled_at, last_error, version, created_by, created_at, updated_at, github_created_at`
 
 func (s *IssueTriggerStore) scan(row pgx.Row) (IssueTrigger, error) {
 	var (
@@ -254,7 +269,7 @@ func (s *IssueTriggerStore) scan(row pgx.Row) (IssueTrigger, error) {
 		githubCreated *time.Time
 	)
 	err := row.Scan(&it.ID, &it.ProjectID, &it.AssignmentID, &it.RepositoryID, &it.Event,
-		&it.Labels, &inputs, &it.Enabled, &cursorAt, &lastPolled, &lastErr, &it.Version,
+		&it.Labels, &inputs, &it.IssueInput, &it.Enabled, &cursorAt, &lastPolled, &lastErr, &it.Version,
 		&it.CreatedBy, &it.CreatedAt, &it.UpdatedAt, &githubCreated)
 	if err != nil {
 		return IssueTrigger{}, err
@@ -292,8 +307,12 @@ type NewIssueTrigger struct {
 	Event        string
 	Labels       []string
 	Inputs       json.RawMessage
-	Enabled      *bool
-	CreatedBy    string
+	// IssueInput (ADR-0066): the github_issue input this trigger's issue
+	// object fills; "" means the single-issue-input default (refused when the
+	// pinned revision declares several).
+	IssueInput string
+	Enabled    *bool
+	CreatedBy  string
 }
 
 // UpdateIssueTriggerInput is Update's input: the editable members, each nil
@@ -307,6 +326,7 @@ type UpdateIssueTriggerInput struct {
 	Event           *string
 	Labels          *[]string
 	Inputs          *json.RawMessage
+	IssueInput      *string
 	Enabled         *bool
 }
 
@@ -366,7 +386,13 @@ func (s *IssueTriggerStore) Create(ctx context.Context, in NewIssueTrigger) (Iss
 	if err != nil {
 		return IssueTrigger{}, err
 	}
-	if err := issueTriggerInputsValid(pin.plan, values); err != nil {
+	// ADR-0066: the mapping is resolved against the pinned revision NOW, so
+	// an ambiguous one is a refused write, not a trigger that fills one of
+	// two issue inputs by accident of map iteration.
+	if _, err := resolveIssueTriggerInput(pin.plan, in.IssueInput); err != nil {
+		return IssueTrigger{}, err
+	}
+	if err := issueTriggerInputsValid(pin.plan, values, in.IssueInput); err != nil {
 		return IssueTrigger{}, fmt.Errorf("postgres: issue trigger inputs rejected by the pinned revision: %w", err)
 	}
 	enabled := true
@@ -376,10 +402,10 @@ func (s *IssueTriggerStore) Create(ctx context.Context, in NewIssueTrigger) (Iss
 
 	row := s.Pool.QueryRow(ctx, `
 		INSERT INTO issue_triggers
-			(project_id, assignment_id, repository_id, event, labels, inputs, enabled, version, created_by)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text[], $6::jsonb, $7, 1, $8::uuid)
+			(project_id, assignment_id, repository_id, event, labels, inputs, issue_input, enabled, version, created_by)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::text[], $6::jsonb, NULLIF($7, ''), $8, 1, $9::uuid)
 		RETURNING `+issueTriggerColumns,
-		in.ProjectID, in.AssignmentID, in.RepositoryID, in.Event, in.Labels, string(stored), enabled, in.CreatedBy)
+		in.ProjectID, in.AssignmentID, in.RepositoryID, in.Event, in.Labels, string(stored), in.IssueInput, enabled, in.CreatedBy)
 	it, err := s.scan(row)
 	if err != nil {
 		return IssueTrigger{}, fmt.Errorf("postgres: insert issue trigger for project %s: %w", in.ProjectID, err)
@@ -474,6 +500,7 @@ func (s *IssueTriggerStore) UpdateIssueTrigger(ctx context.Context, in UpdateIss
 
 	assignmentID, repositoryID := current.AssignmentID, current.RepositoryID
 	ev, labs, inp, en := current.Event, current.Labels, current.Inputs, current.Enabled
+	issueInput := current.IssueInput
 	if in.AssignmentID != nil {
 		assignmentID = *in.AssignmentID
 	}
@@ -488,6 +515,9 @@ func (s *IssueTriggerStore) UpdateIssueTrigger(ctx context.Context, in UpdateIss
 	}
 	if in.Inputs != nil {
 		inp = *in.Inputs
+	}
+	if in.IssueInput != nil {
+		issueInput = *in.IssueInput
 	}
 	if in.Enabled != nil {
 		en = *in.Enabled
@@ -511,7 +541,10 @@ func (s *IssueTriggerStore) UpdateIssueTrigger(ctx context.Context, in UpdateIss
 		if err != nil {
 			return IssueTrigger{}, err
 		}
-		if err := issueTriggerInputsValid(pin.plan, values); err != nil {
+		if _, err := resolveIssueTriggerInput(pin.plan, issueInput); err != nil {
+			return IssueTrigger{}, err
+		}
+		if err := issueTriggerInputsValid(pin.plan, values, issueInput); err != nil {
 			return IssueTrigger{}, fmt.Errorf("postgres: issue trigger %s inputs rejected by the pinned revision: %w", in.ID, err)
 		}
 	}
@@ -519,10 +552,10 @@ func (s *IssueTriggerStore) UpdateIssueTrigger(ctx context.Context, in UpdateIss
 	updated, err := s.scan(tx.QueryRow(ctx, `
 		UPDATE issue_triggers
 		SET assignment_id = $2::uuid, repository_id = $3::uuid, event = $4, labels = $5::text[],
-		    inputs = $6::jsonb, enabled = $7, version = version + 1, updated_at = now()
-		WHERE id = $1::uuid AND version = $8
+		    inputs = $6::jsonb, issue_input = NULLIF($7, ''), enabled = $8, version = version + 1, updated_at = now()
+		WHERE id = $1::uuid AND version = $9
 		RETURNING `+issueTriggerColumns,
-		in.ID, assignmentID, repositoryID, ev, labs, string(inp), en, in.ExpectedVersion))
+		in.ID, assignmentID, repositoryID, ev, labs, string(inp), issueInput, en, in.ExpectedVersion))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IssueTrigger{}, fmt.Errorf("%w: issue trigger %s moved while it was locked",
 			ErrIssueTriggerStaleVersion, in.ID)
@@ -983,6 +1016,18 @@ func (s *IssueTriggerStore) fireIssue(ctx context.Context, tx pgx.Tx, it IssueTr
 	if err != nil {
 		return 0, err
 	}
+	// ADR-0066: the mapped input receives the matched issue OBJECT — the
+	// typed value the run form and the ${{ inputs.issue.* }} bindings speak.
+	// A legacy row whose default went ambiguous under a
+	// re-pin fills nothing and says so at WARN: the required-input refusal
+	// below is the authority, never a guess here.
+	fill, fillErr := resolveIssueTriggerInput(pin.plan, it.IssueInput)
+	if fillErr != nil {
+		s.logger().WarnContext(ctx, "issue trigger's issue mapping is unusable under the pinned revision; firing without the issue input",
+			slog.String("issue_trigger_id", it.ID), slog.String("reason", fillErr.Error()))
+		fill = ""
+	}
+	stampIssueObject(rendered, fill, repo, issue)
 	inputs, err := m4ValidateRunInputs(pin.plan, rendered, issueTriggerInputNames(rendered)...)
 	if err != nil {
 		return 0, fmt.Errorf("postgres: issue trigger %s inputs no longer valid: %w", it.ID, err)
@@ -1165,15 +1210,93 @@ func issueTriggerSampleIssue() github.Issue {
 	}
 }
 
+// issueTriggerSampleRepo is the sample's repository handle, the `repo` member
+// of the ADR-0066 issue value shape.
+const issueTriggerSampleRepo = "o/r"
+
+// issueTriggerIssueInputNames lists the github_issue-typed inputs the pinned
+// plan declares, sorted (InputSpecs' own order). A plan that does not parse
+// declares nothing: the fireable/published gates have already refused such a
+// revision, and the mapping must not invent a guess from unreadable bytes.
+func issueTriggerIssueInputNames(plan json.RawMessage) []string {
+	var p compiler.Plan
+	if err := json.Unmarshal(plan, &p); err != nil {
+		return nil
+	}
+	var names []string
+	for _, spec := range p.InputSpecs() {
+		if spec.Type == compiler.InputTypeGithubIssue {
+			names = append(names, spec.Name)
+		}
+	}
+	return names
+}
+
+// resolveIssueTriggerInput (ADR-0066 § Decision) answers which input this
+// trigger's issue object fills: the named one when named (and only if the
+// pinned revision really declares it as github_issue), the single issue-typed
+// input when there is exactly one, and the ambiguity refusal when there are
+// several. "" with no issue inputs at all is a legitimate "fills no issue"
+// — the template placeholders still render, as they always did.
+func resolveIssueTriggerInput(plan json.RawMessage, want string) (string, error) {
+	names := issueTriggerIssueInputNames(plan)
+	if want != "" {
+		for _, n := range names {
+			if n == want {
+				return want, nil
+			}
+		}
+		return "", fmt.Errorf("%w: input %q is not one of the pinned revision's issue-typed inputs (%s)",
+			ErrIssueTriggerInputUnmappable, want, strings.Join(names, ", "))
+	}
+	switch len(names) {
+	case 0:
+		return "", nil
+	case 1:
+		return names[0], nil
+	default:
+		return "", fmt.Errorf("%w: the pinned revision declares %d issue-typed inputs (%s); set issue_input to one of them",
+			ErrIssueTriggerInputAmbiguous, len(names), strings.Join(names, ", "))
+	}
+}
+
+// stampIssueObject writes the ADR-0066 issue value shape —
+// {number, title, body, url, repo} — under the mapped input name. It is the
+// fire's whole mapping promise in four lines; an unmapped fire stamps
+// nothing, and a name the author also templated is overwritten deliberately:
+// the mapping named that input, the template was the older spelling of it.
+func stampIssueObject(values map[string]json.RawMessage, fill string, repo github.Repository, issue github.Issue) {
+	if fill == "" {
+		return
+	}
+	obj, err := json.Marshal(map[string]any{
+		"number": issue.Number,
+		"title":  issue.Title,
+		"body":   issue.Body,
+		"url":    issue.HTMLURL,
+		"repo":   repo.String(),
+	})
+	if err != nil { // unreachable: five scalars
+		return
+	}
+	values[fill] = obj
+}
+
 // issueTriggerInputsValid is the Create/Update input gate: render against the
-// sample issue, then run the SAME validator a manual POST /runs passes. The
-// fire (fireIssue) reaches for the same code path with the real issue, which
-// is why create-time acceptance and fire-time acceptance cannot disagree.
-func issueTriggerInputsValid(plan json.RawMessage, values map[string]json.RawMessage) error {
+// sample issue, stamp the sample issue object under the mapped name, then run
+// the SAME validator a manual POST /runs passes. The fire (fireIssue) reaches
+// for the same code path with the real issue, which is why create-time
+// acceptance and fire-time acceptance cannot disagree.
+func issueTriggerInputsValid(plan json.RawMessage, values map[string]json.RawMessage, issueInput string) error {
 	rendered, err := renderIssueInputs(values, issueTriggerSampleIssue())
 	if err != nil {
 		return err
 	}
+	fill, err := resolveIssueTriggerInput(plan, issueInput)
+	if err != nil {
+		return err
+	}
+	stampIssueObject(rendered, fill, github.Repository{Owner: "o", Name: "r"}, issueTriggerSampleIssue())
 	if _, err := m4ValidateRunInputs(plan, rendered, issueTriggerInputNames(rendered)...); err != nil {
 		return err
 	}
@@ -1422,7 +1545,7 @@ func (a APIIssueTriggerStore) store() (*IssueTriggerStore, error) {
 // "maintainer" without a membership row and the handler's PATCH gate has one
 // source.
 const apiIssueTriggerColumns = `x.id::text, x.project_id::text, x.assignment_id::text, x.repository_id::text,
-	x.event, x.labels, x.inputs::text, x.enabled, x.cursor_at, x.last_polled_at, x.last_error, x.version,
+	x.event, x.labels, x.inputs::text, COALESCE(x.issue_input, ''), x.enabled, x.cursor_at, x.last_polled_at, x.last_error, x.version,
 	x.created_by::text, x.created_at, x.updated_at, lf.last_run_id, lf.last_fired_at,
 	COALESCE(m.role, CASE WHEN $3::boolean THEN 'maintainer' ELSE '' END)`
 
@@ -1475,7 +1598,7 @@ func (a APIIssueTriggerStore) scanIssueTrigger(row pgx.Row) (api.IssueTriggerVie
 		lastFired  *time.Time
 	)
 	err := row.Scan(&v.ID, &v.ProjectID, &v.AssignmentID, &v.RepositoryID, &v.Event,
-		&v.Labels, &inputs, &v.Enabled, &cursorAt, &lastPolled, &lastErr, &v.Version,
+		&v.Labels, &inputs, &v.IssueInput, &v.Enabled, &cursorAt, &lastPolled, &lastErr, &v.Version,
 		&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt, &lastRunID, &lastFired, &v.MyRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.IssueTriggerView{}, api.ErrIssueTriggerNotFound
@@ -1610,6 +1733,7 @@ func (a APIIssueTriggerStore) CreateIssueTrigger(ctx context.Context, c api.Call
 		Event:        in.Event,
 		Labels:       in.Labels,
 		Inputs:       in.Inputs,
+		IssueInput:   in.IssueInput,
 		Enabled:      &enabled,
 		CreatedBy:    cc.UserID,
 	})
@@ -1652,6 +1776,7 @@ func (a APIIssueTriggerStore) UpdateIssueTrigger(ctx context.Context, c api.Call
 		Event:           in.Event,
 		Labels:          in.Labels,
 		Inputs:          in.Inputs,
+		IssueInput:      in.IssueInput,
 		Enabled:         in.Enabled,
 	})
 	if err != nil {
@@ -1715,6 +1840,10 @@ func issueTriggerAPIErr(err error) error {
 		return api.ErrIssueTriggerStaleVersion
 	case errors.Is(err, ErrIssueTriggerNotFireable):
 		return api.ErrIssueTriggerNotFireable
+	case errors.Is(err, ErrIssueTriggerInputAmbiguous):
+		return api.ErrIssueTriggerInputAmbiguous
+	case errors.Is(err, ErrIssueTriggerInputUnmappable):
+		return api.ErrIssueTriggerInputUnmappable
 	default:
 		return err
 	}
@@ -1725,7 +1854,7 @@ func issueTriggerViewOf(it IssueTrigger, role string) api.IssueTriggerView {
 	v := api.IssueTriggerView{
 		ID: it.ID, ProjectID: it.ProjectID, AssignmentID: it.AssignmentID,
 		RepositoryID: it.RepositoryID, Event: it.Event, Labels: it.Labels,
-		Inputs: it.Inputs, Enabled: it.Enabled, Version: it.Version,
+		Inputs: it.Inputs, IssueInput: it.IssueInput, Enabled: it.Enabled, Version: it.Version,
 		CreatedBy: it.CreatedBy, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt, MyRole: role,
 	}
 	if it.CursorAt != nil {

@@ -459,6 +459,16 @@ func (s *UnitService) Prepare(ctx context.Context, req UnitRequest) (*Unit, erro
 	}); err != nil {
 		return unit, err
 	}
+	// ADR-0059 gap P5, closed by ADR-0069: the launcher's per-turn provider
+	// config (agent-home models.json + the defaultProvider/defaultModel pin)
+	// joins the agent HOME before launch, same as the attempt path.
+	// It carries base URL + model only; the API key rides ADR-0040's
+	// environment channel (Unit.Verify), never this file.
+	if launcher, ok := acp.LookupLauncher(req.LauncherID); ok {
+		if _, err := launcher.WriteProviderConfig(unit.Layout.Home); err != nil {
+			return unit, err
+		}
+	}
 
 	if err := unit.stageAPM(ctx, req); err != nil {
 		return unit, err
@@ -574,10 +584,19 @@ func (u *Unit) Verify(ctx context.Context, launcher acp.Launcher) (acp.LaunchPla
 	if err != nil {
 		return acp.LaunchPlan{}, err
 	}
+	// ADR-0059/ADR-0040, same rule for the per-turn API key: read from the
+	// operator file at launch time, delivered through the launch process
+	// environment (nono inherits it into the child), never the argv `env`
+	// hop the audit journal records verbatim, never the agent-home
+	// models.json (which references the key by $-interpolation only).
+	apiKV, err := launcher.ApiKeyKV()
+	if err != nil {
+		return acp.LaunchPlan{}, err
+	}
 	if u.Enforcement == domain.EnforceDisabled || u.Enforcement == domain.EnforcePermissiveDev {
 		// The two configured non-required modes are still explicit about what
 		// they are: isolation="none" rides every event about them (05).
-		return u.plainPlan(launcher, string(u.Enforcement), kv), nil
+		return u.plainPlan(launcher, string(u.Enforcement), kv, apiKV), nil
 	}
 	spec, err := u.launchSpec(launcher)
 	if err != nil {
@@ -609,6 +628,10 @@ func (u *Unit) Verify(ctx context.Context, launcher acp.Launcher) (acp.LaunchPla
 		// environment into the sandboxed child (ADR-0040); argv carries no
 		// secrets and the audit journal records argv verbatim.
 		env = append(env, kv)
+	}
+	if apiKV != "" {
+		// Same channel for the per-turn API key (ADR-0059, ADR-0069).
+		env = append(env, apiKV)
 	}
 	if u.Materialized != nil {
 		// ADR-0040: the env-delivered secret mounts ride the launched process's
@@ -715,7 +738,7 @@ func (u *Unit) hopsHome() bool {
 // plainPlan is the non-required-mode plan: the adapter itself, with the same
 // from-scratch environment, labelled with the mode so nothing can read the turn
 // as sandboxed.
-func (u *Unit) plainPlan(launcher acp.Launcher, mode string, oauthKV string) acp.LaunchPlan {
+func (u *Unit) plainPlan(launcher acp.Launcher, mode string, oauthKV string, apiKeyKV string) acp.LaunchPlan {
 	env, err := u.adapterEnv(launcher)
 	if err != nil {
 		// A broken credential configuration in a *non-required* mode is the
@@ -729,6 +752,10 @@ func (u *Unit) plainPlan(launcher acp.Launcher, mode string, oauthKV string) acp
 		// Unsandboxed (ADR-0040): the token joins the adapter's real exec
 		// environment — an environment, not argv.
 		env = append(env, oauthKV)
+	}
+	if apiKeyKV != "" {
+		// Same channel for the per-turn API key (ADR-0059, ADR-0069).
+		env = append(env, apiKeyKV)
 	}
 	if u.Materialized != nil {
 		// ADR-0045 / ADR-0040: the GitHub token wiring and the env-delivered mounts
@@ -953,8 +980,18 @@ func (s *UnitService) ProfileDigestFor(kind string) (string, error) {
 // in a directory named for the unit id and reachable by no other unit (and by
 // no sandboxed child: the slot is never a grant). The unit owns it until
 // Cleanup.
+//
+// Since ADR-0069 the conversation path resolves the same allowlist as the
+// attempt path (agentEgressAllow: the operator's COMMUNICATION_AGENT_EGRESS_ALLOW,
+// else the shipped default, plus any launcher's operator-configured provider
+// host) — a pi conversation turn must be able to reach its own gateway here
+// too, or the never-asks mode would launch an agent that can only egress-deny.
 func (s *UnitService) unitProfileFor(unitID string) (*unitProfile, error) {
-	return openUnitProfile(s.PolicyDir, unitID, s.kind(), "", nil)
+	net, hosts, err := agentEgressAllow(nil)
+	if err != nil {
+		return nil, err
+	}
+	return openUnitProfile(s.PolicyDir, unitID, s.kind(), net, hosts)
 }
 
 func (s *UnitService) kind() string {

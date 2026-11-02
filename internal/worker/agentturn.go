@@ -110,8 +110,9 @@ type AttemptSessionStore interface {
 type AgentProfile struct {
 	AgentProfileID string
 	LauncherID     string
-	// PermissionMode is M2's vocabulary: ask | deny |
-	// preapproved_within_sandbox. "" means the profile declared none, which
+	// PermissionMode is M2's vocabulary plus ADR-0069: ask | deny |
+	// preapproved_within_sandbox | autonomous_within_sandbox. "" means the
+	// profile declared none, which
 	// the static policy answers and the Decider bridge still events.
 	PermissionMode string
 	// CommitGranted is the ADR-0017 D4 axis carried into the sandbox plan.
@@ -428,7 +429,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	if refusal != nil {
 		return *refusal, nil
 	}
-	// All three recorded modes are enforced the same way: the harness is put
+	// The three prompting modes are enforced the same way: the harness is put
 	// into the launcher's prompting mode, and the permissionBridge plus
 	// PermissionPolicyFor then answer and journal each prompt (deny →
 	// cancelled, preapproved → allow_once with the node_policy decider).
@@ -436,6 +437,8 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// (docs/compatibility/ACP.md), which sends no session/request_permission
 	// at all: a 'deny' profile would then allow every tool call, and a
 	// 'preapproved' attempt would journal no per-call verdict (ADR-0036 (a)).
+	// ADR-0069's fourth mode is the deliberate opposite: it *wants* the
+	// never-asks default and claims only the sandbox, below.
 	modeID := ""
 	switch prof.PermissionMode {
 	case "ask", "deny", "preapproved_within_sandbox":
@@ -444,6 +447,20 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 			return failedResult(ErrorClassInfra, fmt.Sprintf(
 				"agent profile %q requires the prompting permission mode (%s), but launcher %s has no verified prompting mode (docs/compatibility/ACP.md): running its never-asks default would be a lie about review",
 				spec.profileName, prof.PermissionMode, prof.LauncherID)), nil
+		}
+	case "autonomous_within_sandbox":
+		// ADR-0069: the never-asks launcher's only honest mode. modeID stays
+		// empty — the adapter's never-asks default IS the mode's behaviour,
+		// and the mode makes no review claim (no prompt, no verdict row; the
+		// UI and journal say "runs without asking; the sandbox is the
+		// boundary"). That sentence is only true under `required`: here the
+		// sandbox verification below must pass before the child starts (the
+		// verifyThenPlan chain, ADR-0019 D6 — there is no fallback branch),
+		// and in any other enforcement mode the attempt is refused outright.
+		if a.enforcement() != domain.EnforceRequired {
+			return failedResult(ErrorClassInfra, fmt.Sprintf(
+				"agent profile %q declares autonomous_within_sandbox, but this worker does not run sandbox enforcement %q: the mode claims the sandbox is the boundary and this worker has none, so the attempt is refused (ADR-0069)",
+				spec.profileName, domain.EnforceRequired)), nil
 		}
 	case "":
 		// No recorded mode: agent_profiles.permission_mode is NOT NULL DEFAULT
@@ -470,6 +487,14 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return failedResult(ErrorClassInfra, "create attempt directory: "+a.redact(err.Error())), nil
 		}
+	}
+	// ADR-0059 gap P5, closed by ADR-0069: the launcher's per-turn provider
+	// config (agent-home models.json + the defaultProvider/defaultModel pin)
+	// is written here, into the attempt's own HOME, before any launch. It
+	// carries the base URL and model only — the API key rides ADR-0040's
+	// environment channel below, never this file.
+	if _, err := launcher.WriteProviderConfig(homeDir); err != nil {
+		return failedResult(ErrorClassInfra, "deliver launcher provider config: "+a.redact(err.Error())), nil
 	}
 
 	conv, refusal := a.conversationFor(ctx, c)
@@ -532,6 +557,16 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	oauthKV, err := launcher.OAuthTokenKV()
 	if err != nil {
 		return failedResult(ErrorClassInfra, "resolve launcher long-lived token: "+a.redact(err.Error())), nil
+	}
+	// ADR-0059/ADR-0040, same rule for the API key: the launcher's per-turn
+	// key is read from the operator file at launch time and joins the launch
+	// PROCESS environment (nono inherits it into the child). It must not join
+	// adapterEnv — that list renders into the `env NAME=value` argv hop the
+	// audit journal records verbatim — and never lands in the models.json
+	// written above (which references it by environment interpolation only).
+	apiKeyKV, err := launcher.ApiKeyKV()
+	if err != nil {
+		return failedResult(ErrorClassInfra, "resolve launcher api key: "+a.redact(err.Error())), nil
 	}
 	required := a.enforcement() == domain.EnforceRequired
 	// The env-delivered mounts join the child environment here and nowhere else:
@@ -605,7 +640,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
 	}
 
-	launch, chain, launchPolicy, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, delivered, oauthKV, required, workspaceID)
+	launch, chain, launchPolicy, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, delivered, oauthKV, apiKeyKV, required, workspaceID)
 	// The attempt's private policy file outlives the argv that names it and the
 	// exec that read it, and nothing more: it goes when the attempt is done, on
 	// every exit path (profile_slot.go's rule for a leftover).
@@ -1181,13 +1216,21 @@ func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (Attemp
 // non-required modes run the adapter directly and LABEL themselves. The
 // agent-turn profile carries network_enforced=false and stays labelled that
 // way (M3's label, § 4 step 5).
-func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, delivered []string, oauthKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *unitProfile, *AttemptResult) {
+func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, delivered []string, oauthKV string, apiKeyKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *unitProfile, *AttemptResult) {
 	if !required {
 		// Unsandboxed: the token and the env-delivered mounts join the child's
 		// real exec environment — an environment, not argv (ADR-0040).
 		env := adapterEnv
+		var kv []string
 		if oauthKV != "" {
-			env = append(append([]string{}, adapterEnv...), oauthKV)
+			kv = append(kv, oauthKV)
+		}
+		if apiKeyKV != "" {
+			kv = append(kv, apiKeyKV)
+		}
+		if len(kv) > 0 {
+			// execEnv merges + dedupes, last addition wins (ADR-0018 D4).
+			env = execEnv(adapterEnv, kv)
 		}
 		if gitEnv := GitPushEnv(delivered); len(gitEnv) > 0 {
 			env = append(env, gitEnv...)
@@ -1250,6 +1293,13 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 	env := a.nonoLauncherEnv()
 	if oauthKV != "" {
 		env = append(env, oauthKV)
+	}
+	// ADR-0059/ADR-0040: the launcher's per-turn API key rides the same
+	// process-environment channel as the long-lived token (nono inherits it
+	// into the child), never the argv `env` hop, never the models.json file
+	// (which references it by $-interpolation only).
+	if apiKeyKV != "" {
+		env = append(env, apiKeyKV)
 	}
 	// ADR-0045 / ADR-0040: a GitHub token delivered by a secret mount joins this
 	// process environment — the same place the launcher's long-lived token rides —

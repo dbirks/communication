@@ -1,8 +1,10 @@
 package acp
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -84,13 +86,22 @@ type Launcher struct {
 	// (fail-closed); empty disables the prefix check.
 	ApiKeyPrefix string
 	// ApiBaseURL names the operator environment variable holding the per-turn
-	// provider base URL written into the agent-home pi models.json ("" writes no
-	// per-turn provider config).
+	// provider base URL written into the agent-home launcher provider config
+	// (pi models.json + the defaultProvider/defaultModel pin in pi
+	// settings.json, ADR-0059/ADR-0069; "" writes no per-turn provider config).
 	ApiBaseURL string
 	// ApiModel names the operator environment variable holding the per-turn
-	// provider model id written into the agent-home pi models.json ("" writes no
+	// provider model id written into the agent-home launcher provider config
+	// (pi models.json + pi settings.json, ADR-0059/ADR-0069; "" writes no
 	// per-turn provider config).
 	ApiModel string
+	// AgentConfigDir is the launcher's own configuration directory inside the
+	// agent HOME, slash-separated (pi: ".pi/agent", pi's documented agent-dir
+	// default). WriteProviderConfig renders the per-turn provider config under
+	// it; "" means the launcher accepts no per-turn provider config file at all
+	// (then ApiBaseURL/ApiModel alone are a configuration mistake and the
+	// launch fails closed).
+	AgentConfigDir string
 	// Notes records observed caveats; never a capability guarantee.
 	Notes string
 }
@@ -145,14 +156,15 @@ var knownLaunchers = []Launcher{
 		// No observed prompting mode yet (no permission round-trip run against
 		// the adapter): fail closed per ADR-0019 D6 rather than run in a
 		// permissive default.
-		AskModeID:     "",
-		AuthEnvVars:   []string{"OPENAI_API_KEY"},
-		ApiKeyEnv:     "OPENAI_API_KEY",
-		ApiKeyFileEnv: "COMMUNICATION_PI_API_KEY_FILE",
-		ApiKeyPrefix:  "",
-		ApiBaseURL:    "COMMUNICATION_PI_BASE_URL",
-		ApiModel:      "COMMUNICATION_PI_MODEL",
-		Notes:         "ACP adapter pi-acp@0.0.34 spawns `pi --mode rpc`; pi native ACP mode not shipped. Auth: OpenAI-compatible provider key from COMMUNICATION_PI_API_KEY_FILE via OPENAI_API_KEY; per-turn provider config from COMMUNICATION_PI_BASE_URL + COMMUNICATION_PI_MODEL written into the agent home models.json.",
+		AskModeID:      "",
+		AuthEnvVars:    []string{"OPENAI_API_KEY"},
+		ApiKeyEnv:      "OPENAI_API_KEY",
+		ApiKeyFileEnv:  "COMMUNICATION_PI_API_KEY_FILE",
+		ApiKeyPrefix:   "",
+		ApiBaseURL:     "COMMUNICATION_PI_BASE_URL",
+		ApiModel:       "COMMUNICATION_PI_MODEL",
+		AgentConfigDir: ".pi/agent",
+		Notes:          "ACP adapter pi-acp@0.0.34 spawns `pi --mode rpc`; pi native ACP mode not shipped. Auth: OpenAI-compatible provider key from COMMUNICATION_PI_API_KEY_FILE via OPENAI_API_KEY; per-turn provider config from COMMUNICATION_PI_BASE_URL + COMMUNICATION_PI_MODEL written into the agent home models.json.",
 	},
 }
 
@@ -266,7 +278,7 @@ func (l Launcher) ApiModelsJSON() string {
 	return fmt.Sprintf(`{
   "$schema": "https://pi.dev/schemas/models.schema.json",
   "providers": {
-    "pi-collective": {
+    %q: {
       "name": "Pi Collective",
       "baseUrl": %q,
       "api": "openai-completions",
@@ -277,5 +289,118 @@ func (l Launcher) ApiModelsJSON() string {
     }
   }
 }
-`, baseURL, l.ApiKeyEnv, model)
+`, providerConfigID, baseURL, l.ApiKeyEnv, model)
+}
+
+// providerConfigID is the provider key the per-turn provider config registers
+// under in the agent home. pi selects a model as `<provider>/<modelId>`, so
+// this name and the settings pin below are what make a launched pi start on
+// the configured gateway model instead of pi's ambient default (ADR-0069).
+const providerConfigID = "pi-collective"
+
+// ApiSettingsJSON renders the agent-home pi settings.json pin that points the
+// launcher's startup provider + model at the configured gateway, or "" when
+// the launcher writes no per-turn provider config. The pin is not decoration:
+// measured on pi 1.1.0/1.4.0 (docs/compatibility/ACP.md, ADR-0069), a pi whose
+// models.json declares a custom provider but whose settings name no default
+// still resolves its startup model to the ambient `openai` provider — with
+// OPENAI_API_KEY in the environment that is a request to api.openai.com, which
+// the agent egress allowlist denies (correctly). The pin is what makes the
+// documented "pi talks to the configured gateway" claim actually hold.
+func (l Launcher) ApiSettingsJSON() string {
+	baseURL := strings.TrimSpace(os.Getenv(l.ApiBaseURL))
+	model := strings.TrimSpace(os.Getenv(l.ApiModel))
+	if baseURL == "" || model == "" {
+		return ""
+	}
+	settings := map[string]any{
+		"defaultProvider": providerConfigID,
+		"defaultModel":    model,
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		// map[string]any of two strings: unreachable, and an honest "" is the
+		// fail-closed answer if it ever were.
+		return ""
+	}
+	return string(data) + "\n"
+}
+
+// WriteProviderConfig delivers the per-turn provider config (ADR-0059's
+// models.json, pinned by ADR-0069's settings.json) into the unit's agent HOME
+// before launch, under the launcher's AgentConfigDir. It returns the models
+// path written, or "" with no error when the launcher configures no provider
+// (no ApiBaseURL/ApiModel env — pi then uses its own default, the documented
+// unset behaviour).
+//
+// The key never travels through this file: the rendered models.json references
+// it by `$OPENAI_API_KEY`-style environment interpolation only, and the value
+// reaches the child through the launch environment (ADR-0040's channel —
+// Launcher.ApiKeyKV into the sandbox launcher's process environment, never
+// argv, never this file, never the journal).
+//
+// Pre-existing files are merged, not clobbered: an `apm`-staged settings.json
+// or models.json keeps its other keys/models; the provider and default keys
+// this method owns are overwritten (a turn's provider config is the worker's
+// statement, not the package's). A file that exists but does not parse as a
+// JSON object is a refusal, not an overwrite target — silently destroying
+// staged configuration would be the worse lie.
+func (l Launcher) WriteProviderConfig(agentHome string) (string, error) {
+	doc := l.ApiModelsJSON()
+	if doc == "" {
+		if strings.TrimSpace(os.Getenv(l.ApiBaseURL)) != "" || strings.TrimSpace(os.Getenv(l.ApiModel)) != "" {
+			return "", fmt.Errorf("agent %s: %s/%s are only partly set: both must name an operator variable value for a per-turn provider config to be written", l.ID, l.ApiBaseURL, l.ApiModel)
+		}
+		return "", nil
+	}
+	if agentHome == "" || !filepath.IsAbs(agentHome) {
+		return "", fmt.Errorf("agent %s: provider config needs an absolute agent home, got %q", l.ID, agentHome)
+	}
+	if l.AgentConfigDir == "" || filepath.IsAbs(l.AgentConfigDir) || strings.HasPrefix(l.AgentConfigDir, "..") {
+		return "", fmt.Errorf("agent %s: per-turn provider config env is set but the launcher declares no usable agent config dir (%q)", l.ID, l.AgentConfigDir)
+	}
+	dir := filepath.Join(agentHome, filepath.FromSlash(l.AgentConfigDir))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("agent %s: create %s: %v", l.ID, dir, err)
+	}
+	modelsPath := filepath.Join(dir, "models.json")
+	if err := writeJSONMerging(modelsPath, doc); err != nil {
+		return "", fmt.Errorf("agent %s: write %s: %w", l.ID, modelsPath, err)
+	}
+	if settings := l.ApiSettingsJSON(); settings != "" {
+		if err := writeJSONMerging(filepath.Join(dir, "settings.json"), settings); err != nil {
+			return "", fmt.Errorf("agent %s: write provider default into %s/settings.json: %w", l.ID, dir, err)
+		}
+	}
+	return modelsPath, nil
+}
+
+// writeJSONMerging writes doc into path, merging over an existing JSON object
+// file (rendered keys win). "" doc is a no-op. Top-level rendered keys replace
+// the file's value for that key (models.json's "providers" and settings.json's
+// defaultProvider/defaultModel are the worker's statement); everything else in
+// the file survives.
+func writeJSONMerging(path, doc string) error {
+	if doc == "" {
+		return nil
+	}
+	var rendered map[string]any
+	if err := json.Unmarshal([]byte(doc), &rendered); err != nil {
+		return err
+	}
+	if existing, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(existing))) > 0 {
+		var merged map[string]any
+		if err := json.Unmarshal(existing, &merged); err != nil {
+			return fmt.Errorf("existing file is not a JSON object and will not be overwritten: %w", err)
+		}
+		for k, v := range rendered {
+			merged[k] = v
+		}
+		rendered = merged
+	}
+	data, err := json.MarshalIndent(rendered, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }

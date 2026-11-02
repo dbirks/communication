@@ -41,7 +41,7 @@ type Claim struct {
 	// session mode makes a launcher ask) is the launcher registry's knowledge,
 	// injected via Config.AskModeID.
 	LauncherID     string
-	PermissionMode string // ask | preapproved_within_sandbox | deny
+	PermissionMode string // ask | preapproved_within_sandbox | deny | autonomous_within_sandbox
 	// AgentProfileID is the profile this turn runs on (ADR-0068). The turn
 	// loop keeps one live agent instance per conversation AND per profile:
 	// a profile change closes the live session and launches a NEW ACP session

@@ -8,24 +8,27 @@
 # repository `app` -> file:///srv/m4/fixtures/app.git, and the two agent
 # profiles `pi-planner` / `pi-implementer` with launcher_id `pi`,
 # sandbox_enforcement `required` and permission_mode
-# `preapproved_within_sandbox` — then it prints every id.
+# `autonomous_within_sandbox` — then it prints every id.
 #
 # Why SQL, exactly the way seed.sh does it: there is no profile-write API
 # (M3 D10) and the profile route journals every create as `ask` regardless
 # (internal/events AgentProfileCreatedPayload.PermissionMode — the API
-# REFUSES to carry preapproved_within_sandbox at all, ADR-0030), so the only
+# REFUSES to carry preapproved_within_sandbox or autonomous_within_sandbox at
+# all, ADR-0030), so the only
 # writer of the mode is this upsert, which re-affirms it idempotently on every
 # re-seed (ON CONFLICT (organization_id, name) DO UPDATE).
 #
 # This file is lab scope only, like ADR-0036's seed.sh block: the product's
-# own seeds (migration 00003) and every real deployment stay `ask`. Whether
-# these two profiles may RUN preapproved is the open question this probe
-# answers with evidence — docs/compatibility/SANDBOX.md, section "pi launcher
-# in nono (2026-10-24)". Until that evidence exists (and an ADR extends
-# ADR-0036 to `pi`), the worker is EXPECTED to fail these profiles closed: a
-# pi profile with any recorded permission mode has no verified prompting mode
-# (docs/compatibility/ACP.md "Pi"), and ADR-0019 D6 makes the attempt refuse
-# rather than run the adapter's never-asks default.
+# own seeds (migration 00003) and every real deployment stay `ask`. The mode
+# here is ADR-0069's autonomous_within_sandbox — the only mode a never-asks
+# launcher (pi-acp@0.0.34 sends no session/request_permission for tool calls,
+# SANDBOX.md P4) may run under. It claims NO review: "runs without asking;
+# the sandbox is the boundary", legal only with sandbox_enforcement required
+# (migration 00025 CHECK). Whether a pi turn then really runs inside the
+# boundary is the live question this probe answers with evidence —
+# docs/compatibility/SANDBOX.md, section "pi launcher in nono (2026-10-24)";
+# on a pre-ADR-0069 image the worker still fails the older preapproved rows
+# closed (ADR-0019 D6), which is the honest refusal, not a pass.
 #
 # Isolation: everything flows through lib.sh's M4_URL (18091). The running lab
 # was composed from ~/.cache/comm-lab with the compose.real.yml overlay and the
@@ -199,10 +202,10 @@ create_repo() { # -> REPO_ID
 # upsert is the ONLY writer (M3 D10: no profile-write API) and re-affirms every
 # column idempotently on re-seed.
 declare -A PROFILE_IDS
-seed_pi_profile() { # seed_pi_profile <name> — pi launcher, required, preapproved (lab evidence pending), worktree, no commit grant
+seed_pi_profile() { # seed_pi_profile <name> — pi launcher, required, autonomous_within_sandbox (ADR-0069; live proof pending), worktree, no commit grant
     local name="$1" sql out
     sql="INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode, workspace_mode, sandbox_enforcement, commit_granted)
-         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', 'pi', 'preapproved_within_sandbox', 'worktree', 'required', false)
+         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', 'pi', 'autonomous_within_sandbox', 'worktree', 'required', false)
          ON CONFLICT (organization_id, name) DO UPDATE SET launcher_id = EXCLUDED.launcher_id,
              permission_mode = EXCLUDED.permission_mode, workspace_mode = EXCLUDED.workspace_mode,
              sandbox_enforcement = EXCLUDED.sandbox_enforcement, commit_granted = EXCLUDED.commit_granted;
@@ -212,12 +215,13 @@ seed_pi_profile() { # seed_pi_profile <name> — pi launcher, required, preappro
     case "$PROFILE_ID" in ""|*[!0-9a-f-]*) LAST_NOTE="psql returned [$out]"; loud "seed profile $name: no uuid back";; esac
     PROFILE_IDS[$name]="$PROFILE_ID"
     # Read the row back — the printed line is the evidence that the LAB row
-    # really carries launcher pi / required / preapproved (the API cannot write
-    # this mode, so the row is the fact; never take the INSERT's word for it).
+    # really carries launcher pi / required / autonomous_within_sandbox (the
+    # API cannot write this mode, so the row is the fact; never take the
+    # INSERT's word for it).
     ROW=$(run_sql "SELECT launcher_id || '/' || sandbox_enforcement || '/' || permission_mode || '/' || workspace_mode || '/commit=' || commit_granted::text FROM agent_profiles WHERE id = '$PROFILE_ID'" | tail -1)
-    [ "$ROW" = "pi/required/preapproved_within_sandbox/worktree/commit=false" ] \
-        || loud "seed profile $name: read-back row is [$ROW], not the seeded pi/required/preapproved shape"
-    say "profile: $name -> $PROFILE_ID (launcher pi, sandbox_enforcement=required, permission_mode=preapproved_within_sandbox, workspace_mode=worktree, commit_granted=false) readback=[$ROW]"
+    [ "$ROW" = "pi/required/autonomous_within_sandbox/worktree/commit=false" ] \
+        || loud "seed profile $name: read-back row is [$ROW], not the seeded pi/required/autonomous shape"
+    say "profile: $name -> $PROFILE_ID (launcher pi, sandbox_enforcement=required, permission_mode=autonomous_within_sandbox, workspace_mode=worktree, commit_granted=false) readback=[$ROW]"
 }
 
 # ================================= main =========================================

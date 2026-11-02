@@ -79,6 +79,13 @@ const (
 	// ProfileCodeModelInvalid: model (ADR-0068) is over the 200-character
 	// column CHECK.
 	ProfileCodeModelInvalid = "profile_model_invalid"
+	// ProfileCodePermissionModeInvalid: the snapshot's permission mode is not
+	// one of the recorded modes, or it is autonomous_within_sandbox while the
+	// profile row's sandbox_enforcement is not `required` — the mode's whole
+	// claim is that the sandbox is the boundary (ADR-0069), so the pair is
+	// refused at the write, not discovered at launch (mirrors the DB CHECKs
+	// from migration 00025).
+	ProfileCodePermissionModeInvalid = "permission_mode_invalid"
 )
 
 // AgentProfileProblem is a refused profile write that knows *why* in a
@@ -103,6 +110,35 @@ func (p *AgentProfileProblem) Is(target error) bool { return target == ErrProfil
 
 func profileRefused(code, detail string) error {
 	return &AgentProfileProblem{Code: code, Detail: detail, Wrapped: ErrProfileValidation}
+}
+
+// agentProfilePermissionModes is the Go restatement of migration 00003/00025's
+// permission_mode CHECK — the four recorded modes of 04 "Permission policy"
+// plus ADR-0069's autonomous_within_sandbox. The HTTP surface never lets a
+// request body choose among them (the create path writes the `ask` column
+// default); the one write that DOES move a mode is a version restore, and
+// that path checks here so the refusal carries a code, not a database error.
+var agentProfilePermissionModes = map[string]bool{
+	"ask":                        true,
+	"preapproved_within_sandbox": true,
+	"deny":                       true,
+	"autonomous_within_sandbox":  true,
+}
+
+// checkAgentProfilePermissionMode states ADR-0069's pair rule: the mode must
+// be recorded, and autonomous_within_sandbox is only ever honest beside
+// sandbox_enforcement `required`. Migration 00025 enforces both again in the
+// database; a refusal that never reaches Postgres names the code.
+func checkAgentProfilePermissionMode(mode, sandboxEnforcement string) error {
+	if !agentProfilePermissionModes[mode] {
+		return profileRefused(ProfileCodePermissionModeInvalid,
+			"permission_mode must be one of ask, preapproved_within_sandbox, deny, autonomous_within_sandbox.")
+	}
+	if mode == "autonomous_within_sandbox" && sandboxEnforcement != "required" {
+		return profileRefused(ProfileCodePermissionModeInvalid,
+			"autonomous_within_sandbox requires the profile's sandbox_enforcement to be 'required': the mode claims the sandbox is the boundary, and this profile does not have one (ADR-0069).")
+	}
+	return nil
 }
 
 // cnvProfileColumns is the agent_profiles read list, shared by every select in

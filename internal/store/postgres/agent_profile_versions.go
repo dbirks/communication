@@ -95,14 +95,15 @@ type AgentProfileWrite struct {
 // version it restores — history is append-only, so it gains a new row).
 func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID string, w AgentProfileWrite) (CnvProfile, int, error) {
 	var p CnvProfile
+	var sandboxEnforcement string
 	err := q.QueryRow(ctx, `
 		SELECT id::text, organization_id::text, name, launcher_id, permission_mode, created_at, version,
 		       COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, ''),
-		       COALESCE(model, '')
+		       COALESCE(model, ''), sandbox_enforcement
 		FROM agent_profiles
 		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID, &p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &sandboxEnforcement)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, 0, ErrProfileNotFound
 	}
@@ -110,6 +111,17 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 		return CnvProfile{}, 0, fmt.Errorf("postgres: read agent profile for version write: %w", err)
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
+
+	// ADR-0069: a version restore writes permission_mode, so the mode's own
+	// rules are checked here rather than left to the launch gate. An unknown
+	// mode is refused, and autonomous_within_sandbox is refused unless the
+	// profile's sandbox axis is `required` — the mode claims the sandbox is
+	// the boundary, and a profile whose row says otherwise has no boundary to
+	// claim (the same rule migration 00025 states as a DB CHECK; this names
+	// it as a 422 code before Postgres sees the statement).
+	if err := checkAgentProfilePermissionMode(w.State.PermissionMode, sandboxEnforcement); err != nil {
+		return CnvProfile{}, 0, err
+	}
 
 	if w.ExpectedVersion != nil && *w.ExpectedVersion != p.Version {
 		return CnvProfile{}, 0, ErrProfileVersionConflict

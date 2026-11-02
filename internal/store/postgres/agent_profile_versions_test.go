@@ -221,3 +221,84 @@ func TestAgentProfileVersionCrossOrgInvisible(t *testing.T) {
 		}
 	})
 }
+
+// TestAgentProfileAutonomousModePair (ADR-0069, migration 00025): the mode
+// an API request can reach through ONE write — an ADR-0058 version restore
+// landing a snapshot that names it — carries a pair: it is a recorded mode,
+// and it is honest only beside sandbox_enforcement 'required'. The store
+// refuses the pair mistake with the named code (a 422 at the HTTP edge), and
+// the database refuses it again for every write that skips the store.
+func TestAgentProfileAutonomousModePair(t *testing.T) {
+	f := profWSetup(t)
+	ctx := testCtx(t)
+
+	// A fresh profile's sandbox axis is the column default, 'required'
+	// (migration 00004) — the mode is legal there.
+	profile, err := f.api.CreateAgentProfile(ctx, f.caller(f.alice, true),
+		api.AgentProfileCreateInput{Name: f.profWName("auton"), LauncherID: "pi"})
+	if err != nil {
+		t.Fatalf("CreateAgentProfile: %v", err)
+	}
+	auton := func(name string) AgentProfileWrite {
+		return AgentProfileWrite{State: AgentProfileSnapshot{
+			Name: name, LauncherID: "pi", PermissionMode: "autonomous_within_sandbox",
+		}}
+	}
+	if _, _, err := CommitAgentProfileWrite(ctx, f.pool, profile.ID, f.orgID, auton(profile.Name)); err != nil {
+		t.Fatalf("autonomous_within_sandbox beside required sandbox must land: %v", err)
+	}
+	var mode string
+	if err := f.pool.QueryRow(ctx, `SELECT permission_mode FROM agent_profiles WHERE id = $1::uuid`, profile.ID).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "autonomous_within_sandbox" {
+		t.Fatalf("column mode = %q", mode)
+	}
+
+	// Moving the sandbox axis away while the mode stands is the pair
+	// breaking from the other side: the DB CHECK refuses the UPDATE itself.
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_profiles SET sandbox_enforcement = 'permissive-dev' WHERE id = $1::uuid`, profile.ID); err == nil {
+		t.Fatal("migration 00025's CHECK let autonomous_within_sandbox sit without required enforcement")
+	} else if !strings.Contains(err.Error(), "agent_profiles_autonomous_requires_enforced_sandbox") {
+		t.Fatalf("pair UPDATE refused by %v, want the named autonomous CHECK", err)
+	}
+
+	// A profile WITHOUT required enforcement cannot take the mode through the
+	// store either — the named 422 code, not a database error, and nothing
+	// landed.
+	loose, err := f.api.CreateAgentProfile(ctx, f.caller(f.alice, true),
+		api.AgentProfileCreateInput{Name: f.profWName("loose"), LauncherID: "pi"})
+	if err != nil {
+		t.Fatalf("CreateAgentProfile: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_profiles SET sandbox_enforcement = 'disabled' WHERE id = $1::uuid`, loose.ID); err != nil {
+		t.Fatalf("pre-set sandbox axis (ask mode, any axis is legal): %v", err)
+	}
+	_, _, err = CommitAgentProfileWrite(ctx, f.pool, loose.ID, f.orgID, auton(loose.Name))
+	var problem *AgentProfileProblem
+	if !errors.As(err, &problem) || problem.Code != ProfileCodePermissionModeInvalid {
+		t.Fatalf("autonomous-on-unrequired-sandbox err = %v, want the permission_mode_invalid refusal", err)
+	}
+	if err := f.pool.QueryRow(ctx, `SELECT permission_mode FROM agent_profiles WHERE id = $1::uuid`, loose.ID).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "ask" {
+		t.Errorf("refused write landed anyway: mode = %q", mode)
+	}
+
+	// An unrecorded mode is the same named refusal.
+	if _, _, err := CommitAgentProfileWrite(ctx, f.pool, loose.ID, f.orgID, AgentProfileWrite{
+		State: AgentProfileSnapshot{Name: loose.Name, LauncherID: "pi", PermissionMode: "yolo"},
+	}); !errors.As(err, &problem) || problem.Code != ProfileCodePermissionModeInvalid {
+		t.Errorf("unknown mode err = %v, want the permission_mode_invalid refusal", err)
+	}
+
+	// And a direct SQL write that skips the store hits the database's own
+	// answer (23514), not a silent inconsistency.
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode, sandbox_enforcement)
+		VALUES ($1::uuid, $2, 'pi', 'autonomous_within_sandbox', 'disabled')`,
+		f.orgID, f.profWName("auton-direct")); err == nil {
+		t.Fatal("the DB CHECK let an autonomous profile with sandbox 'disabled' in")
+	}
+}

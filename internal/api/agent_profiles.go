@@ -81,6 +81,11 @@ const (
 	// ProfileCodeModelInvalid: model (ADR-0068) breaks the 200-character
 	// column CHECK.
 	ProfileCodeModelInvalid = "profile_model_invalid"
+	// ProfileCodePermissionModeInvalid: a version restore's snapshot names a
+	// permission mode the product does not record, or
+	// autonomous_within_sandbox without sandbox_enforcement 'required'
+	// (ADR-0069).
+	ProfileCodePermissionModeInvalid = "permission_mode_invalid"
 )
 
 // AgentProfileCreateInput is POST /api/v1/agent-profiles' body.
@@ -330,6 +335,8 @@ func profProblemTitle(code string) string {
 		return "Invalid Launcher Id"
 	case ProfileCodeModelInvalid:
 		return "Invalid Profile Model"
+	case ProfileCodePermissionModeInvalid:
+		return "Invalid Permission Mode"
 	default:
 		return "Validation Failed"
 	}

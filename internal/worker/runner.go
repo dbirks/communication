@@ -314,9 +314,10 @@ func (l *TurnLoop) turnWake(ctx context.Context) <-chan struct{} {
 // decision (wake/poll), and close honestly on deadline or turn cancel. Only
 // this worker ever speaks ACP, so the DB row is the handoff point.
 //
-// Under `deny` and `preapproved_within_sandbox` (and, defensively, any mode
-// that reaches here without a human owner) the answer is policy, not a
-// person: the request is still opened — so conversation.permission.requested
+// Under `deny`, `preapproved_within_sandbox`, `autonomous_within_sandbox`
+// (ADR-0069; its launcher sends no prompt, so this arm is defensive) and,
+// defensively, any mode that reaches here without a human owner, the answer
+// is policy, not a person: the request is still opened — so conversation.permission.requested
 // is journaled and the verdict is visible — and then closed immediately
 // `decided` with the policy's own option, the row naming the policy as
 // decider (ADR-0039 Option A). Nobody is ever asked, so the turn must not
@@ -360,13 +361,7 @@ func (rt *runningTurn) decidePermission(ctx context.Context, p domain.Permission
 		// allow_always. No option of the policy's kinds (or a mode the policy
 		// knows no option for) falls back to today's cancelled close — the
 		// honest "nobody said yes", never a fabricated option id.
-		var kinds []string
-		switch c.PermissionMode {
-		case "deny":
-			kinds = []string{"reject_once", "reject_always"}
-		case "preapproved_within_sandbox":
-			kinds = []string{"allow_once", "allow_always"}
-		}
+		kinds := policyOptionKinds(c.PermissionMode)
 		if optionID := pickPolicyOption(p.Options, kinds); optionID != "" {
 			final, _, cerr := l.store.DecidePermissionByPolicy(ctx, c, requestID, optionID, c.PermissionMode)
 			if cerr != nil {
@@ -467,6 +462,25 @@ func pickPolicyOption(options []domain.PermissionOption, kinds []string) string 
 		}
 	}
 	return ""
+}
+
+// policyOptionKinds names the option kinds each recorded permission mode
+// prefers, in order. `ask` never reaches the policy bridge (a human owns
+// it); an unknown mode gets no kinds and falls to the honest cancelled
+// close.
+func policyOptionKinds(mode string) []string {
+	switch mode {
+	case "deny":
+		return []string{"reject_once", "reject_always"}
+	case "preapproved_within_sandbox":
+		return []string{"allow_once", "allow_always"}
+	case "autonomous_within_sandbox":
+		// ADR-0069: the never-asks launcher sends no prompt, so this arm is
+		// defensive — but if one arrives, the MODE answers it and the row
+		// names the mode (never a person): the claim is the sandbox.
+		return []string{"allow_once", "allow_always"}
+	}
+	return nil
 }
 
 func safeKey(s string) string {

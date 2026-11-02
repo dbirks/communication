@@ -26,11 +26,14 @@
 #     preapproved_within_sandbox — exactly seed.sh's m4-* upsert
 #     (docs/adr/ADR-0036-lab-agent-profiles-preapproved-within-sandbox.md).
 #     ADR-0036's lab exception covers claude ONLY and reverts when "the
-#     launcher is not claude, the only one evaluated"; launcher pi stays a GAP
-#     there (docs/compatibility/ACP.md "Pi": no verified prompting mode, the
-#     worker fails such profiles closed, ANY recorded mode included) — so on
-#     COMMUNICATION_LAB_LAUNCHER=pi the loop's implement node reports an honest
-#     fail-closed refusal naming launcher pi, never a PR. While the launcher
+#     launcher is not claude, the only one evaluated"; on the prompting modes
+#     launcher pi stays a GAP there (docs/compatibility/ACP.md "Pi": no
+#     verified prompting mode, the worker fails such profiles closed) —
+#     ADR-0069 gives a never-asks launcher its own honest mode, so on
+#     COMMUNICATION_LAB_LAUNCHER=pi the profiles carry
+#     autonomous_within_sandbox ("runs without asking; the sandbox is the
+#     boundary", sandbox required, see LAB_MODE below); its live proof is a
+#     rebuilt-lab run, not this seed. While the launcher
 #     is claude this probe runs the loop on claude profiles while the shipped
 #     template
 #     (ui/src/lib/pipeline/templates/issue-to-pr.yaml.txt) names pi ones.
@@ -91,15 +94,26 @@ TEMPLATE="${M4_GH_TEMPLATE:-$M4_REPO_DIR/ui/src/lib/pipeline/templates/issue-to-
 TOKEN_FILE="${COMMUNICATION_TEST_REPO_TOKEN_FILE:-}"
 # Launcher for the two loop profiles: seed.sh's knob, same default (claude —
 # local behaviour unchanged) and the same honesty: launcher pi has no verified
-# prompting mode, so every recorded permission mode fails closed at the worker
-# (docs/compatibility/ACP.md "Pi", 2026-10-24). The gh-loop job on CI sets pi
-# per the operator decision (no Claude token on runners); the implement node
-# then reports the refusal naming launcher pi rather than a silent pass.
+# prompting mode, so the prompting modes (ask/deny/preapproved) fail closed at
+# the worker (docs/compatibility/ACP.md "Pi", 2026-10-24). ADR-0069 gives the
+# never-asks launcher its own mode — LAB_MODE below picks
+# autonomous_within_sandbox for pi; whether a pi turn then really runs is a
+# live-proof question (rebuild + this loop / pi-proof.sh), never this seed's
+# word. The gh-loop job on CI sets pi
+# per the operator decision (no Claude token on runners).
 LAB_LAUNCHER="${COMMUNICATION_LAB_LAUNCHER:-claude}"
 case "$LAB_LAUNCHER" in claude|codex|pi) ;; *)
     printf 'SEEDGH FAIL COMMUNICATION_LAB_LAUNCHER must be claude, codex or pi, got [%s]\n' "$LAB_LAUNCHER" >&2
     exit 2 ;;
 esac
+# ADR-0069: a never-asks launcher (pi) runs ONLY autonomous_within_sandbox;
+# the prompting modes stay fail-closed on it. claude/codex keep ADR-0036's
+# lab mode. The live pi proof is a rebuilt-lab gh-loop/pi-proof run.
+if [ "$LAB_LAUNCHER" = "pi" ]; then
+    LAB_MODE=autonomous_within_sandbox
+else
+    LAB_MODE=preapproved_within_sandbox
+fi
 declare -A JAR CSRF PROFILE_IDS
 GH_TRACE_WAS_X=0; case $- in *x*) GH_TRACE_WAS_X=1 ;; esac
 
@@ -303,7 +317,7 @@ create_repo() { # -> REPO_ID
 seed_claude_profile() { # seed_claude_profile <name> <commit_granted>
     local name="$1" commit="$2" sql out
     sql="INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode, workspace_mode, sandbox_enforcement, commit_granted)
-         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', '$LAB_LAUNCHER', 'preapproved_within_sandbox', 'worktree', 'required', $commit)
+         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', '$LAB_LAUNCHER', '$LAB_MODE', 'worktree', 'required', $commit)
          ON CONFLICT (organization_id, name) DO UPDATE SET launcher_id = EXCLUDED.launcher_id,
              permission_mode = EXCLUDED.permission_mode, workspace_mode = EXCLUDED.workspace_mode,
              sandbox_enforcement = EXCLUDED.sandbox_enforcement, commit_granted = EXCLUDED.commit_granted;
@@ -313,12 +327,13 @@ seed_claude_profile() { # seed_claude_profile <name> <commit_granted>
     case "$PROFILE_ID" in ""|*[!0-9a-f-]*) LAST_NOTE="psql returned [$out]"; loud "seed profile $name: no uuid back";; esac
     PROFILE_IDS[$name]="$PROFILE_ID"
     # Read the row back — the printed line is the evidence that the LAB row
-    # really carries launcher claude / required / preapproved (the API cannot
-    # write this mode, so the row is the fact; never take the INSERT's word).
+    # really carries the launcher / required / the launcher's mode (the API
+    # cannot write these modes, so the row is the fact; never take the
+    # INSERT's word).
     ROW=$(run_sql "SELECT launcher_id || '/' || sandbox_enforcement || '/' || permission_mode || '/' || workspace_mode || '/commit=' || commit_granted::text FROM agent_profiles WHERE id = '$PROFILE_ID'" | tail -1)
-    [ "$ROW" = "$LAB_LAUNCHER/required/preapproved_within_sandbox/worktree/commit=$commit" ] \
-        || loud "seed profile $name: read-back row is [$ROW], not the seeded $LAB_LAUNCHER/required/preapproved shape"
-    say "profile: $name -> $PROFILE_ID (launcher $LAB_LAUNCHER, sandbox_enforcement=required, permission_mode=preapproved_within_sandbox, workspace_mode=worktree, commit_granted=$commit) readback=[$ROW]"
+    [ "$ROW" = "$LAB_LAUNCHER/required/$LAB_MODE/worktree/commit=$commit" ] \
+        || loud "seed profile $name: read-back row is [$ROW], not the seeded $LAB_LAUNCHER/required/$LAB_MODE shape"
+    say "profile: $name -> $PROFILE_ID (launcher $LAB_LAUNCHER, sandbox_enforcement=required, permission_mode=$LAB_MODE, workspace_mode=worktree, commit_granted=$commit) readback=[$ROW]"
 }
 
 # ---- secrets (ADR-0018 write-only; ADR-0061 broker; ADR-0045 push token) -----

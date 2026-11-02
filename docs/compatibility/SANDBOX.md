@@ -630,3 +630,38 @@ fix's live proof is deferred. The P3 conversation probe was a throwaway driver
 (`POST /api/v1/conversations` + one message, same API legs as `deny_probe.sh`),
 not a committed probe. Journal payloads quoted here redact the key value; the
 lab DB row itself still contains it.
+
+### Follow-up 2026-10-24 — ADR-0069: P1/P4/P5 decisions made, implemented; LIVE PROOF PENDING
+
+Nothing above is a PASS, and nothing here flips one — the rebuild-lab rerun of
+`seed-pi.sh` + `pi-proof.sh` owns P1–P5. What changed since this section was
+written (all unit-proven in-tree):
+
+* **P1/P4 (decision 1)**: ADR-0069 added the permission mode
+  `autonomous_within_sandbox` — the never-asks launcher's own honest label
+  ("runs without asking; the sandbox is the boundary", no review claim, no
+  verdict rows). Launcher pi launches under it **only** with enforcement
+  `required` (both worker paths refuse below it, before any spawn; migration
+  `00025` + the store refuse the profile row without `sandbox_enforcement =
+  'required'`). `ask`/`deny`/`preapproved_within_sandbox` on pi **stay
+  fail-closed unchanged** — there is still no prompting mode to verify, and
+  this is not an unlock.
+* **P5 (decision 2)**: `Launcher.WriteProviderConfig` now renders the agent-home
+  provider config at turn launch on both paths: `.pi/agent/models.json`
+  (base URL + model, key by `$OPENAI_API_KEY` interpolation — never the value)
+  **and** `.pi/agent/settings.json` (`defaultProvider`/`defaultModel` —
+  measured load-bearing on this host: models.json alone leaves pi resolving to
+  the ambient `openai` provider, i.e. `api.openai.com`, 401 observed). The
+  per-turn key now joins the launch **process environment** at launch
+  (`Launcher.ApiKeyKV`, ADR-0040's channel; never the argv `env` hop), and the
+  provider host joins the resolved agent-turn egress allowlist on both paths
+  (`agentEgressAllow`; the conversation path previously ignored even
+  `COMMUNICATION_AGENT_EGRESS_ALLOW`, using only the shipped default).
+* **Seed**: `seed-pi.sh` and `COMMUNICATION_LAB_LAUNCHER=pi` in `seed.sh` /
+  `seed-github-loop.sh` now write `autonomous_within_sandbox` (read-back row
+  `pi/required/autonomous_within_sandbox/worktree/…`).
+
+Status of this section's cells: **implemented, live proof pending** — P1/P5
+may flip only when `pi-proof.sh` on the rebuilt image quotes the journal rows
+(`sandbox.verified`, the model answering, egress allow/deny). Until then the
+pi boundary remains `not_tested`, not PASS.

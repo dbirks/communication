@@ -41,7 +41,9 @@
 #      default claude; the acceptance workflow sets pi — see LAB_LAUNCHER
 #      below), sandbox required, implementer commit_granted=true, and (per
 #      ADR-0036, lab evidence only) permission_mode
-#      preapproved_within_sandbox — the product's own seeds stay 'ask'
+#      preapproved_within_sandbox — or, for a launcher that never asks (pi),
+#      ADR-0069's autonomous_within_sandbox; the mode follows LAB_LAUNCHER via
+#      LAB_MODE below. The product's own seeds stay 'ask'
 #   5. secret test-database-url = the § 7.0 contract sentinel (write-only per
 #      ADR-0018; never echoed) allowlisted to m4-implementer, mounted env/DATABASE_URL/
 #      lifecycle=node_attempt
@@ -82,19 +84,32 @@ PIPELINE_YAML="${M4_SEED_PIPELINE:-$M4_DIR/pipeline.yaml}"
 # decision is pi against the LLM collective, ADR-0059 — compose.real.yml wires
 # COMMUNICATION_PI_API_KEY_FILE/BASE_URL/MODEL into the worker containers from
 # the same 0600 key file). HONESTY, do not read this as "pi turns work":
-# every recorded permission mode (ask/deny/preapproved_within_sandbox) needs
-# the launcher's VERIFIED prompting mode, launcher pi has none
+# every prompting mode (ask/deny/preapproved_within_sandbox) needs the
+# launcher's VERIFIED prompting mode, launcher pi has none
 # (internal/agent/acp/launchers.go AskModeID "", ADR-0019 D6;
-# docs/compatibility/ACP.md "Pi", observed 2026-10-24: the worker refuses
-# agent.acp attempts on launcher pi BEFORE sandbox verification). Choosing the
-# mode therefore does not change that outcome — the seed records the same
-# mode for either launcher and the gates must (do) report GAPs naming
-# launcher pi, never a pass.
+# docs/compatibility/ACP.md "Pi", observed 2026-10-24: the worker refused
+# agent.acp attempts on launcher pi BEFORE sandbox verification). ADR-0069
+# adds the mode a never-asks launcher may run under (see LAB_MODE below);
+# its live proof is a rebuilt-lab pi-proof.sh run, and until one is quoted
+# here the gates must report GAPs naming launcher pi, never a pass.
 LAB_LAUNCHER="${COMMUNICATION_LAB_LAUNCHER:-claude}"
 case "$LAB_LAUNCHER" in claude|codex|pi) ;; *)
     printf 'SEED FAIL COMMUNICATION_LAB_LAUNCHER must be claude, codex or pi, got [%s]\n' "$LAB_LAUNCHER" >&2
     exit 2 ;;
 esac
+# ADR-0069: launcher pi is a NEVER-ASKS launcher (pi-acp@0.0.34 sends no
+# session/request_permission for tool calls), so the prompting modes
+# (ask/deny/preapproved_within_sandbox) stay fail-closed on it and the only
+# mode it may run under is autonomous_within_sandbox — which claims no review,
+# only "runs without asking; the sandbox is the boundary", and is legal only
+# with sandbox_enforcement required (the mode this seed always writes).
+# The live proof of a pi turn is the orchestrator's rebuild +
+# pi-proof.sh, not this seed.
+if [ "$LAB_LAUNCHER" = "pi" ]; then
+    LAB_MODE=autonomous_within_sandbox
+else
+    LAB_MODE=preapproved_within_sandbox
+fi
 declare -A JAR CSRF UID_OF
 FAIL=""
 
@@ -291,7 +306,7 @@ put_member() { # put_member <user> <role>
 # re-affirms permission_mode on every re-seed (idempotent, like the other columns).
 seed_profile() { # seed_profile <name> <commit_granted> <workspace_mode> <permission_mode>
     local name="$1" commit="$2" ws="$3" mode="$4" sql
-    case "$mode" in ask|preapproved_within_sandbox|deny) ;; *) loud "seed profile $name: permission_mode '$mode' is not one of ask|preapproved_within_sandbox|deny (04-agent-runtime.md 'Permission policy')";; esac
+    case "$mode" in ask|preapproved_within_sandbox|deny|autonomous_within_sandbox) ;; *) loud "seed profile $name: permission_mode '$mode' is not one of ask|preapproved_within_sandbox|deny|autonomous_within_sandbox (04-agent-runtime.md 'Permission policy', ADR-0069)";; esac
     sql="INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode, workspace_mode, sandbox_enforcement, commit_granted)
          VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', '$LAB_LAUNCHER', '$mode', '$ws', 'required', $commit)
          ON CONFLICT (organization_id, name) DO UPDATE SET launcher_id = EXCLUDED.launcher_id,
@@ -624,9 +639,9 @@ create_repo
 # the product's default seeds (migration 00003, "Claude Code"/"Codex") stay 'ask',
 # and so does every real deployment. It holds only while sandbox enforcement is
 # `required` and the agent egress allowlist is active — see the ADR's conditions.
-seed_profile m4-planner false worktree preapproved_within_sandbox
-seed_profile m4-implementer true worktree preapproved_within_sandbox
-seed_profile m4-reviewer false worktree preapproved_within_sandbox
+seed_profile m4-planner false worktree "$LAB_MODE"
+seed_profile m4-implementer true worktree "$LAB_MODE"
+seed_profile m4-reviewer false worktree "$LAB_MODE"
 
 req alice POST "/api/v1/projects/$PROJECT_ID/secrets" \
     "{\"slug\":\"test-database-url\",\"purpose\":\"M4 exit C2 sentinel (docs/m4-contract.md § 7.0)\",\"delivery_mode\":\"env\",\"allowed_agent_profile_ids\":[\"${PROFILE_IDS[m4-implementer]}\"],\"value\":\"$SENTINEL\"}" \

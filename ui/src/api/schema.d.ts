@@ -598,7 +598,7 @@ export interface paths {
     put?: never;
     /**
      * Create an agent profile
-     * @description A launch descriptor: a name unique in the organization plus the launcher it drives. `permission_mode` is **not** a field here — `ask` is the column default and the only mode an unverified launcher may have, because auto-approving ACP permission prompts is not a substitute for sandbox isolation (`04-agent-runtime.md` "Permission policy", ADR-0009); `preapproved_within_sandbox` needs sandbox evidence for that launcher in `docs/compatibility/`, not a request body.
+     * @description A launch descriptor: a name unique in the organization plus the launcher it drives. `permission_mode` is **not** a field here — `ask` is the column default and the only mode an unverified launcher may have, because auto-approving ACP permission prompts is not a substitute for sandbox isolation (`04-agent-runtime.md` "Permission policy", ADR-0009); `preapproved_within_sandbox` needs sandbox evidence for that launcher in `docs/compatibility/`, not a request body. ADR-0069's `autonomous_within_sandbox` (the never-asks launcher's mode, e.g. `pi`) is likewise operator-declared — via the seed/GitOps route — and only ever honest beside `sandbox_enforcement: required`.
      *     A new profile stages **no** APM package: the triple is NULL until an operator records a digest with `PATCH` below, so a profile can never be created in the unverifiable state probe A5b describes.
      *     Organization library role — the same fail-closed predicate that governs publishing the shared pipeline library (ADR-0030). A member without it gets `403` (the organization's profiles are list-visible, so role is not existence information here); a duplicate name is `409`.
      */
@@ -680,7 +680,7 @@ export interface paths {
     put?: never;
     /**
      * Restore an agent profile version
-     * @description "Restore version n" (ADR-0058): a new write whose snapshot equals version n's snapshot, landed as the profile's next version — history is append-only, so the restore gains a version rather than rewriting one. The write carries the caller's current optimistic-concurrency token and a stale token answers `409`; the client re-reads the version history and retries. The restore is a write, so it answers with the profile as the restore landed it (the new version).
+     * @description "Restore version n" (ADR-0058): a new write whose snapshot equals version n's snapshot, landed as the profile's next version — history is append-only, so the restore gains a version rather than rewriting one. The write carries the caller's current optimistic-concurrency token and a stale token answers `409`; the client re-reads the version history and retries. The restore is a write, so it answers with the profile as the restore landed it (the new version). A snapshot naming a permission mode the product does not record — or `autonomous_within_sandbox` while the profile's sandbox axis is not `required` (ADR-0069) — is refused `422` with code `permission_mode_invalid`.
      */
     post: operations["restoreAgentProfileVersion"];
     delete?: never;
@@ -1828,7 +1828,7 @@ export interface paths {
     };
     /**
      * List a project's runs
-     * @description Newest first (`created_at DESC, id DESC`, `runs_project_created_idx`). Carries `status`, both digests, `depth`, `parent_run_id` and the timing columns; a child run is listed beside its siblings with its `parent_run_id` set, because the tree route is the *relationship* view and this is the *activity* view. Viewer+. M4 has no pagination.
+     * @description Newest first (`created_at DESC, id DESC`, `runs_project_created_idx`). Carries `status`, both digests, `depth`, `parent_run_id` and the timing columns; a child run is listed beside its siblings with its `parent_run_id` set, because the tree route is the *relationship* view and this is the *activity* view. Every row carries `progress` — the run's top-level steps in definition order (bounded: 12 steps plus a `more` count), each folded to the strip's five coarse states (ADR-0070). Viewer+. M4 has no pagination.
      */
     get: operations["listProjectRuns"];
     put?: never;
@@ -2922,10 +2922,10 @@ export interface components {
       /** @description Registry id (M2 seeds `claude` and `codex`) — the executable argv the worker spawns, no shell expansion. */
       launcher_id: string;
       /**
-       * @description `ask` sends every ACP permission prompt to the current controller. `preapproved_within_sandbox` may only be set once an enforced sandbox is verified for that launcher (`04` "Permission policy", ADR-0009); both M2 seeds are `ask`. `deny` rejects prompts outright.
+       * @description `ask` sends every ACP permission prompt to the current controller. `preapproved_within_sandbox` may only be set once an enforced sandbox is verified for that launcher (`04` "Permission policy", ADR-0009); both M2 seeds are `ask`. `deny` rejects prompts outright. `autonomous_within_sandbox` (ADR-0069) is the mode of a launcher that never asks (pi-acp sends no `session/request_permission`): it makes **no** review claim — nothing is asked and no verdict row is produced — and may only be set beside `sandbox_enforcement: required`, because its promise is "runs without asking; the sandbox is the boundary".
        * @enum {string}
        */
-      permission_mode: "ask" | "preapproved_within_sandbox" | "deny";
+      permission_mode: "ask" | "preapproved_within_sandbox" | "deny" | "autonomous_within_sandbox";
       /** Format: date-time */
       created_at: string;
       /** @description The profile's current version (ADR-0058, migration 00014): the optimistic-concurrency token the row carries and that writes must echo, and the latest entry of the version history. Always present — a profile is never versionless. */
@@ -3017,7 +3017,11 @@ export interface components {
         name?: string;
         launcher_id?: string;
         /** @enum {string} */
-        permission_mode?: "ask" | "preapproved_within_sandbox" | "deny";
+        permission_mode?:
+          | "ask"
+          | "preapproved_within_sandbox"
+          | "deny"
+          | "autonomous_within_sandbox";
         apm_package_ref?: string | null;
         /** @enum {string|null} */
         apm_target?: "claude" | "codex" | null;
@@ -3420,7 +3424,7 @@ export interface components {
        * @enum {string|null}
        */
       decided_by_kind?: "user" | "policy" | null;
-      /** @description The deciding permission mode (`deny`, `preapproved_within_sandbox`); null unless `decided_by_kind` is `policy`. */
+      /** @description The deciding permission mode (`deny`, `preapproved_within_sandbox`, or — defensively, ADR-0069 — `autonomous_within_sandbox`, whose launcher is expected to send no prompt at all); null unless `decided_by_kind` is `policy`. */
       decided_by_policy?: string | null;
       /** @description The `option_id` chosen; null unless `status` is `decided`. */
       decision_option_id?: string | null;
@@ -3927,6 +3931,8 @@ export interface components {
      */
     ValidateResponse: {
       valid: boolean;
+      /** @description ADR-0066 publish-time WARNINGS — findings that refuse nothing. Today one code, `input_unfillable_by_trigger`: a required input with no default that an assigned trigger cannot fill, naming the trigger and the input. Assignments stay editable after publish, so this is a warning, not an error; the run start is the authority. */
+      warnings?: components["schemas"]["ValidateWarning"][];
       /** @description Digest over the canonical document (ADR-0021 § 5), null unless `valid` is true. */
       revision_digest?: string | null;
       /** @description Digest over the compiled plan, null unless `valid` is true. */
@@ -3936,6 +3942,31 @@ export interface components {
       errors: components["schemas"]["ValidateError"][];
       /** @description Non-error prose the tooling must surface (`aliases and merge keys were expanded before hashing; the export is regenerated`) and flags (`errors_truncated`). */
       notes: string[];
+    };
+    /**
+     * ValidateWarning
+     * @description One publish-time/validate-time WARNING (ADR-0066). Unlike a `ValidateError` it refuses nothing — the publish and the `valid` verdict stand — because assignments and triggers stay editable after publish. Today's code is `input_unfillable_by_trigger`: a required input with no default that this assigned trigger cannot fill, naming both. The run start remains the authority and refuses with a named error.
+     */
+    ValidateWarning: {
+      /** @description Stable machine code (`input_unfillable_by_trigger`). */
+      code: string;
+      /** @enum {string} */
+      source: "trigger";
+      message: string;
+      /**
+       * Format: uuid
+       * @description The assigned trigger this warning names (schedule or issue trigger).
+       */
+      trigger_id?: string;
+      /** @enum {string} */
+      trigger_kind?: "issue" | "schedule";
+      /**
+       * Format: uuid
+       * @description The project owning the assignment behind this trigger.
+       */
+      project_id?: string;
+      /** @description The run input the trigger cannot fill. */
+      input?: string;
     };
     /**
      * ValidateProblem
@@ -4280,6 +4311,26 @@ export interface components {
       published_by: string;
       /** Format: date-time */
       published_at: string;
+      /** @description The normalized typed-input declaration (ADR-0066), derived from `compiled_plan`'s `spec.inputs` and its `x-communication-input` annotations on every read — never a stored plan field, so the plan bytes and the digest a run pins are unchanged. Sorted by name; empty when the workflow declares no inputs. */
+      input_specs?: components["schemas"]["InputSpec"][];
+      /** @description ADR-0066 trigger-fill warnings recomputed at PUBLISH (the publish still succeeds — they are warnings). Absent on plain reads, which serve the stored record, not a recheck. */
+      warnings?: components["schemas"]["ValidateWarning"][];
+    };
+    /**
+     * InputSpec
+     * @description One typed workflow input (ADR-0066): the property's JSON Schema members (`required` from the array, `default` from the property) merged with its `x-communication-input` annotation (`type`, `label`, `help`). An un-annotated property is presented as `text`. `type` is deliberately an open string — a future type must not 400 an older client.
+     */
+    InputSpec: {
+      name: string;
+      /** @description `github_issue` | `branch` | `agent_profile` | `text` | `long_text` (ADR-0066); unknown values ride through unchanged. */
+      type: string;
+      /** @description Presentation string authored free text — the UI must escape it. */
+      label?: string;
+      /** @description Presentation string authored free text — the UI must escape it. */
+      help?: string;
+      required: boolean;
+      /** @description The property's JSON Schema `default` verbatim; absent when none. */
+      default?: unknown;
     };
     /**
      * DraftSummary
@@ -4341,6 +4392,8 @@ export interface components {
       created_at: string;
       /** Format: date-time */
       updated_at: string;
+      /** @description The typed inputs (ADR-0066) of the draft's LAST validated compiled plan; empty while the draft has never validated (an unvalidated document has no plan to derive from). */
+      input_specs?: components["schemas"]["InputSpec"][];
     };
     /**
      * DraftCreate
@@ -4549,6 +4602,8 @@ export interface components {
       inputs: {
         [key: string]: unknown;
       };
+      /** @description ADR-0066: the `github_issue`-typed run input this trigger fills with the matched issue object (`{number, title, body, url, repo}`) when it fires. Absent/empty means "not explicitly mapped": the single issue-typed input of the pinned revision is implied when there is exactly one, and a revision with several makes the write a `400 issue_input_ambiguous`. A schedule has no such member — a schedule fills no issue. */
+      issue_input?: string;
       enabled: boolean;
       /** Format: date-time */
       cursor_at?: string | null;
@@ -4584,6 +4639,8 @@ export interface components {
       inputs?: {
         [key: string]: unknown;
       };
+      /** @description ADR-0066: which `github_issue` input the matched issue fills — a run input name matching `^[a-z][a-z0-9_]{0,62}$`. Required when the pinned revision declares several (`400 issue_input_ambiguous`); refused with `400 issue_input_unmappable` when it names anything but one of them. Absent or empty means the implicit single-issue-input default. */
+      issue_input?: string;
       /** @default true */
       enabled: boolean;
     };
@@ -4603,6 +4660,8 @@ export interface components {
       inputs?: {
         [key: string]: unknown;
       };
+      /** @description ADR-0066. A run input name (matching `^[a-z][a-z0-9_]{0,62}$`, the vocabulary run inputs themselves use) sets the mapping; the empty string `""` clears it back to the implicit single-issue-input default (which the write refuses when the pinned revision declares several). Absent means unchanged, as on every other patchable member; a malformed name is `400 invalid_issue_input`. */
+      issue_input?: string;
       enabled?: boolean;
     };
     /**
@@ -4680,7 +4739,33 @@ export interface components {
     };
     /** RunSummaryList */
     RunSummaryList: {
-      runs: components["schemas"]["RunSummary"][];
+      runs: components["schemas"]["RunListRow"][];
+    };
+    /**
+     * RunListRow
+     * @description ADR-0070: the `RunSummary` row plus the bounded step progress the project run list's progress strip draws. `progress` is required here and appears nowhere else — the run detail omits it (its node route is the step authority) and the cross-project board carries ADR-0047's finer `steps` instead.
+     */
+    RunListRow: components["schemas"]["RunSummary"] & {
+      progress: components["schemas"]["RunProgress"];
+    };
+    /**
+     * RunProgress
+     * @description ADR-0070: a run's TOP-LEVEL steps for the list's 5-segment progress strip — the pinned plan's root-scope nodes in definition order (loop body nodes never surface; the loop's own row carries the loop's fate), capped at 12 segments with `more` counting the steps beyond the cap. An empty `steps` with `more` 0 means no top-level plan was readable from the pinned snapshot — never a fabricated segment. Derived per page in one set-based query (ADR-0063), never one per row.
+     */
+    RunProgress: {
+      steps: components["schemas"]["RunProgressStep"][];
+      /** @description Top-level steps beyond the 12-step cap; 0 when the strip already shows every step. */
+      more: number;
+    };
+    /**
+     * RunProgressStep
+     * @description ADR-0070: one top-level step projected onto the strip's five coarse states. `state` maps the node execution statuses: `succeeded` and `skipped` are settled without asking for attention (`done`), `leased` and `running` are visibly started (`running`), `waiting` is the gate hold, and any stop that did not complete — `failed`, `interrupted` or `cancelled` — is `failed`; `pending`/`ready` (and a planned node with no execution row yet, so a queued run is all-open) are `open`. A node with several execution rows (a loop) takes the state that most needs attention (failed > running > waiting > done > open).
+     */
+    RunProgressStep: {
+      /** @description The node id as declared in the pinned revision document. The plan carries no separate display label, so the id is the strip's label. */
+      node_id: string;
+      /** @enum {string} */
+      state: "done" | "running" | "waiting" | "failed" | "open";
     };
     /**
      * RunTrigger
@@ -6929,6 +7014,7 @@ export interface operations {
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
       409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
     };
   };
   patchAgentProfile: {

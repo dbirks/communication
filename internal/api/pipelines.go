@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbirks/communication/internal/pipelines/compiler"
 	"github.com/dbirks/communication/internal/pipelines/schema"
 )
 
@@ -293,6 +294,13 @@ type RevisionView struct {
 	Status            string          `json:"status"`
 	PublishedBy       string          `json:"published_by"`
 	PublishedAt       time.Time       `json:"published_at"`
+	// InputSpecs is the normalized typed-input declaration (ADR-0066) derived
+	// from CompiledPlan's spec.inputs on every read — never a stored plan
+	// field. Warnings rides the PUBLISH response only (omitempty): the
+	// publish-time trigger-fill findings (ADR-0066 § Decision) that refuse
+	// nothing but name what a run start will.
+	InputSpecs []compiler.InputSpec `json:"input_specs"`
+	Warnings   []ValidateWarning    `json:"warnings,omitempty"`
 }
 
 // DraftSummaryView is the DraftSummary schema.
@@ -333,6 +341,11 @@ type DraftView struct {
 	// document_text) and is never public — the Draft schema serves the
 	// author's bytes and the last validation body, not compiler output.
 	CanonicalDocument json.RawMessage `json:"-"`
+	// InputSpecs is the normalized typed-input declaration (ADR-0066) of the
+	// draft's LAST validated compiled plan; empty while the draft has never
+	// validated. The adapter derives it from the plan; the shape rule (empty
+	// array, never null) is normalizeDraftView's.
+	InputSpecs []compiler.InputSpec `json:"input_specs"`
 }
 
 // ValidateError is one § 2.2 finding. Source is loader|schema|compiler and
@@ -349,12 +362,104 @@ type ValidateError struct {
 // ValidateResponse is the § 2.2 validate body: the verdict, both digests on
 // success, the sorted findings, and the notes tooling must surface.
 type ValidateResponse struct {
-	Valid          bool            `json:"valid"`
-	RevisionDigest *string         `json:"revision_digest"`
-	PlanDigest     *string         `json:"plan_digest"`
-	DigestScope    string          `json:"digest_scope"`
-	Errors         []ValidateError `json:"errors"`
-	Notes          []string        `json:"notes"`
+	Valid          bool              `json:"valid"`
+	RevisionDigest *string           `json:"revision_digest"`
+	PlanDigest     *string           `json:"plan_digest"`
+	DigestScope    string            `json:"digest_scope"`
+	Errors         []ValidateError   `json:"errors"`
+	Notes          []string          `json:"notes"`
+	Warnings       []ValidateWarning `json:"warnings"`
+}
+
+// ValidateWarning is one publish-time/validate-time WARNING (ADR-0066 §
+// Decision): it refuses nothing — assignments stay editable after publish, so
+// a hard failure would refuse a workflow one edit from complete — and it
+// names the assigned trigger and the input the trigger cannot fill.
+type ValidateWarning struct {
+	Code        string `json:"code"`
+	Source      string `json:"source"`
+	Message     string `json:"message"`
+	TriggerID   string `json:"trigger_id,omitempty"`
+	TriggerKind string `json:"trigger_kind,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
+	Input       string `json:"input,omitempty"`
+}
+
+// CodeInputUnfillableByTrigger is the ADR-0066 publish/validate warning: a
+// required input with no default that this assigned trigger cannot fill.
+const CodeInputUnfillableByTrigger = "input_unfillable_by_trigger"
+
+// TriggerFillFacts is one assigned trigger's ADR-0066 fill facts: which run
+// inputs it can put a value behind when it fires. An issue trigger fills its
+// mapped github_issue input (explicit issue_input or the single-issue-input
+// default) plus every name its template inputs carry; a schedule fills only
+// the literal names of its own inputs object — a schedule fills no issue.
+type TriggerFillFacts struct {
+	Kind      string // "issue" | "schedule"
+	ID        string
+	ProjectID string
+	Name      string // human handle for the warning message (cron expr, repo#event)
+	Fills     []string
+}
+
+// TriggerFactStore is the OPTIONAL store face the publish-time warning needs
+// (serve wires it where the pipeline store already reaches the assignment
+// rows; a store that does not implement it simply reports no warnings).
+type TriggerFactStore interface {
+	ListPipelineTriggerFacts(ctx context.Context, c Caller, pipelineID string) ([]TriggerFillFacts, error)
+}
+
+// InputSpecsFromPlan derives the ADR-0066 typed-input list from a compiled
+// plan (or a plan-shaped draft validation output). An unparseable or planless
+// document yields the empty slice: the shape rule is "array, never null".
+func InputSpecsFromPlan(plan json.RawMessage) []compiler.InputSpec {
+	if len(plan) == 0 || string(plan) == "null" {
+		return []compiler.InputSpec{}
+	}
+	var p compiler.Plan
+	if err := json.Unmarshal(plan, &p); err != nil {
+		return []compiler.InputSpec{}
+	}
+	specs := p.InputSpecs()
+	if specs == nil {
+		return []compiler.InputSpec{}
+	}
+	return specs
+}
+
+// inputUnfillableWarnings is the ADR-0066 publish rule: for every REQUIRED
+// input with no default, each assigned trigger that cannot fill it produces
+// one WARNING naming the trigger and the input. Sorted (trigger, input) for a
+// stable body.
+func inputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFacts) []ValidateWarning {
+	warnings := []ValidateWarning{}
+	for _, spec := range specs {
+		if !spec.Required || spec.Default != nil {
+			continue
+		}
+		for _, fact := range facts {
+			fillable := false
+			for _, name := range fact.Fills {
+				if name == spec.Name {
+					fillable = true
+					break
+				}
+			}
+			if fillable {
+				continue
+			}
+			warnings = append(warnings, ValidateWarning{
+				Code:        CodeInputUnfillableByTrigger,
+				Source:      "trigger",
+				Message:     fmt.Sprintf("trigger %s (%s, %s) cannot fill required input %q and it has no default; a run it fires will be refused at the start (ADR-0066)", fact.Name, fact.Kind, fact.ID, spec.Name),
+				TriggerID:   fact.ID,
+				TriggerKind: fact.Kind,
+				ProjectID:   fact.ProjectID,
+				Input:       spec.Name,
+			})
+		}
+	}
+	return warnings
 }
 
 // --- validation limits -------------------------------------------------------
@@ -772,6 +877,17 @@ func (h *plHandlers) validateDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := capValidateErrors(outcome.Body)
+	if body.Valid {
+		// ADR-0066 publish-time warning: the draft's plan against every
+		// assignment of this pipeline and its triggers. A fact-read failure
+		// degrades to no warnings, loudly logged — the verdict a fix-all
+		// diagnostic must never hinge on a trigger-table read.
+		if facts, ok := h.triggerFacts(r.Context(), c, draft.PipelineID); ok {
+			body.Warnings = inputUnfillableWarnings(InputSpecsFromPlan(outcome.CompiledPlan), facts)
+		} else {
+			body.Warnings = []ValidateWarning{}
+		}
+	}
 	status := "invalid"
 	if body.Valid {
 		status = "valid"
@@ -888,8 +1004,34 @@ func (h *plHandlers) publishDraft(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, c, draftID, "pipeline.draft.publish", err)
 		return
 	}
+	if rev.CompiledPlan != nil {
+		// The same ADR-0066 warning, recomputed at publish so the publisher
+		// sees it even when the validation body predates a trigger edit. The
+		// publish itself still succeeded — it is a warning.
+		if facts, ok := h.triggerFacts(r.Context(), c, rev.PipelineID); ok {
+			rev.Warnings = inputUnfillableWarnings(InputSpecsFromPlan(rev.CompiledPlan), facts)
+		}
+	}
 	w.Header().Set("Location", "/api/v1/revisions/"+rev.ID)
 	WriteJSON(w, http.StatusCreated, normalizeRevisionView(rev))
+}
+
+// triggerFacts reads the ADR-0066 fill facts for one pipeline's assigned
+// triggers. ok=false means "no answer" — the store does not implement the
+// optional face, or the read failed (logged) — and the caller reports no
+// warnings rather than failing the validate or the publish.
+func (h *plHandlers) triggerFacts(ctx context.Context, c Caller, pipelineID string) ([]TriggerFillFacts, bool) {
+	ins, ok := h.store.(TriggerFactStore)
+	if !ok || pipelineID == "" {
+		return nil, false
+	}
+	facts, err := ins.ListPipelineTriggerFacts(ctx, c, pipelineID)
+	if err != nil {
+		h.log(nil).WarnContext(ctx, "could not read trigger fill facts for the ADR-0066 warning",
+			slog.String("pipeline_id", pipelineID), slog.Any("error", err))
+		return nil, false
+	}
+	return facts, true
 }
 
 // refuseUnpublishable answers a publish of a not-valid draft: the secret
@@ -1165,6 +1307,9 @@ func normalizeDraftView(d DraftView) DraftView {
 	if len(d.Validation) == 0 {
 		d.Validation = json.RawMessage("null")
 	}
+	if d.InputSpecs == nil {
+		d.InputSpecs = []compiler.InputSpec{}
+	}
 	return d
 }
 
@@ -1172,6 +1317,15 @@ func normalizeRevisionView(r RevisionView) RevisionView {
 	r.UILayout = m4OrEmptyJSON(r.UILayout)
 	r.CanonicalDocument = m4OrEmptyJSON(r.CanonicalDocument)
 	r.CompiledPlan = m4OrEmptyJSON(r.CompiledPlan)
+	if r.InputSpecs == nil {
+		// The ADR-0066 view: derived from the plan on every read, so a
+		// revision row written before the annotation era still answers (with
+		// the empty array when it declares no inputs).
+		r.InputSpecs = InputSpecsFromPlan(r.CompiledPlan)
+	}
+	if r.Warnings == nil {
+		r.Warnings = []ValidateWarning{}
+	}
 	return r
 }
 
@@ -1183,6 +1337,9 @@ func capValidateErrors(body ValidateResponse) ValidateResponse {
 	}
 	if body.Notes == nil {
 		body.Notes = []string{}
+	}
+	if body.Warnings == nil {
+		body.Warnings = []ValidateWarning{}
 	}
 	if len(body.Errors) > m4MaxValidateErrors {
 		body.Errors = body.Errors[:m4MaxValidateErrors]

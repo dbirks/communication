@@ -612,6 +612,15 @@ func PermissionPolicyFor(mode string) worker.PermissionPolicy {
 		return func(p domain.PermissionPrompt) worker.PermissionVerdict {
 			return pickKind(p, "deny", "reject_once", "reject_always")
 		}
+	case "autonomous_within_sandbox":
+		// ADR-0069: a never-asks launcher sends no prompt, so this arm is
+		// defensive. If a prompt does arrive, the MODE answers it and the
+		// decided_by line names the mode — the audit never reads it as
+		// consent from a person, and the mode itself claims no review: its
+		// promise is the enforced sandbox, verified before launch.
+		return func(p domain.PermissionPrompt) worker.PermissionVerdict {
+			return pickKind(p, "autonomous_within_sandbox", "allow_once", "allow_always")
+		}
 	case "ask":
 		return func(domain.PermissionPrompt) worker.PermissionVerdict {
 			return worker.PermissionVerdict{DecidedBy: "node_policy:ask_unattended"}

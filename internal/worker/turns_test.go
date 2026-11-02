@@ -641,6 +641,45 @@ func TestRecordedModesAllUsePrompting(t *testing.T) {
 	}
 }
 
+// TestAutonomousWithinSandboxRefusesWithoutTheUnitPath pins ADR-0069 on the
+// conversation side: autonomous_within_sandbox launches with NO prompting
+// mode, which is honest only inside the unit path's verified `required`
+// sandbox. A loop running without the unit service has no boundary to point
+// at, so the turn fails closed naming the mode and the missing `required`
+// enforcement — and nothing is launched. (The prompting modes' fail-closed
+// arm on a launcher with no verified prompting mode stays exactly as
+// TestRecordedModesAllUsePrompting proves it.)
+func TestAutonomousWithinSandboxRefusesWithoutTheUnitPath(t *testing.T) {
+	st := newFakeStore()
+	st.claims = []worker.Claim{testClaim2(t, "autonomous_within_sandbox")}
+	ff := &fakeFactory{}
+	startLoop(t, newLoop(t, fastCfg(), st, ff))
+	out := recv(t, st.finishing, "autonomous refusal")
+	if out.Status != events.TurnStatusFailed ||
+		!strings.Contains(out.Message, "autonomous_within_sandbox") ||
+		!strings.Contains(out.Message, "required") {
+		t.Fatalf("outcome = %+v, want failed naming autonomous_within_sandbox and required (ADR-0069)", out)
+	}
+	if ff.count() != 0 {
+		t.Fatalf("launched %d sessions without an enforced sandbox, want 0", ff.count())
+	}
+	// And the prompting modes keep refusing on a launcher with no prompting
+	// mode even though a sibling autonomous mode now exists (no unlock).
+	st2 := newFakeStore()
+	c2 := testClaim2(t, "preapproved_within_sandbox")
+	c2.LauncherID = "gemini"
+	st2.claims = []worker.Claim{c2}
+	ff2 := &fakeFactory{}
+	startLoop(t, newLoop(t, fastCfg(), st2, ff2))
+	out2 := recv(t, st2.finishing, "preapproved refusal on a never-asks launcher")
+	if out2.Status != events.TurnStatusFailed || !strings.Contains(out2.Message, "prompting mode for launcher gemini") {
+		t.Errorf("outcome = %+v, want the unchanged prompting refusal", out2)
+	}
+	if ff2.count() != 0 {
+		t.Errorf("launched %d sessions on the prompting-refusal arm", ff2.count())
+	}
+}
+
 // TestPermissionDenyIsAnsweredByPolicy proves a deny prompt is refused by
 // policy instead of waiting for a human: the request is opened (so
 // conversation.permission.requested is journaled) and closed `decided`

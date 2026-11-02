@@ -628,6 +628,7 @@ func TestPermissionPolicyForVerdicts(t *testing.T) {
 		wantDecBy string
 	}{
 		{"preapproved picks allow_once by kind", "preapproved_within_sandbox", offered, "allow_once", "node_policy:preapproved_within_sandbox"},
+		{"autonomous answers defensively as the mode, never a person (ADR-0069)", "autonomous_within_sandbox", offered, "allow_once", "node_policy:autonomous_within_sandbox"},
 		{"preapproved falls back to allow_always", "preapproved_within_sandbox",
 			domain.PermissionPrompt{Options: []domain.PermissionOption{{OptionID: "a", Kind: "allow_always"}}},
 			"allow_always", "node_policy:preapproved_within_sandbox"},

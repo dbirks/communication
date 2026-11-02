@@ -518,6 +518,10 @@ func m4DraftView(d Draft) api.DraftView {
 		UILayout: d.UILayout, Validation: d.Validation, DigestScope: d.DigestScope,
 		Version: d.Version, EditedBy: d.EditedBy, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 		CanonicalDocument: d.CanonicalDocument,
+		// ADR-0066: the typed inputs of the draft's LAST validated plan —
+		// empty while never validated, because an unvalidated document has no
+		// plan to derive from.
+		InputSpecs: api.InputSpecsFromPlan(d.CompiledPlan),
 	}
 	if d.RevisionDigest != "" {
 		s := d.RevisionDigest
@@ -927,6 +931,9 @@ func m4RevisionView(r PipelineRevision) api.RevisionView {
 		CompiledPlan: r.CompiledPlan, PlanDigest: r.PlanDigest,
 		SchemaDigest: r.SchemaDigest, CelEnvDigest: r.CelEnvDigest,
 		Status: r.Status, PublishedBy: r.PublishedBy, PublishedAt: r.PublishedAt,
+		// ADR-0066: derived from the stored plan on every read — never a
+		// plan field, so the bytes (and the digest a run pins) stand.
+		InputSpecs: api.InputSpecsFromPlan(r.CompiledPlan),
 	}
 }
 
