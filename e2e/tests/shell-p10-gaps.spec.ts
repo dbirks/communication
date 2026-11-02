@@ -349,14 +349,25 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await repoRow.getByRole("link", { name: repoName }).click();
     await expect(page).toHaveURL(new RegExp(`/p/${projectId}/${repoName}$`));
     await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
-    for (const testid of ["repo-header", "repo-workspaces", "repo-issues", "repo-runs"]) {
+    // Design 3a (handoff-repo-chat-nav): the page's sections are the header,
+    // the chat box, the activity feed (runs and chats mixed — the successor
+    // of WORK IN THIS REPO and RECENT RUNS), and the side column's WORKFLOWS
+    // and OPEN ISSUES panels.
+    for (const testid of [
+      "repo-header",
+      "repo-chat-box",
+      "repo-activity",
+      "repo-runs",
+      "repo-workflows",
+      "repo-issues",
+    ]) {
       await expect(page.getByTestId(testid)).toBeVisible({ timeout: 30_000 });
     }
     await checkShellScreen(page, "repository page", stopWatching);
     await evidence(
       page,
       "shell-p10-gaps-repository",
-      `from the project page the repo link "${repoName}" opened /p/${projectId}/${repoName} and the repository page renders its header, STATUS, ISSUES and RECENT RUNS sections`,
+      `from the project page the repo link "${repoName}" opened /p/${projectId}/${repoName} and the repository page renders its header, chat box, ACTIVITY (runs and chats), WORKFLOWS and OPEN ISSUES sections`,
     );
 
     await page.goto(`${BASE_URL}/p/${projectId}/nope`, { waitUntil: "domcontentloaded" });

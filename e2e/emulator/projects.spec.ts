@@ -339,7 +339,7 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
   }) => {
     const projectId = await m4ExitId(page);
 
-    await test.step("repo-1e — workflows on this repo, issues, work, recent runs", async () => {
+    await test.step("repo-1e — chat box, workflows on this repo, issues, activity, runs", async () => {
       await page.goto(`/p/${projectId}/app`);
       await expect(
         page.getByTestId("repo-page"),
@@ -355,17 +355,21 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
         "design 1e: the mono line carries the default branch",
       ).toHaveText("main");
       await expect(
-        page.getByTestId("repo-new-thread"),
-        "design 1e: `New thread here` is the secondary verb",
+        page.getByTestId("repo-chat-box"),
+        "design 3a: the header's `New thread here`/`Start run` pair retired into the chat box — the page's one line to start work",
       ).toBeVisible();
       await expect(
-        page.getByTestId("repo-start-run"),
-        "design 1e: `Start run` is the primary verb",
+        page.getByTestId("repo-chat-start"),
+        "design 3a: `Start` in the chat box is the page's chat-starting verb (repo-chat-start)",
       ).toBeVisible();
+      await expect(
+        page.getByTestId("repo-chat-input"),
+        "design 3a: the chat line names the repository in its placeholder",
+      ).toHaveAttribute("placeholder", /^Chat in app…/);
 
       await expect(
         page.getByTestId("repo-workflows"),
-        "design 1e: WORKFLOWS ON THIS REPO leads the left column",
+        "design 3a: the WORKFLOWS panel leads the side column",
       ).toBeVisible({ timeout: 30_000 });
       const pins = await listJson(page, `projects/${projectId}/assignments`);
       if (pins.length > 0) {
@@ -388,7 +392,7 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
 
       await expect(
         page.getByTestId("repo-issues"),
-        "design 1e: OPEN ISSUES is the second left-column panel",
+        "design 3a: OPEN ISSUES sits under WORKFLOWS in the side column",
       ).toBeVisible();
       // The lab's `app` remote is `file:///srv/m4/fixtures/app.git`. There is no
       // issue list to show, and the honest line is the EXPECTED state — design
@@ -400,19 +404,19 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
       ).toContainText(/need a GitHub repository/i);
 
       await expect(
-        page.getByTestId("repo-workspaces"),
-        "design 1e: WORK IN THIS REPO reports the workspaces touching it",
+        page.getByTestId("repo-activity"),
+        "design 3a: the activity feed (runs and chats mixed) replaced WORK IN THIS REPO — workspace info moved to the chat/run panels",
       ).toBeVisible();
       await expect(
         page.getByTestId("repo-runs"),
-        "design 1e: RECENT RUNS closes the right column",
+        "design 3a: the feed's runs panel is the successor of RECENT RUNS",
       ).toBeVisible();
       const runs = await listJson(page, `projects/${projectId}/runs`);
       if (runs.length === 0) {
         await expect(
           page.getByTestId("repo-runs-empty"),
-          "design 1e: a project that has never run says so in words",
-        ).toContainText(/no runs yet/i);
+          "design 3a: a repository with no runs or chats yet says so in words",
+        ).toContainText(/no runs or chats in .* yet/i);
       }
       await emu.screen("repo-1e", "repo");
     });

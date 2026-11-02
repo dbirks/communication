@@ -695,15 +695,19 @@ const REPO_HEADING: Landmark = {
   desc: "the repository's own title (the H1 — its name is data)",
   any: [{ testid: "repo-name" }, { role: "heading", level: 1 }],
 };
-const REPO_NEW_THREAD: Landmark = {
-  id: "repo-new-thread",
-  desc: "the 'New thread here' action",
-  any: [{ testid: "repo-new-thread" }, { role: "button", name: /new thread here/i }],
-};
-const REPO_START_RUN: Landmark = {
-  id: "repo-start-run",
-  desc: "the 'Start run' action",
-  any: [{ testid: "repo-start-run" }, { role: "button", name: /^start run$/i }],
+const REPO_CHAT_BOX: Landmark = {
+  id: "repo-chat-box",
+  // design 3a (handoff-repo-chat-nav): the header's `New thread here` +
+  // `Start run` pair retires — the page's one line to start work is the
+  // chat box: an input whose label names the repository, the profile chip
+  // and `Start` (repo-chat-start, ADR-0067). A run is started from the
+  // WORKFLOWS row's `Run` (REPO_ROW_RUN).
+  desc: "the 'Chat in <repo>…' box with its Start verb (design 3a)",
+  any: [
+    { testid: "repo-chat-box" },
+    { testid: "repo-chat-start" },
+    { role: "textbox", name: /^chat in /i },
+  ],
 };
 const REPO_WORKFLOWS_PANEL: Landmark = {
   id: "repo-workflows-panel",
@@ -768,14 +772,20 @@ const REPO_ISSUES_PANEL: Landmark = {
   desc: "the OPEN ISSUES panel",
   any: [{ testid: "repo-issues" }, { role: "heading", name: /^OPEN ISSUES/i }],
 };
-const REPO_WORK_PANEL: Landmark = {
-  id: "repo-work-panel",
-  desc: "the WORK IN THIS REPO panel",
-  any: [{ testid: "repo-workspaces" }, { role: "heading", name: /^WORK IN THIS REPO/i }],
+const REPO_ACTIVITY: Landmark = {
+  id: "repo-activity",
+  // design 3a (handoff-repo-chat-nav): WORK IN THIS REPO retires — the
+  // successor is the ACTIVITY list: runs and chats mixed in ONE panel
+  // under the filter chips, newest first.
+  desc: "the activity list (runs and chats mixed) that replaced WORK IN THIS REPO",
+  any: [{ testid: "repo-activity" }, { role: "group", name: /filter activity/i }],
 };
 const REPO_RUNS_PANEL: Landmark = {
   id: "repo-recent-runs-panel",
-  desc: "the RECENT RUNS panel",
+  // design 3a: the runs panel is the activity feed's own box now (`repo-runs`
+  // is the panel under the filter chips); the heading word `RECENT RUNS` went
+  // with the old right column, so the testid carries the landmark.
+  desc: "the runs panel (3a: the activity feed's box)",
   any: [{ testid: "repo-runs" }, { role: "heading", name: /^RECENT RUNS/i }],
 };
 /** The repository page's failed reads. `repo-1e not-found` says so inside the
@@ -1344,8 +1354,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2c schedule-trigger-saved": [
     REPO_PAGE,
     REPO_HEADING,
-    REPO_NEW_THREAD,
-    REPO_START_RUN,
+    REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_STARTS_WHEN,
     REPO_TRIGGER_TOGGLE,
@@ -1354,8 +1363,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2c issue-trigger-saved": [
     REPO_PAGE,
     REPO_HEADING,
-    REPO_NEW_THREAD,
-    REPO_START_RUN,
+    REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_STARTS_WHEN,
     REPO_TRIGGER_TOGGLE,
@@ -1388,8 +1396,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2e repo": [
     REPO_PAGE,
     REPO_HEADING,
-    REPO_NEW_THREAD,
-    REPO_START_RUN,
+    REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_LIBRARY_LINK,
     REPO_ADD_TRIGGER,
@@ -1398,8 +1405,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2e repo-empty": [
     REPO_PAGE,
     REPO_HEADING,
-    REPO_NEW_THREAD,
-    REPO_START_RUN,
+    REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_LIBRARY_LINK,
     REPO_WORKFLOWS_EMPTY,
@@ -1417,8 +1423,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "2e schedule-run-*": [
     REPO_PAGE,
     REPO_HEADING,
-    REPO_NEW_THREAD,
-    REPO_START_RUN,
+    REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_RUNS_PANEL,
   ],
@@ -1481,11 +1486,10 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "repo-1e repo": [
     REPO_PAGE,
     REPO_HEADING,
-    REPO_NEW_THREAD,
-    REPO_START_RUN,
+    REPO_CHAT_BOX,
     REPO_WORKFLOWS_PANEL,
     REPO_ISSUES_PANEL,
-    REPO_WORK_PANEL,
+    REPO_ACTIVITY,
     REPO_RUNS_PANEL,
   ],
   "repo-1e not-found": [

@@ -1015,8 +1015,11 @@ interface RepoLibraryPickerProps {
  * repo, pinned to that workflow's latest published revision (the
  * digest→uuid resolve route 13 supplies, then the one `POST /assignments`).
  * A refusal — the `409` "already assigned", a `404` revision — stays inline.
+ *
+ * Exported for the 3a side panel (`components/repo/RepoWorkflowPanel`), whose
+ * `+ add` meta opens exactly this dialog.
  */
-function RepoLibraryPicker({
+export function RepoLibraryPicker({
   open,
   onClose,
   projectId,
