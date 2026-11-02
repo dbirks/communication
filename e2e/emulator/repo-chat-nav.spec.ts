@@ -29,8 +29,9 @@
 //   rcn-2f — the side panel's `Make a workflow…` opens the assistant panel
 //            with the chat as context. The ask is the app's own canned line;
 //            what the model answers with is deliberately NOT asserted.
-//   rcn-1j — the Inputs tab: add an input, set its type to GitHub issue,
-//            mark it required, save the draft, and the WHO FILLS rows.
+//   rcn-1j — the Inputs tab: add a GitHub-issue input and a required text
+//            input no trigger fills, save the draft, and read the WHO FILLS
+//            rows — the by-hand line, the trigger's ✓ and the server's `!`.
 //   rcn-1k — Run from the repo's workflow row opens the form whose fields are
 //            built from the pinned revision's declared inputs. Cancelled —
 //            these journeys never start a run of this pin.
@@ -53,6 +54,7 @@
 // authors a labeled issue trigger on `server`, and seeds one repo-scoped
 // chat. Everything is pass-stamped and left behind; only the trigger is
 // paused at the end so its poller stops with the pass.
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
@@ -74,6 +76,12 @@ const GH_REPO = "server";
 // — no issue of it carries this pass's label, and the pass PAUSES the
 // trigger at the end anyway.
 const GH_URL = "https://github.com/octocat/Hello-World.git";
+/** The lab's `app.git` fixture branch. Its remote lives on the worker's own
+ * host (`file:///srv/m4/fixtures/app.git`), unreachable from the runner, so
+ * it cannot be read the way {@link remoteDefaultBranch} reads a network one;
+ * `main` is what the fixture is built with, and the journeys that mirror it
+ * prove it every pass. */
+const FILE_REPO_BRANCH = "main";
 const EMU_LABEL = `emu-rcn-${EMU_PASS_ID}`;
 const SEED_CHAT_TITLE = `Emu rcn chat ${EMU_PASS_ID}`;
 /** The chat-box prompt: its first line becomes the thread's title. */
@@ -88,6 +96,11 @@ const MAIL_QUESTION_TOKEN = `EMU-Q-${EMU_PASS_ID}`;
  * shows the question verbatim, and the asked chat's agent answers it
  * read-only on a real model. */
 const MAIL_QUESTION = `${MAIL_QUESTION_TOKEN} — what is in this repository? Answer in one short sentence.`;
+
+/** Escape a literal for a RegExp source (the 2f ask carries the chat's title). */
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /** What `waitForMailLink` settles with: the outgoing link's terminal facts. */
 interface MailLinkRow {
@@ -305,6 +318,30 @@ async function ensureProject(page: Page): Promise<void> {
   expect(ids.projectId, "the journey project has an id").toMatch(/^[0-9a-f-]{36}$/);
 }
 
+/** The branch a remote actually points HEAD at — the registration's
+ * `default_branch` must be this, not a guess. ADR-0017 D2 refuses to guess a
+ * branch name: the worker mirrors the remote and bases the checkout on the
+ * named branch, so a registration naming a branch the remote does not carry
+ * fails EVERY turn of EVERY chat in that project at workspace prep — seen as
+ * `mirror /repos/<project>/server.git has no branch "main" to base server on`
+ * when `server` was registered as `main` while octocat/Hello-World's HEAD
+ * symref is `master`. The refusal is the product's right answer; the seeding
+ * is what was wrong. */
+function remoteDefaultBranch(url: string): string {
+  const out = execFileSync("git", ["ls-remote", "--symref", url, "HEAD"], {
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  // `ref: refs/heads/master<TAB>HEAD` — the symref line names the branch;
+  // `\S+` stops at the tab, so the line's `HEAD` tail must not be anchored away.
+  const match = /^ref:\s+refs\/heads\/(\S+)/m.exec(out);
+  expect(
+    match,
+    `${url} answers \`git ls-remote --symref HEAD\` with a symbolic ref (got ${out.slice(0, 200)})`,
+  ).toBeTruthy();
+  return match![1];
+}
+
 /** alice: `web` on the lab's file:// fixture remote, `server` on a real
  * public GitHub repo (the issue trigger's honest home — the server refuses
  * one on a non-GitHub repo with `not_a_github_repository`, which is exactly
@@ -318,12 +355,12 @@ async function ensureRepos(page: Page): Promise<void> {
   const repos = (await list.json()) as { items?: { id: string; name: string }[] };
   const find = (name: string): string =>
     (repos.items ?? []).find((entry) => entry.name === name)?.id ?? "";
-  const create = async (name: string, gitUrl: string): Promise<string> => {
+  const create = async (name: string, gitUrl: string, defaultBranch: string): Promise<string> => {
     const res = await apiMutate(
       page,
       "POST",
       `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`,
-      { name, git_url: gitUrl, default_branch: "main" },
+      { name, git_url: gitUrl, default_branch: defaultBranch },
     );
     const body = await res.text();
     expect(
@@ -333,8 +370,15 @@ async function ensureRepos(page: Page): Promise<void> {
     return (JSON.parse(body) as { id: string }).id;
   };
   ids.fileRepoId =
-    find(FILE_REPO) !== "" ? find(FILE_REPO) : await create(FILE_REPO, "file:///srv/m4/fixtures/app.git");
-  ids.ghRepoId = find(GH_REPO) !== "" ? find(GH_REPO) : await create(GH_REPO, GH_URL);
+    find(FILE_REPO) !== ""
+      ? find(FILE_REPO)
+      : await create(FILE_REPO, "file:///srv/m4/fixtures/app.git", FILE_REPO_BRANCH);
+  // Read the remote's own HEAD rather than naming a branch by habit (see
+  // `remoteDefaultBranch`): this repo is the one the 3d agent turn mirrors.
+  ids.ghRepoId =
+    find(GH_REPO) !== ""
+      ? find(GH_REPO)
+      : await create(GH_REPO, GH_URL, remoteDefaultBranch(GH_URL));
 }
 
 /** alice: the pin — one assignment per (project, pipeline), resolved first. */
@@ -957,19 +1001,31 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
 
     await test.step("the assistant panel opens with the chat as context (2f)", async () => {
+      // The ask must name THIS thread: the shipped canned line (e211688) is
+      // `Turn the chat “<title>” into a workflow` — only a title-less chat
+      // falls back to `Turn this chat into a workflow` — so the chat's own
+      // title, read from the API, is what proves the note opened the panel on
+      // this conversation rather than on some generic subject. The model's
+      // answer is never asserted.
+      const conv = await page.request.get(`${EMU_BASE_URL}/api/v1/conversations/${ids.chatId}`);
+      expect(conv.status(), "the conversation read answers").toBe(200);
+      const chatTitle = (((await conv.json()) as { title?: string }).title ?? "").trim();
+      expect(chatTitle, "this journey's chat carries a title the ask can name").not.toBe("");
       await page.getByTestId("assistant-note-workflow-action-make_workflow").click();
       await expect(
         page.getByTestId("assistant-popover"),
         "design 2f: Make a workflow… opens the assistant panel",
       ).toBeVisible({ timeout: 30_000 });
       await expect(
-        // The app's canned ask for a TITLED chat is `Turn the chat “title”
-        // into a workflow` (the 2f review — pinned by the ui unit tests);
-        // the title-less chat keeps `Turn this chat into a workflow`. Match
-        // either form of the app's own line; the model's answer is never
-        // asserted.
-        page.getByText(/turn (the chat [^\n]*|this chat) into a workflow/i).first(),
-        "the note's ask travels to the panel (the app's own canned line — the model's answer is never asserted)",
+        page
+          .getByText(
+            new RegExp(
+              `turn the chat [^\n]*${escapeForRegex(chatTitle)}[^\n]* into a workflow`,
+              "i",
+            ),
+          )
+          .first(),
+        `the note's ask travels to the panel naming this chat (${chatTitle}) — the app's own canned line; the model's answer is never asserted`,
       ).toBeVisible({ timeout: 30_000 });
       await emu.screen("rcn-2f", "workflow-draft");
       await page.keyboard.press("Escape");
@@ -1304,12 +1360,60 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       ).toContainText(/required/i, { timeout: 30_000 });
     });
 
+    await test.step("add `ticket`, plain text, required — the input NO trigger fills", async () => {
+      // The warning this journey exists to read (ADR-0066's
+      // `input_unfillable_by_trigger`) fires for a REQUIRED input with NO
+      // DEFAULT that an assigned trigger cannot fill. It cannot fire for the
+      // template's own inputs here: the seeded trigger's `inputs` map carries
+      // `goal` and `repository` (ensureTrigger), so the server answers —
+      // correctly — that the trigger fills both. The honest way to see the
+      // warning is to author the input no trigger names, so the journey does.
+      await page.getByTestId("input-add").click();
+      await expect(page.getByTestId("input-add-form")).toBeVisible();
+      await page.getByTestId("input-add-name").fill("ticket");
+      await page.getByTestId("input-add-type").selectOption("text");
+      await page.getByTestId("input-add-save").click();
+      const row = page.getByTestId("input-item-ticket");
+      await expect(
+        row,
+        "design 1j: the second saved input joins the list",
+      ).toBeVisible({ timeout: 30_000 });
+      const editor = page.getByTestId("input-editor-ticket");
+      await expect
+        .poll(async () => {
+            if (!(await editor.isVisible().catch(() => false))) {
+              await row.locator('[data-testid^="input-row-"]').click({ timeout: 5_000 });
+              await editor.waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
+            }
+          return editor.isVisible().catch(() => false);
+        },
+        {
+          timeout: 30_000,
+          message: "design 1j: the new row expands into its editor",
+        },
+      ).toBe(true);
+      await page.getByTestId("input-required-ticket").click();
+      await page.getByTestId("input-save-ticket").click();
+      await expect(
+        page.getByTestId("input-editor-ticket"),
+        "the editor closes on a saved input",
+      ).toBeHidden({ timeout: 30_000 });
+      await expect(
+        row,
+        "design 1j: `ticket` is required and carries no default",
+      ).toContainText(/required/i, { timeout: 30_000 });
+    });
+
     await test.step("WHO FILLS THE INPUTS — by hand, and the labeled-issue trigger", async () => {
       await expect(page.getByTestId("who-fills"), "design 1j: the WHO FILLS panel").toBeVisible();
       await expect(
         page.getByTestId("who-fills-hand-line"),
         "design 1j: by hand, the form asks for the required inputs",
       ).toContainText(/form asks for/i, { timeout: 30_000 });
+      await expect(
+        page.getByTestId("who-fills-hand-line"),
+        "ADR-0066: the hand line names the required input with no default",
+      ).toContainText(/ticket/i, { timeout: 15_000 });
       const issueRow = page.locator('[data-testid^="who-fills-issue-"]').first();
       await expect(
         issueRow,
@@ -1319,17 +1423,28 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
         issueRow,
         "design 1j / ADR-0066: the single issue input is filled by the matched issue",
       ).toContainText(/← the labeled issue/i, { timeout: 15_000 });
-      // Review round 2: the seeded trigger fills only the issue input, and
-      // this workflow's `goal` and `repository` are required with no default
-      // — the validate the save just re-ran carries ONE server warning per
-      // (trigger, input), and each one gets its own `!` line on the row
-      // (ADR-0066's `input_unfillable_by_trigger`, the rule that covers
-      // every trigger kind, not just schedules).
+      // ADR-0066: the validate the save just re-ran carries ONE server
+      // warning per (trigger, required input with no default the trigger
+      // cannot fill), and each one gets its own `!` line under the row it
+      // names — the rule that covers every trigger kind, not just schedules.
+      // `ticket` is the input the server must complain about: no assigned
+      // trigger names it and it has no default. (`issue` rides along on the
+      // issue trigger's row for its own reason — the pin this trigger fires
+      // predates the issue input, so the pinned revision resolves no mapping
+      // for it. Asserted nowhere here on purpose: the panel's ✓ line above is
+      // the client's own single-issue-input reading.)
+      await expect(
+        page.locator('[data-testid^="who-fills-warn-"][data-testid$="-ticket"]').first(),
+        "ADR-0066: the required input no trigger fills shows the server's warning",
+      ).toContainText(/^! .*cannot fill required input "ticket"/i, { timeout: 30_000 });
+      // And the inputs the trigger DOES template get no warning: the panel
+      // may not invent one (4aa75fe — the seeded trigger's `inputs` map
+      // carries `goal` and `repository`, so both are fillable).
       for (const input of ["goal", "repository"]) {
         await expect(
-          page.locator(`[data-testid^="who-fills-warn-"][data-testid$="-${input}"]`).first(),
-          `ADR-0066: the unfilled required input ${input} shows the server's warning`,
-        ).toContainText(/^! .*(cannot fill required input|can't fill)/, { timeout: 15_000 });
+          page.locator(`[data-testid^="who-fills-warn-"][data-testid$="-${input}"]`),
+          `ADR-0066: the trigger templates ${input}, so it earns no warning`,
+        ).toHaveCount(0);
       }
       await expect(
         issueRow,

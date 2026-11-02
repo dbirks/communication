@@ -1524,9 +1524,14 @@ const RCN_ASSISTANT_COMPOSER: Landmark = {
 };
 const RCN_ASSISTANT_ASK: Landmark = {
   id: "rcn-assistant-workflow-ask",
-  desc: "the 'Turn this chat into a workflow' ask the note sent",
+  desc: "the canned workflow ask the note sent (the app's own line, titled or not)",
   host: "page",
-  any: [{ text: /turn this chat into a workflow/i }],
+  // Shipped copy (ui AssistantPopover `openAssistantWorkflowDraft`, e211688):
+  // a TITLED chat seeds `Turn the chat “title” into a workflow`; only a
+  // title-less one keeps `Turn this chat into a workflow`. The design owns
+  // the sentence, never the title inside it, so both forms satisfy the claim;
+  // which CHAT the line names is the journey's own assertion.
+  any: [{ text: /turn (the chat [^\n]*|this chat) into a workflow/i }],
 };
 
 /* Agent mail (rcn-3d, ADR-0072). The design's "gpt-5" model segment and its
