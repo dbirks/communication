@@ -96,6 +96,19 @@ type Advancer struct {
 // the replica's in-flight work) down with it.
 var ErrNoProgram = errors.New("runtime: no compiled program for this run")
 
+// ErrChildDepthExceeded is the named budget error a ChildResolver returns
+// (wrapped) when the host refuses to book a child beyond ADR-0023 § 7's
+// engine ceiling (maxChildDepth ≤ 2, runs_depth_check). It is a budget, not
+// an infra fault: the advancer turns it into the named terminal failure — the
+// invoking node fails with error_class/failed_cause child_depth_exceeded and
+// the run fails with failed_cause child_depth_exceeded, the same shape as
+// fanout_items_exceeded and node_execution_budget_exceeded — so the pass
+// SUCCEEDS at its job and the driver never retries the request (issue #96
+// looped it on every tick for 28 minutes).
+const ChildDepthExceeded = "child_depth_exceeded"
+
+var ErrChildDepthExceeded = errors.New("runtime: " + ChildDepthExceeded)
+
 // Advance runs the advancer pass over st at time now. Errors here are bugs
 // or impossible states (a row that violates its own machine); business
 // outcomes — failed nodes, exhausted loops — are STATE, not errors.
@@ -1319,6 +1332,9 @@ func (ac *advanceCtx) advanceInvoke(pn *compiler.Node, row *NodeExecution, scope
 			Depth: ac.st.Run.Depth + 1, Priority: ac.st.Run.Priority,
 		})
 		if err != nil {
+			if errors.Is(err, ErrChildDepthExceeded) {
+				return ac.failChildDepth(row)
+			}
 			return err
 		}
 		// The host resolved the authored name and started the child; this record
@@ -1345,6 +1361,26 @@ func (ac *advanceCtx) advanceInvoke(pn *compiler.Node, row *NodeExecution, scope
 		return nil
 	}
 	return ac.pollInvoke(pn, row, iv)
+}
+
+// failChildDepth is the maxChildDepth budget's terminal arm, the invoke twin
+// of advanceForEach's fanout_items_exceeded block: the requesting node fails
+// with the § 6 name in both its naming columns, then the run fails with the
+// SAME name in runs.failed_cause — not the generic
+// node_execution_failed:<key> step 5 would write — and the pass returns nil,
+// so the driver's next tick sees a terminal run and stops retrying (issue
+// #96). The budget fails the run whatever the node's failure policy says,
+// exactly like every other ADR-0023 § 7 budget.
+func (ac *advanceCtx) failChildDepth(row *NodeExecution) error {
+	if !NodeTerminal(row.Status) {
+		if err := row.Move(NodeFailed, ac.now); err != nil {
+			return err
+		}
+	}
+	row.ErrorClass = ChildDepthExceeded
+	row.FailedCause = ChildDepthExceeded
+	ac.changed = true
+	return ac.failRun(ChildDepthExceeded, "", row.InstanceKey)
 }
 
 func (ac *advanceCtx) pollInvoke(pn *compiler.Node, row *NodeExecution, iv Invocation) error {

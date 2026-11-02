@@ -1322,7 +1322,11 @@ func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest)
 	if req.Depth > 2 {
 		// runs_depth_check says the same thing in the database; saying it here
 		// turns a CHECK failure into a named failure (§ 6's child_depth_exceeded).
-		return runtime.ChildOutcome{}, fmt.Errorf("postgres: child_depth_exceeded at depth %d", req.Depth)
+		// Wrapping runtime.ErrChildDepthExceeded is what makes it TERMINAL: the
+		// advancer fails the node and the run with that name instead of letting
+		// the plain error abort the pass, which the driver would retry on every
+		// tick forever (issue #96).
+		return runtime.ChildOutcome{}, fmt.Errorf("postgres: child_depth_exceeded at depth %d: %w", req.Depth, runtime.ErrChildDepthExceeded)
 	}
 
 	// Idempotence per (parentRunID, nodeExecutionID): the invocation row is the
