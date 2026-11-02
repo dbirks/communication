@@ -18,7 +18,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const REPO = "dbirks/communication";
+// The repository defects are filed against. The module default is the
+// historical hard-coded one; EMU_ISSUES_REPO lets a runner (the
+// acceptance.yml `verification` job) name the repository the workflow is
+// running in, so a scheduled run files against its own home repo and a fork
+// cannot file against this one by accident.
+const REPO = process.env.EMU_ISSUES_REPO || "dbirks/communication";
 const LABEL = "emulator";
 const DRY_RUN = process.argv.includes("--dry-run");
 const arg = process.argv.slice(2).find((item) => !item.startsWith("-"));
