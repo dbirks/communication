@@ -4158,6 +4158,46 @@ def c4_dead_attempt_verdicts(a):
     ]
 
 
+# C4c's claim gate. A replacement attempt row is born with fencing_token at
+# the column DEFAULT 0 (migrations/00005_m4_pipelines.sql:272) — the schema
+# CHECK (00005:290-293) pins worker_id IS NULL ⇔ fencing_token = 0 and
+# worker_id IS NOT NULL ⇔ fencing_token > 0 — and the sequence draw happens
+# ONLY inside the claim UPDATE (internal/store/postgres/attempts.go's
+# runClaimSQL: nextval('attempt_fencing_seq'); runtimestore.go drawFence).
+# Comparing strictly-greater before the replacement has been CLAIMED reads a
+# 0 that was never meant to be compared: poll every 2s, capped at 120s, on
+# the claim column (worker_id IS NOT NULL), then assert exactly as strictly.
+C4C_CLAIM_POLL_S = 2.0
+C4C_CLAIM_POLL_CAP_S = 120.0
+
+
+def c4_replacement_rows(text):
+    """Parse C4c's replacement probe rows: status|claimed|token|started_at per
+    attempt other than the fenced one on the same node execution, where
+    claimed is (worker_id IS NOT NULL)::text — the claim marker that travels
+    in the SAME UPDATE as the token draw. Ragged/notice lines are dropped.
+    Pure."""
+    return [dict(zip(("status", "claimed", "token", "started_at"), r))
+            for r in psql_rows(text, 4)]
+
+
+def c4_replacement_claimed(rows):
+    """True iff at least one replacement row has been claimed (worker_id set),
+    i.e. its fencing_token has actually been drawn. Pure."""
+    return any(truthy(r.get("claimed")) for r in rows)
+
+
+def c4_replacement_claim_detail(rows):
+    """Loud observed state for the cap-exhausted failure: every replacement
+    row's status / claim / token / started_at columns. Pure."""
+    if not rows:
+        return "replacement rows=(none)"
+    return "replacement[" + ", ".join(
+        f"status={r.get('status')} claimed={r.get('claimed')} "
+        f"token={r.get('token')} started_at={r.get('started_at')}"
+        for r in rows) + "]"
+
+
 def c4_retry_verdicts(gt):
     """C4c's proof-of-rejection: the replacement attempt drew a STRICTLY greater
     token, which is what makes the refusal mechanical (01 invariant 3)."""
@@ -4781,15 +4821,42 @@ def c4():
                                              "error_class": "interrupted"}, body):
         check(label, ok, detail)
 
-    gt = psql(
-        f"SELECT max(b.fencing_token) > (SELECT fencing_token FROM attempts WHERE id = '{att}') "
-        f"FROM attempts b WHERE b.node_execution_id = (SELECT node_execution_id FROM attempts "
-        f"WHERE id = '{att}') AND b.id <> '{att}'")
     repl_n = psql(
         f"SELECT count(*)::text FROM attempts WHERE node_execution_id = "
         f"(SELECT node_execution_id FROM attempts WHERE id = '{att}') AND id <> '{att}'")
     check("C4c a replacement attempt exists for the same node execution", _int(repl_n) >= 1,
           f"replacement rows={_int(repl_n)}")
+    # The token is drawn from attempt_fencing_seq at CLAIM time only (see
+    # C4C_CLAIM_POLL_S above): an unclaimed replacement row sits at DEFAULT 0,
+    # so poll until one is claimed (worker_id set in the same UPDATE as the
+    # draw) before comparing — the C4a poll shortened the gap this check used
+    # to hide behind a fixed 45s sleep.
+    repl_sql = (f"SELECT status || '|' || (worker_id IS NOT NULL)::text || '|' || "
+                f"fencing_token::text || '|' || coalesce(started_at::text, 'NULL') "
+                f"FROM attempts b WHERE b.node_execution_id = (SELECT node_execution_id "
+                f"FROM attempts WHERE id = '{att}') AND b.id <> '{att}'")
+    repl = c4_replacement_rows(psql(repl_sql))
+    claim_deadline = time.time() + C4C_CLAIM_POLL_CAP_S
+    while time.time() < claim_deadline and not c4_replacement_claimed(repl):
+        time.sleep(min(C4C_CLAIM_POLL_S, max(0.0, claim_deadline - time.time())))
+        repl = c4_replacement_rows(psql(repl_sql))
+    claimed = c4_replacement_claimed(repl)
+    show(f"C4c replacement claim state after polling (cadence "
+         f"{C4C_CLAIM_POLL_S:.0f}s, cap {C4C_CLAIM_POLL_CAP_S:.0f}s)",
+         c4_replacement_claim_detail(repl))
+    if claimed:
+        gt = psql(
+            f"SELECT max(b.fencing_token) > (SELECT fencing_token FROM attempts WHERE id = '{att}') "
+            f"FROM attempts b WHERE b.node_execution_id = (SELECT node_execution_id FROM attempts "
+            f"WHERE id = '{att}') AND b.id <> '{att}'")
+    else:
+        check(f"C4c the replacement attempt was CLAIMED within the "
+              f"{C4C_CLAIM_POLL_CAP_S:.0f}s cap (fencing_token drawn)", False,
+              f"{c4_replacement_claim_detail(repl)} — fencing tokens are drawn from "
+              "attempt_fencing_seq only at claim time (00005 DEFAULT 0 + the "
+              "worker_id⇔token CHECK; attempts.go runClaimSQL), so an unclaimed "
+              "replacement row can never compare strictly greater")
+        gt = "f"  # keep the strict verdict below FAILING, loudly, with the row dumped
     for label, ok, detail in c4_retry_verdicts(gt):
         check(label, ok, detail)
 

@@ -400,6 +400,53 @@ class C4RetryTokenTest(unittest.TestCase):
             self.assertFalse(any(ok for _, ok, _ in m.c4_retry_verdicts(gt)), repr(gt))
 
 
+class C4cClaimGateTest(unittest.TestCase):
+    """The token comparison runs only once a replacement row is CLAIMED:
+    an unclaimed row sits at fencing_token DEFAULT 0 (00005:272) until
+    runClaimSQL draws attempt_fencing_seq in the same UPDATE that sets
+    worker_id — so worker_id IS NOT NULL is the claim marker the poll waits
+    on, and the cap must FAIL loudly with the observed row."""
+
+    def row(self, status="queued", claimed="f", token="0", started_at="NULL"):
+        return {"status": status, "claimed": claimed, "token": token,
+                "started_at": started_at}
+
+    def test_probe_parses_status_claim_token_started(self):
+        self.assertEqual(
+            m.c4_replacement_rows("queued|f|0|NULL\nleased|t|9|2026-01-01 00:00:00+00"),
+            [self.row(), {"status": "leased", "claimed": "t", "token": "9",
+                          "started_at": "2026-01-01 00:00:00+00"}])
+
+    def test_ragged_and_notice_lines_are_dropped_not_read_as_claims(self):
+        self.assertEqual(
+            m.c4_replacement_rows("NOTICE: whatever\nqueued|f|0\nleased|t|9|ts"),
+            [{"status": "leased", "claimed": "t", "token": "9", "started_at": "ts"}])
+
+    def test_unclaimed_replacement_never_opens_the_gate(self):
+        self.assertFalse(m.c4_replacement_claimed([]))
+        self.assertFalse(m.c4_replacement_claimed([self.row()]))
+        # DEFAULT 0 on an unclaimed row is exactly the 'f' C4c misread as a
+        # product bug — the gate keeps the strict verdict from being evaluated
+        # against it.
+        self.assertFalse(m.c4_replacement_claimed([self.row(status="queued")]))
+
+    def test_claimed_replacement_opens_the_gate(self):
+        self.assertTrue(m.c4_replacement_claimed(
+            [self.row(status="leased", claimed="t", token="9", started_at="ts")]))
+        self.assertTrue(m.c4_replacement_claimed(
+            [self.row(), self.row("succeeded", "t", "11", "ts")]))
+
+    def test_cap_exhaustion_detail_shames_the_row(self):
+        d = m.c4_replacement_claim_detail([self.row(status="queued")])
+        for needle in ("status=queued", "claimed=f", "token=0", "started_at=NULL"):
+            self.assertIn(needle, d)
+        self.assertEqual(m.c4_replacement_claim_detail([]), "replacement rows=(none)")
+
+    def test_gate_cadence_and_cap_match_the_brief(self):
+        self.assertEqual(m.C4C_CLAIM_POLL_S, 2.0)
+        self.assertEqual(m.C4C_CLAIM_POLL_CAP_S, 120.0)
+
+
 class C4ApiAgreementTest(unittest.TestCase):
     LEDGER = {"status": "interrupted", "error_class": "interrupted"}
     API = {"id": "a-1", "status": "interrupted", "error_class": "interrupted",
