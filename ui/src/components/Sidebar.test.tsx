@@ -668,6 +668,12 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
       timeout: READ_MS,
     });
     expect(within(flyout).getByText("Widgets")).toBeTruthy();
+    const project = within(flyout).getByRole("link", { name: "Widgets" });
+    // Review 3c: the flyout is what names the project, so the name wraps
+    // inside a 260px box instead of ellipsizing to `Widgets…`.
+    expect(flyout.style.width).toBe("260px");
+    expect(project.className).toContain("break-words");
+    expect(project.className).not.toContain("truncate");
     const repo = within(flyout).getByRole("link", { name: "acme-widgets" });
     expect(repo.getAttribute("href")).toBe(`/p/${P}/acme-widgets`);
     // The flyout is a `ds/Popover`: the pointer arrow is its own element.

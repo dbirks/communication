@@ -1023,7 +1023,10 @@ function Rail({
         onClose={closeNow}
         triggerRef={triggerRef}
         side="right"
-        width={212}
+        // 260, not 212: the flyout's project name is its whole content, and
+        // review 3c watched it cut to `Emu rcn rcn-rev3-1793644…`. The name
+        // wraps onto as many lines as it needs inside this width.
+        width={260}
         height={160}
         ariaLabel={flyoutProject ? `${flyoutProject.name} repositories` : "Project"}
         data-testid={flyoutProject ? `sidebar-rail-flyout-${flyoutProject.id}` : undefined}
@@ -1039,7 +1042,7 @@ function Rail({
             <div className="flex items-center gap-2 px-[6px] pb-[4px] pt-[2px]">
               <Link
                 to={routes.project(flyoutProject.id)}
-                className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink no-underline hover:underline"
+                className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-[17px] text-ink no-underline hover:underline"
               >
                 {flyoutProject.name}
               </Link>

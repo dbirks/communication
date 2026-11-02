@@ -791,7 +791,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await page.goto(`/p/${ids.projectId}/${FILE_REPO}`);
       const banner = page
         .getByRole("alert")
-        .filter({ hasText: /runs could not be loaded/i })
+        // review 3a item 2: the card says the break once — the page's own
+        // sentence, not the banner's three-line restatement.
+        .filter({ hasText: /couldn.t load this repository.s runs/i })
         .first();
       await expect(
         banner,

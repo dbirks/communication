@@ -1,5 +1,5 @@
-import { Fragment } from "react";
 import { Button } from "../ds/Button";
+import { MarkdownBody } from "../../lib/markdown";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
 import type { AssistantAnswerPayload, AssistantMessage } from "./types";
@@ -172,32 +172,6 @@ export function MessageList({
 }
 
 /**
- * `answer_markdown` as prose without a markdown dependency: paragraphs
- * split on blank lines, `` `code` `` spans set in mono — the same
- * renderer shape the command palette's answer uses. The text is never
- * turned into HTML, so nothing the model wrote can render as the app's
- * origin (ADR-0020).
- */
-function CodeSpans({ text }: { text: string }) {
-  return (
-    <>
-      {text.split(/`([^`]+)`/g).map((part, index) =>
-        index % 2 === 1 ? (
-          <code
-            key={index}
-            className="rounded-[3px] bg-fill px-[3px] py-[1px] font-mono text-[11.5px] text-ink"
-          >
-            {part}
-          </code>
-        ) : (
-          <Fragment key={index}>{part}</Fragment>
-        ),
-      )}
-    </>
-  );
-}
-
-/**
  * step glyphs the assistant's draft step list is built from (design 2f:
  * ✓ done in the chat, ● the step drafted to run next, · a later step).
  */
@@ -303,6 +277,15 @@ function StepList({ lines }: { lines: StepLine[] }) {
   );
 }
 
+/**
+ * The answer's prose: `answer_markdown` read as markdown (review 2f: the
+ * draft's `**Adapter swap → PR**` reached the person as asterisks). The
+ * app's own markdown reader (`lib/markdown.tsx`) draws the paragraphs,
+ * emphasis, code spans and lists — never HTML, so nothing the model wrote
+ * can render as the app's origin (ADR-0020). The draft step list is split
+ * out first: its ✓ / ● / · glyphs carry a state word, which is a states.ts
+ * contract this generic reader does not know about.
+ */
 function AnswerProse({ text }: { text: string }) {
   const paragraphs = text
     .split(/\n\s*\n/)
@@ -315,12 +298,11 @@ function AnswerProse({ text }: { text: string }) {
           chunk.type === "steps" ? (
             <StepList key={`${index}:${chunkIndex}`} lines={chunk.lines} />
           ) : (
-            <p
+            <MarkdownBody
               key={`${index}:${chunkIndex}`}
-              className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-ink"
-            >
-              <CodeSpans text={chunk.text} />
-            </p>
+              text={chunk.text}
+              paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
+            />
           ),
         ),
       )}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Minimize2, Plus } from "lucide-react";
 import { Button } from "../ds/Button";
 import { formatAge } from "../../lib/format";
 import { useSpeechToText } from "../../lib/speech";
@@ -518,14 +519,19 @@ export function AssistantPanel({
   // ui-newconv: the header's New conversation / Recent controls. The
   // popover's 400px header is tight (ASSISTANT + trust pill + expand +
   // esc hint), so the popover shortens the labels; the expanded header
-  // shows the full wording.
+  // shows the full wording — until phone width, where the expanded header
+  // has the same problem the popover's has (review 2f: `Shrink to popover`
+  // clipped to `S`/`po` and the chip wrapped onto three lines, so the row
+  // ran off the right edge of the screen). Below 640px both header buttons
+  // are icon-only with their wording in the accessible name and the tooltip.
   const newConversationButton = onNewConversation ? (
     <Button
       variant="ghost"
       compact
       data-testid="assistant-new-conversation"
-      title={popover ? "New conversation" : undefined}
-      aria-label={popover ? "New conversation" : undefined}
+      title="New conversation"
+      aria-label="New conversation"
+      className="shrink-0"
       onClick={onNewConversation}
     >
       {/* 2f review: the 400px (or 358px on a phone) popover header cannot fit
@@ -537,7 +543,10 @@ export function AssistantPanel({
           ＋<span className="sr-only"> New</span>
         </>
       ) : (
-        "New conversation"
+        <>
+          <Plus size={13} strokeWidth={2} aria-hidden className="shrink-0 min-[640px]:hidden" />
+          <span className="hidden min-[640px]:inline">New conversation</span>
+        </>
       )}
     </Button>
   ) : null;
@@ -593,6 +602,11 @@ export function AssistantPanel({
           {contextLabel ? (
             <span
               data-testid="assistant-opened-from"
+              title={`opened from ${contextLabel}`}
+              // The chip truncates (review 2f: `opened from threads` wrapped
+              // onto three lines and pushed the row off the screen). `min-w-0`
+              // is what lets a flex item give its width back.
+              className="min-w-0 max-w-[42%] truncate"
               style={{
                 fontFamily: "var(--font-mono)",
                 fontSize: 10.5,
@@ -606,17 +620,26 @@ export function AssistantPanel({
               {`opened from ${contextLabel}`}
             </span>
           ) : null}
-          <span style={{ flex: "1 1 auto" }} />
+          <span className="min-w-0 basis-0 grow" />
           {newConversationButton}
           {recentButton}
           {onShrink ? (
             <button
               type="button"
               data-testid="assistant-shrink"
+              aria-label="Shrink to popover"
+              title="Shrink to popover"
+              className="inline-flex shrink-0 items-center"
               style={headerButtonStyle}
               onClick={onShrink}
             >
-              Shrink to popover
+              <Minimize2
+                size={13}
+                strokeWidth={2}
+                aria-hidden
+                className="shrink-0 min-[640px]:hidden"
+              />
+              <span className="hidden min-[640px]:inline">Shrink to popover</span>
             </button>
           ) : null}
           <span className="font-mono text-[10px] text-faint">esc</span>

@@ -54,7 +54,8 @@ import { ProgressStrip } from "../ds/ProgressStrip";
 import { runStepSegments } from "./RepoActivity";
 import { triggerLine } from "./RepoWorkflowPanel";
 import { CONVERSATION_STATE, RUN_STATE, SHORT_WORD, STATES } from "../ds/states";
-import { ProblemBanner, Spinner } from "../Feedback";
+import { Spinner } from "../Feedback";
+import { RepoLoadError } from "./RepoLoadError";
 import { formatAge, shortId, testidOf } from "../../lib/format";
 import { routes } from "../../lib/routes";
 
@@ -541,20 +542,20 @@ export function RepoLanes({
   const laneErrors = (
     <>
       {runsError ? (
-        <ProblemBanner
+        <RepoLoadError
           error={runsError}
-          fallback="Runs could not be loaded."
-          subject="this repository's runs"
-          hint="The lanes below show the chats only — the runs lanes have no data to bucket."
+          sentence="Couldn't load this repository's runs."
+          note="The lanes below show the chats only — the runs lanes have no data to bucket."
+          testid="repo-lanes-runs-problem"
           retry={{ onClick: onRetryRuns, pending: retryingRuns, testid: "repo-lanes-runs-retry" }}
         />
       ) : null}
       {chatsError ? (
-        <ProblemBanner
+        <RepoLoadError
           error={chatsError}
-          fallback="Conversations could not be loaded."
-          subject="this repository's chats"
-          hint="The lanes below show the runs only — the chat rows have no data to bucket."
+          sentence="Couldn't load this repository's chats."
+          note="The lanes below show the runs only — the chat rows have no data to bucket."
+          testid="repo-lanes-chats-problem"
           retry={{
             onClick: onRetryChats,
             pending: retryingChats,

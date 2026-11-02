@@ -220,6 +220,29 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
     expect(slot.lastElementChild).toBe(standing);
   });
 
+  it("prints ONE Assistant heading for the whole section (review 2e)", () => {
+    // Two notes drew two `ASSISTANT` headings and the first note's `dismiss`
+    // sat hard against the second. The section owns the heading; a note inside
+    // the group keeps the word for assistive tech, off screen.
+    panel({
+      projectId: projectFixture.id,
+      assistantNote: (
+        <AssistantNote text="A real note from the notes store." onDismiss={() => {}} />
+      ),
+      workflowChat: chat,
+    });
+    const section = screen.getByTestId("side-panel-assistant");
+    expect(section.querySelectorAll("h2")).toHaveLength(1);
+    expect(section.querySelector("h2")?.textContent).toBe("Assistant");
+    expect(section.getAttribute("aria-labelledby")).toBe("side-panel-assistant-heading");
+    for (const title of section.querySelectorAll("[data-testid$=-title]")) {
+      expect(title.className).toContain("sr-only");
+    }
+    // The notes are spaced inside the section, and the slot keeps its own
+    // identity (the 2f journey's `last child is the standing link` test).
+    expect(screen.getByTestId("side-panel-assistant-slot").className).toContain("space-y-[14px]");
+  });
+
   it("does not duplicate itself when a note already offers make_workflow", () => {
     panel({
       projectId: projectFixture.id,

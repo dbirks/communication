@@ -2,11 +2,14 @@
  * The repo page's chat box (design 3a): one line with an ink border and the
  * hard `2px 2px 0` shadow — a placeholder that names the repository, an
  * agent-profile chip (secondary, 26px) that opens the `ds/Menu` picker, and a
- * primary `Start`. Below 640px the placeholder is the verb, not the repo
- * name: review 3a caught `Chat in web…` keeping the prefix while its hint
- * (`ask, plan, or paste an issue`) clipped away — at phone width the hint
- * itself is the shorter sentence, and the repository the chat is born bound
- * to is already the page's own title.
+ * primary `Start`. Below 640px the row WRAPS: the input takes the whole first
+ * line and the chip and `Start` ride a second line under it, because review
+ * 3a watched the single-line phone row clip the hint to
+ * `Ask, plan or paste an iss` — the agent chip and `Start` left no room for
+ * the one sentence that tells a person what to type. At that width the
+ * placeholder is the verb, not the repo name (`Chat in web…` kept the prefix
+ * while its hint clipped away), and the repository the chat is born bound to
+ * is already the page's own title.
  *
  * Start creates a conversation BORN BOUND to this repository (ADR-0067: the
  * POST carries `repository` — the name — plus the chosen profile and the typed
@@ -37,10 +40,11 @@ export interface RepoChatBoxProps {
   prefill?: { text: string };
 }
 
-/** Below 640px the line's own box shrinks to (almost) nothing beside the
- * profile chip and `Start`, and the long placeholder clips mid-word — the
- * one width question this component asks, asked the same way `Shell` asks
- * its own (`matchMedia`, so CSS and mount logic never disagree). */
+/** Below 640px one line cannot hold the input, the profile chip and `Start`
+ * with the hint still readable, so the row wraps and the two controls take a
+ * second line. The wrap is asked the same way `Shell` asks its own widths
+ * (`matchMedia`, so CSS and mount logic never disagree), and the same answer
+ * picks the shorter placeholder — at phone width the hint IS the sentence. */
 const PHONE_WIDTH_QUERY = "(max-width: 639.98px)";
 
 function usePhoneWidth(): boolean {
@@ -124,7 +128,12 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
 
   return (
     <div data-testid="repo-chat-box">
-      <div className="flex items-stretch gap-2 rounded-[3px] border border-ink bg-surface p-[5px] shadow-(--shadow-raised)">
+      <div
+        className={`flex items-stretch gap-2 rounded-[3px] border border-ink bg-surface p-[5px] shadow-(--shadow-raised) ${
+          phoneWidth ? "flex-wrap" : "flex-nowrap"
+        }`}
+        data-testid="repo-chat-row"
+      >
         <input
           ref={inputRef}
           value={text}
@@ -141,7 +150,13 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
               ? "Ask, plan or paste an issue…"
               : `Chat in ${repositoryName}… ask, plan, or paste an issue`
           }
-          className="min-w-0 flex-1 bg-transparent px-2 text-[13px] text-ink outline-none placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className={`min-w-0 bg-transparent px-2 text-[13px] text-ink outline-none placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+            // The wrap: a phone input asks for the whole first line (`w-full`
+            // is what pushes the chip and `Start` onto the second one), so the
+            // hint reads instead of stopping mid-word. From 640px the line is
+            // the design's single row and the input only takes what is left.
+            phoneWidth ? "w-full grow" : "flex-1"
+          }`}
           data-testid="repo-chat-input"
         />
         <button
@@ -151,7 +166,10 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
           aria-expanded={menuOpen}
           disabled={items.length === 0}
           onClick={() => setMenuOpen(true)}
-          className="ds-btn ds-btn--secondary ds-btn--compact inline-flex shrink-0 items-center gap-1 rounded-[4px] font-mono text-[10.5px]"
+          className={`ds-btn ds-btn--secondary ds-btn--compact inline-flex shrink-0 items-center gap-1 rounded-[4px] font-mono text-[10.5px] ${
+            // The second line keeps the design's right-hand alignment.
+            phoneWidth ? "ml-auto" : ""
+          }`}
           data-testid="repo-chat-profile"
         >
           {chipLabel}

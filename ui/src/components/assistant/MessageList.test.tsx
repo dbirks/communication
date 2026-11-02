@@ -203,6 +203,35 @@ describe("MessageList", () => {
     expect(options.some((o) => !o.hasAttribute("disabled"))).toBe(true);
   });
 
+  it("reads the answer as markdown — bold is bold, not asterisks (review 2f)", () => {
+    const answer = (text: string): AssistantMessage => ({
+      ...assistantMessage(),
+      payload: {
+        ...assistantMessage().payload,
+        answer_markdown: text,
+        links: [],
+      } as AssistantMessage["payload"],
+    });
+    render(
+      <MessageList
+        messages={[answer("Drafting **EMU-RCN reply → OK** in `web` for **alice**.")]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const prose = screen.getByTestId("assistant-answer");
+    // Review 2f: the draft's `**EMU-RCN reply → OK**` reached the person as
+    // markup. The emphasis renders, the markers do not.
+    expect([...prose.querySelectorAll("strong")].map((s) => s.textContent)).toEqual([
+      "EMU-RCN reply → OK",
+      "alice",
+    ]);
+    expect(prose.textContent).not.toContain("**");
+    expect(prose.querySelector("code")?.textContent).toBe("web");
+  });
+
   it("renders a draft step list with its progress glyphs (2f)", () => {
     const steps = (): AssistantMessage => ({
       id: "m-steps",

@@ -212,6 +212,42 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     expect(onNew).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Review 2f, item 6: at 390 the expanded header ran off the right edge —
+   * `Shrink to popover` clipped to `S`/`po` and the `opened from …` chip
+   * wrapped onto three lines. Both header controls are now icon-plus-label:
+   * below 640px only the glyph is on screen, and the wording stays in the
+   * accessible name and the tooltip. jsdom applies no media query, so the
+   * contract asserted here is the DOM one the CSS switches between.
+   */
+  it("expanded: both header controls name themselves, and the chip truncates", () => {
+    render(
+      <AssistantPanel
+        variant="expanded"
+        {...panelProps}
+        contextLabel="threads"
+        onNewConversation={() => {}}
+        onShrink={() => {}}
+      />,
+    );
+    const shrink = screen.getByTestId("assistant-shrink") as HTMLButtonElement;
+    expect(shrink.getAttribute("aria-label")).toBe("Shrink to popover");
+    expect(shrink.title).toBe("Shrink to popover");
+    // The phone's glyph is an SVG (it adds no text to the button's name), and
+    // the wording only shows from 640px up.
+    expect(shrink.querySelector("svg")).toBeTruthy();
+    expect(shrink.querySelector("span")?.className).toContain("min-[640px]:inline");
+
+    const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
+    expect(button.getAttribute("aria-label")).toBe("New conversation");
+    expect(button.querySelector("svg")).toBeTruthy();
+
+    const chip = screen.getByTestId("assistant-opened-from");
+    expect(chip.textContent).toBe("opened from threads");
+    expect(chip.className).toContain("truncate");
+    expect(chip.title).toBe("opened from threads");
+  });
+
   it("Recent lists the conversations by title + age and switches on click", () => {
     const onSwitch = vi.fn();
     renderPanel({

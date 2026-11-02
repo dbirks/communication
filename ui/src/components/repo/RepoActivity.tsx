@@ -10,6 +10,10 @@
  * ONLY when the run data really carries per-step states — nothing is ever
  * invented. Every row links to its run or thread.
  *
+ * A failed read is owned by `RepoLoadError`: one plain sentence, the server's
+ * problem document behind `Details`, and the `Retry` (review 3a item 2 — the
+ * shared banner said the same fact three times on this card).
+ *
  * Below 640px the 120px workflow/agents column would squeeze the title to
  * a stub, so it drops out of the grid and re-prints as the row's second
  * line, under the title (design 3a reflow); and the status word after the
@@ -21,7 +25,8 @@ import type { ConversationSummary, RunSummary } from "../../api/types";
 import { Link } from "react-router";
 import { CONVERSATION_STATE, RUN_STATE, SHORT_WORD, STATES, type StateName } from "../ds/states";
 import { ProgressStrip, type ProgressSegment } from "../ds/ProgressStrip";
-import { ProblemBanner, Spinner } from "../Feedback";
+import { Spinner } from "../Feedback";
+import { RepoLoadError } from "./RepoLoadError";
 import { formatAge, shortId, testidOf } from "../../lib/format";
 import { routes } from "../../lib/routes";
 
@@ -233,10 +238,10 @@ export function RepoActivity({
         ) : null}
         {runsError ? (
           <div className="p-[10px]">
-            <ProblemBanner
+            <RepoLoadError
               error={runsError}
-              fallback="Runs could not be loaded."
-              subject="this repository's runs"
+              sentence="Couldn't load this repository's runs."
+              testid="repo-runs-problem"
               retry={{
                 onClick: onRetryRuns,
                 pending: retryingRuns,
@@ -247,10 +252,10 @@ export function RepoActivity({
         ) : null}
         {chatsError ? (
           <div className="p-[10px]">
-            <ProblemBanner
+            <RepoLoadError
               error={chatsError}
-              fallback="Conversations could not be loaded."
-              subject="this repository's chats"
+              sentence="Couldn't load this repository's chats."
+              testid="repo-activity-chats-problem"
               retry={{
                 onClick: onRetryChats,
                 pending: retryingChats,

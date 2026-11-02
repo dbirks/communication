@@ -11,6 +11,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { buildActivityRows, RepoActivity, runStepSegments } from "./RepoActivity";
 import { RepoChatBox } from "./RepoChatBox";
 import { AssistantNotes } from "./AssistantNotes";
@@ -200,6 +201,9 @@ describe("the chat box placeholder at phone width", () => {
     renderBox(1280);
     const input = screen.getByTestId("repo-chat-input") as HTMLInputElement;
     expect(input.placeholder).toBe("Chat in web… ask, plan, or paste an issue");
+    // One row, one line: the input takes the space the controls leave.
+    expect(screen.getByTestId("repo-chat-row").className).toContain("flex-nowrap");
+    expect(input.className).toContain("flex-1");
   });
 
   it("shortens to the verb below 640 — the hint fits instead of clipping away", () => {
@@ -210,6 +214,99 @@ describe("the chat box placeholder at phone width", () => {
     // form; the repository stays in the accessible name (aria-label).
     expect(input.placeholder).toBe("Ask, plan or paste an issue…");
     expect(input.getAttribute("aria-label")).toBe("Chat in web");
+  });
+
+  it("gives the hint the whole first line below 640 — the controls wrap under it", () => {
+    // Review 3a, item 1: even the short hint clipped to `Ask, plan or paste an
+    // iss` because the chip and `Start` shared the row. The row wraps and the
+    // input asks for the full width, so the hint reads whole and the two
+    // controls ride the second line.
+    renderBox(390);
+    const input = screen.getByTestId("repo-chat-input") as HTMLInputElement;
+    expect(screen.getByTestId("repo-chat-row").className).toContain("flex-wrap");
+    expect(input.className).toContain("w-full");
+    expect(input.className).not.toContain("flex-1");
+    expect(screen.getByTestId("repo-chat-profile").className).toContain("ml-auto");
+  });
+});
+
+/** The problem+json a failed read answers, as the API client carries it. */
+function serverProblem(title: string, status: number, detail: string): ApiError {
+  const body = { type: "about:blank", title, status, detail };
+  return new ApiError(body, body);
+}
+
+describe("the feed's load-failure card (review 3a, item 2)", () => {
+  function renderActivityWithErrors(): void {
+    render(
+      <MemoryRouter>
+        <RepoActivity
+          rows={[]}
+          nameFor={() => null}
+          profileNameFor={() => null}
+          meId={null}
+          repositoryName="web"
+          projectId={projectFixture.id}
+          runsPending={false}
+          runsError={serverProblem("Internal Server Error", 500, "emulated failure")}
+          onRetryRuns={() => {}}
+          retryingRuns={false}
+          chatsPending={false}
+          chatsError={null}
+          onRetryChats={() => {}}
+          retryingChats={false}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  it("says the break ONCE, and keeps the server's words and the Retry", () => {
+    renderActivityWithErrors();
+    const card = screen.getByTestId("repo-runs-problem");
+    expect(screen.getByTestId("repo-runs-problem-summary").textContent).toBe(
+      "Couldn't load this repository's runs.",
+    );
+    // The three-sentence banner is the defect: neither the call site's
+    // restatement nor the generic status sentence may ride the card.
+    expect(card.textContent).not.toContain("Runs could not be loaded");
+    expect(card.textContent).not.toContain("The server had a problem");
+    // Evidence stays in the DOM behind the disclosure, and the verb stays.
+    expect(screen.getByTestId("repo-runs-problem-server").textContent).toContain(
+      "Internal Server Error: emulated failure",
+    );
+    expect(screen.getByTestId("repo-runs-retry").textContent).toBe("Retry");
+    // A state is never colour alone: the bar carries glyph + word.
+    expect(card.querySelector("[data-ds-bar]")?.textContent).toContain("COULDN'T LOAD");
+  });
+
+  it("re-asks for the failed read from the card's Retry", () => {
+    const onRetryRuns = vi.fn();
+    render(
+      <MemoryRouter>
+        <RepoActivity
+          rows={[]}
+          nameFor={() => null}
+          profileNameFor={() => null}
+          meId={null}
+          repositoryName="web"
+          projectId={projectFixture.id}
+          runsPending={false}
+          runsError={serverProblem("Not Found", 404, "")}
+          onRetryRuns={onRetryRuns}
+          retryingRuns={false}
+          chatsPending={false}
+          chatsError={null}
+          onRetryChats={() => {}}
+          retryingChats={false}
+        />
+      </MemoryRouter>,
+    );
+    // A refusal is a fact, not a break: no collapsed server quote, and the
+    // card still answers with its one sentence.
+    expect(screen.queryByTestId("repo-runs-problem-details")).toBeNull();
+    expect(screen.getByTestId("repo-runs-problem-summary").textContent).toBe(
+      "Couldn't load this repository's runs.",
+    );
   });
 });
 

@@ -5,6 +5,7 @@
  * nothing. Acting on a note (2f's "Make a workflow…") and dismissal are the
  * caller's: this only draws the text and the buttons it was handed.
  */
+import { createContext, useContext } from "react";
 import type { ReactNode } from "react";
 
 export interface AssistantNoteAction {
@@ -50,15 +51,45 @@ export function makeWorkflowNoteAction(onSelect: () => void): AssistantNoteActio
   return { id: MAKE_WORKFLOW_ACTION_ID, label: "Make a workflow…", onSelect };
 }
 
+/**
+ * The rail's ONE ASSISTANT section (review 2e: two notes stacked two
+ * `ASSISTANT` headings, and the first note's `dismiss` butted against the
+ * second one). A note renders its own heading by default — on a page that
+ * shows a single note that heading IS the section — but inside a group the
+ * group owns the heading and the notes are its rows. The provider adds no
+ * element of its own, so a caller that measures the slot's children (the
+ * 2e rail's standing link must be the last one) sees exactly the notes.
+ */
+const GroupedAssistantNotes = createContext(false);
+
+/** Wraps stacked notes so the group's own heading is the only `ASSISTANT`
+ * the rail prints. It renders no element: the caller's slot keeps its
+ * children exactly as handed (the 2e rail needs its standing note to stay
+ * the slot's last element). */
+export function AssistantNoteGroup({ children }: { children: ReactNode }) {
+  return <GroupedAssistantNotes.Provider value={true}>{children}</GroupedAssistantNotes.Provider>;
+}
+
 export function AssistantNote({
   text,
   actions = [],
   onDismiss,
   testId = "assistant-note",
 }: AssistantNoteProps) {
+  const grouped = useContext(GroupedAssistantNotes);
   return (
     <div data-testid={testId} className="min-w-0 space-y-[6px]">
-      <p className="font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted">
+      <p
+        data-testid={`${testId}-title`}
+        className={
+          grouped
+            ? // In a group the section heading above already says `Assistant`;
+              // the note keeps the word for assistive tech, as its own row
+              // label, but on screen the rail prints the heading once.
+              "sr-only"
+            : "font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted"
+        }
+      >
         Assistant
       </p>
       <p className="text-[12.5px] leading-[1.5] text-ink">{text}</p>

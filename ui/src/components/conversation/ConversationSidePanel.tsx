@@ -34,13 +34,22 @@
  *   duplicated when one of the rendered notes already offers a
  *   `make_workflow` action: AssistantNote stamps every action button with
  *   `data-action-kind`, and the panel reads that marker back off the slot.
+ *   The section carries the ONE `Assistant` heading (review 2e: two notes
+ *   printed two headings and the first note's `dismiss` butted against the
+ *   second); the notes inside are grouped, so they are rows of one section
+ *   with room between them.
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { ReactNode } from "react";
 import { routes } from "../../lib/routes";
 import { STATES, type StateName } from "../ds/states";
-import { AssistantNote, MAKE_WORKFLOW_ACTION_ID, makeWorkflowNoteAction } from "./AssistantNote";
+import {
+  AssistantNote,
+  AssistantNoteGroup,
+  MAKE_WORKFLOW_ACTION_ID,
+  makeWorkflowNoteAction,
+} from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { agentLabel } from "./ConversationTranscript";
 import type { components } from "../../api/schema";
@@ -338,9 +347,16 @@ export function ConversationSidePanel({
         </section>
       ) : null}
       {slot ? (
-        <div data-testid="side-panel-assistant-slot" ref={slotBoxRef}>
-          {slot}
-        </div>
+        <section aria-labelledby="side-panel-assistant-heading" data-testid="side-panel-assistant">
+          <SectionTitle htmlFor="side-panel-assistant-heading">Assistant</SectionTitle>
+          <div
+            data-testid="side-panel-assistant-slot"
+            ref={slotBoxRef}
+            className="mt-[8px] min-w-0 space-y-[14px]"
+          >
+            <AssistantNoteGroup>{slot}</AssistantNoteGroup>
+          </div>
+        </section>
       ) : null}
     </div>
   );

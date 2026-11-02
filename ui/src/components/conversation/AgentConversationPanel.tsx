@@ -521,11 +521,12 @@ export function AgentConversationComposer({
             disabled={!isController}
             aria-describedby={turnInProgress || !isController ? explainerId : undefined}
             placeholder={
-              isController
-                ? agentMailOn
-                  ? "Ask the agent for something… @ another repo's agent to ask it"
-                  : "Ask the agent for something…"
-                : nonControllerPlaceholder
+              // Review 2e: the pinned composer is ONE row tall, so a long
+              // placeholder did not wrap — it was cut at the box's edge
+              // (`Ask the agent for`). The ask is named by the field's own
+              // label; the `@` affordance is the line under the box
+              // (`composer-mail-hint`), which has the room to say it whole.
+              isController ? "Ask the agent…" : nonControllerPlaceholder
             }
           />
           <Menu
