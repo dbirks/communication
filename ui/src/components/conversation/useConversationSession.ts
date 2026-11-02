@@ -14,11 +14,14 @@
  * sessions for one conversation would open two streams.
  */
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
+import { apiFetch } from "../../api/client";
 import { useActorNames, mergeLookups, nameLookup, type NameHint } from "../../api/actors";
 import { humanIdsIn } from "../../api/names";
-import { useConversationEvents, type ConnectionState } from "../../api/events";
+import { M2_EVENT_TYPES, useEventStream, type ConnectionState } from "../../api/events";
 import {
+  invalidateConversation,
+  queryKeys,
   useConversation,
   useCancelConversationTurn,
   useDecideConversationPermission,
@@ -72,11 +75,55 @@ export interface ConversationSession {
   onDecide: (requestId: string, option: PermissionOption) => void;
   decidingRequestId: string | null;
   sendMessage: ReturnType<typeof usePostConversationMessage>;
+  /**
+   * ADR-0068: `POST .../switch-agent` — set the agent profile the NEXT turn
+   * runs on. Controller only, between turns; a non-controller is `403`, an
+   * open turn `409`, and the landed switch journalls the divider row. On
+   * success the response (the fresh conversation, `agents` ranges included)
+   * replaces the cached read.
+   */
+  switchAgent: UseMutationResult<Conversation, Error, { agent_profile_id: string }>;
   takeControl: ReturnType<typeof useTakeConversationControl>;
   returnControl: ReturnType<typeof useReturnConversationControl>;
   cancelTurn: ReturnType<typeof useCancelConversationTurn>;
   decide: ReturnType<typeof useDecideConversationPermission>;
 }
+
+/**
+ * The stream types this session listens to: the shared M2 transcript list
+ * plus `conversation.agent.switched` (ADR-0068, main 219faf5). The hook in
+ * `api/events.ts` pins its own `M2_EVENT_TYPES`, and an `EventSource`
+ * delivers a named type only to a registered listener — so until that
+ * whitelist is widened at its own file, a consumer of `useConversationEvents`
+ * would never see the divider frame at all. This composes the same stream
+ * with the same rules plus the ADR-0068 row; when `api/events.ts` lands the
+ * type, this list and `useConversationEvents` can collapse back into one.
+ */
+const CONVERSATION_STREAM_TYPES: readonly string[] = [
+  ...M2_EVENT_TYPES,
+  "conversation.agent.switched",
+];
+
+/**
+ * The types that change the `Conversation` resource itself — the same rule
+ * `useConversationEvents` applies (transcript chunks deliberately do not
+ * refetch; a frame storm would). `conversation.agent.switched` joins it: it
+ * moved the next-turn profile and re-derived the `agents` ranges.
+ */
+const CONVERSATION_RESOURCE_TYPES = new Set<string>([
+  "conversation.created",
+  "conversation.control.transferred",
+  "conversation.permission.requested",
+  "conversation.permission.decided",
+  "conversation.turn.started",
+  "conversation.turn.completed",
+  "conversation.turn.cancelled",
+  "conversation.turn.failed",
+  "conversation.turn.interrupted",
+  "agent.session.connected",
+  "agent.session.disconnected",
+  "conversation.agent.switched",
+]);
 
 export function useConversationSession(
   conversationId: string,
@@ -85,7 +132,20 @@ export function useConversationSession(
   const queryClient = useQueryClient();
   const conversation = useConversation(conversationId);
   const me = useMe();
-  const { events, status } = useConversationEvents(conversationId);
+  const { events, status } = useEventStream({
+    url: conversationId ? `/api/v1/conversations/${conversationId}/events` : "",
+    types: CONVERSATION_STREAM_TYPES,
+    keys: [conversationId],
+    onEvent: (event) => {
+      if (CONVERSATION_RESOURCE_TYPES.has(event.type)) {
+        invalidateConversation(
+          queryClient,
+          event.conversation_id ?? conversationId,
+          event.project_id,
+        );
+      }
+    },
+  });
   const sendMessage = usePostConversationMessage(conversationId);
   const takeControl = useTakeConversationControl(conversationId);
   const returnControl = useReturnConversationControl(conversationId);
@@ -189,6 +249,21 @@ export function useConversationSession(
     void queryClient.invalidateQueries({ queryKey: ["conversations", "cross-project"] });
   }, [conversationId, turnInProgress, agentSpoken, queryClient]);
 
+  const switchAgent = useMutation<Conversation, Error, { agent_profile_id: string }>({
+    mutationFn: (body) =>
+      apiFetch<Conversation>(`/api/v1/conversations/${conversationId}/switch-agent`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: (fresh) => {
+      // The response IS the fresh conversation view (ADR-0068 § 2); writing
+      // it into the cache updates the chip and the side panel's agent ranges
+      // without a second read. The divider itself arrives on the stream — the
+      // journal row is its only source.
+      queryClient.setQueryData(queryKeys.conversation(conversationId), fresh);
+    },
+  });
+
   const onSend = (event: FormEvent) => {
     event.preventDefault();
     const trimmed = prompt.trim();
@@ -233,6 +308,7 @@ export function useConversationSession(
     onDecide,
     decidingRequestId,
     sendMessage,
+    switchAgent,
     takeControl,
     returnControl,
     cancelTurn,

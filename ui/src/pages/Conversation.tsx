@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { ApiError } from "../api/client";
-import { useProject, useTurnSandbox, useWorkspaces } from "../api/queries";
+import { useConversations, useProject, useTurnSandbox, useWorkspaces } from "../api/queries";
 import {
   automationViaWords,
   interruptedCopy,
@@ -17,13 +17,15 @@ import type { TurnSandbox } from "../api/types";
 import type { components } from "../api/schema";
 import HandToWorkflowDialog from "../components/threads/HandToWorkflowDialog";
 import {
-  AgentConversationPanel,
   AgentConversationComposer,
   AgentConversationControls,
 } from "../components/conversation/AgentConversationPanel";
-import Transcript from "../components/Transcript";
+import { ComposerAgentChip } from "../components/conversation/ComposerAgentChip";
+import { ConversationSidePanel } from "../components/conversation/ConversationSidePanel";
+import { ConversationTranscript } from "../components/conversation/ConversationTranscript";
 import { ThreadListPane } from "../components/threads/ThreadListPane";
 import { useConversationSession } from "../components/conversation/useConversationSession";
+import { useIsNarrow } from "../components/Shell";
 import { WorkspaceWidget } from "../components/Workspaces";
 import { TurnSandboxPanel } from "../components/Sandbox";
 import { ThreadArtifacts } from "../components/threads/ThreadArtifacts";
@@ -114,6 +116,30 @@ export default function ConversationPage({
   // workspace — the same cached list the rail's WorkspaceWidget already makes,
   // so this is one query with a second pair of eyes, never an invented ref.
   const workspaces = useWorkspaces(projectId);
+  // 2e side panel: the thread's repository, read the way the list reads it —
+  // the summary row resolves ADR-0067's whole chain (declared binding →
+  // workspace → linked run) in one fact. The project's conversation list is
+  // one cached read the repo page already makes; a thread beyond its first
+  // page, or a control plane predating the field, falls back to the thread's
+  // own workspace repository — never a guess.
+  const summaries = useConversations(projectId);
+  // <1024px mounts the side panel under the transcript instead of beside it.
+  // Same question the CSS breakpoint asks, one source of truth for what
+  // MOUNTS (see Shell's `useIsNarrow` rationale) — the panel never exists
+  // twice in the tree.
+  const narrow = useIsNarrow();
+  // The header's participant line: every person whose prompt the journal
+  // carries, in first-message order, through the page's actor directory. An
+  // empty transcript names no participants — nothing is invented.
+  const participants = useMemo(() => {
+    const ids: string[] = [];
+    for (const event of session.events) {
+      if (event.type !== "conversation.message.user") continue;
+      const by = (event.payload as Record<string, unknown> | undefined)?.submitted_by;
+      if (typeof by === "string" && by && !ids.includes(by)) ids.push(by);
+    }
+    return ids.map((id) => session.nameOf(id));
+  }, [session.events, session.nameOf]);
   // The handoff dialog, the run it just started and the draft-PR confirmation
   // are page-local: the durable reads are the conversation refetch (whose
   // `linked_runs` is the run list) and the transcript, where the agent's reply
@@ -209,6 +235,58 @@ export default function ConversationPage({
             ? workspaceRepos[0].name
             : `${workspaceRepos[0].name} +${workspaceRepos.length - 1}`;
   const threadBranch = workspaceRepos[0]?.run_ref ?? "";
+  // The side panel's repository: the summary row's resolved name first
+  // (ADR-0067's chain, resolved server-side), the thread's own workspace
+  // repository as the fallback arm, null when neither names one.
+  const summaryRow = (summaries.data?.items ?? []).find((row) => row.id === conversationId);
+  const repositoryName = summaryRow?.repository_name ?? workspaceRepos[0]?.name ?? null;
+  // Honest file count: the workspace manifest's modified paths, or nothing.
+  const filesChanged = workspaceRepos[0]?.modified_paths?.length ?? null;
+
+  const sidePanel = (
+    <ConversationSidePanel
+      projectId={projectId}
+      repoName={repositoryName}
+      branch={threadBranch || null}
+      filesChanged={filesChanged}
+      agents={data.agents ?? null}
+    />
+  );
+  const agentPicker = <ComposerAgentChip session={session} />;
+  // 2e's breadcrumb: project / repository. The repository segment links to
+  // the repo page only when a read names one; "chats" is the honest fallback
+  // for a thread no binding claims.
+  const breadcrumb = (
+    <p
+      className="min-w-0 break-words font-mono text-[11px] text-muted"
+      data-testid="conversation-breadcrumb"
+    >
+      <Link to={routes.project(projectId)} className="text-accent-text hover:text-ink">
+        {project.data?.name ?? (project.isPending ? "…" : projectId)}
+      </Link>
+      <span aria-hidden="true"> / </span>
+      {repositoryName ? (
+        <Link
+          to={routes.repository(projectId, repositoryName)}
+          className="text-accent-text hover:text-ink"
+          data-testid="conversation-breadcrumb-repo"
+        >
+          {repositoryName}
+        </Link>
+      ) : (
+        <span data-testid="conversation-breadcrumb-unbound">chats</span>
+      )}
+    </p>
+  );
+  const participantsLine =
+    participants.length > 0 ? (
+      <p
+        className="min-w-0 break-words font-mono text-[11px] text-muted"
+        data-testid="conversation-participants"
+      >
+        {participants.join(", ")}
+      </p>
+    ) : null;
 
   const rail = (
     <aside className="min-w-0 space-y-3" aria-label="Thread context">
@@ -526,17 +604,19 @@ export default function ConversationPage({
             >
               ← Threads
             </Link>
+            {breadcrumb}
             {/* Below the pane's `lg` stack breakpoint the header is a
                 column: title (full width, wrapping rather than truncating to
                 a word), then the pill and the acts on their own row. At
                 `lg+` they share one row again — the design's shape. */}
-            <div className="flex flex-col gap-x-4 lg:flex-row lg:items-center">
+            <div className="mt-[2px] flex flex-col gap-x-4 lg:flex-row lg:items-center">
               <h1
                 data-testid="conversation-title"
                 className="line-clamp-2 text-title-m font-semibold lg:min-w-0 lg:flex-1 lg:line-clamp-none lg:truncate"
               >
                 {data.title}
               </h1>
+              {participantsLine}
               {/* The control line (1g): only the pill and the acts ride the
                   title row — the pill is the design's own `you're in control`,
                   and Stop (danger) appears only while a turn runs. */}
@@ -665,22 +745,7 @@ export default function ConversationPage({
                   {interruptedCopy(described.record?.interruptReason ?? null)}
                 </Alert>
               ) : null}
-              <Transcript
-                items={session.transcript.items}
-                agentName={data.agent_profile_name ?? "agent"}
-                canDecide={session.isController}
-                controllerName={
-                  data.control.display_name ??
-                  (data.control.user_id ? session.nameOf(data.control.user_id) : null)
-                }
-                nameOf={session.nameOf}
-                onDecide={session.onDecide}
-                decidingRequestId={session.decidingRequestId}
-                decisionError={session.decide.error}
-                decisionErrorRequestId={
-                  session.decide.isError ? (session.decide.variables?.requestId ?? null) : null
-                }
-              />
+              <ConversationTranscript session={session} />
             </div>
             {/* Pass-4 review: the rail's collapsed form was a BOXED mono-caps
                 bar (`THREAD DETAILS — WORKSPACE, ARTIFACTS, NEXT`) sitting
@@ -734,6 +799,18 @@ export default function ConversationPage({
               </summary>
               <div className="mt-[8px] border-t border-line pt-[10px]">{rail}</div>
             </details>
+            {/* 2e's context rail below 1024px: the same side panel, mounted
+                once (the `useIsNarrow` question decides where — never the
+                same content twice in the tree), collapsing under the
+                transcript exactly as the brief allows. */}
+            {narrow ? (
+              <div
+                className="mt-4 min-w-0 max-w-[720px] rounded-[3px] border border-line-strong bg-surface"
+                data-testid="thread-side-panel-stack"
+              >
+                {sidePanel}
+              </div>
+            ) : null}
           </div>
           {/* The composer pins to the bottom of the pane (1g): the last thing
               on the column, visible without scrolling at any width, the ink
@@ -753,10 +830,23 @@ export default function ConversationPage({
                 inputId="conversation-prompt"
                 rows={1}
                 nonControllerPlaceholder="Only the controller can prompt."
+                agentPicker={agentPicker}
               />
             </div>
           </div>
         </div>
+        {/* 2e's side panel: 280px, white, left border, at `lg+` its own
+            column beside the thread; below `lg` it mounts under the
+            transcript instead (the block above), never both. */}
+        {narrow ? null : (
+          <aside
+            className="min-h-0 w-full shrink-0 overflow-y-auto border-t border-line-strong bg-surface lg:h-full lg:w-[280px] lg:border-t-0 lg:border-l"
+            aria-label="Thread context panel"
+            data-testid="thread-side-panel-aside"
+          >
+            {sidePanel}
+          </aside>
+        )}
       </div>
     );
   }
@@ -767,13 +857,8 @@ export default function ConversationPage({
           context that explains it sits in a narrow rail beside it. */}
       <div className="min-w-0 max-w-[820px] space-y-4" data-testid="conversation-main">
         <header className="space-y-2">
-          <p className="font-mono text-[11px] text-muted">
-            <Link to={routes.project(projectId)} className="text-accent-text hover:text-ink">
-              Project
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>Threads</span>
-          </p>
+          {breadcrumb}
+          {participantsLine}
           <div className="flex flex-wrap items-center gap-3">
             <h1 data-testid="conversation-title" className="text-title-l font-bold">
               {data.title}
@@ -872,22 +957,33 @@ export default function ConversationPage({
           </Alert>
         ) : null}
 
-        {/* The shared surface: the transcript (permission cards included) and
-            the composer. The controller line stays in the rail below. */}
-        <AgentConversationPanel
-          conversationId={conversationId}
-          projectId={projectId}
-          variant="page"
+        {/* The shared surface: the transcript (permission cards and the
+            ADR-0068 switch dividers included) and the composer with its
+            agent chip. The controller line stays in the rail below. */}
+        <ConversationTranscript session={session} />
+        <AgentConversationComposer
           session={session}
-          composer={{
-            inputId: "conversation-prompt",
-            rows: 3,
-            nonControllerPlaceholder: "Only the controller can prompt.",
+          ids={{
+            composerInput: "composer-input",
+            composerSend: "composer-send",
+            composerExplainer: "composer-explainer",
           }}
+          inputId="conversation-prompt"
+          rows={3}
+          nonControllerPlaceholder="Only the controller can prompt."
+          heading
+          agentPicker={agentPicker}
         />
       </div>
 
-      {rail}
+      {/* 2e's rail column, legacy page: the side panel (every section only
+          with real data) rides above the thread's working rail in the one
+          narrow column; below `xl` the grid stacks, so the panel lands
+          under the transcript — the same collapse the pane mode mounts. */}
+      <div className="min-w-0 space-y-3">
+        {sidePanel}
+        {rail}
+      </div>
     </div>
   );
 }

@@ -313,6 +313,13 @@ interface ComposerProps {
   nonControllerPlaceholder: string;
   /** The page's "Prompt" heading; the dock keeps the form compact. */
   heading?: boolean;
+  /**
+   * A control that rides the form's line after the input — the chat page's
+   * ADR-0068 agent chip (`ComposerAgentChip`). Surfaces that do not pass it
+   * (the attempt dock: a run-attempt thread cannot switch agents) are
+   * unchanged.
+   */
+  agentPicker?: ReactNode;
 }
 
 /** The prompt form: enabled for the controller only, with the explainer copy. */
@@ -323,6 +330,7 @@ export function AgentConversationComposer({
   rows,
   nonControllerPlaceholder,
   heading = false,
+  agentPicker,
 }: ComposerProps) {
   const {
     control,
@@ -362,6 +370,7 @@ export function AgentConversationComposer({
           aria-describedby={turnInProgress || !isController ? explainerId : undefined}
           placeholder={isController ? "Ask the agent for something…" : nonControllerPlaceholder}
         />
+        {agentPicker}
         <Button
           type="submit"
           variant="primary"
