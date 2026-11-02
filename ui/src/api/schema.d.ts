@@ -4090,6 +4090,7 @@ export interface components {
     /**
      * ValidateWarning
      * @description One publish-time/validate-time WARNING (ADR-0066). Unlike a `ValidateError` it refuses nothing — the publish and the `valid` verdict stand — because assignments and triggers stay editable after publish. Today's code is `input_unfillable_by_trigger`: a required input with no default that this assigned trigger cannot fill, naming both. The run start remains the authority and refuses with a named error.
+     *     The warning carries its parts as FIELDS (`trigger_kind`, `trigger_label`, `input`) as well as in prose: a UI that renders `message` verbatim shows a member a uuid, an internal repository handle and an ADR number. `message` is the operator's line and stays available; the sentence a person reads is built from the fields.
      */
     ValidateWarning: {
       /** @description Stable machine code (`input_unfillable_by_trigger`). */
@@ -4104,12 +4105,14 @@ export interface components {
       trigger_id?: string;
       /** @enum {string} */
       trigger_kind?: "issue" | "schedule";
+      /** @description The trigger's own word, so a client can write the author's sentence (`issue is required and the issue trigger 'labeled' can't fill it`) from the fields instead of scraping a name out of `message`: the event (`labeled`, `opened`) for an issue trigger, the cron expression for a schedule. Deliberately repository-free — the trigger's row heading already names the repository, and a warning under it that repeated it would read like a different trigger. `message` remains the operator's full line (it quotes the repository, the kind, the id and ADR-0066) and is the right thing to show behind a tooltip, never in the author's sentence. */
+      trigger_label?: string;
       /**
        * Format: uuid
        * @description The project owning the assignment behind this trigger.
        */
       project_id?: string;
-      /** @description The run input the trigger cannot fill. */
+      /** @description The run input the trigger cannot fill. The client's sentence names THIS input, so the ✓ line for the same input on the same trigger row is contradicted by it and must not print beside it. */
       input?: string;
     };
     /**

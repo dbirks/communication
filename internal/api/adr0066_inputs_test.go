@@ -418,3 +418,63 @@ func TestADR0066RunStartMissingRequiredInputIsTheNamed422(t *testing.T) {
 		t.Errorf("422 body does not name the missing input: %s", rec.Body)
 	}
 }
+
+// The rcn-1j review's UI defect was a sentence nobody could act on: the Inputs
+// tab printed `message` verbatim — `trigger server #labeled (issue,
+// 01a19dd0-58ef-…) cannot fill required input "issue" … (ADR-0066)` — so the
+// author saw an internal uuid, a repository handle belonging to the assignment
+// above the row, and an ADR number. The warning therefore carries its parts as
+// FIELDS (`trigger_kind`, `trigger_label`, `input`), and the label is the
+// repository-free word the row heading already uses.
+func TestADR0066WarningsCarryTheirPartsAsFields(t *testing.T) {
+	fx := a66Server(t, []TriggerFillFacts{
+		// The production read: Name is `<repo> #<event>`, Label is the event.
+		{Kind: "issue", ID: "t-1", ProjectID: "p-1", Name: "server #labeled",
+			Label: "labeled", Fills: []string{"issue"}},
+		// A fact table that fills no Label still yields the event word, read
+		// off the handle it did provide.
+		{Kind: "issue", ID: "t-2", ProjectID: "p-1", Name: "widgets #opened",
+			Fills: []string{"issue"}},
+		a66ScheduleFact,
+	}, nil)
+	fx.pipes.draft = DraftView{ID: m4UUID2, PipelineID: m4UUID, Status: "draft",
+		DocumentYAML: "kind: Pipeline\n", SourceKind: "manual",
+		SourceSHA256: strings.Repeat("0", 64), Version: 1}
+	outcome := a66ValidOutcome()
+	outcome.CompiledPlan = json.RawMessage(a66GoalRepoPlan)
+	fx.defs.outcome = outcome
+
+	rec := fx.call(t, "POST", "http://localhost:8080/api/v1/drafts/"+m4UUID2+"/validate", "")
+	var body ValidateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	type part struct{ trigger, kind, label, input string }
+	got := make(map[part]bool)
+	for _, w := range body.Warnings {
+		if w.Code != CodeInputUnfillableByTrigger {
+			t.Fatalf("unexpected code %q: %+v", w.Code, w)
+		}
+		if w.TriggerKind == "" || w.TriggerLabel == "" || w.Input == "" {
+			t.Errorf("warning %s/%s is missing a structured part: %+v", w.TriggerID, w.Input, w)
+		}
+		got[part{w.TriggerID, w.TriggerKind, w.TriggerLabel, w.Input}] = true
+	}
+	for _, want := range []part{
+		{"t-1", "issue", "labeled", "goal"},
+		{"t-1", "issue", "labeled", "repository"},
+		{"t-2", "issue", "opened", "goal"},
+		{"s-1", "schedule", "* * * * *", "goal"},
+	} {
+		if !got[want] {
+			t.Errorf("no warning for %+v; got %d warnings: %+v", want, len(body.Warnings), body.Warnings)
+		}
+	}
+	// The label never repeats the repository: that is the row heading's job,
+	// and a warning that restated it read like a different trigger.
+	for _, w := range body.Warnings {
+		if strings.Contains(w.TriggerLabel, " ") && strings.Contains(w.TriggerLabel, "#") {
+			t.Errorf("trigger_label %q still carries the repository handle: %+v", w.TriggerLabel, w)
+		}
+	}
+}

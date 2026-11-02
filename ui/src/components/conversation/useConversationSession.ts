@@ -32,6 +32,8 @@ import {
   usePostConversationMessage,
 } from "../../api/queries";
 import { describeTurn, projectTranscript, type Transcript } from "../../api/transcript";
+import { useAgentProfiles } from "../../api/queries";
+import { launcherNameResolver, launcherNameSource } from "./agentNames";
 import type {
   Conversation,
   ConversationControl,
@@ -224,9 +226,26 @@ export function useConversationSession(
 
   // The fold names the people it mentions, so it re-projects when the actor
   // directory lands — an id in a sentence nobody can act on is not information.
+  //
+  // Review 2e: it also names the AGENT. `agent.session.connected` carries the
+  // launcher id (`claude`), which is the executable the worker spawns, not the
+  // agent the person chose (`Claude Code`). The conversation's own profile row
+  // answers that for the live session; the org's profile list (the SAME cached
+  // read the composer chip makes, `queryKeys.agentProfiles` — not a second
+  // request) answers it for a session on another profile, and only when
+  // exactly one row carries that launcher: two profiles on one executable name
+  // nothing, and the fold then prints the launcher id it was given rather than
+  // guessing which profile ran.
+  const agentProfiles = useAgentProfiles();
+  const agentNameForEvent = useMemo(() => {
+    const resolve = launcherNameResolver(
+      launcherNameSource(data, events, agentProfiles.data?.items ?? []),
+    );
+    return (launcherId: string): string => resolve(launcherId) ?? launcherId ?? "the agent";
+  }, [agentProfiles.data, data, events]);
   const transcript = useMemo(
-    () => projectTranscript(events, nameOf, turnRows),
-    [events, nameOf, turnRows],
+    () => projectTranscript(events, nameOf, turnRows, agentNameForEvent),
+    [events, nameOf, turnRows, agentNameForEvent],
   );
 
   // `active` is set only while nobody has proved the turn is over: a terminal

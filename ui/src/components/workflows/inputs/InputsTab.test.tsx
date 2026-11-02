@@ -127,20 +127,27 @@ const openDraft: PipelineDraftSummary = {
 const scheduleWarning = {
   code: "input_unfillable_by_trigger",
   source: "trigger" as const,
-  message: "issue is required and a schedule can't fill it",
+  message:
+    'trigger * * * * * (schedule, s-1) cannot fill required input "issue" and it has no ' +
+    "default; a run it fires will be refused at the start (ADR-0066)",
   trigger_id: SCHEDULE_ID,
   trigger_kind: "schedule" as const,
+  trigger_label: "* * * * *",
   input: "issue",
 };
 
-/** One server-shaped `input_unfillable_by_trigger` warning for the tests. */
+/** One server-shaped `input_unfillable_by_trigger` warning for the tests,
+ * with every field the server sends: `trigger_label` is the trigger's own
+ * word (the event for an issue trigger, the cron expression for a schedule),
+ * which is what the author's sentence names. */
 function unfillable(kind: "schedule" | "issue", triggerId: string, input: string) {
   return {
     code: "input_unfillable_by_trigger",
     source: "trigger",
-    message: `trigger #opened cannot fill required input "${input}" and it has no default (ADR-0066)`,
+    message: `trigger server #opened (issue, ${triggerId}) cannot fill required input "${input}" and it has no default; a run it fires will be refused at the start (ADR-0066)`,
     trigger_id: triggerId,
     trigger_kind: kind,
+    trigger_label: kind === "issue" ? "opened" : "* * * * *",
     input,
   } as const;
 }
@@ -524,16 +531,57 @@ describe("InputsTab — who fills the inputs (1j)", () => {
       "✓ issue ← the labeled issue",
     );
     // …and each warning the server named gets its own `!` line, verbatim.
+    //
+    // rcn-1j review defect 3: the line used to be the server's OPERATOR
+    // sentence verbatim — `trigger server #opened (issue, 01a1…) cannot fill
+    // required input "goal" … (ADR-0066)` — an internal uuid, a repository
+    // handle and an ADR number set in front of the author. It is now one
+    // sentence composed from the warning's own fields (`input`,
+    // `trigger_kind`, `trigger_label`), and the server's line still rides the
+    // tooltip rather than being thrown away.
     const goalLine = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-goal`);
     const repoLine = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-repository`);
     expect(goalLine.textContent).toBe(
-      `! trigger #opened cannot fill required input "goal" and it has no default (ADR-0066)`,
+      "! goal is required and the issue trigger 'opened' can't fill it",
     );
     expect(repoLine.textContent).toBe(
-      `! trigger #opened cannot fill required input "repository" and it has no default (ADR-0066)`,
+      "! repository is required and the issue trigger 'opened' can't fill it",
     );
+    for (const line of [goalLine, repoLine]) {
+      expect(line.getAttribute("title")).toContain("cannot fill required input");
+      expect(line.getAttribute("title")).toContain("ADR-0066");
+    }
+    // The row itself shows neither the uuid nor the repository handle.
+    expect(row.textContent).not.toContain("ADR-0066");
+    expect(row.textContent).not.toContain("server #opened");
     // The warning marks the whole row pale, as the schedule's does.
     expect(row.className).toContain("bg-st-waiting-pale-body");
+  });
+
+  it("never claims an input filled and unfilled on the same row", async () => {
+    // rcn-1j review defect 3, second half: the reviewed row printed
+    // "✓ issue ← the labeled issue" directly above a server warning that the
+    // SAME input is unfilled. The ✓ is this panel reading the DRAFT's mapping;
+    // the warning is the server's answer about the revision the assignment is
+    // PINNED to, and the server is the authority (ADR-0066) — so the ✓ for
+    // that input goes quiet and the warning stands.
+    const issueDraft = wireDraft({
+      document_yaml: GOAL_REPO_YAML,
+      validation: {
+        valid: true,
+        warnings: [unfillable("issue", TRIGGER_ID, "issue")],
+        digest_scope: "v1alpha1-canonical-1",
+        errors: [],
+        notes: [],
+      },
+    });
+    mountTab({ routes: [{ path: DRAFT_PATH, method: "GET", body: issueDraft }] });
+    const row = await screen.findByTestId(`who-fills-issue-${TRIGGER_ID}`);
+    expect(row.textContent).not.toContain("\u2713");
+    expect(screen.getByTestId(`who-fills-issue-line-${TRIGGER_ID}`).textContent).toContain(
+      "issue is not filled by the pinned revision",
+    );
+    expect(await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-issue`)).toBeTruthy();
   });
 
   it("a warning whose trigger no longer reads is shown, not dropped", async () => {
@@ -559,8 +607,12 @@ describe("InputsTab — who fills the inputs (1j)", () => {
     // a line of its own under the panel's warnings-without-a-row block.
     expect(await screen.findByTestId(`who-fills-warn-${SCHEDULE_ID}-issue`)).toBeTruthy();
     const orphans = await screen.findByTestId("who-fills-orphans");
-    expect(orphans.textContent).toContain(
-      `! trigger #opened cannot fill required input "issue" and it has no default (ADR-0066)`,
+    // The stale warning still gets its line — in the author's sentence, with
+    // the server's operator line behind the tooltip rather than on it.
+    expect(orphans.textContent).toContain("! issue is required and a schedule can't fill it");
+    expect(orphans.textContent).not.toContain("ADR-0066");
+    expect(screen.getByTestId("who-fills-warn-s-deleted-issue").getAttribute("title")).toContain(
+      "ADR-0066",
     );
   });
 

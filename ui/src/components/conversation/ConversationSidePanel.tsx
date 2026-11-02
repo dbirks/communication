@@ -52,6 +52,7 @@ import {
 } from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { agentLabel } from "./ConversationTranscript";
+import { NO_BRANCH_YET } from "./threadBranch";
 import type { components } from "../../api/schema";
 
 export type ConversationChatAgent = components["schemas"]["ConversationChatAgent"];
@@ -91,7 +92,11 @@ export interface ConversationSidePanelProps {
    * say (a live checkout, or no repository named).
    */
   worksInNote?: string | null;
-  /** The workspace's run ref for this thread, or null before one exists. */
+  /** The thread's own branch name, or `NO_BRANCH_YET` while its workspace has
+   * no human branch (rcn-2e review defect 2: the raw `<scope-id>/<repo>` run
+   * ref used to print here, in a thread that worked in another repo).
+   * `null`/undefined = the host holds no workspace for this thread → the
+   * section is absent (an absent fact is not a "no branch yet" claim). */
   branch?: string | null;
   /** Files the workspace manifest records as modified; null when the read
    * does not answer it (an older replica, no workspace). */
@@ -198,7 +203,7 @@ export function ConversationSidePanel({
     ) : null;
   const hasContent =
     Boolean(repoName) ||
-    Boolean(branch) ||
+    branch != null ||
     agentRows.length > 0 ||
     skillList.length > 0 ||
     linkRows.length > 0 ||
@@ -235,10 +240,20 @@ export function ConversationSidePanel({
           </p>
         </section>
       ) : null}
-      {branch ? (
+      {branch != null ? (
         <section aria-labelledby="side-panel-branch-heading" data-testid="side-panel-branch">
           <SectionTitle htmlFor="side-panel-branch-heading">Branch</SectionTitle>
-          <p className="mt-1 min-w-0 break-words font-mono text-[12px] text-ink">{branch}</p>
+          {/* Mono is for a branch NAME (machine-kept identifier, rule 07);
+              "no branch yet" is a sentence about the thread, so it wears the
+              reader's face — the same split WORKS IN uses between the repo
+              name and its state (rcn-2e review defect 2). */}
+          <p
+            className={`mt-1 min-w-0 break-words text-[12px] text-ink ${
+              branch === NO_BRANCH_YET ? "text-muted" : "font-mono"
+            }`}
+          >
+            {branch}
+          </p>
           {filesChanged != null || pullRequest ? (
             <p
               className="mt-1 font-mono text-[11px] text-muted"

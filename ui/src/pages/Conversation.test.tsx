@@ -628,10 +628,23 @@ describe("/p/:projectId/conversations/:conversationId", () => {
 
     // The turn row and its terminal event commit together, so the event is
     // proof the cached active turn has already moved on.
-    await waitFor(() =>
-      expect(screen.getByTestId("turn-status").textContent).toBe("completed (end_turn)"),
+    //
+    // rcn-2e review defect 1: the word used to carry the harness's enum
+    // ("completed (end_turn)", "Turn completed (end_turn)"). The reader's line
+    // is the plain sentence and the wire's words ride the tooltip, so both
+    // assertions now check the sentence AND that the enum survived into `title`.
+    await waitFor(() => expect(screen.getByTestId("turn-status").textContent).toBe("completed"));
+    expect(screen.getByTestId("transcript").textContent).toContain("Turn completed");
+    expect(screen.getByTestId("transcript").textContent).not.toContain("end_turn");
+    // The legacy `/p/...` header labels its chips (`turn:`), so the tooltip
+    // rides the pair's span rather than the chip's label element.
+    expect(screen.getByTestId("turn-status").closest("span[title]")?.getAttribute("title")).toBe(
+      "stop_reason end_turn",
     );
-    expect(screen.getByTestId("transcript").textContent).toContain("Turn completed (end_turn)");
+    const completedLine = screen
+      .getAllByTestId("transcript-item")
+      .find((el) => el.textContent?.includes("Turn completed"));
+    expect(completedLine?.getAttribute("title")).toBe("stop_reason end_turn");
   });
 
   it("explains that a viewer may only watch", async () => {

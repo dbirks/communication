@@ -28,6 +28,7 @@ import {
 import type { components } from "../../api/schema";
 import type { Conversation, Project } from "../../api/types";
 import { mailAskFromPrompt, mentionQueryAtCaret } from "./AgentConversationPanel";
+import { mailAgentLabel } from "./ConversationTranscript";
 
 type ConversationLink = components["schemas"]["ConversationLink"];
 import { MailCard, mailAskedFromEvent, mailAnswerLine, mergeMailAnswered } from "./MailCard";
@@ -190,7 +191,87 @@ describe("the transcript mail card", () => {
     });
     const merged = mergeMailAnswered(base, mine);
     expect(merged.state).toBe("failed");
+    // With no read naming the launcher, the card wears the launcher id the
+    // journal carried — never an invented product name.
     expect(mailAnswerLine(merged)).toBe("← api · claude · failed");
+    // With one, it wears the profile the person chose, model and all
+    // (rcn-3d review item 4).
+    expect(mailAnswerLine(merged, "Claude Code · opus")).toBe(
+      "← api · Claude Code · opus · failed",
+    );
+  });
+
+  it("renders the answer's markdown instead of printing its backticks", () => {
+    // The reviewed card showed `I can't fully answer this: the file-listing
+    // commands were blocked, and the only file I could read is \`README\`` —
+    // the answer's own markup, left for the reader to parse.
+    const { container } = render(
+      <MemoryRouter>
+        <MailCard
+          card={{
+            linkId: "l-md",
+            repo: "server",
+            question: "what is in this repository?",
+            turnId: "t",
+            state: "answered",
+            answer:
+              "I can't fully answer this: the file-listing commands were **blocked**, " +
+              "and the only file I could read is `README`.",
+            launcher: "claude",
+          }}
+          agentLabel="Claude Code · opus"
+        />
+      </MemoryRouter>,
+    );
+    const answer = container.querySelector('[data-testid="mail-card-answer"]');
+    expect(answer?.textContent).toContain("README");
+    // The markup characters are gone: the code span and the bold both read as
+    // formatting, not as punctuation in a sentence.
+    expect(answer?.textContent).not.toContain("`README`");
+    expect(answer?.textContent).not.toContain("**blocked**");
+    expect(answer?.querySelector("code")?.textContent).toBe("README");
+    expect(answer?.querySelector("strong")?.textContent).toBe("blocked");
+    // The header names the agent the person chose, and the launcher the
+    // journal actually carried stays reachable on the tooltip.
+    const line = container.querySelector('[data-testid="mail-card-answer-line"]');
+    expect(line?.textContent).toBe("← server · Claude Code · opus");
+    expect(line?.getAttribute("title")).toBe("launcher_id claude");
+  });
+
+  it("names the mail card's agent from the conversation's own profile row", () => {
+    // ADR-0072 § 10: a mailed chat INHERITS the asking chat's current
+    // profile, so the profile on this read is the answer to "who replied".
+    const conversation = {
+      launcher_id: "claude",
+      agent_profile_name: "Claude Code",
+      agent_profile_model: "opus",
+    };
+    expect(mailAgentLabel("claude", conversation, [], [])).toBe("Claude Code · opus");
+    // A launcher no read names yields nothing: the card prints the id it was
+    // given rather than guessing which profile answered.
+    expect(mailAgentLabel("mystery", conversation, [], [])).toBeNull();
+    expect(mailAgentLabel(undefined, conversation, [], [])).toBeNull();
+    // One profile in the org list carrying the launcher is enough to name it.
+    expect(
+      mailAgentLabel(
+        "codex",
+        conversation,
+        [],
+        [{ launcher_id: "codex", name: "Codex", model: "gpt-5" }],
+      ),
+    ).toBe("Codex · gpt-5");
+    // Two profiles on one executable name nothing.
+    expect(
+      mailAgentLabel(
+        "claude",
+        undefined,
+        [],
+        [
+          { launcher_id: "claude", name: "Claude Code", model: null },
+          { launcher_id: "claude", name: "Claude Code · opus", model: "opus" },
+        ],
+      ),
+    ).toBeNull();
   });
 });
 

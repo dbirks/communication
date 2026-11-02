@@ -519,6 +519,10 @@ export default function Transcript({
               <li
                 key={item.id}
                 data-testid="transcript-item"
+                // Review 2e: the journal's machine words (`stop_reason
+                // end_turn`, `launcher_id claude`) ride the tooltip only — the
+                // visible sentence is the plain one the fold wrote.
+                title={item.raw}
                 className="flex items-baseline gap-2 px-1 py-1 text-[12px] italic text-muted"
               >
                 <span aria-hidden="true" className={`font-mono not-italic ${STATES.info.tagFg}`}>

@@ -30,9 +30,14 @@ import (
 // name the warning quotes, the trigger's own inputs, and the explicit
 // issue_input mapping plus the pinned revision's plan (empty-text fragments
 // for the schedule arms, which resolve nothing).
+//
+// The seventh column is the trigger's own word (`trigger_label` in the
+// warning): a schedule's handle IS its cron expression, and an issue trigger's
+// is its event — the row heading already names the repository, so the
+// warning's sentence must not repeat it (rcn-1j review defect).
 const pipelineTriggerFactsSQL = `
 	SELECT 'schedule', s.id::text, s.project_id::text, s.cron_expr,
-	       s.inputs::text, '', '{}'::jsonb
+	       s.inputs::text, '', '{}'::jsonb, s.cron_expr
 	FROM schedules s
 	JOIN assignments a ON a.id = s.assignment_id
 	JOIN pipelines p ON p.id = a.pipeline_id
@@ -40,7 +45,7 @@ const pipelineTriggerFactsSQL = `
 	UNION ALL
 	SELECT 'issue', t.id::text, t.project_id::text,
 	       COALESCE(r.name, '?') || ' #' || t.event,
-	       t.inputs::text, COALESCE(t.issue_input, ''), r2.compiled_plan
+	       t.inputs::text, COALESCE(t.issue_input, ''), r2.compiled_plan, t.event
 	FROM issue_triggers t
 	JOIN assignments a ON a.id = t.assignment_id
 	JOIN pipelines p ON p.id = a.pipeline_id
@@ -73,7 +78,8 @@ func (a APIPipelineStore) ListPipelineTriggerFacts(ctx context.Context, c api.Ca
 			issue  string
 			plan   []byte
 		)
-		if err := rows.Scan(&fact.Kind, &fact.ID, &fact.ProjectID, &fact.Name, &inputs, &issue, &plan); err != nil {
+		if err := rows.Scan(&fact.Kind, &fact.ID, &fact.ProjectID, &fact.Name, &inputs, &issue,
+			&plan, &fact.Label); err != nil {
 			return nil, fmt.Errorf("postgres: scan trigger fill facts: %w", err)
 		}
 		fills, err := triggerFillNames(json.RawMessage(inputs), fact.Kind, issue, json.RawMessage(plan))

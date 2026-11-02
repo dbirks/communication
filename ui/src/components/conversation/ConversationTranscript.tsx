@@ -25,8 +25,10 @@
  *   place it lands.
  */
 import Transcript from "../Transcript";
+import { useAgentProfiles } from "../../api/queries";
 import type { TranscriptItem } from "../../api/transcript";
 import type { EventEnvelope } from "../../api/types";
+import { agentDisplayForLauncher, launcherNameSource } from "./agentNames";
 import { AgentSwitchDivider, agentSwitchFromEvent } from "./AgentSwitchDivider";
 import { MailCard, mailAskedFromEvent, mergeMailAnswered, type MailCardData } from "./MailCard";
 import { renderSplitAtTurnFailures } from "./TurnFailureNotice";
@@ -35,6 +37,36 @@ import type { ConversationSession } from "./useConversationSession";
 /** `Codex · gpt-5`, or just `Codex` when the profile names no model. */
 export function agentLabel(name: string, model?: string | null): string {
   return model ? `${name} · ${model}` : name;
+}
+
+/**
+ * The mail card's answering agent, in the words a person chose (rcn-3d review
+ * item 4). The answered row carries the target profile's `launcher_id`, and the
+ * card used to print it (`← server · claude`) — the executable, not the
+ * agent.
+ *
+ * ADR-0072 § 10 is the read that names it: a mailed chat INHERITS the asking
+ * chat's current profile, so a card whose launcher is this conversation's own
+ * launcher is answered by the profile row on this very read. Any other launcher
+ * goes through the same resolver the transcript uses, and an unrecognised one
+ * yields null — the card then prints the launcher id it was given rather than
+ * guessing a product name.
+ */
+export function mailAgentLabel(
+  launcher: string | undefined,
+  data:
+    | {
+        launcher_id?: string | null;
+        agent_profile_name?: string | null;
+        agent_profile_model?: string | null;
+      }
+    | undefined,
+  events: readonly EventEnvelope[],
+  profiles: readonly { launcher_id: string; name: string; model?: string | null }[],
+): string | null {
+  if (!launcher) return null;
+  const display = agentDisplayForLauncher(launcher, launcherNameSource(data, events, profiles));
+  return display ? agentLabel(display.name, display.model) : null;
 }
 
 /**
@@ -175,6 +207,10 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
   const { data, transcript, events, isController, nameOf } = session;
   const parts = segmentTranscript(transcript.items, events);
   const switched = parts.some((part) => part.divider !== null);
+  // The same cached profiles read the composer chip and the session fold make
+  // (`queryKeys.agentProfiles`) — the third arm of naming a launcher, used
+  // only when the conversation row and its switch dividers do not answer.
+  const agentProfiles = useAgentProfiles();
 
   // The label for the run before any switch.
   let initial = "agent";
@@ -244,7 +280,16 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
             {part.mails.length > 0 ? (
               <ul className="list-none space-y-[4px]" data-testid="transcript-mail-cards">
                 {part.mails.map((card) => (
-                  <MailCard key={card.linkId} card={card} />
+                  <MailCard
+                    key={card.linkId}
+                    card={card}
+                    agentLabel={mailAgentLabel(
+                      card.launcher,
+                      data,
+                      events,
+                      agentProfiles.data?.items ?? [],
+                    )}
+                  />
                 ))}
               </ul>
             ) : null}

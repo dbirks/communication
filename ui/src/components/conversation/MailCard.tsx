@@ -21,6 +21,7 @@
  */
 import { Link } from "react-router";
 import { routes } from "../../lib/routes";
+import { MarkdownBody } from "../../lib/markdown";
 import type { EventEnvelope } from "../../api/types";
 
 export interface MailCardData {
@@ -75,11 +76,20 @@ export function mergeMailAnswered(card: MailCardData, event: EventEnvelope): Mai
 }
 
 /** The card's answer line: "← api · Codex" plus the failure word, or the
- * bare "← api" while the launcher went unreported (a failed target whose
- * row names nothing prints no ghost segment). */
-export function mailAnswerLine(card: MailCardData): string {
+ * bare "← api" while the target went unnamed (a failed target whose row
+ * names nothing prints no ghost segment).
+ *
+ * `agentLabel` is the caller's answer to "which agent answered" — the
+ * profile's DISPLAY name and pinned model (`Claude Code · opus`), which is
+ * what a person chose and what rcn-3d review item 4 asked for. It is absent
+ * when no read names the launcher, and the line then wears the launcher id
+ * the journal carried: the machine's word, honestly labelled, rather than a
+ * guessed product name.
+ */
+export function mailAnswerLine(card: MailCardData, agentLabel?: string | null): string {
   const parts = ["\u2190 " + card.repo];
-  if (card.launcher) parts.push(card.launcher);
+  if (agentLabel) parts.push(agentLabel);
+  else if (card.launcher) parts.push(card.launcher);
   if (card.state && card.state !== "answered") parts.push(card.state);
   return parts.join(" \u00b7 ");
 }
@@ -92,10 +102,18 @@ function str(payload: Record<string, unknown>, key: string): string {
 export interface MailCardProps {
   card: MailCardData;
   testId?: string;
+  /**
+   * The answering agent as a person knows it — `agentLabel(name, model)`
+   * ("Claude Code · opus"). The host resolves it from the conversation's own
+   * profile row (ADR-0072 § 10: a mailed chat inherits the asking chat's
+   * profile) or from the org's profile list, and passes nothing when no read
+   * names the answered card's `launcher_id`.
+   */
+  agentLabel?: string | null;
 }
 
 /** 3d's bordered mail card. */
-export function MailCard({ card, testId = "mail-card" }: MailCardProps) {
+export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardProps) {
   return (
     <li
       data-testid={testId}
@@ -127,9 +145,27 @@ export function MailCard({ card, testId = "mail-card" }: MailCardProps) {
       </p>
       {card.state ? (
         <div className="flex flex-col gap-[3px] px-[10px] py-2" data-testid={`${testId}-answer`}>
-          <span className="font-mono text-[10.5px] text-muted">{mailAnswerLine(card)}</span>
+          <span
+            className="font-mono text-[10.5px] text-muted"
+            data-testid={`${testId}-answer-line`}
+            // The launcher id the journal actually carried stays reachable:
+            // the label is the profile's display name, and the two can differ.
+            title={card.launcher ? `launcher_id ${card.launcher}` : undefined}
+          >
+            {mailAnswerLine(card, agentLabel)}
+          </span>
           {card.state === "answered" ? (
-            <span className="whitespace-pre-wrap text-[12.5px] text-ink-2">{card.answer}</span>
+            // The answer is the other repo's agent's own markdown (rcn-3d
+            // review item 4): printed raw it arrived with its backticks
+            // (`README`), which is markup the reader has to parse instead of
+            // a sentence. `MarkdownBody` is the app's own reader — React text
+            // nodes, never HTML (ADR-0020) — so an answer that carries
+            // formatting reads as formatting and one that does not reads
+            // exactly as it did.
+            <MarkdownBody
+              text={card.answer ?? ""}
+              paragraphClassName="m-0 text-[12.5px] leading-[1.45] text-ink-2"
+            />
           ) : (
             <span className="text-[12.5px] text-ink-2" data-testid={`${testId}-reason`}>
               {card.reason ?? "no answer arrived."}

@@ -121,13 +121,19 @@ export function QuestionCard({
           </span>
         ) : null}
         {!answered && question.allow_free_text !== false && onFreeText ? (
+          // A HINT, not a quotation (rcn-2f review item 1): the mono face and
+          // the curly quotes made a person's own next sentence look like a
+          // string the assistant had quoted at them — at 390 it read as the
+          // only "code" under the options. Same affordance, prose face, no
+          // quotes: the button is the thing to press, and the composer is where
+          // the words go.
           <button
             type="button"
             data-testid="assistant-question-freetext"
             onClick={onFreeText}
-            className="mt-[2px] cursor-pointer border-none bg-transparent p-0 text-left font-mono text-[11px] text-faint"
+            className="mt-[2px] cursor-pointer border-none bg-transparent p-0 text-left text-[12px] leading-[1.4] text-muted underline decoration-line-strong underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
-            “Or say it your way…”
+            Or say it your way…
           </button>
         ) : null}
       </div>

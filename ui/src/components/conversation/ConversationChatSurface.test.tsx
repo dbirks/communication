@@ -291,16 +291,27 @@ describe("the composer's agent chip", () => {
     );
   });
 
-  it("is disabled while a turn runs, even for the controller", async () => {
+  it("is disabled while a turn runs, and says it ONCE", async () => {
+    // rcn-3d review item 5: the chip printed "A turn is running — the
+    // next-turn agent can be chosen between turns." inside the form while the
+    // composer's own explainer under the box printed "A turn is already open
+    // (…). Wait for it to finish, or press Stop" — the same fact twice in the
+    // same breath. The explainer (longer, actionable, wired to the input) is
+    // the one that shows; the chip stays disabled and keeps its reason as the
+    // tooltip a hover or a screen reader reaches.
     renderApp({
       path,
       routes: routes({ ...switchedConversation, active_turn: turnFixture({ status: "running" }) }),
     });
     const chip = await screen.findByTestId("composer-agent-chip");
     expect(chip.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByTestId("composer-agent-chip-reason").textContent).toContain(
-      "A turn is running",
-    );
+    expect(chip.getAttribute("title")).toContain("A turn is running");
+    expect(screen.queryByTestId("composer-agent-chip-reason")).toBeNull();
+    const explainer = screen.getByTestId("composer-explainer");
+    expect(explainer.textContent).toContain("A turn is already open");
+    // …and the phrase appears exactly once on the surface.
+    const main = chip.closest("section") as HTMLElement;
+    expect((main.textContent?.match(/A turn is/g) ?? []).length).toBe(1);
   });
 
   it("shows a refused switch inline", async () => {
@@ -583,5 +594,143 @@ describe("the side panel follows the width", () => {
     const stack = await screen.findByTestId("thread-side-panel-stack");
     expect(within(stack).getByTestId("conversation-side-panel")).toBeTruthy();
     expect(screen.queryByTestId("thread-side-panel-aside")).toBeNull();
+  });
+});
+
+// --- the protocol lines, in the reader's words (rcn-2e review defect 1) ---
+
+describe("the transcript's protocol lines", () => {
+  it("says who it connected to by PROFILE name, and keeps the launcher in the tooltip", async () => {
+    // The reviewed chat printed "Agent session connected (claude)" — the
+    // executable the worker spawns, where the person chose "Claude Code".
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("agent.session.connected", {
+          binding_id: "b-1",
+          worker_id: workerId,
+          acp_session_id: "s-1",
+          protocol_version: "0.4",
+          launcher_id: claudeProfile.launcher_id,
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^Connected to /)).closest("li[title]") as HTMLElement;
+    expect(line.textContent).toContain("Connected to Claude Code");
+    expect(line.getAttribute("title")).toBe(`launcher_id ${claudeProfile.launcher_id}`);
+  });
+
+  it("names the agent a switch divider proved, not the launcher it carried", async () => {
+    // After a switch the conversation's OWN profile row describes the next
+    // turn, so a session event on the profile the chat moved OFF has to be
+    // named from the divider frame — the journal's own launcher → profile pair.
+    renderApp({ path, routes: routes(backOnClaude) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      const source = FakeEventSource.last();
+      source.emit(
+        conversationEvent("conversation.agent.switched", {
+          actor_user_id: meFixture.id,
+          from_agent_profile_id: claudeProfile.id,
+          from_profile_name: "Claude Code",
+          to_agent_profile_id: codexProfile.id,
+          to_profile_name: "Codex",
+          to_launcher_id: codexProfile.launcher_id,
+          model: "gpt-5",
+          transcript_carried_over: true,
+        }),
+      );
+      source.emit(
+        conversationEvent("agent.session.connected", {
+          binding_id: "b-2",
+          worker_id: workerId,
+          acp_session_id: "s-2",
+          protocol_version: "0.4",
+          launcher_id: codexProfile.launcher_id,
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^Connected to /)).closest("li[title]") as HTMLElement;
+    expect(line.textContent).toContain("Connected to Codex");
+  });
+
+  it("wears the launcher id itself when no read names it, never a guessed product", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("agent.session.connected", {
+          binding_id: "b-9",
+          worker_id: workerId,
+          acp_session_id: "s-9",
+          protocol_version: "0.4",
+          launcher_id: "mystery",
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^Connected to /)).closest("li[title]") as HTMLElement;
+    expect(line.textContent).toContain("Connected to mystery");
+  });
+
+  it("writes a completed turn as one plain word, with the stop reason as the tooltip", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.turn.completed", {
+          turn_id: turnId,
+          worker_id: workerId,
+          fencing_token: 7,
+          stop_reason: "end_turn",
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^Turn (completed|the agent)/)).closest(
+      "li[title]",
+    ) as HTMLElement;
+    expect(line.textContent).toBe("iTurn completed");
+    expect(line.getAttribute("title")).toBe("stop_reason end_turn");
+  });
+
+  it("says what a token-limit stop means instead of printing the enum", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.turn.completed", {
+          turn_id: turnId,
+          stop_reason: "max_tokens",
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^Turn (completed|the agent)/)).closest(
+      "li[title]",
+    ) as HTMLElement;
+    expect(line.textContent).toContain("completed — the agent hit its token limit");
+    expect(line.textContent).not.toContain("max_tokens");
+    expect(line.getAttribute("title")).toBe("stop_reason max_tokens");
+  });
+
+  it("reports a disconnect in words and keeps the machine reason in the tooltip", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("agent.session.disconnected", {
+          binding_id: "b-1",
+          worker_id: workerId,
+          acp_session_id: "s-1",
+          reason: "agent_switched",
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^The agent session closed/)).closest(
+      "li[title]",
+    ) as HTMLElement;
+    expect(line.textContent).toContain(
+      "The agent session closed — the conversation's agent was switched",
+    );
+    expect(line.getAttribute("title")).toBe("reason agent_switched");
   });
 });

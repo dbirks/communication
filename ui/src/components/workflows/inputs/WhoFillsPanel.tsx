@@ -8,14 +8,20 @@
  * `github_issue` input it names (or the revision's single one, implicitly)
  * plus every name its template inputs carry; a schedule fills nothing but
  * its own inputs — defaults carry the rest. The “can't fill it” lines are
- * NEVER computed here: they are the server's `input_unfillable_by_trigger`
- * warnings verbatim, ONE LINE PER WARNING, shown on the trigger row each
- * warning names (issue triggers included). A trigger row whose warnings fill
- * every required input simply states its fills; a schedule row with no
- * warning states the ADR's fact (it fills no inputs) rather than guessing
- * which inputs would suffer. Warnings whose trigger no longer reads (a row
- * deleted since the last validate) still get one line each under the panel's
- * own “orphan” heading — a server warning is never silently dropped.
+ * NEVER decided here: every one is a server `input_unfillable_by_trigger`
+ * warning, ONE LINE PER WARNING, shown on the trigger row each warning names
+ * (issue triggers included) — but the LINE IS A SENTENCE BUILT FROM THE
+ * WARNING'S FIELDS (`input`, `trigger_kind`, `trigger_label`), not the
+ * operator's prose, which carries a uuid and an ADR number a member cannot
+ * use (rcn-1j review defect 3); the server's own line rides the tooltip.
+ * A trigger row whose warnings fill every required input simply states its
+ * fills; a schedule row with no warning states the ADR's fact (it fills no
+ * inputs) rather guessing which inputs would suffer. One input is never both
+ * ✓ and ! on the same row: where the server says a pinned trigger cannot
+ * fill it, the panel's own ✓ for that input goes quiet. Warnings whose
+ * trigger no longer reads (a row deleted since the last validate) still get
+ * one line each under the panel's own “orphan” heading — a server warning is
+ * never silently dropped.
  */
 import { Panel } from "../../ds/Panel";
 import { STATES } from "../../ds/states";
@@ -60,20 +66,56 @@ function warningsForTrigger(warnings: readonly ValidateWarning[], triggerId: str
   );
 }
 
-/** One `!` line per warning — the server's message verbatim. The testid
- * names the trigger AND the input so a journey can pin each warning to its
- * own row; the id part is the warning's own trigger, so the orphan block
- * (whose lines come from several triggers) can never mint two equal ids. */
+/** One `!` line per warning — the author's sentence, built from the
+ * warning's own fields, with the server's line behind a `title` tooltip. The
+ * testid names the trigger AND the input so a journey can pin each warning to
+ * its own row; the id part is the warning's own trigger, so the orphan block
+ * (whose lines come from several triggers) can never mint two equal ids.
+ *
+ * rcn-1j review defect 3: this printed `warning.message` verbatim, which put
+ * `trigger server #labeled (issue, 01a19dd0-58ef-7581-a747-7776ae9f1fe5)
+ * cannot fill required input "issue" … (ADR-0066)` in front of the person
+ * editing the form — an internal uuid, a repository handle that belongs to
+ * the assignment the row already names, and an ADR number. The visible
+ * sentence is now composed from `input` + `trigger_kind` + `trigger_label`;
+ * the server's own line is never dropped, it rides the tooltip.
+ */
 function warningLines(warnings: readonly ValidateWarning[]) {
   return warnings.map((warning, index) => (
     <p
       key={`${warning.trigger_id ?? "trigger"}-${warning.input ?? "input"}-${index}`}
       className={`mt-[2px] font-mono text-[11px] ${STATES.waiting.paleFg}`}
       data-testid={`who-fills-warn-${warning.trigger_id ?? "trigger"}-${warning.input ?? index}`}
+      data-server-says={warning.message}
+      title={warning.message}
     >
-      {`! ${warning.message}`}
+      {`! ${unfillableWords(warning)}`}
     </p>
   ));
+}
+
+/**
+ * The author's sentence for one `input_unfillable_by_trigger` warning:
+ * "`ticket` is required and the issue trigger 'labeled' can't fill it".
+ *
+ * Nothing here decides WHICH input is short — the server named it. A
+ * schedule says "a schedule", which is ADR-0066's own framing (a schedule
+ * fills no run input; defaults carry the rest) and needs no cron echo beside
+ * a heading that already prints it. With no `input` field — a control plane
+ * predating the fields — no sentence can be built honestly, so the server's
+ * line is returned whole: a raw operator sentence beats a wrong author one.
+ */
+export function unfillableWords(warning: ValidateWarning): string {
+  if (!warning.input) return warning.message;
+  const trigger =
+    warning.trigger_kind === "issue"
+      ? warning.trigger_label
+        ? `the issue trigger '${warning.trigger_label}'`
+        : "the issue trigger"
+      : warning.trigger_kind === "schedule"
+        ? "a schedule"
+        : "this trigger";
+  return `${warning.input} is required and ${trigger} can't fill it`;
 }
 
 const ROW = "px-[12px] py-[8px]";
@@ -146,6 +188,19 @@ export function WhoFillsPanel({ specs, groups, loading, error, warnings }: WhoFi
                         : null;
                   const eventWord = trigger.event === "opened" ? "opened" : "labeled";
                   const triggerWarnings = warningsForTrigger(all, trigger.id);
+                  // rcn-1j review defect 3: one row may not both claim an
+                  // input is filled and warn that it is not. The ✓ is this
+                  // panel's reading of the DRAFT's mapping; a warning is the
+                  // SERVER's answer about the revision the assignment is
+                  // pinned to (the fire resolves against that plan, not the
+                  // draft), and the server is the authority. When the two name
+                  // the same input, the ✓ is silenced and the warning stands.
+                  const warnedInputs = new Set(
+                    triggerWarnings
+                      .map((warning) => warning.input)
+                      .filter((name): name is string => !!name),
+                  );
+                  const shownMapped = mapped && !warnedInputs.has(mapped) ? mapped : null;
                   return (
                     <div
                       key={trigger.id}
@@ -163,18 +218,24 @@ export function WhoFillsPanel({ specs, groups, loading, error, warnings }: WhoFi
                           </span>
                         ))}
                       </span>
-                      {mapped ? (
+                      {shownMapped ? (
                         <p
                           className={`mt-[2px] font-mono text-[11px] text-st-done-strong`}
                           data-testid={`who-fills-issue-line-${trigger.id}`}
                         >
-                          {`✓ ${mapped} ← the ${eventWord} issue`}
+                          {`✓ ${shownMapped} ← the ${eventWord} issue`}
                         </p>
                       ) : (
                         <p className={BODY} data-testid={`who-fills-issue-line-${trigger.id}`}>
-                          {issueSpecs.length === 0
-                            ? "the workflow declares no issue input to fill"
-                            : "the trigger maps no issue input yet"}
+                          {/* The input the panel would have claimed is named
+                              here as the thing the server refused, so the row
+                              still reads as one story instead of a ✗ line
+                              with no subject. */}
+                          {mapped
+                            ? `${mapped} is not filled by the pinned revision`
+                            : issueSpecs.length === 0
+                              ? "the workflow declares no issue input to fill"
+                              : "the trigger maps no issue input yet"}
                         </p>
                       )}
                       {warningLines(triggerWarnings)}

@@ -51,6 +51,17 @@ export function ComposerAgentChip({ session }: ComposerAgentChipProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const data = session.data;
   const blocked = agentSwitchBlockedReason(session);
+  // One sentence per fact, once on the screen (rcn-3d review item 5). A
+  // controller whose turn is open is told so by the composer's own explainer
+  // under the box — "A turn is already open (…). Wait for it to finish, or
+  // press Stop" — which is the longer, more actionable of the two lines, and
+  // the one wired to the input through `aria-describedby`. This chip's reason
+  // said the same thing a second time, inside the form, so it is not printed
+  // in that state; the disabled chip keeps it as its `title` tooltip and its
+  // accessible description, and every OTHER refusal (a non-controller, an
+  // archived thread) still prints, because there the explainer below says
+  // something different (who holds the wheel, or that the thread is closed).
+  const reasonIsOnTheScreenElsewhere = session.isController && session.turnInProgress;
   const current = agentLabel(data?.agent_profile_name ?? "agent", data?.agent_profile_model);
 
   const list = profiles.data?.items ?? [];
@@ -126,7 +137,7 @@ export function ComposerAgentChip({ session }: ComposerAgentChipProps) {
           items={items}
         />
       </span>
-      {blocked !== null ? (
+      {blocked !== null && !reasonIsOnTheScreenElsewhere ? (
         <p
           className="w-full font-mono text-[10.5px] text-faint"
           data-testid="composer-agent-chip-reason"

@@ -119,7 +119,24 @@ export type TranscriptItem =
       decidedBy: string | null;
       deadlineAt: string | null;
     }
-  | { kind: "system"; id: string; text: string; at: string };
+  | {
+      kind: "system";
+      id: string;
+      text: string;
+      at: string;
+      /**
+       * The wire's own words for this line (`stop_reason end_turn`,
+       * `launcher_id claude`), rendered only as a `title` tooltip.
+       *
+       * Review 2e: the transcript printed "Turn completed (end_turn)" and
+       * "Agent session connected (claude)" — protocol text a member cannot
+       * act on. The plain sentence is now the visible text (see
+       * `stopReasonWords`), and this carries what the harness actually said:
+       * still in the DOM for whoever can read it, never in the reading line.
+       * Absent means the line has no machine detail to hide.
+       */
+      raw?: string;
+    };
 
 /** What the journal says about one turn (merged with `active_turn` for display). */
 export interface TurnRecord {
@@ -192,6 +209,21 @@ export function formatElapsed(ms: number): string {
   if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
+
+/**
+ * The disconnect causes the worker reports (`internal/agent/acp/disconnect.go`
+ * and ADR-0068's `agent_switched`) in words. An unmapped reason adds no clause:
+ * the line says the session closed, which is true of every one of them, and the
+ * machine word stays in the tooltip rather than being guessed at.
+ */
+const DISCONNECT_WORDS: Record<string, string> = {
+  shutdown: "the worker shut down",
+  replaced: "a new session replaced it",
+  process_exited: "the agent process exited",
+  agent_process_exited: "the agent process exited",
+  acp_connection_closed: "the connection to the agent closed",
+  agent_switched: "the conversation's agent was switched",
+};
 
 const INTERRUPT_COPY: Record<string, string> = {
   lease_expired: "the worker's lease expired",
@@ -299,19 +331,55 @@ export function interruptedCopy(reason: string | null): string {
     : "Turn stopped — outcome unknown; you can send a new prompt";
 }
 
+/**
+ * The plain sentence for a harness stop reason (`review 2e`).
+ *
+ * `conversation.turn.completed`'s `stop_reason` is the ACP `stopReason` verbatim
+ * (`internal/domain/agent.go`: `end_turn`, `cancelled`, `max_tokens`, `refusal`,
+ * `other`, plus `max_turn_requests` for a turn that used up its request budget),
+ * and a harness may answer with a value this build has never seen. Every
+ * reading starts with the word "completed" — that is what the journal says of
+ * the turn — and adds WHY only when the reason carries one, because
+ * "completed (max_tokens)" is the protocol talking past the reader while
+ * "completed — the agent hit its token limit" is the same fact in English. An
+ * unknown reason adds no invented cause: the line stays "completed" and the
+ * machine word rides the tooltip.
+ */
+export function stopReasonWords(reason: string | null | undefined): string {
+  switch (reason) {
+    case "end_turn":
+    case "cancelled":
+    case null:
+    case undefined:
+    case "":
+      return "completed";
+    case "max_tokens":
+      return "completed — the agent hit its token limit";
+    case "max_turn_requests":
+      return "completed — the agent ran out of requests";
+    case "refusal":
+      return "completed — the agent declined to continue";
+    case "other":
+      return "completed — the agent gave no reason";
+    default:
+      return "completed — the agent gave a reason this app does not know";
+  }
+}
+
 /** Plain-language line for the journal rows that are not message content. */
 function systemLine(
   event: EventEnvelope,
   payload: Record<string, unknown>,
   nameOf: (userId: string) => string,
-): string | null {
+  agentName?: (launcherId: string) => string,
+): { text: string; raw?: string } | null {
   switch (event.type) {
     case "conversation.created":
       // The Projects handoff's first copy rule: “Conversations” becomes
       // “Threads” everywhere (docs/design/handoff-projects/README.md § 1) — the
       // event type is the wire's and stays `conversation.created`; the sentence
       // a person reads is the app's.
-      return `Thread started with ${str(payload, "agent_profile_name") || "an agent"}`;
+      return { text: `Thread started with ${str(payload, "agent_profile_name") || "an agent"}` };
     case "conversation.control.transferred": {
       // A uuid in a sentence nobody can act on is not information: the journal
       // identifies principals by id, the transcript names them.
@@ -321,35 +389,58 @@ function systemLine(
       // `to_kind` is `human`, `run_attempt` or `none` (`09`). Only a human has a
       // display name to resolve, so the other two get their own sentence rather
       // than an empty one.
-      if (toKind === "run_attempt") return "Control passed to a run attempt — no human is driving";
-      if (toKind !== "human" || !to) return "Control returned — nobody is driving";
-      if (reason === "returned") return `Control returned to ${nameOf(to)}`;
-      if (reason === "taken") return `Control taken by ${nameOf(to)}`;
-      return `Control transferred to ${nameOf(to)} (${reason})`;
+      if (toKind === "run_attempt")
+        return { text: "Control passed to a run attempt — no human is driving" };
+      if (toKind !== "human" || !to) return { text: "Control returned — nobody is driving" };
+      if (reason === "returned") return { text: `Control returned to ${nameOf(to)}` };
+      if (reason === "taken") return { text: `Control taken by ${nameOf(to)}` };
+      return { text: `Control transferred to ${nameOf(to)} (${reason})` };
     }
     case "conversation.turn.started": {
       const origin = str(payload, "session_origin");
-      if (origin === "resumed") return "Turn started on a resumed agent session";
-      if (origin === "reused") return "Turn continued on the live agent session";
-      return "Turn started on a new agent session";
+      if (origin === "resumed") return { text: "Turn started on a resumed agent session" };
+      if (origin === "reused") return { text: "Turn continued on the live agent session" };
+      return { text: "Turn started on a new agent session" };
     }
-    case "conversation.turn.completed":
-      return `Turn completed${str(payload, "stop_reason") ? ` (${str(payload, "stop_reason")})` : ""}`;
+    case "conversation.turn.completed": {
+      // Review 2e: "Turn completed (end_turn)" is the wire's sentence. The
+      // reader's is the plain word for the reason, and the reason rides the
+      // tooltip.
+      const reason = str(payload, "stop_reason");
+      return {
+        text: `Turn ${stopReasonWords(reason)}`,
+        raw: reason ? `stop_reason ${reason}` : "stop_reason (none reported)",
+      };
+    }
     case "conversation.turn.cancelled":
-      return "Turn cancelled";
+      return { text: "Turn cancelled" };
     case "conversation.turn.failed":
-      return `Turn failed${str(payload, "message") ? `: ${str(payload, "message")}` : ""}`;
+      return {
+        text: `Turn failed${str(payload, "message") ? `: ${str(payload, "message")}` : ""}`,
+      };
     case "conversation.turn.interrupted":
-      return interruptedCopy(str(payload, "reason") || null);
-    case "agent.session.connected":
-      return `Agent session connected (${str(payload, "launcher_id")})`;
-    case "agent.session.disconnected":
-      return `Agent session disconnected (${str(payload, "reason")})`;
+      return { text: interruptedCopy(str(payload, "reason") || null) };
+    case "agent.session.connected": {
+      // Review 2e: "Agent session connected (claude)" named the launcher.
+      // The agent is the profile the person chose, so name that.
+      const launcher = str(payload, "launcher_id");
+      const name = agentName ? agentName(launcher) : launcher || "the agent";
+      return {
+        text: `Connected to ${name || "the agent"}`,
+        raw: launcher ? `launcher_id ${launcher}` : "launcher_id (none reported)",
+      };
+    }
+    case "agent.session.disconnected": {
+      const reason = str(payload, "reason");
+      return {
+        text: `The agent session closed${DISCONNECT_WORDS[reason] ? ` — ${DISCONNECT_WORDS[reason]}` : ""}`,
+        raw: reason ? `reason ${reason}` : "reason (none reported)",
+      };
+    }
     default:
       return null;
   }
 }
-
 /** Fold journal frames into transcript items in the order they were committed. */
 export function projectTranscript(
   events: readonly EventEnvelope[],
@@ -367,6 +458,13 @@ export function projectTranscript(
    * old rendering: an unknown origin is never guessed to be an automation.
    */
   turnRows: readonly ConversationTurn[] = [],
+  /**
+   * Names the agent a `launcher_id` belongs to (review 2e). The surface that
+   * holds the conversation's profile row passes one; the default prints the
+   * launcher id the event carried, which is the wire's word — honest, and the
+   * only thing this build can say when no read names the launcher.
+   */
+  agentName?: (launcherId: string) => string,
 ): Transcript {
   const viaByTurn = new Map<string, TurnSubmittedVia>();
   for (const row of turnRows) {
@@ -611,8 +709,15 @@ export function projectTranscript(
             }
           }
         }
-        const line = systemLine(event, payload, nameOf);
-        if (line) push({ kind: "system", id: event.event_id, text: line, at });
+        const line = systemLine(event, payload, nameOf, agentName);
+        if (line)
+          push({
+            kind: "system",
+            id: event.event_id,
+            text: line.text,
+            ...(line.raw ? { raw: line.raw } : {}),
+            at,
+          });
         break;
       }
     }
@@ -699,14 +804,33 @@ export function turnStatusText(
         ? "running — stop requested, waiting for the agent"
         : "running";
     case "completed":
-      return `completed${record?.stopReason ? ` (${record.stopReason})` : ""}`;
+      // Review 2e: "completed (end_turn)" in a header is the protocol's
+      // sentence, not the reader's — `stopReasonWords` is the one place the
+      // mapping lives, so the header and the transcript line agree.
+      return stopReasonWords(record?.stopReason);
     case "cancelled":
       return `cancelled${record?.requestedBy ? " (requested by a controller)" : ""}`;
     case "failed":
-      return `failed${record?.stopReason ? ` (${record.stopReason})` : ""}`;
+      return "failed";
     case "interrupted":
       return "stopped — outcome unknown";
     default:
       return status;
   }
+}
+
+/**
+ * The wire's own words behind `turnStatusText`, for a `title` tooltip only
+ * (review 2e): "✓ completed (end_turn)" printed the harness's enum where the
+ * reader needed one word. The enum is evidence — the turn genuinely ended for
+ * that reason — so it stays in the DOM, off the reading line.
+ */
+export function turnStatusDetail(
+  turns: readonly TurnRecord[],
+  activeTurn?: ConversationTurn | null,
+): string | null {
+  const { status, record } = describeTurn(turns, activeTurn);
+  if (!record?.stopReason) return null;
+  if (status !== "completed" && status !== "failed") return null;
+  return `stop_reason ${record.stopReason}`;
 }

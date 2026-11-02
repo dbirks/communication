@@ -7,6 +7,7 @@ import {
   interruptedCopy,
   runLinkOf,
   submitterCopy,
+  turnStatusDetail,
   turnStatusText,
 } from "../api/transcript";
 import { formatAge } from "../lib/format";
@@ -35,6 +36,7 @@ import {
   type AssistantNote as AssistantNoteRow,
 } from "../api/notes";
 import { ConversationTranscript } from "../components/conversation/ConversationTranscript";
+import { NO_BRANCH_YET, threadBranch } from "../components/conversation/threadBranch";
 import { ThreadListPane } from "../components/threads/ThreadListPane";
 import { useConversationSession } from "../components/conversation/useConversationSession";
 import { useIsNarrow } from "../components/Shell";
@@ -275,6 +277,9 @@ export default function ConversationPage({
   // One description of the turn drives the status line, the interrupted notice
   // and whether the composer may accept a prompt.
   const turnStatus = turnStatusText(transcript.turns, activeTurn);
+  // Review 2e defect 1: the harness's stop reason is evidence, not reading
+  // matter — it rides the status word's tooltip and nowhere else.
+  const turnStatusRaw = turnStatusDetail(transcript.turns, activeTurn);
   const interrupted = described.status === "interrupted";
   // ADR-0062: `active_turn.submitted_by` is the person who typed the prompt only
   // when the row says `submitted_via: human`. For a fired run's turn it is the
@@ -336,16 +341,24 @@ export default function ConversationPage({
         : !threadWorkspace
           ? "no workspace yet"
           : "no repository attached";
-  const threadBranch = workspaceRepos[0]?.run_ref ?? "";
-  // Honest file count: the workspace manifest's modified paths, or nothing.
-  const filesChanged = workspaceRepos[0]?.modified_paths?.length ?? null;
+  const threadBranchInfo = threadBranch(workspaceRepos, repositoryName);
+  // The branch the header and BRANCH print (rcn-2e review defect 2). The
+  // workspace row this thread OWNS is the source — never `repos[0]`, which is
+  // the alphabetically first repository of a workspace the agent sees whole
+  // (`05` § workspace layout mirrors EVERY repo of the project, so the reviewed
+  // chat in `web` printed `server`'s ref) — and a `<scope-id>/<name>` ref is
+  // machine topology, not a branch a person named, so it prints "no branch
+  // yet". `null` is the honest "there is no workspace to speak of".
+  const threadBranchLabel = threadWorkspace ? threadBranchInfo.label : null;
+  // Honest file count: the thread's own repository's manifest, or nothing.
+  const filesChanged = threadBranchInfo.filesChanged;
 
   const sidePanel = (
     <ConversationSidePanel
       projectId={projectId}
       repoName={repositoryName}
       worksInNote={worksInNote}
-      branch={threadBranch || null}
+      branch={threadBranchLabel}
       filesChanged={filesChanged}
       agents={data.agents ?? null}
       // ADR-0072 agent mail: the rail's LINKED CHATS list reads the detail's
@@ -770,15 +783,22 @@ export default function ConversationPage({
                 row rather than clipping either half. */}
             <div className="mt-[2px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
               <p
-                className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1"
+                className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1 lg:order-1"
                 data-testid="conversation-meta"
               >
                 <span>{repoLabel}</span>
                 <span className="px-2" aria-hidden="true">
                   ·
                 </span>
+                {/* A real branch name keeps the design's `branch <name>`
+                    prefix; "no branch yet" / "no branch recorded" is a state
+                    sentence and wears no prefix (rcn-2e review defect 2). */}
                 <span data-testid="thread-branch">
-                  {threadBranch ? `branch ${threadBranch}` : "no branch recorded"}
+                  {threadBranchLabel === null
+                    ? "no branch recorded"
+                    : threadBranchLabel === NO_BRANCH_YET
+                      ? NO_BRANCH_YET
+                      : `branch ${threadBranchLabel}`}
                 </span>
                 <span className="px-2" aria-hidden="true">
                   ·
@@ -788,19 +808,26 @@ export default function ConversationPage({
                   ·
                 </span>
                 <span data-testid="thread-age">{formatAge(data.created_at)}</span>
-                {turnOrigin ? (
-                  <>
+              </p>
+              {/* The two CONDITIONAL facts ride their own row (rcn-2e review
+                  defect 2: with the workspace ref, the automation line and the
+                  session line all in one paragraph, this meta block wrapped to
+                  FIVE lines beside the status). Repo · branch · agent · age is
+                  the fixed line the design draws and always fits; who a turn
+                  runs for, and what session is attached, are the thread's
+                  context — a second short line, never a fifth wrap. */}
+              {turnOrigin || data.agent_session ? (
+                <p
+                  className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] text-muted lg:order-3 lg:basis-full"
+                  data-testid="conversation-context"
+                >
+                  {turnOrigin ? <span data-testid="turn-origin">{turnOrigin}</span> : null}
+                  {turnOrigin && data.agent_session ? (
                     <span className="px-2" aria-hidden="true">
                       ·
                     </span>
-                    <span data-testid="turn-origin">{turnOrigin}</span>
-                  </>
-                ) : null}
-                {data.agent_session ? (
-                  <>
-                    <span className="px-2" aria-hidden="true">
-                      ·
-                    </span>
+                  ) : null}
+                  {data.agent_session ? (
                     <span data-testid="agent-session">
                       agent: {data.agent_session.launcher_id} (
                       {data.agent_session.session_origin === "resumed"
@@ -808,9 +835,9 @@ export default function ConversationPage({
                         : "new session"}
                       )
                     </span>
-                  </>
-                ) : null}
-              </p>
+                  ) : null}
+                </p>
+              ) : null}
               {/* The quiet state readout (1g), pass review defect 2: no
                   leading, trailing or empty dot-segments. It reads as the
                   turn's word with its state glyph — the glyph hidden for
@@ -822,13 +849,17 @@ export default function ConversationPage({
                   stream has no word to print after a separator, and "word · •"
                   was exactly the stray tail the review named — its `role=
                   "status"` element stays for announcements, read-only. */}
-              <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] lg:mt-0 lg:shrink-0">
+              <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] lg:order-2 lg:mt-0 lg:shrink-0">
                 {turnHasGlyph ? (
                   <span aria-hidden="true" className={turnSpec.tagFg}>
                     {turnSpec.glyph}
                   </span>
                 ) : null}
-                <span data-testid="turn-status" className="text-faint">
+                <span
+                  data-testid="turn-status"
+                  title={turnStatusRaw ?? undefined}
+                  className="text-faint"
+                >
                   {turnStatus}
                 </span>
                 {status === "live" ? (
@@ -1036,7 +1067,10 @@ export default function ConversationPage({
             <span className="px-2" aria-hidden="true">
               ·
             </span>
-            <span className="inline-flex items-center gap-1.5">
+            {/* The legacy page labels its chips (`turn:`), so the raw stop
+                reason rides the pair's own span — `StatusChip`'s labelProps is
+                a narrow set of attributes and not this task's file. */}
+            <span className="inline-flex items-center gap-1.5" title={turnStatusRaw ?? undefined}>
               turn:
               <StatusChip
                 state={stateOf(TURN_STATE[described.status])}

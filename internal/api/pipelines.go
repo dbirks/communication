@@ -375,14 +375,29 @@ type ValidateResponse struct {
 // Decision): it refuses nothing — assignments stay editable after publish, so
 // a hard failure would refuse a workflow one edit from complete — and it
 // names the assigned trigger and the input the trigger cannot fill.
+//
+// The named parts are FIELDS, not just prose (rcn-1j review defect): the
+// Inputs tab printed the operator's `message` whole —
+// `trigger server #labeled (issue, 01a19dd0-58ef-…) cannot fill required
+// input "issue" … (ADR-0066)` — where the author needed "issue is required
+// and the issue trigger 'labeled' can't fill it". Kind, label and input name
+// are therefore in the body so the UI composes a sentence instead of scraping
+// one out of prose; `message` stays verbatim for the tooltip and for CLI
+// consumers, and adding fields never breaks a reader that ignores them.
 type ValidateWarning struct {
 	Code        string `json:"code"`
 	Source      string `json:"source"`
 	Message     string `json:"message"`
 	TriggerID   string `json:"trigger_id,omitempty"`
 	TriggerKind string `json:"trigger_kind,omitempty"`
-	ProjectID   string `json:"project_id,omitempty"`
-	Input       string `json:"input,omitempty"`
+	// TriggerLabel is the trigger's own word the reader's sentence names it
+	// with: the event (`labeled`, `opened`) for an issue trigger, the cron
+	// expression for a schedule. It is the repository-free half of `Name`, so
+	// the row heading ("Issue labeled" / "Schedule · every night") and the
+	// warning under it can never disagree.
+	TriggerLabel string `json:"trigger_label,omitempty"`
+	ProjectID    string `json:"project_id,omitempty"`
+	Input        string `json:"input,omitempty"`
 }
 
 // CodeInputUnfillableByTrigger is the ADR-0066 publish/validate warning: a
@@ -399,7 +414,28 @@ type TriggerFillFacts struct {
 	ID        string
 	ProjectID string
 	Name      string // human handle for the warning message (cron expr, repo#event)
-	Fills     []string
+	// Label is the trigger's own word WITHOUT the repository prefix — the
+	// warning's `trigger_label`. Optional: a fact table that does not fill it
+	// falls back to `triggerLabel`, which reads the event off Name.
+	Label string
+	Fills []string
+}
+
+// triggerLabel is a fact row's `trigger_label`: the Label the read carried,
+// else the part of Name that names the trigger — an issue trigger's Name is
+// `<repo> #<event>`, and the author's sentence wants the event word, because
+// the repository is the assignment the row is already filed under.
+func triggerLabel(fact TriggerFillFacts) string {
+	if fact.Label != "" {
+		return fact.Label
+	}
+	if fact.Kind != "issue" {
+		return fact.Name
+	}
+	if i := strings.LastIndex(fact.Name, "#"); i >= 0 {
+		return strings.TrimSpace(fact.Name[i+1:])
+	}
+	return fact.Name
 }
 
 // TriggerFactStore is the OPTIONAL store face the publish-time warning needs
@@ -453,13 +489,14 @@ func inputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFact
 				continue
 			}
 			warnings = append(warnings, ValidateWarning{
-				Code:        CodeInputUnfillableByTrigger,
-				Source:      "trigger",
-				Message:     fmt.Sprintf("trigger %s (%s, %s) cannot fill required input %q and it has no default; a run it fires will be refused at the start (ADR-0066)", fact.Name, fact.Kind, fact.ID, spec.Name),
-				TriggerID:   fact.ID,
-				TriggerKind: fact.Kind,
-				ProjectID:   fact.ProjectID,
-				Input:       spec.Name,
+				Code:         CodeInputUnfillableByTrigger,
+				Source:       "trigger",
+				Message:      fmt.Sprintf("trigger %s (%s, %s) cannot fill required input %q and it has no default; a run it fires will be refused at the start (ADR-0066)", fact.Name, fact.Kind, fact.ID, spec.Name),
+				TriggerID:    fact.ID,
+				TriggerKind:  fact.Kind,
+				TriggerLabel: triggerLabel(fact),
+				ProjectID:    fact.ProjectID,
+				Input:        spec.Name,
 			})
 		}
 	}

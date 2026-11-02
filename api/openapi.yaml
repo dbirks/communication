@@ -9274,6 +9274,12 @@ components:
         input with no default that this assigned trigger cannot fill, naming
         both. The run start remains the authority and refuses with a named
         error.
+
+        The warning carries its parts as FIELDS (`trigger_kind`,
+        `trigger_label`, `input`) as well as in prose: a UI that renders
+        `message` verbatim shows a member a uuid, an internal repository handle
+        and an ADR number. `message` is the operator's line and stays
+        available; the sentence a person reads is built from the fields.
       type: object
       required: [code, source, message]
       properties:
@@ -9292,13 +9298,30 @@ components:
         trigger_kind:
           type: string
           enum: [issue, schedule]
+        trigger_label:
+          type: string
+          description: >
+            The trigger's own word, so a client can write the author's sentence
+            (`issue is required and the issue trigger 'labeled' can't fill it`)
+            from the fields instead of scraping a name out of `message`: the
+            event (`labeled`, `opened`) for an issue trigger, the cron
+            expression for a schedule. Deliberately repository-free — the
+            trigger's row heading already names the repository, and a warning
+            under it that repeated it would read like a different trigger.
+            `message` remains the operator's full line (it quotes the
+            repository, the kind, the id and ADR-0066) and is the right thing
+            to show behind a tooltip, never in the author's sentence.
         project_id:
           type: string
           format: uuid
           description: The project owning the assignment behind this trigger.
         input:
           type: string
-          description: The run input the trigger cannot fill.
+          description: >
+            The run input the trigger cannot fill. The client's sentence names
+            THIS input, so the ✓ line for the same input on the same trigger
+            row is contradicted by it and must not print beside it.
+
     ValidateProblem:
       title: ValidateProblem
       description: >

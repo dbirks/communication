@@ -61,11 +61,17 @@ describe("QuestionCard", () => {
     expect(onAnswer.mock.calls[2][0]).toBe("Add a second reviewer on Codex");
   });
 
-  it("offers “Or say it your way…” and reports the free-text intent", () => {
+  it("offers the free-text path as a plain hint, not a quoted mono string", () => {
     const onFreeText = vi.fn();
     render(<QuestionCard question={question()} onAnswer={() => {}} onFreeText={onFreeText} />);
+    // rcn-2f review item 1: the affordance wore `font-mono` and curly quotes,
+    // so at 390 a person's own next sentence read like a string the assistant
+    // had quoted at them. Same affordance, prose face, no quotes.
     fireEvent.click(screen.getByTestId("assistant-question-freetext"));
     expect(onFreeText).toHaveBeenCalledTimes(1);
+    const hint = screen.getByTestId("assistant-question-freetext");
+    expect(hint.textContent).toBe("Or say it your way…");
+    expect(hint.className).not.toContain("font-mono");
   });
 
   it("keeps an answered question's options on screen, inert, the chosen one inked (2f)", () => {

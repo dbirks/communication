@@ -1509,10 +1509,28 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       // predates the issue input, so the pinned revision resolves no mapping
       // for it. Asserted nowhere here on purpose: the panel's ✓ line above is
       // the client's own single-issue-input reading.)
+      //
+      // The line is the panel's OWN sentence built from the warning's
+      // structured fields: an id-bearing human sentence, never the server's
+      // raw text with its fact id and ADR reference in the member's reading
+      // line. Those parts stay one hover away in the title attribute.
+      const ticketWarn = page
+        .locator('[data-testid^="who-fills-warn-"][data-testid$="-ticket"]')
+        .first();
       await expect(
-        page.locator('[data-testid^="who-fills-warn-"][data-testid$="-ticket"]').first(),
-        "ADR-0066: the required input no trigger fills shows the server's warning",
-      ).toContainText(/^! .*cannot fill required input "ticket"/i, { timeout: 30_000 });
+        ticketWarn,
+        "ADR-0066: the required input no trigger fills is named in a sentence",
+      ).toContainText(/^! ticket is required and the issue trigger/i, { timeout: 30_000 });
+      await expect(
+        ticketWarn,
+        "round-4 defect 3: the sentence carries no fact id, no ADR citation",
+      ).not.toContainText(/01[0-9a-f]{7}-|adr-/i);
+      await expect(
+        ticketWarn,
+        "the raw warning stays in the tooltip for whoever debugs the form",
+      ).toHaveAttribute(/title/i, /cannot fill required input "ticket".*ADR-0066/i, {
+        timeout: 15_000,
+      });
       // And the inputs the trigger DOES template get no warning: the panel
       // may not invent one (4aa75fe — the seeded trigger's `inputs` map
       // carries `goal` and `repository`, so both are fillable).

@@ -543,3 +543,42 @@ func TestDraftingRulesInTheSystemPrompt(t *testing.T) {
 		}
 	}
 }
+
+// The rcn-2f review caught both halves of the ordering contract breaking in
+// the same reply: the assistant asked "The chat proved one step: Claude Code
+// replies. How far should the workflow go?" as PROSE and then rendered the
+// identical sentence inside the question card, and no step list appeared at
+// all — the person was asked to decide about a draft they had never seen.
+// Design 2f's order is list first, question second, and the card is the only
+// place the question is written.
+func TestDraftingRulesPutTheListBeforeTheQuestionAndNeverRepeatIt(t *testing.T) {
+	for _, want := range []string{
+		// The list comes first, in the SAME turn as the first question.
+		"The STEP LIST comes FIRST, in the SAME turn as your first question",
+		"never a turn of questions with the list saved for later",
+		// The text half never restates what the card already says.
+		"must NOT repeat the question or its options",
+		"shows the same sentence twice",
+	} {
+		if !strings.Contains(conversationSystemPrompt, want) {
+			t.Fatalf("the conversation system prompt must carry the 2f ordering rule %q", want)
+		}
+	}
+	// And the few-shot still shows the shape in that order: the list lines
+	// precede the parenthetical that names the ui.question half.
+	listAt := strings.Index(conversationSystemPrompt, "✓ Plan — Claude Code")
+	sampleAt := strings.Index(conversationSystemPrompt, "(the ui.question half")
+	if listAt < 0 || sampleAt < 0 {
+		t.Fatalf("the few-shot example lost its shape:\n%s", conversationSystemPrompt)
+	}
+	if listAt > sampleAt {
+		t.Errorf("the few-shot must model the step list BEFORE the question (list@%d question@%d)",
+			listAt, sampleAt)
+	}
+	// The example's text half must not contain the question it asks: a
+	// few-shot that repeats it teaches the repetition back.
+	shot := conversationSystemPrompt[listAt:sampleAt]
+	if strings.Contains(shot, "Should it repeat until clean?") {
+		t.Errorf("the few-shot's text half repeats the question it asks:\n%s", shot)
+	}
+}
