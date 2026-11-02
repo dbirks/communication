@@ -97,6 +97,12 @@ func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, err
 		if a.ErrorClass != "" {
 			d.Context["error_class"] = a.ErrorClass
 		}
+		// Same rule as the automatic retry (ADR-0023 § 6): a manual retry of a
+		// node whose last reply was schema-refused inherits the violations too,
+		// so the next attempt is told what to correct.
+		if fb := ValidationFeedback(a); len(fb) > 0 {
+			d.Context["validation_errors"] = fb
+		}
 	}
 	if last != nil {
 		for _, r := range last.RepoStates {

@@ -632,6 +632,12 @@ func (ac *advanceCtx) workerNode(pn *compiler.Node, row *NodeExecution) error {
 					ctx[k] = v
 				}
 			}
+			// A rejected reply is the one failure the NEXT attempt can fix by
+			// itself, if it is told what was wrong: name the violating fields in
+			// the retry_context the worker folds into its prompt (ADR-0023 § 6).
+			if fb := ValidationFeedback(last); len(fb) > 0 {
+				ctx["validation_errors"] = fb
+			}
 			if err := ac.queueAttempt(pn, row, scheduled, ctx); err != nil {
 				return err
 			}

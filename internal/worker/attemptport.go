@@ -86,6 +86,21 @@ type AttemptClaim struct {
 	// advancer's per-attempt resolution; it is opaque to the loop and owned
 	// by the executor for the kind.
 	Config map[string]any
+
+	// RetryContext is attempts.retry_context — what this attempt inherits as a
+	// retry (ADR-0023 § 6): {attempt, error_class, head_commit, …} and, after
+	// an invalid_output refusal, validation_errors naming the rejected fields.
+	// nil on a first attempt. The agent.acp prompt builder folds
+	// validation_errors into the prompt so a rejected reply learns why it was
+	// refused instead of repeating it.
+	RetryContext map[string]any
+
+	// OutputsSchema is the node's declared outputs JSON Schema exactly as the
+	// pinned plan carries it (nil = the plan declares nothing). The agent.acp
+	// prompt states its machine-checked constraints up front: the boundary
+	// judges the reply against this schema (ADR-0022 § 4 rule 2), so the agent
+	// must be able to see the rules it will be held to.
+	OutputsSchema any
 }
 
 // AttemptEvent is one journal append made on behalf of an attempt. The store

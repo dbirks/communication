@@ -391,6 +391,9 @@ func (a *AgentTurn) parseConfig(c AttemptClaim) (agentTurnSpec, *AttemptResult) 
 			return fail(ErrorClassInfra, fmt.Sprintf("agent.acp fallback %q is not new or fail (§ 4 step 6)", f))
 		}
 	}
+	// The prompt the session actually sees states the output contract (and,
+	// on a retry after invalid_output, the exact refusal it must correct).
+	spec.prompt = decorateAgentPrompt(spec.prompt, c)
 	return spec, nil
 }
 

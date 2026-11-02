@@ -97,6 +97,21 @@ func testDeclaredOutputsBoundary(t *testing.T, f Factory) {
 	if !strings.Contains(scheduled, "invalid_output") {
 		t.Fatalf("node.attempt.retry_scheduled does not name the invalid_output retry: %q", scheduled)
 	}
+	// ADR-0073: the queued retry also carries the DURABLE correction —
+	// retry_context.validation_errors names the field that broke, so the
+	// worker's prompt builder can tell the agent instead of handing it the
+	// same prompt again (lab live16: three refusals, three identical prompts).
+	rcx := st.Attempts[1].RetryContext
+	if rcx == nil {
+		t.Fatal("the invalid_output retry carries no retry_context (ADR-0023 § 6)")
+	}
+	fb, _ := rcx["validation_errors"].([]any)
+	if len(fb) == 0 {
+		t.Fatalf("retry_context.validation_errors = %#v, want the refused field named for the next attempt", rcx["validation_errors"])
+	}
+	if blob := encodeJSON(fb); !strings.Contains(blob, "/evidence") || !strings.Contains(blob, "type") {
+		t.Fatalf("retry_context.validation_errors lost the instance location or the rule: %s", blob)
+	}
 
 	// And the retry gets it right: a valid envelope still succeeds normally —
 	// the boundary refuses the lie, not the work. The retry is queued with the

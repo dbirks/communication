@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
@@ -156,6 +158,79 @@ func violations(nodeKey string, err error) *OutputRejection {
 		}}
 	}
 	return rej
+}
+
+// maxRetryValidationErrors bounds retry_context.validation_errors: the block
+// is guidance for the next attempt, not an evidence dump (§ 6's bounded
+// detail rule, and the block is prompt material for a real model).
+const maxRetryValidationErrors = 8
+
+// gotWantRe pulls the machine-readable bounds out of the schema messages the
+// library already emits ("maxLength: got 647, want 600", "got string, want
+// boolean"). These are JSON-Schema sentences; nothing secret can ride in them.
+var gotWantRe = regexp.MustCompile(`got ([^,]{1,64}), want (.{1,64})$`)
+
+// ValidationFeedback turns a failed attempt's invalid_output evidence
+// (attempts.output_errors, written by violations/Entries) into the
+// retry_context.validation_errors block: [{path, rule, got, want, message},
+// …]. ADR-0023 § 6 already promises "the retry's prompt gains a recorded
+// retry_context block"; naming WHICH field violated WHICH rule is what lets
+// the next attempt actually correct itself instead of repeating the reply
+// (lab live16: three invalid_output attempts, each 647/760/765 chars against
+// maxLength 600, each seeing the same prompt). An attempt that did not fail
+// invalid_output, or whose evidence is unreadable, yields nil — the block is
+// simply absent, exactly as before. Bounded to
+// maxRetryValidationErrors entries; entries with no path and no rule are
+// dropped rather than carried as noise.
+func ValidationFeedback(a *Attempt) []any {
+	if a == nil || a.ErrorClass != ErrInvalidOutput || len(a.OutputErrors) == 0 {
+		return nil
+	}
+	out := make([]any, 0, maxRetryValidationErrors)
+	for _, e := range a.OutputErrors {
+		if len(out) >= maxRetryValidationErrors {
+			break
+		}
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := m["instance_location"].(string)
+		rule, _ := m["keyword"].(string)
+		msg, _ := m["message"].(string)
+		if path == "" {
+			path, _ = m["location"].(string) // the keyword location still names the schema site
+		}
+		if path == "" || rule == "" {
+			continue
+		}
+		entry := map[string]any{"path": clip(path, 160), "rule": clip(rule, 64)}
+		if msg != "" {
+			entry["message"] = clip(msg, 200)
+			if g := gotWantRe.FindStringSubmatch(msg); g != nil {
+				entry["got"] = clip(strings.TrimSpace(g[1]), 64)
+				entry["want"] = clip(strings.TrimSpace(g[2]), 64)
+			}
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// clip bounds a retry-context string to n bytes without splitting a rune.
+func clip(s string, n int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for !utf8.ValidString(s) && len(s) > 0 {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func boundedMessage(s string) string {

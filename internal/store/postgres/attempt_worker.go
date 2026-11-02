@@ -95,12 +95,20 @@ func (s *AttemptStore) ClaimAttempts(ctx context.Context, workerID string, capac
 	if len(claims) == 0 {
 		return nil, nil
 	}
-	configs := s.hydrateConfigs(ctx, claims)
+	configs, schemas := s.hydrateConfigs(ctx, claims)
 	out := make([]worker.AttemptClaim, 0, len(claims))
 	for _, c := range claims {
 		var deadline time.Time
 		if c.DeadlineAt != nil {
 			deadline = *c.DeadlineAt
+		}
+		// attempts.retry_context travels verbatim: the advancer wrote it, the
+		// agent prompt folds its validation_errors into the next turn
+		// (ADR-0023 § 6). Unparseable JSON degrades to "no context", never to
+		// a lost claim.
+		var retryCtx map[string]any
+		if len(c.RetryContext) > 0 {
+			_ = json.Unmarshal(c.RetryContext, &retryCtx)
 		}
 		out = append(out, worker.AttemptClaim{
 			AttemptID: c.AttemptID, NodeExecutionID: c.NodeExecutionID,
@@ -108,20 +116,24 @@ func (s *AttemptStore) ClaimAttempts(ctx context.Context, workerID string, capac
 			WorkerID: c.WorkerID, FencingToken: c.FencingToken,
 			NodeID: c.NodeID, NodeInstanceKey: c.NodeInstanceKey,
 			Kind: c.Kind, AttemptNumber: c.AttemptNumber,
-			DeadlineAt: deadline,
-			Config:     configs[c.AttemptID],
+			DeadlineAt:    deadline,
+			Config:        configs[c.AttemptID],
+			RetryContext:  retryCtx,
+			OutputsSchema: schemas[c.AttemptID],
 		})
 	}
 	return out, nil
 }
 
 // hydrateConfigs resolves one node's compiled config per claimed attempt in a
-// single read of the immutable pinned snapshot. A node whose plan entry is
+// single read of the immutable pinned snapshot, and reads the node's declared
+// outputs schema from the same rows (the prompt states its constraints; the
+// boundary judges the reply by them). A node whose plan entry is
 // missing yields no Config at all — the executor's honest refusal, not this
 // read's failure. Errors degrade to "no config", never to a lost claim: the
 // lease is already committed here, and a claim the worker cannot run closes
 // through the loop, visibly, rather than silently going unclaimed.
-func (s *AttemptStore) hydrateConfigs(ctx context.Context, claims []AttemptClaim) map[string]map[string]any {
+func (s *AttemptStore) hydrateConfigs(ctx context.Context, claims []AttemptClaim) (map[string]map[string]any, map[string]any) {
 	ids := make([]string, 0, len(claims))
 	for _, c := range claims {
 		ids = append(ids, c.NodeExecutionID)
@@ -131,7 +143,7 @@ func (s *AttemptStore) hydrateConfigs(ctx context.Context, claims []AttemptClaim
 		FROM node_executions ne JOIN runs r ON r.id = ne.run_id
 		WHERE ne.id = ANY($1::uuid[])`, ids)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer rows.Close()
 	type planRef struct {
@@ -146,14 +158,15 @@ func (s *AttemptStore) hydrateConfigs(ctx context.Context, claims []AttemptClaim
 			payload string
 		)
 		if err := rows.Scan(&id, &payload); err != nil {
-			return nil
+			return nil, nil
 		}
 		byNode[id] = planRef{payload: []byte(payload)}
 	}
 	if err := rows.Err(); err != nil {
-		return nil
+		return nil, nil
 	}
 	out := map[string]map[string]any{}
+	schemas := map[string]any{}
 	plans := map[string]*planShape{}
 	for _, c := range claims {
 		ref, ok := byNode[c.NodeExecutionID]
@@ -169,9 +182,12 @@ func (s *AttemptStore) hydrateConfigs(ctx context.Context, claims []AttemptClaim
 		if cfg := plan.nodeConfig(scopePathNoIndexes(c.ScopeKey), c.NodeID); cfg != nil {
 			out[c.AttemptID] = cfg
 		}
+		if s := plan.nodeOutputs(scopePathNoIndexes(c.ScopeKey), c.NodeID); s != nil {
+			schemas[c.AttemptID] = s
+		}
 	}
 	s.resolveBindings(ctx, claims, out)
-	return out
+	return out, schemas
 }
 
 // resolveBindings closes the loop § 4 step 6 opens: the plan snapshot carries
