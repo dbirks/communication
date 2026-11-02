@@ -155,6 +155,21 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
     reason: "desktop-only affordance (drag resizer for the side dock); the phone sheet replaces it",
     reach: "workbench-dock-panel",
   },
+  // The chat's side panel (`ui/src/pages/Conversation.tsx`): at desktop widths
+  // it is the 280px right column `thread-side-panel-aside`; below 1024px the
+  // SAME panel reflows under the transcript as `thread-side-panel-stack`. The
+  // swap is pinned by
+  // `ui/src/components/conversation/ConversationChatSurface.test.tsx`
+  // ("the side panel follows the width": "mounts as the 280px right column at
+  // desktop widths" / "collapses under the transcript below 1024px"). No
+  // `subtree`: only the aside wrapper's own testid swaps — the panel inside it
+  // (`conversation-side-panel` and every `side-panel-*` id) renders in the
+  // stack too, so parity stays proven item-by-item at 390.
+  "thread-side-panel-aside": {
+    reason:
+      "the chat side panel reflows under the transcript below 1024px as thread-side-panel-stack (ConversationChatSurface.test.tsx pins the swap; the panel's content renders inside the stack)",
+    reach: "thread-side-panel-stack",
+  },
   // The Studio edge "+"'s hover word (`ui/src/components/studio/edges.tsx`):
   // `opacity-0` until the "+" is hovered or keyboard-focused, so the 1280
   // capture can paint `insert step` while the 390 capture never does — touch

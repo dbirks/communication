@@ -34,9 +34,11 @@
 //   rcn-1k — Run from the repo's workflow row opens the form whose fields are
 //            built from the pinned revision's declared inputs. Cancelled —
 //            these journeys never start a run of this pin.
-//   3d     — agent mail is NOT journeyed: the inline card needs two live
-//            agents actually conversing, which no scripted pass may stage
-//            without inventing data. TODO below.
+//   3d     — agent mail (ADR-0072): the settings switch turned ON through
+//            the UI, a chat in `web` whose agent emits the fenced
+//            `communication-mail` block on a real model, the inline card,
+//            LINKED CHATS, the answer arriving, and the asked chat's
+//            workspace proving no writes over the API.
 //
 // Seeding (per pass, over the API the way setup/empty-error do it): admin
 // publishes "Emu rcn <pass>" (the plan-with-approval template with the
@@ -73,6 +75,70 @@ const EMU_LABEL = `emu-rcn-${EMU_PASS_ID}`;
 const SEED_CHAT_TITLE = `Emu rcn chat ${EMU_PASS_ID}`;
 /** The chat-box prompt: its first line becomes the thread's title. */
 const CHAT_PROMPT = `EMU-RCN ${EMU_PASS_ID} — reply with exactly OK`;
+// Agent mail (design 3d, ADR-0072). The token rides INSIDE the question the
+// asking agent must copy verbatim into the fenced block, so the mail card's
+// question line is assertable without matching model prose.
+const MAIL_CHAT_TITLE = `Emu rcn mail ${EMU_PASS_ID}`;
+const MAIL_QUESTION_TOKEN = `EMU-Q-${EMU_PASS_ID}`;
+/** The 3d prompt. The worker's `MailPreamble` (internal/worker/mail.go)
+ * already tells the agent the fenced block exists; this prompt commands
+ * THAT exact block verbatim, so the only live-model risk left is whether it
+ * obeys. Nothing is edited, and the model must not answer the question
+ * itself — the ask must ride the mail channel. */
+const MAIL_PROMPT =
+  `EMU-RCN ${EMU_PASS_ID} MAIL — use agent mail exactly once, then stop.\n\n` +
+  `Ask the agent in the "${GH_REPO}" repository one question with the communication-mail fenced block. End your reply with EXACTLY this block and nothing after it — same fence name, same JSON, question text copied character for character:\n\n` +
+  "```communication-mail\n" +
+  `{"repo": "${GH_REPO}", "question": "${MAIL_QUESTION_TOKEN} — what is in this repository? Answer in one short sentence."}\n` +
+  "```\n\n" +
+  "Do not edit any file, do not answer the question yourself, and do not ask anything else.";
+
+/** What `waitForMailLink` settles with: the outgoing link's terminal facts. */
+interface MailLinkRow {
+  state: string;
+  answer: string | null;
+  reason: string | null;
+  otherConversationId: string;
+}
+
+/** Poll the asking chat's detail until its outgoing link leaves `asked`
+ * (answered | failed | expired — ADR-0072 § 5) or the budget runs out. The
+ * page streams the same facts; this is the journey's independent read, and
+ * the settled row's reason/answer is what names a failing leg. */
+async function waitForMailLink(
+  page: Page,
+  chatId: string,
+  budgetMs: number,
+): Promise<MailLinkRow | null> {
+  const deadline = Date.now() + budgetMs;
+  let last: MailLinkRow | null = null;
+  for (;;) {
+    const res = await page.request.get(`${EMU_BASE_URL}/api/v1/conversations/${chatId}`);
+    if (res.status() === 200) {
+      const detail = (await res.json()) as {
+        linked_chats?: {
+          direction: string;
+          state: string;
+          answer?: string | null;
+          reason?: string | null;
+          other_conversation?: { id?: string };
+        }[];
+      };
+      const row = (detail.linked_chats ?? []).find((link) => link.direction === "outgoing");
+      if (row !== undefined) {
+        last = {
+          state: row.state,
+          answer: row.answer ?? null,
+          reason: row.reason ?? null,
+          otherConversationId: row.other_conversation?.id ?? "",
+        };
+        if (row.state !== "asked") return last;
+      }
+    }
+    if (Date.now() >= deadline) return last;
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+}
 
 const ids = {
   pipelineId: "",
@@ -83,6 +149,8 @@ const ids = {
   assignmentId: "",
   triggerId: "",
   chatId: "",
+  mailChatId: "",
+  mailLinkedChatId: "",
 };
 
 /* ------------------------------------------------------------------ seed */
@@ -372,6 +440,43 @@ async function ensureSeedChat(page: Page): Promise<void> {
     chat.status(),
     `creating the repo-scoped chat answers 201 (got ${chat.status()}: ${chatBody.slice(0, 300)})`,
   ).toBe(201);
+}
+
+/** alice: the mail chat (ADR-0067 bound to `web`), title-resolved like the
+ * seed chat. Created WITHOUT a prompt: the journey prompts through the
+ * composer, alice holding control as the chat's creator. */
+async function ensureMailChat(page: Page): Promise<void> {
+  if (ids.mailChatId !== "") return;
+  await ensureProject(page);
+  await ensureRepos(page);
+  const list = await page.request.get(
+    `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/conversations?repository=${FILE_REPO}`,
+  );
+  expect(list.status(), "the repo's conversation list answers").toBe(200);
+  const chats = (await list.json()) as { items?: { id: string; title: string }[] };
+  const found = (chats.items ?? []).find((entry) => entry.title === MAIL_CHAT_TITLE);
+  if (found !== undefined) {
+    ids.mailChatId = found.id;
+    return;
+  }
+  const profiles = await page.request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
+  expect(profiles.status(), "the lab serves its agent profiles").toBe(200);
+  const profileList = (await profiles.json()) as { items?: { id: string }[] };
+  const firstProfile = profileList.items?.[0]?.id ?? "";
+  expect(firstProfile, "the lab seeds at least one agent profile").toMatch(/^[0-9a-f-]{36}$/);
+  const chat = await apiMutate(
+    page,
+    "POST",
+    `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/conversations`,
+    { title: MAIL_CHAT_TITLE, agent_profile_id: firstProfile, repository: FILE_REPO },
+  );
+  const chatBody = await chat.text();
+  expect(
+    chat.status(),
+    `creating the mail chat answers 201 (got ${chat.status()}: ${chatBody.slice(0, 300)})`,
+  ).toBe(201);
+  ids.mailChatId = (JSON.parse(chatBody) as { id: string }).id;
+  expect(ids.mailChatId, "the mail chat has an id").toMatch(/^[0-9a-f-]{36}$/);
 }
 
 test.describe("repo-chat-nav (admin: publish the workflow the forms read)", () => {
@@ -856,14 +961,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
   });
 
-  // TODO(agent-mail, design 3d): the inline mail card ("→ asked the agent in
-  // <repo>… / ← <repo> · <agent> · <answer>") renders from REAL
-  // `ask_agent`/mail events the ADR-0072 tool emits mid-turn (the side
-  // panel's LINKED CHATS rows and the composer's @ hint ride the same
-  // reads). A scripted journey cannot stage one without faking the second
-  // agent's answer, which the mockdata rule forbids — and the feature was
-  // still landing while this loop was written. Add the journey when a run
-  // path exists that produces a genuine cross-repo ask inside the pass.
+  // The 3d agent-mail journey sits at the END of this group (below the run
+  // form): it is the file's longest leg — two real-model turns plus the
+  // asked chat's — and nothing queues behind it.
 
   test("run by hand — the form is built from the pinned revision's inputs", async ({
     page,
@@ -923,6 +1023,176 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     await test.step("Cancel — this journey never starts a run", async () => {
       await page.getByTestId("new-run-cancel").click();
       await expect(page.getByTestId("run-form-dialog")).toBeHidden({ timeout: 15_000 });
+    });
+  });
+
+  test("agent mail — this chat's agent asks the agent in `server` (rcn-3d, ADR-0072)", async ({
+    page,
+    emu,
+  }) => {
+    // The ADR-0072 minimal channel end to end on the lab's REAL models:
+    // the claim injects the `MailPreamble`, the prompt commands the exact
+    // fenced `communication-mail` block, the worker dispatches the ask at
+    // turn end into a fresh linked chat bound to `server` (born controller
+    // `none`, permission-locked to `ask` — read-only), and the answer
+    // folds back into the 3d card and the panel's LINKED CHATS. Nothing
+    // here fakes the second agent: if the live model will not emit the
+    // block, or the asked turn will not answer, THIS leg stays RED and
+    // names the reason — the orchestrator decides, not a weakened assert.
+    test.setTimeout(30 * 60_000);
+
+    await test.step("settings — flip agent mail on through the UI", async () => {
+      await ensureProject(page);
+      await ensureRepos(page);
+      const project = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${ids.projectId}`);
+      expect(project.status(), "the project read answers").toBe(200);
+      expect(
+        await project.json(),
+        "the Project wire shape carries ADR-0072's agent_mail_enabled (a pre-ADR lab fails HERE, naming itself)",
+      ).toHaveProperty("agent_mail_enabled");
+      await page.goto(`/p/${ids.projectId}/settings`);
+      await expect(
+        page.getByTestId("agent-mail-panel"),
+        "design 3d: the project settings carry the agent-mail switch",
+      ).toBeVisible({ timeout: 30_000 });
+      const toggle = page.getByTestId("agent-mail-toggle");
+      await expect(
+        toggle,
+        "alice created this project — its maintainer may flip the switch (off by default, ADR-0072 § 1)",
+      ).toBeEnabled({ timeout: 15_000 });
+      if (!(await toggle.isChecked())) {
+        const patched = page.waitForResponse(
+          (res) =>
+            res.request().method() === "PATCH" &&
+            new URL(res.url()).pathname === `/api/v1/projects/${ids.projectId}`,
+          { timeout: 20_000 },
+        );
+        await toggle.check();
+        const res = await patched;
+        const body = await res.text();
+        expect(
+          res.status(),
+          `the settings PATCH lands (got ${res.status()}: ${body.slice(0, 200)})`,
+        ).toBe(200);
+      }
+      await expect(
+        page.getByTestId("agent-mail-state"),
+        "design 3d: the state line reads on",
+      ).toContainText(/on — chats in this project may ask/i, { timeout: 15_000 });
+    });
+
+    await test.step("start the chat in `web` and take control", async () => {
+      await ensureMailChat(page);
+      expect(ids.mailChatId, "the mail chat exists").toMatch(/^[0-9a-f-]{36}$/);
+      await page.goto(`/threads/${ids.mailChatId}`);
+      await expect(page.getByTestId("conversation-title")).toBeVisible({ timeout: 30_000 });
+      const take = page.getByTestId("take-control");
+      if (await take.isVisible()) {
+        await take.click({ timeout: 20_000 });
+      }
+      await expect(
+        page.getByTestId("controller-badge"),
+        "design 2e: the prompter holds control",
+      ).toContainText(/control/i, { timeout: 30_000 });
+      await expect(
+        page.getByTestId("composer-mail-hint"),
+        "ADR-0072 § 8: the composer's @ hint renders ONLY while the setting is on — its presence is the switch riding into the chat",
+      ).toBeVisible({ timeout: 30_000 });
+    });
+
+    await test.step("prompt the agent to use the mail channel", async () => {
+      const composer = page.getByTestId("composer-input");
+      await expect(composer, "the controller's composer is enabled").toBeEnabled();
+      await composer.fill(MAIL_PROMPT);
+      await page.getByTestId("composer-send").click();
+      await expect(composer, "the prompt is accepted into the journal").toHaveValue("", {
+        timeout: 30_000,
+      });
+    });
+
+    await test.step("the inline card appears and LINKED CHATS lists `server`", async () => {
+      const chip = page.getByTestId("composer-agent-chip");
+      await expect(
+        chip,
+        "the asking turn settles (real model — the lab's honest `Turn failed:` line settles here too)",
+      ).toBeEnabled({ timeout: 12 * 60_000 });
+      await expect(
+        page.getByTestId("mail-card").first(),
+        "design 3d: the answer ended with the fenced `communication-mail` block and the worker dispatched it — this timeout means the live model did NOT emit the ADR-0072 block; report it, never stage the ask by hand",
+      ).toBeVisible({ timeout: 60_000 });
+      await expect(
+        page.getByTestId("mail-card-bar").first(),
+        "the card's bar names the asked repo",
+      ).toContainText(/asked the agent in/i);
+      await expect(page.getByTestId("mail-card-bar").first()).toContainText(GH_REPO);
+      await expect(
+        page.getByTestId("mail-card-question").first(),
+        "the question rode through verbatim (it carries this pass's token)",
+      ).toContainText(MAIL_QUESTION_TOKEN);
+      await expect(
+        page.getByTestId("side-panel-link-chat-0"),
+        "design 3d: LINKED CHATS lists the linked chat for `server`",
+      ).toContainText(GH_REPO, { timeout: 30_000 });
+      await expect(page.getByTestId("side-panel-link-state-0")).toContainText(
+        /asked|answered/i,
+      );
+    });
+
+    await test.step("the answer arrives", async () => {
+      const link = await waitForMailLink(page, ids.mailChatId, 12 * 60_000);
+      expect(link, "the ask created a link with two ends").toBeTruthy();
+      ids.mailLinkedChatId = link!.otherConversationId;
+      expect(
+        link!.state,
+        `design 3d: the ask settles 'answered' — it settled '${link!.state}'${
+          link!.reason ? ` (${link!.reason})` : ""
+        } on linked chat ${ids.mailLinkedChatId} (MailAnswerTimeout is 10 min). Name the cause in the report; do not retry this journey into a fake`,
+      ).toBe("answered");
+      expect(
+        (link!.answer ?? "").trim().length,
+        "the answer text rides back on the link (≤ 16 KiB)",
+      ).toBeGreaterThan(0);
+      await expect(
+        page.getByTestId("mail-card-answer").first(),
+        "the 3d card prints its '← server · <agent>' answer line",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("mail-card-answer").first()).toContainText(
+        new RegExp(`\u2190\\s*${GH_REPO}`),
+      );
+      await expect(page.getByTestId("side-panel-link-state-0")).toContainText(/answered/i, {
+        timeout: 30_000,
+      });
+      await emu.screen("rcn-3d", "mail-card");
+    });
+
+    await test.step("B's workspace shows no writes (API)", async () => {
+      // ADR-0072 § 4's read-only arm, proven off the shipped workspace
+      // manifest (workspace_repos.modified_paths — the same read ADR-0072's
+      // Verification section names), not off a UI promise.
+      const list = await page.request.get(
+        `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/workspaces`,
+      );
+      expect(list.status(), "the workspace list answers").toBe(200);
+      const body = (await list.json()) as {
+        workspaces?: {
+          id: string;
+          conversation_id?: string | null;
+          repos?: { name: string; modified_paths?: string[] }[];
+        }[];
+      };
+      const mine = (body.workspaces ?? []).filter(
+        (w) => w.conversation_id === ids.mailLinkedChatId,
+      );
+      expect(
+        mine.length,
+        `the asked chat ${ids.mailLinkedChatId} has a workspace row (its turn ran)`,
+      ).toBeGreaterThan(0);
+      for (const repo of mine[mine.length - 1].repos ?? []) {
+        expect(
+          repo.modified_paths ?? [],
+          `ADR-0072 read-only: the asked chat's \`${repo.name}\` checkout shows no writes`,
+        ).toEqual([]);
+      }
     });
   });
 });

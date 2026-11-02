@@ -1506,6 +1506,38 @@ const RCN_ASSISTANT_ASK: Landmark = {
   any: [{ text: /turn this chat into a workflow/i }],
 };
 
+/* Agent mail (rcn-3d, ADR-0072). The design's "gpt-5" model segment and its
+ * tool-activity tail are deliberately NOT landmarks — ADR-0072 § 7 journals
+ * neither, and the card renders rows, not guesses. */
+const RCN_MAIL_CARDS: Landmark = {
+  id: "rcn-mail-cards",
+  desc: "the inline mail card ('→ asked the agent in <repo>')",
+  any: [
+    { testid: "mail-card" },
+    { testid: "transcript-mail-cards" },
+    { text: /asked the agent in/i },
+  ],
+};
+const RCN_MAIL_ANSWER: Landmark = {
+  id: "rcn-mail-answer",
+  desc: "the mail card's answer block ('← <repo> · <agent>')",
+  any: [{ testid: "mail-card-answer" }, { testid: "mail-card-pending" }],
+};
+const RCN_LINKED_CHATS: Landmark = {
+  id: "rcn-linked-chats",
+  desc: "the panel's LINKED CHATS section with its mail row",
+  any: [
+    { testid: "side-panel-links" },
+    { testid: "side-panel-link-row-0" },
+    { text: /linked chats/i },
+  ],
+};
+const RCN_LINKED_CHAT_STATE: Landmark = {
+  id: "rcn-linked-chat-state",
+  desc: "the linked chat row's state line (glyph + word: 'asked · read-only' / 'answered')",
+  any: [{ testid: "side-panel-link-state-0" }, { text: /(asked|answered) \u00b7 read-only/i }],
+};
+
 /* Workflow inputs (rcn-1j) and the run-by-hand form (rcn-1k). */
 const RCN_INPUTS_TAB: Landmark = {
   id: "rcn-inputs-tab",
@@ -2140,6 +2172,19 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_ASSISTANT_PANEL,
     RCN_ASSISTANT_COMPOSER,
     RCN_ASSISTANT_ASK,
+  ],
+
+  // Agent mail (3d): the answered beat — the card with its answer block, and
+  // the side panel's LINKED CHATS row with its state. The 390 side panel
+  // rides the `thread-side-panel-stack` swap (REFLOW_ALLOWLIST names it).
+  "rcn-3d mail-card": [
+    RCN_CONV_TITLE,
+    RCN_COMPOSER,
+    RCN_MAIL_CARDS,
+    RCN_MAIL_ANSWER,
+    RCN_SIDE_PANEL,
+    RCN_LINKED_CHATS,
+    RCN_LINKED_CHAT_STATE,
   ],
 
   // Workflow inputs authoring (1j) on the workflow page, and the run-by-hand

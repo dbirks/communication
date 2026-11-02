@@ -81,6 +81,10 @@ node e2e/emulator/file-issues.mjs e2e/emulator/out/pass-1-<ts>            # file
 
 `EMU_PASS_ID` defaults to `emu-p<runner-pid>` (stable across the suite's
 worker processes); `EMU_BASE_URL` defaults to `http://localhost:18091`.
+The journeys may also run against the Vite dev server
+(`EMU_BASE_URL=http://localhost:15173` — it serves the working-tree UI and
+proxies the API to the lab): that proves UI changes without rebuilding the
+shared lab image, and the setup project signs in through the same proxy.
 
 ## Run the loop
 
@@ -442,9 +446,19 @@ UI to show what the API serves, or an honest empty state.
   form whose fields are the pinned revision's declared inputs (goal a
   textarea, revision a branch field on `main`), Cancelled — no run is ever
   started on this pin. The pass PAUSES its issue trigger at the end (same
-  rule as repo-triggers). **3d agent mail has no journey**: the inline mail
-  card needs two live agents actually conversing, which a pass cannot stage
-  without faking the answer — the TODO sits in the spec.
+  rule as repo-triggers). **rcn-3d** — agent mail (ADR-0072), the file's
+  longest leg, deliberately last: alice flips the project's `Agent mail
+  across repos` switch ON through the settings page (off by default,
+  maintainer-only), the composer's `@` hint proves the setting rode into
+  the chat, an explicit real prompt commands `web`'s agent to end its
+  answer with the fenced `communication-mail` block, and the journey
+  asserts the inline mail card, the panel's LINKED CHATS row, and the
+  asked chat's answer folding back into the card; the read-only arm is
+  proven off the workspace manifest over the API (every checkout of the
+  asked chat's workspace shows no `modified_paths`). The second agent is
+  never staged by hand — if the live model will not emit the block, or the
+  asked turn cannot answer on the lab's launcher (a never-asks launcher
+  fails `ask` closed, ADR-0069), this leg stays RED and names the cause.  
 
 Journeys share the pass's lab serially (`workers: 1`); names are
 pass-stamped (`EMU_PASS_ID`) so passes never collide. Cleanup is only for
