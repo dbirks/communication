@@ -8,7 +8,10 @@
 import type { ReactNode } from "react";
 
 export interface AssistantNoteAction {
-  /** Stable id — also the action button's testid suffix. */
+  /** Stable id — also the action button's testid suffix, and the value of
+   * the button's `data-action-kind` marker (the 2e rail reads that marker
+   * to tell whether one of its notes already offers an action before it
+   * draws a standing one underneath). */
   id: string;
   label: string;
   onSelect: () => void;
@@ -66,6 +69,7 @@ export function AssistantNote({
               key={action.id}
               type="button"
               data-testid={`${testId}-action-${action.id}`}
+              data-action-kind={action.id}
               onClick={action.onSelect}
               className={`font-mono text-[11.5px] text-accent-text hover:text-ink ${action.className ?? ""}`}
             >

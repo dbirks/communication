@@ -953,7 +953,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "design 2f: Make a workflow… opens the assistant panel",
       ).toBeVisible({ timeout: 30_000 });
       await expect(
-        page.getByText(/turn this chat into a workflow/i).first(),
+        // The app's canned ask for a TITLED chat is `Turn the chat “title”
+        // into a workflow` (the 2f review — pinned by the ui unit tests);
+        // the title-less chat keeps `Turn this chat into a workflow`. Match
+        // either form of the app's own line; the model's answer is never
+        // asserted.
+        page.getByText(/turn (the chat [^\n]*|this chat) into a workflow/i).first(),
         "the note's ask travels to the panel (the app's own canned line — the model's answer is never asserted)",
       ).toBeVisible({ timeout: 30_000 });
       await emu.screen("rcn-2f", "workflow-draft");

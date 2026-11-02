@@ -26,15 +26,21 @@
  *   into the linked chat. Asked agents are read-only until a person
  *   approves an edit, and the section says so.
  * - ASSISTANT — the note slot at the bottom, rendered only from a real
- *   source (`assistantNote`), plus the thread → workflow note (design 2f)
- *   when the host names this thread's chat (`workflowChat`): `Make a
- *   workflow…` opens the assistant panel with the chat as context.
+ *   source (`assistantNote`), plus the standing thread → workflow note
+ *   (design 2f): whenever the host names this thread's chat
+ *   (`workflowChat`), `Make a workflow…` sits at the bottom of the
+ *   ASSISTANT section IN ADDITION TO the notes — up to the store's cap —
+ *   so the 2f journey is reachable however many notes arrive. It is not
+ *   duplicated when one of the rendered notes already offers a
+ *   `make_workflow` action: AssistantNote stamps every action button with
+ *   `data-action-kind`, and the panel reads that marker back off the slot.
  */
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { ReactNode } from "react";
 import { routes } from "../../lib/routes";
 import { STATES, type StateName } from "../ds/states";
-import { AssistantNote, makeWorkflowNoteAction } from "./AssistantNote";
+import { AssistantNote, MAKE_WORKFLOW_ACTION_ID, makeWorkflowNoteAction } from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { agentLabel } from "./ConversationTranscript";
 import type { components } from "../../api/schema";
@@ -93,10 +99,10 @@ export interface ConversationSidePanelProps {
   /** The assistant note slot; a host with no real source passes nothing. */
   assistantNote?: ReactNode;
   /**
-   * The thread's own chat for the thread → workflow note (design 2f):
-   * present → the ASSISTANT slot offers `Make a workflow…`. A host that
-   * also passes `assistantNote` keeps its own note in the slot; the
-   * workflow action rides on it as an extra action instead.
+   * The thread's own chat for the standing thread → workflow note (design
+   * 2f): present → the ASSISTANT section always offers `Make a workflow…`
+   * at its bottom, shown in addition to the notes — and not duplicated
+   * when one of them already offers that action itself.
    */
   workflowChat?: { id: string; title?: string | null } | null;
   /**
@@ -118,6 +124,10 @@ function SectionTitle({ htmlFor, children }: { htmlFor: string; children: ReactN
   );
 }
 
+/** The standing note's testid — also the id the 2f journey clicks
+ * (`assistant-note-workflow-action-make_workflow`). */
+const WORKFLOW_NOTE_TEST_ID = "assistant-note-workflow";
+
 export function ConversationSidePanel({
   projectId,
   repoName,
@@ -137,7 +147,7 @@ export function ConversationSidePanel({
   const linkRows = links ?? [];
   const workflowNote = workflowChat ? (
     <AssistantNote
-      testId="assistant-note-workflow"
+      testId={WORKFLOW_NOTE_TEST_ID}
       text={`Turn “${workflowChat.title || "this chat"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
       actions={[
         makeWorkflowNoteAction(() =>
@@ -146,16 +156,37 @@ export function ConversationSidePanel({
       ]}
     />
   ) : null;
-  const slot = assistantNote ? (
-    <>
-      {assistantNote}
-      {workflowChat
-        ? null // one note per slot today: the host's note keeps its surface
-        : workflowNote}
-    </>
-  ) : (
-    workflowNote
-  );
+  // The 2f entry must always be reachable, so the standing note rides below
+  // the store's notes instead of trading places with them. The one thing it
+  // must not become is a second `Make a workflow…` button: a note that
+  // already offers that action (the generator's own `make_workflow` note)
+  // replaces the standing one. AssistantNote stamps `data-action-kind` on
+  // every action button, so the panel sees what its slot actually renders
+  // without the host having to describe its notes to it.
+  const slotBoxRef = useRef<HTMLDivElement | null>(null);
+  const [noteOffersMakeWorkflow, setNoteOffersMakeWorkflow] = useState(false);
+  // Layout effect, not passive: the decision is taken before the browser
+  // paints, so a duplicated standing button is never flashed.
+  useLayoutEffect(() => {
+    const standingTestId = `${WORKFLOW_NOTE_TEST_ID}-action-${MAKE_WORKFLOW_ACTION_ID}`;
+    let found = false;
+    for (const el of slotBoxRef.current?.querySelectorAll<HTMLElement>(
+      `[data-action-kind="${MAKE_WORKFLOW_ACTION_ID}"]`,
+    ) ?? []) {
+      if (el.getAttribute("data-testid") !== standingTestId) {
+        found = true;
+        break;
+      }
+    }
+    setNoteOffersMakeWorkflow(found);
+  }, [assistantNote, workflowChat]);
+  const slot =
+    assistantNote || (workflowChat && !noteOffersMakeWorkflow) ? (
+      <>
+        {assistantNote}
+        {workflowChat && !noteOffersMakeWorkflow ? workflowNote : null}
+      </>
+    ) : null;
   const hasContent =
     Boolean(repoName) ||
     Boolean(branch) ||
@@ -306,7 +337,11 @@ export function ConversationSidePanel({
           </p>
         </section>
       ) : null}
-      {slot ? <div data-testid="side-panel-assistant-slot">{slot}</div> : null}
+      {slot ? (
+        <div data-testid="side-panel-assistant-slot" ref={slotBoxRef}>
+          {slot}
+        </div>
+      ) : null}
     </div>
   );
 }

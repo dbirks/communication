@@ -6,7 +6,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
-import { AssistantNote } from "./AssistantNote";
+import { AssistantNote, MAKE_WORKFLOW_ACTION_ID } from "./AssistantNote";
 import { ASSISTANT_OPEN_EVENT, type AssistantOpenRequest } from "../assistant/AssistantPopover";
 import { claudeProfile, codexProfile, projectFixture } from "../../test/fakes";
 import type { ConversationChatAgent } from "./ConversationSidePanel";
@@ -134,6 +134,11 @@ describe("AssistantNote", () => {
     screen.getByTestId("assistant-note-action-workflow").click();
     screen.getByTestId("assistant-note-dismiss").click();
     expect(calls).toEqual(["w", "d"]);
+    // The kind marker the 2e rail reads back to avoid duplicating an action
+    // its own notes already offer (ConversationSidePanel).
+    expect(
+      screen.getByTestId("assistant-note-action-workflow").getAttribute("data-action-kind"),
+    ).toBe("workflow");
   });
 
   it("shows no action row when the note offers none", () => {
@@ -143,8 +148,9 @@ describe("AssistantNote", () => {
 });
 
 /**
- * Thread → workflow (design 2f): the rail's ASSISTANT slot offers `Make a
- * workflow…` for the thread's own chat. The click-through opens the
+ * Thread → workflow (design 2f): the rail's ASSISTANT section offers `Make a
+ * workflow…` as a standing entry for the thread's own chat, in addition to
+ * the notes store's own notes — and never twice. The click-through opens the
  * assistant panel with the chat as context — the conversation id travels
  * as data in the ask; authorizing the read stays the server's job.
  */
@@ -195,15 +201,71 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
     expect(seen).toHaveLength(0);
   });
 
-  it("one note per slot: the host's own assistant note keeps its surface", () => {
+  it("the standing Make a workflow… rides below the host's notes, not in place of them", () => {
+    // The notes-generate-wire worker used to make a real note replace the
+    // standing 2f entry, hiding it whenever the panel had a note. The
+    // standing link is now shown in addition to the notes.
     panel({
       projectId: projectFixture.id,
-      assistantNote: <AssistantNote text="A real note from the notes store." />,
+      assistantNote: (
+        <AssistantNote text="A real note from the notes store." onDismiss={() => {}} />
+      ),
       workflowChat: chat,
     });
     const slot = screen.getByTestId("side-panel-assistant-slot");
     expect(slot.textContent).toContain("A real note from the notes store.");
-    expect(slot.textContent).not.toContain("Make a workflow");
+    const standing = screen.getByTestId("assistant-note-workflow");
+    expect(standing.textContent).toContain("Make a workflow\u2026");
+    // The standing link sits at the bottom of the ASSISTANT section.
+    expect(slot.lastElementChild).toBe(standing);
+  });
+
+  it("does not duplicate itself when a note already offers make_workflow", () => {
+    panel({
+      projectId: projectFixture.id,
+      assistantNote: (
+        <AssistantNote
+          text="This chat reads like a workflow."
+          actions={[
+            { id: MAKE_WORKFLOW_ACTION_ID, label: "Make a workflow\u2026", onSelect: () => {} },
+          ]}
+        />
+      ),
+      workflowChat: chat,
+    });
+    // The note's own action is the one reachable entry — not a second one.
+    expect(screen.getByTestId("assistant-note-action-make_workflow")).toBeTruthy();
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
+    expect(screen.queryAllByTestId("assistant-note-workflow-action-make_workflow")).toHaveLength(0);
+  });
+
+  it("the standing note returns when the note that duplicated it goes away", () => {
+    const hostNote = (withAction: boolean) => (
+      <AssistantNote
+        text="Notes store note."
+        actions={
+          withAction
+            ? [{ id: MAKE_WORKFLOW_ACTION_ID, label: "Make a workflow\u2026", onSelect: () => {} }]
+            : []
+        }
+      />
+    );
+    const { rerender } = panel({
+      projectId: projectFixture.id,
+      assistantNote: hostNote(true),
+      workflowChat: chat,
+    });
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
+    rerender(
+      <MemoryRouter>
+        <ConversationSidePanel
+          projectId={projectFixture.id}
+          assistantNote={hostNote(false)}
+          workflowChat={chat}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("assistant-note-workflow")).toBeTruthy();
   });
 
   it("no chat named, no note — the component never invents one", () => {
