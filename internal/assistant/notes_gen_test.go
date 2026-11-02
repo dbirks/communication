@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -321,6 +322,215 @@ func TestNotesGenerateDropsMetaNotesAboutItsOwnGuard(t *testing.T) {
 	} {
 		if !strings.Contains(system, phrase) {
 			t.Fatalf("system prompt does not state %q", phrase)
+		}
+	}
+}
+
+// The two sentences the lab showed at HEAD after the guard filter landed (the
+// 2e chat rail and the 3a repository panel): a chat note that reads like a
+// system log and carries the thread's own UUID, and a repository note that
+// states a fact nobody can act on. Both arrive with a well-formed action, so
+// only the sentence can condemn them.
+func TestNotesGenerateDropsNarrationAndIdNotes(t *testing.T) {
+	const (
+		leakedChat = "Alice initiated conversation 01a19d8a-1b53-7f23-9c86-b93d63faaf63 in the " +
+			"'web' repository with a request to reply with OK."
+		leakedRepo = "The repository 'web' is available."
+		useful     = "This thread asked for one reply and no agent has made it."
+	)
+	model := &fakeNotesModel{answer: `[
+		{"text":"` + leakedChat + `","action":{"kind":"make_workflow","conversation_id":"` + genConv + `"}},
+		{"text":"` + leakedRepo + `","action":{"kind":"start_chat","prompt":"what should web do next?"}},
+		{"text":"` + useful + `","action":{"kind":"make_workflow","conversation_id":"` + genConv + `"}}
+	]`}
+	writer := &fakeNotesWriter{}
+	chat := NoteChatFacts{
+		ConversationID: genConv, Conversation: "reply with OK", Repository: "web",
+		Lines: []ChatLine{{Author: "alice", Text: "reply with exactly OK"}},
+	}
+	g := newNotesGen(t, model, &fakeNotesReader{chat: chat}, writer, nil)
+	written, err := g.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeConversation, ProjectID: genProject, ScopeID: genConv})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	got := writer.snapshot()
+	if written != 1 || len(got) != 1 {
+		t.Fatalf("written = %d, store saw %+v, want only the useful note", written, got)
+	}
+	if got[0].Text != useful {
+		t.Fatalf("kept = %q, want %q", got[0].Text, useful)
+	}
+}
+
+// An answer with nothing worth saying leaves the panel empty. That is the
+// correct serving, not a failure: Generate still reports success with zero
+// writes, and no half-repaired sentence is invented to fill the gap.
+func TestNotesGenerateWritesNothingWhenNothingIsUseful(t *testing.T) {
+	// Every action below is one the repository scope's own DATA block honestly
+	// supports: only the sentences can condemn these notes.
+	model := &fakeNotesModel{answer: `[
+		{"text":"Claude Code initiated conversation 01a19d8a-1b53-7f23-9c86-b93d63faaf63.","action":{"kind":"open_run","run_id":"` + genRun + `"}},
+		{"text":"The repository 'web' is available.","action":{"kind":"start_chat","prompt":"ask about web"}},
+		{"text":"Two runs are listed for this repository.","action":{"kind":"open_run","run_id":"` + genRun + `"}},
+		{"text":"Issue 12 was opened by Alice with a request to add the notes field.","action":{"kind":"hand_off","issue_numbers":[12]}}
+	]`}
+	writer := &fakeNotesWriter{}
+	g := newNotesGen(t, model, &fakeNotesReader{repo: repoFacts()}, writer, nil)
+	written, err := g.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo})
+	if err != nil {
+		t.Fatalf("an empty panel was reported as a failure: %v", err)
+	}
+	if written != 0 || len(writer.snapshot()) != 0 {
+		t.Fatalf("written = %d, store saw %+v, want an empty panel", written, writer.snapshot())
+	}
+}
+
+// A scope with no work in it is not a scope with a thin idea: the generator
+// asks for nothing at all, because the one sentence a model can write about an
+// empty repository is the sentence the panel must never show.
+func TestNotesGenerateAsksNothingOfAnEmptyScope(t *testing.T) {
+	model := &fakeNotesModel{answer: `[{"text":"The repository 'web' is available.","action":{"kind":"start_chat","prompt":"ask about web"}}]`}
+	writer := &fakeNotesWriter{}
+	for _, tc := range []struct {
+		name   string
+		reader *fakeNotesReader
+		scope  NoteScope
+	}{
+		{"repository", &fakeNotesReader{repo: NoteRepoFacts{Repository: "web"}},
+			NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo}},
+		{"conversation", &fakeNotesReader{chat: NoteChatFacts{ConversationID: genConv, Conversation: "new thread"}},
+			NoteScope{Kind: NoteScopeConversation, ProjectID: genProject, ScopeID: genConv}},
+	} {
+		g := newNotesGen(t, model, tc.reader, writer, nil)
+		written, err := g.Generate(context.Background(), genCaller, tc.scope)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if written != 0 || len(writer.snapshot()) != 0 {
+			t.Fatalf("%s: written = %d, store saw %+v", tc.name, written, writer.snapshot())
+		}
+	}
+	if _, _, calls := model.snapshot(); calls != 0 {
+		t.Fatalf("an empty scope cost %d completions, want none", calls)
+	}
+}
+
+// The two post-filters are narrow on purpose: they name the shape of a log
+// line and of an identifier, not any sentence that happens to be short. A note
+// about the work keeps its note.
+func TestNoteNarrationAndIDFiltersAreNarrow(t *testing.T) {
+	narration := []string{
+		"Alice initiated conversation 01a19d8a in the 'web' repository.",
+		"The repository 'web' is available.",
+		"Two threads are here for this repository.",
+		"Bob sent a message about the flaky test.",
+		"The run was started with a request to reply with OK.",
+	}
+	for _, s := range narration {
+		if !noteTextIsNarration(s) {
+			t.Fatalf("a log line escaped the narration filter: %q", s)
+		}
+	}
+	advice := []string{
+		"PR review failed twice this week on the same lint rule.",
+		"The last run failed at review with an agent error.",
+		"Issue 12 is still open since the last run.",
+		"Nobody has asked why the checkout test is flaky.",
+		"This thread settled on a fix that no run has made yet.",
+		"Ask what the review step should check before the next run.",
+		"The runs are old; the newest one is three weeks behind.",
+	}
+	for _, s := range advice {
+		if noteTextIsNarration(s) {
+			t.Fatalf("advice was dropped as narration: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"Open conversation 01a19d8a-1b53-7f23-9c86-b93d63faaf63 again.",
+		"Run 01987a6c4d5e7f1a9b2c3d4e never finished.",
+	} {
+		if !noteTextCarriesID(s) {
+			t.Fatalf("an id escaped the identifier filter: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"Issue 12 is still open since the last run.",
+		"The review step failed twice in a row.",
+		"Run the checkout test again on the fix branch.",
+	} {
+		if noteTextCarriesID(s) {
+			t.Fatalf("a plain sentence was dropped as an id: %q", s)
+		}
+	}
+}
+
+// The prompt must carry the advice-not-narration rule in the model's face, with
+// the worked examples the design draws and the shapes the lab produced.
+func TestNotesPromptCarriesTheAdviceExamples(t *testing.T) {
+	system, _ := NotesGenPrompt(NoteScope{Kind: NoteScopeConversation}, "{}")
+	for _, want := range []string{
+		"one sentence of ADVICE",
+		"never a log line",
+		"never write a UUID or an opaque id",
+		"Good notes",
+		"\"PR review failed twice this week on the same lint rule.\"",
+		"Bad notes",
+		"initiated conversation",
+		"The repository 'web' is available.",
+		"an empty panel is the right answer",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("the notes prompt does not carry %q", want)
+		}
+	}
+}
+
+// promptExampleLine is one worked example line of the notes prompt.
+var promptExampleLine = regexp.MustCompile(`^- "([^"]+)"`)
+
+// The prompt's own good examples must survive the prompt's own filters, and its
+// bad examples must die by them: the two halves of this file cannot drift apart
+// and leave the model taught shapes the generator then throws away.
+func TestNotesPromptExamplesPassTheFiltersTheyAreShownBy(t *testing.T) {
+	system, _ := NotesGenPrompt(NoteScope{Kind: NoteScopeRepository}, "{}")
+	section := ""
+	var good, bad []string
+	for _, line := range strings.Split(system, "\n") {
+		switch {
+		case strings.HasPrefix(line, "Good notes"), strings.HasPrefix(line, "Bad notes"):
+			if strings.HasPrefix(line, "Good notes") {
+				section = "good"
+			} else {
+				section = "bad"
+			}
+			continue
+		case !strings.HasPrefix(line, "- \""):
+			continue
+		}
+		m := promptExampleLine.FindStringSubmatch(line)
+		if m == nil {
+			t.Fatalf("an example line the reader cannot parse: %q", line)
+		}
+		if section == "good" {
+			good = append(good, m[1])
+		} else {
+			bad = append(bad, m[1])
+		}
+	}
+	if len(good) < 2 || len(bad) < 2 {
+		t.Fatalf("the prompt carries %d good and %d bad examples, want at least 2 of each",
+			len(good), len(bad))
+	}
+	for _, s := range good {
+		if noteTextIsMeta(s) || noteTextCarriesID(s) || noteTextIsNarration(s) {
+			t.Fatalf("a good example the prompt shows is dropped by the filters: %q", s)
+		}
+	}
+	for _, s := range bad {
+		if !noteTextIsMeta(s) && !noteTextCarriesID(s) && !noteTextIsNarration(s) {
+			t.Fatalf("a bad example the prompt shows would be stored as a note: %q", s)
 		}
 	}
 }
