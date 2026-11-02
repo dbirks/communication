@@ -1863,20 +1863,36 @@ paths:
     post:
       operationId: postConversationMessage
       tags: [conversations]
-      summary: Prompt the agent (controller only)
+      summary: Prompt the agent, or ask another repo's agent (controller only)
       description: >
-        Enqueues a turn carrying `prompt` and appends `conversation.message.user`
-        in the same transaction. The turn is `queued`; a worker claims it, sends
-        it over ACP and streams the answer back as `conversation.message.agent`
-        events — this call does not wait for the agent, and the reply arrives on
+        Without `mail_to`: enqueues a turn carrying `prompt` and appends
+        `conversation.message.user` in the same transaction. The turn is
+        `queued`; a worker claims it, sends it over ACP and streams the answer
+        back as `conversation.message.agent` events — this call does not wait
+        for the agent, and the reply arrives on
         `GET /api/v1/conversations/{conversationId}/events`, not here.
+
+        With `mail_to` (ADR-0072 § 9 — the composer `@<repo> <question>` ask):
+        the prompt is NOT this chat's next turn. The store arm creates the
+        same facts an agent-dispatched mail creates — a fresh linked chat born
+        bound to that repository, controller `none`, its answer turn stamped
+        read-only (`permission_override = ask`), the same per-chat cap and
+        answer deadline — and journals `conversation.mail.asked` on this
+        conversation with an empty `turn_id` (a person asked; no turn did).
+        The answer returns exactly as an agent ask's does: journal rows on
+        both chats and a follow-up prompt on this chat. Nothing is queued on
+        this conversation by this arm. The caller must still be the
+        controller, and a chat that is some link's target cannot ask — the
+        depth-1 rule, worn by a person who took one over, is `422`.
 
         Controller only, and at most one unfinished turn per conversation
         (`01` invariant 2, `06` "Do not send competing prompts to a running
         turn"):
 
         * caller is not the current controller -> `409` whose problem detail
-          carries the current `control`.
+          carries the current `control`; with `mail_to` it is `403` instead —
+          a caller that never held the wheel is denied on identity, the
+          ADR-0068 switch-agent rule.
         * a turn is already `queued`, `leased` or `running` -> `409`
           whose problem detail carries that `active_turn`.
 
@@ -1896,21 +1912,29 @@ paths:
       responses:
         "202":
           description: >
-            Turn queued. `Location` points at the conversation; the prompt text
-            is durable from this response on.
+            Without `mail_to`: turn queued; `Location` points at the
+            conversation and the body is the `ConversationTurn`. With
+            `mail_to`: the ask is durable; `Location` points at the linked
+            chat the ask OPENED and the body is the `ConversationMailAsk`.
+            Either way nothing here waits for the agent.
           headers:
             X-Communication-Replica:
               $ref: "#/components/headers/XCommunicationReplica"
             Location:
               description: >
                 `/api/v1/conversations/{conversationId}` of the conversation
-                this turn belongs to.
+                this response belongs to — the asked conversation without
+                `mail_to`, the linked target chat with it.
               schema:
                 type: string
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConversationTurn"
+                oneOf:
+                  - $ref: "#/components/schemas/ConversationTurn"
+                  - $ref: "#/components/schemas/ConversationMailAsk"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1964,7 +1988,7 @@ paths:
         | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` |
         | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` |
         | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` |
-        | `conversation.mail.asked` | `conversation_id`, `turn_id`, `link_id`, `to_conversation_id`, `repo`, `question`, `state`, `reason` (ADR-0072: one chat's agent asked the agent of another repo in the project; `state` is asked — link_id names the conversation_links row — or rejected with `link_id` absent and `reason` naming why. Journaled on the asking conversation only) |
+        | `conversation.mail.asked` | `conversation_id`, `turn_id`, `link_id`, `to_conversation_id`, `repo`, `question`, `state`, `reason` (ADR-0072: an ask of the agent of another repo in the project — dispatched by the asking chat's agent (§ 3) or by its controller from the composer (§ 9); `state` is asked — link_id names the conversation_links row — or rejected with `link_id` absent and `reason` naming why (agent asks only: a refused § 9 ask is an HTTP refusal and writes nothing). Journaled on the asking conversation only. `turn_id` is empty for § 9 — a person asked, no turn did — and the actor is the human) |
         | `conversation.mail.answered` | `conversation_id`, `link_id`, `from_conversation_id`, `to_conversation_id`, `repo`, `state`, `answer`, `reason`, `launcher_id` (ADR-0072: journaled on BOTH conversations with identical members besides `conversation_id`; `state` is answered (`answer` set), failed (the target turn ended non-completed; `reason`) or expired (the answer deadline passed first; `reason`). `launcher_id` is the target profile's launcher — the card's "← api · Codex" half; no journal row names a model, so none is claimed) |
         | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` |
         | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) |
@@ -7889,6 +7913,15 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ConversationLink"
+        repository_name:
+          type: ["string", "null"]
+          description: >
+            The thread's repository — the same three-arm resolution the list
+            row answers since ADR-0065/ADR-0067 (the repository it was born
+            bound to wins, else the newest workspace's checkout, else the
+            linked run's repository); null when none says one. The composer's
+            `@`-menu (ADR-0072 § 9) offers the project's OTHER repositories,
+            so it needs the thread's own name.
     ConversationSummary:
       title: ConversationSummary
       description: >
@@ -8080,7 +8113,58 @@ components:
           maxLength: 65536
           description: >
             Stored verbatim (surrounding whitespace aside) and delivered to the
-            harness as one `session/prompt`.
+            harness as one `session/prompt`. With `mail_to` it is the QUESTION
+            for the other repository's agent instead — bounded tighter there
+            (4096, the `conversation_links` CHECK), stored on the link, and
+            never journalled as a `conversation.message.user` row of this
+            conversation (ADR-0072 § 9).
+        mail_to:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >
+            ADR-0072 § 9: an optional project repository NAME. Set, this post
+            is the composer `@<repo> <question>` ask — mail is dispatched to
+            that repository's agent through the same arm the worker's
+            agent-dispatched mail uses (read-only target, depth 1, per-chat
+            cap), no turn is queued on this conversation, and a repository
+            the project does not have is `400`. Requires the project's
+            agent-mail setting on (`403` when off) and the controller lock
+            (`403` without it).
+    ConversationMailAsk:
+      title: ConversationMailAsk
+      description: >
+        ADR-0072 § 9: the accepted composer `@<repo>` ask — the response of
+        `postConversationMessage` carrying `mail_to`, mirrored on the
+        `conversation.mail.asked` row it journalled. The answer is NOT here:
+        it returns through the journal (`conversation.mail.answered` on both
+        chats) and the asking chat's follow-up prompt, exactly as for an
+        agent-dispatched ask; this body only names the link and the linked
+        chat the ask opened. `state` is `asked` — refusals answer 4xx and
+        create nothing.
+      type: object
+      required: [link_id, to_conversation_id, repo, question, state]
+      properties:
+        link_id:
+          type: string
+          format: uuid
+          description: The `conversation_links` row the ask created.
+        to_conversation_id:
+          type: string
+          format: uuid
+          description: The linked chat born to answer — also the `Location`.
+        repo:
+          type: string
+          maxLength: 200
+          description: The repository named by the ask, resolved inside the project.
+        question:
+          type: string
+          maxLength: 4096
+          description: The question as stored on the link.
+        state:
+          type: string
+          enum: [asked]
+          description: Always `asked` on this route — a rejected ask is an HTTP refusal, never a journalled rejection.
     ControlVersionRequest:
       title: ControlVersionRequest
       description: >

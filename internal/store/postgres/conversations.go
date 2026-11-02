@@ -291,6 +291,13 @@ type CnvConversation struct {
 	// per maximal run of consecutive turns on the same profile, with the
 	// turn-range the side panel renders. Read, never stored (cnvChatAgents).
 	Agents []CnvChatAgent
+	// RepositoryName (ADR-0067/ADR-0065) is the detail read's thread
+	// repository: the same three-arm resolution the list row answers
+	// (declared binding, then the newest workspace's checkout, then the
+	// linked run's repository); "" when none says one. Read, never stored
+	// (cnvConversationRepository); the composer's @-menu (ADR-0072 § 9)
+	// offers the project's OTHER repositories off it.
+	RepositoryName string
 	// LinkedChats (ADR-0072) is the agent-mail link list for the detail
 	// read, either direction, newest first (cnvLinkedChats).
 	LinkedChats []CnvLinkedChat
@@ -339,6 +346,28 @@ type CnvSummary struct {
 	// single preview line (cnvLastAgentLine); empty when the agent has not
 	// spoken.
 	LastAgentLine string
+}
+
+// cnvConversationRepository resolves a thread's repository for the detail
+// read with the SAME three-arm chain the list row answers (ADR-0067 declared
+// binding → ADR-0065 newest-workspace checkout → linked run's repository),
+// reusing the list's own lateral fragments so list and detail cannot drift.
+// It is a follow-up statement like the detail's other joins, so the base
+// select shared with the control mutations stays untouched.
+func cnvConversationRepository(ctx context.Context, q prjQuerier, conversationID string) (string, error) {
+	var name string
+	err := q.QueryRow(ctx, `
+		SELECT COALESCE(cnvboundrepo.name, repo.repository_name, runrepo.repository_name, '')
+		FROM conversations c
+		`+cnvRunLinkSubquery+cnvRepoSubquery+cnvRunRepoSubquery+cnvRepoBindingJoin+`
+		WHERE c.id = $1::uuid`, conversationID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil // the conversation vanished between the reads
+	}
+	if err != nil {
+		return "", fmt.Errorf("postgres: conversation repository: %w", err)
+	}
+	return name, nil
 }
 
 // cnvLastAgentLineMax is the wire cap on a list row's last-line preview, in
@@ -820,6 +849,11 @@ func cnvGetConversation(ctx context.Context, q prjQuerier, c Caller, conversatio
 		return CnvConversation{}, err
 	}
 	cv.Agents = agents
+	repo, err := cnvConversationRepository(ctx, q, cv.ID)
+	if err != nil {
+		return CnvConversation{}, err
+	}
+	cv.RepositoryName = repo
 	links, err := cnvLinkedChats(ctx, q, cv.ID)
 	if err != nil {
 		return CnvConversation{}, err
@@ -2869,6 +2903,26 @@ func (a APIConversationStore) PostMessage(ctx context.Context, c api.Caller, con
 	return cnvAPITurn(turn, true), nil
 }
 
+// AskRepoMail implements api.ConversationStore: the composer @-ask
+// (ADR-0072 § 9), mapped onto the ConversationMailAsk schema.
+func (a APIConversationStore) AskRepoMail(ctx context.Context, c api.Caller, conversationID, repoName, question string) (api.ConversationMailAskView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.ConversationMailAskView{}, err
+	}
+	ask, err := s.AskRepoMail(ctx, prjAPICaller(c), conversationID, repoName, question)
+	if err != nil {
+		return api.ConversationMailAskView{}, cnvAPIErr(err)
+	}
+	return api.ConversationMailAskView{
+		LinkID:           ask.LinkID,
+		ToConversationID: ask.ToConversationID,
+		Repo:             ask.Repo,
+		Question:         ask.Question,
+		State:            ask.State,
+	}, nil
+}
+
 // TakeControl implements api.ConversationStore.
 func (a APIConversationStore) TakeControl(ctx context.Context, c api.Caller, conversationID string, version int) (api.ConversationView, error) {
 	s, err := a.store()
@@ -3154,6 +3208,7 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		LinkedRuns:         linked,
 		AgentProfileModel:  apiNullString(cv.AgentProfileModel),
 		Agents:             agents,
+		RepositoryName:     apiNullString(cv.RepositoryName),
 		LinkedChats:        links,
 	}
 }

@@ -883,11 +883,14 @@ export interface paths {
     get?: never;
     put?: never;
     /**
-     * Prompt the agent (controller only)
-     * @description Enqueues a turn carrying `prompt` and appends `conversation.message.user` in the same transaction. The turn is `queued`; a worker claims it, sends it over ACP and streams the answer back as `conversation.message.agent` events — this call does not wait for the agent, and the reply arrives on `GET /api/v1/conversations/{conversationId}/events`, not here.
+     * Prompt the agent, or ask another repo's agent (controller only)
+     * @description Without `mail_to`: enqueues a turn carrying `prompt` and appends `conversation.message.user` in the same transaction. The turn is `queued`; a worker claims it, sends it over ACP and streams the answer back as `conversation.message.agent` events — this call does not wait for the agent, and the reply arrives on `GET /api/v1/conversations/{conversationId}/events`, not here.
+     *     With `mail_to` (ADR-0072 § 9 — the composer `@<repo> <question>` ask): the prompt is NOT this chat's next turn. The store arm creates the same facts an agent-dispatched mail creates — a fresh linked chat born bound to that repository, controller `none`, its answer turn stamped read-only (`permission_override = ask`), the same per-chat cap and answer deadline — and journals `conversation.mail.asked` on this conversation with an empty `turn_id` (a person asked; no turn did). The answer returns exactly as an agent ask's does: journal rows on both chats and a follow-up prompt on this chat. Nothing is queued on this conversation by this arm. The caller must still be the controller, and a chat that is some link's target cannot ask — the depth-1 rule, worn by a person who took one over, is `422`.
      *     Controller only, and at most one unfinished turn per conversation (`01` invariant 2, `06` "Do not send competing prompts to a running turn"):
      *     * caller is not the current controller -> `409` whose problem detail
-     *       carries the current `control`.
+     *       carries the current `control`; with `mail_to` it is `403` instead —
+     *       a caller that never held the wheel is denied on identity, the
+     *       ADR-0068 switch-agent rule.
      *     * a turn is already `queued`, `leased` or `running` -> `409`
      *       whose problem detail carries that `active_turn`.
      *
@@ -912,7 +915,7 @@ export interface paths {
      * @description `text/event-stream` of this conversation's rows from the `domain_events` journal — the transcript *is* the journal, scoped by `conversation_id`, so an API replica restarting (or the browser disconnecting) loses nothing that was committed. Framing, resume, gap-safety and the 15 s heartbeat are identical to `GET /api/v1/projects/{projectId}/events` (ADR-0014 §5, §9): `id: <global_seq>`, `event: <type>`, `data: <envelope JSON>`, replayed from `Last-Event-ID` or `?after=`.
      *     Rows are selected by `conversation_id`, and the resume cursor is resolved *through* that scope, so a cursor copied from another conversation replays nothing it should not. Every event also carries `project_id`, so the project stream remains a superset of this one. Authorization is the owning project's membership, checked at connect time and again before each delivery and heartbeat: a removed member stops receiving events (`06` edge case) and a non-member gets `404`.
      *     M2 event types on this stream, and the `payload` members of each (the envelope itself is `EventEnvelope`; payloads never carry secrets, and tool input/output are bounded previews the worker truncated, flagged by `truncated`):
-     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.mail.asked` | `conversation_id`, `turn_id`, `link_id`, `to_conversation_id`, `repo`, `question`, `state`, `reason` (ADR-0072: one chat's agent asked the agent of another repo in the project; `state` is asked — link_id names the conversation_links row — or rejected with `link_id` absent and `reason` naming why. Journaled on the asking conversation only) | | `conversation.mail.answered` | `conversation_id`, `link_id`, `from_conversation_id`, `to_conversation_id`, `repo`, `state`, `answer`, `reason`, `launcher_id` (ADR-0072: journaled on BOTH conversations with identical members besides `conversation_id`; `state` is answered (`answer` set), failed (the target turn ended non-completed; `reason`) or expired (the answer deadline passed first; `reason`). `launcher_id` is the target profile's launcher — the card's "← api · Codex" half; no journal row names a model, so none is claimed) | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
+     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.mail.asked` | `conversation_id`, `turn_id`, `link_id`, `to_conversation_id`, `repo`, `question`, `state`, `reason` (ADR-0072: an ask of the agent of another repo in the project — dispatched by the asking chat's agent (§ 3) or by its controller from the composer (§ 9); `state` is asked — link_id names the conversation_links row — or rejected with `link_id` absent and `reason` naming why (agent asks only: a refused § 9 ask is an HTTP refusal and writes nothing). Journaled on the asking conversation only. `turn_id` is empty for § 9 — a person asked, no turn did — and the actor is the human) | | `conversation.mail.answered` | `conversation_id`, `link_id`, `from_conversation_id`, `to_conversation_id`, `repo`, `state`, `answer`, `reason`, `launcher_id` (ADR-0072: journaled on BOTH conversations with identical members besides `conversation_id`; `state` is answered (`answer` set), failed (the target turn ended non-completed; `reason`) or expired (the answer deadline passed first; `reason`). `launcher_id` is the target profile's launcher — the card's "← api · Codex" half; no journal row names a model, so none is claimed) | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
      *     Enumerated values, spelled exactly: `permission.decided`'s `status` is `decided`, `expired` or `cancelled`; `turn.interrupted`'s `reason` is `lease_expired`, `worker_gone` or `shutdown` (it always has a reason and never a `stop_reason` — nothing reported one); `control.transferred`'s `reason` is `taken`, `returned` or `lost_lease`; `session_origin` on `agent.session.connected` (and on session bindings) is `new` or `resumed`; on `conversation.turn.started` it is `new`, `resumed` or `reused`, describing how *this turn* met its session — `new`/`resumed` when the session was created/restored for this turn (matching that binding's `agent.session.connected`), `reused` when the worker kept the previous turn's live process; controller `kind` is `human`, `run_attempt` or `none`.
      *     `options` is an array of `{option_id, label, kind}` objects as the agent offered them (`kind` = the observed ACP option kind, e.g. `allow_once`); `agent.session.connected`'s `agent_capabilities` is the agent's own capability object, verbatim.
      *     `agent.session.disconnected`'s `reason` is a short machine-readable cause (`shutdown`, `replaced`, `process_exited`, `agent_switched` — ADR-0068: the live session was closed because the controller switched the conversation's agent profile and the next turn launches a new session — or the observed mid-turn death names `agent_process_exited` / `acp_connection_closed`); `detail` and `stderr_tail` ride it only when the emitter observed the evidence — the adapter's exit/transport verdict and the last bytes the harness wrote to stderr, both redacted and bounded by the emitter.
@@ -3382,6 +3385,8 @@ export interface components {
       linked_runs: components["schemas"]["ConversationLinkedRun"][];
       /** @description ADR-0072: the agent-mail links on this thread, either direction, newest first (bounded to 50 rows); empty until the project's agent-mail setting has produced a link here. The side panel's LINKED CHATS section and the transcript's mail cards read it. */
       linked_chats?: components["schemas"]["ConversationLink"][];
+      /** @description The thread's repository — the same three-arm resolution the list row answers since ADR-0065/ADR-0067 (the repository it was born bound to wins, else the newest workspace's checkout, else the linked run's repository); null when none says one. The composer's `@`-menu (ADR-0072 § 9) offers the project's OTHER repositories, so it needs the thread's own name. */
+      repository_name?: string | null;
     };
     /**
      * ConversationSummary
@@ -3460,8 +3465,35 @@ export interface components {
      * @description Request body for `postConversationMessage`. The conversation's transcript is append-only: editing a submitted prompt is not an M2 operation.
      */
     ConversationMessageCreate: {
-      /** @description Stored verbatim (surrounding whitespace aside) and delivered to the harness as one `session/prompt`. */
+      /** @description Stored verbatim (surrounding whitespace aside) and delivered to the harness as one `session/prompt`. With `mail_to` it is the QUESTION for the other repository's agent instead — bounded tighter there (4096, the `conversation_links` CHECK), stored on the link, and never journalled as a `conversation.message.user` row of this conversation (ADR-0072 § 9). */
       prompt: string;
+      /** @description ADR-0072 § 9: an optional project repository NAME. Set, this post is the composer `@<repo> <question>` ask — mail is dispatched to that repository's agent through the same arm the worker's agent-dispatched mail uses (read-only target, depth 1, per-chat cap), no turn is queued on this conversation, and a repository the project does not have is `400`. Requires the project's agent-mail setting on (`403` when off) and the controller lock (`403` without it). */
+      mail_to?: string;
+    };
+    /**
+     * ConversationMailAsk
+     * @description ADR-0072 § 9: the accepted composer `@<repo>` ask — the response of `postConversationMessage` carrying `mail_to`, mirrored on the `conversation.mail.asked` row it journalled. The answer is NOT here: it returns through the journal (`conversation.mail.answered` on both chats) and the asking chat's follow-up prompt, exactly as for an agent-dispatched ask; this body only names the link and the linked chat the ask opened. `state` is `asked` — refusals answer 4xx and create nothing.
+     */
+    ConversationMailAsk: {
+      /**
+       * Format: uuid
+       * @description The `conversation_links` row the ask created.
+       */
+      link_id: string;
+      /**
+       * Format: uuid
+       * @description The linked chat born to answer — also the `Location`.
+       */
+      to_conversation_id: string;
+      /** @description The repository named by the ask, resolved inside the project. */
+      repo: string;
+      /** @description The question as stored on the link. */
+      question: string;
+      /**
+       * @description Always `asked` on this route — a rejected ask is an HTTP refusal, never a journalled rejection.
+       * @enum {string}
+       */
+      state: "asked";
     };
     /**
      * ControlVersionRequest
@@ -7628,18 +7660,21 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Turn queued. `Location` points at the conversation; the prompt text is durable from this response on. */
+      /** @description Without `mail_to`: turn queued; `Location` points at the conversation and the body is the `ConversationTurn`. With `mail_to`: the ask is durable; `Location` points at the linked chat the ask OPENED and the body is the `ConversationMailAsk`. Either way nothing here waits for the agent. */
       202: {
         headers: {
           "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
-          /** @description `/api/v1/conversations/{conversationId}` of the conversation this turn belongs to. */
+          /** @description `/api/v1/conversations/{conversationId}` of the conversation this response belongs to — the asked conversation without `mail_to`, the linked target chat with it. */
           Location?: string;
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ConversationTurn"];
+          "application/json":
+            | components["schemas"]["ConversationTurn"]
+            | components["schemas"]["ConversationMailAsk"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];

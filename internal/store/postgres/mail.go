@@ -542,6 +542,211 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pe) && pe.Code == "23505"
 }
 
+// ------------------------------------------- composer @-ask (ADR-0072 § 9)
+
+// CnvMailAsk is an accepted composer @-ask: the link it created and the
+// linked target chat it opened (APIConversationStore maps it onto the
+// ConversationMailAsk schema).
+type CnvMailAsk struct {
+	LinkID           string
+	ToConversationID string
+	Repo             string
+	Question         string
+	State            string
+}
+
+// AskRepoMail is the person-initiated mail arm (ADR-0072 § 9): the
+// conversation's controller asks the agent of another project repository a
+// question straight from the composer (`@<repo> <question>`). Everything the
+// worker's DispatchMail builds for an accepted ask is built here, for the
+// same reasons — a fresh chat bound to the target repository, controller
+// `none`, the asking chat's current profile, the answer turn stamped
+// `permission_override = 'ask'` (read-only: edits need a person), the same
+// per-chat cap and answer deadline, and `conversation.mail.asked` journalled
+// on the asking chat. Two differences, both honest ones: the ask carries no
+// `from_turn_id` and the event an empty `turn_id` — no agent turn asked, a
+// person did (migration 00026 keeps exactly those columns NULL-able for
+// this arm) — and the actor is the human, not the worker.
+//
+// The refusals are the § 6/§ 5 rules wearing their API faces: the setting
+// off and a non-controller are 403 (ErrConversationForbidden — identity and
+// feature denial, the ADR-0068 switch route's precedent), a repository the
+// project does not have is 400 (ErrConversationBadRequest — the ask names a
+// thing outside this project, the same answer an out-of-project profile
+// gets), and the cap and the depth-1 rule are 422 (ErrConversationValidation).
+// Authz rides the conversation path unchanged: visibility + a writer role or
+// the read is 404/403 before anything else is looked at.
+func (s *CnvStore) AskRepoMail(ctx context.Context, c Caller, conversationID, repoName, question string) (CnvMailAsk, error) {
+	if err := prjRequireCaller(c); err != nil {
+		return CnvMailAsk{}, err
+	}
+	repoName = strings.TrimSpace(repoName)
+	question = strings.TrimSpace(question)
+	if repoName == "" {
+		return CnvMailAsk{}, fmt.Errorf("%w: mail_to is required", ErrConversationValidation)
+	}
+	if len([]rune(repoName)) > 200 || len([]rune(question)) > 4096 {
+		// conversation_links' CHECKs (1..200 / 1..4096): too long is
+		// unprocessable, not a silent truncation — a person's question is
+		// not agent prose.
+		return CnvMailAsk{}, fmt.Errorf("%w: mail_to (200) and question (4096) exceed their bounds", ErrConversationValidation)
+	}
+	if question == "" {
+		return CnvMailAsk{}, fmt.Errorf("%w: a mail question is required", ErrConversationValidation)
+	}
+
+	var out CnvMailAsk
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		chat, project, org, err := cnvWritableConversation(ctx, tx, c, conversationID)
+		if err != nil {
+			return err
+		}
+		if chat.Status == "archived" {
+			return &CnvConflict{
+				Kind:           ConflictArchived,
+				Detail:         "The conversation is archived; it cannot ask another repository's agent.",
+				ConversationID: chat.ID,
+				Control:        &chat.Control,
+			}
+		}
+		if chat.Control.Kind != events.ControllerKindHuman || chat.Control.UserID != c.UserID {
+			// 403 like the ADR-0068 switch route: a caller that never held
+			// the wheel is denied on identity, not on state (§ 9).
+			who := "nobody"
+			if chat.Control.UserID != "" {
+				who = chat.Control.DisplayName
+				if who == "" {
+					who = chat.Control.UserID
+				}
+			} else if chat.Control.Kind == events.ControllerKindRunAttempt {
+				who = "a run attempt"
+			}
+			return fmt.Errorf("%w: %s holds the controller lock; only the controller may ask another repository's agent", ErrConversationForbidden, who)
+		}
+
+		var enabled bool
+		if err := tx.QueryRow(ctx, `SELECT agent_mail_enabled FROM projects WHERE id = $1::uuid`, project).Scan(&enabled); err != nil {
+			return fmt.Errorf("postgres: mail composer setting: %w", err)
+		}
+		if !enabled {
+			return fmt.Errorf("%w: agent mail is switched off for this project", ErrConversationForbidden)
+		}
+
+		// Depth 1 (§ 5), the same rule the claim predicate applies to an
+		// agent: a conversation that is the TARGET of a link never asks — a
+		// person who took over a mailed chat inherits it.
+		var wasAsked bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM conversation_links WHERE to_conversation_id = $1::uuid)`,
+			conversationID).Scan(&wasAsked); err != nil {
+			return fmt.Errorf("postgres: mail composer depth read: %w", err)
+		}
+		if wasAsked {
+			return fmt.Errorf("%w: this chat is answering another chat's mail; agent mail does not hop a second time", ErrConversationValidation)
+		}
+
+		var have int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM conversation_links WHERE from_conversation_id = $1::uuid`,
+			conversationID).Scan(&have); err != nil {
+			return fmt.Errorf("postgres: mail composer cap: %w", err)
+		}
+		if have >= DefaultMailCap {
+			return fmt.Errorf("%w: this chat has already used its %d mails for the project", ErrConversationValidation, DefaultMailCap)
+		}
+
+		var repoID string
+		err = tx.QueryRow(ctx, `
+			SELECT id::text FROM repositories WHERE project_id = $1::uuid AND name = $2`,
+			project, repoName).Scan(&repoID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: mail_to: no repository named %q in this project", ErrConversationBadRequest, repoName)
+		}
+		if err != nil {
+			return fmt.Errorf("postgres: mail composer repo: %w", err)
+		}
+
+		if err := LockEventJournal(ctx, tx, project, org); err != nil {
+			return err
+		}
+
+		// The target chat and its read-only answer turn, built exactly as
+		// DispatchMail builds them (§ 2, § 4): born bound to the asked repo,
+		// controller none, the asking chat's profile, permission_override
+		// 'ask', the same answer deadline. Mail runs on behalf of the caller —
+		// asked_by and the target turn's submitted_by name the person.
+		var toConv string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO conversations (project_id, agent_profile_id, title, status, created_by, repository_id)
+			VALUES ($1::uuid, $2::uuid, $3, 'idle', $4::uuid, $5::uuid)
+			RETURNING id::text`,
+			project, chat.AgentProfileID, mailTitle(chat.Title, repoName), c.UserID, repoID).
+			Scan(&toConv); err != nil {
+			return fmt.Errorf("postgres: mail composer conversation: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_control (conversation_id, controller_kind)
+			VALUES ($1::uuid, 'none')`, toConv); err != nil {
+			return fmt.Errorf("postgres: mail composer control: %w", err)
+		}
+
+		var linkID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO conversation_links
+			    (project_id, from_conversation_id, to_conversation_id,
+			     asked_by, repo_name, question, state, answer_deadline)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, 'asked',
+			        now() + make_interval(secs => $7::double precision))
+			RETURNING id::text`,
+			project, conversationID, toConv, c.UserID,
+			repoName, question, DefaultMailAnswerTimeout.Seconds()).
+			Scan(&linkID); err != nil {
+			return fmt.Errorf("postgres: mail composer link: %w", err)
+		}
+
+		prompt := worker.MailTargetPrompt(chat.Title, c.UserID, question)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_turns
+			    (conversation_id, prompt, submitted_by, agent_profile_id, mail_link_id, permission_override)
+			VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, 'ask')`,
+			toConv, prompt, c.UserID, chat.AgentProfileID, linkID); err != nil {
+			return fmt.Errorf("postgres: mail composer answer turn: %w", err)
+		}
+
+		if _, err := AppendEvent(ctx, tx, events.New{
+			Type:           events.TypeConversationMailAsked,
+			OrganizationID: org,
+			ProjectID:      project,
+			ConversationID: conversationID,
+			Actor:          events.Human(c.UserID),
+			Payload: events.MailAskedPayload{
+				ConversationID:   conversationID,
+				TurnID:           "",
+				LinkID:           linkID,
+				ToConversationID: toConv,
+				Repo:             repoName,
+				Question:         question,
+				State:            events.MailStateAsked,
+			},
+		}); err != nil {
+			return err
+		}
+
+		out = CnvMailAsk{
+			LinkID:           linkID,
+			ToConversationID: toConv,
+			Repo:             repoName,
+			Question:         question,
+			State:            events.MailStateAsked,
+		}
+		return nil
+	})
+	if err != nil {
+		return CnvMailAsk{}, err
+	}
+	return out, nil
+}
+
 // ------------------------------------------------- conversation detail read
 
 // CnvLinkedChat is one agent-mail link on a conversation's detail read

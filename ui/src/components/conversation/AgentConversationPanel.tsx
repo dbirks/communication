@@ -22,12 +22,21 @@
  * through; the panel computes its own session only when none is supplied.
  * Every historical `data-testid` is preserved via the `ids` overrides.
  */
-import { type ReactNode, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router";
 import { ApiError } from "../../api/client";
-import { useProject } from "../../api/queries";
+import { useProject, useRepositories } from "../../api/queries";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import { Button } from "../ds/Button";
+import { Menu, type MenuEntry } from "../ds/Menu";
 import { Textarea } from "../ds/Field";
 import Transcript from "../Transcript";
 import { TakeControlCard } from "../workbench/TakeControlCard";
@@ -324,7 +333,47 @@ interface ComposerProps {
   agentPicker?: ReactNode;
 }
 
-/** The prompt form: enabled for the controller only, with the explainer copy. */
+/**
+ * The composer's @-ask (ADR-0072 § 9): `@<repo> <question>` asks the agent
+ * of another project repository directly — the POST carries `mail_to`, no
+ * turn is queued on this chat, and the answer returns through the mail
+ * journal exactly as for an agent-dispatched ask.
+ *
+ * `mentionQueryAtCaret` is the open-menu test: an `@` that begins a word,
+ * with the repository-name alphabet (`Repository.name` in openapi:
+ * `[A-Za-z0-9._-]`) trailing it up to the caret. `mailAskFromPrompt` is the
+ * send test: a leading `@<token>`, then a non-empty question, and the token
+ * names one of the OFFERED repositories — the project's, minus this chat's
+ * own (the menu offers "other repos" and the send path agrees with it, so a
+ * typed `@<own repo>` stays an ordinary prompt to one's own agent). A prompt
+ * that is not a mention routes nowhere and posts as always.
+ */
+const mentionAtCaret = new RegExp(`(?:^|\\s)@([A-Za-z0-9._-]*)$`);
+const mentionSent = /^@(\S+)[ \t]+([\s\S]+)$/;
+
+export function mentionQueryAtCaret(value: string, caret: number): string | null {
+  const match = mentionAtCaret.exec(value.slice(0, Math.max(0, caret)));
+  return match ? (match[1] ?? "") : null;
+}
+
+export function mailAskFromPrompt(
+  text: string,
+  offeredRepos: readonly string[],
+): { repo: string; question: string } | null {
+  const match = mentionSent.exec(text.trim());
+  if (!match) return null;
+  const question = (match[2] ?? "").trim();
+  if (!question) return null;
+  const named = (match[1] ?? "").toLowerCase();
+  const repo =
+    offeredRepos.find((candidate) => candidate === match[1]) ??
+    offeredRepos.find((candidate) => candidate.toLowerCase() === named);
+  return repo ? { repo, question } : null;
+}
+
+/** The prompt form: enabled for the controller only, with the explainer copy
+ * and — while the project's agent-mail setting is on — the composer @-menu
+ * (ADR-0072 § 9). */
 export function AgentConversationComposer({
   session,
   ids,
@@ -354,6 +403,100 @@ export function AgentConversationComposer({
   // page already holds it.
   const project = useProject(session.data?.project_id ?? "");
   const agentMailOn = project.data?.agent_mail_enabled === true;
+  // The @-menu's candidates exist only for a controller of a mail-enabled
+  // project; the repos read rides the project page's own query key, so this
+  // costs a fetch only on a surface that never showed the list.
+  const repositories = useRepositories(
+    agentMailOn && isController ? (session.data?.project_id ?? "") : "",
+  );
+  const ownRepo = session.data?.repository_name ?? "";
+  const otherRepos = useMemo(
+    () =>
+      (repositories.data?.items ?? [])
+        .map((repo) => repo.name ?? "")
+        .filter((name) => name !== "" && name !== ownRepo),
+    [repositories.data, ownRepo],
+  );
+  // The @-menu's live query: null = closed, "" = opened on the bare `@`.
+  const [mention, setMention] = useState<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const mentionOpen = agentMailOn && isController && mention !== null;
+  const candidates = otherRepos.filter((name) =>
+    name.toLowerCase().startsWith((mention ?? "").toLowerCase()),
+  );
+  // The ds Menu parks focus on its first item when it opens (a child layout
+  // effect). The person is typing, not tabbing into a menu — the composer
+  // owns the caret. A parent layout effect runs after the child's in the
+  // same synchronous commit, so the refocus lands before any queued keystroke
+  // could hit the menu button: the menu answers the pointer and the arrow
+  // keys, never a keystroke the textarea should have had.
+  useLayoutEffect(() => {
+    if (mentionOpen) inputRef.current?.focus();
+  }, [mentionOpen]);
+
+  const onPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    const element = event.currentTarget;
+    inputRef.current = element;
+    setPrompt(value);
+    if (!agentMailOn || !isController) return;
+    setMention(mentionQueryAtCaret(value, element.selectionStart ?? value.length));
+  };
+
+  // Replace the open `@query` before the caret with `@<repo> ` — the token
+  // the send path parses back into `mail_to` — and park the caret right
+  // after it, ready for the question.
+  const pickMention = (repo: string) => {
+    const element = inputRef.current;
+    const value = element?.value ?? prompt;
+    const caret = element?.selectionStart ?? value.length;
+    const query = mentionQueryAtCaret(value, caret) ?? mention ?? "";
+    const cut = Math.max(0, caret - query.length - 1);
+    const next = `${value.slice(0, cut)}@${repo} ${value.slice(caret)}`;
+    setPrompt(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const position = cut + repo.length + 2;
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(position, position);
+    });
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    const ask = agentMailOn && isController ? mailAskFromPrompt(trimmed, otherRepos) : null;
+    if (ask) {
+      // The mail arm: `mail_to` rides the same messages route; nothing is
+      // queued on this chat (ADR-0072 § 9). The card, the LINKED CHATS row
+      // and the answer all arrive on the conversation's own stream.
+      sendMessage.mutate(
+        { prompt: ask.question, mail_to: ask.repo },
+        { onSuccess: () => setPrompt("") },
+      );
+      return;
+    }
+    onSend(event);
+  };
+
+  const menuItems: MenuEntry[] =
+    candidates.length > 0
+      ? candidates.map((name) => ({
+          id: name,
+          label: name,
+          testId: `composer-mail-repo-${name}`,
+          onSelect: () => pickMention(name),
+        }))
+      : [
+          {
+            id: "no-match",
+            label: otherRepos.length === 0 ? "No other repo to ask." : "No repository matches.",
+            onSelect: () => {},
+            disabled: true,
+          },
+        ];
   return (
     <section aria-labelledby={heading ? "composer-heading" : undefined} className="space-y-2">
       {heading ? (
@@ -364,30 +507,43 @@ export function AgentConversationComposer({
           Prompt
         </h2>
       ) : null}
-      <form onSubmit={onSend} className="space-y-2" data-testid={ids.composerForm ?? undefined}>
+      <form onSubmit={submit} className="space-y-2" data-testid={ids.composerForm ?? undefined}>
         <label className="sr-only" htmlFor={inputId}>
           Prompt for the agent
         </label>
-        <Textarea
-          id={inputId}
-          data-testid={ids.composerInput}
-          rows={rows}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          disabled={!isController}
-          aria-describedby={turnInProgress || !isController ? explainerId : undefined}
-          placeholder={
-            isController
-              ? agentMailOn
-                ? "Ask the agent for something… @ another repo's agent to ask it"
-                : "Ask the agent for something…"
-              : nonControllerPlaceholder
-          }
-        />
+        <span ref={anchorRef} className="relative block">
+          <Textarea
+            id={inputId}
+            data-testid={ids.composerInput}
+            rows={rows}
+            value={prompt}
+            onChange={onPromptChange}
+            disabled={!isController}
+            aria-describedby={turnInProgress || !isController ? explainerId : undefined}
+            placeholder={
+              isController
+                ? agentMailOn
+                  ? "Ask the agent for something… @ another repo's agent to ask it"
+                  : "Ask the agent for something…"
+                : nonControllerPlaceholder
+            }
+          />
+          <Menu
+            open={mentionOpen}
+            onClose={() => setMention(null)}
+            triggerRef={anchorRef}
+            side="top"
+            width={260}
+            caption="ASK ANOTHER REPO'S AGENT"
+            ariaLabel="The project repositories whose agent you can ask"
+            data-testid="composer-mail-menu"
+            items={menuItems}
+          />
+        </span>
         {agentMailOn && isController ? (
           <p className="font-mono text-[11px] text-muted" data-testid="composer-mail-hint">
-            @ another repo's agent: your agent can ask it a question — replies arrive in this chat,
-            and the asked agent runs read-only.
+            @ another repo's agent to ask it directly — replies arrive in this chat, and the asked
+            agent runs read-only.
           </p>
         ) : null}
         {agentPicker}
@@ -400,7 +556,11 @@ export function AgentConversationComposer({
           // 06 "do not send competing prompts"), so we say so instead of failing.
           disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
         >
-          {sendMessage.isPending ? "Sending…" : "Send"}
+          {sendMessage.isPending
+            ? "Sending…"
+            : mailAskFromPrompt(prompt, otherRepos) !== null
+              ? "Ask"
+              : "Send"}
         </Button>
       </form>
       {!isController ? (

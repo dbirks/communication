@@ -322,10 +322,27 @@ type ConversationView struct {
 	// Agents (ADR-0068): the derived "agents in this chat" list with turn
 	// ranges, transcript order; empty for a conversation with no turns.
 	Agents []ConversationChatAgentView `json:"agents"`
+	// RepositoryName (ADR-0067) is the repository this thread was born
+	// bound to, or null when unbound. The list row has carried the same
+	// resolution since ADR-0065; the detail carries it so the composer's
+	// @-menu (ADR-0072 § 9) can offer the project's OTHER repositories.
+	RepositoryName *string `json:"repository_name"`
 	// LinkedChats (ADR-0072): the agent-mail links on this conversation,
 	// either direction, newest first; empty when the project's agent-mail
 	// setting has never produced a link here.
 	LinkedChats []ConversationLinkView `json:"linked_chats"`
+}
+
+// ConversationMailAskView is the ConversationMailAsk schema: the accepted
+// composer @-ask (ADR-0072 § 9) — the link it created and the linked chat
+// it opened. The answer rides the journal back to this conversation exactly
+// as for an agent-dispatched ask; this response is only the acceptance.
+type ConversationMailAskView struct {
+	LinkID           string `json:"link_id"`
+	ToConversationID string `json:"to_conversation_id"`
+	Repo             string `json:"repo"`
+	Question         string `json:"question"`
+	State            string `json:"state"`
 }
 
 // ConversationLinkView is the ConversationLink schema: one agent-mail link
@@ -419,6 +436,16 @@ type ConversationStore interface {
 	CreateConversation(ctx context.Context, c Caller, projectID, agentProfileID, title, prompt, repository string) (ConversationView, error)
 	GetConversation(ctx context.Context, c Caller, conversationID string) (ConversationView, error)
 	PostMessage(ctx context.Context, c Caller, conversationID, prompt string) (ConversationTurnView, error)
+	// AskRepoMail is the composer @-ask (ADR-0072 § 9): the conversation's
+	// controller asks the agent of another project repository a question.
+	// It creates the linked target chat through the same arm the worker's
+	// DispatchMail uses — read-only target, depth 1, per-chat cap, asked_by
+	// the caller — and journals conversation.mail.asked with an empty
+	// `turn_id` (no agent turn asked; a person did). Refusals: mail off or
+	// a non-controller is ErrConversationForbidden (403), a repository the
+	// project does not have is ErrConversationBadRequest (400), the cap and
+	// the depth rule are ErrConversationValidation (422).
+	AskRepoMail(ctx context.Context, c Caller, conversationID, repoName, question string) (ConversationMailAskView, error)
 	TakeControl(ctx context.Context, c Caller, conversationID string, version int) (ConversationView, error)
 	ReturnControl(ctx context.Context, c Caller, conversationID string, version int) (ConversationView, error)
 	CancelTurn(ctx context.Context, c Caller, conversationID string) (ConversationTurnView, error)
@@ -514,6 +541,11 @@ const (
 	cnvMaxTitleLen  = 200
 	cnvMaxPromptLen = 65536
 	cnvMaxOptionLen = 200
+	// cnvMaxMailRepoLen / cnvMaxMailQuestionLen are the conversation_links
+	// CHECKs (migration 00026) the composer @-ask (`mail_to`) must respect:
+	// the target repository name and the question are stored verbatim.
+	cnvMaxMailRepoLen     = 200
+	cnvMaxMailQuestionLen = 4096
 )
 
 // RegisterConversations mounts the conversation, turn, control, permission and
@@ -574,6 +606,11 @@ type cnvCreateBody struct {
 
 type cnvMessageBody struct {
 	Prompt string `json:"prompt"`
+	// MailTo (ADR-0072 § 9) is an optional project repository NAME. Set, the
+	// prompt is not this chat's next turn but a question for the agent of
+	// that repository: the person-initiated composer @-ask, dispatched
+	// through the same mail machinery the worker drives.
+	MailTo string `json:"mail_to,omitempty"`
 }
 
 type cnvControlBody struct {
@@ -732,6 +769,15 @@ func (h *cnvHandlers) postMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-0072 § 9: `mail_to` set turns this post into a composer @-ask —
+	// the question goes to the agent of another project repository, and NO
+	// turn is queued on this conversation. The store arm creates the linked
+	// chat exactly as the worker's dispatch does.
+	if mailTo := strings.TrimSpace(body.MailTo); mailTo != "" {
+		h.postMailAsk(w, r, c, conversationID, mailTo, body.Prompt)
+		return
+	}
+
 	turn, err := h.store.PostMessage(r.Context(), c, conversationID, body.Prompt)
 	if err != nil {
 		h.fail(w, r, c, cnvAtConversation("conversation.message", conversationID), err)
@@ -741,6 +787,45 @@ func (h *cnvHandlers) postMessage(w http.ResponseWriter, r *http.Request) {
 	// waits for the agent (ADR-0016 §3).
 	w.Header().Set("Location", "/api/v1/conversations/"+conversationID)
 	WriteJSON(w, http.StatusAccepted, turn)
+}
+
+// postMailAsk is the `mail_to` arm of the message route (ADR-0072 § 9). The
+// bounds mirror the conversation_links CHECKs the ask must fit; the rest —
+// the setting, the controller lock, the project's repositories, the cap and
+// the depth rule — is the store's answer, rendered like every other route:
+// a repository the project does not have is 400 (the caller named a thing
+// that does not exist in this project's scope — the same split the switch-
+// agent route follows between "you sent junk" and "you sent a real name of
+// nothing"); mail off and a non-controller are 403 identity refusals; the
+// per-chat cap and the depth rule are 422.
+func (h *cnvHandlers) postMailAsk(w http.ResponseWriter, r *http.Request, c Caller, conversationID, mailTo, question string) {
+	if utf8.RuneCountInString(mailTo) > cnvMaxMailRepoLen {
+		cnvInvalid(w, fmt.Sprintf("mail_to must be at most %d characters.", cnvMaxMailRepoLen))
+		return
+	}
+	if utf8.RuneCountInString(question) > cnvMaxMailQuestionLen {
+		cnvInvalid(w, fmt.Sprintf("a mail question must be at most %d characters.", cnvMaxMailQuestionLen))
+		return
+	}
+	ask, err := h.store.AskRepoMail(r.Context(), c, conversationID, mailTo, question)
+	if err != nil {
+		target := cnvAtConversation("conversation.mail", conversationID)
+		if errors.Is(err, ErrConversationBadRequest) {
+			// Not h.fail: that 400 arm names the switch route's field
+			// (`invalid_agent_profile`); the store's sentence already names
+			// `mail_to` and the repository it could not find.
+			h.denied(w, r, c, target, "no repository named by mail_to in this project")
+			WriteProblem(w, http.StatusBadRequest, "Bad Request",
+				cnvSentinelDetail(err, ErrConversationBadRequest))
+			return
+		}
+		h.fail(w, r, c, target, err)
+		return
+	}
+	// 202 like the prompt arm: the ask is durable, the answer is not. The
+	// Location names the created resource — the linked chat the ask opened.
+	w.Header().Set("Location", "/api/v1/conversations/"+ask.ToConversationID)
+	WriteJSON(w, http.StatusAccepted, ask)
 }
 
 func (h *cnvHandlers) takeControl(w http.ResponseWriter, r *http.Request) {

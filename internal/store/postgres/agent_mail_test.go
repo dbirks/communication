@@ -12,10 +12,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/worker"
 )
@@ -474,5 +477,228 @@ func TestAgentMailStaleWorkerDispatchRefused(t *testing.T) {
 	f.queryRow(t, `SELECT count(*) FROM conversation_links`).into(t, &after)
 	if after != before {
 		t.Errorf("stale dispatch created links: %d -> %d", before, after)
+	}
+}
+
+// TestAgentMailComposerAsk (ADR-0072 § 9): the composer @-ask arm. The
+// setting gates it (off is a refusal that writes nothing); a repository the
+// project does not have is refused as a bad name, not a rejection journalled
+// on faith; a non-controller is denied on identity; the accepted ask builds
+// the SAME facts the worker's dispatch builds — a fresh chat bound to the
+// target repo, controller none, the answer turn stamped read-only — with
+// from_turn_id/turn_id empty (a person asked, not a turn) and the human as
+// the journal actor. The answer then settles the link through the § 5 arm
+// unchanged, and the follow-up prompt lands on the asking chat.
+func TestAgentMailComposerAsk(t *testing.T) {
+	f := cnvSetup(t)
+	amRepo(t, f, "web")
+	amRepo(t, f, "api")
+
+	chatA := amChat(t, f, f.alice, "composer chat", "", "web")
+
+	// Off by default: the ask is denied and nothing is written.
+	if _, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatA.ID, "api", "what is in here?"); !errors.Is(err, ErrConversationForbidden) {
+		t.Fatalf("composer ask with the setting off: err=%v, want ErrConversationForbidden", err)
+	}
+	var links int
+	f.queryRow(t, `SELECT count(*) FROM conversation_links`).into(t, &links)
+	if links != 0 {
+		t.Fatalf("mail-off ask created %d links", links)
+	}
+
+	amSetEnabled(t, f, true)
+
+	// A repository outside the project is the bad-name refusal (400 arm),
+	// not a journalled rejected ask: nothing about the project leaks and
+	// nothing is written.
+	if _, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatA.ID, "ghost", "hi?"); !errors.Is(err, ErrConversationBadRequest) {
+		t.Fatalf("composer ask to a foreign repo: err=%v, want ErrConversationBadRequest", err)
+	}
+	// A member who does not hold the controller lock is denied on identity
+	// (403, the ADR-0068 switch route's rule), not with a 409 control state.
+	if _, err := f.store.AskRepoMail(f.ctx(), f.caller(f.bob), chatA.ID, "api", "hi?"); !errors.Is(err, ErrConversationForbidden) {
+		t.Fatalf("composer ask without the lock: err=%v, want ErrConversationForbidden", err)
+	}
+	// A non-member cannot even aim the ask at the chat.
+	if _, err := f.store.AskRepoMail(f.ctx(), f.caller(f.outsider), chatA.ID, "api", "hi?"); !errors.Is(err, ErrConversationNotFound) {
+		t.Fatalf("composer ask by an outsider: err=%v, want ErrConversationNotFound", err)
+	}
+	f.queryRow(t, `SELECT count(*) FROM conversation_links`).into(t, &links)
+	if links != 0 {
+		t.Fatalf("refused asks created %d links", links)
+	}
+
+	ask, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatA.ID, "api", "where is search wired?")
+	if err != nil {
+		t.Fatalf("AskRepoMail: %v", err)
+	}
+	if ask.State != events.MailStateAsked || ask.LinkID == "" || ask.ToConversationID == "" {
+		t.Fatalf("accepted ask = %+v", ask)
+	}
+
+	// The linked chat: born bound to `api`, controller none, and its answer
+	// turn queued read-only under the ask override — the same facts § 2/§ 4
+	// name, off a person's ask instead of a turn's.
+	var (
+		toRepo, control, targetTurn, override string
+		fromTurn                              *string
+		askedBy                               string
+	)
+	f.queryRow(t, `
+		SELECT r.name, cc.controller_kind
+		FROM conversations c
+		JOIN repositories r ON r.id = c.repository_id
+		JOIN conversation_control cc ON cc.conversation_id = c.id
+		WHERE c.id = $1::uuid`, ask.ToConversationID).into(t, &toRepo, &control)
+	f.queryRow(t, `
+		SELECT l.from_turn_id::text, l.asked_by::text
+		FROM conversation_links l WHERE l.id = $1::uuid`, ask.LinkID).into(t, &fromTurn, &askedBy)
+	f.queryRow(t, `
+		SELECT t.id::text, COALESCE(t.permission_override, '')
+		FROM conversation_turns t WHERE t.conversation_id = $1::uuid AND t.status = 'queued'`,
+		ask.ToConversationID).into(t, &targetTurn, &override)
+	if toRepo != "api" || control != "none" {
+		t.Fatalf("target chat repo=%q controller=%q, want api/none", toRepo, control)
+	}
+	if fromTurn != nil {
+		t.Errorf("composer link carries from_turn_id=%v; a person asked, no turn did", *fromTurn)
+	}
+	if askedBy != f.alice {
+		t.Errorf("link asked_by = %s, want alice (mail runs on behalf of the caller)", askedBy)
+	}
+	if override != "ask" {
+		t.Errorf("target turn permission_override = %q, want the read-only ask", override)
+	}
+
+	// The journal row: asked, on the asking chat, authored by the human,
+	// with an EMPTY turn_id (the member stays; the value says no turn asked).
+	var (
+		actorKind, actorID, turnID, state string
+		rows                              int
+	)
+	f.queryRow(t, `
+		SELECT actor_kind, actor_id, payload->>'turn_id', payload->>'state', count(*) OVER ()
+		FROM domain_events
+		WHERE conversation_id = $1::uuid AND type = $2`,
+		chatA.ID, events.TypeConversationMailAsked).into(t, &actorKind, &actorID, &turnID, &state, &rows)
+	if rows != 1 {
+		t.Fatalf("asking chat mail.asked rows = %d, want 1", rows)
+	}
+	if actorKind != events.ActorKindHuman || actorID != f.alice {
+		t.Errorf("mail.asked actor = %s/%s, want human/alice", actorKind, actorID)
+	}
+	if turnID != "" || state != events.MailStateAsked {
+		t.Errorf("mail.asked turn_id=%q state=%q, want empty/asked", turnID, state)
+	}
+
+	// The answer returns the SAME way (§ 5): the target turn completes and
+	// the link settles, both chats journal the answer, and the asking chat
+	// gets its follow-up prompt — from_turn_id NULL or not.
+	st := amStore(f)
+	claimT := amClaimExact(t, f, targetTurn)
+	if claimT.MailAllowed {
+		t.Errorf("the composer target's answer turn is mail-eligible; depth 1 is broken")
+	}
+	if err := st.AppendTurnEvent(f.ctx(), claimT, worker.TurnEvent{
+		Type: events.TypeConversationMessageAgent, ActorKind: events.ActorKindWorker, ActorID: f.worker,
+		Payload: events.MessageAgentPayload{ConversationID: ask.ToConversationID, TurnID: targetTurn, ChunkSeq: 1, Text: "handlers/search.go wires it.", Final: true},
+	}); err != nil {
+		t.Fatalf("AppendTurnEvent: %v", err)
+	}
+	if err := st.FinishTurn(f.ctx(), claimT, worker.TurnOutcome{Status: events.TurnStatusCompleted, StopReason: "end_turn"}); err != nil {
+		t.Fatalf("FinishTurn target: %v", err)
+	}
+	state, answer, reason := amLinkState(t, f, ask.LinkID)
+	if state != events.MailStateAnswered || answer != "handlers/search.go wires it." || reason != "" {
+		t.Fatalf("composer link after answer: state=%q answer=%q reason=%q", state, answer, reason)
+	}
+	var followup string
+	f.queryRow(t, `
+		SELECT prompt FROM conversation_turns
+		WHERE conversation_id = $1::uuid AND status = 'queued'`,
+		chatA.ID).into(t, &followup)
+	if !strings.Contains(followup, "the agent in the repository “api” answered") {
+		t.Errorf("asking chat follow-up = %q, want the answer notice", followup)
+	}
+}
+
+// TestAgentMailComposerDepthAndCap: the § 5 rules bite the § 9 arm too — a
+// person who took over a mailed chat inherits its no-ask rule, and the
+// per-chat cap bounds composer asks exactly as it bounds agent asks.
+func TestAgentMailComposerDepthAndCap(t *testing.T) {
+	f := cnvSetup(t)
+	amRepo(t, f, "web")
+	amRepo(t, f, "api")
+	amSetEnabled(t, f, true)
+
+	// Depth: chat B is some link's target; alice takes control of B (the
+	// takeover inherits the rule) and B still cannot ask.
+	chatA := amChat(t, f, f.alice, " asker", "", "web")
+	askA, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatA.ID, "api", "first?")
+	if err != nil {
+		t.Fatalf("AskRepoMail: %v", err)
+	}
+	if _, err := f.store.TakeControl(f.ctx(), f.caller(f.alice), askA.ToConversationID, 1); err != nil {
+		t.Fatalf("TakeControl on the mailed chat: %v", err)
+	}
+	if _, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), askA.ToConversationID, "web", "re-ask?"); !errors.Is(err, ErrConversationValidation) {
+		t.Fatalf("mailed chat asking: err=%v, want ErrConversationValidation (depth 1)", err)
+	}
+
+	// Cap: the eighth ask lands, the ninth is refused with the cap sentence.
+	chatC := amChat(t, f, f.alice, "capped composer", "", "web")
+	for i := 0; i < DefaultMailCap; i++ {
+		if _, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatC.ID, "api", fmt.Sprintf("q%d?", i)); err != nil {
+			t.Fatalf("ask %d: %v", i, err)
+		}
+	}
+	_, err = f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatC.ID, "api", "one too many?")
+	if !errors.Is(err, ErrConversationValidation) || !strings.Contains(err.Error(), fmt.Sprintf("used its %d mails", DefaultMailCap)) {
+		t.Fatalf("over-cap ask: err=%v, want the cap refusal", err)
+	}
+
+	// An archived asking chat takes no asks (the PostMessage refusal, worn
+	// as a conflict).
+	f.exec(t, `UPDATE conversations SET status = 'archived' WHERE id = $1::uuid`, chatC.ID)
+	_, err = f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatC.ID, "api", "from the grave?")
+	var cf *CnvConflict
+	if !errors.As(err, &cf) || cf.Kind != ConflictArchived {
+		t.Fatalf("archived chat ask: err=%v, want the archived conflict", err)
+	}
+}
+
+// TestAgentMailComposerAPIAdapter (ADR-0072 § 9): the API adapter arm of the
+// composer ask against the real database — the accepted ask surfaces as the
+// ConversationMailAsk facts, and the setting-off refusal arrives as the
+// api-side forbidden sentinel the handler renders 403 (the sentinel
+// translation, not just the store-side error, is what the route answers
+// from).
+func TestAgentMailComposerAPIAdapter(t *testing.T) {
+	f := cnvSetup(t)
+	amRepo(t, f, "web")
+	amRepo(t, f, "api")
+	chatA := amChat(t, f, f.alice, "adapter chat", "", "web")
+	caller := api.Caller{UserID: f.alice, OrganizationID: f.orgID}
+	store := APIConversationStore{S: f.store}
+
+	if _, err := store.AskRepoMail(f.ctx(), caller, chatA.ID, "api", "wired where?"); !errors.Is(err, api.ErrConversationForbidden) {
+		t.Fatalf("adapter with the setting off: err=%v, want api.ErrConversationForbidden", err)
+	}
+	amSetEnabled(t, f, true)
+	ask, err := store.AskRepoMail(f.ctx(), caller, chatA.ID, "api", "where is search wired?")
+	if err != nil {
+		t.Fatalf("adapter AskRepoMail: %v", err)
+	}
+	if ask.State != events.MailStateAsked || ask.Repo != "api" || ask.Question != "where is search wired?" ||
+		ask.LinkID == "" || ask.ToConversationID == "" {
+		t.Fatalf("adapter ask = %+v", ask)
+	}
+	var turnID string
+	f.queryRow(t, `
+		SELECT payload->>'turn_id' FROM domain_events
+		WHERE conversation_id = $1::uuid AND type = $2`,
+		chatA.ID, events.TypeConversationMailAsked).into(t, &turnID)
+	if turnID != "" {
+		t.Errorf("journal turn_id = %q, want empty for the person-initiated ask", turnID)
 	}
 }

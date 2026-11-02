@@ -35,10 +35,13 @@
 //            built from the pinned revision's declared inputs. Cancelled —
 //            these journeys never start a run of this pin.
 //   3d     — agent mail (ADR-0072): the settings switch turned ON through
-//            the UI, a chat in `web` whose agent emits the fenced
-//            `communication-mail` block on a real model, the inline card,
-//            LINKED CHATS, the answer arriving, and the asked chat's
-//            workspace proving no writes over the API.
+//            the UI, a chat in `web` whose CONTROLLER asks the agent in
+//            `server` with the composer @-path (`@server <question>` →
+//            `mail_to`, ADR-0072 § 9), the inline card, LINKED CHATS, the
+//            answer arriving from a real read-only model turn, and the
+//            asked chat's workspace proving no writes over the API. The
+//            agent-initiated fenced-block path is deterministic-covered by
+//            the Go suites (internal/worker, internal/store/postgres).
 //
 // Seeding (per pass, over the API the way setup/empty-error do it): admin
 // publishes "Emu rcn <pass>" (the plan-with-approval template with the
@@ -76,22 +79,15 @@ const SEED_CHAT_TITLE = `Emu rcn chat ${EMU_PASS_ID}`;
 /** The chat-box prompt: its first line becomes the thread's title. */
 const CHAT_PROMPT = `EMU-RCN ${EMU_PASS_ID} — reply with exactly OK`;
 // Agent mail (design 3d, ADR-0072). The token rides INSIDE the question the
-// asking agent must copy verbatim into the fenced block, so the mail card's
-// question line is assertable without matching model prose.
+// person types after the `@server` mention, so the mail card's question
+// line is assertable without matching model prose.
 const MAIL_CHAT_TITLE = `Emu rcn mail ${EMU_PASS_ID}`;
 const MAIL_QUESTION_TOKEN = `EMU-Q-${EMU_PASS_ID}`;
-/** The 3d prompt. The worker's `MailPreamble` (internal/worker/mail.go)
- * already tells the agent the fenced block exists; this prompt commands
- * THAT exact block verbatim, so the only live-model risk left is whether it
- * obeys. Nothing is edited, and the model must not answer the question
- * itself — the ask must ride the mail channel. */
-const MAIL_PROMPT =
-  `EMU-RCN ${EMU_PASS_ID} MAIL — use agent mail exactly once, then stop.\n\n` +
-  `Ask the agent in the "${GH_REPO}" repository one question with the communication-mail fenced block. End your reply with EXACTLY this block and nothing after it — same fence name, same JSON, question text copied character for character:\n\n` +
-  "```communication-mail\n" +
-  `{"repo": "${GH_REPO}", "question": "${MAIL_QUESTION_TOKEN} — what is in this repository? Answer in one short sentence."}\n` +
-  "```\n\n" +
-  "Do not edit any file, do not answer the question yourself, and do not ask anything else.";
+/** The 3d question, sent through the composer @-path (ADR-0072 § 9): the
+ * ask dispatches when the person sends `@server <this>` — the mail card
+ * shows the question verbatim, and the asked chat's agent answers it
+ * read-only on a real model. */
+const MAIL_QUESTION = `${MAIL_QUESTION_TOKEN} — what is in this repository? Answer in one short sentence.`;
 
 /** What `waitForMailLink` settles with: the outgoing link's terminal facts. */
 interface MailLinkRow {
@@ -1045,19 +1041,21 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
   });
 
-  test("agent mail — this chat's agent asks the agent in `server` (rcn-3d, ADR-0072)", async ({
+  test("agent mail — the controller asks the agent in `server` with @ (rcn-3d, ADR-0072)", async ({
     page,
     emu,
   }) => {
-    // The ADR-0072 minimal channel end to end on the lab's REAL models:
-    // the claim injects the `MailPreamble`, the prompt commands the exact
-    // fenced `communication-mail` block, the worker dispatches the ask at
-    // turn end into a fresh linked chat bound to `server` (born controller
-    // `none`, permission-locked to `ask` — read-only), and the answer
-    // folds back into the 3d card and the panel's LINKED CHATS. Nothing
-    // here fakes the second agent: if the live model will not emit the
-    // block, or the asked turn will not answer, THIS leg stays RED and
-    // names the reason — the orchestrator decides, not a weakened assert.
+    // The ADR-0072 § 9 person-initiated path end to end on the lab's REAL
+    // models: the composer @-menu offers the project's other repo, sending
+    // `@server <question>` dispatches the ask on the spot (a fresh linked
+    // chat bound to `server`, born controller `none`, permission-locked to
+    // `ask` — read-only), the card and LINKED CHATS fold in over the chat's
+    // own stream, and the asked agent's answer rides back the same way the
+    // worker's agent-dispatched answer does. Deterministic by construction:
+    // no live model has to EMIT anything for the ask to dispatch — only the
+    // asked agent's answer still runs on the real launcher. The
+    // agent-initiated fenced-block path is covered by the Go tests
+    // (TestParseMailCommands, TestAgentMail*, TestPostMessageMailTo*).
     test.setTimeout(30 * 60_000);
 
     await test.step("settings — flip agent mail on through the UI", async () => {
@@ -1128,26 +1126,43 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toBeVisible({ timeout: 30_000 });
     });
 
-    await test.step("prompt the agent to use the mail channel", async () => {
+    await test.step("ask `server` from the composer with @", async () => {
       const composer = page.getByTestId("composer-input");
       await expect(composer, "the controller's composer is enabled").toBeEnabled();
-      await composer.fill(MAIL_PROMPT);
-      await page.getByTestId("composer-send").click();
-      await expect(composer, "the prompt is accepted into the journal").toHaveValue("", {
+      // Typing `@` opens the ds menu over the project's OTHER repos (this
+      // chat is bound to `web`); picking `server` completes the token, and
+      // the question rides behind it. The ask dispatches on SEND — the mail
+      // arm of the messages route (§ 9), not a prompt turn.
+      await composer.pressSequentially("@");
+      const askItem = page.getByTestId(`composer-mail-repo-${GH_REPO}`);
+      await expect(
+        askItem,
+        "the @-menu lists the other repo's agent as askable",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByTestId("composer-mail-repo-web")).toHaveCount(0);
+      await askItem.click();
+      await expect(composer, "picking the repo completes the @ token").toHaveValue(
+        `@${GH_REPO} `,
+      );
+      await composer.type(MAIL_QUESTION);
+      const send = page.getByTestId("composer-send");
+      await expect(
+        send,
+        "the verb flips to Ask while the composer holds a mail mention",
+      ).toHaveText("Ask");
+      await send.click();
+      await expect(composer, "the ask lands (202) and the composer clears").toHaveValue("", {
         timeout: 30_000,
       });
     });
 
     await test.step("the inline card appears and LINKED CHATS lists `server`", async () => {
-      const chip = page.getByTestId("composer-agent-chip");
-      await expect(
-        chip,
-        "the asking turn settles (real model — the lab's honest `Turn failed:` line settles here too)",
-      ).toBeEnabled({ timeout: 12 * 60_000 });
+      // The ask is durable the moment the POST lands; the card rides this
+      // chat's own event stream — no asking-model turn to wait behind.
       await expect(
         page.getByTestId("mail-card").first(),
-        "design 3d: the answer ended with the fenced `communication-mail` block and the worker dispatched it — this timeout means the live model did NOT emit the ADR-0072 block; report it, never stage the ask by hand",
-      ).toBeVisible({ timeout: 60_000 });
+        "design 3d: the § 9 @-ask opened the mail card in this chat",
+      ).toBeVisible({ timeout: 30_000 });
       await expect(
         page.getByTestId("mail-card-bar").first(),
         "the card's bar names the asked repo",

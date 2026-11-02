@@ -55,8 +55,15 @@ type cnvFakeStore struct {
 	controller string
 	version    int
 
-	created   []cnvCreateCall
-	messaged  []cnvMessageCall
+	created  []cnvCreateCall
+	messaged []cnvMessageCall
+	// mailAsked records the ADR-0072 § 9 composer @-asks the handler made,
+	// so a test can prove the route forwarded repo+question unchanged.
+	mailAsked []cnvMailAskCall
+	// mailToErr scripts a store-side refusal on the @-ask arm (the setting
+	// off, the cap, the depth rule) — everything the fake cannot see in its
+	// own fields.
+	mailToErr error
 	taken     []int
 	returned  []int
 	cancelled int
@@ -111,6 +118,9 @@ type cnvCreateCall struct{ projectID, profileID, title, prompt, repository strin
 type cnvSwitchCall struct{ conversationID, agentProfileID string }
 type cnvMessageCall struct {
 	conversationID, prompt string
+}
+type cnvMailAskCall struct {
+	conversationID, repo, question string
 }
 type cnvDenial struct {
 	// subject is the conversation id, or the project id for a project-scoped
@@ -443,6 +453,33 @@ func (f *cnvFakeStore) PostMessage(_ context.Context, c Caller, conversationID, 
 	return ConversationTurnView{
 		ID: cnvTTurn, ConversationID: conversationID, Status: events.TurnStatusQueued,
 		Prompt: prompt, SubmittedBy: c.UserID, CreatedAt: prjFixedTime,
+	}, nil
+}
+
+// AskRepoMail implements the ADR-0072 § 9 @-ask arm the way the real store
+// answers it: visibility, then the writer role, then the controller lock
+// (403 identity, the ADR-0068 switch precedent), then the project's
+// repository set — and it queues NOTHING on this conversation.
+func (f *cnvFakeStore) AskRepoMail(_ context.Context, c Caller, conversationID, repoName, question string) (ConversationMailAskView, error) {
+	if !f.visible(c) {
+		return ConversationMailAskView{}, ErrConversationNotFound
+	}
+	if f.myRole == string(authz.RoleViewer) {
+		return ConversationMailAskView{}, ErrConversationForbidden
+	}
+	if f.controller != c.UserID {
+		return ConversationMailAskView{}, fmt.Errorf("%w: Alice holds the controller lock; only the controller may ask another repository's agent", ErrConversationForbidden)
+	}
+	if f.mailToErr != nil {
+		return ConversationMailAskView{}, f.mailToErr
+	}
+	if !cnvFakeHasRepo(f, repoName) {
+		return ConversationMailAskView{}, fmt.Errorf("%w: mail_to: no repository named %q in this project", ErrConversationBadRequest, repoName)
+	}
+	f.mailAsked = append(f.mailAsked, cnvMailAskCall{conversationID, repoName, question})
+	return ConversationMailAskView{
+		LinkID: "01987a76-1111-7000-8000-000000000001", ToConversationID: "chat-linked-1",
+		Repo: repoName, Question: question, State: events.MailStateAsked,
 	}, nil
 }
 
@@ -1285,6 +1322,118 @@ func TestPostMessageWithoutControlIs409(t *testing.T) {
 	}
 	if len(store.messaged) != 0 {
 		t.Errorf("the store was asked to queue a turn (%+v) even though nobody holds control", store.messaged)
+	}
+}
+
+// ADR-0072 § 9: the composer `@<repo> <question>` ask rides the same
+// messages route with `mail_to`. The handler dispatches through the store's
+// mail arm (never queueing a turn on this chat), refuses a mail-off project
+// and a non-controller on 403 identity, answers a repository the project
+// does not have with 400, and bounds the body before the store is asked.
+
+func TestPostMessageMailToDispatchesAsk(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+	rec := cnvPost(t, s, cnvTUserA, "http://localhost:8080/api/v1/conversations/"+cnvTConv+"/messages",
+		map[string]any{"prompt": "does GET /search take cursor params?", "mail_to": "acme-api"})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("mail ask = %d, want 202 (%s)", rec.Code, rec.Body)
+	}
+	if len(store.messaged) != 0 {
+		t.Errorf("a mail ask queued a turn on the asking chat (%+v); § 9 dispatches, it does not prompt", store.messaged)
+	}
+	if len(store.mailAsked) != 1 {
+		t.Fatalf("mail arm calls = %d, want 1 (%+v)", len(store.mailAsked), store.mailAsked)
+	}
+	call := store.mailAsked[0]
+	if call.conversationID != cnvTConv || call.repo != "acme-api" ||
+		call.question != "does GET /search take cursor params?" {
+		t.Errorf("mail arm got %+v, want the conversation, repo and question forwarded", call)
+	}
+	ask := decodeBody(t, rec)
+	if ask["state"] != events.MailStateAsked || ask["repo"] != "acme-api" {
+		t.Errorf("ask body = %v", ask)
+	}
+	if ask["link_id"] == "" || ask["to_conversation_id"] == "" {
+		t.Errorf("ask body lost the link or the linked chat: %v", ask)
+	}
+	// A ConversationTurn is NOT the mail response: no turn was created.
+	if _, ok := ask["status"].(string); ok && ask["prompt"] != nil {
+		t.Errorf("mail ask answered with a turn body: %v", ask)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/api/v1/conversations/chat-linked-1" {
+		t.Errorf("Location = %q, want the linked chat the ask opened", loc)
+	}
+}
+
+func TestPostMessageMailToWithoutControlIs403(t *testing.T) {
+	store := cnvNewFakeStore()
+	store.controller = cnvTUserB
+	s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+	rec := cnvPost(t, s, cnvTUserA, "http://localhost:8080/api/v1/conversations/"+cnvTConv+"/messages",
+		map[string]any{"prompt": "ask my repo's agent", "mail_to": "acme-api"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("mail ask without the lock = %d, want 403 (%s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	detail, _ := body["detail"].(string)
+	if !strings.Contains(detail, "controller") {
+		t.Errorf("403 detail = %q, want it to name the controller rule", detail)
+	}
+	if len(store.mailAsked) != 0 {
+		t.Errorf("a non-controller dispatched mail (%+v)", store.mailAsked)
+	}
+}
+
+func TestPostMessageMailToRefusedWhenMailOff(t *testing.T) {
+	store := cnvNewFakeStore()
+	// The real store re-reads the project setting inside the transaction and
+	// wraps the denial in its sentence; the fake scripts the same answer.
+	store.mailToErr = fmt.Errorf("%w: agent mail is switched off for this project", ErrConversationForbidden)
+	s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+	rec := cnvPost(t, s, cnvTUserA, "http://localhost:8080/api/v1/conversations/"+cnvTConv+"/messages",
+		map[string]any{"prompt": "ask my repo's agent", "mail_to": "acme-api"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("mail ask with the setting off = %d, want 403 (%s)", rec.Code, rec.Body)
+	}
+	if body := decodeBody(t, rec); !strings.Contains(fmt.Sprint(body["detail"]), "switched off") {
+		t.Errorf("refusal detail = %v, want it to name the switch", body)
+	}
+}
+
+func TestPostMessageMailToForeignRepoIs400(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+	rec := cnvPost(t, s, cnvTUserA, "http://localhost:8080/api/v1/conversations/"+cnvTConv+"/messages",
+		map[string]any{"prompt": "hello?", "mail_to": "not-a-repo-of-this-project"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("mail ask to a foreign repo = %d, want 400 (%s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	detail, _ := body["detail"].(string)
+	if !strings.Contains(detail, "not-a-repo-of-this-project") {
+		t.Errorf("400 detail = %q, want it to name the repository", detail)
+	}
+	if len(store.mailAsked) != 0 {
+		t.Errorf("a foreign repo dispatched (%+v)", store.mailAsked)
+	}
+}
+
+func TestPostMessageMailToLengthIs422(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+	rec := cnvPost(t, s, cnvTUserA, "http://localhost:8080/api/v1/conversations/"+cnvTConv+"/messages",
+		map[string]any{"prompt": strings.Repeat("q", cnvMaxMailQuestionLen+1), "mail_to": "acme-api"})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("over-long mail question = %d, want 422 (%s)", rec.Code, rec.Body)
+	}
+	rec = cnvPost(t, s, cnvTUserA, "http://localhost:8080/api/v1/conversations/"+cnvTConv+"/messages",
+		map[string]any{"prompt": "short?", "mail_to": strings.Repeat("r", cnvMaxMailRepoLen+1)})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("over-long mail_to = %d, want 422 (%s)", rec.Code, rec.Body)
+	}
+	if len(store.mailAsked) != 0 {
+		t.Errorf("over-long bodies reached the store (%+v)", store.mailAsked)
 	}
 }
 
