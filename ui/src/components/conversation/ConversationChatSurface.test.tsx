@@ -355,10 +355,19 @@ describe("the context rail (2e side panel) from the reads", () => {
     expect(within(panel).queryByText(/LINKED CHATS/i)).toBeNull();
   });
 
-  it("renders no panel at all when no read names anything to show", async () => {
+  it("hides every data section when no read names anything, leaving only the assistant's note", async () => {
     renderApp({ path, routes: routes(conversationFixture) });
     await screen.findByTestId("conversation-title");
-    expect(screen.queryByTestId("conversation-side-panel")).toBeNull();
+    const panel = await screen.findByTestId("conversation-side-panel");
+    // No read names a repository, a branch, files or agent ranges: every
+    // data section is absent.
+    expect(within(panel).queryByTestId("side-panel-works-in")).toBeNull();
+    expect(within(panel).queryByTestId("side-panel-branch")).toBeNull();
+    expect(within(panel).queryByTestId("side-panel-files-changed")).toBeNull();
+    expect(within(panel).queryByTestId("side-panel-agent-range-0")).toBeNull();
+    // Thread → workflow (design 2f): the host names this thread's chat, so
+    // the ASSISTANT slot always carries — the rail is never wholly dark here.
+    expect(within(panel).getByTestId("assistant-note-workflow")).toBeTruthy();
   });
 });
 

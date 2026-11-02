@@ -1017,6 +1017,15 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		asstRunner = assistant.NewConversationRunner(assistant.ConversationRunnerDeps{
 			Broker: asstBroker,
 			Draft:  asstDraft,
+			// Thread → workflow (design 2f): the caller-checked chat read
+			// (the GET /conversations/{id} store read, the summary row's
+			// repository, the SSE stream's journal read, member names) and
+			// the library-role-checked draft creation (the user's own
+			// CreatePipeline + CreateDraft with source_kind "assistant").
+			Chats: api.NewAssistantChatTranscript(apiConversations,
+				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
+				apiProjects),
+			Library: api.NewAssistantLibraryDraftCreator(postgres.APIPipelineStore{S: pipelineStore}),
 			Actions: api.NewAssistantActions(api.AssistantActionsDeps{
 				Runs:        postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 				Assignments: postgres.APIAssignmentStore{S: pipelineStore},

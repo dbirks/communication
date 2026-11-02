@@ -250,6 +250,11 @@ export default function ConversationPage({
       branch={threadBranch || null}
       filesChanged={filesChanged}
       agents={data.agents ?? null}
+      // Thread → workflow (design 2f): the rail's ASSISTANT slot offers
+      // `Make a workflow…`, which opens the assistant with THIS chat as
+      // context — the id travels as data in the ask; authorizing the
+      // transcript read stays the server's job (chat.transcript).
+      workflowChat={{ id: conversationId, title: conversation.data?.title ?? null }}
     />
   );
   const agentPicker = <ComposerAgentChip session={session} />;

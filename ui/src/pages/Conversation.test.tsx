@@ -29,6 +29,7 @@ import {
 } from "../test/fakes";
 import type { Conversation, TurnSandbox } from "../api/types";
 import { shortId } from "../api/names";
+import { ASSISTANT_OPEN_EVENT } from "../components/assistant/AssistantPopover";
 import { DRAFT_PR_PROMPT } from "./Conversation";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
@@ -1292,5 +1293,27 @@ describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", 
     expect(screen.getByTestId("thread-draft-pr").textContent).toContain(
       "Take control to ask the agent",
     );
+  });
+
+  // Thread → workflow (design 2f): the page host names this thread's chat,
+  // so the rail offers `Make a workflow…` — the click-through opens the
+  // assistant with the conversation id (and title) as data in the ask.
+  // Authorizing the transcript read stays the server's job.
+  it("rail's Make a workflow… opens the assistant with this conversation as context", async () => {
+    const seen: Event[] = [];
+    const listener = (event: Event) => seen.push(event);
+    window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
+    try {
+      renderApp({ path, routes: routes(conversationFixture) });
+      await screen.findByTestId("conversation-title");
+      fireEvent.click(await screen.findByTestId("assistant-note-workflow-action-make_workflow"));
+    } finally {
+      window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
+    }
+    expect(seen).toHaveLength(1);
+    const ask = (seen[0] as CustomEvent<string>).detail;
+    expect(ask).toContain(conversationId);
+    expect(ask).toContain("Refactor billing");
+    expect(ask).toContain("Read the chat transcript first");
   });
 });
