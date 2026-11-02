@@ -1,0 +1,612 @@
+ROUND 3 · NARROWING
+Sidebar shell, repo list + lanes, assistant notes, agents talking across repos
+Everything here uses the 2c sidebar. Menus now have pointer arrows. Decisions and open threads are tracked in Handoff.md.
+===== [3a] =====
+3a Repo · List, in the sidebar shell Chats start in this repo. Assistant notes sit at the bottom of the side panel.
+C Communication «
+New chat ⌘K
+Today ! 1
+My chats 2
+PROJECTS
+▾ Northwind ! 1
+storefront ● 2
+api
+infra
+▸ Acme
+LIBRARY
+Workflows 8
+Steps
+Agent profiles 4
+DB David Birks
+Northwind / storefront
+storefront
+List Lanes
+Chat in storefront… ask, plan, or paste an issue Claude Code · opus ▾ Start
+All Runs Chats Mine
+! RUN #412 Checkout rounds tax wrong · approve plan Issue to PR 12m
+● RUN #418 Add Apple Pay · Implement Issue to PR 4m
+● CHAT Search revamp spike · Dana, Mike Claude → Codex now
+✓ RUN Nightly deps · opened PR #422 schedule 6h
+× RUN PR review #401 · failed at Review by David 1d
+WORKFLOWS · 3 + add
+Issue to PR
+GitHub · issue labeled factory
+● 1 running · ! 1 needs you
+Run
+Nightly deps
+Schedule · daily 02:00
+✓ last 6h ago
+Run
+PR review
+By hand
+× last failed 1d ago
+Run
+OPEN ISSUES · 12 all ›
+#421 Cart badge doesn't update Hand off
+#419 Add order notes field Hand off
+ASSISTANT NOTICED
+PR review failed twice this week on the same lint rule.
+Start a fix chat dismiss
+#419 and #421 both touch the cart. One run could take both.
+Hand off together dismiss
+===== [3b] =====
+3b Repo · Lanes, with issues as the first lane Workflows aren't a lane anymore. Drag an issue into Running and pick which workflow takes it.
+C
++
+Today
+NW
+AC
+»
+Northwind / storefront
+storefront
+List Lanes New chat
+WORKFLOWS Issue to PR · issue labeled factory Nightly deps · 02:00 PR review · by hand
+ISSUES · 12
+#421
+Cart badge doesn't update
+#419
+Add order notes field
+#415
+Migrate to Node 22
++ 9 more
+! NEEDS YOU · 1
+RUN · Issue to PR
+#412 Checkout rounds tax
+Approve plan
+Approve Open
+● RUNNING · 2
+RUN · Issue to PR
+#418 Add Apple Pay
+#421 · dragging
+Cart badge doesn't update
+START #421 WITH
+Issue to PR
+PR review
+Chat about it instead
+FINISHED · 7 DAYS
+✓ Nightly deps
+Opened PR #422
+× PR review
+#401 failed at Review
+CHAT
+Why is CI flaky?
+===== [3c] =====
+3c Menus with arrows Left: clicking ⋯ on a project row. Right: hovering a tile in the collapsed rail.
+PROJECTS
+▾ Northwind ⋯
+storefront
+api
+infra
+▸ Acme
+Project settings
+Members
+Add repository
+Workflows in use
+NW
+AC
+Northwind ! 1
+storefront ● 2
+api
+infra
+===== [3d] =====
+3d Agents talking across repos The storefront agent asks the api agent. Its reply lands inline; the side chat is linked in the panel.
+Northwind / storefront
+Search revamp spike
+Dana, Mike, you
+DK
+Dana
+Does our new search endpoint support pagination? Check with api before you wire it.
+CC
+Claude Code · opus · storefront
+→ asked the agent in api open chat ›
+"Does GET /search accept cursor or page params? What's the max page size?"
+← api · Codex · gpt-5 · read handlers/search.go
+Cursor-based: ?after=<id>&limit=, max 100. No offset paging.
+Got it. I'll use cursors and cap the page at 50 in the client.
+Reply, / for skills, # for issues, @ for another repo's agent…
+Claude Code · opus ▾ / skill Send
+WORKS IN
+storefront · chat/search-spike
+LINKED CHATS
+api
+Search pagination question
+✓ answered · read-only
+AGENTS
+Claude Code · opus storefront
+Codex · gpt-5 api, asked once
+Asked agents run read-only by default. Letting one edit its repo needs a person to approve.
+===== [3e] =====
+3e Top bar, for comparison 2d cleaned up: real page behind, menu clearly on top with an arrow.
+C Today !1 Northwind ▾ / storefront ▾ Library ▴ Ask ⌘K DB
+storefront
+Chat in storefront… ask, plan, or paste an issue
+! #412 Checkout rounds tax wrong · approve plan
+● #418 Add Apple Pay · Implement
+● Chat · Search revamp spike
+SHARED ACROSS PROJECTS
+Workflows 8
+Issue to PR · Nightly deps · PR review · +5
+Steps
+Reusable step templates
+Agent profiles 4
+Claude Code · Codex · Gemini CLI
+ROUND 2 · COMBINING WHAT YOU LIKED
+Repo views, a collapsible sidebar vs. top bar, quieter suggestions
+Repo: 1a's mixed activity, 1b's workflow rail and progress bars, 1c's composer, with a List / Lanes picker. Nav: "Home" renamed "Today", Library as its own org-level section, project settings behind a cog. Chat: start context is switchable, and the workflow suggestion moves to a side rail and the assistant.
+===== [2a] =====
+2a Repo · List view Composer on top, mixed feed, workflow rail. Top-bar shell from 1f.
+C Today !1 NW Northwind ▾ / storefront ▾ Library ▾ Ask ⌘K DB
+storefront
+github.com/northwind/storefront · main
+List Lanes Repo settings
+Start a chat… ask, plan, or paste an issue in storefront ▾ Claude Code · opus ▾ Start
+All Runs Chats Mine
+! RUN #412 Checkout rounds tax wrong · plan ready, approve to implement Issue to PR 12m
+● RUN #418 Add Apple Pay · Implement Issue to PR 4m
+● CHAT Search revamp spike · Dana, Mike Claude → Codex now
+✓ RUN Nightly deps · opened PR #422 schedule 6h
+× RUN PR review #401 · failed at Review by David 1d
+· CHAT Why is CI flaky? · David · project-wide Codex 2d
+WORKFLOWS · 3 + add
+Issue to PR
+GitHub · issue labeled factory
+● 1 running · ! 1 needs you
+Run
+Nightly deps
+Schedule · daily 02:00
+✓ last 6h ago
+Run
+PR review
+By hand
+× last failed 1d ago
+Run
+OPEN ISSUES · 12 all ›
+#421 Cart badge doesn't update Hand off
+#419 Add order notes field Hand off
+#415 Migrate to Node 22 Hand off
+===== [2b] =====
+2b Same repo · Lanes view The picker remembers your choice per repo. Busy repos get lanes, quiet ones keep the list.
+C Today !1 NW Northwind ▾ / storefront ▾ Library ▾ Ask ⌘K DB
+storefront
+github.com/northwind/storefront · main
+List Lanes New chat
+! NEEDS YOU · 1
+RUN · Issue to PR
+#412 Checkout rounds tax wrong
+Plan ready. Approve to implement.
+Approve Open
+● RUNNING · 2
+RUN · Issue to PR
+#418 Add Apple Pay
+Implement · Codex · 4m
+CHAT
+Search revamp spike
+Dana, Mike · Claude → Codex
+FINISHED · 7 DAYS
+✓ Nightly deps
+Opened PR #422
+× PR review
+#401 failed at Review
+CHAT
+Why is CI flaky?
+WORKFLOWS
+Issue to PR
+issue labeled factory
+Run
+Nightly deps
+daily 02:00
+Run
+PR review
+by hand
+Run
+ISSUES · 12
+Drag an issue onto a workflow to hand it off, or open the list.
+===== [2c] =====
+2c Sidebar · expanded and collapsed Library is a section like Projects. Project settings = cog on hover.
+C Communication «
+New chat ⌘K
+Today ! 1
+My chats 2
+PROJECTS
+▾ Northwind ! 1 ⋯
+storefront ● 2
+api
+infra
+▸ Acme
+LIBRARY
+Workflows 8
+Steps
+Agent profiles 4
+DB David Birks
+Project settings
+Members
+Add repository
+Workflows in use
+C
++
+Today
+NW
+AC
+Library
+»
+DB
+COLLAPSED
+Hovering a project tile shows its repos in a flyout.
+===== [2d] =====
+2d Top bar · Library menu open Library sits apart on the right because it isn't per-project.
+C Today !1 Northwind ▾ / storefront ▾ Library ▴ Ask ⌘K DB
+SHARED ACROSS PROJECTS
+Workflows 8
+Issue to PR · Nightly deps · PR review · +5
+Steps
+Reusable step templates
+Agent profiles 4
+Claude Code · Codex · Gemini CLI
+storefront
+===== [2e] =====
+2e Chat with a context rail Where it runs is switchable (repo or whole project). The workflow idea is one quiet line in the rail.
+Northwind / storefront
+Search revamp spike
+Dana, Mike, you
+MR
+Mike
+Do it. Keep Algolia as the fallback.
+Dana switched to Codex · gpt-5
+CX
+Codex · gpt-5
+edit src/search/adapter.ts · edit src/search/client.ts · +2 files · tests pass
+Adapter is in, the new endpoint is behind SEARCH_V2, Algolia stays as fallback.
+DK
+Dana
+/review then open a draft PR.
+CX
+Codex · gpt-5 · skill: review
+2 findings fixed. Draft PR #424 is open.
+Reply, / for skills, # for issues…
+Codex · gpt-5 ▾ / skill Send
+WORKS IN
+storefront ▾
+Switch to "Northwind · all repos" to let the agent read api and infra too.
+BRANCH
+chat/search-spike
+4 files changed · PR #424
+AGENTS IN THIS CHAT
+Claude Code · opus turns 1–2
+Codex · gpt-5 turns 3–5
+Skill used: review
+ASSISTANT
+Plan → implement → review → PR. This could be a workflow.
+Make a workflow… dismiss
+===== [2f] =====
+2f Assistant builds the workflow with you No translator screen. The assistant drafts step by step and asks when it has to choose.
+Search revamp spike
+Assistant context: this chat
+Turn this chat into a workflow
+I read the chat. Drafting Adapter swap → PR in the library:
+✓ Plan Claude Code · opus
+✓ Approval maintainer
+✓ Implement Codex · gpt-5
+● Review Codex · skill review
+· Open draft PR
+QUESTION 1 OF 2
+In the chat, review ran once and Codex fixed what it found. In the workflow, should it repeat until clean?
+Repeat, max 3
+Run once
+Next question: what starts it? An issue, a typed goal, or either.
+Or tell me what to change… Open draft
+COMMUNICATION · DIRECTIONS · ROUND 1
+Repo page, nav shell, chats, workflow inputs
+Sketch-level mocks in the current tokens. Each option has an id (1a, 1b, …) so you can point at it. Same sample data throughout: project Northwind, repo storefront.
+A · REPO PAGE
+What's happened and what's happening in this repo
+Four ways to cut the current page down. The nav is a plain rail here so it stays out of the way; section B covers the nav.
+===== [1a] =====
+1a Tabs: Activity · Chats · Workflows · Issues Activity is the default. Everything else is one click away.
+C
+NW
+AC
+Northwind / storefront
+storefront
+github.com/northwind/storefront · main
+New chat Run workflow ▾
+Activity Chats 3 Workflows 3 Issues 12
+! Plan ready for approval · Issue to PR · #412 Checkout rounds tax wrong 12m Review
+ACTIVITY runs + chats
+● RUN Issue to PR · #418 Add Apple Pay · Implement 3/5 Codex · gpt-5 4m
+● CHAT Search revamp spike · Dana, Mike Claude Code · opus now
+✓ RUN Nightly deps · opened PR #422 schedule 6h
+× RUN PR review · #401 failed at Review by David 1d
+· CHAT Why is CI flaky? · David Codex · gpt-5 2d
+===== [1b] =====
+1b Feed + side rail One timeline grouped by time. Workflows and issues sit in a narrow rail.
+C
+NW
+AC
+Northwind / storefront
+storefront
+New chat
+All Runs Chats Mine
+NOW
+! NEED YOU Issue to PR · #412 Checkout rounds tax wrong 12m
+Plan step finished. Approve to start Implement.
+● RUNNING Issue to PR · #418 Add Apple Pay 4m
+Plan › Approve › Implement › Review › Open PR · Codex · gpt-5
+CHAT Search revamp spike now
+Dana: "ok switch to codex and run the review skill on this diff"
+EARLIER
+✓ Nightly deps · opened PR #422 6h
+× PR review · #401 failed at Review 1d
+· Chat · Why is CI flaky? 2d
+WORKFLOWS · 3 + add
+Issue to PR
+issue labeled factory
+Run
+Nightly deps
+every day at 02:00
+Run
+PR review
+started by hand
+Run
+OPEN ISSUES · 12 all ›
+#421 Cart badge doesn't update Hand off
+#419 Add order notes field Hand off
+#415 Migrate to Node 22 Hand off
+===== [1c] =====
+1c Chat-first The repo opens on a composer. Workflows are suggestions under it.
+C
+NW
+AC
+Northwind / storefront Activity Workflows Issues Settings
+What are we working on in storefront?
+Ask about the code, plan a change, or paste an issue link…
+Claude Code · opus ▾ / skill # issue branch main Start chat
+Or run a workflow:
+Issue to PR
+PR review
+Nightly deps
+IN THIS REPO NOW
+! NEED YOU
+#412 Checkout rounds tax
+Approve plan
+● RUNNING
+#418 Add Apple Pay
+Implement · Codex
+CHAT · LIVE
+Search revamp spike
+Dana, Mike
+RECENT
+✓ Nightly deps · opened PR #422 6h
+× PR review · #401 failed at Review 1d
+· Chat · Why is CI flaky? 2d
+===== [1d] =====
+1d Lanes The repo as a board: needs you, running, finished. Chats and runs share cards.
+C
+NW
+AC
+Northwind / storefront
+storefront
+Workflows 3 · Issues 12 New chat Run workflow ▾
+! NEEDS YOU · 1
+RUN · Issue to PR
+#412 Checkout rounds tax wrong
+Plan ready. Approve to implement.
+Approve Open
+● RUNNING · 2
+RUN · Issue to PR
+#418 Add Apple Pay
+Implement · Codex · gpt-5 · 4m
+CHAT
+Search revamp spike
+Dana, Mike · Claude Code → Codex
+FINISHED · THIS WEEK
+✓ Nightly deps
+Opened PR #422
+6h
+× PR review
+#401 failed at Review
+1d
+CHAT
+Why is CI flaky?
+2d
+B · NAVIGATION SHELL
+One bar or one column, not both
+Same page in each. Library (workflows, steps, profiles) moves out of the always-visible tree.
+===== [1e] =====
+1e Slimmer sidebar Today's column at 208px, Library folded to one row, collapses to a rail.
+C Communication «
+New chat ⌘K
+Home
+Inbox ! 1
+Chats
+PROJECTS
+▾ Northwind ! 1
+storefront
+api
+infra
+▸ Acme
+Library
+DB David Birks
+Northwind / storefront
+storefront
+Activity Chats Workflows Issues
+! #412 Checkout rounds tax wrong · approve plan
+● #418 Add Apple Pay · Implement
+● Chat · Search revamp spike
+===== [1f] =====
+1f Top bar only Project and repo are switchers in the bar. Full width for content.
+C NW Northwind ▾ / storefront ▾ Home Inbox !1 Chats Library Ask ⌘K DB
+storefront New chat
+Activity Chats Workflows Issues
+! #412 Checkout rounds tax wrong · approve plan
+● #418 Add Apple Pay · Implement
+● Chat · Search revamp spike
+SWITCHER (OPEN STATE)
+Northwind ! 1
+Acme
+All projects
+===== [1g] =====
+1g Rail + project panel Projects as tiles on a rail. The second column lists that project's repos and live chats.
+C
+Home
+Inbox
+NW
+AC
++
+Library
+DB
+Northwind
+New chat
+REPOS
+storefront ! 1
+api
+infra
+LIVE CHATS
+● Search revamp spike
+· Why is CI flaky?
+Workflows
+Members
+Settings
+storefront
+Activity Chats Workflows Issues
+! #412 Checkout rounds tax wrong · approve plan
+● #418 Add Apple Pay · Implement
+● Chat · Search revamp spike
+C · CHATS
+A chat in a repo, switching agents partway, then turning it into a workflow
+===== [1h] =====
+1h Thread with agent switch + end-of-thread suggestion
+Northwind / storefront / chats
+Search revamp spike
+Dana, Mike, you ● branch chat/search-spike · 4 files
+DK
+Dana
+How is search wired today? I want to swap the Algolia client for our own endpoint.
+CC
+Claude Code · opus
+read src/search/client.ts · read src/search/hooks.ts · grep "algoliasearch" (6)
+Search goes through one client in src/search/client.ts; six call sites use it. Plan: add an adapter interface, implement it for the new endpoint, flip it behind a flag.
+MR
+Mike
+Do it. Keep Algolia as the fallback.
+Dana switched to Codex · gpt-5 · transcript and branch carried over
+DK
+Dana
+/review the diff before we push.
+CX
+Codex · gpt-5 · skill: review
+2 findings. The fallback swallows the timeout error; the flag isn't read on the server render path. Both fixed in the last commit.
+ASSISTANT · SUGGESTION
+This chat went plan → implement → review across two agents. Turn it into a workflow so the factory can do the next one?
+Plan (Claude Code) › Implement (Codex) › Review (Codex · review) › Open PR
+Preview workflow Not now
+NEXT TURN RUNS ON
+Claude Code · opus
+Claude Code · sonnet
+Codex · gpt-5 ✓
+Gemini CLI · 2.5 pro
+Profiles come from the project's agent profiles.
+Reply, / for skills, # for issues…
+Codex · gpt-5 ▴ / skill Send
+===== [1i] =====
+1i Thread → workflow preview Opened from the suggestion. Each turn maps to a step; inputs are guessed and editable.
+Draft from chat · Search revamp spike
+Adapter swap → PR
+Open in Studio Save draft
+FROM THE CHAT
+→ STEP 1
+Dana asked how search is wired; Claude read 3 files and proposed a plan.
+→ APPROVAL
+Mike: "Do it. Keep Algolia as the fallback."
+→ STEP 2
+Switched to Codex; implemented adapter and flag (4 files).
+→ STEP 3
+/review skill found 2 issues; Codex fixed them.
+ADDED · NOT IN CHAT
+Open a draft PR at the end.
+STEPS
+1 Plan Claude Code · opus
+! Human approval any maintainer
+2 Implement Codex · gpt-5
+3 Review until clean · max 3 Codex · skill review
+4 Open draft PR git
+INPUTS · GUESSED FROM THE CHAT
+goal required was: "swap Algolia for our endpoint"
+issue optional none in this chat
+fallback optional default "keep old path"
+Saved as a draft in the library. Nothing runs until it's published and added to a repo.
+D · WORKFLOW INPUTS
+Define inputs on the workflow, fill them when you run it
+===== [1j] =====
+1j Authoring: an Inputs tab on the workflow Each trigger shows which inputs it can fill.
+Library / Workflows
+Issue to PR ✓ r4
+draft r5 · unpublished Publish r5
+Overview Inputs YAML Used in History
+INPUTS · 4 + add input
+NAME TYPE REQUIRED DEFAULT
+issue GitHub issue required —
+LABEL
+Issue to work on
+TYPE
+GitHub issue ▾
+HELP TEXT
+The issue becomes the goal; the PR links back to it.
+Required used as ${{ inputs.issue.body }} in Plan
+base_branch Branch optional main
+reviewer Agent profile optional Codex · gpt-5
+notes Long text optional —
+WHO FILLS THE INPUTS
+Run by hand
+Form asks for issue; others prefilled.
+Issue labeled factory
+✓ issue ← the labeled issue
+Schedule · every night
+! issue is required and a schedule can't fill it
+YAML
+inputs:
+issue:
+type: github_issue
+required: true
+base_branch:
+type: branch
+default: main
+reviewer:
+type: agent_profile
+===== [1k] =====
+1k Running it by hand The form is built from the inputs. Issue is a picker, not a number field.
+Run Issue to PR
+storefront · pinned r4
+esc
+ISSUE TO WORK ON *
+#41
+#415 Migrate to Node 22 infra
+#418 Add Apple Pay ● run in progress
+#419 Add order notes field
+The issue becomes the goal; the PR links back to it.
+BASE BRANCH
+main
+REVIEWER
+Codex · gpt-5 ▾
+NOTES optional
+Anything the agent should know…
+Runs overnight if the factory is busy. Cancel Start run

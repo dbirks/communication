@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Text:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;500;600&family=Kaisei+Opti:wght@500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e9e6de;color:#1e1d1a;font-family:'Red Hat Text',system-ui,sans-serif;font-size:13.5px;-webkit-font-smoothing:antialiased}
+a{color:#2a43b8;text-decoration:none}a:hover{color:#1e1d1a}
+button{font-family:inherit;cursor:pointer}
+</style>
+</helmet>
+
+<section id="turn-3" style="padding:64px 64px 0;display:flex;flex-direction:column;gap:56px">
+
+<div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+  <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">ROUND 3 · NARROWING</span>
+  <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-.01em">Sidebar shell, repo list + lanes, assistant notes, agents talking across repos</h1>
+  <p style="margin:0;color:#3a3833;max-width:780px;text-wrap:pretty">Everything here uses the 2c sidebar. Menus now have pointer arrows. Decisions and open threads are tracked in Handoff.md.</p>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start">
+
+<!-- 3a -->
+<div id="3a" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">3a</span><span style="font-weight:600">Repo · List, in the sidebar shell</span><span style="color:#6b675e;font-size:12.5px">Chats start in this repo. Assistant notes sit at the bottom of the side panel.</span></div>
+  <div style="width:1240px;height:760px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="width:220px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;padding:12px 10px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;align-items:center;gap:9px;padding:0 4px">
+        <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+        <span style="font-weight:600;font-size:13px;flex:1">Communication</span>
+        <span style="width:22px;height:22px;display:grid;place-items:center;border:1px solid #cfc9bd;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:11px">«</span>
+      </div>
+      <div style="display:flex;gap:6px"><span style="flex:1;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">New chat</span><span style="height:28px;padding:0 8px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">⌘K</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;font-size:13px;color:#6b675e"><span style="padding:5px 8px;display:flex">Today<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:600;color:#7a4a00">! 1</span></span><span style="padding:5px 8px;display:flex">My chats<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px">2</span></span></div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">PROJECTS</span>
+        <span style="padding:4px 8px;font-size:12.5px;font-weight:600;display:flex">▾ Northwind<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">! 1</span></span>
+        <div style="margin-left:14px;border-left:1px solid #e6e2d9;padding-left:8px;display:flex;flex-direction:column;font-family:'Red Hat Mono',monospace;font-size:11.5px"><span style="padding:4px 6px;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-weight:600;display:flex">storefront<span style="margin-left:auto;color:#0f5e96">● 2</span></span><span style="padding:4px 6px;color:#3a3833">api</span><span style="padding:4px 6px;color:#3a3833">infra</span></div>
+        <span style="padding:4px 8px;font-size:12.5px;font-weight:600">▸ Acme</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px"><span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">LIBRARY</span><span style="padding:4px 8px;font-size:12.5px;color:#3a3833;display:flex">Workflows<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">8</span></span><span style="padding:4px 8px;font-size:12.5px;color:#3a3833">Steps</span><span style="padding:4px 8px;font-size:12.5px;color:#3a3833;display:flex">Agent profiles<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">4</span></span></div>
+      <div style="margin-top:auto;border-top:1px solid #e6e2d9;padding-top:8px;display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:24px;height:24px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span><b>David Birks</b></div>
+    </div>
+    <div style="flex:1;min-width:0;padding:18px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:flex-end;gap:14px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Northwind / storefront</span><span style="font-size:22px;line-height:28px;font-weight:600">storefront</span></div>
+        <div style="display:flex;border:1px solid #cfc9bd;border-radius:4px;overflow:hidden;font-size:12px;font-weight:600"><span style="padding:5px 12px;background:#1e1d1a;color:#fff">List</span><span style="padding:5px 12px;background:#fff;color:#3a3833;border-left:1px solid #cfc9bd">Lanes</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:20px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a;display:flex;align-items:center;gap:8px;padding:7px 8px 7px 12px">
+            <span style="flex:1;font-size:13.5px;color:#6e6a62">Chat in storefront… ask, plan, or paste an issue</span>
+            <span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12px;font-weight:600">Claude Code · opus ▾</span>
+            <button style="height:28px;padding:0 12px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Start</button>
+          </div>
+          <div style="display:flex;gap:6px"><span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-size:12px;font-weight:600">All</span><span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Runs</span><span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Chats</span><span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Mine</span></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px">
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 120px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6;background:#fdf6e4"><span style="font-family:'Red Hat Mono',monospace;font-weight:600;color:#7a4a00">!</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>#412 Checkout rounds tax wrong</b> <span style="color:#5c3d00">· approve plan</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Issue to PR</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">12m</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 120px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><div style="display:flex;flex-direction:column;gap:5px"><span style="font-size:13px"><b>#418 Add Apple Pay</b> <span style="color:#6b675e">· Implement</span></span><div style="display:flex;gap:2px;height:4px;width:200px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span></div></div><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Issue to PR</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">4m</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 120px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><span style="font-size:13px"><b>Search revamp spike</b> <span style="color:#6b675e">· Dana, Mike</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Claude → Codex</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">now</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 120px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>Nightly deps</b> <span style="color:#6b675e">· opened PR #422</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">schedule</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">6h</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 120px 36px;gap:10px;align-items:center;padding:10px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#b0281a">×</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>PR review #401</b> <span style="color:#6b675e">· failed at Review</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">by David</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">1d</span></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>WORKFLOWS · 3</span><a href="#3a" style="margin-left:auto;font-weight:400;font-size:10.5px">+ add</a></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid #f0ede6"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:12.5px">Issue to PR</b><span style="font-size:11.5px;color:#6b675e">GitHub · issue labeled <span style="font-family:'Red Hat Mono',monospace">factory</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#0f5e96">● 1 running · ! 1 needs you</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid #f0ede6"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:12.5px">Nightly deps</b><span style="font-size:11.5px;color:#6b675e">Schedule · daily 02:00</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#1f6b37">✓ last 6h ago</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:9px 10px"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:12.5px">PR review</b><span style="font-size:11.5px;color:#6b675e">By hand</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#b0281a">× last failed 1d ago</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+          </div>
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>OPEN ISSUES · 12</span><a href="#3a" style="margin-left:auto;font-weight:400;font-size:10.5px">all ›</a></div>
+            <div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="flex:1">#421 Cart badge doesn't update</span><a href="#3a" style="font-size:12px;font-weight:600">Hand off</a></div>
+            <div style="display:flex;gap:8px;padding:8px 10px;font-size:12.5px"><span style="flex:1">#419 Add order notes field</span><a href="#3a" style="font-size:12px;font-weight:600">Hand off</a></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;padding:2px 2px 0">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">ASSISTANT NOTICED</span>
+            <div style="display:flex;flex-direction:column;gap:4px;font-size:12.5px;padding-bottom:8px;border-bottom:1px solid #e6e2d9"><span style="color:#3a3833">PR review failed twice this week on the same lint rule.</span><div style="display:flex;gap:12px"><a href="#3a" style="font-weight:600">Start a fix chat</a><a href="#3a" style="color:#6b675e">dismiss</a></div></div>
+            <div style="display:flex;flex-direction:column;gap:4px;font-size:12.5px"><span style="color:#3a3833">#419 and #421 both touch the cart. One run could take both.</span><div style="display:flex;gap:12px"><a href="#3a" style="font-weight:600">Hand off together</a><a href="#3a" style="color:#6b675e">dismiss</a></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 3b -->
+<div id="3b" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">3b</span><span style="font-weight:600">Repo · Lanes, with issues as the first lane</span><span style="color:#6b675e;font-size:12.5px">Workflows aren't a lane anymore. Drag an issue into Running and pick which workflow takes it.</span></div>
+  <div style="width:1240px;height:760px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="width:52px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+      <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+      <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:14px;font-weight:600">+</span>
+      <span style="font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#7a4a00">Today</span>
+      <div style="height:1px;width:28px;background:#e6e2d9"></div>
+      <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+      <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+      <span style="margin-top:auto;font-family:'Red Hat Mono',monospace;font-size:11px">»</span>
+    </div>
+    <div style="flex:1;min-width:0;padding:18px 24px;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:flex-end;gap:14px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Northwind / storefront</span><span style="font-size:22px;line-height:28px;font-weight:600">storefront</span></div>
+        <div style="display:flex;border:1px solid #cfc9bd;border-radius:4px;overflow:hidden;font-size:12px;font-weight:600"><span style="padding:5px 12px;background:#fff;color:#3a3833">List</span><span style="padding:5px 12px;background:#1e1d1a;color:#fff;border-left:1px solid #cfc9bd">Lanes</span></div>
+        <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">New chat</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#6b675e"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">WORKFLOWS</span><span style="padding:3px 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;color:#1e1d1a">Issue to PR · issue labeled factory</span><span style="padding:3px 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;color:#1e1d1a">Nightly deps · 02:00</span><span style="padding:3px 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;color:#1e1d1a">PR review · by hand</span></div>
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;flex:1;min-height:0">
+        <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">ISSUES · 12</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:9px 10px;display:flex;flex-direction:column;gap:3px;opacity:.4"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">#421</span><b style="font-size:12.5px">Cart badge doesn't update</b></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:9px 10px;display:flex;flex-direction:column;gap:3px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">#419</span><b style="font-size:12.5px">Add order notes field</b></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:9px 10px;display:flex;flex-direction:column;gap:3px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">#415</span><b style="font-size:12.5px">Migrate to Node 22</b></div>
+          <span style="font-size:11.5px;color:#6b675e">+ 9 more</span>
+        </div>
+        <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#7a4a00">! NEEDS YOU · 1</span>
+          <div style="background:#fff;border:1px solid #e8cf94;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN · Issue to PR</span><b style="font-size:13px">#412 Checkout rounds tax</b><span style="font-size:12px;color:#3a3833">Approve plan</span><div style="display:flex;gap:6px;margin-top:4px"><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12px;font-weight:600">Approve</button><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Open</button></div></div>
+        </div>
+        <div style="background:#eef0fc;border:1px dashed #2f4bd6;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px;position:relative">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#0f5e96">● RUNNING · 2</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN · Issue to PR</span><b style="font-size:13px">#418 Add Apple Pay</b><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span></div></div>
+          <div style="background:#fff;border:1px solid #1e1d1a;border-radius:3px;padding:9px 10px;display:flex;flex-direction:column;gap:3px;box-shadow:2px 2px 0 #1e1d1a;transform:rotate(-1.5deg)"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">#421 · dragging</span><b style="font-size:12.5px">Cart badge doesn't update</b></div>
+          <div style="position:relative;margin-top:6px">
+            <div style="position:absolute;top:-5px;left:24px;width:9px;height:9px;background:#fff;border-top:1px solid #1e1d1a;border-left:1px solid #1e1d1a;transform:rotate(45deg)"></div>
+            <div style="background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a;padding:6px;font-size:12.5px;display:flex;flex-direction:column">
+              <span style="padding:3px 6px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">START #421 WITH</span>
+              <span style="padding:5px 6px;background:#efede7;border-radius:3px;font-weight:600">Issue to PR</span>
+              <span style="padding:5px 6px">PR review</span>
+              <span style="padding:5px 6px;color:#6b675e">Chat about it instead</span>
+            </div>
+          </div>
+        </div>
+        <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">FINISHED · 7 DAYS</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#1f6b37">✓ Nightly deps</span><b style="font-size:13px">Opened PR #422</b></div>
+          <div style="background:#fff;border:1px solid #e5b2a8;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#b0281a">× PR review</span><b style="font-size:13px">#401 failed at Review</b></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><b style="font-size:13px">Why is CI flaky?</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 3c -->
+<div id="3c" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">3c</span><span style="font-weight:600">Menus with arrows</span><span style="color:#6b675e;font-size:12.5px">Left: clicking ⋯ on a project row. Right: hovering a tile in the collapsed rail.</span></div>
+  <div style="display:flex;gap:24px">
+    <div style="width:520px;height:420px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:220px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;padding:14px 10px;display:flex;flex-direction:column;gap:2px">
+        <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">PROJECTS</span>
+        <span style="padding:4px 8px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px;background:#efede7;border-radius:3px">▾ Northwind<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:400;padding:0 4px;border:1px solid #1e1d1a;border-radius:3px;background:#fff">⋯</span></span>
+        <div style="margin-left:14px;border-left:1px solid #e6e2d9;padding-left:8px;display:flex;flex-direction:column;font-family:'Red Hat Mono',monospace;font-size:11.5px"><span style="padding:4px 6px;color:#3a3833">storefront</span><span style="padding:4px 6px;color:#3a3833">api</span><span style="padding:4px 6px;color:#3a3833">infra</span></div>
+        <span style="padding:4px 8px;font-size:12.5px;font-weight:600">▸ Acme</span>
+      </div>
+      <div style="position:relative;flex:1">
+        <div style="position:absolute;top:24px;left:6px;display:flex;align-items:flex-start">
+          <div style="width:9px;height:9px;margin-top:10px;margin-right:-5px;background:#fff;border-left:1px solid #1e1d1a;border-bottom:1px solid #1e1d1a;transform:rotate(45deg);position:relative;z-index:1"></div>
+          <div style="width:190px;background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a;padding:4px 0;font-size:12.5px;display:flex;flex-direction:column">
+            <span style="padding:6px 12px">Project settings</span><span style="padding:6px 12px">Members</span><span style="padding:6px 12px">Add repository</span><span style="padding:6px 12px;border-top:1px solid #e6e2d9">Workflows in use</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="width:340px;height:420px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:52px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px 0">
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+      </div>
+      <div style="position:relative;flex:1">
+        <div style="position:absolute;top:10px;left:6px;display:flex;align-items:flex-start">
+          <div style="width:9px;height:9px;margin-top:14px;margin-right:-5px;background:#fff;border-left:1px solid #1e1d1a;border-bottom:1px solid #1e1d1a;transform:rotate(45deg);position:relative;z-index:1"></div>
+          <div style="width:200px;background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a;padding:6px;display:flex;flex-direction:column;gap:1px">
+            <span style="padding:4px 6px;font-size:13px;font-weight:600;display:flex">Northwind<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">! 1</span></span>
+            <span style="padding:4px 6px;font-family:'Red Hat Mono',monospace;font-size:11.5px;display:flex">storefront<span style="margin-left:auto;color:#0f5e96">● 2</span></span>
+            <span style="padding:4px 6px;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#3a3833">api</span>
+            <span style="padding:4px 6px;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#3a3833">infra</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 3d -->
+<div id="3d" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">3d</span><span style="font-weight:600">Agents talking across repos</span><span style="color:#6b675e;font-size:12.5px">The storefront agent asks the api agent. Its reply lands inline; the side chat is linked in the panel.</span></div>
+  <div style="width:1100px;height:720px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="background:#fff;border-bottom:1px solid #cfcac0;padding:12px 24px;display:flex;align-items:center;gap:12px">
+      <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Northwind / storefront</span><span style="font-size:17px;font-weight:600">Search revamp spike</span></div>
+      <span style="font-size:12px;color:#6b675e">Dana, Mike, you</span>
+    </div>
+    <div style="flex:1;display:grid;grid-template-columns:minmax(0,1fr) 280px;min-height:0">
+      <div style="display:flex;flex-direction:column;padding:18px 28px;gap:14px">
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">DK</span><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;font-weight:600">Dana</span><span style="font-size:13.5px">Does our new search endpoint support pagination? Check with api before you wire it.</span></div></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #2238a8;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#2a43b8">CC</span><div style="flex:1;display:flex;flex-direction:column;gap:8px"><span style="font-size:12px;font-weight:600">Claude Code <span style="font-family:'Red Hat Mono',monospace;font-weight:400;color:#6b675e">· opus · storefront</span></span>
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;gap:8px;align-items:center;padding:6px 10px;background:#efede7;border-bottom:1px solid #cfcac0;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#3a3833"><span>→ asked the agent in <b>api</b></span><a href="#3d" style="margin-left:auto">open chat ›</a></div>
+            <div style="padding:8px 10px;font-size:12.5px;color:#3a3833;border-bottom:1px solid #f0ede6">"Does GET /search accept cursor or page params? What's the max page size?"</div>
+            <div style="padding:8px 10px;display:flex;flex-direction:column;gap:3px"><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">← api · Codex · gpt-5 · read handlers/search.go</span><span style="font-size:12.5px">Cursor-based: <code style="font-family:'Red Hat Mono',monospace;font-size:11.5px">?after=&lt;id&gt;&amp;limit=</code>, max 100. No offset paging.</span></div>
+          </div>
+          <span style="font-size:13.5px">Got it. I'll use cursors and cap the page at 50 in the client.</span></div></div>
+        <div style="margin-top:auto;background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a">
+          <div style="padding:10px 12px;font-size:13.5px;color:#6e6a62">Reply, / for skills, # for issues, @ for another repo's agent…</div>
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid #f0ede6"><span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12px;font-weight:600">Claude Code · opus ▾</span><span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #e6e2d9;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">/ skill</span><button style="margin-left:auto;height:28px;padding:0 12px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Send</button></div>
+        </div>
+      </div>
+      <div style="background:#fff;border-left:1px solid #cfcac0;padding:16px 14px;display:flex;flex-direction:column;gap:16px;font-size:12.5px">
+        <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">WORKS IN</span><span style="font-family:'Red Hat Mono',monospace;font-size:11.5px">storefront · chat/search-spike</span></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">LINKED CHATS</span><div style="display:flex;flex-direction:column;gap:2px;padding:8px;border:1px solid #cfcac0;border-radius:3px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;font-weight:600">api</span><span>Search pagination question</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#1f6b37">✓ answered · read-only</span></div></div>
+        <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">AGENTS</span><span>Claude Code · opus <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">storefront</span></span><span>Codex · gpt-5 <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">api, asked once</span></span></div>
+        <span style="font-size:11.5px;color:#6b675e">Asked agents run read-only by default. Letting one edit its repo needs a person to approve.</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 3e -->
+<div id="3e" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">3e</span><span style="font-weight:600">Top bar, for comparison</span><span style="color:#6b675e;font-size:12.5px">2d cleaned up: real page behind, menu clearly on top with an arrow.</span></div>
+  <div style="width:1000px;height:560px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden;position:relative">
+    <div style="height:46px;flex-shrink:0;background:#fff;border-bottom:1px solid #1e1d1a;display:flex;align-items:center;gap:10px;padding:0 14px">
+      <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+      <span style="padding:5px 9px;font-size:13px;color:#6b675e">Today <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">!1</span></span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;gap:6px;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12.5px;font-weight:600">Northwind ▾</span>
+      <span style="color:#cfcac0">/</span>
+      <span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600">storefront ▾</span>
+      <span style="width:1px;height:22px;background:#e6e2d9;margin-left:auto"></span>
+      <span style="padding:5px 9px;font-size:13px;font-weight:600;border:1px solid #1e1d1a;border-radius:3px;background:#fff">Library ▴</span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">Ask ⌘K</span>
+      <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+    </div>
+    <div style="padding:20px 28px;display:flex;flex-direction:column;gap:12px">
+      <span style="font-size:22px;font-weight:600">storefront</span>
+      <div style="background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a;padding:10px 12px;font-size:13.5px;color:#6e6a62;max-width:560px">Chat in storefront… ask, plan, or paste an issue</div>
+      <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;font-size:13px;max-width:560px">
+        <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#7a4a00">!</span><span>#412 Checkout rounds tax wrong · approve plan</span></div>
+        <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span>#418 Add Apple Pay · Implement</span></div>
+        <div style="display:flex;gap:10px;padding:9px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span>Chat · Search revamp spike</span></div>
+      </div>
+    </div>
+    <div style="position:absolute;top:52px;right:78px;width:300px;z-index:5">
+      <div style="position:absolute;top:-5px;right:40px;width:9px;height:9px;background:#fff;border-top:1px solid #1e1d1a;border-left:1px solid #1e1d1a;transform:rotate(45deg)"></div>
+      <div style="background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a,0 8px 24px rgba(30,29,26,.18);padding:6px">
+        <span style="display:block;padding:4px 8px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">SHARED ACROSS PROJECTS</span>
+        <div style="display:flex;flex-direction:column;padding:6px 8px;border-radius:3px;background:#efede7"><b style="font-size:13px">Workflows <span style="font-family:'Red Hat Mono',monospace;font-weight:400;font-size:10.5px;color:#6b675e">8</span></b><span style="font-size:11.5px;color:#3a3833">Issue to PR · Nightly deps · PR review · +5</span></div>
+        <div style="display:flex;flex-direction:column;padding:6px 8px"><b style="font-size:13px">Steps</b><span style="font-size:11.5px;color:#3a3833">Reusable step templates</span></div>
+        <div style="display:flex;flex-direction:column;padding:6px 8px"><b style="font-size:13px">Agent profiles <span style="font-family:'Red Hat Mono',monospace;font-weight:400;font-size:10.5px;color:#6b675e">4</span></b><span style="font-size:11.5px;color:#3a3833">Claude Code · Codex · Gemini CLI</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</section>
+
+<section id="turn-2" style="padding:64px 64px 0;display:flex;flex-direction:column;gap:56px">
+
+<div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+  <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">ROUND 2 · COMBINING WHAT YOU LIKED</span>
+  <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-.01em">Repo views, a collapsible sidebar vs. top bar, quieter suggestions</h1>
+  <p style="margin:0;color:#3a3833;max-width:780px;text-wrap:pretty">Repo: 1a's mixed activity, 1b's workflow rail and progress bars, 1c's composer, with a List / Lanes picker. Nav: "Home" renamed "Today", Library as its own org-level section, project settings behind a cog. Chat: start context is switchable, and the workflow suggestion moves to a side rail and the assistant.</p>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start">
+
+<!-- 2a -->
+<div id="2a" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">2a</span><span style="font-weight:600">Repo · List view</span><span style="color:#6b675e;font-size:12.5px">Composer on top, mixed feed, workflow rail. Top-bar shell from 1f.</span></div>
+  <div style="width:1180px;height:760px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="height:46px;flex-shrink:0;background:#fff;border-bottom:1px solid #1e1d1a;display:flex;align-items:center;gap:10px;padding:0 14px">
+      <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+      <span style="padding:5px 9px;font-size:13px;color:#6b675e">Today <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">!1</span></span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;gap:6px;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12.5px;font-weight:600"><span style="width:18px;height:18px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:8.5px">NW</span>Northwind ▾</span>
+      <span style="color:#cfcac0">/</span>
+      <span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600">storefront ▾</span>
+      <span style="margin-left:auto;padding:5px 9px;font-size:13px;color:#6b675e">Library ▾</span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">Ask ⌘K</span>
+      <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+    </div>
+    <div style="padding:18px 28px;display:flex;flex-direction:column;gap:14px;min-height:0">
+      <div style="display:flex;align-items:flex-end;gap:14px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-size:22px;line-height:28px;font-weight:600">storefront</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">github.com/northwind/storefront · main</span></div>
+        <div style="display:flex;border:1px solid #cfc9bd;border-radius:4px;overflow:hidden;font-size:12px;font-weight:600"><span style="padding:5px 12px;background:#1e1d1a;color:#fff">List</span><span style="padding:5px 12px;background:#fff;color:#3a3833;border-left:1px solid #cfc9bd">Lanes</span></div>
+        <span style="height:28px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#fff;font-size:12px;color:#3a3833">Repo settings</span>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a;display:flex;align-items:center;gap:8px;padding:7px 8px 7px 12px">
+            <span style="flex:1;font-size:13.5px;color:#6e6a62">Start a chat… ask, plan, or paste an issue</span>
+            <span style="height:26px;padding:0 8px;display:flex;align-items:center;border:1px solid #e6e2d9;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">in storefront ▾</span>
+            <span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12px;font-weight:600">Claude Code · opus ▾</span>
+            <button style="height:28px;padding:0 12px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Start</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-size:12px;font-weight:600">All</span>
+            <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Runs</span>
+            <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Chats</span>
+            <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Mine</span>
+          </div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px">
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 140px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6;background:#fdf6e4"><span style="font-family:'Red Hat Mono',monospace;font-weight:600;color:#7a4a00">!</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>#412 Checkout rounds tax wrong</b> <span style="color:#5c3d00">· plan ready, approve to implement</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Issue to PR</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">12m</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 140px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><div style="display:flex;flex-direction:column;gap:5px"><span style="font-size:13px"><b>#418 Add Apple Pay</b> <span style="color:#6b675e">· Implement</span></span><div style="display:flex;gap:2px;height:4px;width:200px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span></div></div><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Issue to PR</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">4m</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 140px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><span style="font-size:13px"><b>Search revamp spike</b> <span style="color:#6b675e">· Dana, Mike</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Claude → Codex</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">now</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 140px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>Nightly deps</b> <span style="color:#6b675e">· opened PR #422</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">schedule</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">6h</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 140px 36px;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#b0281a">×</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>PR review #401</b> <span style="color:#6b675e">· failed at Review</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">by David</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">1d</span></div>
+            <div style="display:grid;grid-template-columns:16px 44px minmax(0,1fr) 140px 36px;gap:10px;align-items:center;padding:10px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#5e5a52">·</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><span style="font-size:13px"><b>Why is CI flaky?</b> <span style="color:#6b675e">· David · project-wide</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">2d</span></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>WORKFLOWS · 3</span><a href="#2a" style="margin-left:auto;font-weight:400;font-size:10.5px">+ add</a></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid #f0ede6"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:12.5px">Issue to PR</b><span style="font-size:11.5px;color:#6b675e">GitHub · issue labeled <span style="font-family:'Red Hat Mono',monospace">factory</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#0f5e96">● 1 running · ! 1 needs you</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid #f0ede6"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:12.5px">Nightly deps</b><span style="font-size:11.5px;color:#6b675e">Schedule · daily 02:00</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#1f6b37">✓ last 6h ago</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+            <div style="display:flex;align-items:center;gap:8px;padding:9px 10px"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><b style="font-size:12.5px">PR review</b><span style="font-size:11.5px;color:#6b675e">By hand</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#b0281a">× last failed 1d ago</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+          </div>
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>OPEN ISSUES · 12</span><a href="#2a" style="margin-left:auto;font-weight:400;font-size:10.5px">all ›</a></div>
+            <div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="flex:1">#421 Cart badge doesn't update</span><a href="#2a" style="font-size:12px;font-weight:600">Hand off</a></div>
+            <div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="flex:1">#419 Add order notes field</span><a href="#2a" style="font-size:12px;font-weight:600">Hand off</a></div>
+            <div style="display:flex;gap:8px;padding:8px 10px;font-size:12.5px"><span style="flex:1">#415 Migrate to Node 22</span><a href="#2a" style="font-size:12px;font-weight:600">Hand off</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 2b -->
+<div id="2b" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">2b</span><span style="font-weight:600">Same repo · Lanes view</span><span style="color:#6b675e;font-size:12.5px">The picker remembers your choice per repo. Busy repos get lanes, quiet ones keep the list.</span></div>
+  <div style="width:1180px;height:760px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="height:46px;flex-shrink:0;background:#fff;border-bottom:1px solid #1e1d1a;display:flex;align-items:center;gap:10px;padding:0 14px">
+      <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+      <span style="padding:5px 9px;font-size:13px;color:#6b675e">Today <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">!1</span></span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;gap:6px;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12.5px;font-weight:600"><span style="width:18px;height:18px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:8.5px">NW</span>Northwind ▾</span>
+      <span style="color:#cfcac0">/</span>
+      <span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600">storefront ▾</span>
+      <span style="margin-left:auto;padding:5px 9px;font-size:13px;color:#6b675e">Library ▾</span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">Ask ⌘K</span>
+      <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+    </div>
+    <div style="padding:18px 28px;display:flex;flex-direction:column;gap:14px;flex:1;min-height:0">
+      <div style="display:flex;align-items:flex-end;gap:14px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-size:22px;line-height:28px;font-weight:600">storefront</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">github.com/northwind/storefront · main</span></div>
+        <div style="display:flex;border:1px solid #cfc9bd;border-radius:4px;overflow:hidden;font-size:12px;font-weight:600"><span style="padding:5px 12px;background:#fff;color:#3a3833">List</span><span style="padding:5px 12px;background:#1e1d1a;color:#fff;border-left:1px solid #cfc9bd">Lanes</span></div>
+        <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">New chat</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 260px;gap:14px;flex:1;min-height:0">
+        <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#7a4a00">! NEEDS YOU · 1</span>
+          <div style="background:#fff;border:1px solid #e8cf94;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN · Issue to PR</span><b style="font-size:13px">#412 Checkout rounds tax wrong</b><span style="font-size:12px;color:#3a3833">Plan ready. Approve to implement.</span><div style="display:flex;gap:6px;margin-top:4px"><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12px;font-weight:600">Approve</button><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Open</button></div></div>
+        </div>
+        <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#0f5e96">● RUNNING · 2</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN · Issue to PR</span><b style="font-size:13px">#418 Add Apple Pay</b><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span></div><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Implement · Codex · 4m</span></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><b style="font-size:13px">Search revamp spike</b><span style="font-size:12px;color:#3a3833">Dana, Mike · Claude → Codex</span></div>
+        </div>
+        <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">FINISHED · 7 DAYS</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#1f6b37">✓ Nightly deps</span><b style="font-size:13px">Opened PR #422</b></div>
+          <div style="background:#fff;border:1px solid #e5b2a8;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#b0281a">× PR review</span><b style="font-size:13px">#401 failed at Review</b></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><b style="font-size:13px">Why is CI flaky?</b></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833;padding:10px 0 0">WORKFLOWS</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;font-size:12.5px">
+            <div style="display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid #f0ede6"><span style="flex:1"><b>Issue to PR</b><br><span style="font-size:11.5px;color:#6b675e">issue labeled factory</span></span><a href="#2b" style="font-weight:600">Run</a></div>
+            <div style="display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid #f0ede6"><span style="flex:1"><b>Nightly deps</b><br><span style="font-size:11.5px;color:#6b675e">daily 02:00</span></span><a href="#2b" style="font-weight:600">Run</a></div>
+            <div style="display:flex;align-items:center;padding:8px 10px"><span style="flex:1"><b>PR review</b><br><span style="font-size:11.5px;color:#6b675e">by hand</span></span><a href="#2b" style="font-weight:600">Run</a></div>
+          </div>
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833;padding-top:6px">ISSUES · 12</span>
+          <span style="font-size:12.5px;color:#3a3833">Drag an issue onto a workflow to hand it off, or open the list.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 2c -->
+<div id="2c" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">2c</span><span style="font-weight:600">Sidebar · expanded and collapsed</span><span style="color:#6b675e;font-size:12.5px">Library is a section like Projects. Project settings = cog on hover.</span></div>
+  <div style="display:flex;gap:24px">
+    <div style="width:560px;height:620px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:220px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;padding:12px 10px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;gap:9px;padding:0 4px">
+          <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+          <span style="font-weight:600;font-size:13px;flex:1">Communication</span>
+          <span style="width:22px;height:22px;display:grid;place-items:center;border:1px solid #cfc9bd;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:11px">«</span>
+        </div>
+        <div style="display:flex;gap:6px"><span style="flex:1;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">New chat</span><span style="height:28px;padding:0 8px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">⌘K</span></div>
+        <div style="display:flex;flex-direction:column;gap:2px;font-size:13px;color:#6b675e">
+          <span style="padding:5px 8px;display:flex">Today<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:600;color:#7a4a00">! 1</span></span>
+          <span style="padding:5px 8px;display:flex">My chats<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px">2</span></span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">PROJECTS</span>
+          <span style="padding:4px 8px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:6px;background:#efede7;border-radius:3px">▾ Northwind<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">! 1</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:400;padding:0 4px;border:1px solid #cfc9bd;border-radius:3px;background:#fff">⋯</span></span>
+          <div style="margin-left:14px;border-left:1px solid #e6e2d9;padding-left:8px;display:flex;flex-direction:column;font-family:'Red Hat Mono',monospace;font-size:11.5px">
+            <span style="padding:4px 6px;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-weight:600;display:flex">storefront<span style="margin-left:auto;color:#0f5e96">● 2</span></span>
+            <span style="padding:4px 6px;color:#3a3833">api</span>
+            <span style="padding:4px 6px;color:#3a3833">infra</span>
+          </div>
+          <span style="padding:4px 8px;font-size:12.5px;font-weight:600">▸ Acme</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">LIBRARY</span>
+          <span style="padding:4px 8px;font-size:12.5px;color:#3a3833;display:flex">Workflows<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">8</span></span>
+          <span style="padding:4px 8px;font-size:12.5px;color:#3a3833">Steps</span>
+          <span style="padding:4px 8px;font-size:12.5px;color:#3a3833;display:flex">Agent profiles<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">4</span></span>
+        </div>
+        <div style="margin-top:auto;border-top:1px solid #e6e2d9;padding-top:8px;display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:24px;height:24px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span><b>David Birks</b></div>
+      </div>
+      <div style="flex:1;padding:18px 20px;display:flex;flex-direction:column;gap:8px">
+        <div style="align-self:flex-start;margin-top:148px;margin-left:-16px;width:180px;background:#fff;border:1px solid #cfcac0;border-radius:3px;box-shadow:0 8px 24px rgba(30,29,26,.18);padding:4px 0;font-size:12.5px">
+          <span style="display:block;padding:6px 12px">Project settings</span><span style="display:block;padding:6px 12px">Members</span><span style="display:block;padding:6px 12px">Add repository</span><span style="display:block;padding:6px 12px">Workflows in use</span>
+        </div>
+      </div>
+    </div>
+    <div style="width:280px;height:620px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:52px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+        <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:14px;font-weight:600">+</span>
+        <span style="font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#7a4a00">Today</span>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#6b675e">Library</span>
+        <span style="margin-top:auto;font-family:'Red Hat Mono',monospace;font-size:11px">»</span>
+        <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+      </div>
+      <div style="flex:1;padding:18px 14px;display:flex;flex-direction:column;gap:6px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">COLLAPSED</span><span style="font-size:12.5px;color:#3a3833">Hovering a project tile shows its repos in a flyout.</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 2d -->
+<div id="2d" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">2d</span><span style="font-weight:600">Top bar · Library menu open</span><span style="color:#6b675e;font-size:12.5px">Library sits apart on the right because it isn't per-project.</span></div>
+  <div style="width:880px;height:620px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden;position:relative">
+    <div style="height:46px;flex-shrink:0;background:#fff;border-bottom:1px solid #1e1d1a;display:flex;align-items:center;gap:10px;padding:0 14px">
+      <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+      <span style="padding:5px 9px;font-size:13px;color:#6b675e">Today <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">!1</span></span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;gap:6px;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12.5px;font-weight:600">Northwind ▾</span>
+      <span style="color:#cfcac0">/</span>
+      <span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600">storefront ▾</span>
+      <span style="width:1px;height:22px;background:#e6e2d9;margin-left:auto"></span>
+      <span style="padding:5px 9px;font-size:13px;font-weight:600;border:1px solid #1e1d1a;border-radius:3px;background:#fff">Library ▴</span>
+      <span style="height:28px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">Ask ⌘K</span>
+      <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+    </div>
+    <div style="position:absolute;top:50px;right:84px;width:300px;background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a;padding:6px">
+      <span style="display:block;padding:4px 8px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">SHARED ACROSS PROJECTS</span>
+      <div style="display:flex;flex-direction:column;padding:6px 8px;border-radius:3px;background:#efede7"><b style="font-size:13px">Workflows <span style="font-family:'Red Hat Mono',monospace;font-weight:400;font-size:10.5px;color:#6b675e">8</span></b><span style="font-size:11.5px;color:#3a3833">Issue to PR · Nightly deps · PR review · +5</span></div>
+      <div style="display:flex;flex-direction:column;padding:6px 8px"><b style="font-size:13px">Steps</b><span style="font-size:11.5px;color:#3a3833">Reusable step templates</span></div>
+      <div style="display:flex;flex-direction:column;padding:6px 8px"><b style="font-size:13px">Agent profiles <span style="font-family:'Red Hat Mono',monospace;font-weight:400;font-size:10.5px;color:#6b675e">4</span></b><span style="font-size:11.5px;color:#3a3833">Claude Code · Codex · Gemini CLI</span></div>
+    </div>
+    <div style="padding:20px 28px;display:flex;flex-direction:column;gap:10px;opacity:.55">
+      <span style="font-size:22px;font-weight:600">storefront</span>
+      <div style="height:44px;background:#fff;border:1px solid #cfcac0;border-radius:3px"></div>
+      <div style="height:220px;background:#fff;border:1px solid #cfcac0;border-radius:3px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 2e -->
+<div id="2e" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">2e</span><span style="font-weight:600">Chat with a context rail</span><span style="color:#6b675e;font-size:12.5px">Where it runs is switchable (repo or whole project). The workflow idea is one quiet line in the rail.</span></div>
+  <div style="width:1100px;height:720px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="background:#fff;border-bottom:1px solid #cfcac0;padding:12px 24px;display:flex;align-items:center;gap:12px">
+      <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Northwind / storefront</span><span style="font-size:17px;font-weight:600">Search revamp spike</span></div>
+      <span style="font-size:12px;color:#6b675e">Dana, Mike, you</span>
+    </div>
+    <div style="flex:1;display:grid;grid-template-columns:minmax(0,1fr) 280px;min-height:0">
+      <div style="display:flex;flex-direction:column;padding:18px 28px;gap:14px">
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">MR</span><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;font-weight:600">Mike</span><span style="font-size:13.5px">Do it. Keep Algolia as the fallback.</span></div></div>
+        <div style="display:flex;align-items:center;gap:10px;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e"><span style="flex:1;height:1px;background:#cfcac0"></span>Dana switched to Codex · gpt-5<span style="flex:1;height:1px;background:#cfcac0"></span></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">CX</span><div style="flex:1;display:flex;flex-direction:column;gap:5px"><span style="font-size:12px;font-weight:600">Codex <span style="font-family:'Red Hat Mono',monospace;font-weight:400;color:#6b675e">· gpt-5</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">edit src/search/adapter.ts · edit src/search/client.ts · +2 files · tests pass</span><span style="font-size:13.5px">Adapter is in, the new endpoint is behind <code style="font-family:'Red Hat Mono',monospace;font-size:12px">SEARCH_V2</code>, Algolia stays as fallback.</span></div></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">DK</span><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;font-weight:600">Dana</span><span style="font-size:13.5px"><span style="font-family:'Red Hat Mono',monospace;font-size:11.5px;padding:1px 5px;border:1px solid #e6e2d9;border-radius:3px;background:#efede7">/review</span> then open a draft PR.</span></div></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">CX</span><div style="flex:1;display:flex;flex-direction:column;gap:5px"><span style="font-size:12px;font-weight:600">Codex <span style="font-family:'Red Hat Mono',monospace;font-weight:400;color:#6b675e">· gpt-5 · skill: review</span></span><span style="font-size:13.5px">2 findings fixed. Draft PR <a href="#2e">#424</a> is open.</span></div></div>
+        <div style="margin-top:auto;background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a">
+          <div style="padding:10px 12px;font-size:13.5px;color:#6e6a62">Reply, / for skills, # for issues…</div>
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid #f0ede6"><span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12px;font-weight:600">Codex · gpt-5 ▾</span><span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #e6e2d9;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">/ skill</span><button style="margin-left:auto;height:28px;padding:0 12px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Send</button></div>
+        </div>
+      </div>
+      <div style="background:#fff;border-left:1px solid #cfcac0;padding:16px 14px;display:flex;flex-direction:column;gap:16px;font-size:12.5px">
+        <div style="display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">WORKS IN</span><span style="height:28px;display:flex;align-items:center;padding:0 8px;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11.5px">storefront ▾</span><span style="font-size:11.5px;color:#6b675e">Switch to "Northwind · all repos" to let the agent read api and infra too.</span></div>
+        <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">BRANCH</span><span style="font-family:'Red Hat Mono',monospace;font-size:11.5px">chat/search-spike</span><span style="color:#3a3833">4 files changed · PR <a href="#2e">#424</a></span></div>
+        <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">AGENTS IN THIS CHAT</span><span>Claude Code · opus <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">turns 1–2</span></span><span>Codex · gpt-5 <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">turns 3–5</span></span><span style="color:#6b675e">Skill used: review</span></div>
+        <div style="border-top:1px solid #e6e2d9;padding-top:12px;display:flex;flex-direction:column;gap:6px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">ASSISTANT</span>
+          <span style="color:#3a3833">Plan → implement → review → PR. This could be a workflow.</span>
+          <div style="display:flex;gap:12px"><a href="#2f" style="font-weight:600">Make a workflow…</a><a href="#2e" style="color:#6b675e">dismiss</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 2f -->
+<div id="2f" style="display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">2f</span><span style="font-weight:600">Assistant builds the workflow with you</span><span style="color:#6b675e;font-size:12.5px">No translator screen. The assistant drafts step by step and asks when it has to choose.</span></div>
+  <div style="width:1100px;height:720px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+    <div style="flex:1;padding:18px 28px;display:flex;flex-direction:column;gap:12px;opacity:.45">
+      <span style="font-size:17px;font-weight:600">Search revamp spike</span>
+      <div style="height:60px;background:#fff;border:1px solid #cfcac0;border-radius:3px"></div>
+      <div style="height:90px;background:#fff;border:1px solid #cfcac0;border-radius:3px"></div>
+      <div style="height:60px;background:#fff;border:1px solid #cfcac0;border-radius:3px"></div>
+    </div>
+    <div style="width:440px;flex-shrink:0;background:#fff;border-left:1px solid #1e1d1a;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #e6e2d9"><b style="font-size:13.5px;flex:1">Assistant</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">context: this chat</span></div>
+      <div style="flex:1;padding:14px;display:flex;flex-direction:column;gap:12px;font-size:13px">
+        <span style="align-self:flex-end;max-width:300px;padding:7px 10px;background:#efede7;border-radius:3px">Turn this chat into a workflow</span>
+        <span>I read the chat. Drafting <b>Adapter swap → PR</b> in the library:</span>
+        <div style="border:1px solid #cfcac0;border-radius:3px;font-size:12.5px">
+          <div style="display:flex;gap:8px;padding:7px 10px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="flex:1">Plan</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Claude Code · opus</span></div>
+          <div style="display:flex;gap:8px;padding:7px 10px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="flex:1">Approval</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">maintainer</span></div>
+          <div style="display:flex;gap:8px;padding:7px 10px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="flex:1">Implement</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex · gpt-5</span></div>
+          <div style="display:flex;gap:8px;padding:7px 10px;border-bottom:1px solid #f0ede6;background:#f6f7fe"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">Review</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex · skill review</span></div>
+          <div style="display:flex;gap:8px;padding:7px 10px;color:#6b675e"><span style="font-family:'Red Hat Mono',monospace">·</span><span style="flex:1">Open draft PR</span></div>
+        </div>
+        <div style="border:1px solid #8fa0e6;border-radius:3px;background:#f6f7fe;padding:10px 12px;display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#2a43b8">QUESTION 1 OF 2</span>
+          <span>In the chat, review ran once and Codex fixed what it found. In the workflow, should it repeat until clean?</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap"><span style="padding:4px 9px;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-size:12px;font-weight:600">Repeat, max 3</span><span style="padding:4px 9px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font-size:12px">Run once</span></div>
+        </div>
+        <span style="font-size:12px;color:#6b675e">Next question: what starts it? An issue, a typed goal, or either.</span>
+      </div>
+      <div style="padding:10px 14px;border-top:1px solid #e6e2d9;display:flex;align-items:center;gap:8px">
+        <span style="flex:1;font-size:13px;color:#6e6a62">Or tell me what to change…</span>
+        <button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Open draft</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</section>
+
+<section id="turn-1" style="padding:64px;display:flex;flex-direction:column;gap:72px">
+
+<div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+  <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">COMMUNICATION · DIRECTIONS · ROUND 1</span>
+  <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-.01em">Repo page, nav shell, chats, workflow inputs</h1>
+  <p style="margin:0;color:#3a3833;max-width:760px;text-wrap:pretty">Sketch-level mocks in the current tokens. Each option has an id (1a, 1b, …) so you can point at it. Same sample data throughout: project Northwind, repo storefront.</p>
+</div>
+
+<!-- ============ REPO PAGE ============ -->
+<div style="display:flex;flex-direction:column;gap:20px">
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">A · REPO PAGE</span>
+    <h2 style="margin:0;font-size:20px;font-weight:600">What's happened and what's happening in this repo</h2>
+    <p style="margin:0;color:#3a3833;max-width:760px">Four ways to cut the current page down. The nav is a plain rail here so it stays out of the way; section B covers the nav.</p>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start">
+
+  <!-- 1a -->
+  <div id="1a" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1a</span><span style="font-weight:600">Tabs: Activity · Chats · Workflows · Issues</span><span style="color:#6b675e;font-size:12.5px">Activity is the default. Everything else is one click away.</span></div>
+    <div style="width:1100px;height:720px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:48px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+        <div style="position:relative;width:26px;height:26px"><div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1">C</div></div>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+      </div>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+        <div style="background:#fff;border-bottom:1px solid #cfcac0;padding:20px 28px 0;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:flex-end;gap:16px">
+            <div style="flex:1;display:flex;flex-direction:column;gap:3px">
+              <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e"><a href="#1a">Northwind</a> / storefront</span>
+              <span style="font-size:22px;line-height:28px;font-weight:600">storefront</span>
+              <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">github.com/northwind/storefront · main</span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">New chat</button>
+              <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Run workflow ▾</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:20px;font-size:13px">
+            <span style="padding:8px 0;border-bottom:2px solid #1e1d1a;font-weight:600">Activity</span>
+            <span style="padding:8px 0;color:#6b675e">Chats <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px">3</span></span>
+            <span style="padding:8px 0;color:#6b675e">Workflows <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px">3</span></span>
+            <span style="padding:8px 0;color:#6b675e">Issues <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px">12</span></span>
+          </div>
+        </div>
+        <div style="padding:20px 28px;display:flex;flex-direction:column;gap:16px;max-width:860px">
+          <div style="border:1px solid #e8cf94;border-radius:3px;background:#fdf6e4;display:flex;align-items:center;gap:12px;padding:10px 12px">
+            <span style="font-family:'Red Hat Mono',monospace;font-weight:600;color:#7a4a00">!</span>
+            <span style="flex:1;font-size:13px"><b>Plan ready for approval</b> · Issue to PR · #412 Checkout rounds tax wrong</span>
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">12m</span>
+            <button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font-size:13px;font-weight:600">Review</button>
+          </div>
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;gap:8px;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>ACTIVITY</span><span style="margin-left:auto;font-weight:400;color:#6e6a62">runs + chats</span></div>
+            <div style="display:grid;grid-template-columns:16px 48px minmax(0,1fr) 150px 48px;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>Issue to PR</b> · #418 Add Apple Pay <span style="color:#6b675e">· Implement 3/5</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex · gpt-5</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">4m</span></div>
+            <div style="display:grid;grid-template-columns:16px 48px minmax(0,1fr) 150px 48px;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">CHAT</span><span style="font-size:13px"><b>Search revamp spike</b> <span style="color:#6b675e">· Dana, Mike</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Claude Code · opus</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">now</span></div>
+            <div style="display:grid;grid-template-columns:16px 48px minmax(0,1fr) 150px 48px;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>Nightly deps</b> · opened PR #422</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">schedule</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">6h</span></div>
+            <div style="display:grid;grid-template-columns:16px 48px minmax(0,1fr) 150px 48px;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#b0281a">×</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN</span><span style="font-size:13px"><b>PR review</b> · #401 failed at Review</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">by David</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">1d</span></div>
+            <div style="display:grid;grid-template-columns:16px 48px minmax(0,1fr) 150px 48px;align-items:center;gap:10px;padding:10px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#5e5a52">·</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">CHAT</span><span style="font-size:13px"><b>Why is CI flaky?</b> <span style="color:#6b675e">· David</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex · gpt-5</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">2d</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1b -->
+  <div id="1b" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1b</span><span style="font-weight:600">Feed + side rail</span><span style="color:#6b675e;font-size:12.5px">One timeline grouped by time. Workflows and issues sit in a narrow rail.</span></div>
+    <div style="width:1100px;height:720px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:48px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+        <div style="position:relative;width:26px;height:26px"><div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1">C</div></div>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+      </div>
+      <div style="flex:1;min-width:0;padding:20px 28px;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;align-items:flex-end;gap:16px">
+          <div style="flex:1;display:flex;flex-direction:column;gap:3px">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e"><a href="#1b">Northwind</a> / storefront</span>
+            <span style="font-size:22px;line-height:28px;font-weight:600">storefront</span>
+          </div>
+          <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">New chat</button>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start">
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;gap:6px">
+              <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-size:12px;font-weight:600">All</span>
+              <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Runs</span>
+              <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Chats</span>
+              <span style="height:24px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfcac0;border-radius:3px;font-size:12px;color:#3a3833">Mine</span>
+            </div>
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">NOW</span>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="background:#fff;border:1px solid #e8cf94;border-left:1px solid #e8cf94;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px">
+                <div style="display:flex;gap:8px;align-items:center"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;background:#ffecc2;color:#7a4a00">! NEED YOU</span><b style="font-size:13px">Issue to PR · #412 Checkout rounds tax wrong</b><span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">12m</span></div>
+                <span style="font-size:12.5px;color:#3a3833">Plan step finished. Approve to start Implement.</span>
+              </div>
+              <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;gap:8px;align-items:center"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;background:#d9eefa;color:#0f5e96">● RUNNING</span><b style="font-size:13px">Issue to PR · #418 Add Apple Pay</b><span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">4m</span></div>
+                <div style="display:flex;gap:2px;height:6px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span></div>
+                <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Plan › Approve › <b style="color:#1e1d1a">Implement</b> › Review › Open PR · Codex · gpt-5</span>
+              </div>
+              <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px">
+                <div style="display:flex;gap:8px;align-items:center"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;padding:1px 5px;border-radius:2px;background:#eef0fc;color:#2a43b8">CHAT</span><b style="font-size:13px">Search revamp spike</b><span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">now</span></div>
+                <span style="font-size:12.5px;color:#3a3833">Dana: "ok switch to codex and run the review skill on this diff"</span>
+              </div>
+            </div>
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">EARLIER</span>
+            <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px">
+              <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0ede6;font-size:13px"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="flex:1">Nightly deps · opened PR #422</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">6h</span></div>
+              <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0ede6;font-size:13px"><span style="font-family:'Red Hat Mono',monospace;color:#b0281a">×</span><span style="flex:1">PR review · #401 failed at Review</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">1d</span></div>
+              <div style="display:flex;gap:10px;align-items:center;padding:9px 12px;font-size:13px"><span style="font-family:'Red Hat Mono',monospace;color:#5e5a52">·</span><span style="flex:1">Chat · Why is CI flaky?</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">2d</span></div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+              <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>WORKFLOWS · 3</span><a href="#1b" style="margin-left:auto;font-weight:400;font-size:10.5px">+ add</a></div>
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6"><div style="flex:1;display:flex;flex-direction:column"><b style="font-size:12.5px">Issue to PR</b><span style="font-size:11.5px;color:#6b675e">issue labeled factory</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6"><div style="flex:1;display:flex;flex-direction:column"><b style="font-size:12.5px">Nightly deps</b><span style="font-size:11.5px;color:#6b675e">every day at 02:00</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 10px"><div style="flex:1;display:flex;flex-direction:column"><b style="font-size:12.5px">PR review</b><span style="font-size:11.5px;color:#6b675e">started by hand</span></div><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Run</button></div>
+            </div>
+            <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+              <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>OPEN ISSUES · 12</span><a href="#1b" style="margin-left:auto;font-weight:400;font-size:10.5px">all ›</a></div>
+              <div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="flex:1">#421 Cart badge doesn't update</span><a href="#1b" style="font-size:12px;font-weight:600">Hand off</a></div>
+              <div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="flex:1">#419 Add order notes field</span><a href="#1b" style="font-size:12px;font-weight:600">Hand off</a></div>
+              <div style="display:flex;gap:8px;padding:8px 10px;font-size:12.5px"><span style="flex:1">#415 Migrate to Node 22</span><a href="#1b" style="font-size:12px;font-weight:600">Hand off</a></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1c -->
+  <div id="1c" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1c</span><span style="font-weight:600">Chat-first</span><span style="color:#6b675e;font-size:12.5px">The repo opens on a composer. Workflows are suggestions under it.</span></div>
+    <div style="width:1100px;height:720px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:48px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+        <div style="position:relative;width:26px;height:26px"><div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1">C</div></div>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+      </div>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+        <div style="padding:14px 28px;display:flex;align-items:center;gap:16px;border-bottom:1px solid #e6e2d9">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e"><a href="#1c">Northwind</a> / <b style="color:#1e1d1a;font-family:'Red Hat Text',sans-serif;font-size:15px">storefront</b></span>
+          <div style="margin-left:auto;display:flex;gap:16px;font-size:12.5px;color:#6b675e"><span>Activity</span><span>Workflows</span><span>Issues</span><span>Settings</span></div>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;padding:48px 28px 20px;gap:22px">
+          <div style="width:720px;display:flex;flex-direction:column;gap:10px">
+            <span style="font-size:19px;font-weight:600">What are we working on in storefront?</span>
+            <div style="background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a">
+              <div style="padding:14px;min-height:72px;font-size:13.5px;color:#6e6a62">Ask about the code, plan a change, or paste an issue link…</div>
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid #f0ede6">
+                <span style="height:26px;padding:0 9px;display:flex;align-items:center;gap:6px;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12px;font-weight:600">Claude Code · opus ▾</span>
+                <span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #e6e2d9;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px;color:#3a3833">/ skill</span>
+                <span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #e6e2d9;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px;color:#3a3833"># issue</span>
+                <span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">branch main</span>
+                <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Start chat</button>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:#6b675e;flex-wrap:wrap">
+              <span>Or run a workflow:</span>
+              <span style="padding:3px 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;color:#1e1d1a">Issue to PR</span>
+              <span style="padding:3px 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;color:#1e1d1a">PR review</span>
+              <span style="padding:3px 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;color:#1e1d1a">Nightly deps</span>
+            </div>
+          </div>
+          <div style="width:720px;display:flex;flex-direction:column;gap:8px">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">IN THIS REPO NOW</span>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+              <div style="background:#fdf6e4;border:1px solid #e8cf94;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;color:#7a4a00">! NEED YOU</span><b style="font-size:12.5px">#412 Checkout rounds tax</b><span style="font-size:11.5px;color:#5c3d00">Approve plan</span></div>
+              <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;color:#0f5e96">● RUNNING</span><b style="font-size:12.5px">#418 Add Apple Pay</b><span style="font-size:11.5px;color:#6b675e">Implement · Codex</span></div>
+              <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;color:#2a43b8">CHAT · LIVE</span><b style="font-size:12.5px">Search revamp spike</b><span style="font-size:11.5px;color:#6b675e">Dana, Mike</span></div>
+            </div>
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62;margin-top:8px">RECENT</span>
+            <div style="display:flex;flex-direction:column;font-size:13px">
+              <div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #e6e2d9"><span style="font-family:'Red Hat Mono',monospace;color:#1f6b37">✓</span><span style="flex:1">Nightly deps · opened PR #422</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">6h</span></div>
+              <div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #e6e2d9"><span style="font-family:'Red Hat Mono',monospace;color:#b0281a">×</span><span style="flex:1">PR review · #401 failed at Review</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">1d</span></div>
+              <div style="display:flex;gap:10px;padding:7px 0"><span style="font-family:'Red Hat Mono',monospace;color:#5e5a52">·</span><span style="flex:1">Chat · Why is CI flaky?</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">2d</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1d -->
+  <div id="1d" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1d</span><span style="font-weight:600">Lanes</span><span style="color:#6b675e;font-size:12.5px">The repo as a board: needs you, running, finished. Chats and runs share cards.</span></div>
+    <div style="width:1100px;height:720px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:48px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+        <div style="position:relative;width:26px;height:26px"><div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1">C</div></div>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:28px;height:28px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+      </div>
+      <div style="flex:1;min-width:0;padding:20px 28px;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;align-items:flex-end;gap:16px">
+          <div style="flex:1;display:flex;flex-direction:column;gap:3px">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e"><a href="#1d">Northwind</a> / storefront</span>
+            <span style="font-size:22px;line-height:28px;font-weight:600">storefront</span>
+          </div>
+          <span style="font-size:12.5px;color:#6b675e;padding-bottom:6px">Workflows 3 · Issues 12</span>
+          <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">New chat</button>
+          <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Run workflow ▾</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;flex:1">
+          <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#7a4a00">! NEEDS YOU · 1</span>
+            <div style="background:#fff;border:1px solid #e8cf94;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN · Issue to PR</span><b style="font-size:13px">#412 Checkout rounds tax wrong</b><span style="font-size:12px;color:#3a3833">Plan ready. Approve to implement.</span><div style="display:flex;gap:6px;margin-top:4px"><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12px;font-weight:600">Approve</button><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font-size:12px;font-weight:600">Open</button></div></div>
+          </div>
+          <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#0f5e96">● RUNNING · 2</span>
+            <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">RUN · Issue to PR</span><b style="font-size:13px">#418 Add Apple Pay</b><div style="display:flex;gap:2px;height:5px"><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#4a4740"></span><span style="flex:1;background:#1a6da6"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span><span style="flex:1;background:#fff;border:1px solid #cfcac0"></span></div><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Implement · Codex · gpt-5 · 4m</span></div>
+            <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:5px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><b style="font-size:13px">Search revamp spike</b><span style="font-size:12px;color:#3a3833">Dana, Mike · Claude Code → Codex</span></div>
+          </div>
+          <div style="background:#efede7;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:8px">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">FINISHED · THIS WEEK</span>
+            <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#1f6b37">✓ Nightly deps</span><b style="font-size:13px">Opened PR #422</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">6h</span></div>
+            <div style="background:#fff;border:1px solid #e5b2a8;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#b0281a">× PR review</span><b style="font-size:13px">#401 failed at Review</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">1d</span></div>
+            <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">CHAT</span><b style="font-size:13px">Why is CI flaky?</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">2d</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+</div>
+
+<!-- ============ NAV ============ -->
+<div style="display:flex;flex-direction:column;gap:20px">
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">B · NAVIGATION SHELL</span>
+    <h2 style="margin:0;font-size:20px;font-weight:600">One bar or one column, not both</h2>
+    <p style="margin:0;color:#3a3833;max-width:760px">Same page in each. Library (workflows, steps, profiles) moves out of the always-visible tree.</p>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start">
+
+  <!-- 1e -->
+  <div id="1e" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1e</span><span style="font-weight:600">Slimmer sidebar</span><span style="color:#6b675e;font-size:12.5px">Today's column at 208px, Library folded to one row, collapses to a rail.</span></div>
+    <div style="width:1000px;height:560px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:208px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;padding:12px 10px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;gap:9px;padding:0 4px">
+          <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+          <span style="font-weight:600;font-size:13px;flex:1">Communication</span>
+          <span style="font-family:'Red Hat Mono',monospace;font-size:12px;color:#6b675e">«</span>
+        </div>
+        <div style="display:flex;gap:6px"><span style="flex:1;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">New chat</span><span style="height:28px;padding:0 8px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">⌘K</span></div>
+        <div style="display:flex;flex-direction:column;gap:2px;font-size:13px;color:#6b675e">
+          <span style="padding:5px 8px">Home</span>
+          <span style="padding:5px 8px;display:flex">Inbox<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:600;color:#7a4a00">! 1</span></span>
+          <span style="padding:5px 8px">Chats</span>
+        </div>
+        <div style="height:1px;background:#e6e2d9"></div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">PROJECTS</span>
+          <span style="padding:4px 8px;font-size:12.5px;font-weight:600;display:flex">▾ Northwind<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">! 1</span></span>
+          <div style="margin-left:14px;border-left:1px solid #e6e2d9;padding-left:8px;display:flex;flex-direction:column;font-family:'Red Hat Mono',monospace;font-size:11.5px">
+            <span style="padding:4px 6px;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;font-weight:600">storefront</span>
+            <span style="padding:4px 6px;color:#3a3833">api</span>
+            <span style="padding:4px 6px;color:#3a3833">infra</span>
+          </div>
+          <span style="padding:4px 8px;font-size:12.5px;font-weight:600">▸ Acme</span>
+        </div>
+        <span style="padding:5px 8px;font-size:13px;color:#6b675e">Library</span>
+        <div style="margin-top:auto;border-top:1px solid #e6e2d9;padding-top:8px;display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:24px;height:24px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span><b>David Birks</b></div>
+      </div>
+      <div style="flex:1;padding:20px 28px;display:flex;flex-direction:column;gap:12px">
+        <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Northwind / storefront</span>
+        <span style="font-size:22px;font-weight:600">storefront</span>
+        <div style="display:flex;gap:20px;font-size:13px;border-bottom:1px solid #cfcac0"><span style="padding:8px 0;border-bottom:2px solid #1e1d1a;font-weight:600">Activity</span><span style="padding:8px 0;color:#6b675e">Chats</span><span style="padding:8px 0;color:#6b675e">Workflows</span><span style="padding:8px 0;color:#6b675e">Issues</span></div>
+        <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;font-size:13px">
+          <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#7a4a00">!</span><span style="flex:1">#412 Checkout rounds tax wrong · approve plan</span></div>
+          <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">#418 Add Apple Pay · Implement</span></div>
+          <div style="display:flex;gap:10px;padding:9px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">Chat · Search revamp spike</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1f -->
+  <div id="1f" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1f</span><span style="font-weight:600">Top bar only</span><span style="color:#6b675e;font-size:12.5px">Project and repo are switchers in the bar. Full width for content.</span></div>
+    <div style="width:1000px;height:560px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="height:46px;flex-shrink:0;background:#fff;border-bottom:1px solid #1e1d1a;display:flex;align-items:center;gap:10px;padding:0 14px">
+        <div style="position:relative;width:24px;height:24px"><div style="position:absolute;top:2px;left:2px;right:-2px;bottom:-2px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:15px;line-height:1">C</div></div>
+        <span style="height:28px;padding:0 9px;display:flex;align-items:center;gap:6px;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;font-size:12.5px;font-weight:600"><span style="width:18px;height:18px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:8.5px">NW</span>Northwind ▾</span>
+        <span style="color:#cfcac0">/</span>
+        <span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600">storefront ▾</span>
+        <div style="margin-left:24px;display:flex;gap:2px;font-size:13px;color:#6b675e"><span style="padding:5px 9px">Home</span><span style="padding:5px 9px">Inbox <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">!1</span></span><span style="padding:5px 9px">Chats</span><span style="padding:5px 9px">Library</span></div>
+        <span style="margin-left:auto;height:28px;padding:0 9px;display:flex;align-items:center;border:1px solid #cfc9bd;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">Ask ⌘K</span>
+        <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+      </div>
+      <div style="padding:20px 28px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:flex-end"><span style="font-size:22px;font-weight:600;flex:1">storefront</span><button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">New chat</button></div>
+        <div style="display:flex;gap:20px;font-size:13px;border-bottom:1px solid #cfcac0"><span style="padding:8px 0;border-bottom:2px solid #1e1d1a;font-weight:600">Activity</span><span style="padding:8px 0;color:#6b675e">Chats</span><span style="padding:8px 0;color:#6b675e">Workflows</span><span style="padding:8px 0;color:#6b675e">Issues</span></div>
+        <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;font-size:13px">
+          <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#7a4a00">!</span><span style="flex:1">#412 Checkout rounds tax wrong · approve plan</span></div>
+          <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">#418 Add Apple Pay · Implement</span></div>
+          <div style="display:flex;gap:10px;padding:9px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">Chat · Search revamp spike</span></div>
+        </div>
+        <div style="align-self:flex-start;margin-top:6px;width:260px;background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a;padding:4px;font-size:12.5px">
+          <span style="display:block;padding:4px 8px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">SWITCHER (OPEN STATE)</span>
+          <span style="display:flex;padding:5px 8px;background:#efede7;border-radius:3px">Northwind<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#7a4a00">! 1</span></span>
+          <span style="display:flex;padding:5px 8px">Acme</span>
+          <span style="display:flex;padding:5px 8px;color:#6b675e">All projects</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1g -->
+  <div id="1g" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1g</span><span style="font-weight:600">Rail + project panel</span><span style="color:#6b675e;font-size:12.5px">Projects as tiles on a rail. The second column lists that project's repos and live chats.</span></div>
+    <div style="width:1000px;height:560px;display:flex;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="width:52px;flex-shrink:0;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0">
+        <div style="position:relative;width:26px;height:26px"><div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;border:1px solid #1e1d1a;border-radius:3px;background:#fff;display:flex;align-items:center;justify-content:center;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1">C</div></div>
+        <span style="font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#6b675e">Home</span>
+        <span style="font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#7a4a00">Inbox</span>
+        <div style="height:1px;width:28px;background:#e6e2d9"></div>
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#eef0fc;box-shadow:2px 2px 0 #1e1d1a;font-family:'Red Hat Mono',monospace;font-size:10px">NW</span>
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">AC</span>
+        <span style="width:30px;height:30px;display:grid;place-items:center;border:1px dashed #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:12px;color:#6b675e">+</span>
+        <span style="margin-top:auto;font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#6b675e">Library</span>
+        <span style="width:26px;height:26px;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+      </div>
+      <div style="width:210px;flex-shrink:0;background:#fbfaf7;border-right:1px solid #cfcac0;padding:14px 10px;display:flex;flex-direction:column;gap:12px">
+        <span style="font-size:15px;font-weight:600;padding:0 6px">Northwind</span>
+        <span style="height:28px;display:flex;align-items:center;justify-content:center;border:1px solid #cfc9bd;border-radius:4px;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">New chat</span>
+        <div style="display:flex;flex-direction:column;gap:1px">
+          <span style="padding:0 6px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">REPOS</span>
+          <span style="padding:5px 6px;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:11.5px;font-weight:600;display:flex">storefront<span style="margin-left:auto;color:#7a4a00">! 1</span></span>
+          <span style="padding:5px 6px;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#3a3833">api</span>
+          <span style="padding:5px 6px;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#3a3833">infra</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:1px">
+          <span style="padding:0 6px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">LIVE CHATS</span>
+          <span style="padding:5px 6px;font-size:12.5px;display:flex;gap:6px"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span>Search revamp spike</span>
+          <span style="padding:5px 6px;font-size:12.5px;display:flex;gap:6px"><span style="font-family:'Red Hat Mono',monospace;color:#5e5a52">·</span>Why is CI flaky?</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:1px;font-size:12.5px;color:#6b675e">
+          <span style="padding:5px 6px">Workflows</span><span style="padding:5px 6px">Members</span><span style="padding:5px 6px">Settings</span>
+        </div>
+      </div>
+      <div style="flex:1;padding:20px 28px;display:flex;flex-direction:column;gap:12px">
+        <span style="font-size:22px;font-weight:600">storefront</span>
+        <div style="display:flex;gap:20px;font-size:13px;border-bottom:1px solid #cfcac0"><span style="padding:8px 0;border-bottom:2px solid #1e1d1a;font-weight:600">Activity</span><span style="padding:8px 0;color:#6b675e">Chats</span><span style="padding:8px 0;color:#6b675e">Workflows</span><span style="padding:8px 0;color:#6b675e">Issues</span></div>
+        <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;font-size:13px">
+          <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#7a4a00">!</span><span style="flex:1">#412 Checkout rounds tax wrong · approve plan</span></div>
+          <div style="display:flex;gap:10px;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">#418 Add Apple Pay · Implement</span></div>
+          <div style="display:flex;gap:10px;padding:9px 12px"><span style="font-family:'Red Hat Mono',monospace;color:#0f5e96">●</span><span style="flex:1">Chat · Search revamp spike</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+</div>
+
+<!-- ============ CHAT ============ -->
+<div style="display:flex;flex-direction:column;gap:20px">
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">C · CHATS</span>
+    <h2 style="margin:0;font-size:20px;font-weight:600">A chat in a repo, switching agents partway, then turning it into a workflow</h2>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start">
+
+  <!-- 1h -->
+  <div id="1h" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1h</span><span style="font-weight:600">Thread with agent switch + end-of-thread suggestion</span></div>
+    <div style="width:1000px;height:820px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="background:#fff;border-bottom:1px solid #cfcac0;padding:14px 24px;display:flex;align-items:center;gap:14px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Northwind / storefront / chats</span>
+          <span style="font-size:17px;font-weight:600">Search revamp spike</span>
+        </div>
+        <span style="font-size:12px;color:#6b675e">Dana, Mike, you</span>
+        <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;padding:2px 6px;border-radius:2px;background:#d9eefa;color:#0f5e96">● branch chat/search-spike · 4 files</span>
+      </div>
+      <div style="flex:1;padding:20px 24px;display:flex;flex-direction:column;gap:14px;max-width:760px;width:100%;box-sizing:border-box;align-self:center">
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">DK</span><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;font-weight:600">Dana</span><span style="font-size:13.5px">How is search wired today? I want to swap the Algolia client for our own endpoint.</span></div></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #2238a8;border-radius:3px;background:#eef0fc;font-family:'Red Hat Mono',monospace;font-size:9.5px;color:#2a43b8">CC</span><div style="flex:1;display:flex;flex-direction:column;gap:5px"><span style="font-size:12px;font-weight:600">Claude Code <span style="font-family:'Red Hat Mono',monospace;font-weight:400;color:#6b675e">· opus</span></span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">read src/search/client.ts · read src/search/hooks.ts · grep "algoliasearch" (6)</span><span style="font-size:13.5px">Search goes through one client in <code style="font-family:'Red Hat Mono',monospace;font-size:12px">src/search/client.ts</code>; six call sites use it. Plan: add an adapter interface, implement it for the new endpoint, flip it behind a flag.</span></div></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">MR</span><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;font-weight:600">Mike</span><span style="font-size:13.5px">Do it. Keep Algolia as the fallback.</span></div></div>
+        <div style="display:flex;align-items:center;gap:10px;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e"><span style="flex:1;height:1px;background:#cfcac0"></span>Dana switched to Codex · gpt-5 · transcript and branch carried over<span style="flex:1;height:1px;background:#cfcac0"></span></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">DK</span><div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:12px;font-weight:600">Dana</span><span style="font-size:13.5px"><span style="font-family:'Red Hat Mono',monospace;font-size:11.5px;padding:1px 5px;border:1px solid #e6e2d9;border-radius:3px;background:#efede7">/review</span> the diff before we push.</span></div></div>
+        <div style="display:flex;gap:10px"><span style="width:24px;height:24px;flex-shrink:0;display:grid;place-items:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px">CX</span><div style="flex:1;display:flex;flex-direction:column;gap:5px"><span style="font-size:12px;font-weight:600">Codex <span style="font-family:'Red Hat Mono',monospace;font-weight:400;color:#6b675e">· gpt-5 · skill: review</span></span><span style="font-size:13.5px">2 findings. The fallback swallows the timeout error; the flag isn't read on the server render path. Both fixed in the last commit.</span></div></div>
+        <div style="border:1px solid #8fa0e6;border-radius:3px;background:#f6f7fe;padding:12px 14px;display:flex;flex-direction:column;gap:8px;margin-left:34px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#2a43b8">ASSISTANT · SUGGESTION</span>
+          <span style="font-size:13px">This chat went plan → implement → review across two agents. Turn it into a workflow so the factory can do the next one?</span>
+          <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#3a3833">Plan (Claude Code) › Implement (Codex) › Review (Codex · review) › Open PR</span>
+          <div style="display:flex;gap:8px"><button style="height:26px;padding:0 10px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12px;font-weight:600">Preview workflow</button><button style="height:26px;padding:0 10px;border:0;background:transparent;color:#2a43b8;font-size:12px;font-weight:600">Not now</button></div>
+        </div>
+      </div>
+      <div style="padding:0 24px 18px;display:flex;justify-content:center;position:relative">
+        <div style="position:absolute;bottom:72px;left:calc(50% - 380px);width:270px;background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a;padding:4px;font-size:12.5px">
+          <span style="display:block;padding:4px 8px;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">NEXT TURN RUNS ON</span>
+          <span style="display:flex;padding:5px 8px">Claude Code · opus</span>
+          <span style="display:flex;padding:5px 8px">Claude Code · sonnet</span>
+          <span style="display:flex;padding:5px 8px;background:#efede7;border-radius:3px;font-weight:600">Codex · gpt-5<span style="margin-left:auto">✓</span></span>
+          <span style="display:flex;padding:5px 8px">Gemini CLI · 2.5 pro</span>
+          <span style="display:block;padding:5px 8px;border-top:1px solid #e6e2d9;margin-top:2px;font-size:11.5px;color:#6b675e">Profiles come from the project's agent profiles.</span>
+        </div>
+        <div style="width:760px;background:#fff;border:1px solid #1e1d1a;border-radius:3px;box-shadow:2px 2px 0 #1e1d1a">
+          <div style="padding:10px 12px;font-size:13.5px;color:#6e6a62">Reply, / for skills, # for issues…</div>
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid #f0ede6">
+            <span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #1e1d1a;border-radius:4px;background:#efede7;font-size:12px;font-weight:600">Codex · gpt-5 ▴</span>
+            <span style="height:26px;padding:0 9px;display:flex;align-items:center;border:1px solid #e6e2d9;border-radius:4px;font-family:'Red Hat Mono',monospace;font-size:11px">/ skill</span>
+            <button style="margin-left:auto;height:28px;padding:0 12px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1i -->
+  <div id="1i" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1i</span><span style="font-weight:600">Thread → workflow preview</span><span style="color:#6b675e;font-size:12.5px">Opened from the suggestion. Each turn maps to a step; inputs are guessed and editable.</span></div>
+    <div style="width:1000px;height:820px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="background:#fff;border-bottom:1px solid #cfcac0;padding:14px 24px;display:flex;align-items:center;gap:12px">
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Draft from chat · Search revamp spike</span><span style="font-size:17px;font-weight:600">Adapter swap → PR</span></div>
+        <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">Open in Studio</button>
+        <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Save draft</button>
+      </div>
+      <div style="flex:1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;padding:20px 24px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">FROM THE CHAT</span>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">→ STEP 1</span><span style="font-size:12.5px">Dana asked how search is wired; Claude read 3 files and proposed a plan.</span></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">→ APPROVAL</span><span style="font-size:12.5px">Mike: "Do it. Keep Algolia as the fallback."</span></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">→ STEP 2</span><span style="font-size:12.5px">Switched to Codex; implemented adapter and flag (4 files).</span></div>
+          <div style="background:#fff;border:1px solid #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#2a43b8">→ STEP 3</span><span style="font-size:12.5px">/review skill found 2 issues; Codex fixed them.</span></div>
+          <div style="background:#fff;border:1px dashed #cfcac0;border-radius:3px;padding:10px 12px;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">ADDED · NOT IN CHAT</span><span style="font-size:12.5px">Open a draft PR at the end.</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">STEPS</div>
+            <div style="display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">1</span><b style="font-size:13px">Plan</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Claude Code · opus</span></div>
+            <div style="display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#7a4a00">!</span><b style="font-size:13px">Human approval</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">any maintainer</span></div>
+            <div style="display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">2</span><b style="font-size:13px">Implement</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex · gpt-5</span></div>
+            <div style="display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid #f0ede6"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">3</span><b style="font-size:13px">Review <span style="font-family:'Red Hat Mono',monospace;font-weight:400;font-size:11px;color:#6b675e">until clean · max 3</span></b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">Codex · skill review</span></div>
+            <div style="display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 12px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">4</span><b style="font-size:13px">Open draft PR</b><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">git</span></div>
+          </div>
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>INPUTS · GUESSED FROM THE CHAT</span></div>
+            <div style="display:grid;grid-template-columns:110px 100px minmax(0,1fr);gap:8px;padding:9px 12px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="font-family:'Red Hat Mono',monospace">goal</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#b0281a">required</span><span style="color:#3a3833">was: "swap Algolia for our endpoint"</span></div>
+            <div style="display:grid;grid-template-columns:110px 100px minmax(0,1fr);gap:8px;padding:9px 12px;border-bottom:1px solid #f0ede6;font-size:12.5px"><span style="font-family:'Red Hat Mono',monospace">issue</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">optional</span><span style="color:#3a3833">none in this chat</span></div>
+            <div style="display:grid;grid-template-columns:110px 100px minmax(0,1fr);gap:8px;padding:9px 12px;font-size:12.5px"><span style="font-family:'Red Hat Mono',monospace">fallback</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">optional</span><span style="color:#3a3833">default "keep old path"</span></div>
+          </div>
+          <span style="font-size:12px;color:#6b675e">Saved as a draft in the library. Nothing runs until it's published and added to a repo.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+</div>
+
+<!-- ============ INPUTS ============ -->
+<div style="display:flex;flex-direction:column;gap:20px">
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-family:'Red Hat Mono',monospace;font-size:11px;letter-spacing:.06em;color:#6e6a62">D · WORKFLOW INPUTS</span>
+    <h2 style="margin:0;font-size:20px;font-weight:600">Define inputs on the workflow, fill them when you run it</h2>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start">
+
+  <!-- 1j -->
+  <div id="1j" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1j</span><span style="font-weight:600">Authoring: an Inputs tab on the workflow</span><span style="color:#6b675e;font-size:12.5px">Each trigger shows which inputs it can fill.</span></div>
+    <div style="width:1100px;height:680px;display:flex;flex-direction:column;background:#f8f7f3;border:1px solid #1e1d1a;overflow:hidden">
+      <div style="background:#fff;border-bottom:1px solid #cfcac0;padding:20px 28px 0;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:flex-end;gap:12px">
+          <div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">Library / Workflows</span><span style="font-size:22px;line-height:28px;font-weight:600">Issue to PR <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:600;padding:2px 5px;border-radius:2px;background:#d9f0de;color:#1f6b37;vertical-align:middle">✓ r4</span></span></div>
+          <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#7a4a00;padding-bottom:8px">draft r5 · unpublished</span>
+          <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Publish r5</button>
+        </div>
+        <div style="display:flex;gap:20px;font-size:13px"><span style="padding:8px 0;color:#6b675e">Overview</span><span style="padding:8px 0;border-bottom:2px solid #1e1d1a;font-weight:600">Inputs</span><span style="padding:8px 0;color:#6b675e">YAML</span><span style="padding:8px 0;color:#6b675e">Used in</span><span style="padding:8px 0;color:#6b675e">History</span></div>
+      </div>
+      <div style="padding:20px 28px;display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start">
+        <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+          <div style="display:flex;background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833"><span>INPUTS · 4</span><a href="#1j" style="margin-left:auto;font-weight:400;font-size:10.5px">+ add input</a></div>
+          <div style="display:grid;grid-template-columns:130px 120px 80px minmax(0,1fr);gap:10px;padding:6px 12px;border-bottom:1px solid #e6e2d9;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62"><span>NAME</span><span>TYPE</span><span>REQUIRED</span><span>DEFAULT</span></div>
+          <div style="background:#f6f7fe;border-bottom:1px solid #dfe4fa">
+            <div style="display:grid;grid-template-columns:130px 120px 80px minmax(0,1fr);gap:10px;padding:10px 12px;font-size:13px;align-items:center"><span style="font-family:'Red Hat Mono',monospace;font-weight:600">issue</span><span>GitHub issue</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#b0281a">required</span><span style="color:#6e6a62">—</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;padding:0 12px 12px">
+              <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">LABEL</span><span style="height:30px;display:flex;align-items:center;padding:0 9px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font-size:13px">Issue to work on</span></div>
+              <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">TYPE</span><span style="height:30px;display:flex;align-items:center;padding:0 9px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font-size:13px">GitHub issue ▾</span></div>
+              <div style="grid-column:1 / -1;display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10px;color:#6e6a62">HELP TEXT</span><span style="height:30px;display:flex;align-items:center;padding:0 9px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font-size:13px">The issue becomes the goal; the PR links back to it.</span></div>
+              <span style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:28px;height:16px;border-radius:8px;background:#2f4bd6;position:relative;display:inline-block"><span style="position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:6px;background:#fff"></span></span>Required</span>
+              <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e;align-self:center">used as ${<span></span>{ inputs.issue.body }<span></span>} in Plan</span>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:130px 120px 80px minmax(0,1fr);gap:10px;padding:10px 12px;border-bottom:1px solid #f0ede6;font-size:13px"><span style="font-family:'Red Hat Mono',monospace;font-weight:600">base_branch</span><span>Branch</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">optional</span><span style="font-family:'Red Hat Mono',monospace;font-size:12px">main</span></div>
+          <div style="display:grid;grid-template-columns:130px 120px 80px minmax(0,1fr);gap:10px;padding:10px 12px;border-bottom:1px solid #f0ede6;font-size:13px"><span style="font-family:'Red Hat Mono',monospace;font-weight:600">reviewer</span><span>Agent profile</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">optional</span><span>Codex · gpt-5</span></div>
+          <div style="display:grid;grid-template-columns:130px 120px 80px minmax(0,1fr);gap:10px;padding:10px 12px;font-size:13px"><span style="font-family:'Red Hat Mono',monospace;font-weight:600">notes</span><span>Long text</span><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6b675e">optional</span><span style="color:#6e6a62">—</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">WHO FILLS THE INPUTS</div>
+            <div style="padding:10px 12px;border-bottom:1px solid #f0ede6;display:flex;flex-direction:column;gap:3px"><b style="font-size:12.5px">Run by hand</b><span style="font-size:12px;color:#3a3833">Form asks for issue; others prefilled.</span></div>
+            <div style="padding:10px 12px;border-bottom:1px solid #f0ede6;display:flex;flex-direction:column;gap:3px"><b style="font-size:12.5px">Issue labeled <span style="font-family:'Red Hat Mono',monospace;font-size:11px;font-weight:500;padding:1px 5px;border:1px solid #e6e2d9;border-radius:3px;background:#efede7">factory</span></b><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#1f6b37">✓ issue ← the labeled issue</span></div>
+            <div style="padding:10px 12px;display:flex;flex-direction:column;gap:3px;background:#fdf6e4"><b style="font-size:12.5px">Schedule · every night</b><span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#7a4a00">! issue is required and a schedule can't fill it</span></div>
+          </div>
+          <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden">
+            <div style="background:#efede7;border-bottom:1px solid #cfcac0;padding:4px 10px;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;letter-spacing:.04em;color:#3a3833">YAML</div>
+            <pre style="margin:0;padding:10px 12px;font-family:'Red Hat Mono',monospace;font-size:11px;line-height:1.55;color:#3a3833">inputs:
+  issue:
+    type: github_issue
+    required: true
+  base_branch:
+    type: branch
+    default: main
+  reviewer:
+    type: agent_profile</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1k -->
+  <div id="1k" style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:'Red Hat Mono',monospace;font-size:12px;font-weight:600;padding:2px 7px;border:1px solid #1e1d1a;background:#fff;border-radius:2px;box-shadow:2px 2px 0 #1e1d1a">1k</span><span style="font-weight:600">Running it by hand</span><span style="color:#6b675e;font-size:12.5px">The form is built from the inputs. Issue is a picker, not a number field.</span></div>
+    <div style="width:760px;height:680px;display:flex;align-items:flex-start;justify-content:center;padding-top:40px;box-sizing:border-box;background:rgba(30,29,26,.25);border:1px solid #1e1d1a">
+      <div style="width:540px;background:#fff;border:1px solid #1e1d1a;border-radius:4px;box-shadow:2px 2px 0 #1e1d1a">
+        <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #e6e2d9">
+          <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-size:15px;font-weight:600">Run Issue to PR</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">storefront · pinned r4</span></div>
+          <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6e6a62">esc</span>
+        </div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;flex-direction:column;gap:4px;position:relative">
+            <span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#3a3833">ISSUE TO WORK ON <span style="color:#b0281a">*</span></span>
+            <span style="height:32px;display:flex;align-items:center;padding:0 9px;border:1px solid #2f4bd6;border-radius:3px;box-shadow:0 0 0 3px #dfe4fa;font-size:13px">#41<span style="width:1px;height:16px;background:#1e1d1a;margin-left:1px"></span></span>
+            <div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;box-shadow:0 8px 24px rgba(30,29,26,.18);padding:4px;font-size:12.5px">
+              <span style="display:flex;gap:8px;padding:6px 8px;background:#f6f7fe;border-radius:3px"><b>#415</b><span style="flex:1">Migrate to Node 22</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">infra</span></span>
+              <span style="display:flex;gap:8px;padding:6px 8px"><b>#418</b><span style="flex:1">Add Apple Pay</span><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#0f5e96">● run in progress</span></span>
+              <span style="display:flex;gap:8px;padding:6px 8px"><b>#419</b><span style="flex:1">Add order notes field</span></span>
+            </div>
+            <span style="font-size:12px;color:#6b675e">The issue becomes the goal; the PR links back to it.</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#3a3833">BASE BRANCH</span><span style="height:32px;display:flex;align-items:center;padding:0 9px;border:1px solid #cfcac0;border-radius:3px;font-family:'Red Hat Mono',monospace;font-size:12px">main</span></div>
+            <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#3a3833">REVIEWER</span><span style="height:32px;display:flex;align-items:center;padding:0 9px;border:1px solid #cfcac0;border-radius:3px;font-size:13px">Codex · gpt-5 ▾</span></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px"><span style="font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#3a3833">NOTES <span style="color:#6e6a62">optional</span></span><span style="height:56px;display:flex;padding:8px 9px;box-sizing:border-box;border:1px solid #cfcac0;border-radius:3px;font-size:13px;color:#6e6a62">Anything the agent should know…</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid #e6e2d9">
+          <span style="font-size:12px;color:#6b675e;flex:1">Runs overnight if the factory is busy.</span>
+          <button style="height:30px;padding:0 13px;border-radius:4px;border:0;background:transparent;color:#2a43b8;font-size:12.5px;font-weight:600">Cancel</button>
+          <button style="height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-size:12.5px;font-weight:600">Start run</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div>
+</div>
+
+</section>
+</x-dc>
+</body>
+</html>
