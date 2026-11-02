@@ -352,6 +352,158 @@ class AppendOnlyTest(unittest.TestCase):
                               "one node_executions row"))
 
 
+class C5RetryClaimGateTest(unittest.TestCase):
+    """The acceptance on d221ab1: C5g snapshots the node ledger while the armed retry
+    is booked but UNCLAIMED — the killed node is back in 'ready' with attempt 1
+    interrupted and attempt 2 queued — and its "node not reached yet: no attempts"
+    rule, true of a node the run never reached, FAILs a history the run did keep.
+    The fixed post-kill sleep always carried this read past the claim; the poll that
+    replaced it does not. Same family as 29cf1d1's C4c gate, same marker:
+    attempts.worker_id, written in the SAME UPDATE that draws attempt_fencing_seq
+    (attempts.go runClaimSQL; 00005's worker_id<=>token CHECK), and it survives the
+    claim, so an already-finished retry still reads claimed. The snapshot waits; the
+    per-node rules do NOT move."""
+
+    def row(self, n="1", status="interrupted", claimed="t", worker="worker-a",
+            started_at="2026-02-20 10:00:00+00"):
+        return {"attempt_number": n, "status": status, "claimed": claimed,
+                "worker": worker, "started_at": started_at}
+
+    def ne_row(self, key="/build_until_verified[1]/implement", ne="1", att="0",
+               loc="worker", st="ready"):
+        return {"key": key, "ne": ne, "attempts": att, "location": loc, "status": st}
+
+    def test_probe_parses_number_status_claim_worker_started(self):
+        self.assertEqual(
+            m.c5_retry_claim_rows("1|interrupted|t|worker-a|2026-02-20 10:00:00+00\n"
+                                  "2|queued|f|-|NULL"),
+            [self.row(), self.row(n="2", status="queued", claimed="f", worker="-",
+                                  started_at="NULL")])
+
+    def test_ragged_and_notice_lines_are_dropped_not_read_as_claims(self):
+        self.assertEqual(
+            m.c5_retry_claim_rows("NOTICE: whatever\n2|queued|f\n"
+                                  "2|leased|t|worker-b|2026-02-20 10:01:00+00"),
+            [self.row(n="2", status="leased", claimed="t", worker="worker-b",
+                      started_at="2026-02-20 10:01:00+00")])
+
+    def test_the_failure_shape_queues_a_retry_no_worker_has_taken(self):
+        # Exactly the ledger the acceptance printed: attempts=2, the second UNCLAIMED.
+        rows = [self.row(), self.row(n="2", status="queued", claimed="f", worker="-",
+                                     started_at="NULL")]
+        self.assertFalse(m.c5_retry_claimed(rows),
+                         "an armed retry is a BOOKED row; the gate waits for the CLAIM")
+
+    def test_the_dead_attempts_own_claim_is_never_the_retry_claim(self):
+        # Attempt 1 carries the killed worker's worker_id (it survives the claim): the
+        # corpse's own lease must not read as the retry having landed.
+        self.assertFalse(m.c5_retry_claimed([self.row()]))
+        self.assertFalse(m.c5_retry_claimed([]))
+
+    def test_a_claimed_retry_opens_the_gate(self):
+        self.assertTrue(m.c5_retry_claimed(
+            [self.row(), self.row(n="2", status="leased", claimed="t")]))
+        # ... and so does one that has ALREADY finished: worker_id outlives the attempt,
+        # so a fast retry is never waited out into a cap FAIL.
+        self.assertTrue(m.c5_retry_claimed(
+            [self.row(), self.row(n="2", status="succeeded", claimed="t",
+                                  worker="worker-b")]))
+
+    def test_the_gate_counts_attempts_above_the_killed_one(self):
+        # A re-armed kill can die on attempt 2; its retry is 3.
+        rows = [self.row(), self.row(n="2", status="interrupted"),
+                self.row(n="3", status="queued", claimed="f", worker="-",
+                         started_at="NULL")]
+        self.assertFalse(m.c5_retry_claimed(rows, above_attempt=2))
+        self.assertTrue(m.c5_retry_claimed(rows + [
+            self.row(n="3", status="running", claimed="t")], above_attempt=2))
+
+    def test_a_retry_booked_above_the_kill_is_what_the_wait_waits_for(self):
+        # The wasted-pick shape (§ 7.1 C5b): the node closed BEFORE the signal, so no
+        # attempt above the killed one is ever booked. Waiting for its claim would be a
+        # 120s stall and a FAIL the ledger never promised — the gate declines the wait.
+        self.assertFalse(m.c5_retry_armed([self.row()]))
+        self.assertFalse(m.c5_retry_armed([]))
+        self.assertTrue(m.c5_retry_armed([self.row(), self.row(n="2", status="queued",
+                                                              claimed="f", worker="-")]))
+        # and armed is not claimed: the first says a wait is warranted, the second ends it
+        armed = [self.row(), self.row(n="2", status="queued", claimed="f", worker="-",
+                                      started_at="NULL")]
+        self.assertTrue(m.c5_retry_armed(armed))
+        self.assertFalse(m.c5_retry_claimed(armed))
+        self.assertTrue(m.c5_retry_armed([self.row(), self.row(n="2")], above_attempt=1))
+        self.assertFalse(m.c5_retry_armed([self.row(), self.row(n="2")], above_attempt=2))
+
+    def test_cap_exhaustion_detail_names_every_claim_column(self):
+        d = m.c5_retry_claim_detail([self.row(n="2", status="queued", claimed="f",
+                                             worker="-", started_at="NULL")])
+        for needle in ("attempt=2", "status=queued", "claimed=f", "worker=-",
+                       "started_at=NULL"):
+            self.assertIn(needle, d, d)
+        self.assertEqual(m.c5_retry_claim_detail([]), "retry attempt rows=(none)")
+
+    def test_cap_exhaustion_fails_loudly_and_a_met_wait_prints_nothing(self):
+        rows = [self.row(), self.row(n="2", status="queued", claimed="f", worker="-",
+                                     started_at="NULL")]
+        v = m.c5_retry_claim_verdicts(rows, False, 121.0, "/x[1]/implement")
+        self.assertEqual(len(v), 1, v)
+        label, ok, detail = v[0]
+        self.assertIs(ok, False, "an unclaimed retry is a FAIL, never a GAP or a PASS")
+        self.assertIn("CLAIMED", label)
+        self.assertIn("/x[1]/implement", label)
+        for needle in ("status=queued", "claimed=f", "cap 120s", "UNCHANGED"):
+            self.assertIn(needle, detail, detail)
+        # The met path adds NO line: this is the snapshot's precondition, not a contract
+        # claim, and a PASS here would pad the gate's row count with the driver's own wait.
+        self.assertEqual(m.c5_retry_claim_verdicts(rows, True, 47.0, "/x[1]/implement"), [])
+
+    def test_the_rule_it_gates_is_unchanged(self):
+        # The whole point: the fix moves the READING, never the rule. A ready node
+        # carrying attempt rows still FAILS, and still only when it carries them.
+        self.assertFalse(ok_of(m.c5_append_only_verdicts([self.ne_row(st="ready", att="2")]),
+                              "one node_executions row"))
+        self.assertIn("node not reached yet",
+                      detail_of(m.c5_append_only_verdicts([self.ne_row(st="ready", att="2")]),
+                                "one node_executions row"))
+        self.assertTrue(ok_of(m.c5_append_only_verdicts([self.ne_row(st="ready", att="0")]),
+                              "one node_executions row"))
+        # and once the claim has landed the same node is simply one that ran
+        self.assertTrue(ok_of(m.c5_append_only_verdicts(
+            [self.ne_row(st="running", att="2")]), "one node_executions row"))
+
+    def test_the_snapshot_waits_before_it_reads_the_ledger_and_the_worktree(self):
+        src = driver_src("c5")
+        wait = src.index("retry_attempt_claimed()")
+        self.assertLess(wait, src.index("c5_emit(c5_append_only_verdicts("),
+                        "C5g's node-ledger snapshot is the read the claim gates")
+        self.assertLess(wait, src.index('head_after, dirty_after = gitout("rev-parse HEAD")'),
+                        "C5f reads the worktree DURING the retry's window; before a worker "
+                        "owns it the read is the corpse's, not the retry's")
+        self.assertLess(wait, src.index("c5_emit(c5_retry_row_verdicts(rows"))
+        self.assertIn("C5G_CLAIM_POLL_CAP_S", src[wait:],
+                      "the poll is C4c's cadence: every 2s, capped at 120s, on worker_id")
+        self.assertIn("c5_retry_claim_verdicts", src[wait:],
+                      "reaching the cap reports the attempt rows instead of guessing")
+
+    def test_the_gate_cadence_and_cap_match_the_brief(self):
+        # 2s / 120s — the poll 29cf1d1 gave C4c, declared for this leg so each gate
+        # changes independently of the other.
+        self.assertEqual(m.C5G_CLAIM_POLL_S, 2.0)
+        self.assertEqual(m.C5G_CLAIM_POLL_CAP_S, 120.0)
+
+    def test_the_probe_query_qualifies_every_column(self):
+        sql = m.c5_retry_claim_sql("run-1", "/x[1]/implement")
+        for hit in re.finditer(r"\bstatus\b", sql, re.I):
+            self.assertEqual(sql[hit.start() - 1], ".",
+                             f"unqualified status at {hit.start()}: "
+                             f"{sql[:hit.start() + 8]} (live4/C4's ambiguous-column crash)")
+        self.assertIn("(a.worker_id IS NOT NULL)::text", sql,
+                      "the claim marker is the column the claim UPDATE writes")
+        self.assertIn("WHERE a.run_id = 'run-1'", sql)
+        self.assertIn("ne.node_instance_key = '/x[1]/implement'", sql)
+        self.assertNotIn("{", sql, "the built query carries no unfilled placeholder")
+
+
 class KillLandedTest(unittest.TestCase):
     """live4/C5's root cause: the twin's /plan step closes in <1s, so a kill issued
     after reading the ledger arrives AFTER the node completed. The gate only earns
@@ -2005,6 +2157,8 @@ class C5eScratchReferenceTest(unittest.TestCase):
                                                ("/spec", "also_gone")]), refs)
         self.assertEqual(m.c5e_scratch_ref_pairs(None), [])
         self.assertEqual(m.c5e_scratch_ref_pairs({"spec": {}}), [])
+
+
 
 
 if __name__ == "__main__":

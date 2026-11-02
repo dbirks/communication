@@ -5891,6 +5891,99 @@ def c5_append_only_verdicts(rows):
     return out
 
 
+# --- C5g's node-ledger snapshot gate ------------------------------------------
+#
+# The same lesson 29cf1d1 learned on C4c, applied to the leg d221ab1 sped up. C5g
+# grades the append-not-overwrite rule straight off the node ledger, and one of its
+# rules is "a node in pending/ready/waiting has NO attempt rows" — true of a node
+# the run never reached, FALSE of a node the armed retry put back in 'ready' while
+# its attempt 2 still sits unclaimed. Before d221ab1 the fixed post-kill sleep
+# (C5_KILL_WAIT_S=50 + a 150s poll) had long since let a worker claim that attempt;
+# the poll that replaced it lets C5g land inside the gap, and the rule then FAILs a
+# history the run actually kept (the acceptance on d221ab1: "C5g
+# /build_until_verified[1]/implement: node_executions=1 attempts=2 location=worker
+# status=ready — the rule checked: node not reached yet"). So the snapshot waits for
+# the CLAIM, read by the marker 00005's worker_id⇔fencing_token CHECK pins:
+# attempts.worker_id, set in the same UPDATE that draws the token
+# (internal/store/postgres/attempts.go runClaimSQL) and — unlike a lease — it
+# survives the claim, so an already-finished retry still reads claimed. The rules
+# below are UNCHANGED; a cap the retry never crossed falls through to them and
+# FAILs loudly with every attempt row's status/claim columns.
+C5G_CLAIM_POLL_S = 2.0
+C5G_CLAIM_POLL_CAP_S = 120.0
+
+
+def c5_retry_claim_sql(run_id, key):
+    """The killed node's attempt rows WITH the claim marker C5g waits on:
+    attempt_number|status|claimed|worker|started_at, where claimed is
+    (worker_id IS NOT NULL)::text. Every column is table-qualified — the join makes
+    a bare `status` ambiguous (live4/C4's crash; test_c4_logic sweeps the driver for
+    it). Read-only over the ledger."""
+    return (f"SELECT a.attempt_number::text || '|' || a.status || '|' || "
+            f"(a.worker_id IS NOT NULL)::text || '|' || "
+            f"coalesce((SELECT name FROM workers WHERE id = a.worker_id),'-') || '|' || "
+            f"coalesce(a.started_at::text,'NULL') FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
+            f"ORDER BY a.attempt_number")
+
+
+def c5_retry_claim_rows(text):
+    """Parse c5_retry_claim_sql's rows (ragged/notice lines dropped, never verdicted).
+    Pure."""
+    return [dict(zip(("attempt_number", "status", "claimed", "worker", "started_at"), r))
+            for r in psql_rows(text, 5)]
+
+
+def c5_retry_claimed(rows, above_attempt=1):
+    """True once an attempt ABOVE the killed one has been CLAIMED — a worker owns the
+    retry, so the retried node's 'ready' status is a node that HAS been reached and
+    C5g's 'node not reached yet: no attempts' rule no longer describes it. An
+    unclaimed queued row (worker_id NULL, fencing_token 0) never opens the gate, and
+    neither does a second attempt that merely EXISTS: the claim is the fact. Pure."""
+    return any(_int(r.get("attempt_number")) > _int(above_attempt)
+               and truthy(r.get("claimed")) for r in (rows or []))
+
+
+def c5_retry_armed(rows, above_attempt=1):
+    """True iff an attempt ABOVE the killed one is BOOKED at all (claimed or not) — the
+    armed retry whose claim the snapshot waits for. With nothing booked there is no
+    claim to wait for: § 7.1 C5b's wasted pick (the node closed before the signal, the
+    freeze proved it) arms no retry, and polling 120s for a claim that cannot exist
+    would invent a FAIL the ledger never promised. Pure."""
+    return any(_int(r.get("attempt_number")) > _int(above_attempt) for r in (rows or []))
+
+
+def c5_retry_claim_detail(rows):
+    """The loud observation the cap-exhausted FAIL carries: every attempt row's number,
+    status, claim, worker and started_at columns. Pure."""
+    if not rows:
+        return "retry attempt rows=(none)"
+    return "attempts[" + ", ".join(
+        f"attempt={r.get('attempt_number')} status={r.get('status')} "
+        f"claimed={r.get('claimed')} worker={r.get('worker')} "
+        f"started_at={r.get('started_at')}" for r in rows) + "]"
+
+
+def c5_retry_claim_verdicts(rows, met, waited_s, key, above_attempt=1,
+                            cap_s=C5G_CLAIM_POLL_CAP_S):
+    """Grade the WAIT itself, and only the wait: met -> no row at all (the claim is a
+    precondition of C5g's snapshot, not a contract claim, and a PASS line here would
+    pad the gate's count). Not met -> a FAIL that names the node, the cap and every
+    attempt row, because a retry no worker took in two minutes is exactly the state
+    C5g's per-node rules cannot be read against."""
+    if met:
+        return []
+    return [(f"C5g the armed retry of {key} was CLAIMED (attempts.worker_id set) before "
+             f"the node ledger was snapshotted", False,
+             f"{c5_retry_claim_detail(rows)} — no worker claimed an attempt above "
+             f"{int(_int(above_attempt))} in {waited_s:.0f}s (cap {cap_s:.0f}s). C5g's "
+             "per-node rule 'pending/ready/waiting: no attempts' is about a node the "
+             "run never reached; on a node the retry armed but nobody claimed it grades "
+             "an in-flight retry as an untouched one, so the rows are reported and the "
+             "rule below runs UNCHANGED against them")]
+
+
 def c5_continue_verdicts(head_before, head_after, dirty_before, dirty_after, restored):
     """C5f — continue_workspace is the DEFAULT: nothing reset, the edits still on
     disk, and zero run.checkpoint_restored events in this mode."""
@@ -7203,9 +7296,57 @@ def c5():
     show("C5e GET /api/v1/runs/{id} (the run state the UI would show)", f"{r.status} "
          f"{str(r.text)[:300]}")
 
+    # C5f/C5g — the retry's own window opens when a worker CLAIMS attempt 2, not when
+    # the engine books the row. d221ab1's polls let this leg land in between: the
+    # acceptance on d221ab1 saw C5e report "attempt 2 is queued/running", C5f read the
+    # worktree, and C5g then graded the killed node — back in 'ready' with TWO attempt
+    # rows — by its "node not reached yet (pending/ready/waiting): no attempts" rule,
+    # which is true of a node the run never reached and false of a node the armed retry
+    # re-readied. Wait for the claim on the marker 29cf1d1 gave C4c (attempts.worker_id,
+    # set in the same UPDATE that draws attempt_fencing_seq; it survives the claim),
+    # every C5G_CLAIM_POLL_S up to C5G_CLAIM_POLL_CAP_S, and only then read the worktree
+    # (C5f) and snapshot the node ledger (C5g). No rule is loosened — only the reading
+    # moment moves back to where the old fixed post-kill sleep always put it; a retry no
+    # worker claimed inside the cap FAILs loudly with its rows and falls through to the
+    # UNCHANGED rules below.
+    c5g_claim = {"rows": []}
+    c5g_attempt_above = _int((live or {}).get("attempt_number")) or 1
+
+    def retry_attempt_claimed():
+        try:
+            c5g_claim["rows"] = c5_retry_claim_rows(psql(c5_retry_claim_sql(run_id, key)))
+        except RuntimeError as e:
+            show("C5g the retry-claim poll (psql)", str(e)[:200])
+            return None
+        return c5_retry_claimed(c5g_claim["rows"], c5g_attempt_above) or None
+
+    if c5_retry_armed(rows, c5g_attempt_above):
+        _c5g_met, _c5g_last, c5g_claim_waited = wait_until(retry_attempt_claimed,
+                                                           C5G_CLAIM_POLL_CAP_S,
+                                                           C5G_CLAIM_POLL_S)
+        show(f"C5f/C5g the killed node {key!r} {'WAS' if _c5g_met else 'was NOT'} claimed "
+             f"by a worker after {c5g_claim_waited:.0f}s of polling (cadence "
+             f"{C5G_CLAIM_POLL_S:.0f}s, cap {C5G_CLAIM_POLL_CAP_S:.0f}s — C4c's claim "
+             "marker and cadence, reused; the sleep(50) the polls replaced always landed "
+             "past it)",
+             c5_retry_claim_detail(c5g_claim["rows"]))
+        c5_emit(c5_retry_claim_verdicts(c5g_claim["rows"], _c5g_met, c5g_claim_waited, key,
+                                        c5g_attempt_above))
+    else:
+        show(f"C5f/C5g no retry was armed on {key!r} (attempts "
+             f"{[x.get('attempt_number') for x in rows]}): nothing to wait a claim for",
+             "§ 7.1 C5b's wasted pick leaves no attempt above the killed one, and a poll "
+             "for a claim that can never land would invent a FAIL the ledger never "
+             "promised. C5e's 'a second attempt exists' line above is the row that "
+             "carries this, and C5g's snapshot below runs UNCHANGED.")
+
     # C5f — read the worktree DURING the retry's own window, before it can move HEAD.
-    for x in rows:
-        if _int(x.get("attempt_number")) > 1 and x.get("status") in C5_LIVE_STATES:
+    # The attempt this grace is spent on is the one the CLAIM wait above just named:
+    # `rows` was read before that wait, so on a retry the poll caught mid-queue it
+    # still says 'queued' and the 3s attach grace would be spent on a stale read.
+    for x in (c5g_claim["rows"] or rows):
+        if _int(x.get("attempt_number")) > c5g_attempt_above and \
+                x.get("status") in C5_LIVE_STATES:
             time.sleep(3)                       # let the retry attach the reclaimed worktree
             break
     head_after, dirty_after = gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
