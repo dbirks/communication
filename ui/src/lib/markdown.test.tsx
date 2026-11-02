@@ -374,6 +374,40 @@ describe("<MarkdownBody>", () => {
     expect(box.className).toContain("max-w-full");
   });
 
+  it("gives a list item's content the width the marker leaves over", () => {
+    // Pass-2 review of the same 400-character fence, now written as step 3 of a
+    // plan: it printed ~210px inside a ~1000px column at 1280 and clipped its
+    // lines. The item's content column has to FILL the `<li>`; sizing to its
+    // content collapses it, because the fence itself contributes no width
+    // (`width:0; min-width:100%`). jsdom lays nothing out, so this checks the
+    // classes the layout rests on, not a measured width.
+    render(
+      <MarkdownBody
+        text={
+          '3. **Pin the revision**\n   ```json\n   {"summary": "' + "x".repeat(400) + '"}\n   ```'
+        }
+      />,
+    );
+    const item = screen.getByTestId("markdown-list-item");
+    // The row is a flex box and the marker never stretches or shrinks.
+    expect(item.className).toContain("flex");
+    expect(item.querySelector(":scope > span[aria-hidden]")?.className).toContain("shrink-0");
+
+    const content = screen.getByTestId("markdown-list-item-content");
+    expect(content.className).toContain("flex-1");
+    // …and can still shrink below its content, which is what keeps a long line
+    // from pushing the page sideways at 390.
+    expect(content.className).toContain("min-w-0");
+
+    // The fence is laid out inside that filling column, and still scrolls in
+    // its own box rather than measuring its longest line.
+    const code = screen.getByTestId("markdown-code");
+    expect(content.contains(code)).toBe(true);
+    expect(code.getAttribute("style")).toContain("width: 0px");
+    expect(code.getAttribute("style")).toContain("min-width: 100%");
+    expect(code.className).toContain("overflow-x-auto");
+  });
+
   it("fades the code box's right edge only while content sits off to the right", () => {
     // pass-1 review minor 3: the 2e gate plan's wide fences cut mid-token with
     // no visible hint. The fade appears when the box overflows and clears

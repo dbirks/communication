@@ -896,7 +896,13 @@ function renderBlock(block: MarkdownBlock, key: string, paragraphClassName: stri
             <span aria-hidden className="shrink-0 text-faint">
               {block.ordered ? `${block.start + itemIndex}.` : "\u00b7"}
             </span>
-            <div className="min-w-0 space-y-[2px]">
+            {/* `flex-1` + `min-w-0`: the item's content fills the width the marker
+                leaves over. Without the fill the column sizes to its content, and
+                since a fence deliberately contributes no width of its own
+                (`width:0; min-width:100%`), the box collapsed to the width of the
+                surrounding prose — ~210px inside ~1000px of free column at 1280
+                (`run-gate-waiting-1280.png`, pass-2 review). */}
+            <div className="min-w-0 flex-1 space-y-[2px]" data-testid="markdown-list-item-content">
               {renderInline(item.text)}
               {item.children.map((child, childIndex) =>
                 renderBlock(child, `${key}-${itemIndex}-${childIndex}`, paragraphClassName),

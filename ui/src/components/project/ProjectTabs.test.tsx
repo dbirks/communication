@@ -130,36 +130,70 @@ describe("the project tab strip at phone width", () => {
     expect(screen.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");
   });
 
-  it("stays at scrollLeft 0, first tab whole, when the strip can already see the active tab", () => {
-    // `project-1b-workflows-390.png`, the MINOR from the pass-2 review: opening
-    // the Workflows tab at 390 scrolled the strip to 82 so its own tab sat
-    // whole, and the 34px cue lane was then drawn across the box `Overview` had
-    // been scrolled into — the arrow on top of the first label. The strip now
-    // only moves for a tab it cannot see at all.
+  it("keeps the ACTIVE tab whole and clear of the right cue — Workflows at 390 moves off 0", () => {
+    // The pass-2 acceptance review DEFECT: the old rule counted an active tab as
+    // “seen” if any part of it was on the strip, so Workflows at 390 stayed at
+    // `scrollLeft 0` with its last letters and its count `3` under the right
+    // arrow. The strip now moves to the nearest tab edge that puts the whole
+    // active tab — label and count — clear of the cue lane.
     const { rerender } = mount("workflows");
     const nav = fakePhoneLayout();
     // A count landing re-reads the geometry, exactly as the live read does.
     rerender(remount("workflows", { workflows: 3 }));
-    expect(nav.scrollLeft).toBe(0);
-    // No cue at the strip's start — not in the DOM at all, so it cannot sit on a
-    // label however it is painted.
-    expect(screen.queryByTestId("project-tabs-fade-left")).toBeNull();
-    // …and `Overview` still begins the strip, whole.
-    const overview = screen.getByTestId("project-tab-overview");
-    expect(overview.offsetLeft).toBeGreaterThanOrEqual(nav.scrollLeft);
-    expect(overview.offsetLeft + overview.offsetWidth).toBeLessThanOrEqual(
-      nav.scrollLeft + nav.clientWidth,
-    );
-    // The tab the page was opened on stays reachable, and the cue that says the
-    // strip continues stands at the edge it is clipped at.
+    // The strip moved — but only to `Runs`' left edge, the shortest move that
+    // keeps `Overview` wholly off-strip rather than cut by the left cue.
+    expect(nav.scrollLeft).toBeCloseTo(84.5, 1);
+    const workflows = screen.getByTestId("project-tab-workflows");
+    // Whole, and clear of the right cue (which shows at this position: the
+    // strip has not reached its end).
     expect(screen.getByTestId("project-tabs-fade-right")).toBeTruthy();
+    expect(workflows.offsetLeft).toBeGreaterThanOrEqual(nav.scrollLeft);
+    expect(workflows.offsetLeft + workflows.offsetWidth).toBeLessThanOrEqual(
+      nav.scrollLeft + nav.clientWidth - 34 + 0.5,
+    );
+    // Nothing is cut by the left cue's edge either: every tab is whole in the
+    // clear box or wholly behind it.
+    const cutAtLeftEdge = ([left, width]: [number, number]) =>
+      left < nav.scrollLeft - 1 && left + width > nav.scrollLeft + 1;
+    expect(Object.values(TAB_BOXES).some(cutAtLeftEdge)).toBe(false);
+    // The left cue stands in its own in-flow lane — it cannot cover a label.
+    const left = screen.getByTestId("project-tabs-fade-left");
+    expect(left.className.split(/\s+/)).toContain("shrink-0");
+    expect(left.className).not.toContain("absolute");
+  });
+
+  it("stays at scrollLeft 0 when the active tab is already whole and clear of the right cue", () => {
+    // Overview, Runs and Threads fit inside the strip minus the 34px right cue
+    // at `scrollLeft 0`, so the shortest move is no move: no cue at the strip's
+    // start (not in the DOM at all), `Overview` whole, the tail clipped only
+    // under the RIGHT fade — where it is not the tab the reader is on.
+    for (const tab of ["overview", "runs", "threads"] as const) {
+      const { rerender, unmount } = mount(tab);
+      const nav = fakePhoneLayout();
+      rerender(remount(tab, { threads: 2, workflows: 3 }));
+      expect(nav.scrollLeft).toBe(0);
+      expect(screen.queryByTestId("project-tabs-fade-left")).toBeNull();
+      const active = screen.getByTestId(`project-tab-${tab}`);
+      expect(active.offsetLeft).toBeGreaterThanOrEqual(0);
+      expect(active.offsetLeft + active.offsetWidth).toBeLessThanOrEqual(
+        nav.clientWidth - 34 + 0.5,
+      );
+      // `Overview` still begins the strip, whole.
+      const overview = screen.getByTestId("project-tab-overview");
+      expect(overview.offsetLeft + overview.offsetWidth).toBeLessThanOrEqual(
+        nav.scrollLeft + nav.clientWidth,
+      );
+      expect(screen.getByTestId("project-tabs-fade-right")).toBeTruthy();
+      unmount();
+    }
   });
 
   it("parks a scrolled strip on a boundary where the cue's own edge cuts no label", () => {
     // The cue lane is 34px wide and sits to the LEFT of the strip, so a strip
     // that stops mid-label leaves a label the reader cannot finish right beside
     // it. Every rest position is therefore a tab edge, and of the clean ones the
-    // nearest wins.
+    // nearest wins. (Starting mid-`Runs` at 118 the active Workflows tab is
+    // already whole and clear, so only the left-cut rule moves the strip.)
     const { rerender } = mount("workflows");
     const nav = fakePhoneLayout();
     nav.scrollLeft = 118; // mid `Runs`: 84.5 + 79.4 = 163.9, so 118 cuts it

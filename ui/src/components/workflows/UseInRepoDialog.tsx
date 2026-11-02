@@ -515,12 +515,12 @@ function Chrome({
         className="flex max-h-[calc(100vh-8rem)] w-[520px] max-w-full flex-col gap-[14px] overflow-auto rounded-[4px] border border-ink bg-surface p-[16px] shadow-(--shadow-raised)"
         data-testid="use-in-repo-dialog"
       >
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-baseline justify-between gap-2">
           <span
             id={headingId}
             role="heading"
             aria-level={2}
-            className="text-[13px] font-bold"
+            className="min-w-0 text-[13px] font-bold [overflow-wrap:anywhere]"
             data-testid="use-in-repo-title"
           >
             {title}
@@ -529,7 +529,7 @@ function Chrome({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="font-mono text-[10px] text-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="shrink-0 font-mono text-[10px] text-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             esc
           </button>
