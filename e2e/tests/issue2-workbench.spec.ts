@@ -637,11 +637,33 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await expect(page).toHaveURL(/[?&]new=1/);
     await selectPipelineAssignment(page, state.pipelineSlug);
     await page.getByTestId("new-run-input-goal").fill(`issue2 acceptance ${STAMP}`);
+    // 1k (run by hand): the typed form has no separate repo chooser — the
+    // declared `repository` input is a mono text field, carried read-only
+    // only when the form was opened FROM a repo row (this one opens from the
+    // project header). The deterministic twin runs in the seeded `app`
+    // binding — the same value seed.sh posts. A lab build still rendering
+    // the retired select of project repositories is driven through that
+    // control; either way the run must start with the project's first repo.
     const repo = page.getByTestId("new-run-input-repository");
-    const repoChoice = repo.locator("option").nth(1);
-    await expect(repoChoice).toBeAttached({ timeout: NODE_STEP_TIMEOUT_MS });
-    await repo.selectOption((await repoChoice.getAttribute("value")) ?? "");
-    await page.getByTestId("new-run-input-fanout").check();
+    await expect(repo, "the form offers the declared repository input").toBeVisible({
+      timeout: NODE_STEP_TIMEOUT_MS,
+    });
+    if ((await repo.locator("option").count()) > 0) {
+      const repoChoice = repo.locator("option").nth(1);
+      await expect(repoChoice).toBeAttached({ timeout: NODE_STEP_TIMEOUT_MS });
+      await repo.selectOption((await repoChoice.getAttribute("value")) ?? "");
+    } else {
+      await repo.fill("app");
+    }
+    // `fanout` is declared `type: boolean`: the old form rendered a checkbox,
+    // the typed form renders a text field. Drive the control that is really
+    // there so the fan-out arm is armed either way.
+    const fanout = page.getByTestId("new-run-input-fanout");
+    if ((await fanout.getAttribute("type")) === "checkbox") {
+      await fanout.check();
+    } else {
+      await fanout.fill("true");
+    }
     await page.getByTestId("new-run-input-fanout_count").fill("14");
     await page.getByTestId("new-run-input-hold_seconds").fill("20");
     await page.getByTestId("new-run-submit").click();

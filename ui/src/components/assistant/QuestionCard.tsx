@@ -66,17 +66,22 @@ export function QuestionCard({
         {question.prompt}
       </p>
       <div
-        role={answered ? undefined : "radiogroup"}
-        aria-label={answered ? undefined : question.prompt}
+        role="radiogroup"
+        aria-label={question.prompt}
         className="mt-[8px] flex flex-col gap-[6px]"
       >
         {question.options.slice(0, 4).map((option) => {
           const selected = answered && answeredLabel != null && answeredLabel === option.label;
+          // The radio role is what makes `aria-checked` legal on the button —
+          // dropped on an answered card, axe reads the implicit button role
+          // and fails `aria-allowed-attr` (critical). The answered card keeps
+          // the role and marks itself read-only through `disabled`; selection
+          // stays announced.
           return (
             <button
               key={option.value}
               type="button"
-              role={answered ? undefined : "radio"}
+              role="radio"
               aria-checked={answered ? selected : false}
               disabled={answered}
               data-testid="assistant-question-option"

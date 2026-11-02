@@ -7,17 +7,20 @@
 //      2026-10-16). The row is added through the API the seed adds its `app`
 //      row through (`POST /api/v1/projects/{id}/repos`), idempotently, and
 //      never reset afterwards.
-//   2. a pipeline whose `spec.inputs` declares `issue_number` (integer) and
-//      `goal` (string) — the two names `issueValuesFor` in
-//      `ui/src/components/m4/NewRunForm.tsx` writes issue data into — is
-//      authored and published through the library's own draft path, the way
-//      the M5 exit journey authors its pipeline.
-//   3. the New run form's issue picker lists the live tracker; picking the
-//      first issue prefills `issue_number` with the number and `goal` with the
-//      `#<number> <title>` heading, exactly as `issueValuesFor` promises.
+//   2. a pipeline whose `spec.inputs` declares the ADR-0066 `github_issue`
+//      input (`issue`, `type: object`, annotated `x-communication-input`) plus
+//      the `repository` and `goal` strings that travel with it is authored and
+//      published through the library's own draft path, the way the M5 exit
+//      journey authors its pipeline.
+//   3. the repository page's workflow-row `Run` opens the 1k run form carrying
+//      that repo (design 1k: the `repository` input is prefilled and
+//      read-only) and its searchable issue picker (ADR-0066's `github_issue`
+//      widget) lists the live tracker; the chosen issue rides the form as the
+//      ADR's runtime shape `{number, title, body, url, repo}`.
 //   4. the started run's `run_inputs` (read back through `GET /runs/{runId}`'s
-//      validated `inputs`, per api/openapi.yaml) carry that number and heading
-//      with `origin: submitted` — the record the control plane keeps, not the
+//      validated `inputs`, per api/openapi.yaml) carry that issue (and the
+//      carried `repository`) with `origin: submitted` — the record the control
+//      plane keeps, not the
 //      UI's own echo.
 //
 // It runs against the M4 lab by env override only, the same gate idiom as
@@ -33,7 +36,7 @@
 // reason rather than passing without a real issue. Every wait is bounded.
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
-import { gotoApp, openProjectBySlug, selectByOptionText, shot, signIn } from "./helpers.js";
+import { gotoApp, openProjectBySlug, shot, signIn } from "./helpers.js";
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -71,9 +74,9 @@ function escapeRegExp(value: string): string {
 /**
  * The pipeline the journey publishes: one deterministic `process.exec` node
  * (no model endpoint on the lab) whose only job is to prove the authoring
- * path, and `spec.inputs` that declare exactly the two names `issueValuesFor`
- * writes — `issue_number` (integer) and `goal` (string) — plus the
- * `repository` input whose chosen value is what the issue picker reads. The
+ * path, and `spec.inputs` that declare the ADR-0066 typed issue input
+ * (`issue`, `type: object` annotated `github_issue` — the shape the searchable
+ * picker writes) plus the required `repository` and `goal` strings. The
  * assertion target is the run's recorded inputs, so the node's content is
  * deliberately trivial.
  */
@@ -85,21 +88,20 @@ kind: Pipeline
 metadata:
   name: __SLUG__
   description: >-
-    Run started from a GitHub issue: the issue picker seeds issue_number and
-    goal from the live tracker, and the run records both in run_inputs.
+    Run started from a GitHub issue: the searchable issue picker reads the
+    live tracker, and the run records the picked issue in run_inputs.
 spec:
   inputs:
     type: object
-    required: [repository, issue_number, goal]
+    required: [repository, issue, goal]
     properties:
       repository:
         type: string
         minLength: 1
         description: Project repository binding name, e.g. app.
-      issue_number:
-        type: integer
-        minimum: 1
-        description: The GitHub issue number this run started from.
+      issue:
+        type: object
+        x-communication-input: {type: github_issue, label: Issue, help: The tracker issue this run starts from}
       goal:
         type: string
         minLength: 1
@@ -218,6 +220,7 @@ test.describe("W3 start a run from a GitHub issue", () => {
   let runId = "";
   let issueNumber = 0;
   let issueTitle = "";
+  let goalText = "";
 
   test.beforeAll(async ({ browser }) => {
     adminContext = await browser.newContext();
@@ -280,7 +283,7 @@ test.describe("W3 start a run from a GitHub issue", () => {
       // exposed as its textarea.
       await admin.getByTestId("studio-view-yaml").click();
       await admin.getByTestId("studio-yaml").fill(ISSUE_PIPELINE_YAML.replace("__SLUG__", SLUG));
-      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/issue_number/);
+      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/github_issue/);
       await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: process\.exec/);
       await shot(admin, "m5w3-01-issue-draft");
     });
@@ -373,46 +376,55 @@ test.describe("W3 start a run from a GitHub issue", () => {
     });
   });
 
-  test("the issue picker lists the live tracker and prefills the declared inputs", async () => {
+  test("the repo row's Run opens the issue picker over the live tracker and the picked issue rides the form", async () => {
     // The live GitHub read inside this test can hold the bounded wait, so
     // the test's own timeout covers it plus the rest of its steps.
     test.setTimeout(GITHUB_TIMEOUT_MS + 120_000);
-    await test.step("the New run form offers exactly the revision's spec.inputs", async () => {
-      await gotoApp(alice, `${projectPath}/runs`);
-      await expect(alice.getByTestId("project-runs")).toBeVisible();
-      // Design 1b: the RUNS panel carries no "New run" button of its own —
-      // the header band's `Start run` is the page's one door, landing here
-      // with ?new=1 and opening the form above the list.
-      await alice.getByTestId("project-start-run").click();
-      await expect(alice).toHaveURL(/[?&]new=1/);
+    const pipelineId = pipelinePath.split("/").pop() ?? "";
+    await test.step("the repo row's Run opens the form carrying that repository", async () => {
+      // Design 1k: `Run` on the repository page's workflow row opens the ONE
+      // run dialog carrying that repo (subtitle + read-only repository
+      // field), and the issue picker scopes to the repo it carries.
+      await gotoApp(alice, `${projectPath}/${REPO_NAME}`);
+      await expect(alice.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
+      const row = alice
+        .locator('[data-testid^="repo-workflow-row-"]')
+        .filter({ has: alice.locator(`a[href$="${pipelineId}"]`) });
+      await expect(row).toBeVisible({ timeout: 30_000 });
+      await row.locator('[data-testid^="repo-workflow-run-"]').first().click();
+      await expect(alice.getByTestId("run-form-dialog")).toBeVisible({ timeout: 15_000 });
       await expect(alice.getByTestId("new-run-form")).toBeVisible();
-      await selectByOptionText(alice, "new-run-assignment", SLUG);
-      // The three declared inputs, one control each.
-      await expect(alice.getByTestId("new-run-input-repository")).toBeVisible();
-      // The form's testid is `new-run-input-${field.name}` and the field name
-      // is the spec.inputs property key, which keeps its underscore.
-      await expect(alice.getByTestId("new-run-input-issue_number")).toBeVisible();
+      // The carried repo: the subtitle names it, the declared `repository`
+      // input arrives prefilled and read-only (1k) — never retyped.
+      await expect(alice.getByTestId("run-form-subtitle")).toContainText(
+        new RegExp(`^${escapeRegExp(REPO_NAME)} · pinned r1`),
+      );
+      const repository = alice.getByTestId("new-run-input-repository");
+      await expect(repository).toHaveValue(REPO_NAME);
+      await expect(repository).toHaveAttribute("aria-readonly", "true");
+      // The three declared inputs, one control each: the ADR-0066 searchable
+      // picker for `issue` and the goal text field.
+      await expect(alice.getByTestId("new-run-input-issue-picker")).toBeVisible();
       await expect(alice.getByTestId("new-run-input-goal")).toBeVisible();
     });
-    await test.step("choosing the GitHub repository opens the issue picker", async () => {
-      await selectByOptionText(alice, "new-run-input-repository", REPO_NAME);
-      await expect(alice.getByTestId("issue-section")).toBeVisible();
-      await alice.getByTestId("issue-section-toggle").click();
-    });
     await test.step("the first listed issue is a real row from the tracker", async () => {
-      const body = alice.locator("#issue-section-body");
-      const rows = body.locator('[data-testid^="issue-row-"]');
+      await alice.getByTestId("new-run-input-issue").click();
+      const list = alice.getByTestId("new-run-input-issue-options");
+      await expect(list).toBeVisible({ timeout: 15_000 });
+      const rows = list.locator('[data-testid^="new-run-input-issue-option-"]');
       let sawUpstreamError = false;
       let sawEmptyList = false;
       try {
         await expect
           .poll(
             async () => {
-              // The picker's own failure surface: a problem alert (upstream
-              // error / budget / no network) or its honest "no open issues"
-              // line. Either one means the GitHub arm cannot be proven here.
-              if ((await body.locator('[role="alert"]').count()) > 0) sawUpstreamError = true;
-              if ((await body.getByTestId("issue-list-empty").count()) > 0) sawEmptyList = true;
+              // The picker's own failure surface: its problem row (upstream
+              // error / budget / no network) or its honest no-match line.
+              // Either one means the GitHub arm cannot be proven here.
+              if ((await alice.getByTestId("new-run-input-issue-error").count()) > 0)
+                sawUpstreamError = true;
+              if ((await alice.getByTestId("new-run-input-issue-empty").count()) > 0)
+                sawEmptyList = true;
               return rows.count();
             },
             { timeout: GITHUB_TIMEOUT_MS, intervals: [2_000] },
@@ -435,33 +447,23 @@ test.describe("W3 start a run from a GitHub issue", () => {
         throw error;
       }
       const firstTestid = (await rows.first().getAttribute("data-testid")) ?? "";
-      const number = Number(firstTestid.replace(/^issue-row-/, ""));
+      const number = Number(firstTestid.replace(/^new-run-input-issue-option-/, ""));
       expect(
         Number.isInteger(number) && number > 0,
         `issue row ${firstTestid} names a number`,
       ).toBe(true);
       issueNumber = number;
-      issueTitle = (await rows.first().getByTestId(`issue-title-${number}`).innerText()).trim();
+      issueTitle =
+        (await rows.first().locator("span[title]").first().getAttribute("title")) ?? "";
       expect(issueTitle.length > 0, `issue #${number} has a title`).toBe(true);
     });
-    await test.step("using it prefills exactly what issueValuesFor promises", async () => {
-      await alice.getByTestId(`issue-use-${issueNumber}`).click();
-      // The number into the integer input, the `#N <title>` heading into goal
-      // (`issueValuesFor`: goal gets the heading plus the body when there is
-      // one, so the heading is asserted as a prefix, not an exact value).
-      await expect(alice.getByTestId("new-run-input-issue_number")).toHaveValue(
-        String(issueNumber),
-      );
-      await expect(alice.getByTestId("new-run-input-goal")).toHaveValue(
-        new RegExp(`^#${issueNumber} ${escapeRegExp(issueTitle)}`),
-      );
-      // The note names the filled inputs in the canonical spec.inputs order
-      // (goal, issue_number), not the spec's, so assert the names and the
-      // `from #N` suffix separately.
-      const fillNote = await alice.getByTestId("issue-fill-note").innerText();
-      expect(fillNote).toContain(`from #${issueNumber}`);
-      expect(fillNote).toContain("issue_number");
-      expect(fillNote).toContain("goal");
+    await test.step("picking it puts the issue on the form", async () => {
+      await alice.getByTestId(`new-run-input-issue-option-${issueNumber}`).click();
+      // The picker settles on the picked issue (`#<number>` in the field),
+      // and goal carries the heading the person is signing up to deliver.
+      await expect(alice.getByTestId("new-run-input-issue")).toHaveValue(`#${issueNumber}`);
+      goalText = `#${issueNumber} ${issueTitle} — W3 journey`;
+      await alice.getByTestId("new-run-input-goal").fill(goalText);
       await shot(alice, "m5w3-05-issue-prefilled");
     });
   });
@@ -475,36 +477,44 @@ test.describe("W3 start a run from a GitHub issue", () => {
       expect(runId).toMatch(/^[0-9a-f-]{36}$/);
       await shot(alice, "m5w3-06-run-started");
     });
-    await test.step("run_inputs carry the issue number and the #N <title> heading", async () => {
-      const heading = new RegExp(`^#${issueNumber} ${escapeRegExp(issueTitle)}`);
+    await test.step("run_inputs carry the issue as ADR-0066's shape, with the carried repository", async () => {
       // run_inputs are recorded in the creating transaction, so the read is
       // bounded and short — the bound exists for the read model, not for a worker.
       await expect
         .poll(
           async () => {
             const inputs = await runInputsOf(alice, runId);
-            return inputs.find((input) => input.name === "issue_number")?.value;
+            return inputs.find((input) => input.name === "issue")?.value;
           },
           {
             timeout: RUN_READ_TIMEOUT_MS,
-            message: "the run never recorded issue_number in its inputs",
+            message: "the run never recorded its issue input",
           },
         )
-        .toBe(issueNumber);
+        .toBeTruthy();
       const inputs = await runInputsOf(alice, runId);
-      const number = inputs.find((input) => input.name === "issue_number");
+      const issue = inputs.find((input) => input.name === "issue");
+      const repository = inputs.find((input) => input.name === "repository");
       const goal = inputs.find((input) => input.name === "goal");
-      expect(goal, "the run recorded its goal input").toBeTruthy();
+      // The picked issue rides the ADR's runtime shape: the number the
+      // tracker named, the title it carries, and the owner/repo it came from.
+      const value = (issue?.value ?? {}) as Record<string, unknown>;
+      expect(value.number, "issue.number is the picked row's number").toBe(issueNumber);
+      expect(value.title, "issue.title is the picked row's title").toBe(issueTitle);
+      expect(value.repo, "issue.repo names the GitHub tracker read")
+        .toBe(GITHUB_REPO);
       expect(
-        typeof goal?.value === "string" && heading.test(goal.value),
+        typeof goal?.value === "string" &&
+          new RegExp(`^#${issueNumber} ${escapeRegExp(issueTitle)}`).test(goal.value),
         `goal run_input ${JSON.stringify(goal?.value)} starts with the issue heading`,
       ).toBe(true);
-      // What the picker wrote is a submitted value, not a default the server
+      // What the form carries is a submitted value, not a default the server
       // filled in behind the form's back.
-      for (const input of [number, goal] as (RunInput | undefined)[]) {
+      for (const input of [issue, repository, goal] as (RunInput | undefined)[]) {
         if (!input) continue;
         expect(input.origin, `${input.name} origin`).toBe("submitted");
       }
+      expect(repository?.value, "the carried repo names the repository row").toBe(REPO_NAME);
       await shot(alice, "m5w3-07-run-inputs");
     });
     // The run itself (a worker cloning the public repo and running one printf

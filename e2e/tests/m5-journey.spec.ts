@@ -783,9 +783,12 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await openRunForm(alice, projectPath);
       await selectByOptionText(alice, "new-run-assignment", SLUG);
       await alice.getByTestId("new-run-input-goal").fill(GOAL);
-      // `repository` is a project binding name, offered as the project's own
-      // list — not a URL a user has to remember.
-      await selectByOptionText(alice, "new-run-input-repository", REPO_BINDING);
+      // 1k (run by hand): the typed form renders this revision's un-annotated
+      // `repository: {type: string}` as a mono text field — the run-by-hand
+      // form carries a repo only when it was opened FROM a repo row (this one
+      // opens from the project header), so the binding name is typed, never a
+      // URL a user has to remember.
+      await alice.getByTestId("new-run-input-repository").fill(REPO_BINDING);
       await alice.getByTestId("new-run-submit").click();
       // Route contract C1: the workbench is the project-less `/runs/:runId`.
       await alice.waitForURL(/\/runs\/[0-9a-f-]{36}$/);
