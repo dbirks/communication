@@ -198,6 +198,12 @@
     font-size: var(--text-body);
     -webkit-font-smoothing: antialiased;
   }
+  /* Tailwind v4's preflight dropped the UA default pointer cursor on
+     buttons (design handoff fix): every enabled button is a pointer.
+     Disabled buttons keep the default arrow — they answer to nothing. */
+  button:not(:disabled) {
+    cursor: pointer;
+  }
   a {
     color: var(--color-accent-text);
   }

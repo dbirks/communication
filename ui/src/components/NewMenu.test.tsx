@@ -200,28 +200,31 @@ describe("NewMenu", () => {
   });
 });
 
-/** Issue #62: the menu anchors to the trigger's LEFT edge (the old
- * right-alignment started it off the left edge of a 390px viewport —
- * measured live: menuBox.left = -21 in the phone drawer), shifts back only
- * when it would overflow the right edge, and never stands beside another
- * open surface (opening Ask left New open before the fix — measured live:
- * new-menu-list and assistant-popover both on screen). */
+/** Issue #62 + the pointer-arrow handoff: the menu anchors to the trigger's
+ * LEFT edge, clamps inside the viewport with an 8px margin (its pointer
+ * arrow stays centered on the trigger even when the box shifts — asserted
+ * in ds/Menu.test), and never stands beside another open surface (opening
+ * Ask left New open before the fix — measured live: new-menu-list and
+ * assistant-popover both on screen). */
 describe("NewMenu placement and one-menu-at-a-time (issue #62)", () => {
-  /** Place the trigger at `left` in a `width`-wide viewport for the clamp
-   * math (jsdom lays nothing out, so the rect is the only input). */
+  /** Place the trigger (and its `relative` wrapper, which is the menu's
+   * positioning parent) at `left` in a `width`-wide viewport for the clamp
+   * math (jsdom lays nothing out, so the rects are the only input). */
   function placeTrigger(left: number, width: number) {
     const trigger = screen.getByTestId("new-menu");
-    trigger.getBoundingClientRect = () =>
+    const rect = (l: number) =>
       ({
-        left,
-        right: left + 48,
+        left: l,
+        right: l + 48,
         width: 48,
         height: 26,
         top: 0,
         bottom: 26,
-        x: left,
+        x: l,
         y: 0,
       }) as DOMRect;
+    trigger.getBoundingClientRect = () => rect(left);
+    (trigger.parentElement as HTMLElement).getBoundingClientRect = () => rect(left);
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
@@ -239,12 +242,13 @@ describe("NewMenu placement and one-menu-at-a-time (issue #62)", () => {
     expect(menu.style.left).toBe("0px");
   });
 
-  it("shifts the menu back inside the viewport only as far as the right edge needs", async () => {
+  it("clamps the menu inside the viewport only as far as the right edge needs", async () => {
     renderApp({ path: "/", routes: routes() });
     await screen.findByTestId("new-menu");
     // 250 + the 180px menu would end at 430 in a 300px viewport. With the
-    // 8px margin the menu may move at most 250 + 180 - (300 - 8) = 138px
-    // left; its right edge then sits exactly on the margin.
+    // 8px margin the menu's viewport-left may reach at most 300 - 8 - 180 =
+    // 112; against the wrapper at 250 that is the -138px shift whose right
+    // edge sits exactly on the margin.
     placeTrigger(250, 300);
     fireEvent.click(screen.getByTestId("new-menu"));
     const menu = await screen.findByTestId("new-menu-list", undefined, { timeout: READ_MS });
