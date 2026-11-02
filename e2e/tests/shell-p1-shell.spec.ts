@@ -56,11 +56,13 @@ async function setLayoutOption(page: Page, testid: string): Promise<void> {
   await expect(page.getByTestId(testid).locator("input[type=radio]")).toBeChecked();
 }
 
-/** The sidebar's seven nav rows and the canonical route each must point at. */
+/** The sidebar's five nav rows and the canonical route each must point at.
+ * Handoff 2c/3c: Today (`/`, what the row called Home) and My chats
+ * (`/threads`) are the cross-project rows; the Inbox and Board rows are gone
+ * (Inbox folded into Today, the Board's behavior into the repository page's
+ * Lanes view) while `/inbox` and `/board` stay mounted routes. */
 const NAV: { testid: string; href: string }[] = [
   { testid: "sidebar-link-home", href: "/" },
-  { testid: "sidebar-link-inbox", href: "/inbox" },
-  { testid: "sidebar-link-board", href: "/board" },
   { testid: "sidebar-link-threads", href: "/threads" },
   { testid: "sidebar-link-workflows", href: "/workflows" },
   { testid: "sidebar-link-steps", href: "/steps" },
@@ -92,7 +94,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await evidence(
       page,
       "shell-p1-sidebar",
-      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, and all seven nav rows link to the canonical C1 routes",
+      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, and all five nav rows (Today, My chats, Workflows, Steps, Agent profiles) link to the canonical C1 routes",
     );
   });
 

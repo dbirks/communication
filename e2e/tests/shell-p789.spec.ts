@@ -409,9 +409,12 @@ export async function pendingApprovalForRun(
   throw new Error(`no pending approval appeared for run ${runId}`);
 }
 
-/** The sidebar's Inbox flag count ("! n waiting"); 0 while the flag is absent. */
+/** The sidebar's Today flag count ("! n waiting"); 0 while the flag is absent.
+ * Handoff 2c/3c folded the Inbox row into Today, so the waiting count the Inbox
+ * row used to carry sits on `sidebar-link-home` (same `useSidebarFlags`
+ * reduction, same `aria-label`). */
 export async function inboxFlagCount(page: Page): Promise<number> {
-  const badge = page.getByTestId("sidebar-link-inbox").getByLabel(/waiting$/);
+  const badge = page.getByTestId("sidebar-link-home").getByLabel(/waiting$/);
   if (!(await badge.isVisible().catch(() => false))) return 0;
   const label = (await badge.getAttribute("aria-label")) ?? "";
   const match = label.match(/^(\d+) waiting$/);

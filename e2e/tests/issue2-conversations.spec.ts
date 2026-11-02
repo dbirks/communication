@@ -132,7 +132,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   );
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("A7: one-off conversation from the header and the global New menu", async ({ page }) => {
+  test("A7: one-off conversation from the header and the sidebar's New chat", async ({ page }) => {
     test.setTimeout(300_000); // one real agent turn plus four axe passes, bounded
     await signIn(page, "alice");
     const projectUrl = await openProjectBySlug(page, PROJECT_SLUG);
@@ -197,9 +197,10 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
         "its Thread-details disclosure opened, no part-of-run-link or node reference",
     );
 
-    // --- Entry 2: the global New menu opens the SAME dialog with a picker. ---
-    await page.getByTestId("new-menu").click();
-    await page.getByTestId("new-menu-conversation").click();
+    // --- Entry 2: the sidebar's `New chat` opens the SAME dialog with a picker. ---
+    // Handoff 2c/3c: the shell's cross-project row is one chat-starting button
+    // (`new-chat`); the global "New" menu it replaced is gone from the column.
+    await page.getByTestId("new-chat").click();
     await expect(dialog).toBeVisible();
     // No project was passed in, so the dialog offers the project picker.
     const picker = page.locator('select[data-testid="new-conversation-dialog-project"]');
@@ -207,11 +208,11 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     const projectOption = picker.locator("option", { hasText: PROJECT_NAME });
     await picker.selectOption((await projectOption.first().getAttribute("value")) ?? "");
     await expect(page.getByTestId("conversation-new-title")).toBeVisible();
-    await checkA11y(page, "global New-menu dialog (A7)");
+    await checkA11y(page, "sidebar New-chat dialog (A7)");
     await evidence(
       page,
       "conv-a7-global-menu",
-      "the global New menu (new-menu → new-menu-conversation) opened the same dialog with a working project picker set to M4 Exit",
+      "the sidebar's New chat (new-chat) opened the same dialog with a working project picker set to M4 Exit",
     );
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();

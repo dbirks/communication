@@ -1,21 +1,37 @@
 /**
- * Sidebar v3 — the permanent 240px column that replaces the top app bar
- * (handoff 5a, `SidebarV3.dc.html`).
+ * Sidebar — the shell's one left column (handoff 2c/3c, `Sidebar.dc.html`).
+ *
+ * It has two widths, and which one you get is a saved layout preference
+ * (`sidebarCollapsed`, `lib/prefs.ts`), not local state: 220px expanded, or a
+ * 52px rail of tiles. The rail is not a second implementation of the content:
+ * it carries the same facts — the same projects, the same worst-state flags —
+ * in the same reads, and every tile that hides a list (a project) opens a
+ * `ds/Popover` flyout beside it so nothing becomes unreachable when the labels
+ * go away.
  *
  * Everything the column shows is real: the project tree and its status flags
  * come from the same reads Inbox runs (`useSidebarFlags` projects the
  * `lib/attention.ts` reduction, worst state per project); the library counts
  * are live pipeline/profile reads; the footer is the signed-in identity the
  * old bar carried (`user-badge` + the account menu: Settings, Operations,
- * Sign out) — the replica name moved to Settings, the honest operations
- * signal the footer used to carry. What the backend cannot supply yet is
- * simply absent — no fake folders under Workflows, no count on Steps (there
- * is no template store), no per-repo flags.
+ * Sign out). What the backend cannot supply yet is simply absent — no fake
+ * folders under Workflows, no count on Steps (there is no template store), no
+ * per-repo flags.
+ *
+ * Per DECISIONS.md, Project settings / Members / Add repository / Workflows in
+ * use are NOT tree rows: they live behind the "⋯" that the project row shows on
+ * hover or focus, and each one links to the route that already owns it.
  *
  * The column has two placements: `panel` (desktop, a sticky screen-height
- * flex item) and `drawer` (phone, off-canvas; `Shell` owns the backdrop and
- * the focus choreography, the `drawer` variant adds the close control and
- * takes focus in on mount).
+ * flex item — the one that can collapse to the rail) and `drawer` (phone,
+ * off-canvas, always the expanded column; `Shell` owns the backdrop and the
+ * focus choreography, the `drawer` variant adds the close control and takes
+ * focus in on mount).
+ *
+ * Anchored surfaces: the "⋯" menu and the rail flyouts are positioned against
+ * the column's own non-scrolling host, not the row inside the scroller — the
+ * 220px/52px column is `overflow-y-auto`, and a flyout that leaves it sideways
+ * would be cut off at the column's edge by the scroll container.
  */
 import {
   useEffect,
@@ -27,14 +43,17 @@ import {
   type ReactNode,
 } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router";
+import { ChevronDown, ChevronsLeft, ChevronsRight, Ellipsis, Plus } from "lucide-react";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
+import type { Project } from "../api/types";
 import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
 import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { useSidebarFlags } from "../lib/sidebarFlags";
 import { Mark } from "./ds/Mark";
-import NewMenu from "./NewMenu";
+import { Menu, Popover, type MenuEntry } from "./ds/Menu";
+import NewConversationDialog from "./NewConversationDialog";
 import UserMenu from "./UserMenu";
 
 /**
@@ -68,7 +87,8 @@ export function FlagBadge({ flag }: { flag: Flag }) {
   );
 }
 
-/** The 12×12 chevron the design names by path; down = open, right = closed. */
+/** The 12×12 chevron: down = open, rotated to point right = closed (issue #65:
+ * real lucide icons, not a Unicode arrow). */
 function Chevron({
   open,
   size = 16,
@@ -79,22 +99,12 @@ function Chevron({
   className?: string;
 }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 12 12"
+    <ChevronDown
+      size={size}
+      strokeWidth={1.6}
       aria-hidden="true"
       className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"} ${className}`}
-    >
-      <path
-        d="M3 4.5l3 3 3-3"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    />
   );
 }
 
@@ -127,6 +137,9 @@ const ROW_ACTIVE = "ds-texture-accent border-ink bg-surface font-semibold text-i
 const SECTION_LABEL = "px-2 pb-1 font-mono text-[10px] tracking-[.06em] text-faint";
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring";
+
+/** The rail's hover flyout stays open long enough to cross the 4px gap. */
+const FLYOUT_CLOSE_MS = 150;
 
 /**
  * One repository under a project: indent 14, left rule, mono 11.5. The
@@ -182,15 +195,62 @@ function RepoList({ projectHref, projectId }: { projectHref: string; projectId: 
 }
 
 /**
- * The tree mode (the default): one row per project, a chevron that opens the
- * repository list, the project's worst-state flag on the right. Expansion is
- * a saved preference (`expanded["project:<id>"]`), not local state, so it
- * survives a reload. The project the current route lives inside opens
- * itself — once per entered project, so a manual collapse is never fought
- * while the route stays put.
+ * The four actions the "⋯" holds (DECISIONS: they left the tree). Each is a
+ * route that already exists — and the fourth says what the project's Workflows
+ * tab is: the library workflows this project puts in use.
  */
-function ProjectTree() {
-  const { prefs, update } = useLayoutPrefs();
+export function projectMenuEntries(project: Project, navigate: (to: string) => void): MenuEntry[] {
+  const href = routes.project(project.id);
+  return [
+    {
+      id: "settings",
+      label: "Project settings",
+      testId: "project-menu-settings",
+      onSelect: () => navigate(routes.projectTab(project.id, "settings")),
+    },
+    {
+      id: "members",
+      label: "Members",
+      testId: "project-menu-members",
+      onSelect: () => navigate(`${href}/members`),
+    },
+    // There is no route of its own for adding a repository: the form is the
+    // project overview's `+ add`, which opens `AddRepositoryDialog`. The menu
+    // item goes to the page that owns that door rather than inventing a URL.
+    {
+      id: "add-repository",
+      label: "Add repository",
+      testId: "project-menu-add-repository",
+      onSelect: () => navigate(href),
+    },
+    { separator: true },
+    {
+      id: "workflows",
+      label: "Workflows in use",
+      testId: "project-menu-workflows",
+      onSelect: () => navigate(routes.projectTab(project.id, "pipelines")),
+    },
+  ];
+}
+
+/**
+ * The tree mode (the default): one row per project, a chevron that opens the
+ * repository list, the project's worst-state flag on the right, and the "⋯"
+ * that appears on hover/focus. Expansion is a saved preference
+ * (`expanded["project:<id>"]`), not local state, so it survives a reload. The
+ * project the current route lives inside opens itself — once per entered
+ * project, so a manual collapse is never fought while the route stays put.
+ */
+function ProjectTree({
+  openMenuId,
+  onOpenMenu,
+  onCloseMenu,
+}: {
+  openMenuId: string | null;
+  onOpenMenu: (project: Project, trigger: HTMLElement) => void;
+  onCloseMenu: () => void;
+}) {
+  const { prefs, update, loaded } = useLayoutPrefs();
   const projects = useProjects();
   const flags = useSidebarFlags();
   const items = projects.data?.items ?? [];
@@ -228,6 +288,11 @@ function ProjectTree() {
   const routeProjectId = projectIdFromPath(location.pathname);
   const autoExpandedFor = useRef<string | null>(null);
   useEffect(() => {
+    // The write waits for the read. Auto-expanding before the saved document
+    // has arrived would stamp the optimistic write as “newer” than the fetch
+    // that is still in flight, and the fetch would then be dropped as stale —
+    // losing whatever the user had saved (including the collapsed rail).
+    if (!loaded) return;
     if (routeProjectId === autoExpandedFor.current) return;
     autoExpandedFor.current = routeProjectId;
     if (routeProjectId === null) return;
@@ -247,8 +312,9 @@ function ProjectTree() {
         const key = `project:${project.id}`;
         const open = bridge[key] ?? prefs.expanded[key] === true;
         const href = routes.project(project.id);
+        const menuOpen = openMenuId === project.id;
         return (
-          <div key={project.id}>
+          <div key={project.id} className="group">
             {/* issue #68: `py-[6px]` (was `py-1`) — the row pitch must clear
                 the shared `.icon-hit` 30px hit box, or the next project's
                 chevron clips this row's hit area back below 28px. */}
@@ -274,6 +340,24 @@ function ProjectTree() {
                 </NavLink>
               </span>
               <FlagBadge flag={flags.projects[project.id] ?? { kind: "none", count: 0 }} />
+              {/* The "⋯" is painted only when the row is hovered or holds
+                  focus (and while its menu is open): day-to-day the column
+                  shows what you can act on, not what you configure. */}
+              <button
+                type="button"
+                data-testid={`sidebar-project-menu-${project.id}`}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label={`${project.name} project menu`}
+                onClick={(event) =>
+                  menuOpen ? onCloseMenu() : onOpenMenu(project, event.currentTarget)
+                }
+                className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border bg-surface p-0 text-ink opacity-0 hover:bg-fill group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 ${
+                  menuOpen ? "border-ink opacity-100" : "border-fill-edge"
+                } ${FOCUS_RING}`}
+              >
+                <Ellipsis size={14} strokeWidth={1.6} aria-hidden="true" />
+              </button>
             </div>
             {open ? <RepoList projectHref={href} projectId={project.id} /> : null}
           </div>
@@ -395,7 +479,10 @@ function ProjectSwitcher() {
                 index === active ? "bg-fill" : ""
               } ${FOCUS_RING}`}
             >
-              <InitialsTile name={project.name} className="h-[18px] w-[18px] text-[8.5px]" />
+              <InitialsTile
+                name={project.name}
+                className="h-[18px] w-[18px] text-[8.5px] border-fill-edge"
+              />
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
               <FlagBadge flag={flags.projects[project.id] ?? { kind: "none", count: 0 }} />
             </button>
@@ -428,10 +515,10 @@ function ProjectSwitcher() {
  * store behind a number yet, and an invented one is exactly what the column
  * must not do. Workflows expands to its folders (ADR-0049 § 8) when the
  * `showWorkflowFolders` preference allows: the folders are the wire's own
- * `folder` values with the list read's own counts (Unfiled last), the
- * chevron state is the saved `expanded["library:workflows"]` preference, and
- * each folder links the index filtered on it. With the preference off the
- * row is a plain link again.
+ * `folder` values with the list read's own counts (Unfiled last), the chevron
+ * state is the saved `expanded["library:workflows"]` preference, and each
+ * folder links the index filtered on it. With the preference off the row is a
+ * plain link again.
  */
 function LibrarySection() {
   const pipelines = usePipelines();
@@ -550,19 +637,268 @@ function LibrarySection() {
  * The footer the app bar used to carry: the signed-in user as the menu
  * trigger (`user-badge`) over the account menu (`user-menu-list`: Settings,
  * Operations, Sign out), plus the honest "not signed in" state. The replica
- * name moved to Settings — the operator signal the footer used to carry — and
- * the Operations page shows it too.
+ * name moved to Settings — the honest operations signal the footer used to
+ * carry — and the Operations page shows it too.
  */
-function Footer() {
+function Footer({ rail = false }: { rail?: boolean }) {
   const me = useMe();
 
   return (
-    <div className="mt-auto border-t border-line px-1 pt-2">
+    <div
+      className={
+        rail
+          ? // The rail has room for the avatar tile and nothing else. The
+            // button is pinned to the tile's own 26px with its own overflow,
+            // so the name (which stays in the DOM, and stays the trigger's
+            // accessible name) prints no ink past the tile.
+            "w-full border-t border-line pt-2 [&>div>button]:mx-auto [&>div>button]:w-[26px] [&>div>button]:gap-0 [&>div>button]:overflow-hidden [&>div>button]:px-0"
+          : "mt-auto border-t border-line px-1 pt-2"
+      }
+    >
       {me.data ? (
         <UserMenu />
       ) : (
         <span className="font-mono text-[11px] text-faint">not signed in</span>
       )}
+    </div>
+  );
+}
+
+/** The `New chat` row: one chat-starting button (the shared conversation
+ * dialog, with its project picker) and the `⌘K` box the Ask preference puts
+ * beside it. Signed-in affordance only — "start something" needs a member. */
+function NewChatRow({
+  signedIn,
+  onNewChat,
+  askInSidebar,
+}: {
+  signedIn: boolean;
+  onNewChat: () => void;
+  askInSidebar: boolean;
+}) {
+  return (
+    <div className="flex gap-[6px]">
+      {signedIn ? (
+        <button
+          type="button"
+          data-testid="new-chat"
+          onClick={onNewChat}
+          className={`h-[30px] min-w-0 flex-1 truncate rounded-[4px] border border-fill-edge bg-fill px-2 text-[12.5px] font-semibold text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
+        >
+          New chat
+        </button>
+      ) : null}
+      {askInSidebar ? (
+        <button
+          type="button"
+          data-testid="ask-sidebar"
+          onClick={openAsk}
+          aria-label="Ask the assistant (⌘K)"
+          className={`h-[30px] shrink-0 rounded-[4px] border border-fill-edge bg-surface px-[9px] font-mono text-[11px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill ${FOCUS_RING}`}
+        >
+          ⌘K
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** The rail's `+`: the same conversation dialog as the expanded `New chat`. */
+function RailNewChat({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: () => void }) {
+  if (!signedIn) return null;
+  return (
+    <button
+      type="button"
+      data-testid="new-chat-rail"
+      aria-label="New chat"
+      onClick={onNewChat}
+      className={`grid size-[28px] shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-fill text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
+    >
+      <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
+    </button>
+  );
+}
+
+/** The rail's label-under-a-tile type (mono 9.5). */
+const RAIL_LABEL =
+  "block font-mono text-[9.5px] leading-[1.2] no-underline text-muted hover:text-ink";
+
+/**
+ * The collapsed column: a 52px rail (handoff 3c). The mark, `+`, Today, one
+ * initials tile per project, Library, the expand control and the avatar.
+ * A tile's flyout is the honest replacement for the labels: it names the
+ * project, states its worst flag and links its repositories.
+ */
+function Rail({
+  signedIn,
+  onNewChat,
+  onExpand,
+}: {
+  signedIn: boolean;
+  onNewChat: () => void;
+  onExpand: () => void;
+}) {
+  const projects = useProjects();
+  const flags = useSidebarFlags();
+  const location = useLocation();
+  const items = projects.data?.items ?? [];
+  const activeProjectId = projectIdFromPath(location.pathname);
+
+  // One flyout at a time, anchored to whichever tile opened it. The popover
+  // is a child of the column's host (outside the scrolling list), so the
+  // scroll container cannot cut it at 52px.
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const closeTimer = useRef<number | null>(null);
+  const [flyoutId, setFlyoutId] = useState<string | null>(null);
+  const flyoutProject = items.find((project) => project.id === flyoutId) ?? null;
+
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  const closeNow = () => {
+    cancelClose();
+    setFlyoutId(null);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(closeNow, FLYOUT_CLOSE_MS);
+  };
+  const openFlyoutFor = (trigger: HTMLElement, id: string) => {
+    cancelClose();
+    triggerRef.current = trigger;
+    setFlyoutId(id);
+  };
+
+  useEffect(() => cancelClose, []);
+  // Navigation delivered the flyout's link; the next hover opens the next one.
+  useEffect(() => setFlyoutId(null), [location.pathname]);
+
+  return (
+    <div className="relative flex h-full w-[52px] shrink-0">
+      <aside
+        data-testid="sidebar"
+        aria-label="Primary"
+        className="flex h-full w-[52px] flex-col items-center gap-[10px] border-r border-ink bg-surface py-3 text-ink"
+      >
+        <Link
+          to="/"
+          aria-label="Communication"
+          draggable={false}
+          data-testid="brand-home"
+          className={`flex select-none items-center justify-center text-ink ${FOCUS_RING}`}
+        >
+          <Mark size={24} />
+        </Link>
+
+        <RailNewChat signedIn={signedIn} onNewChat={onNewChat} />
+
+        <NavLink
+          to={routes.home()}
+          end
+          data-testid="sidebar-link-home"
+          className={({ isActive }) =>
+            `${RAIL_LABEL} ${
+              // Today keeps its word even at 52px; amber is the waiting flag the
+              // expanded row carries, and it is colour-plus-word everywhere else.
+              isActive
+                ? "font-semibold text-ink"
+                : flags.inbox.needsYou > 0
+                  ? "text-st-waiting-tag-fg"
+                  : ""
+            }`
+          }
+        >
+          Today
+        </NavLink>
+
+        <div className="h-px w-[28px] shrink-0 bg-line" aria-hidden="true" />
+
+        {/* The tiles keep their natural height (2c draws Library directly
+            under them) and only scroll when there is not enough of it: a
+            growing `flex-1` would push Library down to the bottom group. */}
+        <div className="flex w-full min-h-0 shrink flex-col items-center gap-[8px] overflow-y-auto">
+          {items.map((project) => {
+            const active = project.id === activeProjectId;
+            return (
+              <NavLink
+                key={project.id}
+                to={routes.project(project.id)}
+                data-testid={`sidebar-rail-project-${project.id}`}
+                aria-label={project.name}
+                onMouseEnter={(event) => openFlyoutFor(event.currentTarget, project.id)}
+                onMouseLeave={scheduleClose}
+                onFocus={(event) => openFlyoutFor(event.currentTarget, project.id)}
+                onBlur={scheduleClose}
+                className={`grid size-[30px] shrink-0 place-items-center rounded-[3px] border font-mono text-[10px] no-underline ${FOCUS_RING} ${
+                  active
+                    ? "border-ink bg-accent-tint text-ink"
+                    : "border-fill-edge bg-surface text-muted hover:bg-fill hover:text-ink"
+                }`}
+              >
+                {initialsOf(project.name) || "?"}
+              </NavLink>
+            );
+          })}
+        </div>
+
+        <div className="h-px w-[28px] shrink-0 bg-line" aria-hidden="true" />
+
+        <NavLink
+          to={routes.workflows()}
+          data-testid="sidebar-rail-library"
+          className={({ isActive }) => `${RAIL_LABEL} ${isActive ? "font-semibold text-ink" : ""}`}
+        >
+          Library
+        </NavLink>
+
+        <div className="mt-auto flex w-full flex-col items-center gap-[10px]">
+          <button
+            type="button"
+            data-testid="sidebar-expand"
+            aria-label="Expand sidebar"
+            onClick={onExpand}
+            className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface p-0 text-ink hover:bg-fill ${FOCUS_RING}`}
+          >
+            <ChevronsRight size={14} strokeWidth={1.6} aria-hidden="true" />
+          </button>
+          <Footer rail />
+        </div>
+      </aside>
+
+      <Popover
+        open={flyoutProject !== null}
+        onClose={closeNow}
+        triggerRef={triggerRef}
+        side="right"
+        width={212}
+        height={160}
+        ariaLabel={flyoutProject ? `${flyoutProject.name} repositories` : "Project"}
+        data-testid={flyoutProject ? `sidebar-rail-flyout-${flyoutProject.id}` : undefined}
+      >
+        {flyoutProject ? (
+          <div
+            onMouseEnter={cancelClose}
+            onMouseLeave={closeNow}
+            onFocus={cancelClose}
+            onBlur={scheduleClose}
+            data-testid={`sidebar-rail-flyout-content-${flyoutProject.id}`}
+          >
+            <div className="flex items-center gap-2 px-[6px] pb-[4px] pt-[2px]">
+              <Link
+                to={routes.project(flyoutProject.id)}
+                className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink no-underline hover:underline"
+              >
+                {flyoutProject.name}
+              </Link>
+              <FlagBadge flag={flags.projects[flyoutProject.id] ?? { kind: "none", count: 0 }} />
+            </div>
+            <RepoList projectHref={routes.project(flyoutProject.id)} projectId={flyoutProject.id} />
+          </div>
+        ) : null}
+      </Popover>
     </div>
   );
 }
@@ -574,24 +910,57 @@ export interface SidebarProps {
   onClose?: () => void;
 }
 
-/** The column itself, at either placement. `Shell` decides which one shows. */
+/** The expanded column's width, so `Shell` can park the floating Ask box. */
+export const SIDEBAR_WIDTH_PX = 220;
+/** The collapsed rail's width. */
+export const SIDEBAR_RAIL_WIDTH_PX = 52;
+
+/**
+ * The column itself, at either placement, in either width. `Shell` decides
+ * which placement shows; the width is the `sidebarCollapsed` layout
+ * preference (a drawer is always the expanded column — a phone has no rail).
+ */
 export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
-  const { prefs } = useLayoutPrefs();
-  const flags = useSidebarFlags();
+  const { prefs, update } = useLayoutPrefs();
   const me = useMe();
+  const navigate = useNavigate();
+  const flags = useSidebarFlags();
+  const projectsQuery = useProjects();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+
+  // The project whose "⋯" menu stands open, and the button that opened it.
+  const menuTrigger = useRef<HTMLElement | null>(null);
+  const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
 
   // A drawer opens by intent; the keyboard must land somewhere in it.
   useLayoutEffect(() => {
     if (variant === "drawer") closeRef.current?.focus();
   }, [variant]);
 
+  const collapsed = variant === "panel" && prefs.sidebarCollapsed;
+
+  if (collapsed) {
+    return (
+      <>
+        <Rail
+          signedIn={Boolean(me.data)}
+          onNewChat={() => setChatOpen(true)}
+          onExpand={() => update({ sidebarCollapsed: false })}
+        />
+        <NewConversationDialog open={chatOpen} onClose={() => setChatOpen(false)} />
+      </>
+    );
+  }
+
   const mainNav: { to: string; label: string; testid: string; end?: boolean; flag: ReactNode }[] = [
-    { to: routes.home(), label: "Home", testid: "sidebar-link-home", end: true, flag: null },
+    // Today (was Home; the route is still `/`) carries the count of what needs
+    // a person — the Inbox the page used to be a separate row for.
     {
-      to: routes.inbox(),
-      label: "Inbox",
-      testid: "sidebar-link-inbox",
+      to: routes.home(),
+      label: "Today",
+      testid: "sidebar-link-home",
+      end: true,
       flag:
         flags.inbox.needsYou > 0 ? (
           <span
@@ -603,17 +972,8 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
         ) : null,
     },
     {
-      to: routes.board(),
-      label: "Board",
-      testid: "sidebar-link-board",
-      flag:
-        flags.board.running > 0 ? (
-          <FlagBadge flag={{ kind: "running", count: flags.board.running }} />
-        ) : null,
-    },
-    {
       to: routes.threads(),
-      label: "Threads",
+      label: "My chats",
       testid: "sidebar-link-threads",
       flag:
         flags.threads !== null && flags.threads > 0 ? (
@@ -627,90 +987,122 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
     },
   ];
 
+  const openProjectMenu = (project: Project, trigger: HTMLElement) => {
+    menuTrigger.current = trigger;
+    setMenuProjectId(project.id);
+  };
+  const closeProjectMenu = () => setMenuProjectId(null);
+  const openMenuProject =
+    (projectsQuery.data?.items ?? []).find((project) => project.id === menuProjectId) ?? null;
+
   return (
-    <aside
-      data-testid="sidebar"
-      aria-label="Primary"
-      className="flex h-full w-[240px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-ink bg-surface px-[10px] py-3 text-ink"
-    >
-      <div className="flex items-center gap-[9px] px-1">
-        {/* The brand is a logo, not text: it links home (issue #61) and must
-            never highlight or drag. `min-w-0 flex-1` keeps the wordmark's
-            truncate (and the drawer's close button) behaving as before. */}
-        <Link
-          to="/"
-          aria-label="Communication"
-          draggable={false}
-          data-testid="brand-home"
-          className={`flex min-w-0 flex-1 select-none items-center gap-[9px] text-ink ${FOCUS_RING}`}
+    <>
+      <div className="relative flex h-full w-[220px] shrink-0">
+        <aside
+          data-testid="sidebar"
+          aria-label="Primary"
+          className="flex h-full w-[220px] flex-col gap-3 overflow-y-auto border-r border-ink bg-surface px-[10px] py-3 text-ink"
         >
-          <Mark size={26} />
-          <span className="min-w-0 truncate text-[13.5px] font-semibold">Communication</span>
-        </Link>
-        {variant === "drawer" ? (
-          <button
-            ref={closeRef}
-            type="button"
-            data-testid="sidebar-close"
-            aria-label="Close sidebar"
-            onClick={onClose}
-            className={`icon-hit grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface font-mono text-[13px] text-ink ${FOCUS_RING}`}
-          >
-            ×
-          </button>
-        ) : null}
-      </div>
+          <div className="flex items-center gap-[9px] px-1">
+            {/* The brand is a logo, not text: it links home (issue #61) and must
+                never highlight or drag. `min-w-0 flex-1` keeps the wordmark's
+                truncate (and the drawer's close button) behaving as before. */}
+            <Link
+              to="/"
+              aria-label="Communication"
+              draggable={false}
+              data-testid="brand-home"
+              className={`flex min-w-0 flex-1 select-none items-center gap-[9px] text-ink ${FOCUS_RING}`}
+            >
+              <Mark size={26} />
+              <span className="min-w-0 truncate text-[13.5px] font-semibold">Communication</span>
+            </Link>
+            {variant === "drawer" ? (
+              <button
+                ref={closeRef}
+                type="button"
+                data-testid="sidebar-close"
+                aria-label="Close sidebar"
+                onClick={onClose}
+                className={`icon-hit grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface text-[13px] text-ink ${FOCUS_RING}`}
+              >
+                ×
+              </button>
+            ) : (
+              <button
+                type="button"
+                data-testid="sidebar-collapse"
+                aria-label="Collapse sidebar"
+                onClick={() => update({ sidebarCollapsed: true })}
+                className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface p-0 text-ink hover:bg-fill ${FOCUS_RING}`}
+              >
+                <ChevronsLeft size={14} strokeWidth={1.6} aria-hidden="true" />
+              </button>
+            )}
+          </div>
 
-      <div className="flex gap-[6px]">
-        {/* "New" starts things, so it is a signed-in affordance only. */}
-        <div
-          className={
-            me.data
-              ? "min-w-0 flex-1 [&>div]:w-full [&>div>button]:h-[30px] [&>div>button]:w-full [&>div>button]:justify-center"
-              : "hidden"
+          <NewChatRow
+            signedIn={Boolean(me.data)}
+            onNewChat={() => setChatOpen(true)}
+            askInSidebar={prefs.askPlacement === "sidebar"}
+          />
+
+          <nav aria-label="Cross-project" className="flex flex-col gap-[2px]">
+            {mainNav.map((item) => (
+              <NavLink
+                key={item.testid}
+                to={item.to}
+                end={item.end}
+                data-testid={item.testid}
+                className={({ isActive }) => `${ROW} ${isActive ? ROW_ACTIVE : ROW_INACTIVE}`}
+              >
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.flag}
+              </NavLink>
+            ))}
+          </nav>
+
+          <div className="h-px bg-line" aria-hidden="true" />
+
+          <div className="flex flex-col gap-1">
+            <span className={SECTION_LABEL}>
+              {prefs.projectsMode === "switcher" ? "PROJECT" : "PROJECTS"}
+            </span>
+            {prefs.projectsMode === "switcher" ? (
+              <ProjectSwitcher />
+            ) : (
+              <ProjectTree
+                openMenuId={menuProjectId}
+                onOpenMenu={openProjectMenu}
+                onCloseMenu={closeProjectMenu}
+              />
+            )}
+          </div>
+
+          <LibrarySection />
+
+          <Footer />
+        </aside>
+
+        {/* The "⋯" menu is anchored to its row but mounted outside the
+            scrolling column, so the 220px scroller never cuts it. */}
+        <Menu
+          open={openMenuProject !== null}
+          onClose={closeProjectMenu}
+          triggerRef={menuTrigger}
+          side="bottom"
+          align="end"
+          width={190}
+          height={160}
+          ariaLabel={
+            openMenuProject ? `${openMenuProject.name} project actions` : "Project actions"
           }
-        >
-          {me.data ? <NewMenu /> : null}
-        </div>
-        {prefs.askPlacement === "sidebar" ? (
-          <button
-            type="button"
-            data-testid="ask-sidebar"
-            onClick={openAsk}
-            className={`h-[30px] shrink-0 rounded-[4px] border border-fill-edge bg-surface px-[9px] font-mono text-[11px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill ${FOCUS_RING}`}
-          >
-            Ask ⌘K
-          </button>
-        ) : null}
+          data-testid="sidebar-project-menu"
+          items={openMenuProject ? projectMenuEntries(openMenuProject, navigate) : []}
+        />
       </div>
 
-      <nav aria-label="Cross-project" className="flex flex-col gap-[2px]">
-        {mainNav.map((item) => (
-          <NavLink
-            key={item.testid}
-            to={item.to}
-            end={item.end}
-            data-testid={item.testid}
-            className={({ isActive }) => `${ROW} ${isActive ? ROW_ACTIVE : ROW_INACTIVE}`}
-          >
-            <span className="min-w-0 flex-1 truncate">{item.label}</span>
-            {item.flag}
-          </NavLink>
-        ))}
-      </nav>
-
-      <div className="h-px bg-line" aria-hidden="true" />
-
-      <div className="flex flex-col gap-1">
-        <span className={SECTION_LABEL}>
-          {prefs.projectsMode === "switcher" ? "PROJECT" : "PROJECTS"}
-        </span>
-        {prefs.projectsMode === "switcher" ? <ProjectSwitcher /> : <ProjectTree />}
-      </div>
-
-      <LibrarySection />
-
-      <Footer />
-    </aside>
+      <NewConversationDialog open={chatOpen} onClose={() => setChatOpen(false)} />
+    </>
   );
 }

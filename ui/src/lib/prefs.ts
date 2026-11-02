@@ -16,11 +16,27 @@ export type ProjectsMode = "tree" | "switcher";
 export type AskPlacement = "sidebar" | "floating";
 export type TrustLevel = "ask_all" | "ask_risky" | "no_ask";
 
+/**
+ * The `expanded` key that carries the sidebar's collapsed (rail) state.
+ *
+ * The flag rides the free-form `expanded` map rather than a new `layout`
+ * member because the server's layout section is a closed object — unknown
+ * members are refused by the decoder with a 400 (`internal/api/preferences.go`)
+ * — and adding a member to the public preferences shape is an API change that
+ * needs its own ADR. `expanded` is documented as an open key/value map (the
+ * tree already stores `project:<id>` and `library:workflows` there), so the
+ * rail's state persists today with no wire change. `sidebarCollapsed` is the
+ * camelCase name callers use; this key is the wire detail under it.
+ */
+export const SIDEBAR_COLLAPSED_KEY = "sidebar:collapsed";
+
 /** Display preferences for the app shell's layout (contract C2). */
 export interface LayoutPrefs {
   projectsMode: ProjectsMode;
   askPlacement: AskPlacement;
   showWorkflowFolders: boolean;
+  /** `true` = the 52px rail instead of the 220px column (handoff 2c/3c). */
+  sidebarCollapsed: boolean;
   expanded: Record<string, boolean>;
 }
 
@@ -33,6 +49,7 @@ export const DEFAULT_LAYOUT_PREFS: LayoutPrefs = {
   projectsMode: "tree",
   askPlacement: "sidebar",
   showWorkflowFolders: true,
+  sidebarCollapsed: false,
   expanded: {},
 };
 
@@ -87,13 +104,18 @@ function isString(value: unknown): value is string {
 
 /** Unknown enum values fall back to the defaults — the server owns validity. */
 function parseLayout(raw: PreferencesWire["layout"] | undefined): LayoutPrefs {
-  const expanded =
+  const all =
     raw?.expanded && typeof raw.expanded === "object"
       ? Object.fromEntries(
           Object.entries(raw.expanded).filter(([, value]) => typeof value === "boolean"),
         )
       : {};
+  const expanded = { ...all };
+  delete expanded[SIDEBAR_COLLAPSED_KEY];
   return {
+    // The rail's state is one key of the map the server already stores; the
+    // camelCase field is what callers read, so the key stays out of `expanded`.
+    sidebarCollapsed: all[SIDEBAR_COLLAPSED_KEY] === true,
     projectsMode:
       isString(raw?.projects_mode) && PROJECTS_MODES.includes(raw.projects_mode as ProjectsMode)
         ? (raw.projects_mode as ProjectsMode)
@@ -234,7 +256,20 @@ function usePreferencesCore() {
   const state = query.data ?? EMPTY_STATE;
 
   const applyLayout = (patch: Partial<LayoutPrefs>) => {
-    const next = { ...state.layout, ...patch, expanded: patch.expanded ?? state.layout.expanded };
+    const collapsed = patch.sidebarCollapsed ?? state.layout.sidebarCollapsed;
+    // The rail's flag rides `expanded` (see `SIDEBAR_COLLAPSED_KEY`). The
+    // server merges that map key by key and never deletes, so the key is sent
+    // with its boolean value ONLY when this write changes it: an untouched
+    // `false` must not be stamped into every unrelated layout PATCH, and a
+    // missing key would not clear a stored `true` when the rail expands.
+    const expanded = { ...(patch.expanded ?? state.layout.expanded) };
+    if (
+      patch.sidebarCollapsed !== undefined &&
+      patch.sidebarCollapsed !== state.layout.sidebarCollapsed
+    ) {
+      expanded[SIDEBAR_COLLAPSED_KEY] = collapsed;
+    }
+    const next: LayoutPrefs = { ...state.layout, ...patch, sidebarCollapsed: collapsed, expanded };
     // Optimistic: the chevron flips immediately; the server's answer replaces it.
     queryClient.setQueryData<PreferencesState>(preferencesQueryKey, (prev) => ({
       stored: prev?.stored ?? true,
@@ -257,21 +292,26 @@ function usePreferencesCore() {
     mutation.mutate({ assistant: { trust_level: trustLevel } });
   };
 
-  return { state, query, applyLayout, applyTrust };
+  return { state, query, applyLayout, applyTrust, loaded: query.data !== undefined };
 }
 
 /**
- * Contract C2: `useLayoutPrefs(): { prefs: LayoutPrefs; update(patch); saved }`.
- * `saved` is `false` while the server lacks the endpoint (404): the change is
- * then kept in memory for the session.
+ * Contract C2: `useLayoutPrefs(): { prefs: LayoutPrefs; update(patch); saved; loaded }`.
+ * `saved` is `false` when the server lacks the endpoint (404): the change is
+ * then kept in memory for the session. `loaded` is `true` once the document
+ * has been read at least once: a component that writes a preference *on its
+ * own* (the sidebar auto-expanding the project the route is inside) must wait
+ * for it, or its optimistic write makes the in-flight read look stale and the
+ * saved document is thrown away.
  */
 export function useLayoutPrefs(): {
   prefs: LayoutPrefs;
   update: (patch: Partial<LayoutPrefs>) => void;
   saved: boolean;
+  loaded: boolean;
 } {
-  const { state, applyLayout } = usePreferencesCore();
-  return { prefs: state.layout, update: applyLayout, saved: state.stored };
+  const { state, applyLayout, loaded } = usePreferencesCore();
+  return { prefs: state.layout, update: applyLayout, saved: state.stored, loaded };
 }
 
 /** Contract C2: `useAssistantPrefs(): { trustLevel; setTrustLevel; saved }`. */
@@ -282,4 +322,42 @@ export function useAssistantPrefs(): {
 } {
   const { state, applyTrust } = usePreferencesCore();
   return { trustLevel: state.trustLevel, setTrustLevel: applyTrust, saved: state.stored };
+}
+
+/** The repo page's view choice (design 3a): the mixed List, or the not-yet-
+built board of Lanes. */
+export type RepoView = "list" | "lanes";
+
+/**
+ * The `expanded` key carrying one repository's view choice. Like the rail's
+ * collapsed flag (`SIDEBAR_COLLAPSED_KEY`), the flag rides the open-keyed
+ * `expanded` map because the server's `layout` section is a closed object —
+ * a new member there is an API change needing its own ADR, while `expanded`
+ * is documented to take any key. `repo-view:<name>` present (true) means
+ * Lanes; its absence is List (the default).
+ */
+export function repoViewExpandedKey(repositoryName: string): string {
+  return `repo-view:${repositoryName}`;
+}
+
+/** The List | Lanes choice for one repository, remembered per repo in the
+ * user's layout prefs (3a). `saved` is false when the server lacks the
+ * endpoint: the choice then lives for the session only. */
+export function useRepoView(repositoryName: string): {
+  view: RepoView;
+  setView: (view: RepoView) => void;
+  saved: boolean;
+  loaded: boolean;
+} {
+  const { prefs, update, saved, loaded } = useLayoutPrefs();
+  const key = repoViewExpandedKey(repositoryName);
+  const view: RepoView = prefs.expanded[key] === true ? "lanes" : "list";
+  const setView = (next: RepoView) => {
+    if (next === view) return;
+    const expanded = { ...prefs.expanded };
+    if (next === "lanes") expanded[key] = true;
+    else delete expanded[key];
+    update({ expanded });
+  };
+  return { view, setView, saved, loaded };
 }

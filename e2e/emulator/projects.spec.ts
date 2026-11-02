@@ -315,13 +315,14 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
       // The refusal is a page, not a strip of text welded to the sidebar: on
       // this full-bleed route the shell hands the column over unpadded, so the
       // branch carries the header band's padding itself (the loop's 2026-10-27
-      // report saw this line at x=240, y=0).
+      // report saw this line at x=240, y=0). Handoff 2c/3c narrowed the column
+      // to 220px, so the padded start is the band's own 28px past that.
       const box = await refusal.boundingBox();
       expect(box, "the not-found line is laid out").not.toBeNull();
       expect(
-        (box?.x ?? 0) > 260 && (box?.y ?? 0) > 0,
+        (box?.x ?? 0) > 240 && (box?.y ?? 0) > 0,
         `the not-found page is padded off the sidebar (got x=${box?.x}, y=${box?.y}; ` +
-          "the sidebar ends at x=240, so a padded page starts past 260)",
+          "the sidebar ends at x=220, so a padded page starts past 240)",
       ).toBe(true);
       await emu.screen("project-1b", "not-found");
     });
@@ -444,13 +445,15 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
         page.getByTestId("repo-workflows"),
         "the refusal mounts no repository panels around a repository that is not there",
       ).toHaveCount(0);
-      // Not a full-bleed route: the shell's own column pads it.
+      // Not a full-bleed route: the shell's own column pads it. Handoff 2c/3c
+      // narrowed the column to 220px (and the page is capped and centred), so
+      // a padded start clears 236.
       const box = await refusal.boundingBox();
       expect(box, "the missing-repository line is laid out").not.toBeNull();
       expect(
-        (box?.x ?? 0) > 250 && (box?.y ?? 0) > 0,
+        (box?.x ?? 0) > 236 && (box?.y ?? 0) > 0,
         `the missing-repository page is padded off the sidebar (got x=${box?.x}, y=${box?.y}; ` +
-          "the sidebar ends at x=240, so a padded page starts past 250)",
+          "the sidebar ends at x=220, so a padded page starts past 236)",
       ).toBe(true);
       await emu.screen("repo-1e", "not-found");
     });

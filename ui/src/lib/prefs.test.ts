@@ -14,6 +14,7 @@ import {
   DEFAULT_TRUST_LEVEL,
   parsePreferences,
   preferencesQueryKey,
+  SIDEBAR_COLLAPSED_KEY,
   useAssistantPrefs,
   useLayoutPrefs,
 } from "./prefs";
@@ -59,8 +60,73 @@ describe("useLayoutPrefs", () => {
       projectsMode: "switcher",
       askPlacement: "floating",
       showWorkflowFolders: false,
+      sidebarCollapsed: false,
       expanded: { p1: true, p2: false },
     });
+  });
+
+  // Handoff 2c/3c: the rail's state is a layout preference. It rides the
+  // `expanded` map the server already stores (a new `layout` member is a 400),
+  // and callers read it as `sidebarCollapsed`.
+  it("reads the collapsed rail back from the saved `sidebar:collapsed` key", async () => {
+    const { wrapper } = harness([
+      {
+        path: PREFERENCES_PATH,
+        method: "GET",
+        body: {
+          ...SAVED_DOCUMENT,
+          layout: {
+            ...SAVED_DOCUMENT.layout,
+            expanded: { ...SAVED_DOCUMENT.layout.expanded, [SIDEBAR_COLLAPSED_KEY]: true },
+          },
+        },
+      },
+    ]);
+    const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
+    await waitFor(() => expect(result.current.prefs.sidebarCollapsed).toBe(true));
+  });
+
+  it("persists a collapse as the `sidebar:collapsed` key of the layout PATCH", async () => {
+    const { requests, wrapper } = harness([
+      { path: PREFERENCES_PATH, method: "GET", body: SAVED_DOCUMENT },
+      {
+        path: PREFERENCES_PATH,
+        method: "PATCH",
+        body: {
+          ...SAVED_DOCUMENT,
+          layout: {
+            ...SAVED_DOCUMENT.layout,
+            expanded: { ...SAVED_DOCUMENT.layout.expanded, [SIDEBAR_COLLAPSED_KEY]: true },
+          },
+        },
+      },
+    ]);
+    const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
+    await waitFor(() => expect(result.current.prefs.projectsMode).toBe("switcher"));
+
+    act(() => {
+      result.current.update({ sidebarCollapsed: true });
+    });
+    // Optimistic, and no `sidebar_collapsed` member invented on the wire.
+    await waitFor(() => expect(result.current.prefs.sidebarCollapsed).toBe(true));
+    await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "PATCH")).toHaveLength(1));
+    const sent = JSON.parse(requestsTo(requests, PREFERENCES_PATH, "PATCH")[0].body ?? "{}");
+    // The rail's key is what the server stores, and it carries `true` only.
+    expect(sent.layout.expanded[SIDEBAR_COLLAPSED_KEY]).toBe(true);
+    expect(sent.layout.sidebar_collapsed).toBeUndefined();
+    // The PATCH answer carries the key: the value stays after the settle, and
+    // it is not also reported inside `expanded`.
+    await waitFor(() => expect(result.current.prefs.sidebarCollapsed).toBe(true));
+    expect(result.current.prefs.expanded).toEqual({ p1: true, p2: false });
+
+    // Expanding overwrites the stored key with `false` (the server merges the
+    // map key by key and never deletes, so absence would leave the rail stuck).
+    act(() => {
+      result.current.update({ sidebarCollapsed: false });
+    });
+    await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "PATCH")).toHaveLength(2));
+    const back = JSON.parse(requestsTo(requests, PREFERENCES_PATH, "PATCH")[1].body ?? "{}");
+    expect(back.layout.expanded[SIDEBAR_COLLAPSED_KEY]).toBe(false);
   });
 
   it("degrades to defaults with saved=false when the server lacks the endpoint (404)", async () => {
@@ -100,6 +166,8 @@ describe("useLayoutPrefs", () => {
         projects_mode: "tree",
         ask_placement: "floating",
         show_workflow_folders: false,
+        // The rail's key is only carried while the rail is collapsed; a write
+        // that never touched it leaves `expanded` as the caller handed it over.
         expanded: { p1: true, p2: false },
       },
     });
@@ -121,6 +189,23 @@ describe("useLayoutPrefs", () => {
     await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "GET")).toHaveLength(2));
     expect(result.current.saved).toBe(false);
     expect(result.current.prefs.askPlacement).toBe("floating");
+  });
+
+  // The sidebar auto-expands the project the route is inside without being
+  // asked. That write must not start before `loaded`: an optimistic write makes
+  // the in-flight GET look stale, and the saved document would be dropped.
+  it("reports loaded only once the document has been read", async () => {
+    const { wrapper } = harness([{ path: PREFERENCES_PATH, method: "GET", body: SAVED_DOCUMENT }]);
+    const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
+    expect(result.current.loaded).toBe(false);
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+  });
+
+  it("reports loaded when the endpoint is a 404 (the in-memory document answered)", async () => {
+    const { wrapper } = harness([]); // no stub → 404
+    const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.saved).toBe(false);
   });
 
   it("does not let a slow GET clobber a change made while it was in flight", async () => {
@@ -226,6 +311,7 @@ describe("parsePreferences", () => {
     expect(state.layout.projectsMode).toBe(DEFAULT_LAYOUT_PREFS.projectsMode);
     expect(state.layout.askPlacement).toBe(DEFAULT_LAYOUT_PREFS.askPlacement);
     expect(state.layout.showWorkflowFolders).toBe(DEFAULT_LAYOUT_PREFS.showWorkflowFolders);
+    expect(state.layout.sidebarCollapsed).toBe(DEFAULT_LAYOUT_PREFS.sidebarCollapsed);
     expect(state.layout.expanded).toEqual({ a: true });
     expect(state.trustLevel).toBe(DEFAULT_TRUST_LEVEL);
     expect(state.updatedAt).toBeNull();

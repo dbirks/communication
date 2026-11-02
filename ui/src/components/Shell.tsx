@@ -4,7 +4,7 @@ import { useLayoutPrefs } from "../lib/prefs";
 import { Mark } from "./ds/Mark";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
-import Sidebar, { openAsk } from "./Sidebar";
+import Sidebar, { SIDEBAR_RAIL_WIDTH_PX, SIDEBAR_WIDTH_PX, openAsk } from "./Sidebar";
 import CommandPalette from "./CommandPalette";
 import AssistantPopover from "./assistant/AssistantPopover";
 
@@ -13,13 +13,16 @@ import AssistantPopover from "./assistant/AssistantPopover";
  * lists them. A nav item wins; anything outside the track is named by its own
  * first segment (`/p/proj-1` is `p`, `/login` is `login`) rather than guessed
  * at.
+ *
+ * Handoff 2c/3c: the nav is Today (`/`, what the page called Home) and My
+ * chats. Board and Inbox are not nav rows any more — the Board's behavior
+ * lives in the repository page's Lanes view and the Inbox folds into Today —
+ * but `/board` and `/inbox` stay mounted routes (several pages and deep links
+ * still land on them), and `sectionOf` still names them by their own segment.
  */
 const NAV_ITEMS = [
-  { to: "/", label: "Home", end: true },
-  { to: "/inbox", label: "Inbox" },
-  { to: "/board", label: "Board" },
+  { to: "/", label: "Today", end: true },
   { to: "/threads", label: "Threads" },
-  { to: "/ops", label: "Operations" },
 ];
 
 export function sectionOf(pathname: string): string {
@@ -37,24 +40,70 @@ export interface ShellProps {
   fullBleed?: boolean;
 }
 
+/** Handoff 2c/3c: below this width the shell is the phone frame (drawer +
+ * top strip); at or above it the sidebar owns the left edge and there is no
+ * top bar at all. The same cut the design's own reflow notes use (1024px). */
+export const PHONE_MAX_WIDTH_PX = 1023.98;
+
+const NARROW_QUERY = `(max-width: ${PHONE_MAX_WIDTH_PX}px)`;
+
 /**
- * App shell — Sidebar v3. A 240px white column on every page (no top app bar
- * anywhere): mark, New/Ask, cross-project nav, the project tree or switcher
- * (a saved preference), the library, and the identity footer. Below `md`
- * (768px) the column is an off-canvas drawer opened from a slim top strip;
- * the content column then owns the full width, and that strip is the only
- * place the palette's `Ask… Ctrl K` box may render (see `CommandPalette.tsx`).
+ * Does the viewport ask for the phone frame? The answer drives what MOUNTS,
+ * not what a stylesheet hides: an app bar that exists at desktop width and is
+ * only `display:none`d is still an app bar in the accessibility tree, still
+ * steals the Ask box's one safe anchor, and still has to be re-hidden by every
+ * descendant rule. `matchMedia` is the same question the CSS media query asks,
+ * so one source of truth moves the chrome. Where `matchMedia` is missing (a
+ * server render, a jsdom without it) the shell is the desktop one — the wider
+ * layout is the one the app is designed for.
+ */
+export function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(NARROW_QUERY).matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(NARROW_QUERY);
+    const onChange = () => setNarrow(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
+/**
+ * App shell — handoff 2c/3c: one left column and no top bar on desktop. The
+ * 220px white column (collapsible to a 52px rail — see `Sidebar.tsx`) carries
+ * the mark, New chat + `⌘K`, Today/My chats, the project tree, the library and
+ * the identity footer. Below `PHONE_MAX_WIDTH_PX` the column is an off-canvas
+ * drawer opened from a slim top strip (the phone keeps today's hamburger); the
+ * content column then owns the full width, and that strip is the only place
+ * the palette's `Ask… Ctrl K` box may render (see `CommandPalette.tsx`).
  */
 export default function Shell({ children, fullBleed = false }: ShellProps) {
   const { prefs } = useLayoutPrefs();
   const location = useLocation();
+  const narrow = useIsNarrow();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
+
+  // The column's width is a saved preference: the floating Ask box parks
+  // beside whichever one is showing.
+  const columnWidth = prefs.sidebarCollapsed ? SIDEBAR_RAIL_WIDTH_PX : SIDEBAR_WIDTH_PX;
 
   // Content changed = the phone drawer has delivered its link.
   useEffect(() => {
     setDrawerOpen(false);
   }, [location.pathname]);
+
+  // Leaving the phone frame must not strand an open drawer over the desktop
+  // column (or keep the body locked).
+  useEffect(() => {
+    if (!narrow) setDrawerOpen(false);
+  }, [narrow]);
 
   // Esc closes the drawer and the keyboard goes back to the button that
   // opened it; the page body is locked while it stands over the content.
@@ -82,53 +131,62 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
 
   return (
     <div className="flex min-h-screen bg-paper text-ink">
-      {/* Desktop column: sticky, screen-height; the column scrolls itself. */}
-      <div className="sticky top-0 hidden h-screen shrink-0 md:block">
-        <Sidebar />
-      </div>
+      {/* Desktop column: sticky, screen-height; the column scrolls itself. It
+          is the shell's only chrome at this width — the top bar is gone. */}
+      {narrow ? null : (
+        <div className="sticky top-0 h-screen shrink-0">
+          <Sidebar />
+        </div>
+      )}
 
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-        {/* Phone top strip: the 44px menu button, the mark, and the Ask box.
-            The palette's trigger lives *here* and nowhere else: the pass-2
+        {/* Phone top strip (below 1024px only): the 44px menu button, the mark,
+            and the Ask box. The palette's trigger lives *here* and nowhere else:
+            the pass-2
             review caught the same box parked on a fixed bottom-right anchor,
             drawing over the run page's gate card and the Workflows tab's YAML.
-            Below `sm` the box is hidden by its own rule (the drawer's `Ask ⌘K`
-            row is the trigger there), and at desktop widths the strip is, so
-            the sidebar row is — which is why the panel portals to the body. */}
-        <header className="sticky top-0 z-20 flex h-11 items-center gap-2 border-b border-ink bg-surface px-2 md:hidden">
-          <button
-            ref={menuButton}
-            type="button"
-            data-testid="sidebar-open"
-            aria-label="Open sidebar"
-            aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen(true)}
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-surface text-ink hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+            At desktop widths this strip does not mount at all, and the
+            sidebar's `⌘K` row is the trigger — which is why the panel portals
+            to the body. */}
+        {narrow ? (
+          <header
+            data-testid="phone-top-strip"
+            className="sticky top-0 z-20 flex h-11 items-center gap-2 border-b border-ink bg-surface px-2"
           >
-            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-              <path
-                d="M2 5h14M2 9h14M2 13h14"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          {/* The brand is a logo, not text (issue #61): a home link that
+            <button
+              ref={menuButton}
+              type="button"
+              data-testid="sidebar-open"
+              aria-label="Open sidebar"
+              aria-expanded={drawerOpen}
+              onClick={() => setDrawerOpen(true)}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-surface text-ink hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path
+                  d="M2 5h14M2 9h14M2 13h14"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+            {/* The brand is a logo, not text (issue #61): a home link that
               never highlights or drags; the C mark's box and the wordmark's
               box share a vertical centre (items-center). */}
-          <Link
-            to="/"
-            aria-label="Communication"
-            draggable={false}
-            data-testid="brand-home"
-            className="flex min-w-0 select-none items-center gap-2 text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
-          >
-            <Mark size={22} />
-            <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>
-          </Link>
-          <CommandPalette context={sectionOf(location.pathname)} className="ml-auto shrink-0" />
-        </header>
+            <Link
+              to="/"
+              aria-label="Communication"
+              draggable={false}
+              data-testid="brand-home"
+              className="flex min-w-0 select-none items-center gap-2 text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+            >
+              <Mark size={22} />
+              <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>
+            </Link>
+            <CommandPalette context={sectionOf(location.pathname)} className="ml-auto shrink-0" />
+          </header>
+        ) : null}
 
         <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
           {/* gh-69: navigation clears a caught render error through `resetKey`
@@ -140,9 +198,11 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
         </main>
       </div>
 
-      {/* The phone drawer: backdrop + off-canvas column. */}
-      {drawerOpen ? (
-        <div className="fixed inset-0 z-40 md:hidden">
+      {/* The phone drawer: backdrop + the EXPANDED column off-canvas. The
+          collapsed rail is a desktop affordance; a 390px drawer shows the
+          sidebar the design drew, labels and all. */}
+      {narrow && drawerOpen ? (
+        <div className="fixed inset-0 z-40">
           <button
             type="button"
             tabIndex={-1}
@@ -163,13 +223,15 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
       <AssistantPopover />
 
       {/* Ask placement: a saved preference. `floating` parks the button at
-          the content's bottom-right, above the palette engine. */}
+          the content's bottom-right, above the palette engine — clear of
+          whichever column width the sidebar is saving. */}
       {prefs.askPlacement === "floating" ? (
         <Button
           variant="secondary"
           data-testid="ask-float"
           onClick={openAsk}
-          className="fixed bottom-4 right-4 z-30 font-mono text-[11px] md:right-[256px]"
+          style={{ right: (narrow ? 0 : columnWidth) + 16 }}
+          className="fixed bottom-4 z-30 font-mono text-[11px]"
         >
           Ask ⌘K
         </Button>
