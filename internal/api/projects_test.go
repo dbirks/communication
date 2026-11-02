@@ -29,8 +29,15 @@ type prjFakeStore struct {
 	added     []prjAddCall
 	patched   []prjPatchCall
 	put       []prjPutCall
+	settings  []prjSettingsCall
 	denied    []prjDenial
 	customErr error // returned by the next call instead of the normal answer
+}
+
+type prjSettingsCall struct {
+	projectID string
+	enabled   bool
+	version   int
 }
 
 type prjCreateCall struct{ name, slug, description string }
@@ -127,6 +134,26 @@ func (f *prjFakeStore) GetProject(ctx context.Context, c Caller, projectID strin
 		return ProjectView{}, ErrProjectNotFound
 	}
 	return prjAsCaller(p, c), nil
+}
+
+// SetProjectAgentMail mirrors the real store (ADR-0072): visibility first
+// (the same not-found answer as GetProject), then a CAS against version.
+func (f *prjFakeStore) SetProjectAgentMail(ctx context.Context, c Caller, projectID string, enabled bool, version int) (ProjectView, error) {
+	if f.customErr != nil {
+		return ProjectView{}, f.customErr
+	}
+	p, ok := f.byID[projectID]
+	if !ok || !authz.CanView(c.IsOrgAdmin, authz.Role(p.MyRole)) {
+		return ProjectView{}, ErrProjectNotFound
+	}
+	if p.Version != version {
+		return ProjectView{}, ErrProjectConflict
+	}
+	p.AgentMailEnabled = enabled
+	p.Version++
+	f.byID[projectID] = p
+	f.settings = append(f.settings, prjSettingsCall{projectID: projectID, enabled: enabled, version: version})
+	return p, nil
 }
 
 // prjAsCaller mirrors the store's COALESCE(m.role, 'maintainer'): an org admin
@@ -355,8 +382,9 @@ func TestCreateProjectReturns201WithContractShape(t *testing.T) {
 		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
 	}
 	prjWantFields(t, rec.Body.Bytes(),
-		"id", "slug", "name", "description", "created_at", "version", "my_role")
+		"id", "slug", "name", "description", "created_at", "version", "my_role", "agent_mail_enabled")
 	body := decodeBody(t, rec)
+	prjEqual(t, body["agent_mail_enabled"], false, "agent mail is off by default (ADR-0072)")
 	prjEqual(t, body["slug"], "widgets", "derived slug")
 	prjEqual(t, body["name"], "Widgets", "name")
 	prjEqual(t, body["description"], "Widget incubator", "description")
@@ -859,5 +887,71 @@ func TestPatchRepositoryCredentialSetsAndClears(t *testing.T) {
 	}
 	if len(store2.patched) != 0 {
 		t.Errorf("store.patched = %+v, want nothing", store2.patched)
+	}
+}
+
+// TestPatchProjectAgentMail is the ADR-0072 settings route: a maintainer
+// moves the switch with the current version, a stale version is a 409 that
+// changes nothing, a body naming no setting (or no version) is a 422, and a
+// read-only role never moves it at all.
+func TestPatchProjectAgentMail(t *testing.T) {
+	store := prjNewFakeStore()
+	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+
+	srv := prjServer(t, store, prjAs("u-1", false))
+	rec := do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"agent_mail_enabled":true,"version":1}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("toggle on: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	prjEqual(t, body["agent_mail_enabled"], true, "agent mail on")
+	prjEqual(t, body["version"], float64(2), "version bumped by the write")
+	if len(store.settings) != 1 || !store.settings[0].enabled || store.settings[0].version != 1 {
+		t.Fatalf("store calls = %+v, want one enabled=true version=1", store.settings)
+	}
+
+	rec = do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id,
+		`{"agent_mail_enabled":false,"version":1}`))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale version: status = %d, want 409 (body %s)", rec.Code, rec.Body)
+	}
+	if len(store.settings) != 1 {
+		t.Errorf("store calls after a 409 = %+v, want the CAS loser to never reach the write", store.settings)
+	}
+
+	for _, tt := range []struct{ name, body string }{
+		{"missing setting", `{"version":2}`},
+		{"missing version", `{"agent_mail_enabled":true}`},
+		{"zero version", `{"agent_mail_enabled":true,"version":0}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, srv, prjPost(http.MethodPatch, "/api/v1/projects/"+id, tt.body))
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name, role string
+		want       int
+	}{
+		{"contributor", "contributor", http.StatusForbidden},
+		{"viewer", "viewer", http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := prjNewFakeStore()
+			pid := s.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: tt.role})
+			s2 := prjServer(t, s, prjAs("u-1", false))
+			rec := do(t, s2, prjPost(http.MethodPatch, "/api/v1/projects/"+pid,
+				`{"agent_mail_enabled":true,"version":1}`))
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.want, rec.Body)
+			}
+			if len(s.settings) != 0 {
+				t.Errorf("store calls = %+v, want none from a refused role", s.settings)
+			}
+		})
 	}
 }

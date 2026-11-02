@@ -123,6 +123,11 @@ const CONVERSATION_RESOURCE_TYPES = new Set<string>([
   "agent.session.connected",
   "agent.session.disconnected",
   "conversation.agent.switched",
+  // ADR-0072: asked and answered both rewrite the detail's linked_chats
+  // list, and the answered row is what flips a transcript mail card from
+  // “asked” to its answer.
+  "conversation.mail.asked",
+  "conversation.mail.answered",
 ]);
 
 export function useConversationSession(

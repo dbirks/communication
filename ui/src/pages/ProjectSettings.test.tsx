@@ -434,3 +434,49 @@ describe("/projects/:projectId/settings — materialization audit", () => {
     );
   });
 });
+
+describe("the agent-mail setting (ADR-0072)", () => {
+  it("shows the default off, PATCHes the switch with the project version, and reports the fresh state", async () => {
+    const enabled: Project = { ...projectFixture, agent_mail_enabled: true, version: 2 };
+    // The settings route answers GETs; make the refetch after the PATCH
+    // return the patched project, as the server would (the stub body
+    // function counts this route's requests, 1-based).
+    const { requests } = renderSettings(projectFixture, [
+      { path: projectPath, method: "PATCH", body: enabled },
+      { path: projectPath, method: "GET", body: (n: number) => (n > 1 ? enabled : projectFixture) },
+    ]);
+    const panel = await screen.findByTestId("agent-mail-panel");
+    expect(within(panel).getByTestId("agent-mail-state").textContent).toContain("off");
+    const toggle = within(panel).getByTestId("agent-mail-toggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("agent-mail-state").textContent).toContain(
+          "on — chats in this project may ask",
+        ),
+      { timeout: 2000 },
+    );
+    const calls = requestsTo(requests, projectPath, "PATCH");
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(String(calls[0].body))).toEqual({ agent_mail_enabled: true, version: 1 });
+  });
+
+  it("a read-only role sees the state but cannot move it", async () => {
+    renderSettings({ ...projectFixture, my_role: "viewer", agent_mail_enabled: true });
+    const panel = await screen.findByTestId("agent-mail-panel");
+    expect((within(panel).getByTestId("agent-mail-toggle") as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect(within(panel).getByTestId("agent-mail-locked").textContent).toContain("maintainer");
+    expect(within(panel).getByTestId("agent-mail-state").textContent).toContain("on");
+  });
+
+  it("a lost CAS race says so instead of pretending the write landed", async () => {
+    renderSettings(projectFixture, [{ path: projectPath, method: "PATCH", status: 409 }]);
+    fireEvent.click(await screen.findByTestId("agent-mail-toggle"));
+    const error = await screen.findByTestId("agent-mail-error");
+    expect(error.textContent).toContain("beneath you");
+  });
+});

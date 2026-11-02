@@ -36,9 +36,14 @@ type turnSink struct {
 	// context so a drained turn can still close its transcript.
 	ctx context.Context
 
-	mu         sync.Mutex
-	msg        strings.Builder
-	thought    strings.Builder
+	mu      sync.Mutex
+	msg     strings.Builder
+	thought strings.Builder
+	// full keeps the whole agent message text (bounded by MailScanCap) for
+	// the end-of-turn agent-mail command scan (ADR-0072): the coalesced
+	// journal chunks are what a human reads, but a mail command can straddle
+	// a chunk boundary, so the scan needs the unsplit text.
+	full       strings.Builder
 	msgSeq     int
 	thoughtSeq int
 	flushGen   uint64
@@ -105,6 +110,9 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 	switch ev.Kind {
 	case "message_chunk":
 		s.msg.WriteString(ev.Text)
+		if s.full.Len() < MailScanCap {
+			s.full.WriteString(ev.Text)
+		}
 		if s.msg.Len() >= s.w.cfg.MaxChunkBytes {
 			s.flushMsgLocked(false)
 			s.armIdleLocked()
@@ -165,6 +173,16 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 		// unknown kinds have no M2 event type — dropping them is honest;
 		// inventing types is not (ADR-0016 §7).
 	}
+}
+
+// fullText returns the whole coalesced agent message text this sink
+// captured (bounded by MailScanCap), for the end-of-turn agent-mail scan
+// (ADR-0072). Safe from any goroutine; after finish() it reflects the
+// complete answer.
+func (s *turnSink) fullText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.full.String()
 }
 
 // redact applies the live unit's secret-redaction hook to text about to enter

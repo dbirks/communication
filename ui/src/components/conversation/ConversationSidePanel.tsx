@@ -20,7 +20,11 @@
  *   back appears twice, because the ranges describe the transcript.
  * - Skills used — the wire carries no per-conversation skill list today; the
  *   section renders only what a host hands it.
- * - LINKED CHATS — omitted until agent mail (3d).
+ * - LINKED CHATS — ADR-0072's agent-mail links (`links`, either direction),
+ *   one bordered row per link: the repo, the question, and the state as a
+ *   glyph-and-word pair (never colour alone, per states.ts); the row links
+ *   into the linked chat. Asked agents are read-only until a person
+ *   approves an edit, and the section says so.
  * - ASSISTANT — the note slot at the bottom, rendered only from a real
  *   source (`assistantNote`), plus the thread → workflow note (design 2f)
  *   when the host names this thread's chat (`workflowChat`): `Make a
@@ -29,12 +33,30 @@
 import { Link } from "react-router";
 import type { ReactNode } from "react";
 import { routes } from "../../lib/routes";
+import { STATES, type StateName } from "../ds/states";
 import { AssistantNote, makeWorkflowNoteAction } from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { agentLabel } from "./ConversationTranscript";
 import type { components } from "../../api/schema";
 
 export type ConversationChatAgent = components["schemas"]["ConversationChatAgent"];
+export type ConversationLink = components["schemas"]["ConversationLink"];
+
+/** The link's state as the design spells it, paired with a states.ts glyph
+ * (glyph + word, never colour alone). An expired ask is the honest "we
+ * stopped waiting", not a failure, so it takes the interrupted glyph. */
+export function mailLinkState(state: string): { name: StateName; word: string } {
+  switch (state) {
+    case "answered":
+      return { name: "done", word: "answered" };
+    case "failed":
+      return { name: "failed", word: "failed" };
+    case "expired":
+      return { name: "interrupted", word: "expired" };
+    default:
+      return { name: "running", word: "asked" };
+  }
+}
 
 /** `turns 1–2`, or `turn 3` for a single-turn run. */
 export function turnRangeCopy(first: number, last: number): string {
@@ -56,6 +78,9 @@ export interface ConversationSidePanelProps {
   agents?: ConversationChatAgent[] | null;
   /** Skills the thread used — only if some read says so (none does today). */
   skills?: string[] | null;
+  /** ADR-0072's mail links (`linked_chats`); empty or absent hides the
+   * section. The host reads them off the conversation detail. */
+  links?: ConversationLink[] | null;
   /** The assistant note slot; a host with no real source passes nothing. */
   assistantNote?: ReactNode;
   /**
@@ -92,12 +117,14 @@ export function ConversationSidePanel({
   pullRequest,
   agents,
   skills,
+  links,
   assistantNote,
   workflowChat,
   onMakeWorkflow,
 }: ConversationSidePanelProps) {
   const agentRows = agents ?? [];
   const skillList = (skills ?? []).filter((skill) => skill.trim() !== "");
+  const linkRows = links ?? [];
   const workflowNote = workflowChat ? (
     <AssistantNote
       testId="assistant-note-workflow"
@@ -124,6 +151,7 @@ export function ConversationSidePanel({
     Boolean(branch) ||
     agentRows.length > 0 ||
     skillList.length > 0 ||
+    linkRows.length > 0 ||
     Boolean(slot);
   if (!hasContent) return null;
 
@@ -216,6 +244,48 @@ export function ConversationSidePanel({
               </li>
             ))}
           </ul>
+        </section>
+      ) : null}
+      {linkRows.length > 0 ? (
+        <section aria-labelledby="side-panel-links-heading" data-testid="side-panel-links">
+          <SectionTitle htmlFor="side-panel-links-heading">Linked chats</SectionTitle>
+          <ul className="mt-1 space-y-1">
+            {linkRows.map((link, index) => {
+              const state = mailLinkState(link.state);
+              const spec = STATES[state.name];
+              return (
+                <li
+                  key={link.id}
+                  className="min-w-0 space-y-[2px] rounded-[3px] border border-line-strong bg-surface p-2"
+                  data-testid={`side-panel-link-row-${index}`}
+                >
+                  <Link
+                    to={routes.thread(link.other_conversation.id)}
+                    className="block min-w-0 break-words font-mono text-[11px] font-semibold text-accent-text hover:text-ink"
+                    data-testid={`side-panel-link-chat-${index}`}
+                  >
+                    {link.repo_name}
+                  </Link>
+                  <p className="min-w-0 break-words text-[11.5px] text-ink-2">{link.question}</p>
+                  <p
+                    className={`font-mono text-[10.5px] ${spec.tagFg}`}
+                    data-testid={`side-panel-link-state-${index}`}
+                  >
+                    <span aria-hidden="true">{spec.glyph} </span>
+                    {state.word}
+                    {link.direction === "outgoing" ? " \u00b7 read-only" : " \u00b7 asked here"}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+          <p
+            className="mt-1 text-[11px] leading-[1.5] text-faint"
+            data-testid="side-panel-links-note"
+          >
+            Asked agents run read-only by default. Letting one edit its repo needs a person to
+            approve.
+          </p>
         </section>
       ) : null}
       {slot ? <div data-testid="side-panel-assistant-slot">{slot}</div> : null}

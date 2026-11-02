@@ -133,6 +133,8 @@ func (f *cnvFixture) delete() {
 		{"DELETE FROM outbox WHERE global_seq IN (SELECT global_seq FROM domain_events WHERE conversation_id = ANY(" + conversations + "))", []any{f.project}},
 		{"DELETE FROM permission_requests WHERE conversation_id IN (" + conversations + ")", []any{f.project}},
 		{"DELETE FROM acp_session_bindings WHERE conversation_id IN (" + conversations + ")", []any{f.project}},
+		{"UPDATE conversation_turns SET mail_link_id = NULL WHERE conversation_id IN (" + conversations + ")", []any{f.project}},
+		{"DELETE FROM conversation_links WHERE project_id = $1", []any{f.project}},
 		{"DELETE FROM conversation_turns WHERE conversation_id IN (" + conversations + ")", []any{f.project}},
 		{"DELETE FROM conversation_control WHERE conversation_id IN (" + conversations + ")", []any{f.project}},
 		{"DELETE FROM domain_events WHERE conversation_id = ANY(" + conversations + ")", []any{f.project}},

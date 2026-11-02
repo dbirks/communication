@@ -66,6 +66,9 @@ func (p *itProjects) ListMembers(context.Context, Caller, string) ([]MemberView,
 func (p *itProjects) PutMember(context.Context, Caller, string, string, string) (MemberView, error) {
 	return MemberView{}, notExpectedIT("PutMember")
 }
+func (p *itProjects) SetProjectAgentMail(context.Context, Caller, string, bool, int) (ProjectView, error) {
+	return ProjectView{}, notExpectedIT("SetProjectAgentMail")
+}
 func notExpectedIT(name string) error { return errItNotExpected{name: name} }
 
 type errItNotExpected struct{ name string }

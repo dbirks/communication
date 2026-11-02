@@ -291,6 +291,8 @@ func m2Types() []struct {
 		{TypeConversationTurnCancelled, "conversation.turn.cancelled", TurnCancelledPayload{}},
 		{TypeConversationTurnFailed, "conversation.turn.failed", TurnFailedPayload{}},
 		{TypeConversationTurnInterrupted, "conversation.turn.interrupted", TurnInterruptedPayload{}},
+		{TypeConversationMailAsked, "conversation.mail.asked", MailAskedPayload{}},
+		{TypeConversationMailAnswered, "conversation.mail.answered", MailAnsweredPayload{}},
 		{TypeAgentSessionConnected, "agent.session.connected", SessionConnectedPayload{}},
 		{TypeAgentSessionDisconnected, "agent.session.disconnected", SessionDisconnectedPayload{}},
 	}
@@ -384,6 +386,13 @@ func TestM2PayloadFieldNames(t *testing.T) {
 		"TurnInterruptedPayload": {
 			"conversation_id", "fencing_token", "reason", "turn_id", "worker_id",
 		},
+		"MailAskedPayload": {
+			"conversation_id", "link_id", "question", "reason", "repo", "state", "to_conversation_id", "turn_id",
+		},
+		"MailAnsweredPayload": {
+			"answer", "conversation_id", "from_conversation_id", "launcher_id", "link_id",
+			"reason", "repo", "state", "to_conversation_id",
+		},
 		"SessionConnectedPayload": {
 			"acp_session_id", "agent_capabilities", "binding_id", "conversation_id", "launcher_id",
 			"launcher_version", "protocol_version", "session_origin", "worker_id",
@@ -452,6 +461,14 @@ func TestM2PayloadFieldNames(t *testing.T) {
 		},
 		"TurnInterruptedPayload": TurnInterruptedPayload{
 			ConversationID: "c-1", TurnID: "t-1", WorkerID: "w-1", FencingToken: 1, Reason: InterruptLeaseExpired,
+		},
+		"MailAskedPayload": MailAskedPayload{
+			ConversationID: "c-1", TurnID: "t-1", LinkID: "l-1", ToConversationID: "c-2", Repo: "api",
+			Question: "where is search wired?", State: MailStateAsked, Reason: "n/a",
+		},
+		"MailAnsweredPayload": MailAnsweredPayload{
+			ConversationID: "c-1", LinkID: "l-1", FromConversationID: "c-1", ToConversationID: "c-2",
+			Repo: "api", State: MailStateAnswered, Answer: "handlers/search.go", Reason: "n/a", LauncherID: "codex",
 		},
 		"SessionConnectedPayload": SessionConnectedPayload{
 			ConversationID: "c-1", BindingID: "b-1", WorkerID: "w-1", ACPSessionID: "s-1", ProtocolVersion: 1,

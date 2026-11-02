@@ -114,7 +114,7 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 	wake := l.turnWake(tctx)
 	go l.cancelWatch(tctx, base, c, rt, wake)
 
-	reason, promptErr := sess.handle.Prompt(tctx, c.Prompt)
+	reason, promptErr := sess.handle.Prompt(tctx, l.turnPrompt(base, c))
 
 	// Let trailing stream updates arrive — still routed to the sink —
 	// before the transcript closes; updates racing the turn result would
@@ -129,7 +129,23 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 	finctx, fincancel := context.WithTimeout(context.WithoutCancel(tctx), 15*time.Second)
 	snk.finish(finctx, outcome.Status == events.TurnStatusCompleted)
 	fincancel()
+
+	// Agent mail (ADR-0072): a completed, mail-allowed turn's whole answer is
+	// scanned for mail commands BEFORE the terminal event, so every
+	// conversation.mail.asked row precedes conversation.turn.completed in the
+	// journal. Rejections are noticed after the finish: the notice is a new
+	// turn on this conversation, and this one must be terminal first (the
+	// one-active-turn index is the DB saying so).
+	var rejected []MailResult
+	if outcome.Status == events.TurnStatusCompleted && c.MailAllowed && l.mail != nil && !rt.lostLease.Load() {
+		rejected = l.dispatchMail(base, c, rt, snk.fullText())
+	}
+
 	l.finish(base, c, rt, outcome, errors.Is(promptErr, context.Canceled) || rt.lostLease.Load())
+
+	if len(rejected) > 0 && !rt.lostLease.Load() {
+		l.mailNotice(base, c.ConversationID, MailRejectionPrompt(rejected), c.SubmittedBy)
+	}
 
 	if rt.lostLease.Load() {
 		l.abandon(c)

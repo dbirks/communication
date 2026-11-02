@@ -175,7 +175,37 @@ const (
 	// Agent instance attach/detach. Names kept from 09's event list.
 	TypeAgentSessionConnected    = "agent.session.connected"
 	TypeAgentSessionDisconnected = "agent.session.disconnected"
+
+	// Agent mail (ADR-0072): one chat's agent asks the agent of another
+	// repository in the same project. asked is journaled on the asking
+	// conversation when the worker interprets the agent's mail command;
+	// answered is journaled on BOTH conversations when the target turn
+	// reaches its terminal state, and by the reconciler when the answer
+	// deadline passes first.
+	TypeConversationMailAsked    = "conversation.mail.asked"
+	TypeConversationMailAnswered = "conversation.mail.answered"
 )
+
+// Mail states (ADR-0072). asked/rejected belong to
+// conversation.mail.asked; answered/failed/expired to
+// conversation.mail.answered.
+const (
+	MailStateAsked    = "asked"
+	MailStateRejected = "rejected"
+	MailStateAnswered = "answered"
+	MailStateFailed   = "failed"
+	MailStateExpired  = "expired"
+)
+
+// ValidMailAskedState / ValidMailAnsweredState report whether state is a legal
+// member of its event's vocabulary.
+func ValidMailAskedState(state string) bool {
+	return state == MailStateAsked || state == MailStateRejected
+}
+
+func ValidMailAnsweredState(state string) bool {
+	return state == MailStateAnswered || state == MailStateFailed || state == MailStateExpired
+}
 
 // ---------------------------------------------------------------- M3 events
 
@@ -622,6 +652,44 @@ type TurnInterruptedPayload struct {
 	WorkerID       string `json:"worker_id,omitempty"`
 	FencingToken   int64  `json:"fencing_token,omitempty"`
 	Reason         string `json:"reason"`
+}
+
+// MailAskedPayload is conversation.mail.asked, journaled on the asking
+// conversation (ADR-0072). State is asked (a link row was created and
+// LinkID names it) or rejected (no link: an unknown repo, the per-chat cap,
+// the setting off mid-turn, or a caller who is no longer a member — Reason
+// says which, LinkID is empty).
+type MailAskedPayload struct {
+	ConversationID string `json:"conversation_id"`
+	TurnID         string `json:"turn_id"`
+	LinkID         string `json:"link_id,omitempty"`
+	// ToConversationID names the linked chat the ask opened (empty when the
+	// ask was rejected) — the card's `open chat ›` target from the first row.
+	ToConversationID string `json:"to_conversation_id,omitempty"`
+	Repo             string `json:"repo"`
+	Question         string `json:"question"`
+	State            string `json:"state"`
+	Reason           string `json:"reason,omitempty"`
+}
+
+// MailAnsweredPayload is conversation.mail.answered. It is journaled twice —
+// once scoped to the asking conversation and once to the answered one — with
+// identical members besides ConversationID (ADR-0072). State is answered
+// (Answer carries the target agent's bounded reply), failed (the target turn
+// reached a non-completed terminal state) or expired (the answer deadline
+// passed first). LauncherID is the target conversation's agent profile
+// launcher — the card's "← api · <agent>" half; the model is deliberately
+// absent because no journal row names it (ADR-0068's honesty rule).
+type MailAnsweredPayload struct {
+	ConversationID     string `json:"conversation_id"`
+	LinkID             string `json:"link_id"`
+	FromConversationID string `json:"from_conversation_id"`
+	ToConversationID   string `json:"to_conversation_id"`
+	Repo               string `json:"repo"`
+	State              string `json:"state"`
+	Answer             string `json:"answer,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	LauncherID         string `json:"launcher_id,omitempty"`
 }
 
 // SessionConnectedPayload is agent.session.connected.

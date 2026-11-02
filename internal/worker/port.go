@@ -48,6 +48,13 @@ type Claim struct {
 	// on the new profile in the same workspace, never resuming the old
 	// profile's session (session/load belongs to the harness that made it).
 	AgentProfileID string
+
+	// MailAllowed (ADR-0072) says this turn may dispatch agent mail: the
+	// project's `agent_mail_enabled` setting is on, this turn is not itself
+	// a mailed target turn, and its conversation is not the target of any
+	// link (depth 1 — a mailed chat never asks). It is resolved at claim
+	// time; DispatchMail re-checks the setting at dispatch.
+	MailAllowed bool
 }
 
 // TurnEvent is one journal append made on behalf of a turn or conversation.
@@ -183,6 +190,46 @@ type TurnStore interface {
 	// SetConversationStatus moves idle/active/disconnected as sessions come
 	// and go.
 	SetConversationStatus(ctx context.Context, conversationID, status string) error
+}
+
+// MailAsk is one mail command the agent emitted (ADR-0072): the target
+// repository name and the question. Inputs of the mail tool; its output is
+// the answer, delivered as the follow-up prompt on the asking chat.
+type MailAsk struct {
+	Repo     string
+	Question string
+}
+
+// MailResult is the store's answer for one MailAsk. State is "asked" (a
+// link row exists; LinkID names it) or "rejected" (no link; Reason says
+// why). Rejection is not an error: the turn completed, this ask was simply
+// not honoured.
+type MailResult struct {
+	Repo     string
+	Question string
+	State    string
+	LinkID   string
+	Reason   string
+}
+
+// MailPort is the agent-mail persistence surface (ADR-0072). It is a
+// separate port from TurnStore — not a method set bolted onto it — so every
+// existing TurnStore fake stays a fake and a worker without the mail
+// migration simply has no mail port: NewTurnLoop type-asserts its store.
+type MailPort interface {
+	// DispatchMail interprets the asking turn's mail commands: for each
+	// honoured ask it creates the linked target conversation, enqueues its
+	// read-only (permission_override='ask') answer turn, and journals
+	// conversation.mail.asked; every rejected ask journals the same event
+	// with state "rejected". Fenced on the asking turn's lease triple: a
+	// stale worker dispatches nothing.
+	DispatchMail(ctx context.Context, c Claim, asks []MailAsk) ([]MailResult, error)
+	// EnqueueMailNotice queues a system-authored follow-up prompt on a
+	// conversation (the answer or rejection notice for an ask). It is a
+	// no-op — inserted=false, nil error — when the conversation already
+	// carries a non-terminal turn or is archived: a human prompt always
+	// wins the race against a notice.
+	EnqueueMailNotice(ctx context.Context, conversationID, prompt, submittedBy string) (inserted bool, err error)
 }
 
 // WorkspacePrep prepares the per-conversation working directory before a

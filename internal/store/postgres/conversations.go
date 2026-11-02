@@ -291,6 +291,9 @@ type CnvConversation struct {
 	// per maximal run of consecutive turns on the same profile, with the
 	// turn-range the side panel renders. Read, never stored (cnvChatAgents).
 	Agents []CnvChatAgent
+	// LinkedChats (ADR-0072) is the agent-mail link list for the detail
+	// read, either direction, newest first (cnvLinkedChats).
+	LinkedChats []CnvLinkedChat
 }
 
 // CnvChatAgent is one entry of the derived "agents in this chat" list
@@ -817,6 +820,11 @@ func cnvGetConversation(ctx context.Context, q prjQuerier, c Caller, conversatio
 		return CnvConversation{}, err
 	}
 	cv.Agents = agents
+	links, err := cnvLinkedChats(ctx, q, cv.ID)
+	if err != nil {
+		return CnvConversation{}, err
+	}
+	cv.LinkedChats = links
 	return cv, nil
 }
 
@@ -3102,6 +3110,26 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 			TurnCount:        ag.TurnCount,
 		})
 	}
+	links := make([]api.ConversationLinkView, 0, len(cv.LinkedChats))
+	for _, l := range cv.LinkedChats {
+		links = append(links, api.ConversationLinkView{
+			ID:        l.ID,
+			Direction: l.Direction,
+			RepoName:  l.RepoName,
+			State:     l.State,
+			Question:  l.Question,
+			Answer:    apiNullString(l.Answer),
+			Reason:    apiNullString(l.Reason),
+			OtherConversation: api.ConversationLinkOtherView{
+				ID:     l.OtherConvID,
+				Title:  l.OtherTitle,
+				Status: l.OtherStatus,
+			},
+			LauncherID: l.LauncherID,
+			CreatedAt:  l.CreatedAt,
+			AnsweredAt: l.AnsweredAt,
+		})
+	}
 	return api.ConversationView{
 		ID:               cv.ID,
 		ProjectID:        cv.ProjectID,
@@ -3126,6 +3154,7 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		LinkedRuns:         linked,
 		AgentProfileModel:  apiNullString(cv.AgentProfileModel),
 		Agents:             agents,
+		LinkedChats:        links,
 	}
 }
 

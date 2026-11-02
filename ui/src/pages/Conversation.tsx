@@ -250,6 +250,9 @@ export default function ConversationPage({
       branch={threadBranch || null}
       filesChanged={filesChanged}
       agents={data.agents ?? null}
+      // ADR-0072 agent mail: the rail's LINKED CHATS list reads the detail's
+      // linked_chats (both directions, with the link's state).
+      links={data.linked_chats ?? null}
       // Thread → workflow (design 2f): the rail's ASSISTANT slot offers
       // `Make a workflow…`, which opens the assistant with THIS chat as
       // context — the id travels as data in the ask; authorizing the

@@ -1,0 +1,103 @@
+# ADR-0072 — Agent mail across repos: an opt-in project setting, a linked conversation per ask, and a read-only answer until a person says otherwise
+
+- **Date:** 2026-11-02
+- **Status:** Accepted (implemented and verified on real PostgreSQL — see Verification)
+- **Owners:** control-plane API + store + worker maintainers
+- **Related decisions / contracts:** ADR-0016 (conversations, controller CAS, turn leases and fencing — mail writes ride every one of those rules), ADR-0067 (a conversation born bound to one repository — the mail target is born bound to the asked repo), ADR-0068 (per-turn agent profiles; the target turn is stamped with the asking turn's profile and no wire fact names a model), ADR-0069 (never-asks launchers: a mailed turn runs `ask`, and a launcher with no verified prompting mode fails that turn closed, exactly as a normal `ask` conversation does), ADR-0039 (policy-decided permission rows keep their verdicts durable), ADR-0013 (forward-only migrations), ADR-0014 §9 (one journal; mail events are journal rows), `communication-spec/05-workspaces-security-secrets.md` (the workspace/permission axes: read-only is a *permission* fact first), `communication-spec/06-collaboration-identity.md` (project membership is the authorization scope; the controller lock), migration `00026`; design source `docs/design/handoff-repo-chat-nav/` (README § "Agent mail across repos (3d)", DECISIONS.md — "optional, off by default; asked agents are read-only unless a person approves edits" and "a tool the agent can call to open or message a chat in another repo of the same project").
+
+## Context
+
+Design 3d: in a chat, the agent may ask **the agent of another repository in the same project** a question. The asking chat shows a bordered card (bar "→ asked the agent in **api**", the question, then "← api · <agent> · <answer>"), the side panel lists the relation under LINKED CHATS with its state, and the whole feature is an **optional project setting, off by default**. Asked agents are **read-only**; letting one edit its repo needs a person's approval.
+
+This is a new security boundary and therefore an ADR (13-decisions-and-adrs.md: any change to a security boundary or the public API): before it, one conversation's agent could only ever touch its own conversation's workspace. After it, an agent-authored message can start work in *another repository's* thread. The three questions this record must answer before anything else can be built:
+
+1. **What is a "mail" in the data?** A turn is fenced, leased, terminal — every existing invariant is written per-conversation. A link that spans two conversations has no home yet.
+2. **How does an agent call a tool at all?** There is no tool channel today. `internal/agent/acp/handle.go` negotiates every `session/new` / `session/load` with `McpServers: []acp.McpServer{}` (always empty — the APM lock records MCP server *names* for display, but the worker never wires one into a session), and the client advertises no fs or terminal capabilities. **Agents get their tools from their own harness and nothing else; the worker exposes zero tools to an ACP session.** The ACP-native answer — an MCP server per session — needs an unproven spike per launcher (`docs/compatibility/ACP.md` forbids prefilled PASS rows; whether codex-acp@x or claude-agent-acp@y honours a session-level `mcpServers` entry has never been observed here).
+3. **What does "read-only" mean that is actually enforced?** `communication-spec/04`/`05` give four recorded permission modes; none is "read-only". The existing human approval machinery is `permission_requests`: an `ask` turn parks every harness permission prompt on a durable row a person answers (ADR-0016 §5, ADR-0039), and an unanswered prompt *expires* — which means refusal by default.
+
+## Options considered
+
+| Option | Advantages | Disadvantages | Evidence |
+|---|---|---|---|
+| **Tool = fenced command block in the agent's final answer, interpreted by the worker at turn end ("the minimal channel"); relation = a `conversation_links` row with a fresh linked child chat per ask (chosen)** | zero unproven protocol claims — it rides only what is observed (prompt in, message chunks out); the command *is* the tool (inputs: repo name + question; output: the answer, delivered as the asking chat's follow-up prompt); the linked chat is a real conversation, so the whole ADR-0016 machine (one-active-turn, controller CAS, permission bridge, reconciler) serves it unchanged; `open chat ›` has a real target and real transcript behind it | the agent must be *told* the command exists (a worker-injected preamble); a model that formats the fence wrong gets nothing — mitigated: malformed/missing JSON is dropped, and a rejected ask answers through the same follow-up channel | `handle.go:167/178` (`McpServers: []`); `TestMailDispatchOnCompletedTurnProvesToolSemantics` (worker), `TestAgentMail*` (postgres) |
+| MCP server wired into each ACP session (the ACP-native answer; `agent_mcp` spike, `docs/compatibility/ACP.md`) | a real typed tool call inside the harness; the agent sees it in its tool list | every launcher row would be a PASS nobody has observed; a `communication-mail` subcommand/bridge process is a new attack surface (it would hold a token and reach the API from *inside* the agent's sandbox — spec 05 keeps that boundary deliberate); dead weight for launchers that ignore `mcpServers` entirely | `docs/compatibility/ACP.md` (`agent_mcp` = Spike, not verified); AGENTS.md: "Never claim a capability … without a real test showing it" |
+| Mail = a message appended to the *same* conversation (no second chat) | no new relation, no new chat | there is no "agent of another repo" in this conversation: the session, its workspace and its permission prompts all belong to one conversation (ADR-0016); pretending otherwise would let repo B's answers be authored in repo A's sandbox — the exact boundary this feature must add, not blur | rejected |
+| `conversations.parent_conversation_id` self-FK instead of a link table | one column | cannot carry state, the asking turn, the question or the answer (all named by the design's LINKED CHATS row); one column per relation family is how `runs.source_conversation_id` already had to grow `conversation_links`-shaped semantics ad hoc | rejected on 3d's own UI surface |
+| A new `read_only` permission mode on agent profiles | explicit | changes the profile/launcher capability matrix for a mode no launcher advertises; the enforced behaviour ("edits need a person, silence refuses") is *exactly* `ask` — the mode where every prompt a harness raises goes to a human and expires to a refusal if nobody answers. A new mode would be a label, not a boundary | ADR-0016 §5, `runner.go` `decidePermission` (ask = human bridge; expiry = "nobody said yes") |
+
+## Decision
+
+### 1. The setting (`projects.agent_mail_enabled`, migration `00026`)
+
+One boolean, `NOT NULL DEFAULT false`. The feature does not exist for a project until a maintainer turns it on. Read as a **claim fact** (`conversation_turns` detail read computes `mail_allowed`), and **re-checked at dispatch** inside the fenced transaction: a setting flipped off while a turn runs dispatches nothing new (rejected with `agent mail is switched off for this project`). The API moves it through `PATCH /api/v1/projects/{projectId}` — the project's one mutable setting today — maintainer-only (the same `requireManage` gate as members/repos), optimistic against `version` (a stale body is `409` and lands nothing), no journal row: the setting is read where it is enforced.
+
+### 2. The relation (`conversation_links`)
+
+One row per accepted ask: `project_id`, `from_conversation_id`, `to_conversation_id`, `from_turn_id` (the asking turn), `asked_by` (the asking turn's human — mail runs *on behalf of* a person, never as a free-floating agent), `repo_name`, `question`, `answer`, `reason`, `state` (`asked` → `answered` | `failed` | `expired`), `answer_deadline`. DB CHECKs keep the states honest the way `conversation_control_single_controller` does: `answered` ⇔ (answer AND answered_at), non-answered carry neither; `failed`/`expired` carry a reason, `asked` carries none; `from <> to`. `conversation_turns.mail_link_id` marks the target's answering turn (the unique partial index `conversation_turns_mail_link_id_idx` = one answering turn per link); the FK lives only on the turn so the two tables never hold a circular reference. The target is a **fresh linked chat per ask**, born bound to the target repository (ADR-0067), controller `none` (nobody is driving it), stamped with the asking turn's agent profile (ADR-0068). The conversation detail carries `linked_chats` — both directions, newest first, bounded to 50 (ADR-0063).
+
+### 3. The tool (the minimal channel)
+
+The worker prepends a transport framing block to the prompt it *sends* (never to the journalled `conversation.message.user` — the human's raw text stays the transcript row) naming the project's repositories and the command:
+
+````
+```communication-mail
+{"repo": "<repository name>", "question": "<your question>"}
+```
+````
+
+At the end of a **completed** turn, the whole coalesced answer (secret-redacted, bounded) is parsed — up to 4 commands per turn — and interpreted by `MailPort.DispatchMail` *before* `conversation.turn.completed`, so `conversation.mail.asked` always precedes the terminal row. Inputs are the repo name and the question; the **output is the answer**, delivered to the asking agent as a follow-up prompt on its own chat (see § 5). A rejected ask (unknown repo, cap, setting off, lost membership) journals `conversation.mail.asked` with `state: "rejected"` + reason and answers the asking agent the same way — nothing is ever silently dropped. The preamble rides the wire only when the claim says `mail_allowed`. The compatibility table stays clean: no MCP claim is made, and when the `agent_mcp` spike lands a real tool can replace the parser without touching § 1, § 2, § 4 or § 5.
+
+### 4. Read-only enforcement on the target
+
+The target turn carries `conversation_turns.permission_override = 'ask'` — a column whose CHECK admits *only* `'ask'`, so a mailed turn can never be upgraded, and the claim resolves `COALESCE(t.permission_override, ap.permission_mode)`: the profile's own mode (even `preapproved_within_sandbox` or `autonomous_within_sandbox`) cannot leak into a mailed answer. `ask` is the existing approval machinery: reads that need no permission run; every edit the harness thinks twice about becomes a durable `permission_requests` row on the *linked* chat that a person answers in that chat's own UI — take control first (controller starts `none`), and only that controller's yes lets an edit run (ADR-0016 §5; ADR-0039 keeps the verdict durable). Nobody answers = the prompt expires = refusal, by the rule already shipped for ask turns. On a never-asks launcher the `ask` mode has no verified prompting mode to honour, and the turn fails closed rather than running never-asks under a read-only claim (ADR-0069). The sandbox axis (a read-only *filesystem* for the mailed target) is deliberately not claimed here: nono read-only workspace mounts for the conversation path are a **Spike required** item (spec 05, `docs/compatibility/`); the permission arm is what this ADR enforces, and the ADR says so rather than dressing an intention as a boundary.
+
+### 5. Answering, looping, and the caps
+
+When a turn marked `mail_link_id` reaches its terminal state, the **same fenced `FinishTurn` transaction**: settles the link (`completed` → `answered` with the answer read back from that turn's own journaled `conversation.message.agent` rows, capped 16 KiB; anything else → `failed` + reason), journals `conversation.mail.answered` on **both** conversations (identical members besides `conversation_id`), and queues the follow-up prompt on the asking chat — but only while the asking chat carries no other turn and is not archived: **a human prompt always wins the race** against a notice, and the card in the journal still tells the story either way. `worker.MailAnswerPrompt` wraps the answer so the asking agent knows whose words they are and that it still cannot edit that repo.
+
+- **Depth 1:** the claim computes `mail_allowed` false for (a) a turn that is itself a link's answering turn, and (b) *any* turn of a conversation that is the target of any link — a mailed chat never asks, and its human takeover inherits that rule. There is no second hop, structurally.
+- **Per-chat cap:** at most 8 links per asking conversation (`MailCap`, every state counts so spent asks bound fan-out), checked inside the dispatch transaction.
+- **Timeout:** every link gets `answer_deadline` (default 10 minutes, `MailAnswerTimeout`). The reconciler's mail pass expires overdue `asked` links, journals `mail.answered` with `state: "expired"` on both chats and notices the asking chat. A late answer from a still-running target finds `state <> 'asked'` and changes nothing — the deadline, not the straggler, is the truth.
+- **Fencing:** `DispatchMail` is fenced on the asking turn's lease triple — a stale worker creates no chats, no turns, no journal rows.
+
+### 6. Authz
+
+Same project, enforced by construction rather than by a check to forget: the target repository is looked up **by name inside the asking conversation's project**, so a cross-project ask resolves to "no repository named X" — the ask can neither see nor name a foreign project. The asking turn's author (`submitted_by`, who must hold a project membership at dispatch time, re-read in the transaction) is `asked_by`, and is the `submitted_by` of the target turn: mail runs on behalf of a named human, the audit trail has a person on both ends, and an agent-authored ask never impersonates an anonymous principal. The asking chat's controller rule rides the existing turn path (only a controller can queue the prompt whose turn dispatches). The linked chat is visible to exactly the project's members (ADR-0016 §8's visibility predicate, unchanged — it is just another project conversation).
+
+### 7. Journal events
+
+`conversation.mail.asked` (asking chat, `state` = `asked` + `link_id` + `to_conversation_id`, or `rejected` + `reason` and no link) and `conversation.mail.answered` (both chats; `answered` carries `answer`, `failed`/`expired` carry `reason`; `launcher_id` names the target profile's launcher — the card's "← api · Codex" half). Payload structs are modelled in `internal/events` and pinned by `m2Types` (constant spelling, JSON member set, the openapi payload table). The **model** segment the design draws ("gpt-5") is not journalled and is therefore not shown (ADR-0068's honesty rule), and the design's tool-activity tail ("read handlers/search.go") lives in the linked chat's own transcript, one click away — the card renders rows, not guesses.
+
+### 8. UI surface
+
+Bordered transcript card cut at the `mail.asked` frame under the answer that asked (3d's bar/question/answer structure, `← repo · launcher` on the answer line), absent `open chat ›` until the row names the linked chat, rejected asks render nothing. LINKED CHATS in the chat side panel (repo, question, state as glyph+word from `states.ts`, read-only note). The project settings page carries the switch (off by default; maintainer-only; 409 surfaces honestly). The composer's `@`-hint shows **only while the setting is on**.
+
+## Consequences
+
+- A new cross-repository path exists, but every step of it is an existing, fenced, journalled conversation turn; no second transcript, claim machine, or permission bridge was built.
+- The command block is a convention until the `agent_mcp` spike replaces it with a real tool; the convention is one parser, and the events/API are written so the swap moves the interpreter, not the contract.
+- Mail can make a *second* worker busy on a project's turn budget; turns remain one-per-conversation and the depth-1 rule bounds the fan-out.
+- The asking agent learns answers one follow-up turn later, not mid-prompt. That is a real cost of the minimal channel; it buys not pretending an MCP capability nobody has spiked.
+
+## Security/privacy
+
+- The blast radius of one ask: read-only work in one repo of the same project, on behalf of a named member, capped per chat, deadline-bounded, fully journalled on both chats.
+- Permission-prompt expiry remains refusal. Silence never edits.
+- `answer` and `question` carry agent-authored text; the mail scan runs through the same secret-redaction hook as the journal chunks, so a materialized secret cannot ride into another repo's chat transcript.
+- The link cannot out-see its conversation: `linked_chats` is served only through the detail route's own visibility predicate, same rule as ADR-0053's `linked_runs`.
+
+## Verification
+
+`go build ./... && go vet ./...` clean; `go test -p 1 ./internal/...` against real PostgreSQL (`COMMUNICATION_TEST_DATABASE_URL`):
+
+- `internal/events` — `m2Types` registry: both new types, full JSON member sets, documented-in-openapi.
+- `internal/store/postgres` `TestAgentMail*` (migration `00026` head via `migHeadVersion`): setting default-false + claim gating; dispatch re-checks the setting; membership re-check drops a lost member to `rejected` with no link; unknown repo → `rejected`; the linked chat is born bound to the target repo with controller `none`; `permission_override='ask'` outranks a profile raised to `preapproved_within_sandbox` on the claim, and a mailed chat's claim is never mail-eligible (depth 1); per-chat cap of 2 rejects the third ask with the cap reason; `DispatchMail` from a stale fencing token refuses and writes nothing; the answer arm settles the link + journals both chats + queues the asking follow-up atomically in `FinishTurn`; a failed target fails the link; the reconciler expires an overdue link, journals `expired` and notices only an idle asking chat (the failure notice already queued proves the no-stacking rule); detail `linked_chats` in both directions with state.
+- `internal/api` `TestPatchProjectAgentMail`: maintainer-only 200/403, CAS 409 that never reaches the write, 422 validation; `Project` wire shape pins `agent_mail_enabled` false-by-default.
+- `internal/worker` `TestParseMailCommands` / `TestMail*`: cross-chunk-boundary parse, 4-ask cap, preamble on the wire and never in the journal, `mail.asked` dispatched before the terminal write, rejection notices queued after the finish, and no dispatch when the claim disallows it or the turn did not complete.
+- `redocly lint` clean; `pnpm --dir ui gen:api:check` passes; `vitest run src/components/conversation src/pages` (605 tests) green, incl. the 3d card from journal frames through the real page (ask cuts the transcript under the answer; answered folds by link id; `open chat ›` href), LINKED CHATS rows, and the composer hint appearing only with the setting on.
+
+Not verified with this record: an ACP launcher actually honouring a session-level MCP tool (the spike owns it); nono read-only mounts for the target workspace (spike required, § 4). The lab live proof (orchestrator): repo A chat asks repo B; the card appears in A; B's workspace manifest shows `modified_paths = []`.
+
+## Migration/rollback
+
+Forward-only (ADR-0013): `00026` adds the column, the table and the two narrow `conversation_turns` columns; every pre-ADR-0072 row is unaffected (`agent_mail_enabled = false`, `mail_link_id IS NULL`, `permission_override IS NULL` ⇒ claims resolve exactly as before). The Down section exists for test resets only; a rollback that drops `conversation_links` deletes the links' history, which is exactly why the forward rule holds.

@@ -51,6 +51,9 @@ type Project struct {
 	CreatedAt      time.Time
 	Version        int
 	MyRole         string
+	// AgentMailEnabled is the ADR-0072 project setting: chats in this
+	// project may ask the agent of another repo in the project. Default off.
+	AgentMailEnabled bool
 }
 
 // Repository is a git remote attached to a project.
@@ -96,6 +99,7 @@ type prjQuerier interface {
 // project in the organization without holding a membership.
 const prjProjectSelect = `
 	SELECT p.id, p.organization_id, p.slug, p.name, p.description, p.created_at, p.version,
+	       p.agent_mail_enabled,
 	       COALESCE(m.role, 'maintainer')
 	FROM projects p
 	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
@@ -175,9 +179,9 @@ func (s *ProjectStore) CreateProject(ctx context.Context, c Caller, name, slug, 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO projects (organization_id, slug, name, description, created_by)
 		VALUES ($1::uuid, $2, $3, $4, $5::uuid)
-		RETURNING id, slug, name, description, created_at, version`,
+		RETURNING id, slug, name, description, created_at, version, agent_mail_enabled`,
 		c.OrganizationID, slug, name, description, c.UserID).
-		Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.CreatedAt, &p.Version)
+		Scan(&p.ID, &p.Slug, &p.Name, &p.Description, &p.CreatedAt, &p.Version, &p.AgentMailEnabled)
 	if err != nil {
 		if prjIsConflict(err) {
 			return Project{}, ErrConflict
@@ -228,7 +232,7 @@ func prjGetProject(ctx context.Context, q prjQuerier, c Caller, projectID string
 	err := q.QueryRow(ctx, prjProjectSelectOne,
 		c.UserID, c.OrganizationID, c.IsOrgAdmin, projectID).
 		Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.Name, &p.Description,
-			&p.CreatedAt, &p.Version, &p.MyRole)
+			&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrProjectNotFound
 	}
@@ -237,6 +241,32 @@ func prjGetProject(ctx context.Context, q prjQuerier, c Caller, projectID string
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
 	return p, nil
+}
+
+// SetProjectAgentMail moves the ADR-0072 `agent_mail_enabled` setting. The
+// write is optimistic-concurrency against `version` (the token every
+// mutation already increments — RecordDenied's bump is the precedent): a
+// stale body is ErrProjectConflict, never a silent overwrite of the fresher
+// answer. Visibility (and thus membership) was proven by prjGetProject; the
+// role gate is the API handler's requireManage, the same split putMember
+// uses.
+func (s *ProjectStore) SetProjectAgentMail(ctx context.Context, c Caller, projectID string, enabled bool, version int) (Project, error) {
+	if err := prjRequireCaller(c); err != nil {
+		return Project{}, err
+	}
+	if _, err := prjGetProject(ctx, s.Pool, c, projectID); err != nil {
+		return Project{}, err
+	}
+	tag, err := s.Pool.Exec(ctx, `
+		UPDATE projects SET agent_mail_enabled = $2, version = version + 1, updated_at = now()
+		WHERE id = $1::uuid AND version = $3`, projectID, enabled, version)
+	if err != nil {
+		return Project{}, fmt.Errorf("postgres: set project agent mail: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return Project{}, ErrConflict
+	}
+	return prjGetProject(ctx, s.Pool, c, projectID)
 }
 
 // ListRepositories reads a project's repositories ordered by name. Callers
@@ -506,7 +536,7 @@ func prjBumpProject(ctx context.Context, tx pgx.Tx, projectID string) error {
 func prjScanProject(rows interface{ Scan(dest ...any) error }) (Project, error) {
 	var p Project
 	if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.Name, &p.Description,
-		&p.CreatedAt, &p.Version, &p.MyRole); err != nil {
+		&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole); err != nil {
 		return Project{}, fmt.Errorf("postgres: scan project: %w", err)
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
@@ -659,6 +689,19 @@ func (a APIProjectStore) GetProject(ctx context.Context, c api.Caller, projectID
 	return prjAPIProject(p), nil
 }
 
+// SetProjectAgentMail implements api.ProjectStore (ADR-0072).
+func (a APIProjectStore) SetProjectAgentMail(ctx context.Context, c api.Caller, projectID string, enabled bool, version int) (api.ProjectView, error) {
+	s, err := a.pool()
+	if err != nil {
+		return api.ProjectView{}, err
+	}
+	p, err := s.SetProjectAgentMail(ctx, prjAPICaller(c), projectID, enabled, version)
+	if err != nil {
+		return api.ProjectView{}, prjAPIErr(err)
+	}
+	return prjAPIProject(p), nil
+}
+
 // ListRepositories implements api.ProjectStore.
 func (a APIProjectStore) ListRepositories(ctx context.Context, c api.Caller, projectID string) ([]api.RepositoryView, error) {
 	s, err := a.pool()
@@ -745,13 +788,14 @@ func (a APIProjectStore) RecordDenied(ctx context.Context, c api.Caller, project
 
 func prjAPIProject(p Project) api.ProjectView {
 	return api.ProjectView{
-		ID:          p.ID,
-		Slug:        p.Slug,
-		Name:        p.Name,
-		Description: p.Description,
-		CreatedAt:   p.CreatedAt,
-		Version:     p.Version,
-		MyRole:      p.MyRole,
+		ID:               p.ID,
+		Slug:             p.Slug,
+		Name:             p.Name,
+		Description:      p.Description,
+		CreatedAt:        p.CreatedAt,
+		Version:          p.Version,
+		MyRole:           p.MyRole,
+		AgentMailEnabled: p.AgentMailEnabled,
 	}
 }
 

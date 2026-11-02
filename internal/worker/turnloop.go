@@ -129,6 +129,12 @@ type TurnLoop struct {
 	// when the registry row exists).
 	idFn func() string
 
+	// mail is the agent-mail port (ADR-0072): nil unless the store speaks
+	// it (the real postgres.TurnStore does once migration 00026 is applied;
+	// a fake that does not simply never dispatches). Resolved by a type
+	// assertion in NewTurnLoop so no worker wiring names it.
+	mail MailPort
+
 	mu     sync.Mutex
 	live   map[string]*liveSession // conversation id → live agent instance
 	stopCh chan struct{}           // closed by Drain: stop claiming
@@ -178,6 +184,12 @@ func WithJournalWake(watch func(ctx context.Context) (<-chan struct{}, func(), e
 	return func(l *TurnLoop) { l.wake = watch }
 }
 
+// WithMail overrides the agent-mail port (ADR-0072). Tests inject a fake;
+// production relies on the store assertion in NewTurnLoop.
+func WithMail(m MailPort) TurnOption {
+	return func(l *TurnLoop) { l.mail = m }
+}
+
 // NewTurnLoop validates its ports and returns an idle loop.
 func NewTurnLoop(cfg TurnConfig, store TurnStore, spawn domain.AgentSessionFactory, work WorkspacePrep, workerID func() string, opts ...TurnOption) (*TurnLoop, error) {
 	if store == nil {
@@ -202,6 +214,9 @@ func NewTurnLoop(cfg TurnConfig, store TurnStore, spawn domain.AgentSessionFacto
 		idFn:   workerID,
 		live:   map[string]*liveSession{},
 		stopCh: make(chan struct{}),
+	}
+	if m, ok := store.(MailPort); ok {
+		l.mail = m
 	}
 	for _, o := range opts {
 		o(l)

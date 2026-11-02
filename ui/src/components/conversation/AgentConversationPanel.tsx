@@ -25,6 +25,7 @@
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router";
 import { ApiError } from "../../api/client";
+import { useProject } from "../../api/queries";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import { Button } from "../ds/Button";
 import { Textarea } from "../ds/Field";
@@ -346,6 +347,12 @@ export function AgentConversationComposer({
     sendMessage,
   } = session;
   const explainerId = `${ids.composerExplainer}-copy`;
+  // ADR-0072: the 3d composer hint ("@ for another repo's agent") shows only
+  // when the project's agent-mail setting is on. The project read is the
+  // page's own query key, so this rides cached data — no extra fetch when the
+  // page already holds it.
+  const project = useProject(session.data?.project_id ?? "");
+  const agentMailOn = project.data?.agent_mail_enabled === true;
   return (
     <section aria-labelledby={heading ? "composer-heading" : undefined} className="space-y-2">
       {heading ? (
@@ -368,8 +375,20 @@ export function AgentConversationComposer({
           onChange={(event) => setPrompt(event.target.value)}
           disabled={!isController}
           aria-describedby={turnInProgress || !isController ? explainerId : undefined}
-          placeholder={isController ? "Ask the agent for something…" : nonControllerPlaceholder}
+          placeholder={
+            isController
+              ? agentMailOn
+                ? "Ask the agent for something… @ another repo's agent to ask it"
+                : "Ask the agent for something…"
+              : nonControllerPlaceholder
+          }
         />
+        {agentMailOn && isController ? (
+          <p className="font-mono text-[11px] text-muted" data-testid="composer-mail-hint">
+            @ another repo's agent: your agent can ask it a question — replies arrive in this chat,
+            and the asked agent runs read-only.
+          </p>
+        ) : null}
         {agentPicker}
         <Button
           type="submit"

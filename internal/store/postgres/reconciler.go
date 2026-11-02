@@ -98,6 +98,9 @@ type ReconcileResult struct {
 	SessionsDisconnected int
 	// PermissionsExpired counts prompts nobody answered in time.
 	PermissionsExpired int
+	// MailLinksExpired counts agent-mail links whose answer deadline passed
+	// (ADR-0072).
+	MailLinksExpired int
 }
 
 // NewReconciler builds a reconciler over an open pool.
@@ -189,7 +192,8 @@ func (r *Reconciler) Run(ctx context.Context) (int, error) {
 					r.log.InfoContext(ctx, "turn-lease reconciler pass",
 						slog.Int("turns_interrupted", res.TurnsInterrupted),
 						slog.Int("sessions_disconnected", res.SessionsDisconnected),
-						slog.Int("permissions_expired", res.PermissionsExpired))
+						slog.Int("permissions_expired", res.PermissionsExpired),
+						slog.Int("mail_links_expired", res.MailLinksExpired))
 				}
 			}
 		}
@@ -235,6 +239,9 @@ func (r *Reconciler) Pass(ctx context.Context) (ReconcileResult, error) {
 	errs = append(errs, err)
 	n, err = r.expireStalePermissions(ctx, conn.Conn())
 	out.PermissionsExpired = n
+	errs = append(errs, err)
+	n, err = r.expireStaleMail(ctx, conn.Conn())
+	out.MailLinksExpired = n
 	errs = append(errs, err)
 	return out, errors.Join(errs...)
 }

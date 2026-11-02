@@ -53,6 +53,8 @@ export const M2_EVENT_TYPES = [
   "conversation.turn.failed",
   "conversation.turn.interrupted",
   "conversation.control.transferred",
+  "conversation.mail.asked",
+  "conversation.mail.answered",
   "agent.session.connected",
   "agent.session.disconnected",
 ] as const;
@@ -129,6 +131,10 @@ const RESOURCE_TYPES = new Set<string>([
   "conversation.turn.interrupted",
   "agent.session.connected",
   "agent.session.disconnected",
+  // ADR-0072: both mail rows move the `linked_chats` list the detail
+  // resource carries (and the answered row is the card's other half).
+  "conversation.mail.asked",
+  "conversation.mail.answered",
 ]);
 
 export type ConnectionState = "live" | "reconnecting";

@@ -66,6 +66,9 @@ func (p *schProjects) ListMembers(context.Context, Caller, string) ([]MemberView
 func (p *schProjects) PutMember(context.Context, Caller, string, string, string) (MemberView, error) {
 	return MemberView{}, notExpected("PutMember")
 }
+func (p *schProjects) SetProjectAgentMail(context.Context, Caller, string, bool, int) (ProjectView, error) {
+	return ProjectView{}, notExpected("SetProjectAgentMail")
+}
 
 func notExpected(name string) error { return errSchNotExpected{name} }
 

@@ -28,6 +28,7 @@ import Transcript from "../Transcript";
 import type { TranscriptItem } from "../../api/transcript";
 import type { EventEnvelope } from "../../api/types";
 import { AgentSwitchDivider, agentSwitchFromEvent } from "./AgentSwitchDivider";
+import { MailCard, mailAskedFromEvent, mergeMailAnswered, type MailCardData } from "./MailCard";
 import type { ConversationSession } from "./useConversationSession";
 
 /** `Codex · gpt-5`, or just `Codex` when the profile names no model. */
@@ -86,11 +87,93 @@ export interface ConversationTranscriptProps {
   session: ConversationSession;
 }
 
-/** The session's transcript, with a divider where the agent was switched. */
+/**
+ * One render part: an optional agent-switch divider, the agent-mail cards
+ * opened at this point (ADR-0072), then the transcript items that follow.
+ * A mail card cuts the stream at its `conversation.mail.asked` frame — the
+ * worker dispatches after the final transcript flush, so the card lands
+ * directly under the answer that asked. `conversation.mail.answered` does
+ * not cut anything: it merges into the open card by link id, wherever in
+ * the window it sits.
+ */
+export interface TranscriptSegment {
+  divider: EventEnvelope | null;
+  mails: MailCardData[];
+  items: TranscriptItem[];
+}
+
+/** Cut the folded items at every agent-switch AND accepted-mail frame.
+ * Exported for tests (same reason as splitAtAgentSwitches, which stays for
+ * its own contract). */
+export function segmentTranscript(
+  items: readonly TranscriptItem[],
+  events: readonly EventEnvelope[],
+): TranscriptSegment[] {
+  const seqById = new Map<string, number>();
+  const seen = new Set<number>();
+  const frames: EventEnvelope[] = [];
+  for (const event of events) {
+    if (seen.has(event.global_seq)) continue;
+    seen.add(event.global_seq);
+    seqById.set(event.event_id, event.global_seq);
+    if (event.type === "conversation.agent.switched") {
+      frames.push(event);
+    } else if (event.type === "conversation.mail.asked" && mailAskedFromEvent(event)) {
+      // Only an accepted ask cuts the transcript; a rejected one is a
+      // journal row and a follow-up notice, never a card.
+      frames.push(event);
+    }
+  }
+  const parts: TranscriptSegment[] = [{ divider: null, mails: [], items: [] }];
+  let next = 0;
+  for (const item of items) {
+    const itemSeq = seqById.get(item.id);
+    if (itemSeq !== undefined) {
+      while (
+        next < frames.length &&
+        (seqById.get(frames[next].event_id) ?? Number.POSITIVE_INFINITY) < itemSeq
+      ) {
+        const frame = frames[next];
+        if (frame.type === "conversation.agent.switched") {
+          parts.push({ divider: frame, mails: [], items: [] });
+        } else {
+          const card = mailAskedFromEvent(frame);
+          if (card) parts.push({ divider: null, mails: [card], items: [] });
+        }
+        next += 1;
+      }
+    }
+    parts[parts.length - 1].items.push(item);
+  }
+  while (next < frames.length) {
+    const frame = frames[next];
+    if (frame.type === "conversation.agent.switched") {
+      parts.push({ divider: frame, mails: [], items: [] });
+    } else {
+      const card = mailAskedFromEvent(frame);
+      if (card) parts.push({ divider: null, mails: [card], items: [] });
+    }
+    next += 1;
+  }
+  // Fold every answered row into its card, then render. Answered rows need
+  // no position: the card belongs at the ask.
+  const answered = events.filter((event) => event.type === "conversation.mail.answered");
+  for (const part of parts) {
+    for (let i = 0; i < part.mails.length; i += 1) {
+      for (const event of answered) {
+        part.mails[i] = mergeMailAnswered(part.mails[i], event);
+      }
+    }
+  }
+  return parts;
+}
+
+/** The session's transcript, with a divider where the agent was switched
+ * and a mail card where an ask landed (ADR-0072). */
 export function ConversationTranscript({ session }: ConversationTranscriptProps) {
   const { data, transcript, events, isController, nameOf } = session;
-  const parts = splitAtAgentSwitches(transcript.items, events);
-  const switched = parts.length > 1;
+  const parts = segmentTranscript(transcript.items, events);
+  const switched = parts.some((part) => part.divider !== null);
 
   // The label for the run before any switch.
   let initial = "agent";
@@ -138,13 +221,22 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
           : initial;
         return (
           <div
-            key={part.divider ? part.divider.event_id : `segment-${index}`}
+            key={
+              part.divider ? part.divider.event_id : (part.mails[0]?.linkId ?? `segment-${index}`)
+            }
             className="space-y-[4px]"
           >
             {part.divider ? (
               <AgentSwitchDivider {...agentSwitchFromEvent(part.divider, nameOf)} />
             ) : null}
-            {part.items.length > 0 || !switched ? transcriptFor(part.items, label) : null}
+            {part.mails.length > 0 ? (
+              <ul className="list-none space-y-[4px]" data-testid="transcript-mail-cards">
+                {part.mails.map((card) => (
+                  <MailCard key={card.linkId} card={card} />
+                ))}
+              </ul>
+            ) : null}
+            {part.items.length > 0 || parts.length === 1 ? transcriptFor(part.items, label) : null}
           </div>
         );
       })}

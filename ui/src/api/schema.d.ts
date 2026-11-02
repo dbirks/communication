@@ -272,7 +272,11 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    patch?: never;
+    /**
+     * Move the project's agent-mail setting (ADR-0072)
+     * @description The project's one mutable setting today: `agent_mail_enabled` — the opt-in switch (default `false`) for chats in this project asking the agent of another repository in the project. Maintainer only. The write is optimistic against `version` (the token every project mutation already increments): a body naming a stale version is `409` and changes nothing. A successful patch returns the fresh project with `version` incremented; it appends no journal row — the setting is read where it is enforced.
+     */
+    patch: operations["patchProject"];
     trace?: never;
   };
   "/api/v1/projects/{projectId}/repos": {
@@ -330,6 +334,26 @@ export interface paths {
      * @description Answers "what is in the tracker right now" so a run can be started from an issue (ADR-0031, wishlist W3's read half; ADR-0061 makes it work for private repositories). The adapter calls `GET https://api.github.com/repos/{owner}/{repo}/issues` anonymously for a repository without an ADR-0061 credential and with `Authorization: Bearer <token>` for one that has it, so private repositories answer too; a credential that cannot be resolved is `502` with `code: github_credential_unresolvable`, never a silent anonymous retry. `git_url` is parsed into `owner/repo` and pull requests are filtered out. Nothing is stored — GitHub owns the issue data (`07`), and this route is not a trigger: webhooks/invocations and the `integration.query` node kind need the M6 tables and dedupe. `viewer` or above; bodies are truncated to 4000 bytes with `body_truncated` saying so. A non-GitHub remote is `422 not_a_github_repository`; upstream failures are `502` with a `github_repository_not_found`, `github_rate_limited` or `github_upstream_error` code.
      */
     get: operations["listRepositoryIssues"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/repos/{repositoryId}/notes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The caller's active assistant notes about one repository (ADR-0071)
+     * @description The `ASSISTANT NOTICED` panel (design 3a): this user's active notes about this repository, newest first. Notes are written by the assistant, one per intended reader — a note another user dismissed is nobody else's business, and a note nobody dismissed is still shown three at the most, the cap the panel draws (`AssistantNotesActiveCap`, enforced on the write). `viewer` or above: reading a repository's notes is reading the repository. A non-member, an unknown project and an unknown repository are one `404`, and the attempt is audited against the project it was aimed at. A note is `active` while it is neither dismissed nor past its `expires_at`; both are timestamps, so an inactive note is still a row (ADR-0071 § Storage). There is no write route on purpose: the half that produces notes is the server's own generator, and nothing a browser sends belongs in another user's panel.
+     */
+    get: operations["listRepositoryAssistantNotes"];
     put?: never;
     post?: never;
     delete?: never;
@@ -807,6 +831,46 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/conversations/{conversationId}/notes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The caller's active assistant notes about one thread (ADR-0071)
+     * @description The `ASSISTANT` note at the foot of the thread's side panel (design 2e), and the source of the `Make a workflow…` action of design 2f: this user's active notes about this conversation, newest first, at most three. Not nested under a project for the reason every other conversation route has — the thread's own project membership is the authorization scope — so a caller outside that project gets the same `404` as an unknown thread, and the store audits the refusal against the thread's project. `notes` is `[]` for a thread with nothing to say.
+     */
+    get: operations["listConversationAssistantNotes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/notes/{noteId}/dismiss": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Hide one assistant note, for this user only (ADR-0071)
+     * @description `dismiss` on the design's note: the note stops being active FOR THIS USER and nothing else. It stays in the ledger with `dismissed_at` set (it is what the assistant claimed, and the generator is evaluated against it), and the same note in the same scope for another user is untouched — dismissal is per user because the advice is per user. The id is the only input; there is no body. Answering `204` whether or not the note was already dismissed would be a false report of a write, so a second dismiss is `404` like any note this caller may not act on: not yours, already gone, or never there are one answer, and `403` never is — a `403` would confirm that somebody else was advised. The design's other half, `acting on a note removes it`, is the client's: there is no consume route, so the same note can be clicked twice (ADR-0071 § Dismissal).
+     */
+    post: operations["dismissAssistantNote"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/conversations/{conversationId}/messages": {
     parameters: {
       query?: never;
@@ -846,7 +910,7 @@ export interface paths {
      * @description `text/event-stream` of this conversation's rows from the `domain_events` journal — the transcript *is* the journal, scoped by `conversation_id`, so an API replica restarting (or the browser disconnecting) loses nothing that was committed. Framing, resume, gap-safety and the 15 s heartbeat are identical to `GET /api/v1/projects/{projectId}/events` (ADR-0014 §5, §9): `id: <global_seq>`, `event: <type>`, `data: <envelope JSON>`, replayed from `Last-Event-ID` or `?after=`.
      *     Rows are selected by `conversation_id`, and the resume cursor is resolved *through* that scope, so a cursor copied from another conversation replays nothing it should not. Every event also carries `project_id`, so the project stream remains a superset of this one. Authorization is the owning project's membership, checked at connect time and again before each delivery and heartbeat: a removed member stops receiving events (`06` edge case) and a non-member gets `404`.
      *     M2 event types on this stream, and the `payload` members of each (the envelope itself is `EventEnvelope`; payloads never carry secrets, and tool input/output are bounded previews the worker truncated, flagged by `truncated`):
-     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
+     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.mail.asked` | `conversation_id`, `turn_id`, `link_id`, `to_conversation_id`, `repo`, `question`, `state`, `reason` (ADR-0072: one chat's agent asked the agent of another repo in the project; `state` is asked — link_id names the conversation_links row — or rejected with `link_id` absent and `reason` naming why. Journaled on the asking conversation only) | | `conversation.mail.answered` | `conversation_id`, `link_id`, `from_conversation_id`, `to_conversation_id`, `repo`, `state`, `answer`, `reason`, `launcher_id` (ADR-0072: journaled on BOTH conversations with identical members besides `conversation_id`; `state` is answered (`answer` set), failed (the target turn ended non-completed; `reason`) or expired (the answer deadline passed first; `reason`). `launcher_id` is the target profile's launcher — the card's "← api · Codex" half; no journal row names a model, so none is claimed) | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
      *     Enumerated values, spelled exactly: `permission.decided`'s `status` is `decided`, `expired` or `cancelled`; `turn.interrupted`'s `reason` is `lease_expired`, `worker_gone` or `shutdown` (it always has a reason and never a `stop_reason` — nothing reported one); `control.transferred`'s `reason` is `taken`, `returned` or `lost_lease`; `session_origin` on `agent.session.connected` (and on session bindings) is `new` or `resumed`; on `conversation.turn.started` it is `new`, `resumed` or `reused`, describing how *this turn* met its session — `new`/`resumed` when the session was created/restored for this turn (matching that binding's `agent.session.connected`), `reused` when the worker kept the previous turn's live process; controller `kind` is `human`, `run_attempt` or `none`.
      *     `options` is an array of `{option_id, label, kind}` objects as the agent offered them (`kind` = the observed ACP option kind, e.g. `allow_once`); `agent.session.connected`'s `agent_capabilities` is the agent's own capability object, verbatim.
      *     `agent.session.disconnected`'s `reason` is a short machine-readable cause (`shutdown`, `replaced`, `process_exited`, `agent_switched` — ADR-0068: the live session was closed because the controller switched the conversation's agent profile and the next turn launches a new session — or the observed mid-turn death names `agent_process_exited` / `acp_connection_closed`); `detail` and `stderr_tail` ride it only when the emitter observed the evidence — the adapter's exit/transport verdict and the last bytes the harness wrote to stderr, both redacted and bounded by the emitter.
@@ -2662,6 +2726,8 @@ export interface components {
        * @enum {string}
        */
       my_role: "maintainer" | "contributor" | "viewer";
+      /** @description ADR-0072: the project's opt-in switch for agent mail across repos (a chat's agent asking the agent of another repository in the same project). Default `false`; only `patchProject` moves it. */
+      agent_mail_enabled?: boolean;
     };
     /**
      * ProjectCreate
@@ -2734,6 +2800,14 @@ export interface components {
     RepositoryPatch: {
       /** Format: uuid */
       credential_secret_id: string | null;
+    };
+    /**
+     * ProjectSettingsPatch
+     * @description Request body for `patchProject` (ADR-0072): the project's one mutable setting today is `agent_mail_enabled`, and `version` is the optimistic-concurrency token the write compares against — a stale version is `409` and changes nothing.
+     */
+    ProjectSettingsPatch: {
+      agent_mail_enabled: boolean;
+      version: number;
     };
     /**
      * Member
@@ -3201,6 +3275,40 @@ export interface components {
       created_at: string;
     };
     /**
+     * ConversationLink
+     * @description ADR-0072: one agent-mail link on a conversation, either direction — `direction` is from THIS conversation's point of view: `outgoing` = this chat asked, `incoming` = this chat was asked. `state` is the link's lifecycle (`asked` → one of `answered` / `failed` / `expired`); `answer` is set only when answered, `reason` only when failed or expired. `launcher_id` is the linked chat's agent-profile launcher — the card's "← api · Codex" half; no wire field names a model.
+     */
+    ConversationLink: {
+      /** Format: uuid */
+      id: string;
+      /** @enum {string} */
+      direction: "outgoing" | "incoming";
+      /** @description The repository the question was addressed to, as asked. */
+      repo_name: string;
+      /** @enum {string} */
+      state: "asked" | "answered" | "failed" | "expired";
+      question: string;
+      answer: string | null;
+      reason: string | null;
+      other_conversation: components["schemas"]["ConversationLinkOther"];
+      launcher_id: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      answered_at: string | null;
+    };
+    /**
+     * ConversationLinkOther
+     * @description The linked chat a ConversationLink points at — enough to render the side-panel row and the `open chat ›` link.
+     */
+    ConversationLinkOther: {
+      /** Format: uuid */
+      id: string;
+      title: string;
+      /** @enum {string} */
+      status: "active" | "idle" | "disconnected" | "archived";
+    };
+    /**
      * ConversationRunLink
      * @description Deep-link target for a run-linked conversation (ADR-0043): the run, node execution and attempt that opened it, taken from the NEWEST `attempts` row that references the conversation (`attempts.conversation_id`).
      */
@@ -3270,6 +3378,8 @@ export interface components {
       run_link: components["schemas"]["ConversationRunLink"] | null;
       /** @description ADR-0053: the runs this thread started (it stays open and links to them), creation order; empty when none. Every listed run is one the caller may see (the thread's visibility predicate ran first). */
       linked_runs: components["schemas"]["ConversationLinkedRun"][];
+      /** @description ADR-0072: the agent-mail links on this thread, either direction, newest first (bounded to 50 rows); empty until the project's agent-mail setting has produced a link here. The side panel's LINKED CHATS section and the transcript's mail cards read it. */
+      linked_chats?: components["schemas"]["ConversationLink"][];
     };
     /**
      * ConversationSummary
@@ -5756,6 +5866,119 @@ export interface components {
       };
     };
     /**
+     * AssistantNoteList
+     * @description ADR-0071: the caller's active assistant notes for one scope. `notes` is always an array — `[]` when there is nothing to say — because the panel's own rule is "render nothing when there is nothing", and a client should not have to tell an absent member apart from a bug.
+     */
+    AssistantNoteList: {
+      notes: components["schemas"]["AssistantNote"][];
+    };
+    /**
+     * AssistantNote
+     * @description ADR-0071: one quiet suggestion the assistant wrote FOR this user about one scope. `scope_kind`/`scope_id` are echoed so one client-side cache can key notes by pair without re-deriving them from the route that served them. `text` is the assistant's own sentence, rendered as text and never as markup; `action` is absent when the note only says something. Absent `expires_at` means no deadline — the note is active until dismissed.
+     */
+    AssistantNote: {
+      /**
+       * Format: uuid
+       * @description The `assistant_notes` row id; `dismiss` and the action keys are built on it.
+       */
+      id: string;
+      /**
+       * Format: uuid
+       * @description The project the note's scope lives in — the authorization scope.
+       */
+      project_id: string;
+      /**
+       * @description What `scope_id` names. The same two-valued CHECK migration 00027 puts on the row: `repository` notes come from the repository route, `conversation` notes from the thread route.
+       * @enum {string}
+       */
+      scope_kind: "repository" | "conversation";
+      /**
+       * Format: uuid
+       * @description A `repositories` id when `scope_kind` is `repository`, a `conversations` id when it is `conversation`. No foreign key can name both, so the store admits a note only when this id resolves to a row of that kind inside the note's own project, in the same statement that inserts it (ADR-0071 § Storage).
+       */
+      scope_id: string;
+      /** @description One sentence, in the assistant's own words — the 280 characters of the design's line, bounded as a database CHECK and counted as characters, not bytes. Model output: rendered as text. */
+      text: string;
+      action?: components["schemas"]["AssistantNoteAction"];
+      /**
+       * Format: date-time
+       * @description When the assistant wrote it. The list is ordered newest first by this.
+       */
+      created_at: string;
+      /**
+       * Format: date-time
+       * @description The horizon the generator chose, always in the future on a served note; absent for a note with no deadline. A note past this instant is inactive — it stops answering a list and cannot be dismissed, and the row stays (ADR-0071 § Storage).
+       */
+      expires_at?: string;
+    };
+    /**
+     * AssistantNoteAction
+     * @description ADR-0071: the one thing a note offers, as a CLOSED union discriminated on `kind` — `start_chat` (a new chat in the note's repository, prompt prefilled), `hand_off` (the run-by-hand form with these issues filled), `make_workflow` (the thread → workflow draft conversation, design 2f), `open_run` (a run the note refers to). The client switches on `kind` and navigates with a route it already owns: it never follows a link the note supplied, because the note is model output and model output is data, not instructions. This is why the union is allowlisted rather than a url or a free-form payload — a generated note cannot point a browser anywhere. A note with no action is a note with nothing to do.
+     */
+    AssistantNoteAction:
+      | components["schemas"]["AssistantNoteActionStartChat"]
+      | components["schemas"]["AssistantNoteActionHandOff"]
+      | components["schemas"]["AssistantNoteActionMakeWorkflow"]
+      | components["schemas"]["AssistantNoteActionOpenRun"];
+    /**
+     * AssistantNoteActionStartChat
+     * @description Open a new chat with this prompt filled in (design 3a's chat box). The note's own repository is the chat's binding; the prompt is prefill, not a sent message — starting is still the person's click.
+     */
+    AssistantNoteActionStartChat: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "start_chat";
+      /** @description The first message, offered rather than sent. */
+      prompt: string;
+    };
+    /**
+     * AssistantNoteActionHandOff
+     * @description Offer the run-by-hand form (1k) with these issue numbers filled in — the repo page's `Hand off` link, reached from a sentence instead of from an issue row. GitHub issue numbers of the note's own repository, positive and distinct; the form resolves them against the tracker and refuses one that is not there.
+     */
+    AssistantNoteActionHandOff: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "hand_off";
+      /** @description GitHub issue numbers, the same values an issue row shows as `#421`. */
+      issue_numbers: number[];
+    };
+    /**
+     * AssistantNoteActionMakeWorkflow
+     * @description Turn a thread into a workflow draft (design 2f): opens the assistant panel on `conversation_id` as context. A reference, not a command — the draft is never published, and the thread it names is checked when the panel opens, not when the note was written.
+     */
+    AssistantNoteActionMakeWorkflow: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "make_workflow";
+      /**
+       * Format: uuid
+       * @description The thread the draft workflow would be built from.
+       */
+      conversation_id: string;
+    };
+    /**
+     * AssistantNoteActionOpenRun
+     * @description Navigate to a run the note refers to ("the run that failed twice this afternoon"). A `runs` id and nothing else: the run page answers for the rest, and a run the caller cannot see is the 404 that page already gives.
+     */
+    AssistantNoteActionOpenRun: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "open_run";
+      /**
+       * Format: uuid
+       * @description The run to open.
+       */
+      run_id: string;
+    };
+    /**
      * Communication durable event envelope
      * @description Envelope for every row of the `domain_events` journal and every `data:` frame of the project SSE stream (communication-spec/09-api-events-data.md, 'Durable event envelope'). Identifiers are Postgres `uuid` values rendered as strings; timestamps are RFC 3339 in UTC. `global_seq` is the monotonic replay cursor used for SSE `Last-Event-ID` / `?after=`. The envelope is stable; the shape of `payload` is defined per event `type` and per `schema_version` by the event type's own schema.
      * @example {
@@ -6171,6 +6394,8 @@ export interface components {
     UserId: string;
     /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
     ConversationId: string;
+    /** @description Assistant note id (`uuid`). The route is not nested under a project or a conversation: the note's own `user_id` is the authorization scope, and a note that is not the caller's active note answers `404` — the same answer as one that never existed, so another user's advice is never confirmed (ADR-0071). */
+    NoteId: string;
     /** @description Permission prompt id (`uuid`) — the `permission_request_id` from `conversation.permission.requested`, i.e. the `permission_requests` row id. Not the ACP JSON-RPC request id, which never leaves the worker. */
     PermissionRequestId: string;
     /** @description Last event `global_seq` the client processed, sent automatically by `EventSource` on reconnect. Events with `global_seq` strictly greater than this are replayed before the stream goes live. */
@@ -6534,6 +6759,40 @@ export interface operations {
       404: components["responses"]["NotFound"];
     };
   };
+  patchProject: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectSettingsPatch"];
+      };
+    };
+    responses: {
+      /** @description The project with the moved setting and bumped version. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
   listRepositories: {
     parameters: {
       query?: never;
@@ -6679,6 +6938,44 @@ export interface operations {
       };
       /** @description GitHub refused or failed the read: an upstream `404` (private or missing repository) becomes `github_repository_not_found`, a spent budget (anonymous or the repository's token) becomes `github_rate_limited`, a configured credential this process could not resolve becomes `github_credential_unresolvable`, anything else (including the 10 s timeout) becomes `github_upstream_error`. */
       502: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  listRepositoryAssistantNotes: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description A `repositories` id belonging to the same project as the workspace. */
+        repositoryId: components["parameters"]["RepositoryId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's active notes, newest first, at most three; `notes` is `[]` when the assistant has nothing to say (never an absent member). Never cached (`no-store`). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantNoteList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      /** @description `projectId` or `repositoryId` is not a uuid. Checked before any lookup, so a malformed id never reaches the datastore. */
+      422: {
         headers: {
           "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
           [name: string]: unknown;
@@ -7222,6 +7519,95 @@ export interface operations {
       };
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
+    };
+  };
+  listConversationAssistantNotes: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's active notes about this thread (`no-store`). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantNoteList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      /** @description `conversationId` is not a uuid. Checked before any lookup, so a malformed id never reaches the datastore. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  dismissAssistantNote: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Assistant note id (`uuid`). The route is not nested under a project or a conversation: the note's own `user_id` is the authorization scope, and a note that is not the caller's active note answers `404` — the same answer as one that never existed, so another user's advice is never confirmed (ADR-0071). */
+        noteId: components["parameters"]["NoteId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Dismissed. No body; the note is out of this user's list from the next read on. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description Missing or wrong CSRF token / `Origin` (the mutation guard every POST on this surface carries), before any store call. */
+      403: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No such active note for this user — absent, expired, already dismissed, or owned by somebody else. The four are one answer on purpose (ADR-0071 § The 404 that must not explain itself). */
+      404: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description `noteId` is not a uuid. Checked before any lookup, so a malformed id never reaches the datastore. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
     };
   };
   postConversationMessage: {

@@ -322,6 +322,37 @@ type ConversationView struct {
 	// Agents (ADR-0068): the derived "agents in this chat" list with turn
 	// ranges, transcript order; empty for a conversation with no turns.
 	Agents []ConversationChatAgentView `json:"agents"`
+	// LinkedChats (ADR-0072): the agent-mail links on this conversation,
+	// either direction, newest first; empty when the project's agent-mail
+	// setting has never produced a link here.
+	LinkedChats []ConversationLinkView `json:"linked_chats"`
+}
+
+// ConversationLinkView is the ConversationLink schema: one agent-mail link
+// (ADR-0072) as the chat's side panel and mail card read it. Direction is
+// from THIS conversation's point of view: "outgoing" = this chat asked, "in"
+// = this chat was asked. Question/answer are the stored texts (answer is
+// null until the link is answered; reason is set only when it failed).
+type ConversationLinkView struct {
+	ID                string                    `json:"id"`
+	Direction         string                    `json:"direction"` // outgoing | incoming
+	RepoName          string                    `json:"repo_name"`
+	State             string                    `json:"state"` // asked | answered | failed | expired
+	Question          string                    `json:"question"`
+	Answer            *string                   `json:"answer"`
+	Reason            *string                   `json:"reason"`
+	OtherConversation ConversationLinkOtherView `json:"other_conversation"`
+	LauncherID        string                    `json:"launcher_id"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	AnsweredAt        *time.Time                `json:"answered_at"`
+}
+
+// ConversationLinkOtherView is the linked chat the row points at: enough to
+// render the row and the `open chat ›` link (id, title, live status).
+type ConversationLinkOtherView struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // ConversationSummaryView is the ConversationSummary schema: the project

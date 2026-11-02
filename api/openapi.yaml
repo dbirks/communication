@@ -198,6 +198,12 @@ tags:
       The read-only in-app assistant behind Ctrl K (ADR-0034): one question, a
       bounded turn of READ-ONLY tools that are the same store reads the routes
       above serve, issued as the caller. No write tool, no stored transcript.
+  - name: assistantNotes
+    description: >
+      Assistant notes (ADR-0071): the quiet suggestions the assistant writes,
+      per user, about one repository or one thread — read them, dismiss one.
+      Nothing here accepts a note from a browser: the generator is the
+      server's own assistant, never this API.
 paths:
   /api/v1/system/health:
     get:
@@ -431,8 +437,10 @@ paths:
       summary: Update my display preferences
       description: |
         Deep-merges any subset of the document, per section: an absent member
-        is unchanged, and `expanded` merges key-by-key. The answer is the
-        full document with the new `updated_at`. Unknown keys at any level
+        is unchanged, and `expanded` merges key-by-key — an explicit
+        `true`/`false` sets a key and a key set to `null` deletes it (the
+        merge never drops keys otherwise). The answer is the full document
+        with the new `updated_at`. Unknown keys at any level
         and unknown enum values are `400` problem+json naming the field
         (stable code `invalid_preferences`); the `expanded` map takes at most
         500 keys, each at most 120 characters. Subject to the same
@@ -547,6 +555,52 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: patchProject
+      tags: [projects]
+      summary: Move the project's agent-mail setting (ADR-0072)
+      description: >
+        The project's one mutable setting today: `agent_mail_enabled` — the
+        opt-in switch (default `false`) for chats in this project asking the
+        agent of another repository in the project. Maintainer only. The
+        write is optimistic against `version` (the token every project
+        mutation already increments): a body naming a stale version is `409`
+        and changes nothing. A successful patch returns the fresh project
+        with `version` incremented; it appends no journal row — the setting
+        is read where it is enforced.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectSettingsPatch"
+      responses:
+        "200":
+          description: The project with the moved setting and bumped version.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/projects/{projectId}/repos:
     get:
       operationId: listRepositories
@@ -739,6 +793,59 @@ paths:
             not resolve becomes `github_credential_unresolvable`, anything
             else (including the 10 s timeout) becomes
             `github_upstream_error`.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/projects/{projectId}/repos/{repositoryId}/notes:
+    get:
+      operationId: listRepositoryAssistantNotes
+      tags: [assistantNotes]
+      summary: The caller's active assistant notes about one repository (ADR-0071)
+      description: >
+        The `ASSISTANT NOTICED` panel (design 3a): this user's active notes
+        about this repository, newest first. Notes are written by the
+        assistant, one per intended reader — a note another user dismissed is
+        nobody else's business, and a note nobody dismissed is still shown
+        three at the most, the cap the panel draws (`AssistantNotesActiveCap`,
+        enforced on the write). `viewer` or above: reading a repository's
+        notes is reading the repository. A non-member, an unknown project and
+        an unknown repository are one `404`, and the attempt is audited
+        against the project it was aimed at. A note is `active` while it is
+        neither dismissed nor past its `expires_at`; both are timestamps, so
+        an inactive note is still a row (ADR-0071 § Storage). There is no
+        write route on purpose: the half that produces notes is the server's
+        own generator, and nothing a browser sends belongs in another user's
+        panel.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/RepositoryId"
+      responses:
+        "200":
+          description: >
+            The caller's active notes, newest first, at most three; `notes` is
+            `[]` when the assistant has nothing to say (never an absent
+            member). Never cached (`no-store`).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantNoteList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `projectId` or `repositoryId` is not a uuid. Checked before any
+            lookup, so a malformed id never reaches the datastore.
           headers:
             X-Communication-Replica:
               $ref: "#/components/headers/XCommunicationReplica"
@@ -1641,6 +1748,117 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/conversations/{conversationId}/notes:
+    get:
+      operationId: listConversationAssistantNotes
+      tags: [assistantNotes]
+      summary: The caller's active assistant notes about one thread (ADR-0071)
+      description: >
+        The `ASSISTANT` note at the foot of the thread's side panel (design
+        2e), and the source of the `Make a workflow…` action of design 2f:
+        this user's active notes about this conversation, newest first, at
+        most three. Not nested under a project for the reason every other
+        conversation route has — the thread's own project membership is the
+        authorization scope — so a caller outside that project gets the same
+        `404` as an unknown thread, and the store audits the refusal against
+        the thread's project. `notes` is `[]` for a thread with nothing to
+        say.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ConversationId"
+      responses:
+        "200":
+          description: The caller's active notes about this thread (`no-store`).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantNoteList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `conversationId` is not a uuid. Checked before any lookup, so a
+            malformed id never reaches the datastore.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/notes/{noteId}/dismiss:
+    post:
+      operationId: dismissAssistantNote
+      tags: [assistantNotes]
+      summary: Hide one assistant note, for this user only (ADR-0071)
+      description: >
+        `dismiss` on the design's note: the note stops being active FOR THIS
+        USER and nothing else. It stays in the ledger with `dismissed_at` set
+        (it is what the assistant claimed, and the generator is evaluated
+        against it), and the same note in the same scope for another user is
+        untouched — dismissal is per user because the advice is per user. The
+        id is the only input; there is no body. Answering `204` whether or not
+        the note was already dismissed would be a false report of a write, so
+        a second dismiss is `404` like any note this caller may not act on:
+        not yours, already gone, or never there are one answer, and `403`
+        never is — a `403` would confirm that somebody else was advised. The
+        design's other half, `acting on a note removes it`, is the client's:
+        there is no consume route, so the same note can be clicked twice
+        (ADR-0071 § Dismissal).
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "204":
+          description: >
+            Dismissed. No body; the note is out of this user's list from the
+            next read on.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            Missing or wrong CSRF token / `Origin` (the mutation guard every
+            POST on this surface carries), before any store call.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: >
+            No such active note for this user — absent, expired, already
+            dismissed, or owned by somebody else. The four are one answer on
+            purpose (ADR-0071 § The 404 that must not explain itself).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: >
+            `noteId` is not a uuid. Checked before any lookup, so a malformed
+            id never reaches the datastore.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/conversations/{conversationId}/messages:
     post:
       operationId: postConversationMessage
@@ -1746,6 +1964,8 @@ paths:
         | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` |
         | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` |
         | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` |
+        | `conversation.mail.asked` | `conversation_id`, `turn_id`, `link_id`, `to_conversation_id`, `repo`, `question`, `state`, `reason` (ADR-0072: one chat's agent asked the agent of another repo in the project; `state` is asked — link_id names the conversation_links row — or rejected with `link_id` absent and `reason` naming why. Journaled on the asking conversation only) |
+        | `conversation.mail.answered` | `conversation_id`, `link_id`, `from_conversation_id`, `to_conversation_id`, `repo`, `state`, `answer`, `reason`, `launcher_id` (ADR-0072: journaled on BOTH conversations with identical members besides `conversation_id`; `state` is answered (`answer` set), failed (the target turn ended non-completed; `reason`) or expired (the answer deadline passed first; `reason`). `launcher_id` is the target profile's launcher — the card's "← api · Codex" half; no journal row names a model, so none is claimed) |
         | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` |
         | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) |
         | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` |
@@ -5705,6 +5925,20 @@ components:
         type: string
         format: uuid
         pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      description: >
+        Assistant note id (`uuid`). The route is not nested under a project or
+        a conversation: the note's own `user_id` is the authorization scope,
+        and a note that is not the caller's active note answers `404` — the
+        same answer as one that never existed, so another user's advice is
+        never confirmed (ADR-0071).
+      schema:
+        type: string
+        format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     PermissionRequestId:
       name: requestId
       in: path
@@ -6463,6 +6697,12 @@ components:
           description: >
             The caller's role in this project. Organization admins who hold no
             explicit membership are reported as `maintainer`.
+        agent_mail_enabled:
+          type: boolean
+          description: >
+            ADR-0072: the project's opt-in switch for agent mail across repos
+            (a chat's agent asking the agent of another repository in the
+            same project). Default `false`; only `patchProject` moves it.
       example:
         id: 01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80
         slug: widgets
@@ -6607,6 +6847,22 @@ components:
             - string
             - "null"
           format: uuid
+    ProjectSettingsPatch:
+      title: ProjectSettingsPatch
+      description: >
+        Request body for `patchProject` (ADR-0072): the project's one mutable
+        setting today is `agent_mail_enabled`, and `version` is the
+        optimistic-concurrency token the write compares against — a stale
+        version is `409` and changes nothing.
+      type: object
+      required: [agent_mail_enabled, version]
+      additionalProperties: false
+      properties:
+        agent_mail_enabled:
+          type: boolean
+        version:
+          type: integer
+          minimum: 1
     Member:
       title: Member
       description: A project membership with the member's display name resolved.
@@ -7426,6 +7682,63 @@ components:
         created_at:
           type: string
           format: date-time
+    ConversationLink:
+      title: ConversationLink
+      description: >
+        ADR-0072: one agent-mail link on a conversation, either direction —
+        `direction` is from THIS conversation's point of view: `outgoing` =
+        this chat asked, `incoming` = this chat was asked. `state` is the
+        link's lifecycle (`asked` → one of `answered` / `failed` / `expired`);
+        `answer` is set only when answered, `reason` only when failed or
+        expired. `launcher_id` is the linked chat's agent-profile launcher —
+        the card's "← api · Codex" half; no wire field names a model.
+      type: object
+      required: [id, direction, repo_name, state, question, answer, reason, other_conversation, launcher_id, created_at, answered_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum: [outgoing, incoming]
+        repo_name:
+          type: string
+          description: The repository the question was addressed to, as asked.
+        state:
+          type: string
+          enum: [asked, answered, failed, expired]
+        question:
+          type: string
+        answer:
+          type: ["string", "null"]
+        reason:
+          type: ["string", "null"]
+        other_conversation:
+          $ref: "#/components/schemas/ConversationLinkOther"
+        launcher_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        answered_at:
+          type: ["string", "null"]
+          format: date-time
+    ConversationLinkOther:
+      title: ConversationLinkOther
+      description: >
+        The linked chat a ConversationLink points at — enough to render the
+        side-panel row and the `open chat ›` link.
+      type: object
+      required: [id, title, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          type: string
+          enum: [active, idle, disconnected, archived]
     ConversationRunLink:
       title: ConversationRunLink
       description: >
@@ -7567,6 +7880,15 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ConversationLinkedRun"
+        linked_chats:
+          description: >
+            ADR-0072: the agent-mail links on this thread, either direction,
+            newest first (bounded to 50 rows); empty until the project's
+            agent-mail setting has produced a link here. The side panel's
+            LINKED CHATS section and the transcript's mail cards read it.
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationLink"
     ConversationSummary:
       title: ConversationSummary
       description: >
@@ -12060,7 +12382,9 @@ components:
       title: UserPreferencesPatch
       description: >
         The PATCH body: any subset of the document, deep-merged per section.
-        An absent member is unchanged; `expanded` merges key-by-key. Unknown
+        An absent member is unchanged; `expanded` merges key-by-key, where a
+        `true`/`false` value sets the key and a `null` value deletes it
+        (deleting an absent key is a no-op). Unknown
         keys and unknown enum values are `400` problem+json naming the
         field.
       type: object
@@ -12081,7 +12405,10 @@ components:
             expanded:
               type: object
               additionalProperties:
-                type: boolean
+                type: [boolean, "null"]
+                description: >-
+                  true/false sets the key; null deletes it from the merged
+                  document.
         assistant:
           type: object
           additionalProperties: false
@@ -12089,3 +12416,188 @@ components:
             trust_level:
               type: string
               enum: [ask_all, ask_risky, no_ask]
+    AssistantNoteList:
+      title: AssistantNoteList
+      description: >
+        ADR-0071: the caller's active assistant notes for one scope. `notes` is
+        always an array — `[]` when there is nothing to say — because the
+        panel's own rule is "render nothing when there is nothing", and a
+        client should not have to tell an absent member apart from a bug.
+      type: object
+      additionalProperties: false
+      required: [notes]
+      properties:
+        notes:
+          type: array
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/AssistantNote"
+    AssistantNote:
+      title: AssistantNote
+      description: >
+        ADR-0071: one quiet suggestion the assistant wrote FOR this user about
+        one scope. `scope_kind`/`scope_id` are echoed so one client-side cache
+        can key notes by pair without re-deriving them from the route that
+        served them. `text` is the assistant's own sentence, rendered as text
+        and never as markup; `action` is absent when the note only says
+        something. Absent `expires_at` means no deadline — the note is active
+        until dismissed.
+      type: object
+      additionalProperties: false
+      required: [id, project_id, scope_kind, scope_id, text, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          description: The `assistant_notes` row id; `dismiss` and the action keys are built on it.
+        project_id:
+          type: string
+          format: uuid
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          description: The project the note's scope lives in — the authorization scope.
+        scope_kind:
+          type: string
+          enum: [repository, conversation]
+          description: >
+            What `scope_id` names. The same two-valued CHECK migration 00027
+            puts on the row: `repository` notes come from the repository route,
+            `conversation` notes from the thread route.
+        scope_id:
+          type: string
+          format: uuid
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          description: >
+            A `repositories` id when `scope_kind` is `repository`, a
+            `conversations` id when it is `conversation`. No foreign key can
+            name both, so the store admits a note only when this id resolves
+            to a row of that kind inside the note's own project, in the same
+            statement that inserts it (ADR-0071 § Storage).
+        text:
+          type: string
+          minLength: 1
+          maxLength: 280
+          description: >
+            One sentence, in the assistant's own words — the 280 characters of
+            the design's line, bounded as a database CHECK and counted as
+            characters, not bytes. Model output: rendered as text.
+        action:
+          $ref: "#/components/schemas/AssistantNoteAction"
+        created_at:
+          type: string
+          format: date-time
+          description: When the assistant wrote it. The list is ordered newest first by this.
+        expires_at:
+          type: string
+          format: date-time
+          description: >
+            The horizon the generator chose, always in the future on a served
+            note; absent for a note with no deadline. A note past this instant
+            is inactive — it stops answering a list and cannot be dismissed,
+            and the row stays (ADR-0071 § Storage).
+    AssistantNoteAction:
+      title: AssistantNoteAction
+      description: >
+        ADR-0071: the one thing a note offers, as a CLOSED union discriminated
+        on `kind` — `start_chat` (a new chat in the note's repository, prompt
+        prefilled), `hand_off` (the run-by-hand form with these issues
+        filled), `make_workflow` (the thread → workflow draft conversation,
+        design 2f), `open_run` (a run the note refers to). The client switches
+        on `kind` and navigates with a route it already owns: it never
+        follows a link the note supplied, because the note is model output and
+        model output is data, not instructions. This is why the union is
+        allowlisted rather than a url or a free-form payload — a generated
+        note cannot point a browser anywhere. A note with no action is a note
+        with nothing to do.
+      discriminator:
+        propertyName: kind
+        mapping:
+          start_chat: "#/components/schemas/AssistantNoteActionStartChat"
+          hand_off: "#/components/schemas/AssistantNoteActionHandOff"
+          make_workflow: "#/components/schemas/AssistantNoteActionMakeWorkflow"
+          open_run: "#/components/schemas/AssistantNoteActionOpenRun"
+      oneOf:
+        - $ref: "#/components/schemas/AssistantNoteActionStartChat"
+        - $ref: "#/components/schemas/AssistantNoteActionHandOff"
+        - $ref: "#/components/schemas/AssistantNoteActionMakeWorkflow"
+        - $ref: "#/components/schemas/AssistantNoteActionOpenRun"
+    AssistantNoteActionStartChat:
+      title: AssistantNoteActionStartChat
+      description: >
+        Open a new chat with this prompt filled in (design 3a's chat box). The
+        note's own repository is the chat's binding; the prompt is prefill, not
+        a sent message — starting is still the person's click.
+      type: object
+      additionalProperties: false
+      required: [kind, prompt]
+      properties:
+        kind:
+          type: string
+          enum: [start_chat]
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: The first message, offered rather than sent.
+    AssistantNoteActionHandOff:
+      title: AssistantNoteActionHandOff
+      description: >
+        Offer the run-by-hand form (1k) with these issue numbers filled in —
+        the repo page's `Hand off` link, reached from a sentence instead of
+        from an issue row. GitHub issue numbers of the note's own repository,
+        positive and distinct; the form resolves them against the tracker and
+        refuses one that is not there.
+      type: object
+      additionalProperties: false
+      required: [kind, issue_numbers]
+      properties:
+        kind:
+          type: string
+          enum: [hand_off]
+        issue_numbers:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items:
+            type: integer
+            minimum: 1
+          description: GitHub issue numbers, the same values an issue row shows as `#421`.
+    AssistantNoteActionMakeWorkflow:
+      title: AssistantNoteActionMakeWorkflow
+      description: >
+        Turn a thread into a workflow draft (design 2f): opens the assistant
+        panel on `conversation_id` as context. A reference, not a command —
+        the draft is never published, and the thread it names is checked when
+        the panel opens, not when the note was written.
+      type: object
+      additionalProperties: false
+      required: [kind, conversation_id]
+      properties:
+        kind:
+          type: string
+          enum: [make_workflow]
+        conversation_id:
+          type: string
+          format: uuid
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          description: The thread the draft workflow would be built from.
+    AssistantNoteActionOpenRun:
+      title: AssistantNoteActionOpenRun
+      description: >
+        Navigate to a run the note refers to ("the run that failed twice this
+        afternoon"). A `runs` id and nothing else: the run page answers for the
+        rest, and a run the caller cannot see is the 404 that page already
+        gives.
+      type: object
+      additionalProperties: false
+      required: [kind, run_id]
+      properties:
+        kind:
+          type: string
+          enum: [open_run]
+        run_id:
+          type: string
+          format: uuid
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          description: The run to open.

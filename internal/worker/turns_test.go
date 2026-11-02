@@ -324,7 +324,15 @@ func newFakeSession(info domain.SessionInfo) *fakeSession {
 
 func (s *fakeSession) Info() domain.SessionInfo { return s.info }
 
-func (s *fakeSession) Prompt(ctx context.Context, _ string) (domain.StopReason, error) {
+// promptTexts records every prompt text the loop actually sent (ADR-0072:
+// the agent-mail preamble rides the wire but never the journal).
+var fakeSessionPromptMu sync.Mutex
+var fakeSessionPromptTexts []string
+
+func (s *fakeSession) Prompt(ctx context.Context, prompt string) (domain.StopReason, error) {
+	fakeSessionPromptMu.Lock()
+	fakeSessionPromptTexts = append(fakeSessionPromptTexts, prompt)
+	fakeSessionPromptMu.Unlock()
 	if s.promptFn != nil {
 		return s.promptFn(ctx, s)
 	}

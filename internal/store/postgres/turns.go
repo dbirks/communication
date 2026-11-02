@@ -33,6 +33,14 @@ type TurnStore struct {
 	// LeaseTTL is the lease this store hands out at claim time; zero uses
 	// worker.DefaultLeaseTTL (30 s, ADR-0016 §3).
 	LeaseTTL time.Duration
+
+	// MailAnswerTimeout bounds how long a dispatched ask may wait in `asked`
+	// before the reconciler expires it; zero uses DefaultMailAnswerTimeout
+	// (ADR-0072).
+	MailAnswerTimeout time.Duration
+	// MailCap caps the links one conversation may open; zero uses
+	// DefaultMailCap (ADR-0072).
+	MailCap int
 }
 
 var _ worker.TurnStore = (*TurnStore)(nil)
@@ -94,14 +102,19 @@ func (s *TurnStore) ClaimTurn(ctx context.Context, workerID string) (worker.Clai
 
 	err = s.Pool.QueryRow(ctx, `
 		SELECT t.prompt, t.submitted_by::text, c.project_id::text, p.organization_id::text,
-		       ap.launcher_id, ap.permission_mode,
-		       COALESCE(t.agent_profile_id, c.agent_profile_id)::text
+		       ap.launcher_id, COALESCE(t.permission_override, ap.permission_mode),
+		       COALESCE(t.agent_profile_id, c.agent_profile_id)::text,
+		       p.agent_mail_enabled AND t.mail_link_id IS NULL
+		         AND NOT EXISTS (
+		             SELECT 1 FROM conversation_links ml
+		             WHERE ml.to_conversation_id = c.id
+		         )
 		FROM conversation_turns t
 		JOIN conversations c ON c.id = t.conversation_id
 		JOIN projects p ON p.id = c.project_id
 		JOIN agent_profiles ap ON ap.id = COALESCE(t.agent_profile_id, c.agent_profile_id)
 		WHERE t.id = $1`, turnID).
-		Scan(&c.Prompt, &c.SubmittedBy, &c.ProjectID, &c.OrganizationID, &c.LauncherID, &c.PermissionMode, &c.AgentProfileID)
+		Scan(&c.Prompt, &c.SubmittedBy, &c.ProjectID, &c.OrganizationID, &c.LauncherID, &c.PermissionMode, &c.AgentProfileID, &c.MailAllowed)
 	if err != nil {
 		return worker.Claim{}, false, fmt.Errorf("postgres: read claimed turn %s: %w", turnID, err)
 	}
@@ -355,7 +368,13 @@ func (s *TurnStore) FinishTurn(ctx context.Context, c worker.Claim, o worker.Tur
 			ActorID:   c.WorkerID,
 			Payload:   payload,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		// Agent mail (ADR-0072): if this turn is a link's answering turn, the
+		// same fenced transaction settles the link, journals the answer on
+		// both chats and queues the follow-up prompt on the asking chat.
+		return trnResolveMailTx(ctx, tx, c, o)
 	})
 }
 

@@ -54,6 +54,9 @@ type ProjectView struct {
 	CreatedAt   time.Time `json:"created_at"`
 	Version     int       `json:"version"`
 	MyRole      string    `json:"my_role"`
+	// AgentMailEnabled is the ADR-0072 project setting (default false): chats
+	// in this project may ask the agent of another repo in the project.
+	AgentMailEnabled bool `json:"agent_mail_enabled"`
 }
 
 // RepositoryView is the Repository schema of api/openapi.yaml. Credential is
@@ -96,6 +99,10 @@ type ProjectStore interface {
 	PatchRepositoryCredential(ctx context.Context, c Caller, projectID, repositoryID, credentialSecretID string) (RepositoryView, error)
 	ListMembers(ctx context.Context, c Caller, projectID string) ([]MemberView, error)
 	PutMember(ctx context.Context, c Caller, projectID, userID, role string) (MemberView, error)
+	// SetProjectAgentMail moves the ADR-0072 agent-mail setting, CAS against
+	// version; a stale version is ErrProjectConflict. Maintainer-only at the
+	// handler (requireManage).
+	SetProjectAgentMail(ctx context.Context, c Caller, projectID string, enabled bool, version int) (ProjectView, error)
 	RecordDenied(ctx context.Context, c Caller, projectID, action string) error
 }
 
@@ -137,6 +144,7 @@ func RegisterProjects(s *Server, store ProjectStore) {
 	s.HandleAuthed("GET /api/v1/projects", http.HandlerFunc(h.listProjects))
 	s.HandleAuthed("POST /api/v1/projects", http.HandlerFunc(h.createProject))
 	s.HandleAuthed("GET /api/v1/projects/{projectId}", http.HandlerFunc(h.getProject))
+	s.HandleAuthed("PATCH /api/v1/projects/{projectId}", http.HandlerFunc(h.patchProject))
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/repos", http.HandlerFunc(h.listRepositories))
 	s.HandleAuthed("POST /api/v1/projects/{projectId}/repos", http.HandlerFunc(h.addRepository))
 	s.HandleAuthed("PATCH /api/v1/projects/{projectId}/repos/{repositoryId}", http.HandlerFunc(h.patchRepository))
@@ -178,6 +186,13 @@ type prjRepositoryPatchBody struct {
 
 type prjMemberPutBody struct {
 	Role string `json:"role"`
+}
+
+// prjSettingsPatchBody keeps agent_mail_enabled as a pointer: absent is a
+// 422 (the one field this route moves must be named), not a silent false.
+type prjSettingsPatchBody struct {
+	AgentMailEnabled *bool `json:"agent_mail_enabled"`
+	Version          int   `json:"version"`
 }
 
 // prjList is the {items:[...]} envelope every collection route returns, so a
@@ -256,6 +271,41 @@ func (h *prjHandlers) getProject(w http.ResponseWriter, r *http.Request) {
 	project, err := h.store.GetProject(r.Context(), c, projectID)
 	if err != nil {
 		h.fail(w, r, c, projectID, "project.get", prjNoConflict, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, project)
+}
+
+// prjSettingsConflict is the 409 detail for a CAS loss on the settings patch.
+const prjSettingsConflict = "The project changed beneath you; refetch it and retry with the current version."
+
+// patchProject moves the ADR-0072 agent-mail setting (the project's only
+// mutable knob today). Maintainer-only; optimistic against `version`.
+func (h *prjHandlers) patchProject(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	projectID := r.PathValue("projectId")
+	if !h.requireManage(w, r, c, projectID, "project.settings.update") {
+		return
+	}
+	var body prjSettingsPatchBody
+	if err := DecodeJSON(r, &body); err != nil {
+		h.badRequest(w, r, err)
+		return
+	}
+	if body.AgentMailEnabled == nil {
+		prjInvalid(w, "agent_mail_enabled is required (true or false).")
+		return
+	}
+	if body.Version < 1 {
+		prjInvalid(w, "version must be at least 1.")
+		return
+	}
+	project, err := h.store.SetProjectAgentMail(r.Context(), c, projectID, *body.AgentMailEnabled, body.Version)
+	if err != nil {
+		h.fail(w, r, c, projectID, "project.settings.update", prjSettingsConflict, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, project)
