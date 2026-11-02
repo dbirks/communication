@@ -42,6 +42,20 @@ var (
 	// ErrConversationValidation is a well-formed request the schema would
 	// reject (an unknown agent profile, an option the agent never offered): 422.
 	ErrConversationValidation = errors.New("postgres: conversation request failed validation")
+	// ErrConversationRepositoryNotFound is the answer to a well-formed
+	// `repository` LIST filter that names no repository of the project
+	// (ADR-0067): 404 — a query parameter naming a resource is answered like
+	// the resource route answers absence, and within a project the repository
+	// list is already visible to every member, so nothing leaks. A CREATE
+	// body naming such a repository is ErrConversationValidation (422) —
+	// there the client named a body field it got wrong.
+	ErrConversationRepositoryNotFound = errors.New("postgres: conversation repository filter names no repository of this project")
+	// ErrConversationBadRequest is the ADR-0068 switch-agent answer to a body
+	// field that names no legal value (an agent_profile_id that is not one of
+	// the project's organization's profiles): 400. It is distinct from
+	// ErrConversationValidation (422) because the switch route documents 400
+	// for that refusal (ADR-0068); the routes that predate it keep 422.
+	ErrConversationBadRequest = errors.New("postgres: conversation request is a bad request")
 )
 
 // Conflict kinds (ADR-0016 §2/§5, api/openapi.yaml ConversationConflict). The
@@ -105,6 +119,10 @@ type CnvProfile struct {
 	// (migration 00013), read back as JSON text; nil while the profile has no
 	// resolved lock — the honest "not locked" state, not an empty list.
 	APMLockContents *apmLockContentsJSON
+	// Model is the profile's pinned display model (ADR-0068, migration
+	// 00023): what "Codex · gpt-5" renders. "" means the profile names no
+	// model — the harness default, the honest state, not a missing read.
+	Model string
 }
 
 // CnvControl is the one-row-per-conversation controller lock. UserID is "" for
@@ -142,6 +160,15 @@ type CnvTurn struct {
 	CreatedAt         time.Time
 	StartedAt         *time.Time
 	FinishedAt        *time.Time
+	// AgentProfileID is the profile this turn ran on (ADR-0068), stamped when
+	// the turn was enqueued. Rows written before migration 00023 carry no stamp,
+	// and the reads COALESCE through the conversation's profile — which for
+	// those rows was never mutable, so it IS the recorded answer.
+	AgentProfileID   string
+	AgentProfileName string
+	// AgentProfileModel is the profile's pinned model for display ("" = the
+	// profile names none).
+	AgentProfileModel string
 }
 
 // IsActive reports whether the turn still occupies the conversation
@@ -256,6 +283,28 @@ type CnvConversation struct {
 	// LinkedRuns (ADR-0053): the runs this conversation started
 	// (runs.source_conversation_id), creation order; nil = none.
 	LinkedRuns []CnvLinkedRun
+	// AgentProfileModel is the next-turn profile's pinned display model
+	// ("" = it names none) — the composer chip's "Codex · gpt-5" half
+	// (ADR-0068).
+	AgentProfileModel string
+	// Agents (ADR-0068) is the derived "agents in this chat" list: one entry
+	// per maximal run of consecutive turns on the same profile, with the
+	// turn-range the side panel renders. Read, never stored (cnvChatAgents).
+	Agents []CnvChatAgent
+}
+
+// CnvChatAgent is one entry of the derived "agents in this chat" list
+// (ADR-0068): a profile, its display model, and the range of turn ordinals
+// (1-based, conversation creation order) it ran consecutively. A profile that
+// is switched away from and back appears twice — the ranges describe what the
+// transcript shows, they are not a per-profile aggregate.
+type CnvChatAgent struct {
+	AgentProfileID   string
+	AgentProfileName string
+	Model            string
+	FirstTurn        int
+	LastTurn         int
+	TurnCount        int
 }
 
 // CnvSummary is a list row: enough for a project timeline (who is driving, is
@@ -612,7 +661,7 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 		var contents *string
 		if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &contents); err != nil {
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &contents); err != nil {
 			return nil, fmt.Errorf("postgres: scan agent profile: %w", err)
 		}
 		p.CreatedAt = p.CreatedAt.UTC()
@@ -684,6 +733,7 @@ const cnvConversationSelect = `
 	SELECT c.id::text, c.project_id::text, p.organization_id::text,
 	       COALESCE(m.role, 'maintainer'),
 	       c.agent_profile_id::text, ap.name, ap.launcher_id,
+	       COALESCE(ap.model, ''), c.agent_profile_version,
 	       c.title, c.status, c.created_by::text, COALESCE(cb.display_name, ''),
 	       c.created_at, c.updated_at,
 	       ctl.controller_kind, COALESCE(ctl.controller_user_id::text, ''),
@@ -705,6 +755,7 @@ func cnvScanConversation(row interface{ Scan(dest ...any) error }) (CnvConversat
 	var cv CnvConversation
 	err := row.Scan(&cv.ID, &cv.ProjectID, &cv.OrganizationID, &cv.MyRole,
 		&cv.AgentProfileID, &cv.AgentProfileName, &cv.LauncherID,
+		&cv.AgentProfileModel, &cv.AgentProfileVersion,
 		&cv.Title, &cv.Status, &cv.CreatedBy, &cv.CreatedByDisplay,
 		&cv.CreatedAt, &cv.UpdatedAt,
 		&cv.Control.Kind, &cv.Control.UserID, &cv.Control.DisplayName,
@@ -761,7 +812,58 @@ func cnvGetConversation(ctx context.Context, q prjQuerier, c Caller, conversatio
 		return CnvConversation{}, err
 	}
 	cv.LinkedRuns = linked
+	agents, err := cnvChatAgents(ctx, q, cv.ID)
+	if err != nil {
+		return CnvConversation{}, err
+	}
+	cv.Agents = agents
 	return cv, nil
+}
+
+// cnvChatAgents derives the "agents in this chat" list (ADR-0068): the
+// conversation's turns in creation order, numbered 1..n, segmented into the
+// maximal runs of consecutive turns on one profile (the classic gaps trick:
+// the global ordinal minus the per-profile ordinal is constant exactly across a
+// consecutive run). Unstamped pre-migration turns COALESCE through the
+// conversation's profile — for those rows the conversation profile is the
+// recorded answer because nothing could move it until ADR-0068. The list is
+// bounded by the conversation's turn count and reads through the
+// conversation_turns_agent_profile_idx access path (migration 00023).
+func cnvChatAgents(ctx context.Context, q prjQuerier, conversationID string) ([]CnvChatAgent, error) {
+	rows, err := q.Query(ctx, `
+		WITH ranked AS (
+			SELECT COALESCE(t.agent_profile_id, c.agent_profile_id) AS profile_id,
+			       COALESCE(ap.name, '') AS name,
+			       COALESCE(ap.model, '') AS model,
+			       row_number() OVER (ORDER BY t.created_at, t.id) AS n
+			FROM conversation_turns t
+			JOIN conversations c ON c.id = t.conversation_id
+			LEFT JOIN agent_profiles ap ON ap.id = COALESCE(t.agent_profile_id, c.agent_profile_id)
+			WHERE t.conversation_id = $1::uuid
+		), segmented AS (
+			SELECT profile_id, name, model, n,
+			       n - row_number() OVER (PARTITION BY profile_id ORDER BY n) AS seg
+			FROM ranked
+		)
+		SELECT profile_id::text, name, model,
+		       min(n)::int, max(n)::int, count(*)::int
+		FROM segmented
+		GROUP BY profile_id, name, model, seg
+		ORDER BY min(n)`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: conversation agents: %w", err)
+	}
+	defer rows.Close()
+	out := []CnvChatAgent{}
+	for rows.Next() {
+		var a CnvChatAgent
+		if err := rows.Scan(&a.AgentProfileID, &a.AgentProfileName, &a.Model,
+			&a.FirstTurn, &a.LastTurn, &a.TurnCount); err != nil {
+			return nil, fmt.Errorf("postgres: scan conversation agent: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // cnvLinkedRuns (ADR-0053) reads the forward handoff links: the runs this
@@ -835,9 +937,12 @@ const cnvActiveTurnSQL = `
 	SELECT t.id::text, t.conversation_id::text, t.status, t.prompt, t.submitted_by::text,
 	       COALESCE(u.display_name, ''), COALESCE(t.worker_id::text, ''),
 	       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at,
-	       t.submitted_via
+	       t.submitted_via,
+	       COALESCE(t.agent_profile_id, c.agent_profile_id)::text, COALESCE(ap.name, ''), COALESCE(ap.model, '')
 	FROM conversation_turns t
 	LEFT JOIN users u ON u.id = t.submitted_by
+	JOIN conversations c ON c.id = t.conversation_id
+	LEFT JOIN agent_profiles ap ON ap.id = COALESCE(t.agent_profile_id, c.agent_profile_id)
 	WHERE t.conversation_id = $1::uuid
 	  AND t.status IN ('queued', 'leased', 'running')
 	ORDER BY t.created_at, t.id
@@ -848,7 +953,7 @@ func cnvScanTurn(row interface{ Scan(dest ...any) error }) (CnvTurn, error) {
 	err := row.Scan(&t.ID, &t.ConversationID, &t.Status, &t.Prompt, &t.SubmittedBy,
 		&t.SubmittedByDisplayName, &t.WorkerID,
 		&t.CancelRequestedAt, &t.StopReason, &t.CreatedAt, &t.StartedAt, &t.FinishedAt,
-		&t.SubmittedVia)
+		&t.SubmittedVia, &t.AgentProfileID, &t.AgentProfileName, &t.AgentProfileModel)
 	if err != nil {
 		return CnvTurn{}, err
 	}
@@ -881,9 +986,12 @@ func cnvActiveTurnForUpdate(ctx context.Context, tx pgx.Tx, conversationID strin
 		SELECT t.id::text, t.conversation_id::text, t.status, t.prompt, t.submitted_by::text,
 		       COALESCE(u.display_name, ''), COALESCE(t.worker_id::text, ''),
 		       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at,
-		       t.submitted_via
+		       t.submitted_via,
+		       COALESCE(t.agent_profile_id, c.agent_profile_id)::text, COALESCE(ap.name, ''), COALESCE(ap.model, '')
 		FROM conversation_turns t
 		LEFT JOIN users u ON u.id = t.submitted_by
+		JOIN conversations c ON c.id = t.conversation_id
+		LEFT JOIN agent_profiles ap ON ap.id = COALESCE(t.agent_profile_id, c.agent_profile_id)
 		WHERE t.conversation_id = $1::uuid
 		  AND t.status IN ('queued', 'leased', 'running')
 		ORDER BY t.created_at, t.id
@@ -1077,25 +1185,74 @@ const cnvLastAgentSubquery = `
 // cnvListSummaryExtraColumns are the SELECT arms the two list READS (project
 // and cross-project) share for the ADR-0065 fields, and cnvListSummaryExtraJoins
 // the LATERALs that feed them. COALESCE + value scan, the same sentinel
-// convention as the run-link columns: an empty string means the lateral
-// matched nothing. The repository is the workspace binding first and the
-// linked run's repository second — a run thread with no binding of its own
-// still names where its run works (ADR-0065, run-thread arm).
+// convention as the run-link columns: an empty string means no arm matched
+// anything. The repository is ADR-0067's DECLARED binding first
+// (conversations.repository_id, recorded at create — it exists before any
+// workspace or run says where the work happened), then the ADR-0065
+// derivation: the workspace binding, then the linked run's repository — a
+// run thread with no binding of its own still names where its run works
+// (ADR-0065, run-thread arm). The declared binding wins over the derivation
+// because it is the answer to "which repo was this thread opened FOR", which
+// no later volume fact can amend. id and name stay one fact: the name of the
+// declared binding is read off the same repositories row the id points at
+// (`cnvRepoBindingJoin`, a primary-key join), so the COALESCE arms are
+// (binding, workspace, run) for both members together — never one arm's id
+// with another arm's name.
 const cnvListSummaryExtraColumns = `,
-		       COALESCE(repo.repository_id, runrepo.repository_id, ''),
-		       COALESCE(repo.repository_name, runrepo.repository_name, ''),
+		       COALESCE(c.repository_id::text, repo.repository_id, runrepo.repository_id, ''),
+		       COALESCE(cnvboundrepo.name, repo.repository_name, runrepo.repository_name, ''),
 		       COALESCE(lastmsg.text, '')`
 
-const cnvListSummaryExtraJoins = cnvRunLinkSubquery + cnvRepoSubquery + cnvRunRepoSubquery + cnvLastAgentSubquery
+// cnvRepoBindingJoin is the declared-binding name seek (ADR-0067): one
+// repositories primary-key lookup per row whose c.repository_id is set, none
+// for the rest (a LEFT JOIN on a NULL key matches nothing without scanning).
+const cnvRepoBindingJoin = `
+		LEFT JOIN repositories cnvboundrepo ON cnvboundrepo.id = c.repository_id`
 
-// cnvListFilters renders the optional list filters. Both are ” = off, so a
+const cnvListSummaryExtraJoins = cnvRunLinkSubquery + cnvRepoSubquery + cnvRunRepoSubquery + cnvLastAgentSubquery + cnvRepoBindingJoin
+
+// cnvListFilters renders the optional list filters. All are ” = off, so a
 // plain list costs one equality-free clause; the q pattern escapes the three
 // characters that would otherwise widen it (%, _, and the escape character
-// itself), which is why "0%" matches only a title that contains 0%.
+// itself), which is why "0%" matches only a title that contains 0%. The
+// repository filter ($4, ADR-0067) is the resolved repository UUID as text
+// (” = off) and asks the SAME three-arm chain the row columns answer — a
+// thread counts as "in" the repository it is declared-bound to, else the one
+// its newest workspace checked out, else the one its linked run works on.
+// A $3/$4 predicate only ever narrows the row set the visibility WHERE
+// produced, so it cannot widen what a caller may see.
 func cnvListFilters() string {
 	return `
 		  AND ($2::text = '' OR (la.attempt_id IS NOT NULL) = ($2::text = 'run'))
-		  AND ($3::text = '' OR c.title ILIKE '%' || replace(replace(replace($3::text, '\', '\\'), '%', '\%'), '_', '\_') || '%')`
+		  AND ($3::text = '' OR c.title ILIKE '%' || replace(replace(replace($3::text, '\', '\\'), '%', '\%'), '_', '\_') || '%')
+		  AND ($4::text = '' OR COALESCE(c.repository_id::text, repo.repository_id, runrepo.repository_id) = $4::text)`
+}
+
+// cnvNullParam renders an optional uuid query parameter: "" is SQL NULL, so
+// an unbound create writes repository_id = NULL instead of colliding with the
+// ::uuid cast.
+func cnvNullParam(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
+}
+
+// cnvRepositoryIDByName resolves a repository NAME within a project (the
+// repositories (project_id, name) unique index — one seek) for the ADR-0067
+// list filter. found=false is the caller's ErrConversationRepositoryNotFound
+// arm (404); err is only ever a database failure.
+func cnvRepositoryIDByName(ctx context.Context, q prjQuerier, projectID, name string) (id string, found bool, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT id::text FROM repositories
+		WHERE project_id = $1::uuid AND name = $2`, projectID, name).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("postgres: resolve project repository: %w", err)
+	}
+	return id, true, nil
 }
 
 // ListConversations returns a project's conversations newest first, capped at
@@ -1103,14 +1260,29 @@ func cnvListFilters() string {
 // caller may not see is ErrConversationNotFound — the same 404 the rest of the
 // project surface gives, so a conversation list cannot probe project existence.
 // origin ("" | "manual" | "run") and query (case-insensitive title substring,
-// "" = off) are the ADR-0043 filters; the join only ever narrows the list, so
-// visibility is exactly the caller's project scope as before.
-func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]CnvSummary, error) {
+// "" = off) are the ADR-0043 filters; repository ("" = off) is ADR-0067's
+// repository-name filter, resolved to the project's repository row before any
+// conversation read — a name the project does not have is
+// ErrConversationRepositoryNotFound, never an empty list that pretends the
+// repository exists. The join only ever narrows the list, so visibility is
+// exactly the caller's project scope as before.
+func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query, repository string) ([]CnvSummary, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return nil, err
 	}
 	if _, err := prjGetProject(ctx, s.Pool, c, projectID); err != nil {
 		return nil, ErrConversationNotFound
+	}
+	repositoryID := ""
+	if repository != "" {
+		id, found, err := cnvRepositoryIDByName(ctx, s.Pool, projectID, repository)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, ErrConversationRepositoryNotFound
+		}
+		repositoryID = id
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT c.id::text, c.project_id::text, c.agent_profile_id::text, c.title, c.status,
@@ -1138,7 +1310,7 @@ func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID, o
 		cnvListSummaryExtraJoins+`
 		WHERE c.project_id = $1::uuid`+cnvListFilters()+`
 		ORDER BY c.created_at DESC, c.id DESC
-		LIMIT 100`, projectID, origin, query)
+		LIMIT 100`, projectID, origin, query, repositoryID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list conversations: %w", err)
 	}
@@ -1216,7 +1388,20 @@ const cnvMaxPromptRunes = 65536
 // The caller becomes the controller at version 1; conversation.created's
 // payload carries that version so a viewer's first control mutation has a CAS
 // token without a second round trip.
-func (s *CnvStore) CreateConversation(ctx context.Context, c Caller, projectID, profileID, title, prompt string) (CnvConversation, error) {
+//
+// repository (ADR-0067) is an optional repository NAME of the project: when
+// present the conversation is born bound to that one repository
+// (conversations.repository_id, recorded once at create like a run's, and
+// enforced against the project by the composite FK of migration 00022). A
+// name the project does not have is ErrConversationValidation (422) — the
+// caller named a body field it got wrong, the same answer as an unknown
+// profile — and "belongs to another project" is that same not-found, so a
+// foreign name leaks nothing about who else has it. The first message (when a
+// prompt is present) rides the turn-1 path unchanged: queued under the
+// starter's control, appended as conversation.message.user in the same
+// transaction, claimed by whichever worker picks the turn up — the binding
+// says which repository the thread was opened FOR, it does not launch it.
+func (s *CnvStore) CreateConversation(ctx context.Context, c Caller, projectID, profileID, title, prompt, repository string) (CnvConversation, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvConversation{}, err
 	}
@@ -1246,6 +1431,21 @@ func (s *CnvStore) CreateConversation(ctx context.Context, c Caller, projectID, 
 		return CnvConversation{}, err
 	}
 
+	// ADR-0067: resolve the declared repository inside the project, before
+	// anything is written, so a foreign or invented name is a 422 and not a
+	// half-made conversation the composite FK then refuses.
+	repositoryID := ""
+	if repository != "" {
+		id, found, err := cnvRepositoryIDByName(ctx, tx, projectID, repository)
+		if err != nil {
+			return CnvConversation{}, err
+		}
+		if !found {
+			return CnvConversation{}, fmt.Errorf("%w: no such repository %q in this project", ErrConversationValidation, repository)
+		}
+		repositoryID = id
+	}
+
 	if err := LockEventJournal(ctx, tx, project.ID, project.OrganizationID); err != nil {
 		return CnvConversation{}, err
 	}
@@ -1260,10 +1460,10 @@ func (s *CnvStore) CreateConversation(ctx context.Context, c Caller, projectID, 
 	cv.Status = "idle"
 	cv.AgentProfileVersion = profile.Version
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO conversations (project_id, agent_profile_id, agent_profile_version, title, status, created_by)
-		VALUES ($1::uuid, $2::uuid, $3::int, $4, 'idle', $5::uuid)
+		INSERT INTO conversations (project_id, agent_profile_id, agent_profile_version, title, status, created_by, repository_id)
+		VALUES ($1::uuid, $2::uuid, $3::int, $4, 'idle', $5::uuid, $6::uuid)
 		RETURNING id::text, created_at, updated_at`,
-		projectID, profileID, profile.Version, title, c.UserID).
+		projectID, profileID, profile.Version, title, c.UserID, cnvNullParam(repositoryID)).
 		Scan(&cv.ID, &cv.CreatedAt, &cv.UpdatedAt); err != nil {
 		return CnvConversation{}, fmt.Errorf("postgres: insert conversation: %w", err)
 	}
@@ -1283,9 +1483,9 @@ func (s *CnvStore) CreateConversation(ctx context.Context, c Caller, projectID, 
 	var turnID string
 	if strings.TrimSpace(prompt) != "" {
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)
-			VALUES ($1::uuid, $2, $3::uuid) RETURNING id::text`,
-			cv.ID, prompt, c.UserID).Scan(&turnID); err != nil {
+			INSERT INTO conversation_turns (conversation_id, prompt, submitted_by, agent_profile_id)
+			VALUES ($1::uuid, $2, $3::uuid, $4::uuid) RETURNING id::text`,
+			cv.ID, prompt, c.UserID, cv.AgentProfileID).Scan(&turnID); err != nil {
 			return CnvConversation{}, fmt.Errorf("postgres: insert first turn: %w", err)
 		}
 	}
@@ -1435,10 +1635,10 @@ func (s *CnvStore) PostMessage(ctx context.Context, c Caller, conversationID, pr
 		}
 
 		err = tx.QueryRow(ctx, `
-			INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)
-			VALUES ($1::uuid, $2, $3::uuid)
+			INSERT INTO conversation_turns (conversation_id, prompt, submitted_by, agent_profile_id)
+			VALUES ($1::uuid, $2, $3::uuid, $4::uuid)
 			RETURNING id::text`,
-			conversationID, prompt, c.UserID).Scan(&turn.ID)
+			conversationID, prompt, c.UserID, chat.AgentProfileID).Scan(&turn.ID)
 		if err != nil {
 			if prjIsConflict(err) {
 				// Lost the race for the partial unique index: re-read through a
@@ -1484,6 +1684,164 @@ func (s *CnvStore) PostMessage(ctx context.Context, c Caller, conversationID, pr
 		return CnvTurn{}, conflict
 	}
 	return cnvTurnByID(ctx, s.Pool, turn.ID)
+}
+
+// SwitchAgent moves the conversation's next-turn agent profile (ADR-0068).
+// The rules the route documents and the database enforces here:
+//
+//   - CONTROLLER ONLY, and only BETWEEN turns. A caller who is not the human
+//     controller gets ErrConversationForbidden (403) — "you are not the one
+//     driving" is an identity answer, not a state race. A caller whose role
+//     cannot write gets the same 403 out of cnvWritableConversation; a
+//     non-member gets 404 there, never 403 (ADR-0016 §8).
+//   - MID-TURN is a 409 (ConflictTurnInProgress, carrying the turn in the
+//     way): the profile a turn runs on is stamped at enqueue and never moves
+//     afterwards, and switching while a session is prompting would split the
+//     conversation's story about which agent wrote which answer.
+//   - The profile must be one of the project's organization's profiles (the
+//     same set the create route may launch). A body naming any other is
+//     ErrConversationBadRequest (400) — this route documents 400, where the
+//     older routes answer 422.
+//   - Switching to the profile the conversation already carries is an
+//     idempotent no-op: no write, no event — the same double-click rule
+//     taking control follows.
+//
+// A switch that lands updates conversations.agent_profile_id (the next-turn
+// pointer), re-pins agent_profile_version to the new profile's current
+// version (ADR-0058's resolution root), and appends conversation.agent.switched
+// in the SAME transaction — that journal row is what the transcript divider
+// renders from, so a switch that a viewer cannot replay cannot have happened.
+// It does not touch the workspace, the branch, or the transcript: the next
+// turn starts a NEW ACP session on the new profile in the SAME prepared
+// workspace (the worker suppresses session/load across a profile change —
+// TurnStore.ResumableSession's profile filter).
+func (s *CnvStore) SwitchAgent(ctx context.Context, c Caller, conversationID, profileID string) (CnvConversation, error) {
+	if err := prjRequireCaller(c); err != nil {
+		return CnvConversation{}, err
+	}
+	var conflict *CnvConflict
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		chat, project, org, err := cnvWritableConversation(ctx, tx, c, conversationID)
+		if err != nil {
+			return err
+		}
+		if chat.Status == "archived" {
+			conflict = &CnvConflict{
+				Kind:           ConflictArchived,
+				Detail:         "The conversation is archived; its agent cannot change either.",
+				ConversationID: chat.ID,
+				Control:        &chat.Control,
+			}
+			return conflict
+		}
+		if chat.Control.Kind != events.ControllerKindHuman || chat.Control.UserID != c.UserID {
+			// 403, not the 409 PostMessage answers: the brief's contract for
+			// this route is "only the CONTROLLER may change it", and a caller
+			// that never held the wheel is denied on identity.
+			who := "nobody"
+			if chat.Control.UserID != "" {
+				who = chat.Control.DisplayName
+				if who == "" {
+					who = chat.Control.UserID
+				}
+			} else if chat.Control.Kind == events.ControllerKindRunAttempt {
+				who = "a run attempt"
+			}
+			return fmt.Errorf("%w: %s holds the controller lock; only the controller may switch the agent for the next turn", ErrConversationForbidden, who)
+		}
+
+		// The switch lands between turns only: the same active-turn probe
+		// PostMessage refuses with, answered before the profile read so a
+		// mid-turn caller never learns anything about the target profile.
+		existing, err := cnvActiveTurn(ctx, tx, conversationID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			conflict = &CnvConflict{
+				Kind:           ConflictTurnInProgress,
+				Detail:         "A turn is already queued or running for this conversation; the agent changes only between turns.",
+				ConversationID: conversationID,
+				Control:        &chat.Control,
+				ActiveTurn:     existing,
+			}
+			return conflict
+		}
+
+		if chat.AgentProfileID == profileID {
+			// Idempotent: already the next-turn profile. No version burn, no
+			// divider, no event — a double-click cannot write twice.
+			return nil
+		}
+
+		profile, err := cnvSwitchProfileForOrganization(ctx, tx, profileID, org)
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE conversations
+			SET agent_profile_id = $2::uuid, agent_profile_version = $3::int, updated_at = now()
+			WHERE id = $1::uuid`, conversationID, profileID, profile.Version); err != nil {
+			return fmt.Errorf("postgres: switch conversation agent: %w", err)
+		}
+
+		if _, err := AppendEvent(ctx, tx, events.New{
+			Type:           events.TypeConversationAgentSwitched,
+			OrganizationID: org,
+			ProjectID:      project,
+			ConversationID: conversationID,
+			Actor:          events.Human(c.UserID),
+			Payload: events.AgentSwitchedPayload{
+				ConversationID:        conversationID,
+				ActorUserID:           c.UserID,
+				FromAgentProfileID:    chat.AgentProfileID,
+				FromProfileName:       chat.AgentProfileName,
+				ToAgentProfileID:      profile.ID,
+				ToProfileName:         profile.Name,
+				ToLauncherID:          profile.LauncherID,
+				Model:                 apiNullString(profile.Model),
+				TranscriptCarriedOver: true,
+			},
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil && !errors.As(err, &conflict) {
+		return CnvConversation{}, err
+	}
+	if conflict != nil {
+		return CnvConversation{}, conflict
+	}
+	// Both the landed switch and the idempotent no-op answer with the fresh
+	// detail read, so the response carries the re-pinned profile and the
+	// derived agents list either way.
+	return cnvGetConversation(ctx, s.Pool, c, conversationID)
+}
+
+// cnvSwitchProfileForOrganization is cnvProfileInOrganization's twin for the
+// ADR-0068 switch route, answering 400 (ErrConversationBadRequest) where the
+// create path answers 422, and reading the two columns the divider and the
+// version re-pin need (the current version and the display model).
+func cnvSwitchProfileForOrganization(ctx context.Context, q prjQuerier, profileID, orgID string) (CnvProfile, error) {
+	if !prjValidUUID(profileID) {
+		return CnvProfile{}, fmt.Errorf("%w: agent_profile_id must be a uuid", ErrConversationBadRequest)
+	}
+	var p CnvProfile
+	err := q.QueryRow(ctx, `
+		SELECT id::text, organization_id::text, name, launcher_id, permission_mode,
+		       version, COALESCE(model, '')
+		FROM agent_profiles
+		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID).
+		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID, &p.PermissionMode, &p.Version, &p.Model)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CnvProfile{}, fmt.Errorf("%w: agent_profile_id is not one of this project's agent profiles", ErrConversationBadRequest)
+	}
+	if err != nil {
+		return CnvProfile{}, fmt.Errorf("postgres: get switch agent profile: %w", err)
+	}
+	return p, nil
 }
 
 // TakeControl moves the exclusive controller lock to the caller by
@@ -2236,9 +2594,12 @@ func cnvTurnByID(ctx context.Context, q prjQuerier, turnID string) (CnvTurn, err
 		SELECT t.id::text, t.conversation_id::text, t.status, t.prompt, t.submitted_by::text,
 		       COALESCE(u.display_name, ''), COALESCE(t.worker_id::text, ''),
 		       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at,
-		       t.submitted_via
+		       t.submitted_via,
+		       COALESCE(t.agent_profile_id, c.agent_profile_id)::text, COALESCE(ap.name, ''), COALESCE(ap.model, '')
 		FROM conversation_turns t
 		LEFT JOIN users u ON u.id = t.submitted_by
+		JOIN conversations c ON c.id = t.conversation_id
+		LEFT JOIN agent_profiles ap ON ap.id = COALESCE(t.agent_profile_id, c.agent_profile_id)
 		WHERE t.id = $1::uuid`, turnID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvTurn{}, ErrConversationNotFound
@@ -2319,13 +2680,38 @@ func cnvAPIErr(err error) error {
 	switch {
 	case errors.Is(err, ErrConversationNotFound):
 		return fmt.Errorf("%w: %w", api.ErrConversationNotFound, err)
+	case errors.Is(err, ErrConversationRepositoryNotFound):
+		return fmt.Errorf("%w: %w", api.ErrConversationRepositoryNotFound, err)
 	case errors.Is(err, ErrConversationForbidden):
-		return fmt.Errorf("%w: %w", api.ErrConversationForbidden, err)
+		return cnvWrapSentinel(api.ErrConversationForbidden, err)
+	case errors.Is(err, ErrConversationBadRequest):
+		return cnvWrapSentinel(api.ErrConversationBadRequest, err)
 	case errors.Is(err, ErrConversationValidation):
 		return fmt.Errorf("%w: %w", api.ErrConversationValidation, err)
 	default:
 		return err
 	}
+}
+
+// cnvWrapSentinel re-answers a store sentinel as its api twin WITHOUT nesting
+// the postgres sentinel's own sentence twice: what remains after the store
+// sentinel is the store's naming (who holds the lock, which profile is not in
+// the project), and that naming is the whole value of the answer.
+func cnvWrapSentinel(target, err error) error {
+	text := err.Error()
+	for _, s := range []error{ErrConversationForbidden, ErrConversationBadRequest, ErrConversationNotFound, ErrConversationValidation} {
+		if s == target {
+			continue
+		}
+		if i := strings.Index(text, s.Error()); i >= 0 {
+			text = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text[i+len(s.Error()):]), ":"))
+			break
+		}
+	}
+	if text == "" || text == target.Error() {
+		return target
+	}
+	return fmt.Errorf("%w: %s", target, text)
 }
 
 // cnvConflictDetail prefers the store's human sentence; the kind alone would
@@ -2355,13 +2741,14 @@ func (a APIConversationStore) ListAgentProfiles(ctx context.Context, c api.Calle
 }
 
 // ListConversations implements api.ConversationStore, forwarding the
-// ADR-0043 origin and q filters unchanged.
-func (a APIConversationStore) ListConversations(ctx context.Context, c api.Caller, projectID, origin, query string) ([]api.ConversationSummaryView, error) {
+// ADR-0043 origin and q filters and the ADR-0067 repository filter unchanged
+// (both are names; the store resolves the repository inside the project).
+func (a APIConversationStore) ListConversations(ctx context.Context, c api.Caller, projectID, origin, query, repository string) ([]api.ConversationSummaryView, error) {
 	s, err := a.store()
 	if err != nil {
 		return nil, err
 	}
-	chats, err := s.ListConversations(ctx, prjAPICaller(c), projectID, origin, query)
+	chats, err := s.ListConversations(ctx, prjAPICaller(c), projectID, origin, query, repository)
 	if err != nil {
 		return nil, cnvAPIErr(err)
 	}
@@ -2398,13 +2785,14 @@ func cnvAPISummary(cv CnvSummary) api.ConversationSummaryView {
 	}
 }
 
-// CreateConversation implements api.ConversationStore.
-func (a APIConversationStore) CreateConversation(ctx context.Context, c api.Caller, projectID, agentProfileID, title, prompt string) (api.ConversationView, error) {
+// CreateConversation implements api.ConversationStore. repository is the
+// optional ADR-0067 repository name the thread is born bound to.
+func (a APIConversationStore) CreateConversation(ctx context.Context, c api.Caller, projectID, agentProfileID, title, prompt, repository string) (api.ConversationView, error) {
 	s, err := a.store()
 	if err != nil {
 		return api.ConversationView{}, err
 	}
-	cv, err := s.CreateConversation(ctx, prjAPICaller(c), projectID, agentProfileID, title, prompt)
+	cv, err := s.CreateConversation(ctx, prjAPICaller(c), projectID, agentProfileID, title, prompt, repository)
 	if err != nil {
 		return api.ConversationView{}, cnvAPIErr(err)
 	}
@@ -2493,6 +2881,19 @@ func (a APIConversationStore) ReturnControl(ctx context.Context, c api.Caller, c
 		return api.ConversationView{}, err
 	}
 	cv, err := s.ReturnControl(ctx, prjAPICaller(c), conversationID, version)
+	if err != nil {
+		return api.ConversationView{}, cnvAPIErr(err)
+	}
+	return cnvAPIConversation(cv), nil
+}
+
+// SwitchAgent implements api.ConversationStore (ADR-0068).
+func (a APIConversationStore) SwitchAgent(ctx context.Context, c api.Caller, conversationID, agentProfileID string) (api.ConversationView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.ConversationView{}, err
+	}
+	cv, err := s.SwitchAgent(ctx, prjAPICaller(c), conversationID, agentProfileID)
 	if err != nil {
 		return api.ConversationView{}, cnvAPIErr(err)
 	}
@@ -2610,6 +3011,9 @@ func cnvAPITurn(t CnvTurn, withPrompt bool) api.ConversationTurnView {
 		CreatedAt:              t.CreatedAt,
 		StartedAt:              t.StartedAt,
 		FinishedAt:             t.FinishedAt,
+		AgentProfileID:         t.AgentProfileID,
+		AgentProfileName:       t.AgentProfileName,
+		Model:                  apiNullString(t.AgentProfileModel),
 	}
 	if withPrompt {
 		out.Prompt = t.Prompt
@@ -2687,6 +3091,17 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 	for _, l := range cv.LinkedRuns {
 		linked = append(linked, api.ConversationLinkedRunView{RunID: l.RunID, CreatedAt: l.CreatedAt})
 	}
+	agents := make([]api.ConversationChatAgentView, 0, len(cv.Agents))
+	for _, ag := range cv.Agents {
+		agents = append(agents, api.ConversationChatAgentView{
+			AgentProfileID:   ag.AgentProfileID,
+			AgentProfileName: ag.AgentProfileName,
+			Model:            apiNullString(ag.Model),
+			FirstTurn:        ag.FirstTurn,
+			LastTurn:         ag.LastTurn,
+			TurnCount:        ag.TurnCount,
+		})
+	}
 	return api.ConversationView{
 		ID:               cv.ID,
 		ProjectID:        cv.ProjectID,
@@ -2709,6 +3124,8 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		Origin:             cv.Origin,
 		RunLink:            cnvAPIRunLink(cv.RunLink),
 		LinkedRuns:         linked,
+		AgentProfileModel:  apiNullString(cv.AgentProfileModel),
+		Agents:             agents,
 	}
 }
 
@@ -2753,6 +3170,7 @@ func cnvProfileView(p CnvProfile) api.AgentProfileView {
 		APMPackageRef:  null(p.APMPackageRef),
 		APMTarget:      null(p.APMTarget),
 		APMLockDigest:  null(p.APMLockDigest),
+		Model:          null(p.Model),
 	}
 	if p.APMLockContents != nil {
 		contents := &api.AgentProfileContentsView{
@@ -2800,7 +3218,7 @@ func (a APIConversationStore) CreateAgentProfile(ctx context.Context, c api.Call
 	if err != nil {
 		return api.AgentProfileView{}, err
 	}
-	profile, err := s.CreateAgentProfile(ctx, prjAPICaller(c), in.Name, in.LauncherID)
+	profile, err := s.CreateAgentProfile(ctx, prjAPICaller(c), in.Name, in.LauncherID, in.Model)
 	if err != nil {
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}
@@ -2814,7 +3232,7 @@ func (a APIConversationStore) PatchAgentProfileAPM(ctx context.Context, c api.Ca
 		return api.AgentProfileView{}, err
 	}
 	profile, err := s.PatchAgentProfileAPM(ctx, prjAPICaller(c), profileID,
-		in.APMPackageRef, in.APMTarget, in.APMLockDigest, in.Version)
+		in.APMPackageRef, in.APMTarget, in.APMLockDigest, in.Version, in.Model)
 	if err != nil {
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}

@@ -35,6 +35,19 @@ var (
 	// ErrConversationValidation is a well-formed body the contract rejects (an
 	// unknown agent profile, an option the agent never offered): 422.
 	ErrConversationValidation = errors.New("api: conversation request failed validation")
+	// ErrConversationRepositoryNotFound is the answer to a well-formed
+	// `repository` list filter naming no repository of the project (ADR-0067):
+	// 404, the same answer an absent resource gets everywhere else on this
+	// surface. A create body naming such a repository is
+	// ErrConversationValidation (422) instead — a body field, not a filter.
+	ErrConversationRepositoryNotFound = errors.New("api: conversation repository filter names no repository of this project")
+	// ErrConversationBadRequest is the ADR-0068 switch-agent answer to a body
+	// field naming no legal value (an agent_profile_id outside the project's
+	// profiles): 400. It exists beside ErrConversationValidation (422) because
+	// the switch route documents 400 for that refusal while the older routes
+	// keep their 422; a store maps its own validation onto this one only for
+	// the routes that promised 400.
+	ErrConversationBadRequest = errors.New("api: conversation request is a bad request")
 )
 
 // ConversationConflictKind values. They are the store's vocabulary and this
@@ -99,6 +112,10 @@ type AgentProfileView struct {
 	// truncation flag. Null while the profile has no resolved lock — the honest
 	// "not locked yet", never a fabricated empty list.
 	APMContents *AgentProfileContentsView `json:"apm_contents"`
+	// Model is the profile's pinned display model (ADR-0068, migration
+	// 00023) — the "gpt-5" half of "Codex · gpt-5". Explicit null means the
+	// profile names no model: the harness default, the honest state.
+	Model *string `json:"model"`
 }
 
 // AgentProfileContentsView is the names-only lock summary the API reports
@@ -196,6 +213,16 @@ type ConversationTurnView struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	StartedAt         *time.Time `json:"started_at"`
 	FinishedAt        *time.Time `json:"finished_at"`
+	// AgentProfileID is the profile this turn ran on, stamped at enqueue
+	// (ADR-0068). Rows written before the per-turn profile existed resolve to
+	// the conversation's profile — for them that WAS the turn's profile,
+	// because nothing could move it until the switch route.
+	AgentProfileID   string `json:"agent_profile_id"`
+	AgentProfileName string `json:"agent_profile_name"`
+	// Model is the profile's pinned display model ("Codex · gpt-5"); explicit
+	// null when the profile names none (the harness default is the honest
+	// answer, not a missing read).
+	Model *string `json:"model"`
 }
 
 // PermissionOptionView is the PermissionOption schema — one choice the agent
@@ -250,6 +277,20 @@ type ConversationLinkedRunView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// ConversationChatAgentView is the ConversationChatAgent schema (ADR-0068):
+// one entry of the derived "agents in this chat" list — a profile, its
+// display model, and the 1-based turn ordinals (conversation creation order)
+// it ran consecutively. A profile switched away from and back appears twice,
+// because the ranges describe the transcript, not a per-profile aggregate.
+type ConversationChatAgentView struct {
+	AgentProfileID   string  `json:"agent_profile_id"`
+	AgentProfileName string  `json:"agent_profile_name"`
+	Model            *string `json:"model"`
+	FirstTurn        int     `json:"first_turn"`
+	LastTurn         int     `json:"last_turn"`
+	TurnCount        int     `json:"turn_count"`
+}
+
 // ConversationView is the Conversation schema.
 type ConversationView struct {
 	ID                 string                   `json:"id"`
@@ -274,6 +315,13 @@ type ConversationView struct {
 	// LinkedRuns (ADR-0053): the runs this thread was handed to (forward
 	// link), creation order; empty when none.
 	LinkedRuns []ConversationLinkedRunView `json:"linked_runs"`
+	// AgentProfileID names the profile the NEXT turn runs on (ADR-0068):
+	// only the controller moves it, only between turns. AgentProfileModel is
+	// that profile's pinned display model (explicit null when it names none).
+	AgentProfileModel *string `json:"agent_profile_model"`
+	// Agents (ADR-0068): the derived "agents in this chat" list with turn
+	// ranges, transcript order; empty for a conversation with no turns.
+	Agents []ConversationChatAgentView `json:"agents"`
 }
 
 // ConversationSummaryView is the ConversationSummary schema: the project
@@ -329,15 +377,29 @@ type ConversationSummaryView struct {
 type ConversationStore interface {
 	// ListConversations returns the project's conversations; origin ("" | "manual" | "run")
 	// and query (case-insensitive title substring, "" = off) are the ADR-0043
-	// filters and are validated by the handler before they reach the store.
-	ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]ConversationSummaryView, error)
-	CreateConversation(ctx context.Context, c Caller, projectID, agentProfileID, title, prompt string) (ConversationView, error)
+	// filters and are validated by the handler before they reach the store;
+	// repository (ADR-0067) is a repository NAME of the project ("" = off),
+	// syntax-validated by the handler and resolved by the store — a name the
+	// project does not have answers ErrConversationRepositoryNotFound.
+	ListConversations(ctx context.Context, c Caller, projectID, origin, query, repository string) ([]ConversationSummaryView, error)
+	// CreateConversation starts a thread; repository (ADR-0067, "" = unbound)
+	// is the project repository the thread is born bound to — a name the
+	// project does not have answers ErrConversationValidation (422).
+	CreateConversation(ctx context.Context, c Caller, projectID, agentProfileID, title, prompt, repository string) (ConversationView, error)
 	GetConversation(ctx context.Context, c Caller, conversationID string) (ConversationView, error)
 	PostMessage(ctx context.Context, c Caller, conversationID, prompt string) (ConversationTurnView, error)
 	TakeControl(ctx context.Context, c Caller, conversationID string, version int) (ConversationView, error)
 	ReturnControl(ctx context.Context, c Caller, conversationID string, version int) (ConversationView, error)
 	CancelTurn(ctx context.Context, c Caller, conversationID string) (ConversationTurnView, error)
 	DecidePermission(ctx context.Context, c Caller, conversationID, requestID, optionID string) (PermissionRequestView, error)
+	// SwitchAgent sets the profile the NEXT turn runs on (ADR-0068). Only the
+	// human controller, only between turns: a non-controller (or a role that
+	// cannot write) is ErrConversationForbidden, a conversation with a queued/
+	// leased/running turn is a *ConversationConflict (turn_in_progress), and a
+	// profile outside the project's organization is ErrConversationBadRequest.
+	// On success conversation.agent.switched is journalled and the fresh
+	// conversation view (including the derived agents list) is returned.
+	SwitchAgent(ctx context.Context, c Caller, conversationID, agentProfileID string) (ConversationView, error)
 	// AuthorizeConversation answers the one question an open stream must keep
 	// asking: may this caller still see this conversation's project?
 	AuthorizeConversation(ctx context.Context, c Caller, conversationID string) (projectID string, err error)
@@ -454,6 +516,7 @@ func RegisterConversations(s *Server, store ConversationStore, profiles ProfileS
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/take-control", http.HandlerFunc(h.takeControl))
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/return-control", http.HandlerFunc(h.returnControl))
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/cancel", http.HandlerFunc(h.cancel))
+	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/switch-agent", http.HandlerFunc(h.switchAgent))
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/permissions/{requestId}", http.HandlerFunc(h.decidePermission))
 	if stream != nil {
 		registerConversationEvents(s, h, stream, evtProductionTiming())
@@ -472,6 +535,10 @@ type cnvCreateBody struct {
 	AgentProfileID string `json:"agent_profile_id"`
 	Title          string `json:"title"`
 	Prompt         string `json:"prompt,omitempty"`
+	// Repository (ADR-0067) is an optional project repository NAME: the
+	// conversation is born bound to it. Absent or "" is unbound, the pre-0067
+	// shape.
+	Repository string `json:"repository,omitempty"`
 }
 
 type cnvMessageBody struct {
@@ -484,6 +551,10 @@ type cnvControlBody struct {
 
 type cnvPermissionBody struct {
 	OptionID string `json:"option_id"`
+}
+
+type cnvSwitchAgentBody struct {
+	AgentProfileID string `json:"agent_profile_id"`
 }
 
 // --- handlers -----------------------------------------------------------
@@ -525,7 +596,18 @@ func (h *cnvHandlers) listConversations(w http.ResponseWriter, r *http.Request) 
 			"invalid_query: q must be at most 200 characters.")
 		return
 	}
-	items, err := h.store.ListConversations(r.Context(), c, projectID, origin, query)
+	// ADR-0067: a repository filter must at least be a repository name this
+	// app could ever have created — the projects.go pattern AND the same
+	// "."/".." traversal refusal addRepository applies — so a syntactic junk
+	// value is the same 400 the other filters raise, before any lookup. A
+	// well-formed name the project does not have is the store's 404.
+	repository := r.URL.Query().Get("repository")
+	if repository != "" && (repository == "." || repository == ".." || !prjRepoNamePattern.MatchString(repository)) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_repository: repository must be a repository name (1-100 characters of [A-Za-z0-9._-]).")
+		return
+	}
+	items, err := h.store.ListConversations(r.Context(), c, projectID, origin, query, repository)
 	if err != nil {
 		h.fail(w, r, c, cnvAtProject("conversation.list", projectID), err)
 		return
@@ -566,8 +648,17 @@ func (h *cnvHandlers) createConversation(w http.ResponseWriter, r *http.Request)
 		cnvInvalid(w, fmt.Sprintf("prompt must be at most %d characters.", cnvMaxPromptLen))
 		return
 	}
+	// ADR-0067: the declared repository is a body field, so a malformed name
+	// is 422 like every other body refusal here; a well-formed name the
+	// project does not have is the store's 422 too ("no such repository"),
+	// the same answer an unknown profile gets.
+	repository := strings.TrimSpace(body.Repository)
+	if repository != "" && (repository == "." || repository == ".." || !prjRepoNamePattern.MatchString(repository)) {
+		cnvInvalid(w, "repository must be a repository name (1-100 characters of [A-Za-z0-9._-]).")
+		return
+	}
 
-	chat, err := h.store.CreateConversation(r.Context(), c, projectID, body.AgentProfileID, title, prompt)
+	chat, err := h.store.CreateConversation(r.Context(), c, projectID, body.AgentProfileID, title, prompt, repository)
 	if err != nil {
 		h.fail(w, r, c, cnvAtProject("conversation.create", projectID), err)
 		return
@@ -675,6 +766,39 @@ func (h *cnvHandlers) cancel(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusAccepted, turn)
 }
 
+// switchAgent sets the profile the NEXT turn runs on (ADR-0068). The body is
+// one field; both of its malformed shapes are refused before any store call —
+// a non-uuid id is 400 here, and a well-formed id that is not one of the
+// project's profiles is the store's 400 (invalid_agent_profile), the same
+// split the file's other routes follow between "you sent junk" and "you sent
+// a real id of nothing". Everything else (403 not the controller, 409 mid-
+// turn, 409 archived) is the store's answer, rendered by fail().
+func (h *cnvHandlers) switchAgent(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	conversationID := r.PathValue("conversationId")
+
+	var body cnvSwitchAgentBody
+	if err := DecodeJSON(r, &body); err != nil {
+		h.badRequest(w, r, err)
+		return
+	}
+	if !validUUID(body.AgentProfileID) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_agent_profile: agent_profile_id must be a uuid.")
+		return
+	}
+
+	chat, err := h.store.SwitchAgent(r.Context(), c, conversationID, body.AgentProfileID)
+	if err != nil {
+		h.fail(w, r, c, cnvAtConversation("conversation.switch-agent", conversationID), err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, chat)
+}
+
 func (h *cnvHandlers) decidePermission(w http.ResponseWriter, r *http.Request) {
 	c, ok := h.caller(w, r)
 	if !ok {
@@ -732,18 +856,50 @@ func (h *cnvHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, tar
 		return
 	}
 	switch {
+	case errors.Is(err, ErrConversationRepositoryNotFound):
+		h.denied(w, r, c, target, "no such repository in this project")
+		WriteProblem(w, http.StatusNotFound, "Not Found",
+			"No such repository in this project.")
 	case errors.Is(err, ErrConversationNotFound):
 		h.denied(w, r, c, target, "no such conversation, or it is not visible to you")
 		WriteProblem(w, http.StatusNotFound, "Not Found", "No such conversation.")
 	case errors.Is(err, ErrConversationForbidden):
-		h.denied(w, r, c, target, "the caller's project role is read-only")
-		WriteProblem(w, http.StatusForbidden, "Forbidden",
-			"Your project role is read-only; a contributor is required to change a conversation.")
+		h.denied(w, r, c, target, "the caller may not make this conversation change")
+		// The stored sentence names the reason the caller is denied (a viewer
+		// role, or a non-controller on the ADR-0068 switch route). When the
+		// store wrapped the sentinel with one, forward it; the bare sentinel
+		// keeps the role sentence the surface has always answered with.
+		detail := "Your project role is read-only; a contributor is required to change a conversation."
+		if wrapped := cnvSentinelDetail(err, ErrConversationForbidden); wrapped != "" {
+			detail = wrapped
+		}
+		WriteProblem(w, http.StatusForbidden, "Forbidden", detail)
+	case errors.Is(err, ErrConversationBadRequest):
+		// ADR-0068: the switch route's "not one of this project's agent
+		// profiles" (and any malformed id the store still saw) answers 400
+		// naming the field, the same forwarding the 422 does.
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_agent_profile: "+cnvSentinelDetail(err, ErrConversationBadRequest))
 	case errors.Is(err, ErrConversationValidation):
 		cnvInvalid(w, cnvValidationDetail(err))
 	default:
 		h.serverError(w, r, target, err)
 	}
+}
+
+// cnvSentinelDetail turns a wrapped sentinel error into the detail text
+// written beside it ("only the controller may switch…", "agent_profile_id is
+// not one of this project's agent profiles"). The store names the offending
+// value or holder and that naming is the point, so the text after the
+// sentinel is forwarded; a bare sentinel answers "" and the caller picks its
+// own generic line.
+func cnvSentinelDetail(err, sentinel error) string {
+	text := err.Error()
+	prefix := sentinel.Error()
+	if i := strings.Index(text, prefix); i >= 0 {
+		text = text[i+len(prefix):]
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), ":"))
 }
 
 // cnvValidationDetail turns a wrapped ErrConversationValidation into the 422

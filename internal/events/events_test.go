@@ -278,6 +278,7 @@ func m2Types() []struct {
 	}{
 		{TypeConversationCreated, "conversation.created", ConversationCreatedPayload{}},
 		{TypeConversationControlTransferred, "conversation.control.transferred", ControlTransferredPayload{}},
+		{TypeConversationAgentSwitched, "conversation.agent.switched", AgentSwitchedPayload{}},
 		{TypeConversationMessageUser, "conversation.message.user", MessageUserPayload{}},
 		{TypeConversationMessageAgent, "conversation.message.agent", MessageAgentPayload{}},
 		{TypeConversationThought, "conversation.thought", ThoughtPayload{}},

@@ -145,6 +145,11 @@ const (
 	// Conversation lifecycle and control.
 	TypeConversationCreated            = "conversation.created"
 	TypeConversationControlTransferred = "conversation.control.transferred"
+	// TypeConversationAgentSwitched is ADR-0068's divider row: the controller
+	// moved the conversation's next-turn agent profile between turns. The
+	// transcript renders "<person> switched to <agent> · <model> · transcript
+	// and branch carried over" from this row, never from a UI-local guess.
+	TypeConversationAgentSwitched = "conversation.agent.switched"
 
 	// Transcript content.
 	TypeConversationMessageUser  = "conversation.message.user"
@@ -441,6 +446,27 @@ type ControlTransferredPayload struct {
 	// ControlVersion is the version the transfer produced, i.e. the CAS token
 	// the new controller must send on its next control mutation.
 	ControlVersion int `json:"control_version"`
+}
+
+// AgentSwitchedPayload is conversation.agent.switched (ADR-0068). The actor is
+// the envelope's actor (the controller who switched); these members are what
+// the transcript divider renders: from whom, to whom, and the model the new
+// profile pins when it names one (null = the profile names no model, which is
+// the honest state, not a missing read). The switch lands BETWEEN turns only;
+// the next turn starts a new ACP session on the to-profile while the
+// conversation's workspace/branch and its journal carry over unchanged.
+type AgentSwitchedPayload struct {
+	ConversationID     string  `json:"conversation_id"`
+	ActorUserID        string  `json:"actor_user_id"`
+	FromAgentProfileID string  `json:"from_agent_profile_id"`
+	FromProfileName    string  `json:"from_profile_name"`
+	ToAgentProfileID   string  `json:"to_agent_profile_id"`
+	ToProfileName      string  `json:"to_profile_name"`
+	ToLauncherID       string  `json:"to_launcher_id"`
+	Model              *string `json:"model"`
+	// TranscriptCarriedOver is the divider's claim spelled as data: the
+	// transcript and the branch carry over; only the session changes.
+	TranscriptCarriedOver bool `json:"transcript_carried_over"`
 }
 
 // MessageUserPayload is conversation.message.user: the prompt the controller
@@ -1031,6 +1057,10 @@ type AgentProfileUpdatedPayload struct {
 	APMTarget     string `json:"apm_target,omitempty"`
 	APMLockDigest string `json:"apm_lock_digest,omitempty"`
 	APMPinCleared bool   `json:"apm_pin_cleared"`
+	// Model is the profile's model pin after this write (ADR-0068): null when
+	// the profile names none. It travels so an update that only moved the
+	// model is readable as what it did, not as an empty APM diff.
+	Model *string `json:"model"`
 }
 
 // AgentProfileAPMLockedPayload is agent.profile.apm_locked: the worker's

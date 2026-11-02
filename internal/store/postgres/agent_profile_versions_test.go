@@ -190,7 +190,7 @@ func TestAgentProfileVersionCrossOrgInvisible(t *testing.T) {
 	f := profWSetup(t)
 	ctx := testCtx(t)
 	other, err := f.store.CreateAgentProfile(ctx, Caller{UserID: f.mallory, OrganizationID: f.elseOrg, IsOrgAdmin: true},
-		f.profWName("cross"), "claude")
+		f.profWName("cross"), "claude", "")
 	if err != nil {
 		t.Fatalf("CreateAgentProfile in the other organization: %v", err)
 	}

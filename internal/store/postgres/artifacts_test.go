@@ -261,8 +261,8 @@ func TestArtifactListByConversation(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM agent_profiles WHERE organization_id = $1 AND name = 'Claude Code'`, orgID).Scan(&profileID); err != nil {
 		t.Fatalf("seeded profile lookup (migration 00003): %v", err)
 	}
-	threadA, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Fix the flaky spec", "please")
-	threadB, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Add retry logging", "please")
+	threadA, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Fix the flaky spec", "please", "")
+	threadB, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Add retry logging", "please", "")
 	// Both prompts above enqueued a live 'please' turn. This test never
 	// claims them, and ClaimTurn is a global FIFO — leaving them queued
 	// would hand them to whichever turn test claims next. Settle them here.
@@ -289,7 +289,7 @@ func TestArtifactListByConversation(t *testing.T) {
 	}
 
 	// A thread with no artifacts yet is a real (empty) answer, not an error.
-	threadEmpty, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Empty thread", "")
+	threadEmpty, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Empty thread", "", "")
 	emptyList, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadEmpty.ID)
 	if err != nil {
 		t.Fatalf("empty thread list: %v", err)
@@ -310,7 +310,7 @@ func TestArtifactListByConversation(t *testing.T) {
 	}
 	// A conversation in another project is not this project's thread either.
 	projectB := artProject(t, projects, owner, orgID, "Other threads", "other-threads")
-	threadElsewhere, err := cnv.CreateConversation(ctx, artCallOf(t, pool, owner, orgID, false), projectB, profileID, "Elsewhere", "please")
+	threadElsewhere, err := cnv.CreateConversation(ctx, artCallOf(t, pool, owner, orgID, false), projectB, profileID, "Elsewhere", "please", "")
 	settleQueuedTurns(t, pool, threadElsewhere.ID)
 	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadElsewhere.ID); !errors.Is(err, ErrArtifactNotFound) {
 		t.Errorf("foreign-project conversation = %v, want ErrArtifactNotFound", err)

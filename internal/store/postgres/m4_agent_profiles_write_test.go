@@ -329,12 +329,12 @@ func TestAgentProfileAPMRefusals(t *testing.T) {
 		// the SQL level, and the row must not move.
 		_, err := f.store.PatchAgentProfileAPM(ctx,
 			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false}, prof.ID,
-			ptr("mattpocock/skills#v1.3.1"), ptr("claude"), ptr(digest), nil)
+			ptr("mattpocock/skills#v1.3.1"), ptr("claude"), ptr(digest), nil, nil)
 		if !errors.Is(err, ErrProfileForbidden) {
 			t.Fatalf("non-admin store patch err = %v, want ErrProfileForbidden", err)
 		}
 		_, err = f.store.CreateAgentProfile(ctx,
-			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false}, f.profWName("ghost"), "claude")
+			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false}, f.profWName("ghost"), "claude", "")
 		if !errors.Is(err, ErrProfileForbidden) {
 			t.Fatalf("non-admin store create err = %v, want ErrProfileForbidden", err)
 		}
@@ -470,7 +470,7 @@ func TestAgentProfileWriteFeedsTheWorkerRead(t *testing.T) {
 	// the same join the worker uses.
 	chat, err := f.store.CreateConversation(ctx,
 		Caller{UserID: f.alice, OrganizationID: f.orgID, IsOrgAdmin: true},
-		f.project, f.profile, "profw pinning", "")
+		f.project, f.profile, "profw pinning", "", "")
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}

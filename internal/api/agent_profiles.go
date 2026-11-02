@@ -78,12 +78,19 @@ const (
 	ProfileCodeAPMIncomplete = "apm_pin_incomplete"
 	ProfileCodeNameInvalid   = "profile_name_invalid"
 	ProfileCodeLauncherBad   = "launcher_id_invalid"
+	// ProfileCodeModelInvalid: model (ADR-0068) breaks the 200-character
+	// column CHECK.
+	ProfileCodeModelInvalid = "profile_model_invalid"
 )
 
 // AgentProfileCreateInput is POST /api/v1/agent-profiles' body.
 type AgentProfileCreateInput struct {
 	Name       string `json:"name"`
 	LauncherID string `json:"launcher_id"`
+	// Model is the optional pinned display model (ADR-0068): the "gpt-5" a
+	// transcript divider renders after the profile name. Absent or "" names
+	// no model (the harness default).
+	Model string `json:"model,omitempty"`
 }
 
 // AgentProfileAPMPatch is PATCH /api/v1/agent-profiles/{profileId}'s body. A nil
@@ -99,6 +106,11 @@ type AgentProfileAPMPatch struct {
 	// check — the server still bumps and journals every write — but a client
 	// that does carry one must carry the right one.
 	Version *int `json:"version"`
+	// Model (ADR-0068) follows the absent-means-nothing rule of this body:
+	// absent leaves the current pin alone, "" clears it, a value sets it.
+	// It rides the same version bump as the APM triple — a pin is a state,
+	// never a delta.
+	Model *string `json:"model"`
 }
 
 // apmPinComplete is the all-or-nothing rule as the handler states it. The store
@@ -143,6 +155,11 @@ func (h *cnvHandlers) createProfile(w http.ResponseWriter, r *http.Request) {
 			"launcher_id must match ^[a-z0-9][a-z0-9_-]{0,63}$ — a launcher registry id, never a command line.")
 		return
 	}
+	body.Model = strings.TrimSpace(body.Model)
+	if len(body.Model) > 200 {
+		profProblem(w, ProfileCodeModelInvalid, "model must be at most 200 characters.")
+		return
+	}
 	if !c.IsOrgAdmin {
 		h.profileDenied(w, r, c, "", "profile.create", "the library role is required")
 		WriteProblem(w, http.StatusForbidden, "Forbidden",
@@ -172,6 +189,14 @@ func (h *cnvHandlers) patchProfile(w http.ResponseWriter, r *http.Request) {
 		profProblem(w, ProfileCodeAPMIncomplete,
 			"an apm pin is either all three set (locked) or just the ref and target (unlocked); a partial pin is refused.")
 		return
+	}
+	if body.Model != nil {
+		model := strings.TrimSpace(*body.Model)
+		body.Model = &model
+		if len(model) > 200 {
+			profProblem(w, ProfileCodeModelInvalid, "model must be at most 200 characters.")
+			return
+		}
 	}
 	if !validUUID(profileID) {
 		h.profileDenied(w, r, c, profileID, "profile.update", "malformed profile id")
@@ -303,6 +328,8 @@ func profProblemTitle(code string) string {
 		return "Invalid Profile Name"
 	case ProfileCodeLauncherBad:
 		return "Invalid Launcher Id"
+	case ProfileCodeModelInvalid:
+		return "Invalid Profile Model"
 	default:
 		return "Validation Failed"
 	}

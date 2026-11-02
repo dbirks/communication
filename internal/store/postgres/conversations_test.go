@@ -172,7 +172,7 @@ func (f *cnvFixture) caller(user string) Caller {
 // control: the create path is the one place version 1 comes from.
 func (f *cnvFixture) cnvCreate(t *testing.T, user, title, prompt string) CnvConversation {
 	t.Helper()
-	chat, err := f.store.CreateConversation(testCtx(t), f.caller(user), f.project, f.profile, title, prompt)
+	chat, err := f.store.CreateConversation(testCtx(t), f.caller(user), f.project, f.profile, title, prompt, "")
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestConversationNonMemberCannotSeeIt(t *testing.T) {
 	}
 
 	// Listing is scoped the same way: the outsider's project list has no rows.
-	items, err := f.store.ListConversations(ctx, f.caller(f.outsider), f.project, "", "")
+	items, err := f.store.ListConversations(ctx, f.caller(f.outsider), f.project, "", "", "")
 	if !errors.Is(err, ErrConversationNotFound) {
 		t.Fatalf("list = %v, want the project itself to be invisible", err)
 	}
@@ -494,7 +494,7 @@ func TestConversationNonMemberCannotSeeIt(t *testing.T) {
 		t.Errorf("list returned %d rows for a caller who may not see the project", len(items))
 	}
 	// The member's list sees it.
-	items, err = f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "")
+	items, err = f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
 	if err != nil || len(items) != 1 || items[0].ID != chat.ID {
 		t.Fatalf("member list = %v / %v", items, err)
 	}
@@ -541,7 +541,7 @@ func TestViewerMayReadButNeverWrite(t *testing.T) {
 	if _, err := f.store.GetConversation(ctx, carl, chat.ID); err != nil {
 		t.Fatalf("viewer read = %v, want 200-equivalent", err)
 	}
-	if _, err := f.store.ListConversations(ctx, carl, f.project, "", ""); err != nil {
+	if _, err := f.store.ListConversations(ctx, carl, f.project, "", "", ""); err != nil {
 		t.Fatalf("viewer list = %v", err)
 	}
 
@@ -551,7 +551,7 @@ func TestViewerMayReadButNeverWrite(t *testing.T) {
 		"return-control": func() error { _, err := f.store.ReturnControl(ctx, carl, chat.ID, chat.Control.Version); return err },
 		"cancel":         func() error { _, err := f.store.CancelTurn(ctx, carl, chat.ID); return err },
 		"create": func() error {
-			_, err := f.store.CreateConversation(ctx, carl, f.project, f.profile, "x", "")
+			_, err := f.store.CreateConversation(ctx, carl, f.project, f.profile, "x", "", "")
 			return err
 		},
 	}
@@ -1138,7 +1138,7 @@ func TestConversationListOriginAndRunLink(t *testing.T) {
 
 	list := func(origin, query string) map[string]CnvSummary {
 		t.Helper()
-		items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, origin, query)
+		items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, origin, query, "")
 		if err != nil {
 			t.Fatalf("list(origin=%q, q=%q) = %v", origin, query, err)
 		}

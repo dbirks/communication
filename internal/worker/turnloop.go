@@ -351,6 +351,11 @@ type liveSession struct {
 	handle         domain.AgentSession
 	info           domain.SessionInfo
 	bindingID      string
+	// profileID is the agent profile this instance was launched on
+	// (ADR-0068). A turn that claims a different profile must not ride this
+	// process: the profile is the launcher, permission and packaged-context
+	// decision, and a live instance carries all three from its launch.
+	profileID string
 
 	// dead is set once the event stream closed (process gone).
 	dead atomic.Bool
@@ -414,13 +419,25 @@ func (s *liveSession) dispatch() {
 func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*liveSession, error) {
 	l.mu.Lock()
 	if s := l.live[c.ConversationID]; s != nil && !s.dead.Load() {
+		// ADR-0068: continue_live reuse is a same-profile decision. The
+		// controller switched the conversation's agent since this process
+		// launched, so the switch is honored here — honestly, by closing the
+		// old instance (binding closed, agent.session.disconnected journalled,
+		// conversation moved to idle) and falling through to a NEW session on
+		// the new profile in the SAME prepared workspace/branch.
+		if s.profileID == c.AgentProfileID || c.AgentProfileID == "" {
+			l.mu.Unlock()
+			rt.session(s)
+			// Honest turn origin: this turn rides a session an earlier turn
+			// created — no new binding, no new agent.session.connected (04
+			// "Session reuse semantics": continue_live).
+			rt.turnOrigin = events.SessionOriginReused
+			return s, nil
+		}
+		stale := s
 		l.mu.Unlock()
-		rt.session(s)
-		// Honest turn origin: this turn rides a session an earlier turn
-		// created — no new binding, no new agent.session.connected (04
-		// "Session reuse semantics": continue_live).
-		rt.turnOrigin = events.SessionOriginReused
-		return s, nil
+		l.closeSession(ctx, stale, "agent_switched")
+		l.mu.Lock()
 	}
 	l.mu.Unlock()
 
@@ -495,7 +512,7 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	// A prior live binding on *this* worker whose process died (restart
 	// before the reconciler noticed) is the only thing worth attempting a
 	// session/load for; both adapters must have advertised it.
-	if prev, ok, err := l.store.ResumableSession(ctx, c.ConversationID, c.WorkerID); err == nil && ok {
+	if prev, ok, err := l.store.ResumableSession(ctx, c.ConversationID, c.WorkerID, c.AgentProfileID); err == nil && ok {
 		req.LoadSessionID = prev.ACPSessionID
 	}
 
@@ -539,6 +556,7 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	ls := &liveSession{
 		loop:           l,
 		conversationID: c.ConversationID,
+		profileID:      c.AgentProfileID,
 		handle:         sess,
 		info:           info,
 		bindingID:      bindingID,

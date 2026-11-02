@@ -214,8 +214,15 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00021 (ADR-0065 conversation
-// list reads) on top of
+// version every replica demands. Current head: 00023 (ADR-0068 per-turn agent
+// profiles: conversation_turns.agent_profile_id +
+// acp_session_bindings.agent_profile_id) on top of
+// 00022 (ADR-0067 repo-scoped conversations:
+// conversations.repository_id, the declared binding, with the composite FK to
+// repositories (id, project_id) — no index, the list filter rides the
+// project scan and 00021's seeks, ADR-0063) on top of
+// 00021 (ADR-0065 conversation list reads: the domain_events agent-message
+// and workspaces conversation indexes) on top of
 // 00020 (ADR-0064 run title: runs.title with the 1..200 CHECK, no backfill —
 // runs.repository_id itself already arrived with 00015) on top of
 // 00019 (ADR-0020 amendment:
@@ -251,7 +258,7 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 21
+const migHeadVersion = 23
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.

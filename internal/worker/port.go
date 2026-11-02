@@ -35,11 +35,19 @@ type Claim struct {
 	Prompt      string
 	SubmittedBy string
 
-	// LauncherID and PermissionMode come from the conversation's agent
-	// profile; ModeID resolution (which session mode makes a launcher ask)
-	// is the launcher registry's knowledge, injected via Config.AskModeID.
+	// LauncherID and PermissionMode come from the turn's agent
+	// profile (ADR-0068: from the turn row, which was stamped from the
+	// conversation's next-turn profile at enqueue); ModeID resolution (which
+	// session mode makes a launcher ask) is the launcher registry's knowledge,
+	// injected via Config.AskModeID.
 	LauncherID     string
 	PermissionMode string // ask | preapproved_within_sandbox | deny
+	// AgentProfileID is the profile this turn runs on (ADR-0068). The turn
+	// loop keeps one live agent instance per conversation AND per profile:
+	// a profile change closes the live session and launches a NEW ACP session
+	// on the new profile in the same workspace, never resuming the old
+	// profile's session (session/load belongs to the harness that made it).
+	AgentProfileID string
 }
 
 // TurnEvent is one journal append made on behalf of a turn or conversation.
@@ -164,8 +172,11 @@ type TurnStore interface {
 	RecordBinding(ctx context.Context, c Claim, s domain.SessionInfo) (bindingID string, closedPrior []string, err error)
 	// ResumableSession returns the session id of a live binding this worker
 	// lost its process for (worker restart before the reconciler noticed),
-	// only when the recorded capabilities advertised loadSession.
-	ResumableSession(ctx context.Context, conversationID, workerID string) (domain.SessionInfo, bool, error)
+	// only when the recorded capabilities advertised loadSession and — since
+	// ADR-0068 — the binding was launched by profileID. An empty profileID
+	// skips the profile filter (the attempt path pins its profile in its plan;
+	// nothing switches it mid-run): a switched conversation must launch NEW.
+	ResumableSession(ctx context.Context, conversationID, workerID, profileID string) (domain.SessionInfo, bool, error)
 	// CloseBinding marks this worker's live binding closed and returns the
 	// affected ids for eventing.
 	CloseBinding(ctx context.Context, conversationID, workerID, reason string) ([]string, error)

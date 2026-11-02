@@ -111,7 +111,7 @@ func rsConversation(t *testing.T, f *m4Fixture, projectID string) string {
 	}
 	cv, err := (&CnvStore{Pool: f.pool}).CreateConversation(testCtx(t),
 		Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true},
-		projectID, profileID, "Why is CI slow on acme-api?", "")
+		projectID, profileID, "Why is CI slow on acme-api?", "", "")
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}

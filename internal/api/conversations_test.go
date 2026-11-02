@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -59,8 +60,11 @@ type cnvFakeStore struct {
 	taken     []int
 	returned  []int
 	cancelled int
-	decided   []cnvDecideCall
-	denied    []cnvDenial
+	// switched records the ADR-0068 switch writes the handler made, so a test
+	// can prove the route forwarded the body unchanged.
+	switched []cnvSwitchCall
+	decided  []cnvDecideCall
+	denied   []cnvDenial
 	// authFails flips visibility: the fake answers every read as the store
 	// answers a non-member, which is the only way to test that 404 (not 403) is
 	// what an outsider sees on every route.
@@ -73,9 +77,18 @@ type cnvFakeStore struct {
 	eventsRead     int
 	// lastListOrigin and lastListQuery are the ADR-0043 filters the handler
 	// forwarded, so a test can prove the query string reached the store
-	// unchanged.
-	lastListOrigin string
-	lastListQuery  string
+	// unchanged. lastListRepository is ADR-0067's repository filter, same
+	// purpose.
+	lastListOrigin     string
+	lastListQuery      string
+	lastListRepository string
+	// repos is the set of repository NAMES the fake's project has (ADR-0067).
+	// The fake answers a filter or a create binding like the real store: a
+	// well-formed name outside the set is ErrConversationRepositoryNotFound
+	// (404) on the list and ErrConversationValidation (422) on the create —
+	// the two arms differ on purpose, and a handler that flattened them would
+	// fail here.
+	repos []string
 	// listRepositoryID/listRepositoryName/listLastLine are the ADR-0065
 	// fields a test stamps onto the fake's one list row; the handler test
 	// then reads them back off the wire. Unset = the thread is unbound
@@ -94,7 +107,8 @@ type cnvFakeStore struct {
 	apmLockReads []string
 }
 
-type cnvCreateCall struct{ projectID, profileID, title, prompt string }
+type cnvCreateCall struct{ projectID, profileID, title, prompt, repository string }
+type cnvSwitchCall struct{ conversationID, agentProfileID string }
 type cnvMessageCall struct {
 	conversationID, prompt string
 }
@@ -123,6 +137,7 @@ func cnvNewFakeStore() *cnvFakeStore {
 		myRole:     string(authz.RoleMaintainer),
 		controller: cnvTUserA,
 		version:    1,
+		repos:      []string{"acme-api", "zeta"},
 		profiles: []AgentProfileView{
 			{ID: cnvTProfile, Name: "Claude Code", LauncherID: "claude", PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1},
 			{ID: "p-2", Name: "Codex", LauncherID: "codex", PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1},
@@ -152,6 +167,17 @@ func strPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// cnvFakeHasRepo answers whether the fake's project has a repository name
+// (ADR-0067).
+func cnvFakeHasRepo(f *cnvFakeStore, name string) bool {
+	for _, r := range f.repos {
+		if r == name {
+			return true
+		}
+	}
+	return false
 }
 
 // cnvActiveTurn is the turn the fake reports as in flight.
@@ -314,15 +340,21 @@ func (f *cnvFakeStore) RestoreAgentProfileVersion(_ context.Context, c Caller, p
 	return *p, p.Version, nil
 }
 
-func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]ConversationSummaryView, error) {
+func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query, repository string) ([]ConversationSummaryView, error) {
 	if !f.visible(c) {
 		return nil, ErrConversationNotFound
 	}
 	if projectID != cnvTProject {
 		return nil, ErrConversationNotFound
 	}
+	// ADR-0067: a repository filter naming no repository of the project is a
+	// 404 before any row read — the store, not the handler, owns that answer.
+	if repository != "" && !cnvFakeHasRepo(f, repository) {
+		return nil, ErrConversationRepositoryNotFound
+	}
 	f.lastListOrigin = origin
 	f.lastListQuery = query
+	f.lastListRepository = repository
 	f.syncControl()
 	return []ConversationSummaryView{{
 		ID: cnvTConv, ProjectID: cnvTProject, AgentProfileID: cnvTProfile,
@@ -334,7 +366,7 @@ func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectI
 	}}, nil
 }
 
-func (f *cnvFakeStore) CreateConversation(_ context.Context, c Caller, projectID, profileID, title, prompt string) (ConversationView, error) {
+func (f *cnvFakeStore) CreateConversation(_ context.Context, c Caller, projectID, profileID, title, prompt, repository string) (ConversationView, error) {
 	if !f.visible(c) {
 		return ConversationView{}, ErrConversationNotFound
 	}
@@ -353,7 +385,12 @@ func (f *cnvFakeStore) CreateConversation(_ context.Context, c Caller, projectID
 	if !known {
 		return ConversationView{}, fmt.Errorf("%w: no such agent profile in your organization", ErrConversationValidation)
 	}
-	f.created = append(f.created, cnvCreateCall{projectID, profileID, title, prompt})
+	// ADR-0067: a create body naming a repository the project does not have is
+	// a 422 (the field is wrong), not the list's 404 (the resource is absent).
+	if repository != "" && !cnvFakeHasRepo(f, repository) {
+		return ConversationView{}, fmt.Errorf("%w: no such repository %q in this project", ErrConversationValidation, repository)
+	}
+	f.created = append(f.created, cnvCreateCall{projectID, profileID, title, prompt, repository})
 	f.version = 1
 	f.controller = c.UserID
 	f.syncControl()
@@ -475,6 +512,36 @@ func (f *cnvFakeStore) CancelTurn(_ context.Context, c Caller, conversationID st
 		return ConversationTurnView{}, f.conflict(ConflictNoActiveTurn, "No turn is queued or running", nil)
 	}
 	return *f.chat.ActiveTurn, nil
+}
+
+// SwitchAgent answers the way the ADR-0068 store answers: role gate, identity
+// gate (403, not the not-controller 409 the prompt route uses), mid-turn 409,
+// unknown profile 400, and a fresh conversation view on success.
+func (f *cnvFakeStore) SwitchAgent(_ context.Context, c Caller, conversationID, agentProfileID string) (ConversationView, error) {
+	if !f.visible(c) {
+		return ConversationView{}, ErrConversationNotFound
+	}
+	if f.myRole == string(authz.RoleViewer) {
+		return ConversationView{}, ErrConversationForbidden
+	}
+	if f.controller != c.UserID {
+		return ConversationView{}, fmt.Errorf("%w: Alice holds the controller lock; only the controller may switch the agent for the next turn", ErrConversationForbidden)
+	}
+	if f.chat.ActiveTurn != nil {
+		return ConversationView{}, f.conflict(ConflictTurnInProgress,
+			"A turn is already queued or running for this conversation; the agent changes only between turns.", f.chat.ActiveTurn)
+	}
+	if f.findProfile(agentProfileID) == nil {
+		return ConversationView{}, fmt.Errorf("%w: agent_profile_id is not one of this project's agent profiles", ErrConversationBadRequest)
+	}
+	f.switched = append(f.switched, cnvSwitchCall{conversationID, agentProfileID})
+	f.chat.AgentProfileID = agentProfileID
+	if p := f.findProfile(agentProfileID); p != nil {
+		f.chat.AgentProfileName = p.Name
+		f.chat.LauncherID = p.LauncherID
+		f.chat.AgentProfileModel = p.Model
+	}
+	return f.chat, nil
 }
 
 func (f *cnvFakeStore) DecidePermission(_ context.Context, c Caller, conversationID, requestID, optionID string) (PermissionRequestView, error) {
@@ -691,6 +758,145 @@ func TestListConversationsOriginAndQuery(t *testing.T) {
 		if rec.Code != http.StatusOK || store.lastListOrigin != "" || store.lastListQuery != "" {
 			t.Fatalf("GET list = %d (origin=%q query=%q), want a plain list", rec.Code,
 				store.lastListOrigin, store.lastListQuery)
+		}
+	})
+}
+
+// TestListConversationsRepositoryFilter pins ADR-0067's repository query
+// filter on the route: a malformed name is a 400 that never reaches the
+// store (the origin/q discipline), a well-formed name the project does not
+// have is the store's 404 (not an empty 200 that pretends it does), a valid
+// name reaches the store unchanged, and a non-member still gets the plain
+// project 404 — a filter cannot out-see membership.
+func TestListConversationsRepositoryFilter(t *testing.T) {
+	listTarget := "http://localhost:8080/api/v1/projects/" + cnvTProject + "/conversations"
+
+	t.Run("malformed repository is 400 and never reaches the store", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		for _, bad := range []string{"..", "no such/thing", strings.Repeat("r", 101)} {
+			rec := do(t, s, request(http.MethodGet, listTarget+"?repository="+url.QueryEscape(bad), nil))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("GET ?repository=%q = %d (%s), want 400", bad, rec.Code, rec.Body)
+			}
+			if prob := decodeProblem(t, rec); !strings.Contains(prob.Detail, "invalid_repository") {
+				t.Errorf("detail = %q, want it to name invalid_repository", prob.Detail)
+			}
+		}
+		if store.lastListRepository != "" {
+			t.Errorf("store called with repository %q for an invalid filter", store.lastListRepository)
+		}
+	})
+
+	t.Run("unknown repository is 404, not an empty list", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget+"?repository=other-org-repo", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET ?repository=other-org-repo = %d (%s), want 404", rec.Code, rec.Body)
+		}
+		if prob := decodeProblem(t, rec); !strings.Contains(prob.Detail, "repository") {
+			t.Errorf("detail = %q, want it to name the repository", prob.Detail)
+		}
+	})
+
+	t.Run("valid repository is forwarded to the store", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		repoID := "01987a70-1111-7000-8000-abcdef012345"
+		store.listRepositoryID, store.listRepositoryName = &repoID, strPtr("acme-api")
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget+"?repository=acme-api", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET ?repository=acme-api = %d (%s), want 200", rec.Code, rec.Body)
+		}
+		if store.lastListRepository != "acme-api" {
+			t.Errorf("store saw repository %q, want acme-api", store.lastListRepository)
+		}
+		var out struct {
+			Items []ConversationSummaryView `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body)
+		}
+		if len(out.Items) != 1 || out.Items[0].RepositoryName == nil || *out.Items[0].RepositoryName != "acme-api" {
+			t.Errorf("items = %s, want the row echoing its repository", rec.Body)
+		}
+	})
+
+	t.Run("a non-member is 404 with or without the filter", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		store.authFails = true
+		s := cnvMount(t, store, nil, cnvCaller("stranger"))
+		rec := do(t, s, request(http.MethodGet, listTarget+"?repository=acme-api", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET ?repository=... as a stranger = %d (%s), want 404", rec.Code, rec.Body)
+		}
+		if store.lastListRepository != "" {
+			t.Errorf("the filter reached the store (%q) past a denied caller", store.lastListRepository)
+		}
+	})
+}
+
+// TestCreateConversationInRepository pins ADR-0067's create arm on the
+// route: the repository name rides the one request that carries the profile
+// and the first message, a well-formed name the project does not have is 422
+// (a wrong body field, not a missing filter target), and a malformed one is
+// refused before the store is asked.
+func TestCreateConversationInRepository(t *testing.T) {
+	createTarget := "http://localhost:8080/api/v1/projects/" + cnvTProject + "/conversations"
+
+	t.Run("repository rides the create", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := cnvPost(t, s, cnvTUserA, createTarget,
+			map[string]any{"agent_profile_id": cnvTProfile, "title": "Chat in storefront", "prompt": "hi", "repository": "acme-api"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST conversations = %d (%s)", rec.Code, rec.Body)
+		}
+		if len(store.created) != 1 || store.created[0].repository != "acme-api" || store.created[0].prompt != "hi" {
+			t.Fatalf("create calls = %+v, want one call carrying repository=acme-api and the first message", store.created)
+		}
+	})
+
+	t.Run("repository the project does not have is 422", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := cnvPost(t, s, cnvTUserA, createTarget,
+			map[string]any{"agent_profile_id": cnvTProfile, "title": "x", "repository": "mallory-repo"})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 (%s)", rec.Code, rec.Body)
+		}
+		if prob := decodeProblem(t, rec); !strings.Contains(prob.Detail, "repository") {
+			t.Errorf("detail = %q, want it to name the repository", prob.Detail)
+		}
+		if len(store.created) != 0 {
+			t.Errorf("store was called with %+v although the repository is not the project's", store.created)
+		}
+	})
+
+	t.Run("malformed repository never reaches the store", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := cnvPost(t, s, cnvTUserA, createTarget,
+			map[string]any{"agent_profile_id": cnvTProfile, "title": "x", "repository": "../../etc"})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 (%s)", rec.Code, rec.Body)
+		}
+		if len(store.created) != 0 {
+			t.Errorf("store was called with %+v although validation failed", store.created)
+		}
+	})
+
+	t.Run("omitted repository is the plain unbound create", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := cnvPost(t, s, cnvTUserA, createTarget,
+			map[string]any{"agent_profile_id": cnvTProfile, "title": "unbound"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST conversations = %d (%s)", rec.Code, rec.Body)
+		}
+		if len(store.created) != 1 || store.created[0].repository != "" {
+			t.Fatalf("create calls = %+v, want one unbound call", store.created)
 		}
 	})
 }

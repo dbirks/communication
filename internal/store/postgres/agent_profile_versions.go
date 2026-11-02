@@ -61,6 +61,10 @@ type AgentProfileSnapshot struct {
 	APMPackageRef  *string `json:"apm_package_ref"`
 	APMTarget      *string `json:"apm_target"`
 	APMLockDigest  *string `json:"apm_lock_digest"`
+	// Model is the ADR-0068 display-model pin (null = the profile names none).
+	// Pre-0068 snapshots have no key at all and decode to nil: restoring one
+	// clears the pin, which is exactly "this version named no model".
+	Model *string `json:"model"`
 }
 
 // Marshal encodes a snapshot into the JSONB column's bytes.
@@ -93,11 +97,12 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 	var p CnvProfile
 	err := q.QueryRow(ctx, `
 		SELECT id::text, organization_id::text, name, launcher_id, permission_mode, created_at, version,
-		       COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, '')
+		       COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, ''),
+		       COALESCE(model, '')
 		FROM agent_profiles
 		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID, &p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest)
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, 0, ErrProfileNotFound
 	}
@@ -117,10 +122,11 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 	if _, err := q.Exec(ctx, `
 		UPDATE agent_profiles
 		SET version = $1, name = $2, launcher_id = $3, permission_mode = $4,
-		    apm_package_ref = $5, apm_target = $6, apm_lock_digest = $7
-		WHERE id = $8::uuid AND organization_id = $9::uuid AND version = $10::int`,
+		    apm_package_ref = $5, apm_target = $6, apm_lock_digest = $7, model = $8
+		WHERE id = $9::uuid AND organization_id = $10::uuid AND version = $11::int`,
 		newVersion, w.State.Name, w.State.LauncherID, w.State.PermissionMode,
 		apmNullToAny(w.State.APMPackageRef), apmNullToAny(w.State.APMTarget), apmNullToAny(w.State.APMLockDigest),
+		apmNullToAny(w.State.Model),
 		profileID, orgID, p.Version); err != nil {
 		return CnvProfile{}, 0, fmt.Errorf("postgres: write agent profile version %d: %w", newVersion, err)
 	}
@@ -138,6 +144,7 @@ func CommitAgentProfileWrite(ctx context.Context, q prjQuerier, profileID, orgID
 	p.APMPackageRef = apmAnyToStr(w.State.APMPackageRef)
 	p.APMTarget = apmAnyToStr(w.State.APMTarget)
 	p.APMLockDigest = apmAnyToStr(w.State.APMLockDigest)
+	p.Model = apmAnyToStr(w.State.Model)
 	return p, newVersion, nil
 }
 

@@ -414,7 +414,7 @@ func TestTurnsResumableSession(t *testing.T) {
 	pool, f := trnSetup(t)
 	ctx := testCtx(t)
 
-	if _, ok, err := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerA); ok || err != nil {
+	if _, ok, err := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerA, ""); ok || err != nil {
 		t.Fatalf("resumable with no binding: ok=%v err=%v", ok, err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -422,11 +422,11 @@ func TestTurnsResumableSession(t *testing.T) {
 		VALUES ($1, $2, 'resume-me', 1, '{"loadSession": true}', 'claude')`, f.ConvID, f.WorkerA); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
-	info, ok, err := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerA)
+	info, ok, err := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerA, "")
 	if err != nil || !ok || info.ACPSessionID != "resume-me" {
 		t.Fatalf("resumable = %+v %v %v", info, ok, err)
 	}
-	if _, ok, _ := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerB); ok {
+	if _, ok, _ := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerB, ""); ok {
 		t.Error("worker B was offered worker A's session to resume")
 	}
 	if _, err := pool.Exec(ctx, `UPDATE acp_session_bindings SET status = 'closed', disconnected_at = now() WHERE conversation_id = $1`,
@@ -438,7 +438,7 @@ func TestTurnsResumableSession(t *testing.T) {
 		VALUES ($1, $2, 'no-load', 1, '{}', 'claude')`, f.ConvID, f.WorkerB); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
-	if _, ok, _ := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerB); ok {
+	if _, ok, _ := f.Store.ResumableSession(ctx, f.ConvID, f.WorkerB, ""); ok {
 		t.Error("a binding without an advertised loadSession was offered for resume")
 	}
 }

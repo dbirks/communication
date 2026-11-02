@@ -94,13 +94,14 @@ func (s *TurnStore) ClaimTurn(ctx context.Context, workerID string) (worker.Clai
 
 	err = s.Pool.QueryRow(ctx, `
 		SELECT t.prompt, t.submitted_by::text, c.project_id::text, p.organization_id::text,
-		       ap.launcher_id, ap.permission_mode
+		       ap.launcher_id, ap.permission_mode,
+		       COALESCE(t.agent_profile_id, c.agent_profile_id)::text
 		FROM conversation_turns t
 		JOIN conversations c ON c.id = t.conversation_id
 		JOIN projects p ON p.id = c.project_id
-		JOIN agent_profiles ap ON ap.id = c.agent_profile_id
+		JOIN agent_profiles ap ON ap.id = COALESCE(t.agent_profile_id, c.agent_profile_id)
 		WHERE t.id = $1`, turnID).
-		Scan(&c.Prompt, &c.SubmittedBy, &c.ProjectID, &c.OrganizationID, &c.LauncherID, &c.PermissionMode)
+		Scan(&c.Prompt, &c.SubmittedBy, &c.ProjectID, &c.OrganizationID, &c.LauncherID, &c.PermissionMode, &c.AgentProfileID)
 	if err != nil {
 		return worker.Claim{}, false, fmt.Errorf("postgres: read claimed turn %s: %w", turnID, err)
 	}
@@ -655,11 +656,11 @@ func (s *TurnStore) RecordBinding(ctx context.Context, c worker.Claim, sess doma
 		return tx.QueryRow(ctx, `
 			INSERT INTO acp_session_bindings
 				(conversation_id, worker_id, acp_session_id, protocol_version, agent_capabilities,
-				 launcher_id, launcher_version, session_origin)
-			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+				 launcher_id, launcher_version, session_origin, agent_profile_id)
+			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 			RETURNING id::text`,
 			c.ConversationID, c.WorkerID, sess.ACPSessionID, sess.ProtocolVersion, caps,
-			sess.LauncherID, sess.LauncherVersion, origin).Scan(&id)
+			sess.LauncherID, sess.LauncherVersion, origin, cnvNullParam(c.AgentProfileID)).Scan(&id)
 	})
 	if err != nil {
 		return "", nil, err
@@ -669,8 +670,13 @@ func (s *TurnStore) RecordBinding(ctx context.Context, c worker.Claim, sess doma
 
 // ResumableSession returns the live binding this worker lost its process
 // for, but only when the recorded capabilities advertised loadSession —
-// session/load is attempted only if advertised (04, ADR-0016 §6).
-func (s *TurnStore) ResumableSession(ctx context.Context, conversationID, workerID string) (domain.SessionInfo, bool, error) {
+// session/load is attempted only if advertised (04, ADR-0016 §6) — and, since
+// ADR-0068, only when that binding was launched by the profile the claiming
+// turn runs on (profileID): a switched conversation must launch NEW, because
+// session/load restores the OLD harness's own history, not the new profile's.
+// An empty profileID is the attempt path's "no profile filter" (a run pins its
+// profile in its plan; nothing switches it under the attempt).
+func (s *TurnStore) ResumableSession(ctx context.Context, conversationID, workerID, profileID string) (domain.SessionInfo, bool, error) {
 	var info domain.SessionInfo
 	var caps []byte
 	err := s.Pool.QueryRow(ctx, `
@@ -678,8 +684,9 @@ func (s *TurnStore) ResumableSession(ctx context.Context, conversationID, worker
 		FROM acp_session_bindings
 		WHERE conversation_id = $1 AND worker_id = $2 AND status = 'connected'
 		  AND agent_capabilities ->> 'loadSession' = 'true'
+		  AND ($3::text = '' OR agent_profile_id = NULLIF($3, '')::uuid)
 		ORDER BY connected_at DESC, id DESC
-		LIMIT 1`, conversationID, workerID).
+		LIMIT 1`, conversationID, workerID, profileID).
 		Scan(&info.ACPSessionID, &info.ProtocolVersion, &caps, &info.LauncherID, &info.LauncherVersion, &info.Origin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.SessionInfo{}, false, nil

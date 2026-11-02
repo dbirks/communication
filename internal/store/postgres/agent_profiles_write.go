@@ -76,6 +76,9 @@ const (
 	ProfileCodeAPMTargetInvalid = "apm_target_invalid"
 	// ProfileCodeAPMDigestInvalid: apm_lock_digest is not sha256:<64 hex>.
 	ProfileCodeAPMDigestInvalid = "apm_lock_digest_invalid"
+	// ProfileCodeModelInvalid: model (ADR-0068) is over the 200-character
+	// column CHECK.
+	ProfileCodeModelInvalid = "profile_model_invalid"
 )
 
 // AgentProfileProblem is a refused profile write that knows *why* in a
@@ -103,12 +106,14 @@ func profileRefused(code, detail string) error {
 }
 
 // cnvProfileColumns is the agent_profiles read list, shared by every select in
-// this package so a new column lands in one place. COALESCE keeps the three
-// nullable apm columns plain strings here (NULL and "" mean the same thing: this
-// profile stages no packaged context); the API layer re-nulls them.
+// this package so a new column lands in one place. COALESCE keeps the nullable
+// apm columns and the ADR-0068 model plain strings here (NULL and "" mean the
+// same thing: this profile stages no packaged context / names no model); the
+// API layer re-nulls them.
 const cnvProfileColumns = `id::text, organization_id::text, name, launcher_id,
 	permission_mode, created_at, version,
-	COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, '')`
+	COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, ''),
+	COALESCE(model, '')`
 
 // cnvProfileRow reads one profile scoped to the caller's organization: a profile
 // in somebody else's organization answers not-found, never a peek
@@ -125,7 +130,7 @@ func cnvProfileRow(ctx context.Context, q prjQuerier, profileID, orgID string) (
 		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest)
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileNotFound
 	}
@@ -250,7 +255,7 @@ func (s *CnvStore) cnvPool() (*pgxpool.Pool, error) {
 // The admin check is the INSERT's WHERE clause: a caller who is not an
 // organization admin matches zero rows and gets ErrProfileForbidden out of the
 // zero-row branch below, not a row.
-func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launcherID string) (CnvProfile, error) {
+func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launcherID, model string) (CnvProfile, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvProfile{}, err
 	}
@@ -260,6 +265,9 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	if !cnvLauncherPattern.MatchString(launcherID) {
 		return CnvProfile{}, profileRefused(ProfileCodeLauncherInvalid,
 			"launcher_id must match ^[a-z0-9][a-z0-9_-]{0,63}$ (a registry id, not a command line).")
+	}
+	if len(model) > 200 {
+		return CnvProfile{}, profileRefused(ProfileCodeModelInvalid, "model must be at most 200 characters.")
 	}
 	pool, err := s.cnvPool()
 	if err != nil {
@@ -273,14 +281,14 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 
 	var p CnvProfile
 	err = tx.QueryRow(ctx, `
-		INSERT INTO agent_profiles (organization_id, name, launcher_id)
-		SELECT $1::uuid, $2, $3
-		WHERE $4::boolean
+		INSERT INTO agent_profiles (organization_id, name, launcher_id, model)
+		SELECT $1::uuid, $2, $3, NULLIF($4, '')
+		WHERE $5::boolean
 		RETURNING `+cnvProfileColumns,
-		c.OrganizationID, strings.TrimSpace(name), launcherID, c.IsOrgAdmin).
+		c.OrganizationID, strings.TrimSpace(name), launcherID, strings.TrimSpace(model), c.IsOrgAdmin).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest)
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
 	}
@@ -305,6 +313,7 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 		Name:           p.Name,
 		LauncherID:     p.LauncherID,
 		PermissionMode: p.PermissionMode,
+		Model:          apmAnyToPtr(p.Model),
 	}
 	snapshot, err = snap.Marshal()
 	if err != nil {
@@ -338,7 +347,8 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	return p, nil
 }
 
-// PatchAgentProfileAPM writes the APM triple — and only the triple. It never
+// PatchAgentProfileAPM writes the APM triple and the model pin — and only
+// those. It never
 // touches permission_mode, the launcher, or any other axis: those are separate
 // decisions with separate evidence, and a route that could quietly move the
 // sandbox axis while "attaching a skills package" would be the easy way to widen
@@ -351,13 +361,18 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 //
 // A nil pointer means "this write does not carry the column", and checkAPMPin
 // refuses any partial triple, so the two legal calls are all three values and
-// all three nil-or-empty (the clear).
-func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, ref, target, digest *string, expectedVersion *int) (CnvProfile, error) {
+// all three nil-or-empty (the clear). Model (ADR-0068) follows the same
+// nil-means-absent rule with a twist: absent leaves the current pin alone,
+// "" clears it, a value sets it — the model is a single column, not a triple.
+func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, ref, target, digest *string, expectedVersion *int, model *string) (CnvProfile, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvProfile{}, err
 	}
 	if err := checkAPMPin(ref, target, digest); err != nil {
 		return CnvProfile{}, err
+	}
+	if model != nil && len(*model) > 200 {
+		return CnvProfile{}, profileRefused(ProfileCodeModelInvalid, "model must be at most 200 characters.")
 	}
 	pool, err := s.cnvPool()
 	if err != nil {
@@ -393,6 +408,17 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		}
 		return *v
 	}
+	// A model-only write (ADR-0068: the body carries `model` and none of the
+	// triple) moves the model column and NOTHING else. The old contract — all
+	// three triple members absent is the clear — stands for every other body,
+	// including `{}` and `{"version":n}`; this arm exists so setting a display
+	// model cannot silently stage down a locked profile.
+	apmCarried := ref != nil || target != nil || digest != nil || model == nil
+	if !apmCarried {
+		ref, target, digest = nil, nil, nil
+		pkg, targ, dig := p.APMPackageRef, p.APMTarget, p.APMLockDigest
+		ref, target, digest = &pkg, &targ, &dig
+	}
 	var contents *string
 	// The write's own WHERE carries the library-role predicate and the version
 	// CAS token: the write refuses rather than trusting the caller to have
@@ -401,17 +427,21 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 	// apm_contents_summary rides the same write as apm_lock_digest: a pin that is
 	// unlocked or cleared leaves both null, so a digest (and the names-only
 	// contents summary that came with it) can never survive a ref/target change.
+	carryTriple := apmCarried
 	err = tx.QueryRow(ctx, `
 		UPDATE agent_profiles
-		SET apm_package_ref = $1, apm_target = $2, apm_lock_digest = $3, apm_contents_summary = $4,
+		SET apm_package_ref = $1, apm_target = $2, apm_lock_digest = $3,
+		    apm_contents_summary = CASE WHEN $10::boolean THEN $4 ELSE apm_contents_summary END,
+		    model = CASE WHEN $8::boolean THEN NULLIF($9, '') ELSE model END,
 		    version = version + 1
 		WHERE id = $5::uuid AND organization_id = $6::uuid AND version = $7::int
 		RETURNING `+cnvProfileColumns+", apm_contents_summary",
 		null(ref), null(target), null(digest), nil,
-		profileID, c.OrganizationID, p.Version).
+		profileID, c.OrganizationID, p.Version,
+		model != nil, modelOrEmpty(model), carryTriple).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt, &p.Version,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &contents)
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &p.Model, &contents)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
 	}
@@ -446,6 +476,7 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		APMPackageRef:  apmAnyToPtr(p.APMPackageRef),
 		APMTarget:      apmAnyToPtr(p.APMTarget),
 		APMLockDigest:  apmAnyToPtr(p.APMLockDigest),
+		Model:          apmAnyToPtr(p.Model),
 	}
 	snapshot, err := snap.Marshal()
 	if err != nil {
@@ -469,9 +500,12 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 			APMPackageRef: p.APMPackageRef,
 			APMTarget:     p.APMTarget,
 			APMLockDigest: p.APMLockDigest,
-			// The pin is cleared when nothing is left set — recorded so a reader
-			// can tell "this profile now stages nothing" from "the digest moved".
-			APMPinCleared: p.APMPackageRef == "",
+			// The pin is cleared when THIS write carried the triple and left
+			// nothing set — recorded so a reader can tell "this profile now
+			// stages nothing" from "the digest moved". A model-only write
+			// (ADR-0068) never claims a clear it did not perform.
+			APMPinCleared: carryTriple && p.APMPackageRef == "",
+			Model:         apmAnyToPtr(p.Model),
 		},
 	}); err != nil {
 		return CnvProfile{}, err
@@ -480,6 +514,16 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		return CnvProfile{}, fmt.Errorf("postgres: commit patch agent profile: %w", err)
 	}
 	return p, nil
+}
+
+// modelOrEmpty renders the carried model pin for the CASE arm above: the
+// "carried" flag decides whether the column moves at all, so this only has to
+// keep NULLIF(”,”)-able text out of the nil case.
+func modelOrEmpty(m *string) string {
+	if m == nil {
+		return ""
+	}
+	return *m
 }
 
 // pgConflictCode reports a SQLSTATE anywhere in err's chain. The database's own

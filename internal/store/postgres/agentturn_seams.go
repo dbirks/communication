@@ -169,6 +169,18 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 		}
 		convID := *conversationID
 
+		// The profile the attempt's turn runs on (ADR-0068): the conversation's
+		// current one. A run attempt never switches profiles — the switch route
+		// requires a human controller, and control here is 'run_attempt' — so
+		// this read is the same answer the conversation was created with; it is
+		// a read, never an invention.
+		var turnProfileID string
+		if err := tx.QueryRow(ctx, `
+			SELECT agent_profile_id::text FROM conversations WHERE id = $1::uuid`, convID).
+			Scan(&turnProfileID); err != nil {
+			return fmt.Errorf("postgres: read profile for attempt conversation %s: %w", convID, err)
+		}
+
 		// The control row: created already holding this attempt (§ 4 step 6
 		// "taking conversation_control as controller_kind='run_attempt'"). On a
 		// reused conversation the take is a version bump over 'none' or an
@@ -226,12 +238,12 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 		stampErr := tx.QueryRow(ctx, `
 			INSERT INTO conversation_turns
 				(conversation_id, prompt, submitted_by, submitted_via, status, worker_id,
-				 fencing_token, lease_expires_at, started_at, node_attempt_id)
+				 fencing_token, lease_expires_at, started_at, node_attempt_id, agent_profile_id)
 			VALUES ($1::uuid, $2, $3::uuid, $8, 'leased', $4::uuid, $5,
-			        now() + make_interval(secs => $6::double precision), NULL, $7::uuid)
+			        now() + make_interval(secs => $6::double precision), NULL, $7::uuid, $9::uuid)
 			RETURNING id::text`,
 			convID, spec.prompt, submitter, st.WorkerID, st.FencingToken,
-			s.Runs.leaseTTL().Seconds(), st.AttemptID, submittedVia).Scan(&turnID)
+			s.Runs.leaseTTL().Seconds(), st.AttemptID, submittedVia, turnProfileID).Scan(&turnID)
 		if stampErr != nil {
 			if idnUniqueViolation(stampErr) {
 				return fmt.Errorf("postgres: conversation %s still carries a non-terminal turn: its owner owes conversation.turn.<terminal> before this retry enqueues its own (one-active-turn index, ADR-0016 § 5; the holder is the human's own prompt when a return-control landed inside it): %w", convID, worker.ErrAttemptConversationBusy)
@@ -426,7 +438,7 @@ func (s *AttemptSessions) ResumableSession(ctx context.Context, conversationID, 
 	if _, err := s.pool(); err != nil {
 		return domain.SessionInfo{}, false, err
 	}
-	return s.turns().ResumableSession(ctx, conversationID, workerID)
+	return s.turns().ResumableSession(ctx, conversationID, workerID, "")
 }
 
 // RecordBinding closes any stale live binding and inserts this attempt's

@@ -137,7 +137,7 @@ func TestConversationListRepositoryAndLastLine(t *testing.T) {
 	clAgentMessage(t, f, lost.ID, longLine+"\nlater lines")
 	wantTruncated := string([]rune(longLine)[:cnvLastAgentLineMax-1]) + "…"
 
-	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "")
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestConversationListRunThreadRepository(t *testing.T) {
 	//    the row stays null — the fallback invents nothing.
 	plain := f.cnvCreate(t, f.alice, "Plain thread", "")
 
-	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "")
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}

@@ -49,7 +49,7 @@ func TestConversationListStructuredLastAgentLine(t *testing.T) {
 		prose.ID:    "half an object:",
 	}
 
-	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "")
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestConversationListLastAgentLineNewestChunk(t *testing.T) {
 	clAgentMessage(t, f, endsProse.ID, `{"summary": "the structured answer"}`)
 	clAgentMessage(t, f, endsProse.ID, "done — and the docs are updated")
 
-	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "")
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}

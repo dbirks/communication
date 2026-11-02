@@ -48,10 +48,14 @@ type fakeStore struct {
 	bindingConv    []string // RecordBinding conversation ids
 	resumable      domain.SessionInfo
 	resumableOK    bool
-	closedBinds    chan closedBind
-	convStatus     chan string
-	convEvents     chan worker.TurnEvent
-	appendErrOn    func(worker.TurnEvent) error
+	// resumableFor gates the resume offer to one agent profile (ADR-0068):
+	// "" keeps the old always-offer behavior, a profile id makes the fake
+	// answer like the real store — only a turn on that profile may resume.
+	resumableFor string
+	closedBinds  chan closedBind
+	convStatus   chan string
+	convEvents   chan worker.TurnEvent
+	appendErrOn  func(worker.TurnEvent) error
 }
 
 type recordedAppend struct {
@@ -248,8 +252,14 @@ func (f *fakeStore) RecordBinding(_ context.Context, c worker.Claim, s domain.Se
 	return id, nil, nil
 }
 
-func (f *fakeStore) ResumableSession(_ context.Context, _, _ string) (domain.SessionInfo, bool, error) {
-	return f.resumable, f.resumableOK, nil
+func (f *fakeStore) ResumableSession(_ context.Context, _, _, profileID string) (domain.SessionInfo, bool, error) {
+	if !f.resumableOK {
+		return domain.SessionInfo{}, false, nil
+	}
+	if f.resumableFor != "" && profileID != f.resumableFor {
+		return domain.SessionInfo{}, false, nil
+	}
+	return f.resumable, true, nil
 }
 
 func (f *fakeStore) CloseBinding(_ context.Context, conversationID, workerID, reason string) ([]string, error) {

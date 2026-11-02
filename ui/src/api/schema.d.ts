@@ -748,14 +748,16 @@ export interface paths {
     /**
      * List a project's conversations
      * @description Newest first (`created_at` descending). Visibility is project membership: a caller who is not a member — and is not an organization admin — gets `404`, the same answer every other project-scoped route gives, and no list. M2 has no pagination; the list is capped at 100 items ordered by `created_at DESC, id DESC`.
-     *     Two optional filters (ADR-0043): `origin` keeps only conversations opened by a person (`manual`) or by a pipeline run (`run`), and `q` keeps only conversations whose title contains the text, case insensitively, with LIKE metacharacters matching literally. Both are validated before any lookup: another `origin` value is `400` `invalid_origin`, and a `q` over 200 characters is `400` `invalid_query`.
+     *     Three optional filters, combinable: `origin` keeps only conversations opened by a person (`manual`) or by a pipeline run (`run`), and `q` keeps only conversations whose title contains the text, case insensitively, with LIKE metacharacters matching literally (ADR-0043); `repository` keeps only conversations bound to that repository (ADR-0067). `origin` and `q` are validated before any lookup: another `origin` value is `400` `invalid_origin`, a `q` over 200 characters is `400` `invalid_query`, and a `repository` that is not shaped like a repository name (or is `.`/`..`) is `400` `invalid_repository`. A well-formed `repository` the project does not have is `404` — a filter naming a missing repository is answered like the missing resource itself, never as an empty list that pretends it exists.
+     *     A thread counts as "in" a repository through the same resolution the row's `repository_id`/`repository_name` answer (ADR-0065 + ADR-0067): the repository it was created bound to wins; else the first repository of its newest workspace; else the repository of its linked run. The repo page's activity feed — this route with `repository` — therefore shows a just-started repo chat immediately, before any worker has prepared a workspace.
      */
     get: operations["listConversations"];
     put?: never;
     /**
      * Start a conversation against a project
      * @description Creates the conversation, its controller row (caller becomes the controller, `version` 1) and — when `prompt` is present — its first queued turn, all in one transaction, and appends `conversation.created` (plus `conversation.message.user` when a prompt was supplied). Nothing is launched here: a worker claims the turn, starts the agent and attaches a session (ADR-0016).
-     *     `agent_profile_id` must be a profile of the caller's organization (`422` otherwise). `contributor` or `maintainer` required; a `viewer` gets `403`. M2 does not honour `Idempotency-Key`, so a retried create makes a second conversation (ADR-0014 §Consequences).
+     *     When `repository` is present the conversation is born bound to that one repository of the project (ADR-0067): the binding is recorded once at creation, the list's `repository_id`/`repository_name` answer it immediately (before any workspace or run exists), and the repo page's filtered list finds the thread from this single request. The first `prompt`, when present, is enqueued as turn 1 under the starter's control exactly as in an unbound create — the binding names what the thread was opened for; it launches nothing.
+     *     `agent_profile_id` must be a profile of the caller's organization (`422` otherwise) and `repository`, when present, must name a repository of this project (`422` otherwise, including another project's repository, which is answered identically so a foreign name leaks nothing). `contributor` or `maintainer` required; a `viewer` gets `403`. M2 does not honour `Idempotency-Key`, so a retried create makes a second conversation (ADR-0014 §Consequences).
      */
     post: operations["createConversation"];
     delete?: never;
@@ -844,10 +846,10 @@ export interface paths {
      * @description `text/event-stream` of this conversation's rows from the `domain_events` journal — the transcript *is* the journal, scoped by `conversation_id`, so an API replica restarting (or the browser disconnecting) loses nothing that was committed. Framing, resume, gap-safety and the 15 s heartbeat are identical to `GET /api/v1/projects/{projectId}/events` (ADR-0014 §5, §9): `id: <global_seq>`, `event: <type>`, `data: <envelope JSON>`, replayed from `Last-Event-ID` or `?after=`.
      *     Rows are selected by `conversation_id`, and the resume cursor is resolved *through* that scope, so a cursor copied from another conversation replays nothing it should not. Every event also carries `project_id`, so the project stream remains a superset of this one. Authorization is the owning project's membership, checked at connect time and again before each delivery and heartbeat: a removed member stops receiving events (`06` edge case) and a non-member gets `404`.
      *     M2 event types on this stream, and the `payload` members of each (the envelope itself is `EventEnvelope`; payloads never carry secrets, and tool input/output are bounded previews the worker truncated, flagged by `truncated`):
-     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
+     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
      *     Enumerated values, spelled exactly: `permission.decided`'s `status` is `decided`, `expired` or `cancelled`; `turn.interrupted`'s `reason` is `lease_expired`, `worker_gone` or `shutdown` (it always has a reason and never a `stop_reason` — nothing reported one); `control.transferred`'s `reason` is `taken`, `returned` or `lost_lease`; `session_origin` on `agent.session.connected` (and on session bindings) is `new` or `resumed`; on `conversation.turn.started` it is `new`, `resumed` or `reused`, describing how *this turn* met its session — `new`/`resumed` when the session was created/restored for this turn (matching that binding's `agent.session.connected`), `reused` when the worker kept the previous turn's live process; controller `kind` is `human`, `run_attempt` or `none`.
      *     `options` is an array of `{option_id, label, kind}` objects as the agent offered them (`kind` = the observed ACP option kind, e.g. `allow_once`); `agent.session.connected`'s `agent_capabilities` is the agent's own capability object, verbatim.
-     *     `agent.session.disconnected`'s `reason` is a short machine-readable cause (`shutdown`, `replaced`, `process_exited`, or the observed mid-turn death names `agent_process_exited` / `acp_connection_closed`); `detail` and `stderr_tail` ride it only when the emitter observed the evidence — the adapter's exit/transport verdict and the last bytes the harness wrote to stderr, both redacted and bounded by the emitter.
+     *     `agent.session.disconnected`'s `reason` is a short machine-readable cause (`shutdown`, `replaced`, `process_exited`, `agent_switched` — ADR-0068: the live session was closed because the controller switched the conversation's agent profile and the next turn launches a new session — or the observed mid-turn death names `agent_process_exited` / `acp_connection_closed`); `detail` and `stderr_tail` ride it only when the emitter observed the evidence — the adapter's exit/transport verdict and the last bytes the harness wrote to stderr, both redacted and bounded by the emitter.
      *     `conversation.message.agent` is the worker's coalesced, readable chunk (`09` "worker may batch/coalesce to reduce DB costs, while preserving readable transcript order"), not a token stream: `chunk_seq` orders chunks within a turn and `final` marks the last one. The Go structs for these payloads are in `internal/events/events.go` — the control plane and the worker emit them from the same package, so a shape cannot drift between writer and reader.
      */
     get: operations["streamConversationEvents"];
@@ -909,6 +911,43 @@ export interface paths {
      *     Same CAS rules as `take-control`: `version` must match, a stale `version` is `409` with the current `control`, and the transition emits `conversation.control.transferred` with `reason: "returned"`. Only the current controller may return it (`409` otherwise, so a UI cannot release a lock it never held).
      */
     post: operations["returnConversationControl"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/switch-agent": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Set the agent profile the NEXT turn runs on (controller only, between turns)
+     * @description ADR-0068: the composer's "NEXT TURN RUNS ON" picker. The body names one of the project's organization's agent profiles; the conversation's `agent_profile_id` (which is what the next turn launches) moves to it, the profile's current version is re-pinned, and `conversation.agent.switched` is appended in the same transaction — that journal row is what the transcript divider ("`<person>` switched to `<agent>` · `<model>` · transcript and branch carried over") renders from. The transcript and the workspace/branch are untouched: the next turn starts a NEW ACP session on the new profile in the SAME prepared workspace, and `session/load` is never offered across a profile change (the old session belongs to the old harness).
+     *     Rules, all database-enforced:
+     *     * Only the human CONTROLLER may switch, and only BETWEEN turns. A
+     *       caller who is not the controller (including a `viewer` role and a
+     *       thread controlled by a run attempt) gets `403` — identity, not a
+     *       lost race. A conversation with a `queued`/`leased`/`running` turn
+     *       gets `409` `turn_in_progress` carrying the live `control` and the
+     *       turn in the way; an archived thread gets `409`.
+     *     * `agent_profile_id` must be a profile of the project's organization
+     *       (the same set `createConversation` may launch). A malformed uuid or
+     *       a well-formed id of no such profile is `400` with the
+     *       `invalid_agent_profile` detail — this route answers `400` where the
+     *       older conversation routes answer `422` for a bad body field.
+     *     * Switching to the profile the conversation already carries is an
+     *       idempotent `200`: no write, no divider, no event — the same
+     *       double-click rule `take-control` follows.
+     *
+     *     A non-member gets `404` (never `403`) with an audit row (`ADR-0014` §3). The response is the fresh conversation, including the derived `agents` list with the new turn ranges.
+     */
+    post: operations["switchConversationAgent"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2907,6 +2946,8 @@ export interface components {
         mcp_servers?: string[];
         truncated?: boolean;
       } | null;
+      /** @description The profile's pinned display model (ADR-0068, `04`'s `model_preference` axis, first cut): the `gpt-5` a transcript divider and the agents list render beside the profile name. Nothing in the launch path reads it — the harness still gets its model from the launcher's own configuration — so a value here is a display promise, never a capability claim. Null means the profile names no model (the harness default), the honest state. */
+      model?: string | null;
     };
     /**
      * AgentProfileCreate
@@ -2921,10 +2962,12 @@ export interface components {
       name: string;
       /** @description A launcher registry id. Never a command line: argv only, no shell expansion, and no claim that the harness works on this host. */
       launcher_id: string;
+      /** @description Optional pinned display model (ADR-0068); absent or empty names none (the harness default). */
+      model?: string;
     };
     /**
      * AgentProfileAPMPatch
-     * @description PATCH /api/v1/agent-profiles/{profileId}. All three members present, or all three absent/empty; any partial triple is `422` `apm_pin_incomplete` (see the route description for why). Unknown fields are refused.
+     * @description PATCH /api/v1/agent-profiles/{profileId}. All three `apm_*` members present, or all three absent/empty; any partial triple is `422` `apm_pin_incomplete` (see the route description for why). `model` (ADR-0068) is independent of the triple: a body carrying only `model` moves the model column and leaves the pin alone. Unknown fields are refused.
      * @example {
      *       "apm_package_ref": "mattpocock/skills#v1.3.1",
      *       "apm_target": "claude",
@@ -2937,6 +2980,8 @@ export interface components {
       /** @enum {string|null} */
       apm_target?: "claude" | "codex" | null;
       apm_lock_digest?: string | null;
+      /** @description ADR-0068: the display-model pin. Absent means the write does not carry the column (the current pin stays); `""` or null clears it; a value sets it. A body carrying only `model` moves the model column alone — it never clears the APM triple. Like every write here it lands a new profile version (ADR-0058). */
+      model?: string | null;
       /** @description The optimistic-concurrency token (ADR-0058): the profile version the caller last saw, which the write must match or answer 409. Optional because a client that never saw a version writes without a CAS check — the server still bumps and journals every write — but a client that does carry one must carry the right one. `null` is the same answer as absent: no token was carried. */
       version?: number | null;
     };
@@ -3111,12 +3156,35 @@ export interface components {
       cancel_requested_at?: string | null;
       /** @description Harness `stopReason` verbatim (`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`); null for `interrupted` turns, because nothing reported one. */
       stop_reason?: string | null;
+      /**
+       * Format: uuid
+       * @description ADR-0068: the agent profile this turn ran on, stamped at enqueue (a turn's profile never moves afterwards). Rows written before migration `00023` resolve to the conversation's profile, which for them was the turn's profile — nothing could move it until ADR-0068.
+       */
+      agent_profile_id?: string;
+      /** @description The profile's name at read time, for display (`"Codex"`). */
+      agent_profile_name?: string;
+      /** @description The profile's pinned display model (ADR-0068 `agent_profiles.model`) — the `gpt-5` half of "Codex · gpt-5". Explicit null means the profile names no model: the harness default, the honest answer. */
+      model?: string | null;
       /** Format: date-time */
       created_at: string;
       /** Format: date-time */
       started_at?: string | null;
       /** Format: date-time */
       finished_at?: string | null;
+    };
+    /**
+     * ConversationChatAgent
+     * @description ADR-0068: one entry of `Conversation.agents` — the derived "agents in this chat" list. One entry per maximal run of consecutive turns on the same agent profile; turn ordinals are 1-based in the conversation's turn-creation order. A profile switched away from and back appears twice, because the ranges describe the transcript, not a per-profile rollup. Derived at read (`cnvChatAgents`), never stored.
+     */
+    ConversationChatAgent: {
+      /** Format: uuid */
+      agent_profile_id: string;
+      agent_profile_name: string;
+      /** @description The profile's pinned display model; null = names none. */
+      model?: string | null;
+      first_turn: number;
+      last_turn: number;
+      turn_count: number;
     };
     /**
      * ConversationLinkedRun
@@ -3156,10 +3224,17 @@ export interface components {
       id: string;
       /** Format: uuid */
       project_id: string;
-      /** Format: uuid */
+      /**
+       * Format: uuid
+       * @description The profile the NEXT turn runs on (ADR-0068). Only the controller moves it (`POST .../switch-agent`), only between turns; history lives on the turn rows' `agent_profile_id`.
+       */
       agent_profile_id: string;
       /** @description Resolved profile name for display (`"Claude Code"`). */
       agent_profile_name?: string;
+      /** @description The next-turn profile's pinned display model (the composer chip's "Codex · gpt-5" half, ADR-0068); null when the profile names none. */
+      agent_profile_model?: string | null;
+      /** @description ADR-0068: the derived "agents in this chat" list with turn ranges, transcript order; empty for a conversation with no turns. */
+      agents?: components["schemas"]["ConversationChatAgent"][];
       /** @description Launcher the profile resolves to, repeated for display convenience. */
       launcher_id?: string;
       title: string;
@@ -3227,10 +3302,10 @@ export interface components {
       run_link: components["schemas"]["ConversationRunLink"] | null;
       /**
        * Format: uuid
-       * @description ADR-0065: the repository this thread works in — the first repository bound to the conversation's newest workspace (every state except `lost`), so a released thread keeps its repository. A thread with no binding of its own — the shape of a thread a run node opened, whose work lives in the RUN's workspace (ADR-0017) — answers the linked run's `repository_id` instead (ADR-0060/0064, read through the same `run_link`); the binding always wins, and a run that names no repository (a project-wide run) adds nothing. Null when neither the binding nor the linked run says one; both repository members are null or non-null together.
+       * @description ADR-0065 + ADR-0067: the repository this thread works in, in three arms. First, the repository the conversation was CREATED bound to (`conversations.repository_id`, ADR-0067) — it exists before any workspace or run says where the work happens, so a repo page's fresh chat names its repository immediately. Else the first repository bound to the conversation's newest workspace (every state except `lost`), so a released thread keeps its repository. Else a thread with no binding of its own — the shape of a thread a run node opened, whose work lives in the RUN's workspace (ADR-0017) — answers the linked run's `repository_id` instead (ADR-0060/0064, read through the same `run_link`); the earlier arm always wins over the later one, and a run that names no repository (a project-wide run) adds nothing. Null when no arm says one; both repository members are null or non-null together.
        */
       repository_id?: string | null;
-      /** @description The name of `repository_id`, from the `repositories` row, so a list row renders `repo · agent` without a second read — whether the id came from the thread's workspace binding or from its linked run (ADR-0065). Null exactly when `repository_id` is null. */
+      /** @description The name of `repository_id`, from the `repositories` row of the same arm that answered the id, so a list row renders `repo · agent` without a second read — whether the id came from the thread's declared binding (ADR-0067), its workspace binding or its linked run (ADR-0065). Null exactly when `repository_id` is null. */
       repository_name?: string | null;
       /** @description ADR-0065: the newest `conversation.message.agent` journal row's text — first non-empty line, trimmed, at most 160 characters (an ellipsis marks a cut). When that row's text is one JSON object — the structured output a run node's agent ends on, pretty-printed and/or wrapped in a ```json fence — the whole message is parsed and the line is that object's own words: the first non-blank string under `summary`, else `goal`, else `title`, else `notes`, else `reason`, else `message` at the top level, then the same keys in the same order one nested object down (so `{"plan": {"goal": …}}` reads as its goal); else the first string value found breadth-first in the object's document order, at most three containers deep; else, when the object holds no string at any depth, its top-level scalars as `key: value` pairs joined by ` · ` — a reviewer's `approved: true` verdict. Whatever text that picks still takes the plain rule above, so a multi-line summary is one line and 160 characters is still the cap. Never a paraphrase. Any other text — prose, a non-JSON or unclosed fence, an array, a chunk split mid-object, invalid JSON that merely starts with a brace, an object whose only strings are too deep to be a headline — is rendered by the plain rule unchanged. Null when the agent has not spoken in this thread. Derived from the journal at read time; nothing is stored twice. */
       last_agent_line?: string | null;
@@ -3250,7 +3325,7 @@ export interface components {
     };
     /**
      * ConversationCreate
-     * @description Request body for `createConversation`. `prompt` is optional: when present it becomes the first queued turn (and the `conversation.message.user` event) exactly as if it had been POSTed to `.../messages` afterwards.
+     * @description Request body for `createConversation`. `prompt` is optional: when present it becomes the first queued turn (and the `conversation.message.user` event) exactly as if it had been POSTed to `.../messages` afterwards. `repository` is optional: when present the conversation is born bound to that one repository of the project (ADR-0067).
      */
     ConversationCreate: {
       /**
@@ -3261,6 +3336,8 @@ export interface components {
       title: string;
       /** @description First prompt to enqueue for the controller. */
       prompt?: string;
+      /** @description ADR-0067: the NAME of a repository of this project to bind the conversation to, recorded once at creation (like a run's `repository_id`). The repo page's chat box sends its repository. A malformed name (including `.` and `..`) or one the project does not have — including another project's repository, answered identically so a foreign name leaks nothing — is `422`. The conversation's `repository_id`/`repository_name` list members then answer this repository immediately, before any workspace or run exists. */
+      repository?: string;
     };
     /**
      * ConversationMessageCreate
@@ -6019,6 +6096,8 @@ export interface components {
     ConversationOriginFilter: "manual" | "run";
     /** @description Case-insensitive substring on the conversation title (ADR-0043). The LIKE metacharacters (`%`, `_`, `\`) match literally, so `0%` finds only titles containing `0%`. At most 200 characters; a longer value is `400` `invalid_query`. */
     ConversationTitleQuery: string;
+    /** @description Keep only conversations bound to this repository (ADR-0067), named by its project-unique name (the same shape `RepositoryCreate.name` accepts). A thread counts as "in" the repository its row's `repository_id` names: the repository it was created bound to wins (ADR-0067), else the first repository of its newest live-or-released workspace, else the repository of its linked run (ADR-0065). A name shaped like a repository but unknown to the project is `404`; a malformed name (including `.` and `..`) is `400` `invalid_repository`. Omitted = no filter. */
+    ConversationRepositoryFilter: string;
     /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
     SecretId: string;
     /** @description A `secret_mounts` declaration id, scoped to the project in the path. */
@@ -6946,6 +7025,8 @@ export interface operations {
         origin?: components["parameters"]["ConversationOriginFilter"];
         /** @description Case-insensitive substring on the conversation title (ADR-0043). The LIKE metacharacters (`%`, `_`, `\`) match literally, so `0%` finds only titles containing `0%`. At most 200 characters; a longer value is `400` `invalid_query`. */
         q?: components["parameters"]["ConversationTitleQuery"];
+        /** @description Keep only conversations bound to this repository (ADR-0067), named by its project-unique name (the same shape `RepositoryCreate.name` accepts). A thread counts as "in" the repository its row's `repository_id` names: the repository it was created bound to wins (ADR-0067), else the first repository of its newest live-or-released workspace, else the repository of its linked run (ADR-0065). A name shaped like a repository but unknown to the project is `404`; a malformed name (including `.` and `..`) is `400` `invalid_repository`. Omitted = no filter. */
+        repository?: components["parameters"]["ConversationRepositoryFilter"];
       };
       header?: never;
       path: {
@@ -7189,6 +7270,53 @@ export interface operations {
       404: components["responses"]["NotFound"];
       409: components["responses"]["ConversationConflict"];
       422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  switchConversationAgent: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /**
+           * Format: uuid
+           * @description The profile the next turn runs on.
+           */
+          agent_profile_id: string;
+        };
+      };
+    };
+    responses: {
+      /** @description The next turn runs on the named profile (or already did — the idempotent no-op); body is the fresh conversation. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Conversation"];
+        };
+      };
+      /** @description `agent_profile_id` is malformed or names no profile of this project's organization (`invalid_agent_profile`). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ConversationConflict"];
     };
   };
   cancelConversationTurn: {
