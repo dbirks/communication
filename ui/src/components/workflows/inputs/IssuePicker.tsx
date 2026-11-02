@@ -38,6 +38,9 @@ export interface IssuePickerProps {
   id: string;
   value: IssueSelection | undefined;
   invalid?: boolean;
+  /** Required by `spec.inputs` — the state reaches assistive tech here (the
+   * visible `*` in the field label is aria-hidden by design). */
+  required?: boolean;
   onSelect: (value: IssueSelection) => void;
 }
 
@@ -68,6 +71,7 @@ export function IssuePicker({
   id,
   value,
   invalid = false,
+  required = false,
   onSelect,
 }: IssuePickerProps) {
   const [query, setQuery] = useState("");
@@ -113,6 +117,7 @@ export function IssuePicker({
           role="combobox"
           aria-expanded={open}
           aria-controls={`${id}-list`}
+          aria-required={required || undefined}
           autoComplete="off"
           placeholder="#41"
           value={open ? query : value ? `#${value.issue.number}` : query}

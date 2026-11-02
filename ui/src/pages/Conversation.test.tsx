@@ -29,7 +29,10 @@ import {
 } from "../test/fakes";
 import type { Conversation, TurnSandbox } from "../api/types";
 import { shortId } from "../api/names";
-import { ASSISTANT_OPEN_EVENT } from "../components/assistant/AssistantPopover";
+import {
+  ASSISTANT_OPEN_EVENT,
+  type AssistantOpenRequest,
+} from "../components/assistant/AssistantPopover";
 import { DRAFT_PR_PROMPT } from "./Conversation";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
@@ -1311,9 +1314,12 @@ describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", 
       window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
     }
     expect(seen).toHaveLength(1);
-    const ask = (seen[0] as CustomEvent<string>).detail;
-    expect(ask).toContain(conversationId);
-    expect(ask).toContain("Refactor billing");
-    expect(ask).toContain("Read the chat transcript first");
+    // 2f review: a human sentence on screen, the id as structured context,
+    // and the full assistant panel (not the floating popover).
+    const ask = (seen[0] as CustomEvent<AssistantOpenRequest>).detail;
+    expect(ask.text).toBe("Turn the chat \u201CRefactor billing\u201D into a workflow");
+    expect(ask.text).not.toContain(conversationId);
+    expect(ask.entity).toEqual({ kind: "conversation", id: conversationId });
+    expect(ask.expanded).toBe(true);
   });
 });

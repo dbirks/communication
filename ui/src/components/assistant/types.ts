@@ -49,7 +49,10 @@ export interface AssistantMessageContext {
   route: string;
   project_id?: string | null;
   entity?: {
-    kind: "pipeline" | "draft" | "run" | "node_template" | "profile";
+    /** `conversation` (thread → workflow, design 2f) names the chat the ask
+     * is about: its id rides as structured context, never in the visible
+     * text; chat.transcript still re-authorizes the read as the caller. */
+    kind: "pipeline" | "draft" | "run" | "node_template" | "profile" | "conversation";
     id: string;
   } | null;
 }

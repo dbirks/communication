@@ -19,7 +19,10 @@ import {
   requestsTo,
   type RouteStub,
 } from "../test/fakes";
-import { ASSISTANT_OPEN_EVENT } from "../components/assistant/AssistantPopover";
+import {
+  ASSISTANT_OPEN_EVENT,
+  type AssistantOpenRequest,
+} from "../components/assistant/AssistantPopover";
 import type { AssistantNoteList } from "../api/notes";
 
 const notesPath = `/api/v1/conversations/${conversationId}/notes`;
@@ -102,9 +105,14 @@ describe("assistant notes in the chat rail", () => {
       window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
     }
     expect(seen).toHaveLength(1);
-    const ask = (seen[0] as CustomEvent<string>).detail;
-    expect(ask).toContain(conversationId);
-    expect(ask).toContain(conversationFixture.title);
+    // 2f review: the visible ask is a human sentence; the conversation id
+    // rides as structured context, and the full panel opens.
+    const ask = (seen[0] as CustomEvent<AssistantOpenRequest>).detail;
+    expect(ask.text).toContain(conversationFixture.title ?? "");
+    expect(ask.text).toContain("workflow");
+    expect(ask.text).not.toContain(conversationId);
+    expect(ask.entity).toEqual({ kind: "conversation", id: conversationId });
+    expect(ask.expanded).toBe(true);
   });
 
   it("a note with no action is a sentence with no button", async () => {

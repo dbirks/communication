@@ -246,8 +246,9 @@ export interface StartIssueMenuProps {
   /** …or the `Start…` button (anchor `keyboard`). */
   triggerRef: React.RefObject<HTMLElement | null>;
   /** A workflow whose OTHER required inputs have no default: the run-by-hand
-   * form takes over instead of posting a doomed run — carrying the issue. */
-  onOpenRunForm: (issue: GitHubIssue) => void;
+   * form takes over instead of posting a doomed run — carrying the issue and
+   * the chosen assignment, so the form starts on that pin (1k). */
+  onOpenRunForm: (issue: GitHubIssue, assignment: Assignment) => void;
   onClose: () => void;
 }
 
@@ -329,7 +330,7 @@ export function StartIssueMenu({
           // Other required inputs have no default: the run-by-hand form is
           // the only honest start — opened with the issue prefilled.
           onClose();
-          onOpenRunForm(start.issue);
+          onOpenRunForm(start.issue, row.assignment);
           return;
         }
         if (inFlight.current) return;
@@ -460,7 +461,7 @@ export interface RepoLanesProps {
   profilesPending: boolean;
   /** Opens the run-by-hand form (1k) with the issue prefilled, when a
    * picked workflow has other required inputs with no default. */
-  onOpenRunForm: (issue: GitHubIssue) => void;
+  onOpenRunForm: (issue: GitHubIssue, assignment: Assignment) => void;
   now?: number;
 }
 

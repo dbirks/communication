@@ -203,22 +203,67 @@ function CodeSpans({ text }: { text: string }) {
  */
 const STEP_GLYPHS = ["✓", "●", "·"] as const;
 
-function stepGlyphOf(line: string): (typeof STEP_GLYPHS)[number] | null {
-  const head = line.trimStart().charAt(0);
-  return (STEP_GLYPHS as readonly string[]).includes(head)
-    ? (head as (typeof STEP_GLYPHS)[number])
-    : null;
+/**
+ * One step line: an (optional) markdown list marker and emphasis around the
+ * glyph, then the step text. The server's drafting rules ask for
+ * `✓ Plan — Claude Code · opus`, but a model that wraps the lines in `- `
+ * bullets or bolds the glyph is still posting a step list (2f review: the
+ * list must render as it is posted, not fall back to a prose block).
+ */
+interface StepLine {
+  glyph: (typeof STEP_GLYPHS)[number];
+  rest: string;
 }
 
-/** A paragraph is a step list when every line opens with a step glyph
- * and the list carries at least two steps (a stray ✓ line stays prose). */
-function splitStepList(paragraph: string): string[] | null {
-  const lines = paragraph
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length < 2) return null;
-  return lines.every((line) => stepGlyphOf(line) !== null) ? lines : null;
+function stepLineOf(raw: string): StepLine | null {
+  let line = raw.trim();
+  const bullet = /^(?:[-*+]|\d+[.)])\s+/.exec(line);
+  if (bullet) line = line.slice(bullet[0].length).trimStart();
+  // `**✓**` / `*✓*` / `__·__`: the glyph may ride inside markdown emphasis.
+  const emphasized = /^([*_]{1,2})([✓●·])\1/.exec(line);
+  if (emphasized) line = line.slice(emphasized[0].length).trimStart();
+  const glyph = (STEP_GLYPHS as readonly string[]).includes(line.charAt(0))
+    ? (line.charAt(0) as (typeof STEP_GLYPHS)[number])
+    : null;
+  if (glyph === null) return null;
+  return { glyph, rest: line.slice(1).trim() };
+}
+
+/**
+ * Split one answer paragraph into prose runs and step-list runs: a run of
+ * two or more consecutive step lines is the draft step list (a stray ✓ line
+ * stays prose, as before); everything else renders as the prose it is.
+ */
+type AnswerChunk = { type: "prose"; text: string } | { type: "steps"; lines: StepLine[] };
+
+function chunkParagraph(paragraph: string): AnswerChunk[] {
+  const chunks: AnswerChunk[] = [];
+  let prose: string[] = [];
+  let steps: StepLine[] = [];
+  const flushProse = () => {
+    if (prose.length === 0) return;
+    chunks.push({ type: "prose", text: prose.join("\n") });
+    prose = [];
+  };
+  const flushSteps = () => {
+    if (steps.length === 0) return;
+    if (steps.length < 2) prose.push(...steps.map((line) => `${line.glyph} ${line.rest}`));
+    else chunks.push({ type: "steps", lines: steps });
+    steps = [];
+  };
+  for (const raw of paragraph.split("\n")) {
+    const step = stepLineOf(raw);
+    if (step) {
+      flushProse();
+      steps.push(step);
+    } else {
+      flushSteps();
+      if (raw.trim().length > 0 || prose.length > 0 || steps.length > 0) prose.push(raw);
+    }
+  }
+  flushSteps();
+  flushProse();
+  return chunks;
 }
 
 /**
@@ -226,38 +271,34 @@ function splitStepList(paragraph: string): string[] | null {
  * progress ✓ / ● / ·"): one line per step, the glyph paired with its
  * word (never colour alone, per states.ts) — done, next, later.
  */
-function StepList({ lines }: { lines: string[] }) {
+function StepList({ lines }: { lines: StepLine[] }) {
   return (
     <div data-testid="assistant-step-list" className="flex flex-col gap-[2px] py-[2px]">
-      {lines.map((line, index) => {
-        const glyph = stepGlyphOf(line) ?? "·";
-        const rest = line.slice(line.indexOf(glyph) + 1).trim();
-        return (
-          <p
-            key={index}
-            data-testid="assistant-step-row"
-            data-state={glyph === "✓" ? "done" : glyph === "●" ? "current" : "later"}
-            className="m-0 flex items-baseline gap-[6px] text-[12.5px] leading-[1.5] text-ink"
+      {lines.map((line, index) => (
+        <p
+          key={index}
+          data-testid="assistant-step-row"
+          data-state={line.glyph === "✓" ? "done" : line.glyph === "●" ? "current" : "later"}
+          className="m-0 flex items-baseline gap-[6px] text-[12.5px] leading-[1.5] text-ink"
+        >
+          <span
+            aria-hidden="true"
+            className={`w-[12px] flex-shrink-0 text-center ${
+              line.glyph === "✓"
+                ? "text-st-done-pale-fg"
+                : line.glyph === "●"
+                  ? "text-accent"
+                  : "text-faint"
+            }`}
           >
-            <span
-              aria-hidden="true"
-              className={`w-[12px] flex-shrink-0 text-center ${
-                glyph === "✓"
-                  ? "text-st-done-pale-fg"
-                  : glyph === "●"
-                    ? "text-accent"
-                    : "text-faint"
-              }`}
-            >
-              {glyph}
-            </span>
-            <span className="min-w-0">{rest}</span>
-            <span className="sr-only">
-              {glyph === "✓" ? " (done)" : glyph === "●" ? " (next)" : " (later)"}
-            </span>
-          </p>
-        );
-      })}
+            {line.glyph}
+          </span>
+          <span className="min-w-0">{line.rest}</span>
+          <span className="sr-only">
+            {line.glyph === "✓" ? " (done)" : line.glyph === "●" ? " (next)" : " (later)"}
+          </span>
+        </p>
+      ))}
     </div>
   );
 }
@@ -269,15 +310,20 @@ function AnswerProse({ text }: { text: string }) {
     .filter((paragraph) => paragraph.length > 0);
   return (
     <div data-testid="assistant-answer" className="space-y-[6px]">
-      {paragraphs.map((paragraph, index) => {
-        const steps = splitStepList(paragraph);
-        if (steps) return <StepList key={index} lines={steps} />;
-        return (
-          <p key={index} className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-ink">
-            <CodeSpans text={paragraph} />
-          </p>
-        );
-      })}
+      {paragraphs.flatMap((paragraph, index) =>
+        chunkParagraph(paragraph).map((chunk, chunkIndex) =>
+          chunk.type === "steps" ? (
+            <StepList key={`${index}:${chunkIndex}`} lines={chunk.lines} />
+          ) : (
+            <p
+              key={`${index}:${chunkIndex}`}
+              className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-ink"
+            >
+              <CodeSpans text={chunk.text} />
+            </p>
+          ),
+        ),
+      )}
     </div>
   );
 }

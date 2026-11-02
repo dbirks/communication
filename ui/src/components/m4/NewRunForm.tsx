@@ -42,7 +42,7 @@
  * predates) keeps the free-form form above, unchanged — the old contract
  * stays byte-for-byte what its suites assert.
  */
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { useAssignments, usePipelines, useRevision } from "../../api/pipelines";
 import { useAgentProfiles, useRepositories } from "../../api/queries";
@@ -119,6 +119,14 @@ function looksLikeRepository(name: string, node: InputSchemaNode): boolean {
     .map((value) => String(value).toLowerCase());
   if (hints.some((value) => value.includes("repositor"))) return true;
   return /(^|[_-])repos?itor?y?(ies|s)?($|[_-])/.test(name.toLowerCase());
+}
+
+/** A TYPED input (ADR-0066 `input_specs`) that declares the repository the
+ * run works in — named or labelled like one. The free-form path asks the
+ * JSON Schema the same question (`looksLikeRepository`). */
+function looksLikeRepositorySpec(spec: InputSpec): boolean {
+  const hay = `${spec.name} ${spec.label ?? ""}`.toLowerCase();
+  return /repos?itor/.test(hay) || /(^|[^a-z0-9])repo([^a-z0-9]|$)/.test(hay);
 }
 
 function enumStrings(node: InputSchemaNode): string[] | undefined {
@@ -379,17 +387,38 @@ export interface NewRunFormProps {
   /** Design 1k's prefill — the repo page's `Hand off` opens the form with
    * this issue already picked into the first `github_issue` input. */
   issue?: GitHubIssue | null;
+  /** 1k (run-from-a-repo-row): open the form ON this assignment — the repo
+   * page's workflow row names the pin, so the form starts there instead of
+   * defaulting to the project's first assignment. */
+  assignmentId?: string | null;
+  /** 1k: the repository the form was opened from. The subtitle names it, the
+   * issue picker can read its tracker when the pin is project-wide, and a
+   * declared `repository` input is prefilled with it and read-only — the run
+   * carries the repo, the person does not retype it. */
+  repository?: { id: string; name: string } | null;
+  /** Reports which form the revision asks for — `typed` (the 1k modal owns
+   * its own chrome) or `freeform`. The repo page uses it to stand its own
+   * modal chrome down when the typed form takes over (one modal, 1k). */
+  onFormModeChange?: (mode: "typed" | "freeform") => void;
 }
 
 /** The run-input form for a project: fields come from the pinned revision. */
-export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: NewRunFormProps) {
+export function NewRunForm({
+  projectId,
+  onCreated,
+  onCancel,
+  issue = null,
+  assignmentId: initialAssignmentId = null,
+  repository = null,
+  onFormModeChange,
+}: NewRunFormProps) {
   const navigate = useNavigate();
   const assignments = useAssignments(projectId);
   const pipelines = usePipelines();
   const repositories = useRepositories(projectId);
   const createRun = useCreateRun(projectId);
 
-  const [assignmentId, setAssignmentId] = useState("");
+  const [assignmentId, setAssignmentId] = useState(initialAssignmentId ?? "");
   const [values, setValues] = useState<Record<string, InputValue>>({});
   const [typedValues, setTypedValues] = useState<Record<string, TypedInputValue | undefined>>({});
   const [showProblems, setShowProblems] = useState(false);
@@ -479,11 +508,33 @@ export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: New
 
   const typedSpecs: InputSpec[] = useMemo(() => revision.data?.input_specs ?? [], [revision.data]);
   const typedMode = typedSpecs.length > 0;
-  // The repository the issue picker reads: the assignment's own repo (an
-  // ADR-0060 pin). A project-wide pin names none — the picker says so.
-  const pickerRepo: Repository | null = active?.repositoryId
-    ? (repos.find((repo) => repo.id === active.repositoryId) ?? null)
-    : null;
+  // The repo this form carries: the assignment's own pin wins (an ADR-0060
+  // repo-scoped pin), then the repository the page opened the form from (1k:
+  // a run started from a repo row starts IN that repo even when the pin is
+  // whole-project). Nothing else is guessed.
+  const carriedRepository = active?.repositoryName ?? repository?.name ?? null;
+  // The repository the issue picker reads: the carried repo's row (the pin's
+  // own repository first, the opened-from repository otherwise).
+  const pickerRepo: Repository | null =
+    repos.find(
+      (repo) => repo.id === (active?.repositoryId ?? (active ? repository?.id : undefined) ?? ""),
+    ) ?? null;
+
+  // One modal, not two (1k review): when the revision carries `input_specs`
+  // the typed RunFormDialog owns the chrome — the caller stands its own
+  // modal shell down when this reports `typed`.
+  useEffect(() => {
+    onFormModeChange?.(typedMode ? "typed" : "freeform");
+  }, [typedMode, onFormModeChange]);
+
+  /** The value a repository-declaring input must carry (1k: opened from a
+   * repo, the form carries that repo — the field is prefilled and read-only,
+   * never an empty free-text box). */
+  const lockedRepositoryValue = useCallback(
+    (spec: InputSpec): string | null =>
+      carriedRepository && looksLikeRepositorySpec(spec) ? carriedRepository : null,
+    [carriedRepository],
+  );
 
   // Seed once per assignment: declared string defaults, plus the `Hand off`
   // prefill into the first `github_issue` input. Nothing else is guessed.
@@ -492,6 +543,12 @@ export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: New
     if (!typedMode || !active || typedSeeded.current === active.id) return;
     typedSeeded.current = active.id;
     const initial = typedDefaultsOf(typedSpecs);
+    // A repository-declaring input starts on the carried repo (1k): the run
+    // inherits it from the row that opened the form, it is not retyped.
+    for (const spec of typedSpecs) {
+      const locked = lockedRepositoryValue(spec);
+      if (locked !== null) initial[spec.name] = locked;
+    }
     if (issue) {
       const first = typedSpecs.find((spec) => spec.type === "github_issue");
       if (first)
@@ -502,7 +559,7 @@ export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: New
     }
     setTypedValues(initial);
     setShowProblems(false);
-  }, [typedMode, active, typedSpecs, issue, pickerRepo]);
+  }, [typedMode, active, typedSpecs, issue, pickerRepo, lockedRepositoryValue]);
 
   /** Prefill patch: an issue picked before the repository list landed (or
    * handed in by `Hand off`) gets its `repo` from the assignment's remote. */
@@ -514,6 +571,12 @@ export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: New
         value !== undefined && typeof value !== "string" && value.repository === ""
           ? { ...value, repository: repoName }
           : value;
+    }
+    // A locked repository input answers with the carried repo whatever the
+    // (read-only) field holds — the wire value cannot drift from it.
+    for (const spec of typedSpecs) {
+      const locked = lockedRepositoryValue(spec);
+      if (locked !== null) out[spec.name] = locked;
     }
     return out;
   };
@@ -589,7 +652,7 @@ export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: New
     return (
       <RunFormDialog
         title={`Run ${active.displayName || active.pipelineSlug}`}
-        subtitle={`${active.repositoryName ?? "whole project"} · pinned r${revision.data?.revision_number ?? "?"}`}
+        subtitle={`${carriedRepository ?? "whole project"} · pinned r${revision.data?.revision_number ?? "?"}`}
         helper={
           typedRequired.length > 0
             ? "Required fields are marked *; the rest start on their defaults."
@@ -637,6 +700,7 @@ export function NewRunForm({ projectId, onCreated, onCancel, issue = null }: New
             values={typedValues}
             problems={showProblems ? typedProblems : {}}
             pickerRepo={pickerRepo}
+            lockedRepositoryValue={lockedRepositoryValue}
             onChange={(name, value) => setTypedValues((current) => ({ ...current, [name]: value }))}
           />
           {createRun.isError ? (
@@ -1276,6 +1340,10 @@ interface TypedFieldsProps {
   values: Record<string, TypedInputValue | undefined>;
   problems: Record<string, string>;
   pickerRepo: Repository | null;
+  /** Names the value a repository-declaring input must carry (the repo the
+   * form was opened from, 1k); that control renders prefilled and read-only.
+   * `null` for every spec when the form carries no repository. */
+  lockedRepositoryValue?: (spec: InputSpec) => string | null;
   onChange(name: string, value: TypedInputValue | undefined): void;
 }
 
@@ -1295,6 +1363,7 @@ export function TypedFields({
   values,
   problems,
   pickerRepo,
+  lockedRepositoryValue = () => null,
   onChange,
 }: TypedFieldsProps) {
   return (
@@ -1305,10 +1374,17 @@ export function TypedFields({
         const text = typeof value === "string" ? value : "";
         const problem = problems[spec.name];
         const label = spec.label ?? spec.name;
+        const locked = lockedRepositoryValue(spec);
         return (
           <div key={spec.name} data-testid={`new-run-field-${spec.name}`}>
             <label className={labelClass} htmlFor={id}>
               {label}
+              {/* The `*` is the design's visual required marker (1k) — kept OUT
+                of the accessible name, and the required fact reaches
+                assistive tech through `aria-required` on the control instead
+                (never a bare decorative star read aloud as "star"). This is
+                what makes W1's `required` read an honest one: the driver
+                reads the same signal a screen reader gets. */}
               {spec.required ? (
                 <span aria-hidden="true" className="ml-[3px] font-semibold text-st-failed-tag-fg">
                   *
@@ -1321,6 +1397,7 @@ export function TypedFields({
                   projectId={projectId}
                   repository={pickerRepo}
                   id={id}
+                  required={spec.required}
                   value={typeof value === "string" || value === undefined ? undefined : value}
                   invalid={Boolean(problem)}
                   onSelect={(picked) => onChange(spec.name, picked)}
@@ -1329,6 +1406,7 @@ export function TypedFields({
                 <ProfileField
                   id={id}
                   value={text}
+                  required={spec.required}
                   invalid={Boolean(problem)}
                   onChange={(next) => onChange(spec.name, next)}
                 />
@@ -1339,6 +1417,8 @@ export function TypedFields({
                   value={text}
                   placeholder={spec.help ?? undefined}
                   invalid={Boolean(problem)}
+                  required={spec.required || undefined}
+                  aria-required={spec.required || undefined}
                   onChange={(event) => onChange(spec.name, event.target.value)}
                   data-testid={id}
                 />
@@ -1346,8 +1426,17 @@ export function TypedFields({
                 <Input
                   id={id}
                   type="text"
-                  value={text}
+                  value={locked ?? text}
+                  readOnly={locked !== null}
+                  aria-readonly={locked !== null || undefined}
+                  title={
+                    locked !== null
+                      ? `The run starts in ${locked} — carried from its row`
+                      : undefined
+                  }
                   invalid={Boolean(problem)}
+                  required={spec.required || undefined}
+                  aria-required={spec.required || undefined}
                   onChange={(event) => onChange(spec.name, event.target.value)}
                   data-testid={id}
                 />
@@ -1380,6 +1469,9 @@ interface ProfileFieldProps {
   id: string;
   value: string;
   invalid: boolean;
+  /** Required by `spec.inputs` (the label's visible `*` is aria-hidden; the
+   * state reaches assistive tech on the control). */
+  required?: boolean;
   onChange(next: string): void;
 }
 
@@ -1387,7 +1479,7 @@ interface ProfileFieldProps {
  * `agent_profile` is an id, never a credential); its name and pinned display
  * model are what a person reads. A default naming an unknown profile stays
  * selectable — the server judges ids, this control does not invent them. */
-function ProfileField({ id, value, invalid, onChange }: ProfileFieldProps) {
+function ProfileField({ id, value, invalid, required = false, onChange }: ProfileFieldProps) {
   const profiles = useAgentProfiles();
   const items = profiles.data?.items ?? [];
   const known = value === "" || items.some((profile) => profile.id === value);
@@ -1396,6 +1488,8 @@ function ProfileField({ id, value, invalid, onChange }: ProfileFieldProps) {
       id={id}
       value={value}
       invalid={invalid}
+      required={required || undefined}
+      aria-required={required || undefined}
       onChange={(event) => onChange(event.target.value)}
       data-testid={id}
     >

@@ -645,6 +645,64 @@ describe("the side panel", () => {
     expect(await screen.findByTestId("repo-library-dialog")).toBeTruthy();
   });
 
+  /** 1k acceptance review: a row's `Run` opens ONE modal (no outer `Start a
+   * run` shell around the typed form) that CARRIES THE REPOSITORY — the
+   * subtitle names this repo, never "whole project", and a declared
+   * repository input arrives prefilled and read-only. */
+  it("the row's Run opens ONE typed form that carries this repository (1k)", async () => {
+    renderFeed([
+      {
+        path: `/api/v1/revisions/${WIRE_REVISION_ID}`,
+        body: {
+          ...wireRevision,
+          revision_number: 1,
+          input_specs: [
+            { name: "goal", type: "text", required: true },
+            { name: "repository", type: "text", required: true },
+          ],
+        },
+      },
+    ]);
+    await screen.findByTestId(`repo-workflow-row-${testid(repoAssignment.id)}`);
+    fireEvent.click(screen.getByTestId(`repo-workflow-run-${testid(repoAssignment.id)}`));
+    expect(await screen.findByTestId("run-form-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("repo-run-form")).toBeNull();
+    // One esc, one chrome: the dialog's own. The title is the workflow's.
+    expect(screen.queryAllByText("Start a run")).toHaveLength(0);
+    // The repo pin's name, not "whole project".
+    expect(screen.getByTestId("run-form-subtitle").textContent).toBe("communication · pinned r1");
+    // The repository field arrives filled and locked; the person does not
+    // retype what the row already knows.
+    const repoField = screen.getByTestId("new-run-input-repository") as HTMLInputElement;
+    expect(repoField.value).toBe("communication");
+    expect(repoField.readOnly).toBe(true);
+  });
+
+  /** A WHOLE-PROJECT pin row still carries the repository the page is about
+   * (the 1k review: opened from the web repo, the form says so). */
+  it("the whole-project row's Run still carries this repository (1k)", async () => {
+    renderFeed([
+      {
+        path: `/api/v1/revisions/${WIRE_REVISION_ID}`,
+        body: {
+          ...wireRevision,
+          revision_number: 1,
+          input_specs: [
+            { name: "goal", type: "text", required: true },
+            { name: "repository", type: "text", required: true },
+          ],
+        },
+      },
+    ]);
+    await screen.findByTestId(`repo-workflow-row-${testid(projectAssignment.id)}`);
+    fireEvent.click(screen.getByTestId(`repo-workflow-run-${testid(projectAssignment.id)}`));
+    expect(await screen.findByTestId("run-form-dialog")).toBeTruthy();
+    expect(screen.getByTestId("run-form-subtitle").textContent).toBe("communication · pinned r1");
+    const repoField = screen.getByTestId("new-run-input-repository") as HTMLInputElement;
+    expect(repoField.value).toBe("communication");
+    expect(repoField.readOnly).toBe(true);
+  });
+
   it("issues list with `Hand off` expanding today's inline run form", async () => {
     renderFeed();
     const row = await screen.findByTestId(`repo-issue-${issue.number}`);
@@ -859,8 +917,12 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
       await screen.findByTestId(`repo-start-issue-workflow-${testid(repoAssignment.id)}`),
     );
     // `goal` is required and no default covers it: 1k takes over — opened
-    // with the issue prefilled — and no run is posted here.
-    expect(await screen.findByTestId("repo-run-form")).toBeTruthy();
+    // with the issue prefilled — and no run is posted here. ONE modal (1k
+    // review): the typed form's own dialog, not the outer `Start a run`
+    // shell wrapping it, and it carries the repository it was opened from.
+    expect(await screen.findByTestId("run-form-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("repo-run-form")).toBeNull();
+    expect(screen.getByTestId("run-form-subtitle").textContent).toContain(repository.name);
     expect(
       requestsTo(requests, `${projectPath}/runs`, "POST").filter((request) =>
         (request.body ?? "").includes('"issue"'),

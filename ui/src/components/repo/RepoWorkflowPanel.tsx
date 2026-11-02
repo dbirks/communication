@@ -53,8 +53,9 @@ export interface RepoWorkflowPanelProps {
   runs: readonly RunSummary[] | undefined;
   runsPending: boolean;
   runsError: unknown;
-  /** Opens the page's run-start form (the same one for every row). */
-  onRun: () => void;
+  /** Opens the page's run-start form FOR this row's assignment — the form
+   * carries the repository the row belongs to (1k). */
+  onRun: (assignment: Assignment) => void;
 }
 
 export function RepoWorkflowPanel({
@@ -169,7 +170,7 @@ export function RepoWorkflowPanel({
                 menuOpen={menuFor === assignment.id}
                 onOpenMenu={() => setMenuFor(assignment.id)}
                 onCloseMenu={() => setMenuFor(null)}
-                onRun={onRun}
+                onRun={() => onRun(assignment)}
                 onAddTrigger={() =>
                   setDialog({
                     assignment,

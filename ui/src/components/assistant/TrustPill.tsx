@@ -86,7 +86,7 @@ export function TrustPill({ value, onChange, className = "" }: TrustPillProps) {
     <div
       className={className}
       onBlur={handleBlur}
-      style={{ position: "relative", display: "inline-flex" }}
+      style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}
     >
       <button
         ref={pillRef}
@@ -114,6 +114,10 @@ export function TrustPill({ value, onChange, className = "" }: TrustPillProps) {
           color: "var(--color-ink-2)",
           cursor: "pointer",
           lineHeight: 1.4,
+          // The 2f review: at 358px (a phone popover) the header squeezed this
+          // pill to two lines. It is one short label — never break it.
+          whiteSpace: "nowrap",
+          flexShrink: 0,
         }}
       >
         {trustPillLabel(value)}

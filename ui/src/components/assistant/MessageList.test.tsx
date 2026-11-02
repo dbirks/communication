@@ -238,6 +238,42 @@ describe("MessageList", () => {
     expect(onGo).toHaveBeenCalledWith("/workflows/pl-9");
   });
 
+  it("keeps a step list whole when its intro rides the same paragraph (2f)", () => {
+    const answer = (text: string): AssistantMessage => ({
+      ...assistantMessage(),
+      payload: {
+        ...assistantMessage().payload,
+        answer_markdown: text,
+        links: [],
+      } as AssistantMessage["payload"],
+    });
+    render(
+      <MessageList
+        messages={[
+          answer(
+            "I read the chat. Drafting Adapter swap → PR in the library:\n" +
+              "- ✓ Plan — Claude Code\n" +
+              "- ● Review — Codex · gpt-5\n" +
+              "- · Open draft PR",
+          ),
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    // The bullet-marked lines are still the draft step list…
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1].getAttribute("data-state")).toBe("current");
+    expect(rows[0].textContent).toContain("Plan — Claude Code");
+    // …and the intro line stays its own prose paragraph.
+    expect(screen.getByTestId("assistant-answer").textContent).toContain(
+      "I read the chat. Drafting Adapter swap",
+    );
+  });
+
   it("leaves a stray ✓ line as prose (a step list needs ≥ 2 marked lines)", () => {
     render(
       <MessageList

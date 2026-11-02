@@ -44,7 +44,7 @@ import { useAssignments, usePipelines } from "../api/pipelines";
 import { useProjectApprovals } from "../api/approvals";
 import { isGitHubRepository, useRepoIssues } from "../api/issues";
 import type { GitHubIssue } from "../api/issues";
-import type { Approval, Repository, RunSummary } from "../api/types";
+import type { Approval, Assignment, Repository, RunSummary } from "../api/types";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
 import { Button } from "../components/ds/Button";
@@ -175,6 +175,9 @@ export default function Repository() {
   // fill; that route carries the issue in as the form's prefill (1k).
   const [runFormOpen, setRunFormOpen] = useState(false);
   const [runFormIssue, setRunFormIssue] = useState<GitHubIssue | null>(null);
+  // The workflow row that opened the form (1k): the form carries its pin and
+  // this repository instead of defaulting to the project's first assignment.
+  const [runFormAssignment, setRunFormAssignment] = useState<Assignment | null>(null);
   // Lanes has no left-column chat box, so its header carries `New chat` —
   // the same RepoChatBox, in a modal.
   const [chatFormOpen, setChatFormOpen] = useState(false);
@@ -221,6 +224,7 @@ export default function Repository() {
         // The issue travels when this page can see it; the form is the
         // answer either way, and an issue GitHub no longer lists is not a
         // reason to leave the person with a button that does nothing.
+        setRunFormAssignment(null);
         setRunFormIssue(items.find((issue) => wanted.has(issue.number)) ?? null);
         setRunFormOpen(true);
         break;
@@ -467,7 +471,8 @@ export default function Repository() {
             names={names}
             profileDefaultId={profileDefaultId}
             profilesPending={profiles.isPending}
-            onOpenRunForm={(issue) => {
+            onOpenRunForm={(issue, assignment) => {
+              setRunFormAssignment(assignment);
               setRunFormIssue(issue);
               setRunFormOpen(true);
             }}
@@ -510,7 +515,8 @@ export default function Repository() {
               runs={runs.data?.runs}
               runsPending={runs.isPending}
               runsError={runs.error}
-              onRun={() => {
+              onRun={(assignment) => {
+                setRunFormAssignment(assignment);
                 setRunFormIssue(null);
                 setRunFormOpen(true);
               }}
@@ -533,7 +539,13 @@ export default function Repository() {
       )}
 
       {runFormOpen ? (
-        <RunFormModal projectId={id} issue={runFormIssue} onClose={() => setRunFormOpen(false)} />
+        <RunFormModal
+          projectId={id}
+          issue={runFormIssue}
+          assignment={runFormAssignment}
+          repository={{ id: repositoryData.id, name: repositoryData.name }}
+          onClose={() => setRunFormOpen(false)}
+        />
       ) : null}
       {chatFormOpen ? (
         <ChatFormModal
@@ -547,19 +559,29 @@ export default function Repository() {
   );
 }
 
-/** The page's one run-start form (3a): a raised modal over the current page,
- * carrying today's `NewRunForm` — same assignment select, same declared
+/** The page's one run-start form (3a, 1k): a raised modal over the current
+ * page, carrying today's `NewRunForm` — same assignment select, same declared
  * inputs, same receipts; the 3b drop-to-Running route hands the form its
- * issue prefill (1k). `esc` closes and returns focus to the page. */
+ * issue prefill (1k). `esc` closes and returns focus to the page.
+ *
+ * ONE modal (1k review): when the pinned revision declares `input_specs`,
+ * the typed 1k form brings its own dialog chrome — the outer `Start a run`
+ * shell steps down instead of wrapping a second modal with a second esc/×.
+ * Opened from a row, the form carries that row's pin and this repository. */
 function RunFormModal({
   projectId,
   issue,
+  assignment,
+  repository,
   onClose,
 }: {
   projectId: string;
   issue: GitHubIssue | null;
+  assignment: Assignment | null;
+  repository: { id: string; name: string };
   onClose: () => void;
 }) {
+  const [formMode, setFormMode] = useState<"typed" | "freeform">("freeform");
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -570,6 +592,19 @@ function RunFormModal({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+  if (formMode === "typed") {
+    // The typed form IS the modal — no second shell around it.
+    return (
+      <NewRunForm
+        projectId={projectId}
+        issue={issue ?? undefined}
+        assignmentId={assignment?.id ?? null}
+        repository={repository}
+        onFormModeChange={setFormMode}
+        onCancel={onClose}
+      />
+    );
+  }
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4"
@@ -602,7 +637,14 @@ function RunFormModal({
           </button>
         </div>
         <div className="p-[10px]">
-          <NewRunForm projectId={projectId} issue={issue ?? undefined} onCancel={onClose} />
+          <NewRunForm
+            projectId={projectId}
+            issue={issue ?? undefined}
+            assignmentId={assignment?.id ?? null}
+            repository={repository}
+            onFormModeChange={setFormMode}
+            onCancel={onClose}
+          />
         </div>
       </div>
     </div>

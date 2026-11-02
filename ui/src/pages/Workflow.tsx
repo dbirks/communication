@@ -84,6 +84,207 @@ function tabHref(pipelineId: string, key: WorkflowPageTab): string {
 }
 
 /**
+ * The workflow page's tab strip, at 390 in the project tab strip's pattern
+ * (`components/project/ProjectTabs.tsx`, design 1j): the labels scroll
+ * inside the strip's own row (`overscroll-x-contain`, never dragging the
+ * page sideways); BOTH cues are in-flow lanes BESIDE the strip — an
+ * overlaid arrow can always end up drawn on top of a label (the pass-2
+ * review of the project tabs), a lane takes its width off the strip
+ * instead; and the page's OWN tab is parked whole inside the visible box —
+ * the 1j review saw `History` clipped to `H` with no cue at all.
+ */
+function WorkflowTabStrip({
+  pipelineId,
+  tab,
+  usedInLoading,
+  usedInError,
+  usedInCount,
+}: {
+  pipelineId: string;
+  tab: WorkflowPageTab;
+  usedInLoading: boolean;
+  usedInError: unknown;
+  usedInCount: number;
+}) {
+  const navRef = useRef<HTMLElement | null>(null);
+  const [fade, setFade] = useState<{ left: boolean; right: boolean }>({
+    left: false,
+    right: false,
+  });
+
+  const measure = useCallback(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const max = nav.scrollWidth - nav.clientWidth;
+    const x = nav.scrollLeft;
+    setFade((prev) => {
+      // A pixel of slop each side; a lane never exists while its edge has
+      // nothing past it (an arrow beside the strip's FIRST tab is the cue
+      // sitting on `Overview` — the project-tabs lesson, kept).
+      const next = { left: x > 1, right: x < max - 1 };
+      return prev.left === next.left && prev.right === next.right ? prev : next;
+    });
+  }, []);
+
+  /** Park the strip so the active tab is WHOLE inside the visible box — the
+   * shortest move that fits it, aligned to whichever edge it crosses. A tab
+   * too wide for the box falls back to the browser's own `nearest` scroll.
+   * jsdom measures every box at 0×0, so this is a no-op in unit tests. */
+  const pullActiveIntoView = useCallback(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const activeTab = nav.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!activeTab || activeTab.offsetWidth <= 0) {
+      activeTab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      measure();
+      return;
+    }
+    const w = nav.clientWidth;
+    const max = nav.scrollWidth - w;
+    if (w <= 0 || max <= 0) {
+      measure();
+      return;
+    }
+    // `offsetLeft` counts from the wrapper the cue lanes share with the
+    // strip; the strip's own scroll coordinates start at its padding box.
+    const base = activeTab.offsetLeft - (nav.offsetLeft + nav.clientLeft);
+    const left = Math.max(base, 0);
+    const right = Math.min(base + activeTab.offsetWidth - w, max);
+    if (base + activeTab.offsetWidth > nav.scrollLeft + w + 1) {
+      nav.scrollLeft = right;
+    } else if (base < nav.scrollLeft - 1) {
+      nav.scrollLeft = left;
+    }
+    measure();
+  }, [measure]);
+
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    measure();
+    nav.addEventListener("scroll", measure, { passive: true });
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => pullActiveIntoView()) : null;
+    observer?.observe(nav);
+    window.addEventListener("resize", pullActiveIntoView);
+    return () => {
+      nav.removeEventListener("scroll", measure);
+      observer?.disconnect();
+      window.removeEventListener("resize", pullActiveIntoView);
+    };
+  }, [measure, pullActiveIntoView]);
+
+  useEffect(() => {
+    // On arrival and whenever the tab changes — the deep-link case (a
+    // `?tab=inputs` load at 390 must not open on a clipped Inputs tab).
+    pullActiveIntoView();
+  }, [tab, usedInCount, pullActiveIntoView]);
+
+  return (
+    <div className="flex items-stretch" data-testid="workflow-tabs-wrap">
+      {fade.left ? (
+        <span
+          aria-hidden="true"
+          data-testid="workflow-tabs-fade-left"
+          className="pointer-events-none flex w-[34px] shrink-0 items-center"
+          style={{
+            background:
+              "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",
+          }}
+        >
+          <svg
+            className="ml-[8px] text-ink-2"
+            width="8"
+            height="12"
+            viewBox="0 0 8 12"
+            aria-hidden="true"
+          >
+            <path
+              d="M6.5 1.5l-4 4.5 4 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      ) : null}
+      <nav
+        ref={navRef}
+        aria-label="Workflow page"
+        className="-mb-px flex min-w-0 flex-1 gap-[4px] overflow-x-auto overscroll-x-contain"
+        data-testid="workflow-tabs"
+      >
+        {TABS.map(({ key, label }) => {
+          const active = tab === key;
+          return (
+            <Link
+              key={key}
+              to={tabHref(pipelineId, key)}
+              aria-current={active ? "page" : undefined}
+              className={`shrink-0 whitespace-nowrap rounded-t-[3px] border px-[12px] pt-[6px] pb-[7px] text-[13px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                active
+                  ? "border-ink border-b-paper bg-paper font-semibold text-ink"
+                  : "border-transparent text-muted"
+              }`}
+              data-testid={`workflow-tab-${key}`}
+            >
+              {label}
+              {/* Only the Used-in count means something (shared page
+                  pattern): the design's tab row is
+                  `Overview Inputs YAML Used in 2 History`. A failed read is NOT
+                  a count and not a question mark either — the tab simply says
+                  `Used in`, because a `?` in a number's seat is still a value
+                  the page never read, and `Used in 0` over a broken fan says
+                  “nobody uses this” when the truth is “we could not tell”
+                  (pass-2 + pass-7 reviews, 2a server-error). The FAILED banner
+                  in the panel says the thing in words. */}
+              {key === "used-in" && !usedInLoading && !usedInError ? (
+                <span
+                  className="ml-[4px] font-mono text-[10.5px]"
+                  data-testid="workflow-used-in-count"
+                >
+                  {` ${usedInCount}`}
+                </span>
+              ) : null}
+            </Link>
+          );
+        })}
+      </nav>
+      {fade.right ? (
+        <span
+          aria-hidden="true"
+          data-testid="workflow-tabs-fade-right"
+          className="pointer-events-none flex w-[34px] shrink-0 items-center justify-end"
+          style={{
+            background:
+              "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",
+          }}
+        >
+          <svg
+            className="mr-[8px] text-ink-2"
+            width="8"
+            height="12"
+            viewBox="0 0 8 12"
+            aria-hidden="true"
+          >
+            <path
+              d="M1.5 1.5l4 4.5-4 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * One pipeline: graph-first Overview, YAML, Used in, History — the page the
  * Workflows Review handoff picked (1e + 2a + 2d).
  */
@@ -634,49 +835,17 @@ export function PipelinePage() {
         </div>
         {/* Header tabs are routes: links that sit on the band's bottom border
             (13px, `6px 12px 7px`; the active one gets the ink border, paper
-            bottom, `bg-paper`, weight 600). `overflow-x-auto` keeps them
-            scrollable inside their own row at 390px. */}
-        <nav
-          aria-label="Workflow page"
-          className="-mb-px flex gap-[4px] overflow-x-auto"
-          data-testid="workflow-tabs"
-        >
-          {TABS.map(({ key, label }) => {
-            const active = tab === key;
-            return (
-              <Link
-                key={key}
-                to={tabHref(pipelineId, key)}
-                aria-current={active ? "page" : undefined}
-                className={`shrink-0 whitespace-nowrap rounded-t-[3px] border px-[12px] pt-[6px] pb-[7px] text-[13px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
-                  active
-                    ? "border-ink border-b-paper bg-paper font-semibold text-ink"
-                    : "border-transparent text-muted"
-                }`}
-                data-testid={`workflow-tab-${key}`}
-              >
-                {label}
-                {/* Only the Used-in count means something (shared page
-                    pattern): the design's tab row is
-                    `Overview YAML Used in 2 History`. A failed read is NOT a
-                    count and not a question mark either — the tab simply says
-                    `Used in`, because a `?` in a number's seat is still a value
-                    the page never read, and `Used in 0` over a broken fan says
-                    “nobody uses this” when the truth is “we could not tell”
-                    (pass-2 + pass-7 reviews, 2a server-error). The FAILED banner
-                    in the panel says the thing in words. */}
-                {key === "used-in" && !usedIn.loading && !usedIn.error ? (
-                  <span
-                    className="ml-[4px] font-mono text-[10.5px]"
-                    data-testid="workflow-used-in-count"
-                  >
-                    {` ${usedIn.groups.length}`}
-                  </span>
-                ) : null}
-              </Link>
-            );
-          })}
-        </nav>
+            bottom, `bg-paper`, weight 600). At 390px the five labels do not
+            all fit — the strip scrolls inside its own row with in-flow cue
+            lanes beside it, and the page's own tab is kept WHOLE (the
+            project tab strip's pattern, design 1j). */}
+        <WorkflowTabStrip
+          pipelineId={pipelineId}
+          tab={tab}
+          usedInLoading={usedIn.loading}
+          usedInError={usedIn.error}
+          usedInCount={usedIn.groups.length}
+        />
       </header>
 
       {/* -------------------------------------------------------------- body */}

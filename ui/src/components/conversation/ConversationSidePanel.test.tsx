@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
 import { AssistantNote } from "./AssistantNote";
-import { ASSISTANT_OPEN_EVENT } from "../assistant/AssistantPopover";
+import { ASSISTANT_OPEN_EVENT, type AssistantOpenRequest } from "../assistant/AssistantPopover";
 import { claudeProfile, codexProfile, projectFixture } from "../../test/fakes";
 import type { ConversationChatAgent } from "./ConversationSidePanel";
 
@@ -170,11 +170,14 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
       window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
     }
     expect(seen).toHaveLength(1);
-    const ask = (seen[0] as CustomEvent<string>).detail;
-    expect(ask).toContain("c-42");
-    expect(ask).toContain("Search revamp spike");
-    expect(ask).toContain("Read the chat transcript first");
-    expect(ask).toContain("Never publish");
+    // 2f review: the ask is one HUMAN sentence — the conversation id rides
+    // as structured context, never as visible prose — and the ask opens
+    // the full panel, not the floating popover.
+    const ask = (seen[0] as CustomEvent<AssistantOpenRequest>).detail;
+    expect(ask.text).toBe("Turn the chat \u201CSearch revamp spike\u201D into a workflow");
+    expect(ask.text).not.toContain("c-42");
+    expect(ask.entity).toEqual({ kind: "conversation", id: "c-42" });
+    expect(ask.expanded).toBe(true);
   });
 
   it("a host-supplied handler replaces the default open", () => {

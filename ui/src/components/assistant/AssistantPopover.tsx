@@ -49,7 +49,7 @@ import {
   useUndoAllAssistantChanges,
   useUndoAssistantChange,
 } from "../../api/assistant";
-import type { AssistantChange, AssistantMessage } from "./types";
+import type { AssistantChange, AssistantMessage, AssistantMessageContext } from "./types";
 import type { ComposerRestore } from "./AssistantPanel";
 
 /** The palette's Ask row opens the popover (and carries its question). */
@@ -73,18 +73,39 @@ export function openAssistantPopover(text?: string): void {
 }
 
 /**
+ * The structured form of an `ASSISTANT_OPEN_EVENT` detail (a bare string is
+ * still the simple ask). `expanded` opens the full AssistantPanel instead of
+ * the bottom-right popover; `entity` rides along as the ask's structured
+ * context so ids travel as data, not as visible prose.
+ */
+export interface AssistantOpenRequest {
+  text: string;
+  expanded?: boolean;
+  entity?: NonNullable<AssistantMessageContext["entity"]>;
+}
+
+/**
  * Thread → workflow (design 2f): `Make a workflow…` opens the assistant
- * panel with the chat as context — the ask is the canned drafting
- * instruction, carrying the conversation id as data (the assistant reads
- * the transcript through its caller-checked `chat.transcript` tool; the
- * id alone authorizes nothing). Same open path as the palette's Ask row.
+ * PANEL (the full-size AssistantPanel, not the floating popover) with the
+ * chat as context. The ask is one human sentence — `Turn the chat “title”
+ * into a workflow` — and the conversation id travels as the message's
+ * structured context entity, never in the visible text (the assistant
+ * reads the transcript through its caller-checked `chat.transcript` tool;
+ * the id alone authorizes nothing).
  */
 export function openAssistantWorkflowDraft(chat: { id: string; title?: string | null }): void {
-  const label = chat.title ? `"${chat.title}"` : `conversation ${chat.id}`;
-  openAssistantPopover(
-    `Turn this chat into a workflow (${label}, conversation id ${chat.id}). ` +
-      "Read the chat transcript first, then post the draft step list, " +
-      "ask one question for each real fork, and finally save a library draft. Never publish.",
+  const title = chat.title?.trim();
+  const request: AssistantOpenRequest = {
+    text: title
+      ? `Turn the chat \u201C${title}\u201D into a workflow`
+      : "Turn this chat into a workflow",
+    expanded: true,
+    entity: { kind: "conversation", id: chat.id },
+  };
+  window.dispatchEvent(
+    new CustomEvent<AssistantOpenRequest>(ASSISTANT_OPEN_EVENT, {
+      detail: request,
+    }),
   );
 }
 
@@ -308,12 +329,17 @@ export default function AssistantPopover() {
    * `carriedOver` marks the palette's question, which never lived in the
    * composer: on failure this container hands it back through `composerRestore`.
    *
+  /**
    * Issue #63: the ask shows as the person's own bubble the moment it is
    * sent — an optimistic local row appended BEFORE the round-trip (so the
    * empty-state suggestions disappear on a chip click and `thinking…`
    * follows the words). On success the server's echoed rows replace the
    * local row; on failure the bubble stays, carries the honest line under
    * it, and offers `Retry` (see MessageList).
+   *
+   * 2f: `entity` names the ask's subject as STRUCTURED context (the chat a
+   * workflow draft is about) — it rides the post body's context, never the
+   * visible text.
    */
   const localSeq = useRef(0);
 
@@ -329,7 +355,11 @@ export default function AssistantPopover() {
   }, []);
 
   const send = useCallback(
-    (text: string, carriedOver = false): Promise<boolean> => {
+    (
+      text: string,
+      carriedOver = false,
+      entity?: AssistantOpenRequest["entity"],
+    ): Promise<boolean> => {
       const trimmed = text.trim();
       if (trimmed.length === 0) return Promise.resolve(false);
       setSendError(null);
@@ -344,6 +374,8 @@ export default function AssistantPopover() {
         local: { state: "pending" },
       };
       setMessages((current) => [...current, optimistic]);
+      const context: AssistantMessageContext = assistantContextOf(location.pathname);
+      if (entity) context.entity = entity;
       return (async () => {
         try {
           let id = conversationId;
@@ -355,7 +387,7 @@ export default function AssistantPopover() {
           }
           const result = await post.mutateAsync({
             conversationId: id,
-            body: { text: trimmed, context: assistantContextOf(location.pathname) },
+            body: { text: trimmed, context },
           });
           setMessages((current) => {
             const rest = current.filter((message) => message.id !== localId);
@@ -443,13 +475,26 @@ export default function AssistantPopover() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open]);
 
-  // The palette's Ask row: open (and, with a question carried over, send it).
+  // The palette's Ask row (a bare string) and the structured 2f draft ask
+  // both open the surface here: the string opens the popover, an
+  // `AssistantOpenRequest` may open the full panel and names its entity as
+  // the ask's structured context. A panel opened expanded by the draft ask
+  // closes completely on esc (it never falls back to the floating popover
+  // over the chat's composer — the 2f review).
+  const openedExpandedByAsk = useRef(false);
   useEffect(() => {
     const onOpen = (event: Event) => {
       closeOtherMenus();
+      const detail = (event as CustomEvent<string | AssistantOpenRequest | undefined>).detail;
+      const request: AssistantOpenRequest =
+        typeof detail === "string" ? { text: detail } : (detail ?? { text: "" });
+      if (request.expanded) {
+        openedExpandedByAsk.current = true;
+        setExpanded(true);
+      }
       setOpen(true);
-      const text = (event as CustomEvent<string | undefined>).detail;
-      if (typeof text === "string" && text.trim().length > 0) void send(text, true);
+      const text = typeof request.text === "string" ? request.text.trim() : "";
+      if (text.length > 0) void send(text, true, request.entity);
     };
     window.addEventListener(ASSISTANT_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(ASSISTANT_OPEN_EVENT, onOpen);
@@ -513,6 +558,17 @@ export default function AssistantPopover() {
 
   const close = useCallback(() => setOpen(false), []);
   const shrink = useCallback(() => setExpanded(false), []);
+  /** esc / close on a panel the draft ask opened expanded: close the whole
+   * surface (the 2f panel never shrinks back into the floating box). */
+  const closeExpanded = useCallback(() => {
+    if (openedExpandedByAsk.current) {
+      openedExpandedByAsk.current = false;
+      setOpen(false);
+      setExpanded(false);
+    } else {
+      setExpanded(false);
+    }
+  }, []);
 
   /** ui-newconv: the Recent menu's rows, newest first (the API's order). */
   const recentConversations = (conversations.data?.conversations ?? []).map((c) => ({
@@ -557,7 +613,7 @@ export default function AssistantPopover() {
             activeConversationId={conversationId}
             onSwitchConversation={switchConversation}
             onShrink={shrink}
-            onClose={shrink}
+            onClose={closeExpanded}
             busy={post.isPending || createConversation.isPending}
           />
         </div>

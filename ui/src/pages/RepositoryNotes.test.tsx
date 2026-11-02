@@ -13,7 +13,10 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
-import { ASSISTANT_OPEN_EVENT } from "../components/assistant/AssistantPopover";
+import {
+  ASSISTANT_OPEN_EVENT,
+  type AssistantOpenRequest,
+} from "../components/assistant/AssistantPopover";
 import type { AssistantNoteList } from "../api/notes";
 import type { GitHubIssue } from "../api/issues";
 import type { Assignment, PipelineRevision, Repository } from "../api/types";
@@ -205,7 +208,10 @@ describe("ASSISTANT NOTICED on the repository page", () => {
       window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
     }
     expect(seen).toHaveLength(1);
-    expect((seen[0] as CustomEvent<string>).detail).toContain(conversationId);
+    // 2f review: the chat id rides the open request as structured context
+    // (an `AssistantOpenRequest`), never as visible prose in the ask.
+    const ask = (seen[0] as CustomEvent<AssistantOpenRequest>).detail;
+    expect(ask.entity).toEqual({ kind: "conversation", id: conversationId });
   });
 
   it("an action this build cannot perform renders no button", async () => {

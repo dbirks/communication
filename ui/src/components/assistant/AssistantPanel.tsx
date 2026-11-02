@@ -164,10 +164,15 @@ function RecentMenu({
   conversations,
   activeId,
   onSwitch,
+  compact = false,
 }: {
   conversations: RecentConversation[];
   activeId: string | null;
   onSwitch: (id: string) => void;
+  /** Popover: the word `Recent` is kept for assistive tech and the DOM but
+   * hidden on screen — the 400px header cannot fit it whole (2f review:
+   * the header controls wrapped onto two lines at 390). */
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -246,9 +251,10 @@ function RecentMenu({
           if (open) return;
           requestAnimationFrame(() => itemRefs.current[0]?.focus());
         }}
-        style={headerButtonStyle}
+        style={{ ...headerButtonStyle, whiteSpace: "nowrap" }}
       >
-        {`Recent ${open ? "▴" : "▾"}`}
+        {compact ? <span className="sr-only">Recent </span> : "Recent "}
+        {open ? "▴" : "▾"}
       </button>
       {open ? (
         <div
@@ -519,9 +525,20 @@ export function AssistantPanel({
       compact
       data-testid="assistant-new-conversation"
       title={popover ? "New conversation" : undefined}
+      aria-label={popover ? "New conversation" : undefined}
       onClick={onNewConversation}
     >
-      {popover ? "＋ New" : "New conversation"}
+      {/* 2f review: the 400px (or 358px on a phone) popover header cannot fit
+        the full wording next to the trust pill, and the row must never break
+        onto two lines — the popover keeps just the ＋ on screen, with the
+        wording in the accessible name and the tooltip. */}
+      {popover ? (
+        <>
+          ＋<span className="sr-only"> New</span>
+        </>
+      ) : (
+        "New conversation"
+      )}
     </Button>
   ) : null;
 
@@ -530,6 +547,7 @@ export function AssistantPanel({
       conversations={recentConversations.slice(0, 5)}
       activeId={activeConversationId}
       onSwitch={onSwitchConversation}
+      compact={popover}
     />
   ) : null;
 
@@ -547,7 +565,7 @@ export function AssistantPanel({
     >
       {popover ? (
         <>
-          <span className="font-mono text-[10.5px] font-semibold tracking-wider text-ink">
+          <span className="shrink-0 font-mono text-[10.5px] font-semibold tracking-wider text-ink whitespace-nowrap">
             ASSISTANT
           </span>
           <TrustPill value={trustLevel} onChange={onTrustLevelChange} />

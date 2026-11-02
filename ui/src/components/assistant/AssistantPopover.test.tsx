@@ -9,7 +9,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AssistantPopover, { openAssistantPopover } from "./AssistantPopover";
+import AssistantPopover, {
+  openAssistantPopover,
+  openAssistantWorkflowDraft,
+} from "./AssistantPopover";
 
 const CONV = "conv-1";
 const OLD_CONV = "conv-old";
@@ -241,6 +244,37 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
     expect((await screen.findByTestId("assistant-error")).textContent).toContain(
       "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
     );
+  });
+});
+
+/** 2f acceptance review: `Make a workflow…` opens the assistant PANEL at its
+ * normal size (the expanded variant — never the small floating popover over
+ * the chat's composer), the visible ask is one human sentence, and the
+ * conversation id rides the POST as structured context. */
+describe("thread → workflow draft ask (2f)", () => {
+  it("opens the expanded panel and posts the human ask with the chat as context entity", async () => {
+    const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/p/01P/conversations/c-42"]}>
+          <AssistantPopover />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
+    const panel = await screen.findByTestId("assistant-panel");
+    expect(panel.getAttribute("data-variant")).toBe("expanded");
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    const body = JSON.parse(stub.posted[0].body) as {
+      text: string;
+      context?: { entity?: { kind: string; id: string } };
+    };
+    expect(body.text).toBe("Turn the chat \u201CSearch revamp spike\u201D into a workflow");
+    expect(body.text).not.toContain("c-42");
+    expect(body.context?.entity).toEqual({ kind: "conversation", id: "c-42" });
   });
 });
 
