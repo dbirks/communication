@@ -85,20 +85,23 @@ func DefaultUserPreferences() UserPreferences {
 
 // UserPreferencesPatch is the PATCH body: any subset of the document,
 // deep-merged per section. A nil pointer is an untouched section, a nil
-// member an untouched field; `expanded` merges key-by-key. Unknown keys at
-// any level are refused by the decoder before the store is asked.
+// member an untouched field; `expanded` merges key-by-key and a key set to
+// JSON null is deleted. Unknown keys at any level are refused by the decoder
+// before the store is asked.
 type UserPreferencesPatch struct {
 	Layout    *UserPreferencesLayoutPatch    `json:"layout,omitempty"`
 	Assistant *UserPreferencesAssistantPatch `json:"assistant,omitempty"`
 }
 
 // UserPreferencesLayoutPatch is the layout section of a patch; every member
-// is a pointer so absence means "unchanged".
+// is a pointer so absence means "unchanged". In `expanded` a *true/*false
+// sets the key and a JSON null deletes it — the only way a folded sidebar
+// row leaves the map (the merge itself never drops keys on its own).
 type UserPreferencesLayoutPatch struct {
-	ProjectsMode        *string         `json:"projects_mode,omitempty"`
-	AskPlacement        *string         `json:"ask_placement,omitempty"`
-	ShowWorkflowFolders *bool           `json:"show_workflow_folders,omitempty"`
-	Expanded            map[string]bool `json:"expanded,omitempty"`
+	ProjectsMode        *string          `json:"projects_mode,omitempty"`
+	AskPlacement        *string          `json:"ask_placement,omitempty"`
+	ShowWorkflowFolders *bool            `json:"show_workflow_folders,omitempty"`
+	Expanded            map[string]*bool `json:"expanded,omitempty"`
 }
 
 // UserPreferencesAssistantPatch is the assistant section of a patch.

@@ -34,6 +34,12 @@ import { test, expect, type Locator, type Page, type APIRequestContext } from "@
 import { BASE_URL, AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { expectNoLegacyAppBar, gotoApp, repinAssignment, signIn, testidOf } from "./helpers.js";
 import {
+  IS_PI_LAUNCHER,
+  LAB_LAUNCHER,
+  newProfileCardTestid,
+  seedLabPiProfile,
+} from "./lab-launcher.js";
+import {
   apiPipelines,
   apiProjects,
   checkShellScreen,
@@ -60,6 +66,9 @@ const PROFILE_NAME = `journey-${STAMP}`;
  * exact race and solved it with a shell wait — impossible here: the dialog
  * profile is always permission_mode=ask, which the ACP harness treats as
  * deny, internal/agent/acp/permission.go, so any shell wait is rejected).
+ * (Under COMMUNICATION_LAB_LAUNCHER=pi the step's profile runs
+ * autonomous_within_sandbox instead — ADR-0069 — so its tools really run
+ * inside the sandbox; the essay keeps that long turn open just the same.)
  * A long generation keeps the turn open instead: at the lab model's
  * ~80 tok/s, a 2500–4000 word essay stays in flight for well over the
  * ~30 s the workbench UI needs between the API catch and the confirm click.
@@ -659,7 +668,9 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     console.log("journey a: new-profile dialog open — a11y pass");
     await checkShellScreen(page, "new-profile-dialog", stopWatching ?? undefined);
     console.log("journey a: dialog a11y pass done");
-    await page.getByTestId("new-profile-card-claude").click({ timeout: 30_000 });
+    // The dialog's launcher card is the lab's launcher (COMMUNICATION_LAB_LAUNCHER;
+    // unset keeps the historical claude card).
+    await page.getByTestId(newProfileCardTestid()).click({ timeout: 30_000 });
     await page.getByTestId("agents-new-name-input").fill(PROFILE_NAME, { timeout: 30_000 });
     await expect(page.getByTestId("agents-new-submit")).toContainText("Create and use in", {
       timeout: 30_000,
@@ -667,11 +678,19 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await evidence(
       page,
       `journey-a-dialog-${STAMP}`,
-      `New-profile dialog open: the Claude Code card, name ${PROFILE_NAME}, and the footer reads “Create and use in <step>” (contract C6)`,
+      `New-profile dialog open: the ${LAB_LAUNCHER} card, name ${PROFILE_NAME}, and the footer reads “Create and use in <step>” (contract C6)`,
     );
     await page.getByTestId("agents-new-submit").click({ timeout: 30_000 });
     await expect(dialog).toBeHidden({ timeout: 30_000 });
     await expect(page.getByTestId("insp-profile")).toHaveValue(PROFILE_NAME, { timeout: 30_000 });
+    if (IS_PI_LAUNCHER) {
+      // The dialog can only write `ask` (ADR-0030) and pi never asks: the
+      // mode this run's step needs — autonomous_within_sandbox beside sandbox
+      // `required` — arrives the seed.sh way, through the stack's own
+      // postgres (ADR-0069). Without it the worker fail-closes the attempt
+      // before launch (ADR-0019 D6) and step e has no live turn to catch.
+      seedLabPiProfile(PROFILE_NAME);
+    }
     console.log(`journey a: profile ${PROFILE_NAME} created and selected`);
 
     // “What should it do?” — a short, harmless instruction.
@@ -1185,7 +1204,10 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
                 ? ((await msgs.nth(userBefore).textContent()) ?? "").trim()
                 : "";
             },
-            { timeout: 15_000, message: `the option click shows "${label}" as the person's message at once` },
+            {
+              timeout: 15_000,
+              message: `the option click shows "${label}" as the person's message at once`,
+            },
           )
           .toBe(label);
         await waitForAssistantTurn(page);

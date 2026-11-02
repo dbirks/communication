@@ -236,3 +236,30 @@ func TestPreferencesPatchEmptyBodyIsValid(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
 	}
 }
+
+// An explicit null under `expanded` is the documented delete: it decodes
+// (unlike a wrong type) and reaches the store as a nil value. The store owns
+// the deletion itself (TestUserPrefsExpandedNullDeletesKey).
+func TestPreferencesPatchExpandedNullIsTheDelete(t *testing.T) {
+	t.Parallel()
+	oks := testPrincipal()
+	store := &fakePrefsStore{doc: DefaultUserPreferences()}
+	srv := newPrefsTestServer(t, store, principalAuth(oks, nil))
+	rec := do(t, srv, prefsRequest(t, http.MethodPatch,
+		"http://localhost:8080/api/v1/me/preferences",
+		map[string]string{HeaderCSRFToken: oks.CSRFToken},
+		`{"layout":{"expanded":{"p-1":null,"p-2":true}}}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if store.last.Layout == nil || store.last.Layout.Expanded == nil {
+		t.Fatalf("store got patch %+v, want the expanded map", store.last)
+	}
+	v, sent := store.last.Layout.Expanded["p-1"]
+	if !sent || v != nil {
+		t.Fatalf("expanded[p-1] = %v, %t, want a present key with a nil value (the delete)", v, sent)
+	}
+	if p2 := store.last.Layout.Expanded["p-2"]; p2 == nil || *p2 != true {
+		t.Fatalf("expanded[p-2] = %v, want the explicit true", store.last.Layout.Expanded["p-2"])
+	}
+}

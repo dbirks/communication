@@ -164,7 +164,15 @@ func prefsMergePatch(current *api.UserPreferences, patch api.UserPreferencesPatc
 				current.Layout.Expanded = map[string]bool{}
 			}
 			for key, v := range l.Expanded {
-				current.Layout.Expanded[key] = v
+				// The key-by-key merge grows the map; an explicit JSON null is
+				// the documented drop (openapi UserPreferencesPatch: `"expanded":
+				// {"p-7": null}` deletes `p-7`). Deleting an absent key is a
+				// no-op, not an error — last-write-wins UI state stays idempotent.
+				if v == nil {
+					delete(current.Layout.Expanded, key)
+					continue
+				}
+				current.Layout.Expanded[key] = *v
 			}
 			if len(current.Layout.Expanded) > api.PrefExpandedMaxKeys {
 				return &api.UserPrefsValidationError{

@@ -27,6 +27,7 @@ import {
   allowOpenPermission,
   expectTurnStatus,
   gotoApp,
+  openPermissionCard,
   restartComposeServices,
   sendPrompt,
   setMember,
@@ -35,16 +36,30 @@ import {
   takeControl,
   waitForOpenPermission,
 } from "./helpers.js";
+import { IS_PI_LAUNCHER, LAB_LAUNCHER, seedLabPiProfile } from "./lab-launcher.js";
 
 // Throwaway mock-IdP identities with readable profiles (ADR-0012 §4: the app
-// takes the display name from the id token's `name` claim).
-const ALICE = { subject: "alice", name: "Alice Andersen" };
-const BOB = { subject: "bob", name: "Bob Brennan" };
+// takes the display name from the id token's `name` claim). The subjects are
+// THIS journey's own: ADR-0012 §4 refreshes the stored profile on every login
+// (name → preferred_username → subject), and the lab's other suites re-login
+// the bare `alice`/`bob` subjects with email-only claims, which would reset
+// their stored display name mid-run to the login (`Controlled by alice`). The
+// control-holder badge below is the fact under test, so the journey drives
+// identities no other suite writes — the display name it asserts is then
+// the name the server really resolved on both replicas.
+const STAMP = process.env.E2E_M2_STAMP ?? Date.now().toString(36);
+const ALICE = { subject: `m2-alice-${STAMP}`, name: `Alice Andersen ${STAMP}` };
+const BOB = { subject: `m2-bob-${STAMP}`, name: `Bob Brennan ${STAMP}` };
 
-const PROJECT_NAME = "Hello World onboarding";
+const PROJECT_NAME = `Hello World onboarding ${STAMP}`;
 const REPO_NAME = "hello-world";
 const REPO_GIT_URL = "https://github.com/octocat/Hello-World.git";
 const REPO_BRANCH = "master";
+
+// The agent profile this journey drives: the product's default `Claude Code`
+// seed under the claude launcher (local runs unchanged), and a pi profile
+// seeded the seed.sh way under `pi` (see beforeAll).
+const PROFILE = IS_PI_LAUNCHER ? `m2-pi-${STAMP}` : "Claude Code";
 
 // Phrased as instructions to one specific tool with exact content: the journey
 // is about who is driving, not about what the model chooses to do.
@@ -87,6 +102,13 @@ test.describe("M2 shared conversation and control handoff", () => {
     // bob's page lives on replica B from the start: reading a conversation
     // from a different API replica than the one that wrote it is the point.
     bob = await bobContext.newPage();
+    // Under the lab launcher `pi` (COMMUNICATION_LAB_LAUNCHER=pi) the product
+    // API can only write `ask` profiles (ADR-0030) and pi is never-asks
+    // (ADR-0069), so the journey's profile arrives the way seed.sh seeds it:
+    // the stack's own postgres, launcher pi + autonomous_within_sandbox +
+    // sandbox required. Under claude the journey keeps the product's default
+    // seeded `Claude Code` profile and touches no SQL.
+    if (IS_PI_LAUNCHER) seedLabPiProfile(PROFILE);
   });
 
   test.afterAll(async () => {
@@ -185,18 +207,19 @@ test.describe("M2 shared conversation and control handoff", () => {
     await setMember(alice, projectUrl, BOB.name, "contributor");
   });
 
-  test("alice starts a Claude Code conversation and the first turn completes", async () => {
+  test(`alice starts a ${LAB_LAUNCHER} conversation and the first turn completes`, async () => {
     conversationPath = await startConversation(alice, `${BASE_URL}${projectPath}`, {
       title: "Hello World onboarding",
-      profile: "Claude Code",
+      profile: PROFILE,
       prompt: FIRST_PROMPT,
     });
     expect(conversationPath).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
 
     // Alice is the controller of her own conversation and the agent is real:
-    // the session binding is reported, not assumed.
+    // the session binding is reported, not assumed. The binding names the
+    // lab's launcher (ADR-0069: on `pi` this is the never-asks launcher).
     await expect(alice.getByTestId("controller-badge")).toHaveText("you're in control");
-    await expect(alice.getByTestId("agent-session")).toContainText("agent: claude", {
+    await expect(alice.getByTestId("agent-session")).toContainText(`agent: ${LAB_LAUNCHER}`, {
       timeout: PERMISSION_TIMEOUT_MS,
     });
     await expectTurnStatus(alice, /completed/);
@@ -227,28 +250,90 @@ test.describe("M2 shared conversation and control handoff", () => {
     await expect(bob.getByTestId("turn-status")).toContainText(/completed/);
   });
 
-  test("a permission request is actionable for alice and read-only for bob", async () => {
-    await sendPrompt(alice, LONG_PROMPT);
-    const card = await waitForOpenPermission(alice, { timeout: PERMISSION_TIMEOUT_MS });
-    await expect(card).toContainText("for i in 1 2 3 4 5 6 7 8 9 10");
-    await expect(card.getByRole("button", { name: /yes|allow/i }).first()).toBeVisible();
+  test(
+    IS_PI_LAUNCHER
+      ? "the never-asks launcher raises no permission request on either replica (ADR-0069)"
+      : "a permission request is actionable for alice and read-only for bob",
+    async () => {
+      if (IS_PI_LAUNCHER) {
+        // ADR-0069's honest pi arm: the same long turn runs under
+        // autonomous_within_sandbox — "runs without asking; the sandbox is
+        // the boundary". No card mounts on the controller's screen or the
+        // watcher's, the turn completes on its own, and the journal carries
+        // no verdict line: the transcript never says "awaiting a decision"
+        // and no decision is ever "answered" by a person or a policy.
+        await sendPrompt(alice, LONG_PROMPT);
+        await expect(openPermissionCard(alice)).toHaveCount(0);
+        await expect(openPermissionCard(bob)).toHaveCount(0);
+        await expectTurnStatus(alice, /completed/);
+        for (const viewer of [alice, bob]) {
+          await expect(viewer.getByTestId("transcript")).not.toContainText("awaiting a decision");
+          await expect(viewer.getByTestId("transcript")).not.toContainText("answered");
+          await expect(viewer.getByTestId("transcript")).not.toContainText("approved");
+        }
+        // The profile row carries the mode the launch honoured (the UI's
+        // ADR-0069 chip), read back off the product's own page.
+        await gotoApp(alice, "/profiles");
+        const profileRow = alice
+          .getByTestId("agent-list")
+          .locator('[data-testid^="agent-item-"]')
+          .filter({ hasText: PROFILE });
+        await expect(profileRow.first()).toBeVisible({ timeout: 30_000 });
+        const rowId = ((await profileRow.first().getAttribute("data-testid")) ?? "").replace(
+          /^agent-item-/,
+          "",
+        );
+        await alice.getByTestId(`agent-row-${rowId}`).click();
+        await expect(alice.getByTestId(`agent-permission-${rowId}`)).toHaveText(
+          /^permission: autonomous_within_sandbox$/,
+        );
+        // Back to the thread: the takeover test below drives alice's composer.
+        await gotoApp(alice, conversationPath);
+        return;
+      }
+      await sendPrompt(alice, LONG_PROMPT);
+      const card = await waitForOpenPermission(alice, { timeout: PERMISSION_TIMEOUT_MS });
+      await expect(card).toContainText("for i in 1 2 3 4 5 6 7 8 9 10");
+      await expect(card.getByRole("button", { name: /yes|allow/i }).first()).toBeVisible();
 
-    // The same card on bob's replica: visible, and explicitly not his to answer.
-    const bobCard = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
-    await expect(bobCard.getByTestId("permission-readonly")).toContainText(ALICE.name);
-    await expect(bobCard.getByRole("button")).toHaveCount(0);
+      // The same card on bob's replica: visible, and explicitly not his to answer.
+      const bobCard = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
+      await expect(bobCard.getByTestId("permission-readonly")).toContainText(ALICE.name);
+      await expect(bobCard.getByRole("button")).toHaveCount(0);
 
-    // Alice allows; the decision is journalled with her name on it.
-    const label = await allowOpenPermission(alice, undefined, ALICE.name);
-    expect(label.length).toBeGreaterThan(0);
-    await expect(alice.getByTestId("transcript")).toContainText(
-      `answered "${label}" by ${ALICE.name}`,
-    );
-  });
+      // Alice allows; the decision is journalled with her name on it.
+      const label = await allowOpenPermission(alice, undefined, ALICE.name);
+      expect(label.length).toBeGreaterThan(0);
+      await expect(alice.getByTestId("transcript")).toContainText(
+        `answered "${label}" by ${ALICE.name}`,
+      );
+    },
+  );
 
   test("bob takes control, and alice's open turn ends cancelled", async () => {
     // While the ticks are still running: a takeover requests cancellation of
     // the in-flight turn rather than pretending it finished (ADR-0014 §9).
+    if (IS_PI_LAUNCHER) {
+      // The claude arm inherits its live turn from the permission card the
+      // previous test left open; the pi arm's turn completed autonomously,
+      // so this arm opens a fresh long turn itself and catches it in
+      // flight — the takeover must have a running turn to cancel.
+      await sendPrompt(alice, LONG_PROMPT);
+      await expect
+        .poll(
+          async () =>
+            (
+              (await alice
+                .getByTestId("turn-status")
+                .innerText()
+                .catch(() => "")) ?? ""
+            )
+              .replace(/\s+/g, " ")
+              .trim(),
+          { timeout: AGENT_TURN_TIMEOUT_MS, message: "the pi turn never went in-flight" },
+        )
+        .toMatch(/queued|starting|running/i);
+    }
     await takeControl(bob);
     await expect(bob.getByTestId("controller-badge")).toHaveText("you're in control");
     await expectTurnStatus(bob, /cancelled/);
@@ -264,20 +349,37 @@ test.describe("M2 shared conversation and control handoff", () => {
     await expect(alice.getByTestId("take-control")).toBeVisible();
   });
 
-  test("bob prompts a file write, approves it, and the turn completes", async () => {
-    await sendPrompt(bob, WRITE_PROMPT);
-    const card = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
-    await expect(card.getByTestId("permission-readonly")).toHaveCount(0);
-    const label = await allowOpenPermission(bob, undefined, BOB.name);
-    await expectTurnStatus(bob, /completed/);
+  test(
+    IS_PI_LAUNCHER
+      ? "bob prompts a file write and the turn completes with no verdict row (ADR-0069)"
+      : "bob prompts a file write, approves it, and the turn completes",
+    async () => {
+      await sendPrompt(bob, WRITE_PROMPT);
+      if (IS_PI_LAUNCHER) {
+        // No card mounts and the transcript carries no verdict line: the
+        // autonomy is the sandbox plus the audit, never an approval claim.
+        await expect(openPermissionCard(bob)).toHaveCount(0);
+        await expectTurnStatus(bob, /completed/);
+        const writeTranscript = bob.getByTestId("transcript");
+        await expect(writeTranscript).toContainText(`repos/${REPO_NAME}/NOTES.md`);
+        await expect(writeTranscript).not.toContainText("answered");
+        await expect(writeTranscript).not.toContainText("approved");
+        await expect(alice.getByTestId("transcript")).toContainText(WRITE_PROMPT);
+        return;
+      }
+      const card = await waitForOpenPermission(bob, { timeout: PERMISSION_TIMEOUT_MS });
+      await expect(card.getByTestId("permission-readonly")).toHaveCount(0);
+      const label = await allowOpenPermission(bob, undefined, BOB.name);
+      await expectTurnStatus(bob, /completed/);
 
-    // The write happened in the conversation's workspace and the transcript
-    // says so, on bob's replica; bob answered, not alice.
-    const transcript = bob.getByTestId("transcript");
-    await expect(transcript).toContainText(`repos/${REPO_NAME}/NOTES.md`);
-    await expect(transcript).toContainText(`answered "${label}" by ${BOB.name}`);
-    await expect(alice.getByTestId("transcript")).toContainText(WRITE_PROMPT);
-  });
+      // The write happened in the conversation's workspace and the transcript
+      // says so, on bob's replica; bob answered, not alice.
+      const transcript = bob.getByTestId("transcript");
+      await expect(transcript).toContainText(`repos/${REPO_NAME}/NOTES.md`);
+      await expect(transcript).toContainText(`answered "${label}" by ${BOB.name}`);
+      await expect(alice.getByTestId("transcript")).toContainText(WRITE_PROMPT);
+    },
+  );
 
   test("bob returns control to alice", async () => {
     await bob.getByTestId("return-control").click();

@@ -55,6 +55,12 @@ import {
   waitForOpenPermission,
   type PermissionCardRef,
 } from "./helpers.js";
+import {
+  IS_PI_LAUNCHER,
+  LAB_LAUNCHER,
+  newProfileCardTestid,
+  seedLabPiProfile,
+} from "./lab-launcher.js";
 
 // The lab's seeded identities: display names are the bare subjects (seed.sh
 // posts only an `email` claim, so no `name` to read off the id token — the same
@@ -79,7 +85,12 @@ const TURN_CLOSE_TIMEOUT_MS = Number(process.env.E2E_INBOX_TURN_CLOSE_TIMEOUT_MS
 
 const stamp =
   process.env.E2E_M5_INBOX_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
-const PROFILE_NAME = `m5-inbox-ask-${stamp}`;
+// Under claude the profile stays `ask` (the only mode the product API writes,
+// ADR-0030). Under the lab launcher `pi` the mode must be
+// `autonomous_within_sandbox` (ADR-0069) — the never-asks launcher's only
+// honest mode — and it lands the seed.sh way: the stack's own postgres,
+// because the API refuses to carry it.
+const PROFILE_NAME = `m5-inbox-${IS_PI_LAUNCHER ? "autonomous" : "ask"}-${stamp}`;
 const TITLE = `inbox two-context ${stamp}`;
 // One tool call with exact content, so the request is the subject of the test
 // and not a model that happens to wander: `ask` puts this in front of a human.
@@ -158,177 +169,309 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
     });
   });
 
-  test("admin creates an ask-mode profile and the row serves ask", async () => {
-    await test.step("/profiles → NEW AGENT (the route takes a name and a launcher, nothing else)", async () => {
-      await gotoApp(admin, "/profiles");
-      await expect(admin.getByTestId("agents-page")).toBeVisible();
-      // The library role is what the New profile button's presence means
-      // (ADR-0030); the form itself now lives in the dialog it opens.
-      await expect(admin.getByTestId("agents-new-open")).toBeVisible();
-      const row = profileRow(admin);
-      if ((await row.count()) === 0) {
-        await admin.getByTestId("agents-new-open").click();
-        await expect(admin.getByTestId("agents-new-form")).toBeVisible();
-        await admin.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
-        // The new dialog picks the launcher by agent card (radio), not a select;
-        // `agents-new-launcher-select` is the disabled "Other ACP agent" catch-all.
-        await admin.getByTestId("new-profile-card-claude").click();
-        await admin.getByTestId("agents-new-submit").click();
+  test(
+    IS_PI_LAUNCHER
+      ? "admin creates the lab-launcher profile and the seed writes its autonomous mode"
+      : "admin creates an ask-mode profile and the row serves ask",
+    async () => {
+      await test.step("/profiles → NEW AGENT (the route takes a name and a launcher, nothing else)", async () => {
+        await gotoApp(admin, "/profiles");
+        await expect(admin.getByTestId("agents-page")).toBeVisible();
+        // The library role is what the New profile button's presence means
+        // (ADR-0030); the form itself now lives in the dialog it opens.
+        await expect(admin.getByTestId("agents-new-open")).toBeVisible();
+        const row = profileRow(admin);
+        if ((await row.count()) === 0) {
+          await admin.getByTestId("agents-new-open").click();
+          await expect(admin.getByTestId("agents-new-form")).toBeVisible();
+          await admin.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
+          // The new dialog picks the launcher by agent card (radio), not a select;
+          // `agents-new-launcher-select` is the disabled "Other ACP agent" catch-all.
+          // The card is the LAB launcher (COMMUNICATION_LAB_LAUNCHER; claude keeps
+          // the historical claude card).
+          await admin.getByTestId(newProfileCardTestid()).click();
+          await admin.getByTestId("agents-new-submit").click();
+        }
+        if (IS_PI_LAUNCHER) {
+          // ADR-0030 leaves every dialog create at `ask` and pi never asks, so
+          // the mode arrives the seed.sh way — the stack's own postgres upsert
+          // (autonomous_within_sandbox + sandbox required), idempotent on re-runs.
+          seedLabPiProfile(PROFILE_NAME);
+          // The seed lands in Postgres behind the API's back — the SPA still
+          // holds the profile list from before the upsert (the dialog create
+          // fetched it as `ask`). Reload the page so the chip read below is
+          // the served row, not the stale cache.
+          await gotoApp(admin, "/profiles");
+          await expect(admin.getByTestId("agents-page")).toBeVisible();
+        }
+        // The created row, read back from the served list. The permission mode
+        // is served by the profile's detail panel — the row opens it. Under
+        // claude it says `ask`, because the route has no field to make it
+        // anything else; under pi it says `autonomous_within_sandbox` because
+        // that is the only mode the never-asks launcher may run under (ADR-0069).
+        await expect(row).toHaveCount(1, { timeout: 30_000 });
+        const rowId = ((await row.first().getAttribute("data-testid")) ?? "").replace(
+          /^agent-item-/,
+          "",
+        );
+        await admin.getByTestId(`agent-row-${rowId}`).click();
+        await expect(admin.getByTestId(`agent-permission-${rowId}`)).toHaveText(
+          new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous_within_sandbox" : "ask"}$`),
+        );
+        await shot(admin, "m5-inbox-01-ask-profile");
+      });
+    },
+  );
+
+  test(
+    IS_PI_LAUNCHER
+      ? "alice starts the conversation and the autonomous turn raises no request (ADR-0069)"
+      : "alice starts the conversation and the agent raises a permission request",
+    async () => {
+      await test.step("alice opens a conversation on the ask profile", async () => {
+        projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
+        conversationPath = await startConversation(alice, `${BASE_URL}${projectPath}`, {
+          title: TITLE,
+          profile: PROFILE_NAME,
+          prompt: PROMPT,
+        });
+        conversationId = conversationPath.split("/").pop() ?? "";
+        expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
+        await expect(alice.getByTestId("conversation-title")).toHaveText(TITLE);
+        // The profile the page says it launched, in the mode the row served.
+        // The new thread meta renders the profile name as its own `·`-separated
+        // field (no `profile:` prefix), so assert the name itself.
+        await expect(alice.getByTestId("conversation-meta")).toContainText(PROFILE_NAME);
+        // A real session on a real worker, or there is nothing to wait for.
+        // The binding names the lab's launcher (ADR-0069: pi is never-asks).
+        await expect(alice.getByTestId("agent-session")).toContainText(`agent: ${LAB_LAUNCHER}`, {
+          timeout: PERMISSION_REQUEST_TIMEOUT_MS,
+        });
+      });
+      if (IS_PI_LAUNCHER) {
+        await test.step("the never-asks turn opens no prompt card (ADR-0069)", async () => {
+          // The honest pi arm: `autonomous_within_sandbox` claims no review, so
+          // no card mounts — not for the controller, and (asserted downstream
+          // on bob's pages) not anywhere else in the journal either. The turn
+          // stays live here; bob's inbox read below catches it in flight.
+          await expect(openPermissionCard(alice)).toHaveCount(0);
+          await shot(alice, "m5-inbox-02-autonomous-turn");
+        });
+        return;
       }
-      // The created row, read back from the served list. The permission mode
-      // is served by the profile's detail panel — the row opens it — and it
-      // says `ask`, because the route has no field to make it anything else.
-      await expect(row).toHaveCount(1, { timeout: 30_000 });
-      const rowId = ((await row.first().getAttribute("data-testid")) ?? "").replace(
-        /^agent-item-/,
-        "",
-      );
-      await admin.getByTestId(`agent-row-${rowId}`).click();
-      await expect(admin.getByTestId(`agent-permission-${rowId}`)).toHaveText(/\bask\b/);
-      await shot(admin, "m5-inbox-01-ask-profile");
-    });
-  });
+      await test.step("the turn asks a human within the permission budget, or the arm says so itself", async () => {
+        // Bounded AND self-announcing: the helper fails the moment the turn ends
+        // terminal with no card, naming the status and the last transcript line.
+        const pending = await waitForOpenPermission(alice, {
+          timeout: PERMISSION_REQUEST_TIMEOUT_MS,
+          context:
+            `the agent never raised a permission request on profile ${PROFILE_NAME} ` +
+            `(permission mode ask) on ${conversationPath} — check the lab worker's agent turn ` +
+            `(ask mode must reach a human)`,
+        });
+        // The request is the one the prompt asked for: the journal names the file,
+        // and the card is labelled as the permission request it is.
+        const card = pending.first();
+        await expect(card).toContainText("awaiting a decision");
+        await expect(card).toContainText("PERMISSION REQUEST");
+        await expect(alice.getByTestId("transcript")).toContainText(/INBOX-NOTES\.md/i, {
+          timeout: 30_000,
+        });
+        // The option the controller is offered, recorded so the decision below is
+        // named by the same label the card showed.
+        const offered = await card
+          .getByTestId("permission-allow")
+          .textContent()
+          .catch(() => null);
+        const fallback = await card
+          .getByRole("button")
+          .first()
+          .textContent()
+          .catch(() => null);
+        permissionLabel = (offered ?? fallback ?? "").trim();
+        expect(permissionLabel.length).toBeGreaterThan(0);
+        await shot(alice, "m5-inbox-02-pending-permission");
+      });
+    },
+  );
 
-  test("alice starts the conversation and the agent raises a permission request", async () => {
-    await test.step("alice opens a conversation on the ask profile", async () => {
-      projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
-      conversationPath = await startConversation(alice, `${BASE_URL}${projectPath}`, {
-        title: TITLE,
-        profile: PROFILE_NAME,
-        prompt: PROMPT,
+  test(
+    IS_PI_LAUNCHER
+      ? "bob's /inbox carries the conversation with no PERMISSION tag, and nothing reloads"
+      : "bob's /inbox carries the conversation with a PERMISSION tag, and nothing reloads",
+    async () => {
+      await test.step("bob's inbox is opened once, then only polled", async () => {
+        await gotoApp(bob, "/inbox");
+        await expect(bob.getByTestId("inbox-greeting")).toBeVisible({ timeout: 30_000 });
+        await markDocument(bob);
       });
-      conversationId = conversationPath.split("/").pop() ?? "";
-      expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
-      await expect(alice.getByTestId("conversation-title")).toHaveText(TITLE);
-      // The profile the page says it launched, in the mode the row served.
-      // The new thread meta renders the profile name as its own `·`-separated
-      // field (no `profile:` prefix), so assert the name itself.
-      await expect(alice.getByTestId("conversation-meta")).toContainText(PROFILE_NAME);
-      // A real session on a real worker, or there is nothing to wait for.
-      await expect(alice.getByTestId("agent-session")).toContainText("agent: claude", {
-        timeout: PERMISSION_REQUEST_TIMEOUT_MS,
-      });
-    });
-    await test.step("the turn asks a human within the permission budget, or the arm says so itself", async () => {
-      // Bounded AND self-announcing: the helper fails the moment the turn ends
-      // terminal with no card, naming the status and the last transcript line.
-      const pending = await waitForOpenPermission(alice, {
-        timeout: PERMISSION_REQUEST_TIMEOUT_MS,
-        context:
-          `the agent never raised a permission request on profile ${PROFILE_NAME} ` +
-          `(permission mode ask) on ${conversationPath} — check the lab worker's agent turn ` +
-          `(ask mode must reach a human)`,
-      });
-      // The request is the one the prompt asked for: the journal names the file,
-      // and the card is labelled as the permission request it is.
-      const card = pending.first();
-      await expect(card).toContainText("awaiting a decision");
-      await expect(card).toContainText("PERMISSION REQUEST");
-      await expect(alice.getByTestId("transcript")).toContainText(/INBOX-NOTES\.md/i, {
-        timeout: 30_000,
-      });
-      // The option the controller is offered, recorded so the decision below is
-      // named by the same label the card showed.
-      const offered = await card
-        .getByTestId("permission-allow")
-        .textContent()
-        .catch(() => null);
-      const fallback = await card
-        .getByRole("button")
-        .first()
-        .textContent()
-        .catch(() => null);
-      permissionLabel = (offered ?? fallback ?? "").trim();
-      expect(permissionLabel.length).toBeGreaterThan(0);
-      await shot(alice, "m5-inbox-02-pending-permission");
-    });
-  });
-
-  test("bob's /inbox carries the conversation with a PERMISSION tag, and nothing reloads", async () => {
-    await test.step("bob's inbox is opened once, then only polled", async () => {
-      await gotoApp(bob, "/inbox");
-      await expect(bob.getByTestId("inbox-greeting")).toBeVisible({ timeout: 30_000 });
-      await markDocument(bob);
-    });
-    await test.step("the row and its PERMISSION tag appear within 60s", async () => {
-      const id = testidOf(conversationId);
-      const row = bob.getByTestId(`inbox-conversation-${id}`);
-      // Bounded: a prompt that never reaches his inbox fails here saying so.
-      await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
-      await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/permission/i, {
-        timeout: INBOX_TIMEOUT_MS,
-      });
-      await expect(bob.locator("#inbox-conversations-heading")).toContainText(/CONVERSATIONS/);
-      // The row names the conversation the wire carries it under.
-      await expect(row).toContainText(TITLE);
-      expect(bob.url()).toContain("/inbox");
-      // No reload, proved rather than claimed: the marker set on this exact
-      // document is still there.
-      expect(await markerSurvived(bob)).toBe(true);
-      await shot(bob, "m5-inbox-03-bob-inbox-permission");
-    });
-  });
-
-  test("bob opens it and sees the pending request — one he is not offered to answer", async () => {
-    await test.step("the inbox's own Open link, not a hand-built url", async () => {
-      await bob.getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).click();
-      // The inbox's Open link goes to the standalone thread page (C1).
-      await bob.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
-      await expect(bob.getByTestId("conversation-title")).toHaveText(TITLE);
-    });
-    await test.step("the pending request is on the conversation page", async () => {
-      // Same guarantee as alice's wait: bounded by INBOX_TIMEOUT_MS, and dead
-      // the moment the turn itself has ended with no card to mirror.
-      const card = await waitForOpenPermission(bob, { timeout: INBOX_TIMEOUT_MS });
-      await expect(card.first()).toContainText("awaiting a decision");
-      // Pin THIS card (by request id, positional on older markup) while it is
-      // open, so the decision step below can follow the same card to decided
-      // instead of counting answered cards transcript-wide.
-      permissionCard = await pinPermissionCard(bob, card.first());
-    });
-    await test.step("answering is not offered to him, so he does not answer", async () => {
-      // The honest arm of "do not answer as bob unless the UI offers it": the
-      // card tells him who owns the decision and gives him no control at all.
-      await expect(bob.getByTestId("permission-readonly")).toContainText("Only the controller");
-      await expect(openPermissionCard(bob).getByRole("button")).toHaveCount(0);
-      expect(bob.url()).toContain(conversationPath);
-      expect(await markerSurvived(bob)).toBe(true);
-      await shot(bob, "m5-inbox-04-bob-sees-pending");
-    });
-  });
-
-  test("alice answers it, and bob's open page learns so with no reload", async () => {
-    await test.step("the controller decides", async () => {
-      const label = await allowOpenPermission(alice);
-      expect(label.length).toBeGreaterThan(0);
-      if (!permissionCard) throw new Error("bob's pinned permission card is missing");
-      // The exact card bob was looking at learned the decision — not a
-      // transcript-wide count of answered cards, which earlier turns could
-      // contaminate.
-      const decided = pinnedPermissionCard(bob, permissionCard);
-      await expect(decided).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
-      await expect(decided).toContainText("decided", { timeout: INBOX_TIMEOUT_MS });
-      await expect(decided).toContainText(`answered "${label}"`, { timeout: INBOX_TIMEOUT_MS });
-      // The open request is gone from bob's screen, and it is the same document
-      // he was looking at a minute ago: no reload, only the journal arriving.
-      await expect(openPermissionCard(bob)).toHaveCount(0, { timeout: INBOX_TIMEOUT_MS });
-      expect(await markerSurvived(bob)).toBe(true);
-      await shot(bob, "m5-inbox-05-decision-live");
-    });
-    await test.step("close cleanly: the turn is left terminal, not abandoned in flight", async () => {
-      const terminal = /completed|cancelled|failed|interrupted/;
-      const closed = await expectTurnStatus(alice, terminal, TURN_CLOSE_TIMEOUT_MS)
-        .then(() => true)
-        .catch(() => false);
-      if (!closed) {
-        // Press the page's own Stop rather than leaving an open turn holding
-        // the conversation (and the worker's agent session) behind us.
-        await alice.getByTestId("stop-turn").click();
-        await expectTurnStatus(alice, /cancelled|completed|failed|interrupted/, INBOX_TIMEOUT_MS);
+      if (IS_PI_LAUNCHER) {
+        await test.step("the row appears and carries no permission tag (ADR-0069)", async () => {
+          // Bounded the same way: the conversation must still reach his inbox —
+          // what must NOT appear is the PERMISSION tag, which only a pending
+          // permission request ever produces (ui/pages/Inbox.tsx renders the
+          // chip as `needsPermission ? "permission" : status`). A never-asks
+          // launcher produces no request, so demanding a PERMISSION tag here
+          // would assert a fake prompt; asserting nothing would pass vacuously
+          // on a row that never arrived.
+          const id = testidOf(conversationId);
+          const row = bob.getByTestId(`inbox-conversation-${id}`);
+          await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
+          // Re-read over the window a pending request would have taken to
+          // land — bounded, and it names the failure.
+          await expect
+            .poll(
+              async () =>
+                bob
+                  .getByTestId(`inbox-conversation-tag-${id}`)
+                  .filter({ hasText: /permission/i })
+                  .count(),
+              {
+                timeout: 20_000,
+                message: "a PERMISSION tag appeared on a launcher that never asks (ADR-0069)",
+              },
+            )
+            .toBe(0);
+          // The chip is really there, wearing the conversation's own status.
+          await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/active|idle/i);
+          await expect(bob.locator("#inbox-conversations-heading")).toContainText(/CONVERSATIONS/);
+          await expect(row).toContainText(TITLE);
+          expect(bob.url()).toContain("/inbox");
+          expect(await markerSurvived(bob)).toBe(true);
+          await shot(bob, "m5-inbox-03-bob-inbox-autonomous");
+        });
+        return;
       }
-      await expect(alice.getByTestId("composer-input")).toBeEnabled({ timeout: 30_000 });
-    });
-  });
+      await test.step("the row and its PERMISSION tag appear within 60s", async () => {
+        const id = testidOf(conversationId);
+        const row = bob.getByTestId(`inbox-conversation-${id}`);
+        // Bounded: a prompt that never reaches his inbox fails here saying so.
+        await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
+        await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/permission/i, {
+          timeout: INBOX_TIMEOUT_MS,
+        });
+        await expect(bob.locator("#inbox-conversations-heading")).toContainText(/CONVERSATIONS/);
+        // The row names the conversation the wire carries it under.
+        await expect(row).toContainText(TITLE);
+        expect(bob.url()).toContain("/inbox");
+        // No reload, proved rather than claimed: the marker set on this exact
+        // document is still there.
+        expect(await markerSurvived(bob)).toBe(true);
+        await shot(bob, "m5-inbox-03-bob-inbox-permission");
+      });
+    },
+  );
+
+  test(
+    IS_PI_LAUNCHER
+      ? "bob opens it and sees a running turn with no request to answer (ADR-0069)"
+      : "bob opens it and sees the pending request — one he is not offered to answer",
+    async () => {
+      await test.step("the inbox's own Open link, not a hand-built url", async () => {
+        await bob.getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).click();
+        // The inbox's Open link goes to the standalone thread page (C1).
+        await bob.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
+        await expect(bob.getByTestId("conversation-title")).toHaveText(TITLE);
+      });
+      if (IS_PI_LAUNCHER) {
+        await test.step("no card exists to pin, and his open page learns the end with no reload", async () => {
+          // The honest pi arm of the same journey: bob opens the thread, sees
+          // the turn run with no permission card anywhere (there is no request
+          // to pin and nothing to answer), and the turn reaches its terminal
+          // state on his open page — the journal arriving, the document not
+          // reloading.
+          await expect(openPermissionCard(bob)).toHaveCount(0);
+          await expect(bob.getByTestId("permission-readonly")).toHaveCount(0);
+          await expect(bob.getByTestId("composer-input")).toBeDisabled();
+          await expectTurnStatus(
+            bob,
+            /completed|cancelled|failed|interrupted/,
+            PERMISSION_REQUEST_TIMEOUT_MS,
+          );
+          await expect(bob.getByTestId("transcript")).not.toContainText("awaiting a decision");
+          await expect(bob.getByTestId("transcript")).not.toContainText("answered");
+          expect(bob.url()).toContain(conversationPath);
+          expect(await markerSurvived(bob)).toBe(true);
+          await shot(bob, "m5-inbox-04-bob-autonomous-live");
+        });
+        return;
+      }
+      await test.step("the pending request is on the conversation page", async () => {
+        // Same guarantee as alice's wait: bounded by INBOX_TIMEOUT_MS, and dead
+        // the moment the turn itself has ended with no card to mirror.
+        const card = await waitForOpenPermission(bob, { timeout: INBOX_TIMEOUT_MS });
+        await expect(card.first()).toContainText("awaiting a decision");
+        // Pin THIS card (by request id, positional on older markup) while it is
+        // open, so the decision step below can follow the same card to decided
+        // instead of counting answered cards transcript-wide.
+        permissionCard = await pinPermissionCard(bob, card.first());
+      });
+      await test.step("answering is not offered to him, so he does not answer", async () => {
+        // The honest arm of "do not answer as bob unless the UI offers it": the
+        // card tells him who owns the decision and gives him no control at all.
+        await expect(bob.getByTestId("permission-readonly")).toContainText("Only the controller");
+        await expect(openPermissionCard(bob).getByRole("button")).toHaveCount(0);
+        expect(bob.url()).toContain(conversationPath);
+        expect(await markerSurvived(bob)).toBe(true);
+        await shot(bob, "m5-inbox-04-bob-sees-pending");
+      });
+    },
+  );
+
+  test(
+    IS_PI_LAUNCHER
+      ? "nobody answers: the autonomous turn closes with no verdict line (ADR-0069)"
+      : "alice answers it, and bob's open page learns so with no reload",
+    async () => {
+      if (IS_PI_LAUNCHER) {
+        await test.step("the turn ended by itself and the controller's composer is free again", async () => {
+          // ADR-0069: the mode makes no review claim, so the journal holds no
+          // verdict row — no `conversation.permission.decided`, no “answered …”
+          // line — and the turn leaves the conversation cleanly.
+          await expectTurnStatus(
+            alice,
+            /completed|cancelled|failed|interrupted/,
+            TURN_CLOSE_TIMEOUT_MS,
+          );
+          await expect(alice.getByTestId("transcript")).not.toContainText("answered");
+          await expect(alice.getByTestId("transcript")).not.toContainText("approved");
+          await expect(alice.getByTestId("composer-input")).toBeEnabled({ timeout: 30_000 });
+          await shot(alice, "m5-inbox-05-autonomous-closed");
+        });
+        return;
+      }
+      await test.step("the controller decides", async () => {
+        const label = await allowOpenPermission(alice);
+        expect(label.length).toBeGreaterThan(0);
+        if (!permissionCard) throw new Error("bob's pinned permission card is missing");
+        // The exact card bob was looking at learned the decision — not a
+        // transcript-wide count of answered cards, which earlier turns could
+        // contaminate.
+        const decided = pinnedPermissionCard(bob, permissionCard);
+        await expect(decided).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
+        await expect(decided).toContainText("decided", { timeout: INBOX_TIMEOUT_MS });
+        await expect(decided).toContainText(`answered "${label}"`, { timeout: INBOX_TIMEOUT_MS });
+        // The open request is gone from bob's screen, and it is the same document
+        // he was looking at a minute ago: no reload, only the journal arriving.
+        await expect(openPermissionCard(bob)).toHaveCount(0, { timeout: INBOX_TIMEOUT_MS });
+        expect(await markerSurvived(bob)).toBe(true);
+        await shot(bob, "m5-inbox-05-decision-live");
+      });
+      await test.step("close cleanly: the turn is left terminal, not abandoned in flight", async () => {
+        const terminal = /completed|cancelled|failed|interrupted/;
+        const closed = await expectTurnStatus(alice, terminal, TURN_CLOSE_TIMEOUT_MS)
+          .then(() => true)
+          .catch(() => false);
+        if (!closed) {
+          // Press the page's own Stop rather than leaving an open turn holding
+          // the conversation (and the worker's agent session) behind us.
+          await alice.getByTestId("stop-turn").click();
+          await expectTurnStatus(alice, /cancelled|completed|failed|interrupted/, INBOX_TIMEOUT_MS);
+        }
+        await expect(alice.getByTestId("composer-input")).toBeEnabled({ timeout: 30_000 });
+      });
+    },
+  );
 });
 
 /**

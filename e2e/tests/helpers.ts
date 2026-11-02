@@ -670,7 +670,8 @@ function composeInterpolationEnv(): NodeJS.ProcessEnv {
  * call goes straight there.
  */
 let dockerNeedsSudo = false;
-function execDocker(args: string[]): Buffer {
+/** Exported for lab-launcher.ts's seed upsert (same stack, same sudo fallback). */
+export function execDocker(args: string[]): Buffer {
   const env = composeInterpolationEnv();
   const run = (prefix: string[]) =>
     execFileSync(prefix[0], [...prefix.slice(1), ...args], {

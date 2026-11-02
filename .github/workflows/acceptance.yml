@@ -212,6 +212,15 @@ jobs:
       - name: seed (§ 7.0 contract)
         run: bash docs/compatibility/probes/m4/seed.sh
       - name: run the lab-gated suites
+        env:
+          # The four real-agent specs (home-cluster, m2-journey, m5-inbox,
+          # shell-journey) read this same knob (e2e/tests/lab-launcher.ts):
+          # under pi they pick the pi launcher card and seed their profiles
+          # as autonomous_within_sandbox (ADR-0069), exactly like the seed
+          # step above. Workflow-level env already reaches every step; this
+          # names it explicitly at the consumer so a refactor cannot drop it
+          # silently.
+          COMMUNICATION_LAB_LAUNCHER: ${{ env.COMMUNICATION_LAB_LAUNCHER }}
         run: |
           set -uo pipefail
           HOST_UID="$(id -u)"; HOST_GID="$(id -g)"; export HOST_UID HOST_GID

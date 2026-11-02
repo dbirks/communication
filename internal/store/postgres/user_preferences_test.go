@@ -66,6 +66,19 @@ func prefsStr(v string) *string { return &v }
 
 func prefsStrBool(v bool) *bool { return &v }
 
+func prefsBool(v bool) *bool { return &v }
+
+// prefsExpandedMap turns a plain bool map into the patch's *bool map (every
+// key set explicitly; null-delete arms build their maps by hand).
+func prefsExpandedMap(in map[string]bool) map[string]*bool {
+	out := make(map[string]*bool, len(in))
+	for k, v := range in {
+		v := v
+		out[k] = &v
+	}
+	return out
+}
+
 // sameLayout compares two layout documents field by field (a struct holding
 // a map cannot use ==).
 func sameLayout(a, b api.UserPreferencesLayout) bool {
@@ -228,7 +241,7 @@ func TestUserPrefsExpandedBounds(t *testing.T) {
 	longKey := fmt.Sprintf("%0121d", 1)
 	_, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
 		Layout: &api.UserPreferencesLayoutPatch{
-			Expanded: map[string]bool{longKey: true},
+			Expanded: map[string]*bool{longKey: prefsStrBool(true)},
 		},
 	})
 	var ve *api.UserPrefsValidationError
@@ -237,9 +250,9 @@ func TestUserPrefsExpandedBounds(t *testing.T) {
 	}
 
 	// More than the bound in one patch.
-	big := make(map[string]bool)
+	big := make(map[string]*bool)
 	for i := 0; i < api.PrefExpandedMaxKeys+1; i++ {
-		big[fmt.Sprintf("p-%03d", i)] = true
+		big[fmt.Sprintf("p-%03d", i)] = prefsStrBool(true)
 	}
 	if _, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
 		Layout: &api.UserPreferencesLayoutPatch{Expanded: big},
@@ -249,9 +262,9 @@ func TestUserPrefsExpandedBounds(t *testing.T) {
 
 	// The bound itself lands, and the merge keeps counting: 499 stored keys
 	// plus 2 new ones is over the bound and is refused before any write.
-	ok500 := make(map[string]bool)
+	ok500 := make(map[string]*bool)
 	for i := 0; i < api.PrefExpandedMaxKeys; i++ {
-		ok500[fmt.Sprintf("p-%03d", i)] = true
+		ok500[fmt.Sprintf("p-%03d", i)] = prefsStrBool(true)
 	}
 	if _, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
 		Layout: &api.UserPreferencesLayoutPatch{Expanded: ok500},
@@ -259,11 +272,11 @@ func TestUserPrefsExpandedBounds(t *testing.T) {
 		t.Fatalf("500-key patch: %v", err)
 	}
 	// Rebuild a 499-key map and add 2 fresh keys.
-	nearly := make(map[string]bool)
+	nearly := make(map[string]*bool)
 	for i := 0; i < api.PrefExpandedMaxKeys-1; i++ {
-		nearly[fmt.Sprintf("p-%03d", i)] = true
+		nearly[fmt.Sprintf("p-%03d", i)] = prefsStrBool(true)
 	}
-	over := map[string]bool{"fresh-a": true, "fresh-b": true}
+	over := map[string]*bool{"fresh-a": prefsStrBool(true), "fresh-b": prefsStrBool(true)}
 	for k, v := range nearly {
 		over[k] = v
 	}
@@ -287,14 +300,14 @@ func TestUserPrefsExpandedMergesKeyByKey(t *testing.T) {
 	ctx := testCtx(t)
 	if _, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
 		Layout: &api.UserPreferencesLayoutPatch{
-			Expanded: map[string]bool{"p-1": true, "p-2": true},
+			Expanded: prefsExpandedMap(map[string]bool{"p-1": true, "p-2": true}),
 		},
 	}); err != nil {
 		t.Fatalf("first patch: %v", err)
 	}
 	doc, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
 		Layout: &api.UserPreferencesLayoutPatch{
-			Expanded: map[string]bool{"p-3": true, "p-1": false},
+			Expanded: prefsExpandedMap(map[string]bool{"p-3": true, "p-1": false}),
 		},
 	})
 	if err != nil {
@@ -309,5 +322,52 @@ func TestUserPrefsExpandedMergesKeyByKey(t *testing.T) {
 			t.Fatalf("expanded[%q] = %v, want %v (full map %v)", k,
 				doc.Layout.Expanded[k], v, doc.Layout.Expanded)
 		}
+	}
+}
+
+func TestUserPrefsExpandedNullDeletesKey(t *testing.T) {
+	// The key-by-key merge only ever grew the map; an explicit JSON null is
+	// the documented drop (openapi UserPreferencesPatch): it deletes exactly
+	// that key, an absent key is a no-op, and every other key stands.
+	f := prefsTestFixture(t)
+	ctx := testCtx(t)
+	if _, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
+		Layout: &api.UserPreferencesLayoutPatch{
+			Expanded: prefsExpandedMap(map[string]bool{"p-1": true, "p-2": true, "p-3": false}),
+		},
+	}); err != nil {
+		t.Fatalf("seed patch: %v", err)
+	}
+	doc, err := f.store.PatchUserPreferences(ctx, f.user, api.UserPreferencesPatch{
+		Layout: &api.UserPreferencesLayoutPatch{Expanded: map[string]*bool{
+			"p-1":  nil,                 // the delete
+			"p-2":  prefsStrBool(false), // set alongside the delete
+			"nope": nil,                 // deleting an absent key is a no-op
+		}},
+	})
+	if err != nil {
+		t.Fatalf("delete patch: %v", err)
+	}
+	want := map[string]bool{"p-2": false, "p-3": false}
+	if _, gone := doc.Layout.Expanded["p-1"]; gone {
+		t.Fatalf("expanded = %v, want p-1 deleted by the null", doc.Layout.Expanded)
+	}
+	if len(doc.Layout.Expanded) != len(want) {
+		t.Fatalf("expanded = %v, want %v", doc.Layout.Expanded, want)
+	}
+	for k, v := range want {
+		if doc.Layout.Expanded[k] != v {
+			t.Fatalf("expanded[%q] = %v, want %v (full map %v)", k,
+				doc.Layout.Expanded[k], v, doc.Layout.Expanded)
+		}
+	}
+	// The delete reached Postgres, not just the returned document.
+	back, err := f.store.GetUserPreferences(ctx, f.user)
+	if err != nil {
+		t.Fatalf("GetUserPreferences: %v", err)
+	}
+	if !sameLayout(back.Layout, doc.Layout) {
+		t.Fatalf("stored expanded = %v, want the patch's answer %v",
+			back.Layout.Expanded, doc.Layout.Expanded)
 	}
 }

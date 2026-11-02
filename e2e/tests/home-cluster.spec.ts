@@ -60,6 +60,12 @@ import {
   classifyTransientModelFailure,
   type TransientModelFailure,
 } from "./transient-model-failure.js";
+import {
+  IS_PI_LAUNCHER,
+  LAB_LAUNCHER,
+  newProfileCardTestid,
+  seedLabPiProfile,
+} from "./lab-launcher.js";
 
 const HOME_ENABLED = process.env.COMMUNICATION_E2E_HOME === "1";
 /** The target (default: the live cluster, docs/home-cluster.md § 1); overridable for the proof. */
@@ -776,9 +782,10 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       const used = page.getByTestId(`project-library-used-${PLAN_SLUG}`);
       // The picker names each workflow and its latest rN; one click resolves
       // and posts, so the pin's revision is the newest published r1.
-      await expect(
-        page.getByTestId(`project-library-row-${PLAN_SLUG}`),
-      ).toContainText(/latest r1(?!\d)/, { timeout: 30_000 });
+      await expect(page.getByTestId(`project-library-row-${PLAN_SLUG}`)).toContainText(
+        /latest r1(?!\d)/,
+        { timeout: 30_000 },
+      );
       await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });
       if (await use.isVisible().catch(() => false)) {
         await use.click();
@@ -803,9 +810,10 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         .locator('[data-testid^="project-workflow-row-"]')
         .filter({ has: page.locator(`a[href$="${planPipelineId}"]`) });
       await expect(pinnedRow).toBeVisible({ timeout: 30_000 });
-      await expect(
-        pinnedRow.locator('[data-testid^="project-workflow-revision-"]'),
-      ).toContainText(/\br1\b/, { timeout: 30_000 });
+      await expect(pinnedRow.locator('[data-testid^="project-workflow-revision-"]')).toContainText(
+        /\br1\b/,
+        { timeout: 30_000 },
+      );
       assertNoRefusedWrites("step 3 — plan pipeline publish and assign");
       await shot(page, "home-04-assigned");
     });
@@ -1026,11 +1034,31 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await page.getByTestId("project-start-run").click({ timeout: UI_TIMEOUT_MS });
       await expect(page).toHaveURL(/[?&]new=1/, { timeout: UI_TIMEOUT_MS });
       await expect(page.getByTestId("new-run-form")).toBeVisible({ timeout: UI_TIMEOUT_MS });
-      await selectByOptionText(page, "new-run-assignment", PLAN_SLUG);
+      // The form names the pinned revision two ways, and both are the page's
+      // own fact (ADR-0066 typed mode): with more than one assignment the
+      // select is shown and the plan is chosen in it; with this project's
+      // single assignment the dialog opens straight on it — its heading
+      // carries the pipeline's slug, which is the pin named as data.
+      const assignmentSelect = page.getByTestId("new-run-assignment");
+      if (await assignmentSelect.isVisible().catch(() => false)) {
+        await selectByOptionText(page, "new-run-assignment", PLAN_SLUG);
+      } else {
+        await expect(page.getByRole("heading", { name: new RegExp(PLAN_SLUG) })).toBeVisible({
+          timeout: UI_TIMEOUT_MS,
+        });
+      }
       await page.getByTestId("new-run-input-goal").fill(GOAL, { timeout: UI_TIMEOUT_MS });
       // `repository` is the project binding name, offered as the project's
-      // own list — not a URL a user has to remember.
-      await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
+      // own list — not a URL a user has to remember. Typed mode declares this
+      // revision's `repository` input as plain text, so the same testid is a
+      // text box there; both shapes take the binding name.
+      const repoField = page.getByTestId("new-run-input-repository");
+      const repoTag = await repoField.evaluate((el) => el.tagName, { timeout: UI_TIMEOUT_MS });
+      if (repoTag === "SELECT") {
+        await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
+      } else {
+        await repoField.fill(REPO_BINDING, { timeout: UI_TIMEOUT_MS });
+      }
       await page.getByTestId("new-run-submit").click({ timeout: UI_TIMEOUT_MS });
       await waitForNavAfterWrite(page, /\/runs\/[0-9a-f-]{36}$/, "start the plan run");
       planRunId = new URL(page.url()).pathname.split("/").pop() ?? "";
@@ -1198,9 +1226,9 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     });
   });
 
-  test("step 5 — one agent.acp node on the claude launcher profile", async () => {
+  test(`step 5 — one agent.acp node on the ${LAB_LAUNCHER} launcher profile`, async () => {
     refusedWrites.length = 0;
-    await test.step("the claude-launcher profile exists (created through the dialog when absent)", async () => {
+    await test.step(`the ${LAB_LAUNCHER}-launcher profile exists (created through the dialog when absent)`, async () => {
       await gotoApp(page, "/profiles");
       await expect(page.getByTestId("agents-page")).toBeVisible();
       const rows = page
@@ -1210,11 +1238,12 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       if ((await rows.count()) === 0) {
         // The redesigned /profiles creates through the New profile dialog with
         // a LAUNCHER CARD (shell-p5's proven flow) — there is no longer a
-        // launcher `<select>` on the list page itself.
+        // launcher `<select>` on the list page itself. The card is the lab's
+        // launcher (COMMUNICATION_LAB_LAUNCHER; unset = claude, unchanged).
         await page.getByTestId("agents-new-open").click();
         const dialog = page.getByTestId("new-profile-dialog");
         await expect(dialog).toBeVisible();
-        await page.getByTestId("new-profile-card-claude").click();
+        await page.getByTestId(newProfileCardTestid()).click();
         await page.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
         await page.getByTestId("agents-new-submit").click();
         // The dialog closes and the journey lands on the new profile's detail
@@ -1223,28 +1252,46 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         await expect(dialog).toBeHidden({ timeout: 30_000 });
         await gotoApp(page, "/profiles");
         await expect(rows.first()).toBeVisible({ timeout: 30_000 });
-        console.log(`created agent profile ${PROFILE_NAME} (claude launcher)`);
+        console.log(`created agent profile ${PROFILE_NAME} (${LAB_LAUNCHER} launcher)`);
       } else {
         console.log(`reusing agent profile ${PROFILE_NAME}`);
+      }
+      if (IS_PI_LAUNCHER) {
+        // ADR-0030 leaves every product create at `ask`, and `ask` fails
+        // closed on the never-asks launcher (ADR-0019 D6). The honest mode —
+        // autonomous_within_sandbox beside sandbox `required` — arrives the
+        // seed.sh way: the stack's own postgres, idempotent on re-runs. The
+        // seed lands behind the API's back, so reload the page: the chip
+        // read below must be the served row, not the pre-seed cache.
+        seedLabPiProfile(PROFILE_NAME);
+        await gotoApp(page, "/profiles");
+        await expect(page.getByTestId("agents-page")).toBeVisible();
+        await expect(rows.first()).toBeVisible({ timeout: 30_000 });
       }
       const testid = (await rows.first().getAttribute("data-testid")) ?? "";
       profileId = testid.replace(/^agent-item-/, "");
       expect(profileId).toMatch(/^[0-9a-f-]{36}$/);
       await expect(page.getByTestId(`agent-launcher-${profileId}`)).toHaveText(
-        /^launcher: claude$/,
+        new RegExp(`^launcher: ${LAB_LAUNCHER}$`),
       );
-      // A profile created through the product can only ever be `ask`
+      // The permission chip renders on the profile DETAIL page, so open the
+      // row. Under claude a product-created profile can only ever be `ask`
       // (ADR-0030: permission_mode has no write field) — the § 3 caveat's
-      // precondition, recorded as evidence. The permission chip renders on
-      // the profile DETAIL page, so open the row.
+      // precondition, recorded as evidence. Under pi it reads
+      // `autonomous_within_sandbox`, the never-asks launcher's only honest
+      // mode (ADR-0069): no prompt, the sandbox is the boundary.
       await page.getByTestId(`agent-row-${profileId}`).click();
       await expect(page.getByTestId("profile-version")).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId(`agent-permission-${profileId}`)).toHaveText(
-        /^permission: ask$/,
+        new RegExp(`^permission: ${IS_PI_LAUNCHER ? "autonomous_within_sandbox" : "ask"}$`),
       );
       await gotoApp(page, "/profiles");
       await expect(page.getByTestId(`agent-item-${profileId}`)).toBeVisible();
-      evidence.push(`agent profile ${PROFILE_NAME}: launcher claude, permission ask`);
+      evidence.push(
+        `agent profile ${PROFILE_NAME}: launcher ${LAB_LAUNCHER}, permission ${
+          IS_PI_LAUNCHER ? "autonomous_within_sandbox" : "ask"
+        }`,
+      );
       await shot(page, "home-09-profile");
     });
     await test.step("the one-node pipeline (Blank): r1 published (created once, reused)", async () => {
@@ -1319,9 +1366,10 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await expect(page.getByTestId("project-library-dialog")).toBeVisible();
       const use = page.getByTestId(`project-library-use-${CLAUDE_SLUG}`);
       const used = page.getByTestId(`project-library-used-${CLAUDE_SLUG}`);
-      await expect(
-        page.getByTestId(`project-library-row-${CLAUDE_SLUG}`),
-      ).toContainText(/latest r1(?!\d)/, { timeout: 30_000 });
+      await expect(page.getByTestId(`project-library-row-${CLAUDE_SLUG}`)).toContainText(
+        /latest r1(?!\d)/,
+        { timeout: 30_000 },
+      );
       // Same assign/already-assigned race as the plan pipeline: settle on
       // either branch's marker before deciding which one is present.
       await expect(use.or(used).first()).toBeVisible({ timeout: 30_000 });
@@ -1349,7 +1397,17 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await page.getByTestId("project-start-run").click();
       await expect(page.getByTestId("new-run-form")).toBeVisible();
       await selectByOptionText(page, "new-run-assignment", CLAUDE_SLUG);
-      await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
+      // Same two shapes as step 4's binding field: a repo picker when the
+      // form offers one, a text box when the revision types it as plain text.
+      const claudeRepo = page.getByTestId("new-run-input-repository");
+      const claudeRepoTag = await claudeRepo.evaluate((el) => el.tagName, {
+        timeout: UI_TIMEOUT_MS,
+      });
+      if (claudeRepoTag === "SELECT") {
+        await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
+      } else {
+        await claudeRepo.fill(REPO_BINDING, { timeout: UI_TIMEOUT_MS });
+      }
       await page.getByTestId("new-run-submit").click();
       await waitForNavAfterWrite(page, /\/runs\/[0-9a-f-]{36}$/, "start the claude run");
       claudeRunId = new URL(page.url()).pathname.split("/").pop() ?? "";
@@ -1448,7 +1506,11 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
             throw new Error(
               `claude run ${shortRefOf(claudeRunId)} reached ${status} without the recorded ` +
                 `unattended-ask evidence (error_class ${errorClass}; detail: ${detailText}; ` +
-                `timeline: ${timelineText.slice(0, 400) || "(empty)"})`,
+                `timeline: ${timelineText.slice(0, 400) || "(empty)"})` +
+                (IS_PI_LAUNCHER
+                  ? " — launcher pi runs autonomous_within_sandbox (ADR-0069): nothing is " +
+                    "asked and nothing can be left unattended, so this run must simply complete"
+                  : ""),
             );
           }
         });
