@@ -340,6 +340,21 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 		}
 	}
 
+	// The run workspace row is what makes a mount target authorizable AND what
+	// names the checkouts and mirrors this attempt may see: its repositories
+	// come from § 4 step 3's preparation, and an attempt never invents a
+	// checkout path to write a secret into, nor a mirror path to read.
+	workspaceID := ""
+	if p.Checkpoints != nil {
+		if ref, ok, err := p.Checkpoints.RunWorkspace(context.WithoutCancel(ctx), c.RunID); err == nil && ok {
+			workspaceID = ref.WorkspaceID
+		}
+	}
+	repos, refusal := p.attemptRepos(ctx, workspaceID)
+	if refusal != nil {
+		return *refusal, nil
+	}
+
 	plan := wsgit.LaunchPlan{
 		WorkspaceID: "run/" + c.RunID,
 		Layout:      layout,
@@ -352,25 +367,34 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 		AgentHome:    homeDir,
 		Cwd:          cwd,
 	}
-	if err := plan.Check(); err != nil {
+	// ADR-0017 D4, mirrored onto process.exec (lab run 01a19bab: the agent
+	// node's git worked because its plan carried the mirror axis; the
+	// diffstat node's git died with exit 128 because this one did not). A
+	// linked worktree's .git file points into the bare mirror, so ANY git
+	// command in a worktree checkout needs the mirror readable — probe P10's
+	// never-optional grant. Same authorized read as the agent.acp attempt
+	// (the workspace_repos rows § 4 step 3 wrote, never a path inferred from
+	// the layout), same single grant shape (wsgit.MirrorGrants, through the
+	// agent path's attemptMirrorGrants). commitGranted is false and stays
+	// false: process.exec has no commit axis, so the mirror join is the
+	// read-only mirror_read alone — wsgit.Grant.Access reports ro for that
+	// role and no call site can widen it. No Secrets seam or no run
+	// workspace means no repos are known and no mirror grants join: the
+	// plan degrades to what it was, visibly, rather than inventing a path.
+	mirrorGrants, err := attemptMirrorGrants(layout, repos, false)
+	if err != nil {
 		return failedResult(ErrorClassInfra, "command launch plan: "+p.redact(err.Error())), nil
 	}
-
-	// The run workspace row is what makes a mount target authorizable: its
-	// repositories come from § 4 step 3's preparation, and an attempt never
-	// invents a checkout path to write a secret into.
-	workspaceID := ""
-	if p.Checkpoints != nil {
-		if ref, ok, err := p.Checkpoints.RunWorkspace(context.WithoutCancel(ctx), c.RunID); err == nil && ok {
-			workspaceID = ref.WorkspaceID
-		}
+	plan.Grants = append(plan.Grants, mirrorGrants...)
+	if err := plan.Check(); err != nil {
+		return failedResult(ErrorClassInfra, "command launch plan: "+p.redact(err.Error())), nil
 	}
 
 	// § 4 step 4 runs in the contract's order: materialize, then verify, then
 	// launch — so a mount that cannot be delivered means no child process and no
 	// partial set (ADR-0018 D4), and nothing sandboxed ever ran holding a value
 	// the ledger does not record.
-	materialized, refusal := p.materializeSecrets(ctx, c, workspaceID, layout)
+	materialized, refusal := p.materializeSecrets(ctx, c, workspaceID, layout, repos)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -482,6 +506,24 @@ type wrappedLaunch struct {
 	argv []string
 }
 
+// attemptRepos reads the run workspace's prepared repositories back once per
+// attempt — AgentTurn.attemptRepos's shape, same seam, same rule: the rows §
+// 4 step 3 wrote, never a path inferred from the layout. No Secrets seam or no
+// run workspace means no repos are known, and therefore no mirror grants: the
+// plan degrades to what it was before the mirror axis was wired here,
+// visibly, rather than inventing a path.
+func (p *ProcExec) attemptRepos(ctx context.Context, workspaceID string) ([]MaterializeRepo, *AttemptResult) {
+	if p.Secrets == nil || workspaceID == "" {
+		return nil, nil
+	}
+	repos, err := p.Secrets.ReposForWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, ptrResult(failedResult(ErrorClassInfra,
+			"read the run workspace's repositories for the attempt grant set: "+p.redact(err.Error())))
+	}
+	return repos, nil
+}
+
 // materializeSecrets is contract § 4 step 4 at process.exec scope: the
 // node_attempt mounts this attempt is authorized to hold, delivered before the
 // command launches, never half a set (ADR-0018 D4).
@@ -513,7 +555,7 @@ type wrappedLaunch struct {
 // is the boundary. PolicyDigest is left empty for the agentturn reason: under
 // `required` the policy is verified at step 5, after materialization, and a
 // digest claimed here would be a promise about a launch not yet checked.
-func (p *ProcExec) materializeSecrets(ctx context.Context, c AttemptClaim, workspaceID string, layout wsgit.Layout) (*Materialized, *AttemptResult) {
+func (p *ProcExec) materializeSecrets(ctx context.Context, c AttemptClaim, workspaceID string, layout wsgit.Layout, repos []MaterializeRepo) (*Materialized, *AttemptResult) {
 	if p.Secrets == nil {
 		return nil, nil
 	}
@@ -524,14 +566,10 @@ func (p *ProcExec) materializeSecrets(ctx context.Context, c AttemptClaim, works
 		return nil, nil
 	}
 	// The checkouts a mount may target are § 4 step 3's, never this executor's
-	// guess: no workspace row, no repos, and an attempt with no authorized root
-	// delivers nothing rather than writing into a directory the database never
-	// named.
-	repos, err := p.Secrets.ReposForWorkspace(ctx, workspaceID)
-	if err != nil {
-		return nil, ptrResult(failedResult(ErrorClassInfra,
-			"read the run workspace's repositories for node_attempt secret mounts: "+p.redact(err.Error())))
-	}
+	// guess — the same authorized read the grant axis above made once per
+	// attempt (AgentTurn's shape: one read, both consumers). No workspace row,
+	// no repos, and an attempt with no authorized root delivers nothing rather
+	// than writing into a directory the database never named.
 	var extra []string
 	m, err := p.Secrets.Materialize(ctx, MaterializeRequest{
 		OrganizationID: c.OrganizationID, ProjectID: c.ProjectID,
@@ -988,6 +1026,11 @@ type procExecOutcome struct {
 	stderrLen int64
 	stdoutPre []byte
 	stderrPre []byte
+	// stderrTail is the last bytes of the stderr capture: the unable-to-start
+	// detail's diagnosis (the head preview is the noise; the failure's own
+	// words are at the end). Bounded, host-root-redacted, and swept for
+	// materialized secrets by Execute's redactResult, never raw.
+	stderrTail []byte
 }
 
 // run execs argv in its own process group, captures full stdout/stderr to
@@ -1057,6 +1100,7 @@ func (p *ProcExec) run(ctx context.Context, path string, args, env []string, cwd
 	out.stderrLen, _ = fileSize(stderrPath)
 	out.stdoutPre = headBytes(stdoutPath, procExecPreviewBytes)
 	out.stderrPre = headBytes(stderrPath, procExecPreviewBytes)
+	out.stderrTail = tailBytes(stderrPath, maxAttemptStderrTailBytes)
 	// A wait error after a start is exit-status data for classify(); only a
 	// never-started command is a run failure, and that returned early above.
 	_ = waitErr
@@ -1078,6 +1122,33 @@ func headBytes(path string, n int64) []byte {
 	}
 	defer func() { _ = f.Close() }()
 	buf := make([]byte, n)
+	read, _ := io.ReadFull(f, buf)
+	return buf[:read]
+}
+
+// tailBytes reads the last n bytes of a capture file (acp.StderrTail's
+// discipline for the agent path, aimed at the file this one already holds in
+// full). A read that cannot answer yields no tail: the diagnosis is
+// best-effort, the exit code is the fact.
+func tailBytes(path string, n int64) []byte {
+	st, err := os.Stat(path)
+	if err != nil || st.Size() == 0 {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	size := st.Size()
+	off := int64(0)
+	if size > n {
+		off = size - n
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return nil
+	}
+	buf := make([]byte, size-off)
 	read, _ := io.ReadFull(f, buf)
 	return buf[:read]
 }
@@ -1122,10 +1193,21 @@ func (p *ProcExec) classify(ctx context.Context, spec procExecSpec, out procExec
 	default:
 		// 126+ (not-executable, not-found, shell-internal) is "unable to
 		// start"-class even though the kernel ran the parent: 1–125 is where
-		// authored commands speak, 126+ is the OS talking.
-		return failedResult(ErrorClassInfra, fmt.Sprintf(
+		// authored commands speak, 126+ is the OS talking. The band alone
+		// was diagnosable for nobody — the lab's diffstat failed this arm
+		// with "git exited 128" and no reason (the missing mirror grant is
+		// now fixed, but 128 has many causes). The stderr capture's tail is
+		// git's own words; host roots are redacted here, materialized
+		// secrets are swept by Execute's redactResult over the whole result
+		// (attemptloop applies the same 512-byte bound), and it is bounded
+		// so the code always survives next to it.
+		detail := fmt.Sprintf(
 			"%s exited %d, outside the business-outcome band 1..125 (§ 4 step 7: unable-to-start class)",
-			filepath.Base(spec.argv[0]), out.code))
+			filepath.Base(spec.argv[0]), out.code)
+		if tail := strings.TrimSpace(p.redact(string(out.stderrTail))); tail != "" {
+			detail += "; stderr tail: " + bounded(tail, 320)
+		}
+		return failedResult(ErrorClassInfra, detail)
 	}
 }
 

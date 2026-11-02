@@ -665,3 +665,49 @@ Status of this section's cells: **implemented, live proof pending** — P1/P5
 may flip only when `pi-proof.sh` on the rebuilt image quotes the journal rows
 (`sandbox.verified`, the model answering, egress allow/deny). Until then the
 pi boundary remains `not_tested`, not PASS.
+
+## process.exec mirror grant — fix landed (2026-11-02), live proof pending
+
+**Observed.** Lab run `01a19bab-8715-7ad9-818e-52686a3bd2e3` (probe
+`docs/compatibility/probes/m4/pi-proof.sh`, commit eb89ab0): the `edit`
+agent.acp node succeeded with `sandbox.verified` grants
+`workspace_repo rw, workspace_scratch rw, workspace_home rw, mirror_read ro`;
+the `diffstat` process.exec node then failed as `infra` with
+*"git exited 128, outside the business-outcome band 1..125 (§ 4 step 7:
+unable-to-start class)"* — and its `sandbox.verified` row carried **no
+`mirror_read`**.
+
+**Cause.** A linked worktree's `.git` file points into the bare mirror
+(objects/refs), so without a read grant on the mirror every git command in a
+worktree checkout dies at exit 128 — probe P10's never-optional grant, which
+ADR-0017 D4 wired into the agent.acp attempt path (`attemptMirrorGrants`) but
+which the process.exec launch plan (`internal/worker/procexec.go`) never
+grew: it granted only checkout/scratch/home.
+
+**Fix (in-tree, unit- and real-sandbox-proven):** `ProcExec.executeAttempt`
+now performs the same authorized read as the agent attempt (the
+`workspace_repos` rows § 4 step 3 wrote, via `AttemptSecrets.
+ReposForWorkspace`) and joins `wsgit.MirrorGrants`' read axis to the plan —
+same single shape, same order. `commitGranted` is false and stays false for
+this kind, so the mirror join is `mirror_read ro` and nothing else; a
+`Grant.Access` for `mirror_read` is `ro` by construction (no call site can
+widen it). No run workspace row or no prepared repositories means no mirror
+grants — the same visible degradation the agent path set, never an invented
+path. Additionally, the unable-to-start attempt detail now carries the
+redacted, bounded **tail** of the captured stderr (git's own words; host
+roots replaced with `<host-root>`, materialized secrets swept by the existing
+`redactResult`), so a future exit 128 from another cause names its reason.
+
+**Evidence.** `TestProcExecAttemptPlanGrantsTheMirrorReadForWorktreeWorkspaces`
+and `TestProcExecUnableToStartDetailCarriesStderrTail`
+(`internal/worker/procexec_mirror_test.go`) pin the grant set and the detail;
+`TestProcExecUnderRealNonoGitRunsInWorktreeWithMirrorGrant` runs `git status`
+in a real linked worktree under real nono 0.80.0 on this host's Landlock
+through the executor itself (PASS 2026-11-02). The no-mirror-read control
+(git dies without the grant) is measured in
+`agentturn_mirror_grants_nono_test.go` against the same profile shape.
+
+**Status: implemented, live proof pending.** This section records no new
+matrix PASS; the cell flips only when the orchestrator's rebuild-lab rerun of
+`seed-pi.sh` + `pi-proof.sh` shows the `diffstat` node succeeding and its
+`sandbox.verified` row quoting `mirror_read ro`.
