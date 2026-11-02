@@ -134,6 +134,11 @@ type TurnLoop struct {
 	// a fake that does not simply never dispatches). Resolved by a type
 	// assertion in NewTurnLoop so no worker wiring names it.
 	mail MailPort
+	// mailBox is the ADR-0072 § 12 read of a conversation's asked-side state.
+	// Resolved by the same kind of type assertion as `mail` (a store that does
+	// not speak it leaves every workspace read-write, which is what a worker
+	// before migration 00026 has always done).
+	mailBox MailSandboxPort
 
 	mu     sync.Mutex
 	live   map[string]*liveSession // conversation id → live agent instance
@@ -190,6 +195,12 @@ func WithMail(m MailPort) TurnOption {
 	return func(l *TurnLoop) { l.mail = m }
 }
 
+// WithMailSandbox overrides the § 12 read-only state reader. Tests inject it;
+// production relies on the store assertion in NewTurnLoop.
+func WithMailSandbox(p MailSandboxPort) TurnOption {
+	return func(l *TurnLoop) { l.mailBox = p }
+}
+
 // NewTurnLoop validates its ports and returns an idle loop.
 func NewTurnLoop(cfg TurnConfig, store TurnStore, spawn domain.AgentSessionFactory, work WorkspacePrep, workerID func() string, opts ...TurnOption) (*TurnLoop, error) {
 	if store == nil {
@@ -217,6 +228,9 @@ func NewTurnLoop(cfg TurnConfig, store TurnStore, spawn domain.AgentSessionFacto
 	}
 	if m, ok := store.(MailPort); ok {
 		l.mail = m
+	}
+	if p, ok := store.(MailSandboxPort); ok {
+		l.mailBox = p
 	}
 	for _, o := range opts {
 		o(l)
@@ -465,8 +479,19 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		notes   []string
 		unit    *Unit
 	)
+	// ADR-0072 § 12: on the asked side of an agent-mail link, read-only is a
+	// filesystem rule decided BEFORE the launch rather than a prompt that may
+	// never come. The store answers it; a store that cannot (§ 12's port is
+	// optional) leaves the workspace read-write exactly as it always was, and an
+	// `ask` turn on a never-asks launcher keeps failing closed under ADR-0069 —
+	// a missing read can only ever cost a turn, never widen a sandbox.
+	repoAccess, err := l.mailRepoAccess(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	readOnlyRepo := repoAccess.ReadOnlyRepo()
 	if l.units != nil {
-		unit, err = l.prepareUnit(ctx, c, repos)
+		unit, err = l.prepareUnit(ctx, c, repos, readOnlyRepo)
 		if err != nil {
 			return nil, err
 		}
@@ -476,6 +501,12 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		if err != nil {
 			return nil, err
 		}
+	}
+	// The mount is the guarantee only if there is a sandbox to hold it. A turn
+	// that reached here with no unit has no repository grant to narrow, so the
+	// § 12 arm does not apply to it and nothing is claimed about it.
+	if readOnlyRepo && unit == nil {
+		readOnlyRepo = false
 	}
 
 	// `ask`, `deny` and `preapproved_within_sandbox` all need the launcher's
@@ -490,13 +521,40 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	// (ADR-0036 (a)) and journal no verdict (preapproved).
 	modeID := ""
 	switch c.PermissionMode {
-	case "ask", "deny", "preapproved_within_sandbox":
+	case "ask":
+		// ADR-0072 § 12 is the arm that changed here. Where the launcher has a
+		// verified prompting mode, `ask` stays exactly as it was — and on the
+		// asked side it is now the SECOND layer, because the repository is also
+		// mounted read-only. Where the launcher has none (pi, ADR-0069), there is
+		// nothing to prompt with, and a turn whose read-only is a mount rather
+		// than a promise has no review claim to make: it runs the never-asks
+		// default, which is what `autonomous_within_sandbox` says. That word is
+		// only honest over a real boundary, so the same `required` gate the
+		// autonomous arm below applies is checked here too; without it the turn
+		// fails closed rather than running never-asks under an unenforced
+		// read-only label.
 		modeID = l.cfg.AskModeID(c.LauncherID)
-		if modeID == "" {
+		if modeID != "" {
+			break
+		}
+		if !readOnlyRepo {
 			// Fail closed: without a verified prompting mode the adapter's
 			// default answers every permission itself — the recorded mode
 			// would be a lie (docs/compatibility/ACP.md: prompting is a
 			// mode property).
+			return nil, errNoAskMode{launcher: c.LauncherID, mode: c.PermissionMode}
+		}
+		if err := l.requireRequiredSandbox(c.LauncherID); err != nil {
+			return nil, err
+		}
+		// The transcript says what the launch is, because the stamped mode no
+		// longer does: no prompt will ever arrive on this launcher.
+		notes = append(notes, "this chat is answering another chat's mail: its repository is mounted read-only in the sandbox, and it runs without asking because the sandbox is the boundary (ADR-0072 § 12). A person's approval lifts the mount to read-write.")
+	case "deny", "preapproved_within_sandbox":
+		modeID = l.cfg.AskModeID(c.LauncherID)
+		if modeID == "" {
+			// Fail closed, as above: these modes claim a policy verdict, and a
+			// launcher that sends no prompt produces none to record.
 			return nil, errNoAskMode{launcher: c.LauncherID, mode: c.PermissionMode}
 		}
 	case "autonomous_within_sandbox":
@@ -511,11 +569,8 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		// there is no fallback branch). A loop without the unit service, or
 		// a worker configured below `required`, has no boundary to point at
 		// and refuses before any spawn.
-		if l.units == nil {
-			return nil, errAutonomousWithoutSandbox{launcher: c.LauncherID, mode: "none (no unit service)"}
-		}
-		if mode := l.units.enforcement(); mode != domain.EnforceRequired {
-			return nil, errAutonomousWithoutSandbox{launcher: c.LauncherID, mode: string(mode)}
+		if err := l.requireRequiredSandbox(c.LauncherID); err != nil {
+			return nil, err
 		}
 	default:
 		return nil, errors.New("worker: unknown permission mode " + c.PermissionMode)
@@ -673,6 +728,36 @@ func (e errNoAskMode) Error() string {
 		mode = "ask"
 	}
 	return "worker: permission mode " + mode + " needs a prompting mode for launcher " + e.launcher + "; none is verified (docs/compatibility/ACP.md)"
+}
+
+// requireRequiredSandbox is the one gate every never-asks launch passes: the
+// boundary the mode points at must be the unit path's verified `required`
+// chain, or there is nothing to be honest about (ADR-0069). ADR-0072 § 12's
+// asked-side turn on a never-asks launcher runs under that same sentence, so it
+// passes under this same check rather than a copy of it.
+func (l *TurnLoop) requireRequiredSandbox(launcherID string) error {
+	if l.units == nil {
+		return errAutonomousWithoutSandbox{launcher: launcherID, mode: "none (no unit service)"}
+	}
+	if mode := l.units.enforcement(); mode != domain.EnforceRequired {
+		return errAutonomousWithoutSandbox{launcher: launcherID, mode: string(mode)}
+	}
+	return nil
+}
+
+// mailRepoAccess reads the ADR-0072 § 12 state of a conversation. A loop whose
+// store cannot answer it gets "ordinary conversation", which is the shape this
+// path had before the § 12 arm existed: read-write grants, and an `ask` turn
+// that fails closed on a never-asks launcher.
+func (l *TurnLoop) mailRepoAccess(ctx context.Context, c Claim) (MailRepoAccess, error) {
+	if l.mailBox == nil {
+		return MailRepoAccess{}, nil
+	}
+	access, err := l.mailBox.MailRepoAccess(ctx, c)
+	if err != nil {
+		return MailRepoAccess{}, fmt.Errorf("worker: read the agent-mail state of turn %s: %w", c.TurnID, err)
+	}
+	return access, nil
 }
 
 // errAutonomousWithoutSandbox reports an autonomous_within_sandbox profile on

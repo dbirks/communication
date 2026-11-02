@@ -43,13 +43,22 @@ const (
 type Grant struct {
 	Role string
 	Path string
+	// AccessLevel narrows this grant below the level its role carries by
+	// default. Only AccessReadOnly (or "" = the role's default) is representable:
+	// a field that could name `rw` would let a caller widen `mirror_read` into a
+	// write, which is the mistake the role table exists to make impossible.
+	// ADR-0072 § 12 is why the field exists at all: the asked side of an
+	// agent-mail link mounts its repository read-only, and the plan — not a
+	// prompt — is the thing the kernel enacts and the journal reports.
+	AccessLevel string
 }
 
-// Access returns the level the role carries. Every role here is rw except the
-// two read-only ones, so the mapping is a table and not an argument.
+// Access returns the level the grant carries: the role's table entry, narrowed
+// by AccessLevel when one was named. A grant may be read-only beside a role
+// that defaults to rw; it is never wider than its role.
 func (g Grant) Access() string {
-	switch g.Role {
-	case RoleMirrorRead:
+	switch {
+	case g.Role == RoleMirrorRead || g.AccessLevel == AccessReadOnly:
 		return AccessReadOnly
 	default:
 		return AccessReadWrite
@@ -93,6 +102,12 @@ type LaunchPlan struct {
 	// CommitGranted is the ADR-0017 D4 axis. Without it the four mirror
 	// writes are absent and the agent's own `git commit` fails.
 	CommitGranted bool
+	// RepoReadOnly records that the repository grants were mounted read-only
+	// for this launch (ADR-0072 § 12). It is recorded rather than inferred so a
+	// reader of the plan can tell "this turn was not allowed to edit" from "this
+	// turn's profile grants nothing" — the first is a policy the sandbox holds,
+	// the second is an absent capability.
+	RepoReadOnly bool
 	// DeniedPaths are the profile's deny requests. nono has no CLI deny flag
 	// and Linux filesystem.deny is point-in-time (probes C-TMP2/C-TMP3), so
 	// under `required` this is a configuration error rather than a policy —
@@ -136,6 +151,12 @@ func (p LaunchPlan) Check() error {
 		if g.Role == "" {
 			return fmt.Errorf("workspace: grant with no role at %s", g.Path)
 		}
+		if g.AccessLevel != "" && g.AccessLevel != AccessReadOnly {
+			// The one shape that would make the field a widening, refused rather
+			// than normalised: a caller that meant rw means the role table.
+			return fmt.Errorf("workspace: grant %s (%s) names access level %q; only %q (or empty for the role's default) is representable — a grant may be narrowed, never widened",
+				g.Role, g.Path, g.AccessLevel, AccessReadOnly)
+		}
 		if seen[g.Path] {
 			continue
 		}
@@ -147,8 +168,18 @@ func (p LaunchPlan) Check() error {
 	if p.Cwd == "" {
 		return fmt.Errorf("workspace: launch plan has no working directory")
 	}
+	// The cwd must be covered by a grant. Probe C-CWD's finding is about a cwd
+	// outside *every* grant: nono does not refuse it, it moves the child to /,
+	// so the turn fails confusingly. A read-only grant covering the cwd is a
+	// different case and a legal one — measured with the shipped nono 0.80.0
+	// (internal/worker's real-nono read-only test): inside a `--read` checkout
+	// the child's pwd is the checkout, `cat` works and `echo > file` is refused
+	// with EACCES. That is ADR-0072 § 12's asked turn exactly: it works in the
+	// repository it was asked about and cannot change it.
 	if err := insideAny(p.Cwd, p.rwPaths()); err != nil {
-		return fmt.Errorf("workspace: cwd %s is outside every read-write grant; in profile mode nono does not refuse this, it moves the child to / (probe C-CWD), so the turn would fail confusingly: %w", p.Cwd, err)
+		if !p.readOnlyRepoCoversCwd() {
+			return fmt.Errorf("workspace: cwd %s is outside every grant; in profile mode nono does not refuse this, it moves the child to / (probe C-CWD), so the turn would fail confusingly: %w", p.Cwd, err)
+		}
 	}
 	if err := insideAny(p.AgentHome, p.rwPaths()); err != nil {
 		return fmt.Errorf("workspace: agent home %s is outside the read-write grants; git aborts on an ungranted HOME (probe P6): %w", p.AgentHome, err)
@@ -176,6 +207,20 @@ func (p LaunchPlan) rwPaths() []string {
 	return out
 }
 
+// readOnlyRepoCoversCwd is the one read-only shape a launch may start inside:
+// its own repository mount, narrowed by ADR-0072 § 12. A cwd covered only by
+// some other read grant (the mirror, a tool directory) is still refused — this
+// is not a general "read is enough" rule, it is the asked turn working in the
+// repo it was asked about.
+func (p LaunchPlan) readOnlyRepoCoversCwd() bool {
+	for _, g := range p.Grants {
+		if g.Role == RoleCheckout && g.Access() == AccessReadOnly && covers(g.Path, p.Cwd) {
+			return true
+		}
+	}
+	return false
+}
+
 // Plan builds the launch plan for a prepared workspace.
 //
 // The grant set is the *narrow* shape (probes C-GRANT/C-GRANT2), which is what
@@ -193,12 +238,20 @@ func Plan(prep *PreparedWorkspace, opts PlanOptions) (LaunchPlan, error) {
 	if opts.WorkspaceID == "" {
 		return LaunchPlan{}, fmt.Errorf("workspace: launch plan needs the workspace id")
 	}
+	// Read-only is a narrowing of the whole repository axis: the worktree is
+	// mounted ro *and* the commit axis is withheld, because the four mirror
+	// writes are how a worktree's contents become a commit. Granting them to a
+	// turn that may not edit its repo would describe a boundary the launch does
+	// not have.
+	repoReadOnly := opts.RepoAccess == AccessReadOnly
+	commitGranted := opts.CommitGranted && !repoReadOnly
 	plan := LaunchPlan{
 		WorkspaceID:   opts.WorkspaceID,
 		Layout:        prep.Layout,
 		AgentHome:     prep.Layout.Home,
 		LauncherHome:  opts.LauncherHome,
-		CommitGranted: opts.CommitGranted,
+		CommitGranted: commitGranted,
+		RepoReadOnly:  repoReadOnly,
 		DeniedPaths:   opts.DeniedPaths,
 	}
 	add := func(role, path string) {
@@ -215,8 +268,12 @@ func Plan(prep *PreparedWorkspace, opts PlanOptions) (LaunchPlan, error) {
 	}
 
 	for _, repo := range prep.Repos {
-		add(RoleCheckout, repo.CheckoutPath)
-		for _, g := range MirrorGrants(prep.Layout.ScopeID, repo.MirrorPath, repo.AdminDir, opts.CommitGranted) {
+		checkout := Grant{Role: RoleCheckout, Path: repo.CheckoutPath}
+		if repoReadOnly {
+			checkout.AccessLevel = AccessReadOnly
+		}
+		plan.Grants = append(plan.Grants, checkout)
+		for _, g := range MirrorGrants(prep.Layout.ScopeID, repo.MirrorPath, repo.AdminDir, commitGranted) {
 			add(g.Role, g.Path)
 		}
 	}
@@ -252,6 +309,12 @@ func MirrorGrants(scopeID, mirrorPath, adminDir string, commitGranted bool) []Gr
 type PlanOptions struct {
 	WorkspaceID   string
 	CommitGranted bool
+	// RepoAccess names the level the repository (workspace_repo) grants carry:
+	// "" (rw, every run's default) or AccessReadOnly — ADR-0072 § 12's enforced
+	// read-only for the asked side of an agent-mail link. It is an *access*
+	// rather than a bool so a caller states the level it means; read-only also
+	// withholds the commit axis, whatever the profile asked for.
+	RepoAccess string
 	// LauncherHome is nono's own HOME: checked against the grants, never one.
 	LauncherHome          string
 	HarnessCredentialDirs []string

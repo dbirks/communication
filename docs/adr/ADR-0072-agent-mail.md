@@ -1,9 +1,9 @@
 # ADR-0072 — Agent mail across repos: an opt-in project setting, a linked conversation per ask, and a read-only answer until a person says otherwise
 
 - **Date:** 2026-11-02
-- **Status:** Accepted (implemented and verified on real PostgreSQL — see Verification)
+- **Status:** Accepted (implemented and verified on real PostgreSQL — see Verification). Amended 2026-11-02 by § 12: the asked side's read-only is enforced by the sandbox (`workspace_repo` mounted `ro`), not only by a permission mode.
 - **Owners:** control-plane API + store + worker maintainers
-- **Related decisions / contracts:** ADR-0016 (conversations, controller CAS, turn leases and fencing — mail writes ride every one of those rules), ADR-0067 (a conversation born bound to one repository — the mail target is born bound to the asked repo), ADR-0068 (per-turn agent profiles; the target turn is stamped with the asking turn's profile and no wire fact names a model), ADR-0069 (never-asks launchers: a mailed turn runs `ask`, and a launcher with no verified prompting mode fails that turn closed, exactly as a normal `ask` conversation does), ADR-0039 (policy-decided permission rows keep their verdicts durable), ADR-0013 (forward-only migrations), ADR-0014 §9 (one journal; mail events are journal rows), `communication-spec/05-workspaces-security-secrets.md` (the workspace/permission axes: read-only is a *permission* fact first), `communication-spec/06-collaboration-identity.md` (project membership is the authorization scope; the controller lock), migration `00026`; design source `docs/design/handoff-repo-chat-nav/` (README § "Agent mail across repos (3d)", DECISIONS.md — "optional, off by default; asked agents are read-only unless a person approves edits" and "a tool the agent can call to open or message a chat in another repo of the same project").
+- **Related decisions / contracts:** ADR-0016 (conversations, controller CAS, turn leases and fencing — mail writes ride every one of those rules), ADR-0067 (a conversation born bound to one repository — the mail target is born bound to the asked repo), ADR-0068 (per-turn agent profiles; the target turn is stamped with the asking turn's profile and no wire fact names a model), ADR-0069 (never-asks launchers: a mailed turn used to run `ask`, and a launcher with no verified prompting mode failed that turn closed — § 12 makes the read-only a sandbox mount instead, so on such a launcher the mailed turn runs ADR-0069's `autonomous_within_sandbox` launch under `required` enforcement, and nothing else is unlocked), ADR-0039 (policy-decided permission rows keep their verdicts durable), ADR-0013 (forward-only migrations), ADR-0014 §9 (one journal; mail events are journal rows), `communication-spec/05-workspaces-security-secrets.md` (the workspace/permission axes: read-only is a *permission* fact first), `communication-spec/06-collaboration-identity.md` (project membership is the authorization scope; the controller lock), migration `00026`; design source `docs/design/handoff-repo-chat-nav/` (README § "Agent mail across repos (3d)", DECISIONS.md — "optional, off by default; asked agents are read-only unless a person approves edits" and "a tool the agent can call to open or message a chat in another repo of the same project").
 
 ## Context
 
@@ -49,7 +49,7 @@ At the end of a **completed** turn, the whole coalesced answer (secret-redacted,
 
 ### 4. Read-only enforcement on the target
 
-The target turn carries `conversation_turns.permission_override = 'ask'` — a column whose CHECK admits *only* `'ask'`, so a mailed turn can never be upgraded, and the claim resolves `COALESCE(t.permission_override, ap.permission_mode)`: the profile's own mode (even `preapproved_within_sandbox` or `autonomous_within_sandbox`) cannot leak into a mailed answer. `ask` is the existing approval machinery: reads that need no permission run; every edit the harness thinks twice about becomes a durable `permission_requests` row on the *linked* chat that a person answers in that chat's own UI — take control first (controller starts `none`), and only that controller's yes lets an edit run (ADR-0016 §5; ADR-0039 keeps the verdict durable). Nobody answers = the prompt expires = refusal, by the rule already shipped for ask turns — and, since § 11, a prompt raised while the chat has no controller at all is refused at once instead of holding the turn for the full TTL. On a never-asks launcher the `ask` mode has no verified prompting mode to honour, and the turn fails closed rather than running never-asks under a read-only claim (ADR-0069). The sandbox axis (a read-only *filesystem* for the mailed target) is deliberately not claimed here: nono read-only workspace mounts for the conversation path are a **Spike required** item (spec 05, `docs/compatibility/`); the permission arm is what this ADR enforces, and the ADR says so rather than dressing an intention as a boundary.
+The target turn carries `conversation_turns.permission_override = 'ask'` — a column whose CHECK admits *only* `'ask'`, so a mailed turn can never be upgraded, and the claim resolves `COALESCE(t.permission_override, ap.permission_mode)`: the profile's own mode (even `preapproved_within_sandbox` or `autonomous_within_sandbox`) cannot leak into a mailed answer. `ask` is the existing approval machinery: reads that need no permission run; every edit the harness thinks twice about becomes a durable `permission_requests` row on the *linked* chat that a person answers in that chat's own UI — take control first (controller starts `none`), and only that controller's yes lets an edit run (ADR-0016 §5; ADR-0039 keeps the verdict durable). Nobody answers = the prompt expires = refusal, by the rule already shipped for ask turns — and, since § 11, a prompt raised while the chat has no controller at all is refused at once instead of holding the turn for the full TTL. On a never-asks launcher the `ask` mode has no verified prompting mode to honour, and the turn fails closed rather than running never-asks under a read-only claim (ADR-0069) — **until § 12**, which replaces the promise with a mount. The sandbox axis (a read-only *filesystem* for the mailed target) is claimed in § 12: the read-only workspace mount that § 4 of the first draft called **Spike required** is measured there, and on a prompting launcher both layers hold.
 
 ### 5. Answering, looping, and the caps
 
@@ -89,7 +89,7 @@ Actions run `41503571017` (job *verification (emulator loop)*) failed **every pa
 
 - **The mail arms were not the bug.** § 2/§ 9 already said the asked chat and its answer turn carry the asking chat's current profile (`DispatchMail` reads `COALESCE(t.agent_profile_id, c.agent_profile_id)` — the asking TURN's stamp first, per ADR-0068; `AskRepoMail` reads the conversation's). No default, no "first profile by name", no project/org fallback exists in either arm. This note **pins** that contract with `TestAgentMailProfileInheritance` (store): the dispatch arm inherits the turn stamp even when the conversation pointer diverges under it, the composer arm inherits a real `SwitchAgent`'s new profile, and the § 4 `ask` override still outranks the inherited profile's mode on the claim.
 - **The journey was the bug.** `e2e/emulator/repo-chat-nav.spec.ts` started its chats on `GET /api/v1/agent-profiles`' `items[0]`. That list is organization-wide and `ORDER BY name`: migration `00003` seeds `Claude Code` and `Codex` into the default org, and they sort **before** the `COMMUNICATION_LAB_LAUNCHER=pi` lab profiles (`m4-*`). So the chain was born on launcher `claude`, § 2 faithfully carried `Claude Code` into the linked chat, and `claude-agent-acp` — which has no login on a runner — answered with its own `-32000 Authentication required`. One launcher per conversation chain is what § 2 buys; a chain must therefore START on the launcher it means to keep: the rcn journeys (2e's chat-box chat, 2f's carrier chat, 3d's mail chat, and the seed chat) now pick the first profile whose `launcher_id` is `COMMUNICATION_LAB_LAUNCHER` (the `labProfiles` helper, keyed off `e2e/tests/lab-launcher.ts`' `LAB_LAUNCHER`), and the 2e switch stays **within** that launcher. Under the historical unset default (`claude`) the first lab profile IS the migration `Claude Code` row, so local behaviour is unchanged.
-- **The honest cost of ADR-0069 on that chain.** The § 4 read-only arm stamps `ask`, and launcher `pi` has no verified prompting mode (`docs/compatibility/ACP.md`: the refusal "stays" — ADR-0069). A mailed answer turn inherited onto `pi` therefore fails **closed** — `the answering turn ended failed: worker: permission mode ask needs a prompting mode for launcher pi; none is verified` — it does not run never-asks under a read-only label. Consequence for Actions: `rcn-3d`'s `answered` leg is only claimable on a launcher that can honestly prompt; until `pi-acp` grows a verified prompting mode or the read-only-sandbox spike (spike required, spec 05) lands, a pi-launched 3d run must settle `failed` with that named reason, and no PASS row may be prefilled for it either way (AGENTS.md: no capability claim without a real test).
+- **The honest cost of ADR-0069 on that chain.** The § 4 read-only arm stamps `ask`, and launcher `pi` has no verified prompting mode (`docs/compatibility/ACP.md`: the refusal "stays" — ADR-0069). A mailed answer turn inherited onto `pi` therefore failed **closed** — `the answering turn ended failed: worker: permission mode ask needs a prompting mode for launcher pi; none is verified` — it did not run never-asks under a read-only label. **§ 12 (2026-11-02) paid this cost down**: the read-only is now a mount, so a mailed answer turn on `pi` runs under the never-asks default with its repository read-only, and `rcn-3d`'s `answered` leg is claimable on a pi-launched run. No PASS row may be prefilled for it either way (AGENTS.md: no capability claim without a real test); the row is earned by the journal's `workspace_repo` access `ro` plus the answer the chat actually wrote.
 
 ### 11. A prompt nobody can answer is refused now, not after two minutes (note, 2026-11-02)
 
@@ -147,7 +147,116 @@ the claim that resolves it.
 The same pass also showed the § 5 notice's own failure arm working: a pi-launched
 3d run settles `failed — worker: permission mode ask needs a prompting mode for
 launcher pi` (§ 10), and the asking agent relays that refusal rather than
-inventing an answer.
+inventing an answer. That arm is § 12's subject: the relay was honest, and the
+failure underneath it was the missing boundary.
+
+### 12. Read-only is enforced by the sandbox, not by a prompt (note, 2026-11-02)
+
+§ 4's `ask` stamp is a *request* for a human verdict. Actions runs every agent on
+`pi`, which has no verified prompting mode (ADR-0069), so on Actions the asked
+turn failed closed — § 10's cost — and on any launcher the read-only rule was
+only as strong as a prompt somebody might never see. Read-only is now a
+filesystem fact instead:
+
+- **The mount.** A turn that belongs to the asked side of a link gets its
+  repository workspace mounted read-only in nono: grant role `workspace_repo`
+  with access `ro` instead of `rw`. That is a stronger guarantee than a prompt,
+  because it is enforced rather than trusted — the child cannot edit the
+  repository whether or not anything asks a person first. `workspace_scratch`
+  and `workspace_home` keep `rw`: § 12 narrows the repository, not the agent's
+  ability to generate output or to have a readable git HOME (probe P6). The four
+  commit-axis mirror writes are withheld with the mount — they are how a
+  worktree's contents become a commit, so a turn that may not edit its repo has
+  no business holding them (`sandbox.verified.commit_granted` says `false`, and
+  it is true). `mirror_read` stays: without it every git command in a linked
+  worktree dies (probe P10) and the asked agent could not even read what it was
+  asked about.
+- **The mode.** On a launcher **with** a verified prompting mode, `ask` is kept
+  exactly as § 4 shipped it, with the mount underneath — two layers. On a
+  **never-asks** launcher there is nothing to prompt with, and a turn whose
+  read-only is a mount makes no review claim at all, so it runs the launcher's
+  never-asks default, which is what `autonomous_within_sandbox` says
+  (ADR-0069). That sentence is only honest over a real boundary, so the § 12 arm
+  passes ADR-0069's own gate (`required` enforcement, verified before the spawn)
+  and fails closed without it — the same check the autonomous profile path
+  applies, in one function rather than two copies. Where a store cannot answer
+  § 12's question at all the turn keeps today's behaviour: read-write mount,
+  `ask` refused on a never-asks launcher. A missing read can cost a turn; it can
+  never widen a sandbox.
+- **A person's approval still gates an edit — and it lifts the mount, not the
+  mode.** `permission_override` admits only `'ask'`, so a mailed turn can never
+  be upgraded (§ 4's column rule), and nothing here changes that. What lifts the
+  read-only mount is a durable row naming a human: they answered one of that
+  chat's own prompts with an `allow_*` option (ADR-0016 § 5's answer, recorded
+  per ADR-0039), or they hold the controller lock and queued the turn
+  themselves — their own prompt is their own instruction, which is the only
+  path to an edit on a launcher that never asks. A **policy** verdict is not a
+  person and lifts nothing; a turn the mail channel authored (`mail_link_id`)
+  is not a person's yes either, whoever's id is on it.
+- **The two honest limits, said rather than smoothed.** A Landlock ruleset is
+  point-in-time (probes C-TMP2/C-TMP3), so a sandbox cannot be widened under a
+  running process: an approval lands on that chat's *next* launch, and on a
+  prompting launcher the in-flight turn that was refused by the mount still
+  cannot write. And on a never-asks launcher, a *stamped* turn whose mount has
+  been lifted by an approval fails closed exactly as § 10 had it — approval
+  widens the filesystem, it does not unlock a mode that claims review.
+- **What the journal has to say.** The turn row keeps its stamped `ask` (the
+  store's rule, unchanged). The evidence of what was actually enforced is
+  `sandbox.verified.grants`, written from the plan the launch carried: a
+  `workspace_repo` entry at access `ro`. Because the launch is never-asks on
+  `pi`, no prompt row will ever appear, so the transcript also carries a note
+  saying the repository is mounted read-only and the chat runs without asking
+  because the sandbox is the boundary — the mode the row names is not the mode
+  the process ran, and the journal says so instead of the reader guessing.
+
+Measured on this host with the shipped nono 0.80.0 on Landlock
+(`internal/worker/mail_sandbox_nono_test.go`, both legs required to believe the
+text above):
+
+1. an asked turn's plan, launched for real: `cat README.mail` from inside the
+   read-only checkout succeeds, `echo edits > <repo>/written-by-the-agent` is
+   refused (EACCES, no file created), and `workspace_scratch` stays writable;
+2. the control pair — the same launch with the access § 12 withholds from an
+   asked turn writes the same file, so leg 1's refusal is the mount and not a
+   filesystem accident;
+3. and the fact `LaunchPlan.Check` had to learn: a launch whose working
+   directory is covered *only* by a read grant keeps that working directory.
+   Probe C-CWD's failure is a cwd outside **every** grant (that launch is
+   refused outright: `nono: CWD access requires --allow-cwd in non-interactive
+   mode`); a read-granted cwd is entered and merely not writable. Without that
+   measurement the asked turn would have to start outside the repository it was
+   asked about.
+
+Shape of the code, so the next reader knows where each rule lives:
+`wsgit.Grant.AccessLevel` (a **narrowing-only** per-grant level — a plan can be
+read-only beside a role that defaults to rw and can never be wider than its
+role), `wsgit.PlanOptions.RepoAccess` (`""` or `AccessReadOnly`, which also
+withholds the commit axis) and `wsgit.LaunchPlan.RepoReadOnly` (recorded, so
+the plan can tell "was not allowed to edit" from "its profile grants nothing");
+`worker.MailSandboxPort`/`MailRepoAccess` (an optional port asserted beside
+`MailPort`, implemented in `internal/store/postgres/mail.go`) is the single read
+of the asked-side state, and `UnitRequest.RepoAccess` carries it to the plan.
+Everything downstream — `--read` in the argv, N-d's `assertGrants` level check,
+`sandbox.verified` labels — already read `Grant.Access()`, so the plan stays the
+one object the kernel and the journal agree on.
+
+Proven by: `internal/worker/mail_ask_test.go` (a mailed `ask` turn on launcher
+`pi` completes instead of failing for want of a prompt, launches with **no**
+mode id, and journals `workspace_repo` at `ro` with no commit axis; a prompting
+launcher keeps `ask` *on top of* the mount; an ordinary `ask` turn on `pi` is
+still refused and launches nothing; an approved mailed turn on `pi` is still
+refused; a store without the port keeps the old refusal),
+`internal/worker/mail_sandbox_test.go` (the grant plan: asked → `ro`, approved →
+`rw`, ordinary → `rw`; scratch/HOME keep `rw`; `mirror_read` stays; a plan that
+tried to widen `mirror_read` is refused by `Check`), the two real-nono legs
+above, and `internal/store/postgres/mail_readonly_test.go` (the SQL behind
+`MailRepoAccess`: ordinary chat is not asked-side; the mailed answer turn is,
+with no approval; a policy `allow` is not a person; a human `allow` lifts it;
+a human `reject` does not; a mailed turn under a live human controller is still
+read-only while a turn that person queued themselves is not).
+
+The § 3 channel, the § 5 answer arms and the § 9 composer path are untouched by
+this note: what changed is what the asked agent's sandbox lets it do.
 
 ## Consequences
 
@@ -160,6 +269,7 @@ inventing an answer.
 
 - The blast radius of one ask: read-only work in one repo of the same project, on behalf of a named member, capped per chat, deadline-bounded, fully journalled on both chats.
 - Permission-prompt expiry remains refusal. Silence never edits.
+- § 12: on the asked side, "read-only" is the mount, not the prompt — `workspace_repo` at `ro`, the commit axis withheld, and no session-level `--allow-cwd` widening (probe C-CWD3) to make the tree reachable another way. The mount follows the *launch*, so a chat's live session keeps the boundary it was verified with until the next launch; a person's approval is durable, and the widened mount arrives then.
 - `answer` and `question` carry agent-authored text; the mail scan runs through the same secret-redaction hook as the journal chunks, so a materialized secret cannot ride into another repo's chat transcript.
 - The link cannot out-see its conversation: `linked_chats` is served only through the detail route's own visibility predicate, same rule as ADR-0053's `linked_runs`.
 
@@ -174,9 +284,10 @@ inventing an answer.
 - § 11 (the prompt nobody can answer): `internal/worker` `turns_unattended_ask_test.go` — an `ask` prompt raised while the conversation has no controller is opened (so it is visible) and closed `decided` at once with the harness's own `reject_once` option and `decided_by_policy = 'ask_without_controller'`, never entering the wake/poll wait loop; with no reject option it closes `cancelled` rather than holding the turn. ADR-0016 § 5's human path is untouched: `TestPermissionBridge`'s three legs now name their controller (that is what makes the prompt answerable) and still prove the decision, the deadline expiry and the cancel-while-pending close.
 - § 5's follow-up prompt as claimable work: `internal/store/postgres` `TestAgentMailFollowUpTurnClaimsLikeATurn` (the queued notice is taken by `ClaimTurn`, resolves the asking chat's profile/launcher/mode, and stays mail-eligible because depth 1 binds the target) and `TestAgentMailFollowUpTurnPinnedToTheAskingChatsWorker` (while the asking chat has a live session on another worker this worker cannot take the notice — ADR-0016 § 3's affinity is what keeps ADR-0068's "same workspace and branch" true; the session's own worker takes it immediately).
 - `internal/worker` `TestParseMailCommands` / `TestMail*`: cross-chunk-boundary parse, 4-ask cap, preamble on the wire and never in the journal, `mail.asked` dispatched before the terminal write, rejection notices queued after the finish, and no dispatch when the claim disallows it or the turn did not complete.
+- § 12 (read-only is the sandbox): `internal/worker` `mail_ask_test.go` — a mailed `ask` turn on launcher `pi` completes on the never-asks default (mode id empty) and journals `sandbox.verified` with `workspace_repo` at access `ro` and `commit_granted=false`; a prompting launcher runs its verified prompting mode *and* the read-only mount; an ordinary `ask` turn on `pi`, an approved mailed turn on `pi`, and a loop whose store cannot answer the port are all refused and launch nothing. `mail_sandbox_test.go` — the grant plan per case (asked → `ro`; approved → `rw`; ordinary → `rw`), the commit axis withheld with the mount, `mirror_read`/scratch/HOME unchanged, and `Check` refusing a grant that asks to widen. `mail_sandbox_nono_test.go` — the real nono 0.80.0 legs: read succeeds, write into the repository refused, scratch writable, and the control pair whose write lands. `internal/store/postgres` `mail_readonly_test.go` — `MailRepoAccess` against real rows (asked side, policy verdict is not a person, human `allow` lifts, human `reject` does not, mailed turn under a live controller still read-only vs. the person's own queued turn).
 - `redocly lint` clean; `pnpm --dir ui gen:api:check` passes; `vitest run src/components/conversation src/pages` (605 tests) green, incl. the 3d card from journal frames through the real page (ask cuts the transcript under the answer; answered folds by link id; `open chat ›` href), LINKED CHATS rows, and the composer hint appearing only with the setting on.
 
-Not verified with this record: an ACP launcher actually honouring a session-level MCP tool (the spike owns it); nono read-only mounts for the target workspace (spike required, § 4). The lab live proof (orchestrator): repo A chat asks repo B; the card appears in A; B's workspace manifest shows `modified_paths = []`.
+Not verified with this record: an ACP launcher actually honouring a session-level MCP tool (the spike owns it). The read-only mount § 4 once called spike-required is measured (§ 12), and what remains unproven here is the live leg: an `rcn-3d` run whose asked turn answers on the pi-seeded lab with `sandbox.verified` showing `workspace_repo` access `ro`, and B's workspace manifest still `modified_paths = []`.
 
 ## Migration/rollback
 

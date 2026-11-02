@@ -23,7 +23,12 @@ import (
 // workspace that cannot be prepared for a project that *has* repositories fails
 // the turn. The difference is whether there was anything to prepare, not whether
 // a failure would be inconvenient.
-func (l *TurnLoop) prepareUnit(ctx context.Context, c Claim, repos []Repo) (*Unit, error) {
+//
+// repoReadOnly is ADR-0072 § 12's mount: the asked side of an agent-mail link
+// gets `wsgit.AccessReadOnly`, so its repository is read-only because the
+// sandbox says so and not because a prompt might have arrived. Every ordinary
+// turn passes false.
+func (l *TurnLoop) prepareUnit(ctx context.Context, c Claim, repos []Repo, repoReadOnly bool) (*Unit, error) {
 	svc := l.units
 	if svc == nil {
 		return nil, errors.New("worker: no unit service configured")
@@ -32,11 +37,15 @@ func (l *TurnLoop) prepareUnit(ctx context.Context, c Claim, repos []Repo) (*Uni
 	if err != nil {
 		return nil, err
 	}
+	repoAccess := ""
+	if repoReadOnly {
+		repoAccess = wsgit.AccessReadOnly
+	}
 	unit, prepErr := svc.Prepare(ctx, UnitRequest{
 		OrganizationID: c.OrganizationID, ProjectID: c.ProjectID,
 		ConversationID: c.ConversationID, TurnID: c.TurnID, WorkerID: c.WorkerID,
 		Axes: axes, LauncherID: c.LauncherID, FencingToken: c.FencingToken,
-		Repos: toProjectRepos(repos),
+		Repos: toProjectRepos(repos), RepoAccess: repoAccess,
 	})
 	if prepErr != nil {
 		// The row is left `preparing` by the service; the loop's job is the

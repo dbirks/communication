@@ -182,6 +182,13 @@ type UnitRequest struct {
 	// Repos are the project's repositories, with identities: workspace_repos has
 	// an FK to repositories(id) and a name cannot fill it.
 	Repos []ProjectRepo
+	// RepoAccess names the level the repository grants are mounted at for this
+	// unit: "" (read-write, every ordinary turn) or wsgit.AccessReadOnly —
+	// ADR-0072 § 12's enforced read-only for the asked side of an agent-mail
+	// link. It arrives here as a turn fact rather than a profile axis because
+	// the same profile answers a question read-only in one turn and edits its
+	// repository in the next, once a person has said it may.
+	RepoAccess string
 }
 
 // ProjectRepo is one repository with its identity.
@@ -269,6 +276,11 @@ type Unit struct {
 	// unit that ran with isolation="none" has to be able to prove that about
 	// itself from its own record.
 	Enforcement domain.EnforcementMode
+	// RepoAccess is the level this unit's repository grants were mounted at
+	// (ADR-0072 § 12). Recorded, for the same reason Enforcement is: the
+	// conversation's read-only state is a fact about the launch, and a later
+	// reader must be able to tell it from the profile's own axes.
+	RepoAccess string
 
 	// secretFiles lists materialized files for the cleanup assertion.
 	secretFiles []string
@@ -436,6 +448,7 @@ func (s *UnitService) Prepare(ctx context.Context, req UnitRequest) (*Unit, erro
 		Layout:       prep.Layout, Repos: prep.Repos, Staged: map[string]*apm.StagedContext{},
 		workspaceVolume: prep.WorkspaceVolume,
 		Profile:         req.Axes,
+		RepoAccess:      req.RepoAccess,
 		Enforcement:     s.enforcement(), logger: log,
 	}
 
@@ -445,7 +458,8 @@ func (s *UnitService) Prepare(ctx context.Context, req UnitRequest) (*Unit, erro
 	// is no other identity source, so the turn would die on git's "Please tell me
 	// who you are" after the workspace had already been claimed and evented.
 	// Refusing here costs a `preparing` row instead.
-	if req.Axes.CommitGranted && (s.GitIdentity.Name == "" || s.GitIdentity.Email == "") {
+	if req.Axes.CommitGranted && req.RepoAccess != wsgit.AccessReadOnly &&
+		(s.GitIdentity.Name == "" || s.GitIdentity.Email == "") {
 		// Deliberately not quarantined: the tree is sound, the *configuration* is
 		// wrong, and ADR-0017 D3's quarantine reasons are all security conditions about
 		// a workspace. It stays `preparing`, which is the state that means "this is not
@@ -802,6 +816,7 @@ func (u *Unit) rebuildPlan() error {
 	plan, err := wsgit.Plan(&wsgit.PreparedWorkspace{Layout: u.Layout, Repos: u.Repos}, wsgit.PlanOptions{
 		WorkspaceID: u.WorkspaceID, CommitGranted: u.Profile.CommitGranted,
 		LauncherHome: u.svc.LauncherHome, HarnessCredentialDirs: dirs,
+		RepoAccess: u.RepoAccess,
 	})
 	if err != nil {
 		return fmt.Errorf("worker: resolve the sandbox grant set for workspace %s: %w", u.WorkspaceID, err)

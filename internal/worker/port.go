@@ -232,6 +232,38 @@ type MailPort interface {
 	EnqueueMailNotice(ctx context.Context, conversationID, prompt, submittedBy string) (inserted bool, err error)
 }
 
+// MailRepoAccess is what the worker must know about a conversation before it
+// builds a sandbox (ADR-0072 § 12).
+type MailRepoAccess struct {
+	// Asked says the conversation is the *asked side* of an agent-mail link:
+	// another chat's question brought this agent into being here.
+	Asked bool
+	// EditsApproved says a person has authorised this chat to change its
+	// repository: they answered one of its prompts with an `allow_*` option (a
+	// durable row naming them, ADR-0016 § 5's answer recorded per ADR-0039 — a
+	// *policy* verdict is not a person), or they hold the controller lock and
+	// queued this turn themselves, which is their own instruction. Neither arm
+	// is ever inferred from an agent's words, and a turn the mail channel
+	// authored never counts as a person's yes.
+	EditsApproved bool
+}
+
+// ReadOnlyRepo is the rule § 12 enforces: the asked side runs with its
+// repository mounted read-only, and nothing else does. A chat that is not
+// asked-side is an ordinary conversation; an asked chat whose edits a person
+// approved is no longer read-only.
+func (a MailRepoAccess) ReadOnlyRepo() bool { return a.Asked && !a.EditsApproved }
+
+// MailSandboxPort is the read of that state. It is a separate port asserted
+// beside MailPort's (so a store fake that speaks dispatch but not this stays
+// the fake it was): a worker whose store cannot answer it has no read-only
+// mounts, which is exactly the pre-§ 12 shape — and it keeps failing closed on
+// `ask` under ADR-0069, so the missing read cannot widen a sandbox.
+type MailSandboxPort interface {
+	// MailRepoAccess answers the § 12 question for the turn about to launch.
+	MailRepoAccess(ctx context.Context, c Claim) (MailRepoAccess, error)
+}
+
 // WorkspacePrep prepares the per-conversation working directory before a
 // session launches and reports human-readable notes (clone failures) for the
 // transcript — never fatal unless the directory itself cannot exist

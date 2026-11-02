@@ -818,3 +818,53 @@ func cnvLinkedChats(ctx context.Context, q prjQuerier, conversationID string) ([
 	}
 	return out, rows.Err()
 }
+
+// ------------------------------------------- § 12 read-only enforcement read
+
+var _ worker.MailSandboxPort = (*TurnStore)(nil)
+
+// MailRepoAccess implements worker.MailSandboxPort (ADR-0072 § 12). It answers
+// the two facts a sandbox is built from, from the rows that hold them:
+//
+//   - asked — the conversation is the TARGET of a mail link, which is what
+//     "the asked side" means; the depth-1 rule already reads the same
+//     predicate, so there is one definition of it in the schema;
+//   - edits approved — either a durable human `allow_*` verdict on this chat's
+//     own permission prompts (ADR-0016 § 5's answer, recorded per ADR-0039
+//     with decided_by_kind='user'; a *policy* verdict is not a person and does
+//     not count), or a turn this chat's human controller queued themselves,
+//     which is their own instruction and is not an agent speaking for them. A
+//     turn the mail channel authored (mail_link_id) never satisfies this arm:
+//     the ask is not the person's yes.
+//
+// A mail link row is read for the turn that is launching, not for the link's
+// state: an answered or expired link does not retroactively un-read-only the
+// chat it was born to answer — the chat keeps the mount until a person says
+// otherwise, which is the rule § 4 has always stated.
+func (s *TurnStore) MailRepoAccess(ctx context.Context, c worker.Claim) (worker.MailRepoAccess, error) {
+	var out worker.MailRepoAccess
+	err := s.Pool.QueryRow(ctx, `
+		SELECT
+			EXISTS (SELECT 1 FROM conversation_links l
+			         WHERE l.to_conversation_id = t.conversation_id),
+			(t.mail_link_id IS NULL AND k.controller_kind = 'human'
+			                          AND k.controller_user_id = t.submitted_by)
+			 OR EXISTS (
+			          SELECT 1 FROM permission_requests pr
+			          CROSS JOIN LATERAL jsonb_array_elements(pr.options) AS o
+			           WHERE pr.conversation_id = t.conversation_id
+			             AND pr.status = 'decided' AND pr.decided_by_kind = 'user'
+			             AND pr.decision_option_id = o ->> 'option_id'
+			             AND o ->> 'kind' IN ('allow_once', 'allow_always'))
+		FROM conversation_turns t
+		LEFT JOIN conversation_control k ON k.conversation_id = t.conversation_id
+		WHERE t.id = $1::uuid`, c.TurnID).
+		Scan(&out.Asked, &out.EditsApproved)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return worker.MailRepoAccess{}, fmt.Errorf("postgres: mail read-only state: turn %s does not exist", c.TurnID)
+	}
+	if err != nil {
+		return worker.MailRepoAccess{}, fmt.Errorf("postgres: mail read-only state for turn %s: %w", c.TurnID, err)
+	}
+	return out, nil
+}

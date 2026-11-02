@@ -108,10 +108,15 @@ func MailPreamble(repoNames []string) string {
 // its provenance, and the read-only rule. The target chat's transcript shows
 // this text as its conversation.message.user row — the honest record of who
 // asked what, with nothing hidden.
+//
+// The read-only sentence states what the sandbox now does about it (ADR-0072
+// § 12): the repository is mounted read-only, so an edit is refused by the
+// kernel rather than by a prompt. Telling the agent which kind of rule it is
+// saves it from retrying a write that cannot land.
 func MailTargetPrompt(fromTitle string, askedBy string, question string) string {
 	return "(Agent mail (ADR-0072) from the chat \u201c" + bounded(fromTitle, 120) +
 		"\u201d, on behalf of user " + askedBy +
-		". You are answering read-only: edits are refused unless a person approves them in this chat. Question:\n\n" +
+		". You are answering read-only: your repository is mounted read-only in the sandbox, so an edit is refused there until a person approves it in this chat. Question:\n\n" +
 		question
 }
 

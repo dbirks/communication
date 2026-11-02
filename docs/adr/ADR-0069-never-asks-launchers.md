@@ -56,7 +56,15 @@ none of them.
   fallback branch), so the boundary sentence is checked, not asserted.
 * It is the **only mode a never-asks launcher may run under**, and
   `ask`/`deny`/`preapproved_within_sandbox` on launcher pi **stay
-  fail-closed**. That refusal is honest and stays.
+  fail-closed**. That refusal is honest and stays — with exactly one carve-out,
+  which does not weaken it: ADR-0072 § 12 makes an agent-mail *target's* read-only
+  a mount (`workspace_repo` at access `ro`) rather than a prompt, so a mailed
+  `ask` turn on a never-asks launcher runs this mode's launch (the never-asks
+  default, under `required` enforcement, this ADR's own gate) because it makes no
+  review claim to be dishonest about. No other `ask` turn is unlocked: an
+  ordinary `ask` conversation on pi is refused as always, and so is a mailed
+  turn whose read-only mount a person has already lifted — approval widens the
+  filesystem, it does not unlock a mode that claims review.
 * Profiles declare it the way ADR-0036 declares preapproved: **not via the
   API** (create still writes the `ask` column default; the mode arrives via
   the seed/GitOps SQL route, e.g. `docs/compatibility/probes/m4/seed*.sh`,
