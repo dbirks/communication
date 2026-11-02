@@ -17,7 +17,9 @@
  * - AGENTS IN THIS CHAT — ADR-0068's derived `agents` list, one row per
  *   maximal run of consecutive turns on one profile, with its 1-based turn
  *   range ("Claude Code · opus turns 1–2"); a profile switched away from and
- *   back appears twice, because the ranges describe the transcript.
+ *   back appears twice, because the ranges describe the transcript. A run whose
+ *   turns the journal records as failed wears the failed state too ("Codex
+ *   turn 2 · failed") — see `agentRunStateCopy`.
  * - Skills used — the wire carries no per-conversation skill list today; the
  *   section renders only what a host hands it.
  * - LINKED CHATS — ADR-0072's agent-mail links (`links`, either direction),
@@ -53,6 +55,7 @@ import {
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { agentLabel } from "./ConversationTranscript";
 import { NO_BRANCH_YET } from "./threadBranch";
+import type { TurnRecord } from "../../api/transcript";
 import type { components } from "../../api/schema";
 
 export type ConversationChatAgent = components["schemas"]["ConversationChatAgent"];
@@ -77,6 +80,39 @@ export function mailLinkState(state: string): { name: StateName; word: string } 
 /** `turns 1–2`, or `turn 3` for a single-turn run. */
 export function turnRangeCopy(first: number, last: number): string {
   return first === last ? `turn ${first}` : `turns ${first}\u2013${last}`;
+}
+
+/**
+ * The state of one agent run, in words, or null when there is nothing to say.
+ *
+ * A run is a range of turns (`first_turn`…`last_turn`, the 1-based creation
+ * order the server derives ADR-0068's `agents` list from) and `turns` is the
+ * journal's own turn list in that same order — the fold builds it in journal
+ * order, and at most one turn per conversation is ever open (ADR-0016), so the
+ * two orders are the same order and ordinal `n` is `turns[n-1]`.
+ *
+ * The rail used to print `Codex turn 2` over a turn the journal says failed:
+ * the range read like work that happened. So the turn rows answer, and only
+ * for the turns this read actually reaches — a range beyond the transcript the
+ * surface holds prints no state rather than borrowing a neighbour's (an absent
+ * fact is not a claim). A run with no failed turn says nothing: silence is the
+ * honest default, and "completed" would be a guess about cancelled,
+ * interrupted and still-open turns.
+ */
+export function agentRunStateCopy(
+  run: { first_turn: number; last_turn: number },
+  turns: readonly TurnRecord[],
+): string | null {
+  if (run.last_turn > turns.length) return null;
+  let failed = 0;
+  for (let ordinal = run.first_turn; ordinal <= run.last_turn; ordinal += 1) {
+    if (turns[ordinal - 1]?.status === "failed") failed += 1;
+  }
+  if (failed === 0) return null;
+  // One failure in a one-turn run is that run's own state; inside a longer run
+  // the count is the honest word — the range did not all fail.
+  if (failed === 1 && run.first_turn === run.last_turn) return STATES.failed.word;
+  return `${failed} ${STATES.failed.word}`;
 }
 
 export interface ConversationSidePanelProps {
@@ -105,6 +141,13 @@ export interface ConversationSidePanelProps {
   pullRequest?: { label: string; href?: string } | null;
   /** ADR-0068's derived agents list; empty or absent hides the section. */
   agents?: ConversationChatAgent[] | null;
+  /**
+   * The journal's turn rows — `transcript.turns` on the chat page. The only
+   * thing that says whether a turn in an agent's range finished or failed
+   * (`agentRunStateCopy`); absent = the surface holds no turn rows, so each
+   * range prints on its own and nothing is claimed about its state.
+   */
+  turns?: readonly TurnRecord[] | null;
   /** Skills the thread used — only if some read says so (none does today). */
   skills?: string[] | null;
   /** ADR-0072's mail links (`linked_chats`); empty or absent hides the
@@ -150,6 +193,7 @@ export function ConversationSidePanel({
   filesChanged,
   pullRequest,
   agents,
+  turns,
   skills,
   links,
   assistantNote,
@@ -157,6 +201,7 @@ export function ConversationSidePanel({
   onMakeWorkflow,
 }: ConversationSidePanelProps) {
   const agentRows = agents ?? [];
+  const turnRows = turns ?? [];
   const skillList = (skills ?? []).filter((skill) => skill.trim() !== "");
   const linkRows = links ?? [];
   const workflowNote = workflowChat ? (
@@ -286,20 +331,35 @@ export function ConversationSidePanel({
         <section aria-labelledby="side-panel-agents-heading" data-testid="side-panel-agents">
           <SectionTitle htmlFor="side-panel-agents-heading">Agents in this chat</SectionTitle>
           <ul className="mt-1 space-y-1">
-            {agentRows.map((agent, index) => (
-              <li
-                key={`${agent.agent_profile_id}-${agent.first_turn}`}
-                className="flex min-w-0 flex-wrap items-baseline gap-x-[6px] font-mono text-[11.5px]"
-                data-testid={`side-panel-agent-row-${index}`}
-              >
-                <span className="min-w-0 break-words text-ink">
-                  {agentLabel(agent.agent_profile_name, agent.model)}
-                </span>
-                <span className="text-faint" data-testid={`side-panel-agent-range-${index}`}>
-                  {turnRangeCopy(agent.first_turn, agent.last_turn)}
-                </span>
-              </li>
-            ))}
+            {agentRows.map((agent, index) => {
+              const state = agentRunStateCopy(agent, turnRows);
+              return (
+                <li
+                  key={`${agent.agent_profile_id}-${agent.first_turn}`}
+                  className="flex min-w-0 flex-wrap items-baseline gap-x-[6px] font-mono text-[11.5px]"
+                  data-testid={`side-panel-agent-row-${index}`}
+                >
+                  <span className="min-w-0 break-words text-ink">
+                    {agentLabel(agent.agent_profile_name, agent.model)}
+                  </span>
+                  <span className="text-faint" data-testid={`side-panel-agent-range-${index}`}>
+                    {turnRangeCopy(agent.first_turn, agent.last_turn)}
+                  </span>
+                  {state ? (
+                    // Glyph AND word, never colour alone (rule 06) — the same
+                    // treatment the LINKED CHATS rows use for a link's state.
+                    <span
+                      className={STATES.failed.tagFg}
+                      data-testid={`side-panel-agent-state-${index}`}
+                    >
+                      {"\u00b7 "}
+                      <span aria-hidden="true">{STATES.failed.glyph} </span>
+                      {state}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         </section>
       ) : null}

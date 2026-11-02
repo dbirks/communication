@@ -5,10 +5,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
-import { ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
+import { agentRunStateCopy, ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
 import { AssistantNote, MAKE_WORKFLOW_ACTION_ID } from "./AssistantNote";
 import { ASSISTANT_OPEN_EVENT, type AssistantOpenRequest } from "../assistant/AssistantPopover";
 import { claudeProfile, codexProfile, projectFixture } from "../../test/fakes";
+import type { TurnRecord } from "../../api/transcript";
 import type { ConversationChatAgent } from "./ConversationSidePanel";
 
 afterEach(cleanup);
@@ -39,6 +40,49 @@ function panel(props: Parameters<typeof ConversationSidePanel>[0]) {
     </MemoryRouter>,
   );
 }
+
+/** One journal turn row, in the order the fold builds them (`transcript.turns`). */
+function turnRow(turnId: string, status: TurnRecord["status"]): TurnRecord {
+  return {
+    turnId,
+    status,
+    stopReason: status === "completed" ? "end_turn" : null,
+    interruptReason: null,
+    requestedBy: null,
+    sessionOrigin: null,
+    startedAt: "2026-11-01T12:00:00Z",
+  };
+}
+
+describe("agentRunStateCopy", () => {
+  const rows = [
+    turnRow("t-1", "completed"),
+    turnRow("t-2", "failed"),
+    turnRow("t-3", "failed"),
+    turnRow("t-4", "running"),
+  ];
+
+  it("says nothing about a run with no failure", () => {
+    expect(agentRunStateCopy({ first_turn: 1, last_turn: 1 }, rows)).toBeNull();
+    // An open turn is not a failed one, and is not called anything here.
+    expect(agentRunStateCopy({ first_turn: 4, last_turn: 4 }, rows)).toBeNull();
+  });
+
+  it("names a single-turn run that failed", () => {
+    expect(agentRunStateCopy({ first_turn: 2, last_turn: 2 }, rows)).toBe("failed");
+  });
+
+  it("counts the failures inside a longer run", () => {
+    expect(agentRunStateCopy({ first_turn: 1, last_turn: 2 }, rows)).toBe("1 failed");
+    expect(agentRunStateCopy({ first_turn: 1, last_turn: 4 }, rows)).toBe("2 failed");
+  });
+
+  it("claims nothing about a turn this read does not reach", () => {
+    // An older/partial transcript read must not borrow a neighbour's state.
+    expect(agentRunStateCopy({ first_turn: 5, last_turn: 6 }, rows)).toBeNull();
+    expect(agentRunStateCopy({ first_turn: 5, last_turn: 6 }, [])).toBeNull();
+  });
+});
 
 describe("turnRangeCopy", () => {
   it("spells ranges and single turns", () => {
@@ -91,6 +135,44 @@ describe("ConversationSidePanel", () => {
     expect(screen.getByTestId("side-panel-agent-range-1").textContent).toBe("turn 3");
     // A profile with no pinned model prints its bare name only.
     expect(rows[1].textContent).toContain("Codex · gpt-5");
+    // …and with no turn rows handed to the rail, nothing is claimed about
+    // those turns' state.
+    expect(screen.queryAllByTestId(/^side-panel-agent-state-/)).toHaveLength(0);
+  });
+
+  it("says so on the range when the turn it names failed", () => {
+    panel({
+      projectId: projectFixture.id,
+      agents,
+      turns: [turnRow("t-1", "completed"), turnRow("t-2", "failed"), turnRow("t-3", "failed")],
+    });
+    const rows = screen.getAllByTestId(/^side-panel-agent-row-/);
+    // The Claude run (turns 1–2) carries one failure inside a longer range.
+    expect(screen.getByTestId("side-panel-agent-state-0").textContent).toBe(
+      "\u00b7 \u00d7 1 failed",
+    );
+    // The Codex run is one turn and that turn failed: the row reads
+    // “Codex · gpt-5 · turn 3 · × failed”, not a range that implies the work
+    // happened.
+    expect(screen.getByTestId("side-panel-agent-state-1").textContent).toBe("\u00b7 \u00d7 failed");
+    expect(screen.getByTestId("side-panel-agent-range-1").textContent).toBe("turn 3");
+    // Never colour alone (rule 06): glyph and word both ride the row.
+    expect(rows[1].textContent).toContain("\u00d7");
+    expect(rows[1].textContent).toContain("failed");
+  });
+
+  it("leaves a healthy run's range on its own", () => {
+    panel({
+      projectId: projectFixture.id,
+      agents,
+      turns: [
+        turnRow("t-1", "completed"),
+        turnRow("t-2", "completed"),
+        turnRow("t-3", "cancelled"),
+      ],
+    });
+    // A cancelled turn is not a failed one, and is not called anything here.
+    expect(screen.queryAllByTestId(/^side-panel-agent-state-/)).toHaveLength(0);
   });
 
   it("renders skills and the assistant slot only when handed them", () => {

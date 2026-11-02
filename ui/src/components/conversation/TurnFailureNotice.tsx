@@ -16,6 +16,17 @@
  * the treatment a7ea79f gave the run gate, because an unquoted failure is a
  * lost fact and a quoted one is a leak-shaped wall of text.
  *
+ * One class needed its own arm (ADR-0068 round 4): git's "Authentication
+ * required" on an unreadable repository and the harness's own
+ * `acp: session/new: {"code":-32000,"message":"Authentication required"}` are
+ * the same two words said by two subsystems, and the git sentence was winning.
+ * A Codex turn whose workspace had prepared cleanly was reported as a
+ * repository no worker could read. So the sign-in refusal is matched on the
+ * producer's own structured shape — `launcher "x" is not signed in`
+ * (`internal/worker/launchfailure.go`) or an ACP session path naming
+ * authentication — and it is keyed BEFORE the git arm, which now takes the
+ * phrase only with git vocabulary beside it.
+ *
  * An unrecognised message prints the honest generic sentence, never a guess
  * at a cause; the raw line still rides the disclosure, so nothing is hidden
  * from whoever can read it.
@@ -34,6 +45,56 @@ export const TURN_FAILURE_FALLBACK = "This turn failed.";
 export const TURN_FAILURE_SILENT = "This turn failed — the worker reported no detail.";
 
 /**
+ * The worker's own sentence for a launcher that will not start without a
+ * sign-in it cannot give it (`internal/worker/launchfailure.go`): the launcher
+ * id is quoted, so it is captured rather than searched for.
+ */
+const LAUNCHER_NOT_SIGNED_IN = /\blauncher "([^"]+)" is not signed in\b/i;
+
+/**
+ * The harness's own refusal, for a control plane that has not restated it:
+ * `acp: session/new: {"code":-32000,"message":"Authentication required"}`.
+ * The pair (session path + authentication) is what makes it the agent's
+ * refusal — the same shape `acpAuthRefusal` in the worker matches. A bare
+ * "Authentication required" anywhere else is git's, and stays git's.
+ */
+const ACP_SIGN_IN_REFUSAL =
+  /\bacp: (?:initialize|session\/[a-z]+)\b[\s\S]{0,200}?\bauthentication (?:required|failed|denied)\b/i;
+
+/** Git's own authentication failure — the phrase only ever reaches the reader
+ * with git vocabulary beside it (a git/remote/clone/mirror/report line), which
+ * is what keeps an agent sign-in refusal out of this sentence. */
+const GIT_AUTH_FAILURE =
+  /\b(?:git|remote|clone|fetch|mirror|ls-remote|repository)\b[\s\S]{0,160}?\bauthentication (?:required|failed|denied)\b|\bauthentication (?:required|failed|denied)\b[\s\S]{0,160}?\b(?:git|remote|repository)\b/i;
+
+/** Name the agent a sign-in refusal came from in the words the person chose. */
+function signInSubject(
+  launcherId: string | undefined,
+  agentName?: ((launcherId: string) => string | null) | null,
+): string {
+  if (!launcherId) return "This agent";
+  const named = agentName?.(launcherId) ?? null;
+  // No read names the launcher: the machine's word, honestly labelled (see
+  // `agentNames.ts`) — never an invented product name.
+  if (named) return named;
+  return `The agent on launcher ${launcherId}`;
+}
+
+/** Git's own address/vocabulary failures, spelled by the producers in
+ * `internal/workspace/git/workspace.go` — and the auth phrase ONLY when git
+ * vocabulary stands beside it, because the agent harness uses those same two
+ * words for a sign-in refusal (`ACP_SIGN_IN_REFUSAL` above). */
+const GIT_ADDRESS_FAILURE =
+  /create mirror .* from |does not appear to be a git repository|Could not read from remote repository|repository not found/;
+
+/** Extra facts the surface may know, beyond the message text itself. */
+export interface TurnFailureContext {
+  /** Names the agent a `launcher_id` is (the profile label a person chose);
+   * null/undefined for every launcher no read names. */
+  agentName?: ((launcherId: string) => string | null) | null;
+}
+
+/**
  * The known classes, in order, each with the sentence a reader gets. The
  * patterns are the worker's own error prefixes — matching them is quoting the
  * producer, not guessing: an unmatched message is genuinely unknown to this
@@ -41,8 +102,26 @@ export const TURN_FAILURE_SILENT = "This turn failed — the worker reported no 
  */
 const TURN_FAILURE_COPY: {
   readonly test: RegExp;
-  readonly words: (match: RegExpMatchArray) => string;
+  readonly words: (match: RegExpMatchArray, context: TurnFailureContext) => string;
 }[] = [
+  {
+    // `worker: launcher "codex" is not signed in on this worker: the agent
+    // refused session/new because it requires a sign-in, JSON-RPC code -32000
+    // — check this launcher's credential directory …` (launchfailure.go), and
+    // the adapter's raw shape for a control plane that quotes it whole.
+    //
+    // First in the list on purpose: this message says "credential directory"
+    // too, and the launcher-registry entry below would otherwise describe a
+    // sign-in the harness refused as a directory that was never configured —
+    // a different claim about a different fact. It sits above the git entry for
+    // the reason in ADR-0068's round-4 note: the lab printed a Codex sign-in
+    // refusal as a repository that could not be read.
+    test: new RegExp(`${LAUNCHER_NOT_SIGNED_IN.source}|${ACP_SIGN_IN_REFUSAL.source}`, "i"),
+    words: (match, context) => {
+      const launcher = LAUNCHER_NOT_SIGNED_IN.exec(match[0])?.[1];
+      return `${signInSubject(launcher, context.agentName)} isn't signed in on this worker, so this turn couldn't start.`;
+    },
+  },
   {
     // `workspace: mirror <path> has no branch "main" to base <repo> on
     // (ADR-0017 D2 refuses a branch-name guess)` and its HEAD-less twin.
@@ -68,7 +147,11 @@ const TURN_FAILURE_COPY: {
     // this build saw in the lab when a thread was bound to a repository
     // whose address no worker can read. The one thing the reader can act on
     // lives on the project's Settings tab, so name it.
-    test: /create mirror .* from |does not appear to be a git repository|Could not read from remote repository|repository not found|authentication required/i,
+    // `authentication required` reaches this sentence only through
+    // GIT_AUTH_FAILURE — git vocabulary beside it. A bare one, or the harness's
+    // own, is the sign-in refusal above; reading an agent's refusal as a broken
+    // repository is the round-4 lab defect.
+    test: new RegExp(`${GIT_ADDRESS_FAILURE.source}|${GIT_AUTH_FAILURE.source}`, "i"),
     words: () =>
       "This chat couldn't start its workspace: the repository's git address could not be read from this worker — check it under the project's repositories.",
   },
@@ -118,11 +201,15 @@ const TURN_FAILURE_COPY: {
 ];
 
 /** One plain sentence for a worker's diagnostic — never the diagnostic itself. */
-export function turnFailureWords(message: string | null | undefined): string {
+export function turnFailureWords(
+  message: string | null | undefined,
+  agentName?: TurnFailureContext["agentName"],
+): string {
   if (!message) return TURN_FAILURE_SILENT;
+  const context: TurnFailureContext = { agentName };
   for (const entry of TURN_FAILURE_COPY) {
     const match = message.match(entry.test);
-    if (match) return entry.words(match);
+    if (match) return entry.words(match, context);
   }
   return TURN_FAILURE_FALLBACK;
 }
@@ -199,6 +286,9 @@ export function splitAtTurnFailures(
 export interface TurnFailureNoticeProps {
   failure: TurnFailureData;
   testId?: string;
+  /** Names the launcher a sign-in refusal came from (see `agentNames.ts`); a
+   * surface with no read naming it prints the launcher id it was given. */
+  agentName?: TurnFailureContext["agentName"];
 }
 /**
  * Render one run's items with every failed turn cut out and printed as a
@@ -215,12 +305,17 @@ export function renderSplitAtTurnFailures(
   events: readonly EventEnvelope[],
   keyBase: string,
   renderItems: (items: TranscriptItem[]) => ReactNode,
+  agentName?: TurnFailureContext["agentName"],
 ): ReactNode {
   const blocks = splitAtTurnFailures(items, events);
   if (blocks.every((block) => block.kind === "items")) return renderItems(items);
   return blocks.map((block, index) =>
     block.kind === "failure" ? (
-      <TurnFailureNotice key={`${keyBase}-failed-${block.failure.id}`} failure={block.failure} />
+      <TurnFailureNotice
+        key={`${keyBase}-failed-${block.failure.id}`}
+        failure={block.failure}
+        agentName={agentName}
+      />
     ) : (
       <Fragment key={`${keyBase}-run-${index}`}>{renderItems(block.items)}</Fragment>
     ),
@@ -234,7 +329,11 @@ export function renderSplitAtTurnFailures(
  * rule as the `i` rows) because it IS a journal fact, not a banner the reader
  * must dismiss.
  */
-export function TurnFailureNotice({ failure, testId = "turn-failed" }: TurnFailureNoticeProps) {
+export function TurnFailureNotice({
+  failure,
+  testId = "turn-failed",
+  agentName,
+}: TurnFailureNoticeProps) {
   const failed = STATES.failed;
   return (
     <div
@@ -248,7 +347,7 @@ export function TurnFailureNotice({ failure, testId = "turn-failed" }: TurnFailu
       </span>
       <div className="min-w-0 flex-1">
         <p className="min-w-0 wrap-anywhere" data-testid={`${testId}-plain`}>
-          {turnFailureWords(failure.message)}
+          {turnFailureWords(failure.message, agentName)}
         </p>
         {failure.message ? (
           // Collapsed by default (error-details-r6, as in `ProblemBanner`):

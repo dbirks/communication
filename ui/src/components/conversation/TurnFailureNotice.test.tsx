@@ -34,6 +34,19 @@ const MIRROR_NO_BRANCH =
   "workspace: mirror /repos/01a19c73-99be-72da-b92b-4a74716530b2/server.git has no " +
   'branch "main" to base server on (ADR-0017 D2 refuses a branch-name guess)';
 
+/** `internal/worker/launchfailure.go` — what a launcher that will not sign in
+ * says since ce21ae7. Note the trailing “credential directory”: the phrase the
+ * launcher-registry entry also matches, on a message that is NOT about a
+ * missing directory. */
+const LAUNCHER_NOT_SIGNED_IN =
+  'worker: launcher "codex" is not signed in on this worker: the agent refused ' +
+  "session/new because it requires a sign-in, JSON-RPC code -32000 \u2014 check this " +
+  "launcher's credential directory on the worker that owns the turn";
+
+/** The adapter's own words, for a control plane that quotes them whole. The
+ * lab read this as a broken repository address (ADR-0068 round 4). */
+const ACP_AUTH_REFUSAL = 'acp: session/new: {"code":-32000,"message":"Authentication required"}';
+
 describe("turnFailureWords", () => {
   it("says 'no default branch' in one sentence, with no uuid, path or ADR number", () => {
     const words = turnFailureWords(MIRROR_NO_BRANCH);
@@ -118,6 +131,69 @@ describe("turnFailureWords", () => {
     expect(turnFailureWords("acp: session/new: EOF")).toBe(
       "The agent process couldn't be started.",
     );
+  });
+
+  it("reads a launcher's sign-in refusal as that, not as a broken repository", () => {
+    // The round-4 confusion: a Codex turn whose workspace prepared cleanly on
+    // the same worker was printed as “the repository's git address could not
+    // be read”. The sentence now names the launcher the worker named.
+    expect(turnFailureWords(LAUNCHER_NOT_SIGNED_IN)).toBe(
+      "The agent on launcher codex isn't signed in on this worker, so this turn couldn't start.",
+    );
+    // Nothing about a repository, a workspace, or a directory: the git arm must
+    // not fire on it, and neither must the launcher-registry one.
+    expect(turnFailureWords(LAUNCHER_NOT_SIGNED_IN)).not.toMatch(/git|repository|workspace|dir/i);
+    // …and the launcher-registry sentence is still there for the failure it
+    // describes (a profile that points at a directory that is not usable).
+    expect(
+      turnFailureWords(
+        'agent.acp: launcher "pi" declares a credential directory at /x that is not usable: stat: no such file',
+      ),
+    ).toBe("This agent's sign-in is not set up on this worker.");
+  });
+
+  it("maps the harness's raw -32000 refusal to the same sign-in sentence", () => {
+    // No `launcher "x"` in this one — the adapter never names itself, so the
+    // sentence says “This agent” rather than inventing a name.
+    expect(turnFailureWords(ACP_AUTH_REFUSAL)).toBe(
+      "This agent isn't signed in on this worker, so this turn couldn't start.",
+    );
+    // A bare “Authentication required” with no git beside it is still the
+    // agent's refusal; an unrelated `acp:` failure keeps its own sentence.
+    expect(turnFailureWords("acp: initialize: Authentication failed")).toBe(
+      "This agent isn't signed in on this worker, so this turn couldn't start.",
+    );
+    expect(turnFailureWords("acp: session/new: EOF")).toBe(
+      "The agent process couldn't be started.",
+    );
+  });
+
+  it("names the agent a sign-in refusal came from when the surface can name it", () => {
+    expect(
+      turnFailureWords(LAUNCHER_NOT_SIGNED_IN, (launcherId) =>
+        launcherId === "codex" ? "Codex · gpt-5" : null,
+      ),
+    ).toBe("Codex · gpt-5 isn't signed in on this worker, so this turn couldn't start.");
+    // No read names the launcher → the machine's word, never an invented one.
+    expect(turnFailureWords(LAUNCHER_NOT_SIGNED_IN, () => null)).toContain("launcher codex");
+  });
+
+  it("keeps the git sentence for git's own authentication failure", () => {
+    // Genuine git: the phrase rides with `git`/`remote:` vocabulary beside it,
+    // on a workspace path the reader can act on under the project's repos.
+    const gitAuth =
+      "worker: prepare workspace for project 01a19d0b: git fetch origin main: " +
+      "fatal: Authentication required (exit 128)";
+    expect(turnFailureWords(gitAuth)).toBe(
+      "This chat couldn't start its workspace: the repository's git address could not be read " +
+        "from this worker — check it under the project's repositories.",
+    );
+    expect(
+      turnFailureWords(
+        "worker: run unit: git clone --mirror https://github.com/acme/server.git: " +
+          "remote: Repository not found.",
+      ),
+    ).toContain("git address could not be read");
   });
 
   it("says the honest generic sentence for a message this build has no words for", () => {
@@ -212,6 +288,37 @@ describe("TurnFailureNotice", () => {
     render(<TurnFailureNotice failure={{ id: "f-1", message: null }} />);
     expect(screen.getByTestId("turn-failed-plain").textContent).toBe(TURN_FAILURE_SILENT);
     expect(screen.queryByTestId("turn-failed-details")).toBeNull();
+  });
+
+  it("prints a sign-in refusal as the agent's own sentence, server line still disclosed", () => {
+    render(
+      <TurnFailureNotice
+        failure={{ id: "f-1", message: ACP_AUTH_REFUSAL }}
+        agentName={(launcherId) => (launcherId ? `the agent (${launcherId})` : null)}
+      />,
+    );
+    // The adapter never names its own launcher, so no read can name it here:
+    // the sentence stays the agent's, and the git sentence is nowhere on the
+    // line the reader sees.
+    expect(screen.getByTestId("turn-failed-plain").textContent).toBe(
+      "This agent isn't signed in on this worker, so this turn couldn't start.",
+    );
+    expect(screen.getByTestId("turn-failed-plain").textContent).not.toMatch(/git|repositor/i);
+    expect(screen.getByTestId("turn-failed-server").textContent).toBe(
+      `server said: ${ACP_AUTH_REFUSAL}`,
+    );
+  });
+
+  it("uses the surface's agent name in the sign-in sentence", () => {
+    render(
+      <TurnFailureNotice
+        failure={{ id: "f-1", message: LAUNCHER_NOT_SIGNED_IN }}
+        agentName={(launcherId) => (launcherId === "codex" ? "Codex" : null)}
+      />,
+    );
+    expect(screen.getByTestId("turn-failed-plain").textContent).toBe(
+      "Codex isn't signed in on this worker, so this turn couldn't start.",
+    );
   });
 });
 
