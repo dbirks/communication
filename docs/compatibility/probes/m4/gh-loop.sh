@@ -7,7 +7,10 @@
 # ADR-0045 GH_TOKEN secret mounted for claude-implementer), the published
 # issue-to-pr pipeline (claude planner/implementer profiles, the lab's
 # ADR-0036 preapproved-within-sandbox exception — claude only; pi stays a GAP)
-# and the labeled/comm:go issue trigger. If the project is absent the driver
+# and the labeled/comm:go issue trigger. The launcher those claude-* named
+# profiles CARRY is seed-github-loop.sh's COMMUNICATION_LAB_LAUNCHER knob
+# (default claude; the acceptance CI sets pi per the operator decision — then
+# every implement node fails closed naming launcher pi, ACP.md "Pi"). If the project is absent the driver
 # runs the seed itself (which needs COMMUNICATION_TEST_REPO_TOKEN_FILE).
 #
 # For i in 1..N (N = $1, default 1):

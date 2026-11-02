@@ -26,11 +26,24 @@
 #                                    llm-collective.e-gineering.com
 #                                    (→ COMMUNICATION_LLM_API_KEY_HOST_FILE;
 #                                    compose.real.yml + e2e/tests/helpers.ts's
-#                                    restart interpolation read it)
+#                                    restart interpolation read it). The SAME
+#                                    file is what the pi launcher reads: the
+#                                    compose.real.yml worker containers get
+#                                    COMMUNICATION_PI_API_KEY_FILE=
+#                                    /run/comm/llm-api-key, that key file
+#                                    bind-mounted ro (ADR-0059).
 #   COMMUNICATION_TEST_REPO_TOKEN    fine-grained token for the throwaway
 #                                    repo dbirks/comms-test-repo-1
 #                                    (→ COMMUNICATION_TEST_REPO_TOKEN_FILE;
 #                                    docs/compatibility/probes/m4/gh-loop.sh)
+# Agent launcher: COMMUNICATION_LAB_LAUNCHER=pi (workflow env below) seeds the
+# lab's agent profiles on the pi launcher against the LLM collective instead
+# of claude — runners have no ~/.claude login and the operator decision is NO
+# Claude token. Honest state: launcher pi has no verified prompting mode, so
+# the worker fail-closes agent.acp attempts on it under EVERY recorded
+# permission mode (ADR-0019 D6; docs/compatibility/ACP.md "Pi", observed
+# 2026-10-24); the affected gates/legs report GAPs naming launcher pi, never
+# a pass. docs/testing/acceptance-ci.md carries the affected-leg list.
 # GITHUB_TOKEN (workflow-level, issues: write) lets e2e/emulator/loop.sh's
 # file-issues step file emulator defects as issues: `gh` (preinstalled on the
 # runner) authenticates from GH_TOKEN in the environment; file-issues.mjs only
@@ -43,7 +56,18 @@
 name: Acceptance
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: >-
+          Comma list limiting the run to named jobs/shards, e.g.
+          "m4:watch,github-loop" or "m4" (all shards). "all" runs everything.
+          Surrounding spaces are trimmed; unknown names fail the run loudly.
+          Names: lab-e2e, m4, m4:fence, m4:restore, m4:watch,
+          m4:fanout, m4:core-a, m4:core-b, verification, github-loop.
+        required: false
+        default: all
+        type: string
   push:
     branches: [main]
   schedule:
@@ -58,16 +82,88 @@ permissions:
 
 concurrency:
   group: acceptance-${{ github.ref }}
-  # A superseded push to main need not finish; a nightly or manual run must.
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # NEVER cancel-in-progress: the first real run cancelled itself the moment
+  # main moved again, losing hours of lab work mid-shard. A running
+  # acceptance run always finishes; GitHub keeps only the NEWEST queued run
+  # per group, so superseded pushes collapse in the queue instead of killing
+  # a finished-past-the-halfway run.
+  cancel-in-progress: false
 
 env:
   # The ci.yml pins, in one place.
   NODE_VERSION: "24.22.0"
   M4_COMPOSE: docker compose -p communication-m4 -f compose.yml -f compose.harness.yml -f compose.m4.yml -f compose.real.yml
+  # Lab agent launcher (seed.sh / seed-github-loop.sh read it; unset keeps
+  # local behaviour = claude). pi's per-turn config reaches the WORKER
+  # containers through compose.real.yml: COMMUNICATION_PI_API_KEY_FILE is
+  # /run/comm/llm-api-key there — the COMMUNICATION_LLM_API_KEY secret file
+  # bind-mounted ro (ADR-0059) — and the base URL + model interpolate from
+  # the COMMUNICATION_LLM_* pair below (identical defaults; set explicitly so
+  # an operator repoints the whole suite in one place). The
+  # COMMUNICATION_PI_* pair mirrors them for anything reading the launcher's
+  # own names on the host.
+  COMMUNICATION_LAB_LAUNCHER: pi
+  COMMUNICATION_LLM_BASE_URL: https://llm-collective.e-gineering.com/v1
+  COMMUNICATION_LLM_MODEL: david-birks/qwen3-8-flash-next
+  COMMUNICATION_PI_BASE_URL: https://llm-collective.e-gineering.com/v1
+  COMMUNICATION_PI_MODEL: david-birks/qwen3-8-flash-next
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────
+  # select: parses the workflow_dispatch `jobs` input into the per-job
+  # booleans and the m4 matrix JSON the other jobs read through `needs`
+  # (matrix is not an available context in jobs.<id>.if, so per-shard
+  # filtering must be computed here, not inline). push/schedule always
+  # mean "all". Unknown names fail the run here — a typo must not
+  # silently skip every job.
+  # ────────────────────────────────────────────────────────────────────
+  select:
+    name: select jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      lab-e2e: ${{ steps.pick.outputs.lab-e2e }}
+      m4: ${{ steps.pick.outputs.m4 }}
+      verification: ${{ steps.pick.outputs.verification }}
+      github-loop: ${{ steps.pick.outputs.github-loop }}
+    steps:
+      - id: pick
+        env:
+          JOBS: ${{ github.event_name == 'workflow_dispatch' && inputs.jobs || 'all' }}
+        run: |
+          set -eu
+          J="$(printf '%s' "${JOBS:-all}" | tr -d '[:space:]')"; : "${J:=all}"
+          sel() { [ "$J" = all ] && return 0; case ",$J," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+          # Loud typo guard: every token must name a job or a shard — an
+          # unrecognised name must fail the run, not silently skip everything.
+          if [ "$J" != all ]; then
+            KNOWN=",lab-e2e,m4,m4:fence,m4:restore,m4:watch,m4:fanout,m4:core-a,m4:core-b,verification,github-loop,"
+            IFS=',' read -r -a TOKENS <<< "$J"
+            for t in "${TOKENS[@]}"; do
+              [ -n "$t" ] || continue
+              case "$KNOWN" in
+                *",$t,"*) ;;
+                *) echo "::error::jobs input names unknown job/shard [$t]"; exit 1 ;;
+              esac
+            done
+          fi
+          for job in lab-e2e verification github-loop; do
+            if sel "$job"; then echo "$job=true" >> "$GITHUB_OUTPUT"; else echo "$job=false" >> "$GITHUB_OUTPUT"; fi
+          done
+          # The m4 shard→gates table. The exit driver's `--list` re-checks
+          # every shard's gate ids at run time ("check the shard's gate ids
+          # exist"), so drift between this table and the driver fails loudly.
+          inc=()
+          for pair in "fence:C3,C4,C5,W2" "restore:C6" "watch:W5,W6,W11" "fanout:C8" "core-a:C1,C2,C7,C9,C10,W1,W3,W7" "core-b:C11,C12,C13,C14,W4,W8,W9,W10"; do
+            if sel m4 || sel "m4:${pair%%:*}"; then
+              inc+=("{\"shard\":\"${pair%%:*}\",\"gates\":\"${pair#*:}\"}")
+            fi
+          done
+          m4_json="[$(IFS=,; printf '%s' "${inc[*]}")]"
+          echo "m4=$m4_json" >> "$GITHUB_OUTPUT"
+          echo "selection: $J -> m4 matrix $m4_json"
+
+  # ────────────────────────────────────────────────────────────────────
   # accept_run.sh's `lab` phase: every lab-gated e2e suite (M5, shell,
   # issue2, home, harness flags) against a fresh seeded lab. The verdict is
   # the Playwright list summary: any failed/skipped/flaky/did-not-run line
@@ -76,6 +172,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────
   lab-e2e:
     name: lab-e2e
+    needs: select
+    if: ${{ needs.select.outputs.lab-e2e == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -150,8 +248,9 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
   # accept_run.sh's `m4` phase: the live § 7.1/§ 7.2 exit gates, sharded so
-  # every long fault group owns a runner. The shard set below is exactly the
-  # gate table of `python3 e2e/m4/e2e_m4_exit.py --list` (C1–C14, W1–W11),
+  # every long fault group owns a runner. The shard→gates table lives in the
+  # select job (single source); it is exactly the gate table of
+  # `python3 e2e/m4/e2e_m4_exit.py --list` (C1–C14, W1–W11),
   # each id in exactly one shard — the "gates in --list" step re-proves the
   # ids on every run, and docs/testing/acceptance-ci.md carries the coverage
   # table. Cross-gate witnesses decide shard membership:
@@ -162,29 +261,27 @@ jobs:
   #     and W11's attempt-pair arm reads the interrupted-then-succeeded pair
   #     W5's kill produces → W2 rides with C4/C5, W11 with W5.
   # Each shard runs the driver exactly as accept_run does (`--up --ready
-  # --seed`, the driver's own 3-file stack bring-up), on its own fresh
+  # --seed`, the driver's own 3-file stack bring-up — note that stack has NO
+  # compose.real.yml, so its workers hold no PI_*/gateway env at all; with
+  # launcher pi the attempt still fails closed at the prompting-mode gate
+  # BEFORE any credential read, so the verdict is the same honest refusal
+  # docs/testing/acceptance-ci.md names), on its own fresh
   # runner, and uploads m4.out + compose logs whatever the verdicts say.
   # ──────────────────────────────────────────────────────────────────────────
   m4:
     name: m4 (${{ matrix.shard }})
+    # `jobs=m4` selects every shard; `jobs=m4:watch` (etc.) one shard. The
+    # include list is built by select — matrix is not readable in a job-level
+    # if, so the filtering happens there, and an empty selection skips the
+    # whole job rather than spawning a matrix of nothing.
+    needs: select
+    if: ${{ needs.select.outputs.m4 != '[]' && needs.select.outputs.m4 != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - shard: fence
-            gates: C3,C4,C5,W2
-          - shard: restore
-            gates: C6
-          - shard: watch
-            gates: W5,W6,W11
-          - shard: fanout
-            gates: C8
-          - shard: core-a
-            gates: C1,C2,C7,C9,C10,W1,W3,W7
-          - shard: core-b
-            gates: C11,C12,C13,C14,W4,W8,W9,W10
+        include: ${{ fromJSON(needs.select.outputs.m4) }}
     env:
       SHARD: ${{ matrix.shard }}
       GATES: ${{ matrix.gates }}
@@ -202,11 +299,34 @@ jobs:
         run: |
           set -euo pipefail
           pnpm --dir e2e install --frozen-lockfile
-          # The W gates drive `pnpm dlx @playwright/cli@0.1.22`
-          # (playwright-core 1.64.0-alpha); the browser comes from the e2e
-          # package's own playwright 1.64.1 install into the shared
-          # ~/.cache/ms-playwright registry.
+          # The W gates drive `pnpm dlx @playwright/cli@0.1.22`, which bundles
+          # its OWN playwright-core 1.64.0-alpha pinning chromium v1247 — a
+          # DIFFERENT build than the v1248 the e2e package's playwright 1.64.1
+          # installs. On a fresh runner only 1248 exists and `open` dies
+          # daemon-side (Actions run 41408536765: "Daemon pid=…: Browser
+          # \"chrome-for-testing\" is not installed; expected executable at
+          # …/chromium-1247/chrome-linux64/chrome", reproduced locally by
+          # pointing PLAYWRIGHT_BROWSERS_PATH at a 1248-only cache). So the
+          # CLI installs its own revision into the shared
+          # ~/.cache/ms-playwright registry; system deps come from the
+          # --with-deps install below (identical for the two revisions).
+          pnpm dlx @playwright/cli@0.1.22 install-browser chromium
           pnpm --dir e2e exec playwright install --with-deps chromium
+      - name: playwright-cli preflight (open must work on this runner)
+        # Fails the job on its own, printing FULL stdout+stderr, so a browser
+        # problem never hides inside a W-gate verdict line truncated at the
+        # stack header. Named session `preflight` only — never `default`,
+        # and close closes exactly that one.
+        run: |
+          set -eu
+          rc=0
+          pnpm dlx @playwright/cli@0.1.22 -s=preflight open --browser=chromium about:blank || rc=$?
+          pnpm dlx @playwright/cli@0.1.22 -s=preflight close || true
+          if [ "$rc" != 0 ]; then
+            echo "::error::playwright-cli open failed on this runner (rc=$rc) — the W legs cannot drive a browser"
+            exit "$rc"
+          fi
+          echo "playwright-cli preflight: open+close OK"
       - name: install python3-yaml
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml
       - name: agent homes the harness overlay binds
@@ -276,6 +396,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────
   verification:
     name: verification (emulator loop)
+    needs: select
+    if: ${{ needs.select.outputs.verification == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -302,7 +424,26 @@ jobs:
         run: |
           set -euo pipefail
           pnpm --dir e2e install --frozen-lockfile
+          # The emulator loop drives @playwright/test (v1248 below); the
+          # CLI's own chromium v1247 is installed too and proven by the
+          # preflight, so a broken runner browser shows up HERE, in its own
+          # step with full stderr, not only inside pass verdicts. Same
+          # revision-skew story as the m4 job's install step.
+          pnpm dlx @playwright/cli@0.1.22 install-browser chromium
           pnpm --dir e2e exec playwright install --with-deps chromium
+      - name: playwright-cli preflight (open must work on this runner)
+        # Named session `preflight` only — never `default`; close closes
+        # exactly that one. FULL stdout+stderr lands in the job log.
+        run: |
+          set -eu
+          rc=0
+          pnpm dlx @playwright/cli@0.1.22 -s=preflight open --browser=chromium about:blank || rc=$?
+          pnpm dlx @playwright/cli@0.1.22 -s=preflight close || true
+          if [ "$rc" != 0 ]; then
+            echo "::error::playwright-cli open failed on this runner (rc=$rc)"
+            exit "$rc"
+          fi
+          echo "playwright-cli preflight: open+close OK"
       - name: install python3-yaml
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml
       - name: write the gateway key file
@@ -342,6 +483,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────
   github-loop:
     name: github-loop
+    needs: select
+    if: ${{ needs.select.outputs.github-loop == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:

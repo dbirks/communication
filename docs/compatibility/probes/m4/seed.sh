@@ -37,8 +37,10 @@
 #      use a second project" — this is the second-project branch).
 #   3. repository app -> file:///srv/m4/fixtures/app.git (e2e/m4/make_fixture_repo.sh)
 #   4. profiles m4-planner/m4-implementer/m4-reviewer by SQL — M3's D10: there is
-#      no profile-write API; § 7.0's launcher claude, sandbox required, implementer
-#      commit_granted=true, and (per ADR-0036, lab evidence only) permission_mode
+#      no profile-write API; § 7.0's launcher (COMMUNICATION_LAB_LAUNCHER,
+#      default claude; the acceptance workflow sets pi — see LAB_LAUNCHER
+#      below), sandbox required, implementer commit_granted=true, and (per
+#      ADR-0036, lab evidence only) permission_mode
 #      preapproved_within_sandbox — the product's own seeds stay 'ask'
 #   5. secret test-database-url = the § 7.0 contract sentinel (write-only per
 #      ADR-0018; never echoed) allowlisted to m4-implementer, mounted env/DATABASE_URL/
@@ -74,6 +76,25 @@ REPO_URL="${M4_SEED_REPO_URL:-file:///srv/m4/fixtures/app.git}"
 GOAL="${M4_SEED_GOAL:-Document and fix add() in hello.py}"
 SENTINEL="${M4_SEED_SECRET_VALUE:-SENTINEL-m4-7c1e9d42-exit-test-only}"
 PIPELINE_YAML="${M4_SEED_PIPELINE:-$M4_DIR/pipeline.yaml}"
+# ---- launcher selection (lab-only; default keeps local behaviour) ----------
+# COMMUNICATION_LAB_LAUNCHER picks the launcher the three lab profiles carry.
+# The acceptance workflow sets `pi` (runner has no ~/.claude login; the user
+# decision is pi against the LLM collective, ADR-0059 — compose.real.yml wires
+# COMMUNICATION_PI_API_KEY_FILE/BASE_URL/MODEL into the worker containers from
+# the same 0600 key file). HONESTY, do not read this as "pi turns work":
+# every recorded permission mode (ask/deny/preapproved_within_sandbox) needs
+# the launcher's VERIFIED prompting mode, launcher pi has none
+# (internal/agent/acp/launchers.go AskModeID "", ADR-0019 D6;
+# docs/compatibility/ACP.md "Pi", observed 2026-10-24: the worker refuses
+# agent.acp attempts on launcher pi BEFORE sandbox verification). Choosing the
+# mode therefore does not change that outcome — the seed records the same
+# mode for either launcher and the gates must (do) report GAPs naming
+# launcher pi, never a pass.
+LAB_LAUNCHER="${COMMUNICATION_LAB_LAUNCHER:-claude}"
+case "$LAB_LAUNCHER" in claude|codex|pi) ;; *)
+    printf 'SEED FAIL COMMUNICATION_LAB_LAUNCHER must be claude, codex or pi, got [%s]\n' "$LAB_LAUNCHER" >&2
+    exit 2 ;;
+esac
 declare -A JAR CSRF UID_OF
 FAIL=""
 
@@ -272,7 +293,7 @@ seed_profile() { # seed_profile <name> <commit_granted> <workspace_mode> <permis
     local name="$1" commit="$2" ws="$3" mode="$4" sql
     case "$mode" in ask|preapproved_within_sandbox|deny) ;; *) loud "seed profile $name: permission_mode '$mode' is not one of ask|preapproved_within_sandbox|deny (04-agent-runtime.md 'Permission policy')";; esac
     sql="INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode, workspace_mode, sandbox_enforcement, commit_granted)
-         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', 'claude', '$mode', '$ws', 'required', $commit)
+         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', '$LAB_LAUNCHER', '$mode', '$ws', 'required', $commit)
          ON CONFLICT (organization_id, name) DO UPDATE SET launcher_id = EXCLUDED.launcher_id,
              permission_mode = EXCLUDED.permission_mode, workspace_mode = EXCLUDED.workspace_mode,
              sandbox_enforcement = EXCLUDED.sandbox_enforcement, commit_granted = EXCLUDED.commit_granted;
@@ -283,7 +304,7 @@ seed_profile() { # seed_profile <name> <commit_granted> <workspace_mode> <permis
     case "$PROFILE_ID" in *[!0-9a-f-]*|"") LAST_NOTE="psql returned [$out]"; loud "seed profile $name: no uuid back";; esac
     PROFILE_ID=$(printf '%s' "$PROFILE_ID" | tr -d '[:space:]')
     PROFILE_IDS[$name]="$PROFILE_ID"
-    say "profile: $name -> $PROFILE_ID (launcher claude, permission_mode=$mode, commit_granted=$commit, workspace_mode=$ws)"
+    say "profile: $name -> $PROFILE_ID (launcher $LAB_LAUNCHER, permission_mode=$mode, commit_granted=$commit, workspace_mode=$ws)"
 }
 declare -A PROFILE_IDS
 

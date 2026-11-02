@@ -20653,8 +20653,15 @@ def pw_login(user, path="/projects", session="m4exit"):
     rc_open, out_open = pw("open", "--browser=chromium", url,
                            session=session, timeout=120)
     if rc_open != 0:
+        # Up to 4000 chars, NOT 300: the real runner failure (Actions run
+        # 41408536765) was a daemon crash whose root cause — "Browser
+        # 'chrome-for-testing' is not installed; expected executable at
+        # …/chromium-1247/…" — sat BELOW the first 300 chars of the stack,
+        # so every arm reported the same truncated rejectWithPid line and no
+        # arm named the actual fault. This print is the ONLY open-failure
+        # change allowed to this file; other failure prints stay as they are.
         check(f"{user}: browser session '{session}' opened", False,
-              f"playwright-cli open rc={rc_open}: {(out_open or '')[:300]}")
+              f"playwright-cli open rc={rc_open}: {(out_open or '')[:4000]}")
         return False
     rc, snap = pw_snapshot(session=session)
     nodes = pw_snapshot_nodes(snap)
