@@ -702,3 +702,154 @@ func TestAgentMailComposerAPIAdapter(t *testing.T) {
 		t.Errorf("journal turn_id = %q, want empty for the person-initiated ask", turnID)
 	}
 }
+
+// amProfile seeds an extra organization profile to inherit. The cleanup
+// un-pins every conversation/turn born on it onto the fixture profile
+// FIRST (agent_profile_id is NOT NULL — the FK cannot be nulled) and then
+// deletes the row; registered here, it runs before cnvFixture.delete().
+func amProfile(t *testing.T, f *cnvFixture, name, launcher, mode string) string {
+	t.Helper()
+	var id string
+	f.queryRow(t, `
+		INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode)
+		VALUES ($1::uuid, $2, $3, $4) RETURNING id::text`,
+		f.orgID, name, launcher, mode).into(t, &id)
+	bg := context.Background()
+	t.Cleanup(func() {
+		if _, err := f.pool.Exec(bg, `UPDATE conversation_turns SET agent_profile_id = $2::uuid WHERE agent_profile_id = $1::uuid`, id, f.profile); err != nil {
+			t.Errorf("unpin turns from profile %s: %v", name, err)
+		}
+		if _, err := f.pool.Exec(bg, `UPDATE conversations SET agent_profile_id = $2::uuid WHERE agent_profile_id = $1::uuid`, id, f.profile); err != nil {
+			t.Errorf("unpin conversations from profile %s: %v", name, err)
+		}
+		if _, err := f.pool.Exec(bg, `DELETE FROM agent_profiles WHERE id = $1::uuid`, id); err != nil {
+			t.Errorf("cleanup profile %s: %v", name, err)
+		}
+	})
+	return id
+}
+
+// amTargetProfile reads a conversation's and its queued answer turn's agent
+// profile ids (the two rows ADR-0072 § 2/§ 9 must stamp identically).
+func amTargetProfile(t *testing.T, f *cnvFixture, conversationID string) (convProfile, turnProfile string) {
+	t.Helper()
+	f.queryRow(t, `SELECT agent_profile_id::text FROM conversations WHERE id = $1::uuid`,
+		conversationID).into(t, &convProfile)
+	f.queryRow(t, `
+		SELECT agent_profile_id::text FROM conversation_turns
+		WHERE conversation_id = $1::uuid AND status = 'queued' AND mail_link_id IS NOT NULL`,
+		conversationID).into(t, &turnProfile)
+	return
+}
+
+// TestAgentMailProfileInheritance (ADR-0072 § 2/§ 9, Actions run
+// 41503571017): the asked chat and its answer turn run on the ASKING
+// chat's CURRENT profile — not a project/org default, not the first
+// profile by name. On Actions every lab agent runs on launcher pi
+// (ADR-0069) while the org list still carries migration 00003's
+// claude/codex rows; a mail arm that resolved its own default would put
+// the answering turn on a launcher the runner cannot authenticate, and
+// the whole chain must stay on one launcher. The dispatch arm inherits
+// the asking TURN's stamped profile (ADR-0068 per-turn stamp — it can
+// differ from the conversation pointer), the composer arm inherits the
+// conversation's current profile after a real SwitchAgent, and on both
+// arms the read-only `ask` override still outranks the inherited
+// profile's own mode on the claim.
+func TestAgentMailProfileInheritance(t *testing.T) {
+	f := cnvSetup(t)
+	amRepo(t, f, "web")
+	amRepo(t, f, "api")
+	amSetEnabled(t, f, true)
+	st := amStore(f)
+
+	// The inheritable profile: a distinct launcher and a mode the mail arm
+	// must NOT leak into the answer — exactly the shape that made the
+	// Actions failure (a claude row) unmistakable in the data.
+	second := amProfile(t, f, "am-inherit-"+migFixtureToken(t), "pi", "preapproved_within_sandbox")
+
+	// --- dispatch arm (§ 3): inherit the asking turn's stamped profile.
+	chatA := amChat(t, f, f.alice, "inherit chat", "how is search wired?", "web")
+	if err := st.FinishTurn(f.ctx(), amClaim(t, f, chatA.ActiveTurn.ID),
+		worker.TurnOutcome{Status: events.TurnStatusCompleted, StopReason: "end_turn"}); err != nil {
+		t.Fatalf("FinishTurn(first): %v", err)
+	}
+	// ADR-0068's order: the chat is switched between turns and the next
+	// turn is stamped with the new pointer — the asking TURN runs on
+	// `second`. The raw conversation UPDATE then pulls the pointer back
+	// under the queued turn (only the queue-time stamp and the pointer can
+	// diverge; a legacy-shaped row pair is exactly what the claim's
+	// COALESCE(t, c) must resolve honestly): the target must follow the
+	// TURN's stamp, not the conversation pointer.
+	if _, err := f.store.SwitchAgent(f.ctx(), f.caller(f.alice), chatA.ID, second); err != nil {
+		t.Fatalf("SwitchAgent to the inheritable profile: %v", err)
+	}
+	turn2, err := f.store.PostMessage(f.ctx(), f.caller(f.alice), chatA.ID, "still wired?")
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	if turn2.AgentProfileID != second {
+		t.Fatalf("asking turn stamped agent_profile_id = %q, want %q (ADR-0068)", turn2.AgentProfileID, second)
+	}
+	f.exec(t, `UPDATE conversations SET agent_profile_id = $2::uuid WHERE id = $1::uuid`, chatA.ID, f.profile)
+	claim2 := amClaimExact(t, f, turn2.ID)
+	results, err := st.DispatchMail(f.ctx(), claim2, []worker.MailAsk{{Repo: "api", Question: "where now?"}})
+	if err != nil || results[0].State != events.MailStateAsked {
+		t.Fatalf("DispatchMail: %+v err=%v", results, err)
+	}
+	var toConv string
+	f.queryRow(t, `SELECT to_conversation_id::text FROM conversation_links WHERE id = $1::uuid`,
+		results[0].LinkID).into(t, &toConv)
+	convProfile, turnProfile := amTargetProfile(t, f, toConv)
+	if convProfile != second || turnProfile != second {
+		t.Errorf("dispatch target profiles = conv %q turn %q, want the asking turn's profile %q on both (never the conversation pointer %q)",
+			convProfile, turnProfile, second, f.profile)
+	}
+	// Drain the dispatch target (finished BEFORE the asking turn goes
+	// terminal, so the § 5 follow-up finds chatA busy and skips — the
+	// fixture keeps an idle queue for the composer arm's real ClaimTurn).
+	if err := st.FinishTurn(f.ctx(), amClaim(t, f, amTargetTurn(t, f, toConv)),
+		worker.TurnOutcome{Status: events.TurnStatusCompleted, StopReason: "end_turn"}); err != nil {
+		t.Fatalf("FinishTurn(dispatch target): %v", err)
+	}
+	if err := st.FinishTurn(f.ctx(), claim2,
+		worker.TurnOutcome{Status: events.TurnStatusCompleted, StopReason: "end_turn"}); err != nil {
+		t.Fatalf("FinishTurn(asking): %v", err)
+	}
+
+	// --- composer arm (§ 9): inherit the conversation's CURRENT profile.
+	chatB := amChat(t, f, f.alice, "composer inherit", "", "web")
+	if _, err := f.store.SwitchAgent(f.ctx(), f.caller(f.alice), chatB.ID, second); err != nil {
+		t.Fatalf("SwitchAgent for the composer arm: %v", err)
+	}
+	ask, err := f.store.AskRepoMail(f.ctx(), f.caller(f.alice), chatB.ID, "api", "what is in here?")
+	if err != nil {
+		t.Fatalf("AskRepoMail after a switch: %v", err)
+	}
+	convProfile, turnProfile = amTargetProfile(t, f, ask.ToConversationID)
+	if convProfile != second || turnProfile != second {
+		t.Errorf("composer target profiles = conv %q turn %q, want the asking chat's current profile %q on both",
+			convProfile, turnProfile, second)
+	}
+
+	// Read-only still outranks the inherited profile's own mode (§ 4): a
+	// target born on a preapproved profile claims `ask` — the real
+	// ClaimTurn read, not a copy of its SQL.
+	claimT := amClaim(t, f, amTargetTurn(t, f, ask.ToConversationID))
+	if claimT.PermissionMode != "ask" {
+		t.Errorf("target claim permission mode = %q, want the read-only ask override over the inherited profile", claimT.PermissionMode)
+	}
+	if claimT.AgentProfileID != second {
+		t.Errorf("target claim agent profile = %q, want the inherited %q", claimT.AgentProfileID, second)
+	}
+}
+
+// amTargetTurn reads the queued answer turn id of a linked chat.
+func amTargetTurn(t *testing.T, f *cnvFixture, conversationID string) string {
+	t.Helper()
+	var id string
+	f.queryRow(t, `
+		SELECT id::text FROM conversation_turns
+		WHERE conversation_id = $1::uuid AND status = 'queued' AND mail_link_id IS NOT NULL`,
+		conversationID).into(t, &id)
+	return id
+}

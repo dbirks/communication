@@ -54,12 +54,20 @@
 // authors a labeled issue trigger on `server`, and seeds one repo-scoped
 // chat. Everything is pass-stamped and left behind; only the trigger is
 // paused at the end so its poller stops with the pass.
+//
+// Profile rule (2026-11-02, run 41503571017): every chat these journeys
+// start (2e, 2f's carrier, 3d) starts on the LAB LAUNCHER's profile —
+// `labProfiles` below, keyed by COMMUNICATION_LAB_LAUNCHER exactly like
+// e2e/tests/lab-launcher.ts — because ADR-0072 carries the asking chat's
+// profile into the linked mail chat, and the org's items[0] is the
+// migration-seeded `Claude Code` row no Actions runner can authenticate.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test, apiMutate } from "./fixtures.js";
 import { EMU_ADMIN_STATE, EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID, EMU_REPO_ROOT } from "./env.js";
+import { LAB_LAUNCHER } from "../tests/lab-launcher.js";
 
 const WF_NAME = `Emu rcn ${EMU_PASS_ID}`;
 const WF_SLUG = `emu-rcn-${EMU_PASS_ID}`.toLowerCase();
@@ -101,6 +109,47 @@ const MAIL_QUESTION = `${MAIL_QUESTION_TOKEN} — what is in this repository? An
 function escapeForRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/** One row of GET /api/v1/agent-profiles (the members these journeys read). */
+interface ProfileRow {
+  id: string;
+  name: string;
+  launcher_id: string;
+}
+
+/**
+ * The lab launcher's profiles (list order = by name): the journeys that
+ * START a chat (2e's chat-box chat, 3d's mail chat, the seed chat) start it
+ * on the first of these, and the 2e switch moves to another one, so the
+ * whole redesign suite runs real turns on the launcher the acceptance
+ * workflow picked (`COMMUNICATION_LAB_LAUNCHER`, e2e/tests/lab-launcher.ts;
+ * Actions sets pi, ADR-0069). Why not `items[0]`: the org-wide list also
+ * carries migration 00003's seeded `Claude Code` and `Codex` rows, which
+ * sort FIRST by name, and an Actions runner has no Claude login — a chat
+ * started there fails its real turns with the ACP adapter's own
+ * `Authentication required` (observed on run 41503571017; and ADR-0072
+ * rides the asking chat's profile into every linked mail chat, so 3d failed
+ * at the answering turn with exactly that message). Under the historical
+ * local default (launcher `claude`) the first lab profile IS the migration
+ * `Claude Code` row, so local runs keep the exact profile they used
+ * before.
+ */
+async function labProfiles(page: Page): Promise<ProfileRow[]> {
+  const profiles = await page.request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
+  expect(profiles.status(), "the lab serves its agent profiles").toBe(200);
+  const list = ((await profiles.json()) as { items?: ProfileRow[] }).items ?? [];
+  const lab = list.filter((profile) => profile.launcher_id === LAB_LAUNCHER);
+  expect(
+    lab.length,
+    `the lab seeds at least one agent profile on launcher ${LAB_LAUNCHER} (COMMUNICATION_LAB_LAUNCHER=${LAB_LAUNCHER}; the migration-seeded claude/codex rows do not count)`,
+  ).toBeGreaterThan(0);
+  return lab;
+}
+
+/** The chat box's profile-chip menu row testid for a profile (the UI
+ * sanitizes and truncates the id — RepoChatBox.tsx). */
+const chatBoxProfileTestid = (id: string): string =>
+  `repo-chat-profile-${id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13)}`;
 
 /** What `waitForMailLink` settles with: the outgoing link's terminal facts. */
 interface MailLinkRow {
@@ -464,11 +513,8 @@ async function ensureSeedChat(page: Page): Promise<void> {
   expect(list.status(), "the repo's conversation list answers").toBe(200);
   const chats = (await list.json()) as { items?: { id: string; title: string }[] };
   if ((chats.items ?? []).some((entry) => entry.title === SEED_CHAT_TITLE)) return;
-  const profiles = await page.request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
-  expect(profiles.status(), "the lab serves its agent profiles").toBe(200);
-  const profileList = (await profiles.json()) as { items?: { id: string }[] };
-  const firstProfile = profileList.items?.[0]?.id ?? "";
-  expect(firstProfile, "the lab seeds at least one agent profile").toMatch(/^[0-9a-f-]{36}$/);
+  // The lab launcher's profile, not items[0] (see labProfiles).
+  const firstProfile = (await labProfiles(page))[0].id;
   const chat = await apiMutate(
     page,
     "POST",
@@ -499,11 +545,12 @@ async function ensureMailChat(page: Page): Promise<void> {
     ids.mailChatId = found.id;
     return;
   }
-  const profiles = await page.request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
-  expect(profiles.status(), "the lab serves its agent profiles").toBe(200);
-  const profileList = (await profiles.json()) as { items?: { id: string }[] };
-  const firstProfile = profileList.items?.[0]?.id ?? "";
-  expect(firstProfile, "the lab seeds at least one agent profile").toMatch(/^[0-9a-f-]{36}$/);
+  // The mail chat starts on the lab launcher's profile because ADR-0072
+  // § 2/§ 9 carries the asking chat's CURRENT profile into the linked chat
+  // and its answer turn: a chain born on `Claude Code` asks `Claude Code`
+  // (run 41503571017: every rcn-3d pass died `Authentication required` at
+  // the answering turn for exactly this reason).
+  const firstProfile = (await labProfiles(page))[0].id;
   const chat = await apiMutate(
     page,
     "POST",
@@ -759,6 +806,25 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
 
     await test.step("type + Start lands in the new repo-scoped chat", async () => {
+      // Start the chat on the LAB LAUNCHER's profile, not the chip's
+      // default (items[0] = migration 00003's `Claude Code`, which an
+      // Actions runner cannot authenticate — see labProfiles). The 2e
+      // turn legs and the 2f chat are real turns; under
+      // COMMUNICATION_LAB_LAUNCHER=pi that means pi. Locally (claude
+      // default) the first lab profile is the migration row the chip
+      // already carries, so nothing moves.
+      const lab = await labProfiles(page);
+      await page.getByTestId("repo-chat-profile").click();
+      const profileMenu = page.getByTestId("repo-chat-profile-menu");
+      await expect(
+        profileMenu,
+        "the chat box's profile chip opens the picker",
+      ).toBeVisible({ timeout: 10_000 });
+      await profileMenu.getByTestId(chatBoxProfileTestid(lab[0].id)).click();
+      await expect(
+        page.getByTestId("repo-chat-profile"),
+        `the chat starts on the lab launcher's ${lab[0].name}`,
+      ).toContainText(lab[0].name, { timeout: 10_000 });
       await page.getByTestId("repo-chat-input").fill(CHAT_PROMPT);
       await page.getByTestId("repo-chat-start").click();
       await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/, { timeout: 30_000 });
@@ -928,8 +994,16 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         .agent_profile_id as string;
       const profiles = await page.request.get(`${EMU_BASE_URL}/api/v1/agent-profiles`);
       expect(profiles.status(), "the lab serves its agent profiles").toBe(200);
-      const list = ((await profiles.json()) as { items?: { id: string; name: string }[] }).items ?? [];
-      const next = list.find((profile) => profile.id !== currentProfileId);
+      const list = ((await profiles.json()) as { items?: ProfileRow[] }).items ?? [];
+      // Switch WITHIN the lab launcher: the second turn must run on the
+      // same launcher the chat started on (pi on Actions — the migration
+      // claude/codex rows cannot answer there), just another profile, so
+      // the AGENTS IN THIS CHAT list gets its two pi rows. Only when the
+      // lab seeds a single launcher profile does the switch fall back to
+      // any other profile (the pre-rule behaviour).
+      const next =
+        list.find((profile) => profile.id !== currentProfileId && profile.launcher_id === LAB_LAUNCHER) ??
+        list.find((profile) => profile.id !== currentProfileId);
       expect(
         next,
         "the lab seeds more than one agent profile, so the picker has somewhere to switch to",
