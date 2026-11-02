@@ -40,6 +40,19 @@ import { cronInWords } from "../../lib/cronText";
 import { formatAge, testidOf } from "../../lib/format";
 import { routes } from "../../lib/routes";
 
+/**
+ * The row's `⋯` at phone width (review 3a: it now rides the header line).
+ * The shell's phone floor (tokens.css `APP-SHELL-PHONE`) would grow it to
+ * 44px and double the header line's height, so the floor is cancelled
+ * (`min-h-0!`, the `!` outranks the unlayered rule) and the target reaches
+ * 44px the way WorkflowRow's `PHONE_HIT` does: an invisible absolutely-
+ * positioned `::after` above and below the 22px box (22+12+12 = 46 ≥ 44),
+ * which the reflow target checker counts as the effective box. The sidebar
+ * tree row's `⋯` is the same 22px box.
+ */
+const ROW_MENU_PHONE_HIT =
+  "max-[559px]:relative max-[559px]:min-h-0! max-[559px]:after:absolute max-[559px]:after:inset-x-0 max-[559px]:after:-top-[12px] max-[559px]:after:-bottom-[12px] max-[559px]:after:content-['']";
+
 /** The statuses after which a run is no longer live (the terminal arms of
  * `RunStatus`; `interrupted` stopped with the outcome unknown). */
 const TERMINAL_RUN_STATUSES = new Set<string>(["completed", "failed", "cancelled", "interrupted"]);
@@ -119,14 +132,24 @@ export function RepoWorkflowPanel({
         className="min-w-0"
         meta={
           canManage ? (
-            <button
-              type="button"
-              onClick={() => setPickerOpen(true)}
-              className="font-mono text-[10.5px] font-normal normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-              data-testid="repo-workflow-library"
-            >
-              + add
-            </button>
+            // One line at any width — the pattern the REPOSITORIES bar
+            // carries (Projects Review pass-2): below 560px the phone floor
+            // makes every `main button` 44px tall, and this bar grew to
+            // twice OPEN ISSUES' (53px against 24px, review 3a). The opener
+            // stays a real button; the wrapper holds the bar's line box and
+            // clips the floor's growth, so the `+ add` sits in the bar
+            // exactly like the sibling panels' header verbs, and the dialog
+            // it opens carries the 44px targets where the finger aims.
+            <span className="flex h-[14px] items-center overflow-hidden min-[560px]:h-auto min-[560px]:overflow-visible">
+              <button
+                type="button"
+                onClick={() => setPickerOpen(true)}
+                className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                data-testid="repo-workflow-library"
+              >
+                + add
+              </button>
+            </span>
           ) : undefined
         }
       >
@@ -293,22 +316,47 @@ function RepoWorkflowSideRow({
     <li className="py-[10px] first:pt-0" data-testid={`repo-workflow-row-${key}`}>
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1 space-y-[2px]">
-          {name ? (
-            <Link
-              to={routes.workflow(assignment.pipeline_id)}
-              className="block truncate text-[12.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-              data-testid={`repo-workflow-name-${key}`}
-            >
-              {name}
-            </Link>
-          ) : (
-            <span
-              className="block font-mono text-[10px] text-muted"
-              data-testid={`repo-workflow-name-${key}`}
-            >
-              · loading
-            </span>
-          )}
+          {/* The header line owns the row's two reading points: the name and
+              the `⋯` that edits its triggers. Review 3a: the `⋯` used to sit
+              in the right column under `Run`, which at phone width left it
+              alone at the bottom-right of a row whose trigger line had
+              wrapped — an icon with nothing beside it. */}
+          <div
+            className="flex min-w-0 items-center gap-1"
+            data-testid={`repo-workflow-head-${key}`}
+          >
+            {name ? (
+              <Link
+                to={routes.workflow(assignment.pipeline_id)}
+                className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                data-testid={`repo-workflow-name-${key}`}
+              >
+                {name}
+              </Link>
+            ) : (
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted"
+                data-testid={`repo-workflow-name-${key}`}
+              >
+                · loading
+              </span>
+            )}
+            {canManage ? (
+              <button
+                ref={triggerRef}
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label={`${name ?? "This workflow"} triggers`}
+                title={`${name ?? "This workflow"} triggers`}
+                onClick={onOpenMenu}
+                className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${ROW_MENU_PHONE_HIT}`}
+                data-testid={`repo-workflow-menu-${key}`}
+              >
+                <MoreHorizontal size={14} strokeWidth={2} aria-hidden />
+              </button>
+            ) : null}
+          </div>
           <p
             className="min-w-0 break-words font-mono text-[10.5px] text-muted"
             data-testid={`repo-workflow-triggers-${key}`}
@@ -336,20 +384,6 @@ function RepoWorkflowSideRow({
           >
             Run
           </Button>
-          {canManage ? (
-            <button
-              ref={triggerRef}
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              aria-label={`${name ?? "This workflow"} triggers`}
-              onClick={onOpenMenu}
-              className="icon-hit shrink-0 rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-              data-testid={`repo-workflow-menu-${key}`}
-            >
-              <MoreHorizontal size={14} strokeWidth={2} aria-hidden />
-            </button>
-          ) : null}
         </div>
       </div>
       {canManage ? (

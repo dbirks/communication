@@ -428,16 +428,20 @@ func InputSpecsFromPlan(plan json.RawMessage) []compiler.InputSpec {
 }
 
 // inputUnfillableWarnings is the ADR-0066 publish rule: for every REQUIRED
-// input with no default, each assigned trigger that cannot fill it produces
-// one WARNING naming the trigger and the input. Sorted (trigger, input) for a
-// stable body.
+// input with no default, EACH assigned trigger that cannot fill it — of ANY
+// kind the fact table answers (issue and schedule today) — produces one
+// WARNING naming the trigger and the input. The repository the assignment
+// pins is NOT an implicit filler: it sets the run's repository, never a
+// `repository` input the plan happens to declare (ADR-0066 § note 2026-11-02),
+// so a required `repository` warns exactly like any other unfilled name.
+// Sorted by (trigger, input) for a stable body.
 func inputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFacts) []ValidateWarning {
 	warnings := []ValidateWarning{}
-	for _, spec := range specs {
-		if !spec.Required || spec.Default != nil {
-			continue
-		}
-		for _, fact := range facts {
+	for _, fact := range facts {
+		for _, spec := range specs {
+			if !spec.Required || spec.Default != nil {
+				continue
+			}
 			fillable := false
 			for _, name := range fact.Fills {
 				if name == spec.Name {
@@ -459,6 +463,14 @@ func inputUnfillableWarnings(specs []compiler.InputSpec, facts []TriggerFillFact
 			})
 		}
 	}
+	// (trigger, input): the UI groups warning lines under the trigger row the
+	// warning names, so the trigger — not the input — is the major key.
+	sort.SliceStable(warnings, func(i, j int) bool {
+		if warnings[i].TriggerID != warnings[j].TriggerID {
+			return warnings[i].TriggerID < warnings[j].TriggerID
+		}
+		return warnings[i].Input < warnings[j].Input
+	})
 	return warnings
 }
 

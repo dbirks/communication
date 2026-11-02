@@ -202,12 +202,14 @@ describe("the chat box placeholder at phone width", () => {
     expect(input.placeholder).toBe("Chat in web… ask, plan, or paste an issue");
   });
 
-  it("shortens to the repository's name below 640 — never a mid-word clip", () => {
+  it("shortens to the verb below 640 — the hint fits instead of clipping away", () => {
     renderBox(390);
     const input = screen.getByTestId("repo-chat-input") as HTMLInputElement;
-    // The design's prefix survives (the journey test pins `^Chat in app…`);
-    // the hint that used to clip away simply is not offered at that width.
-    expect(input.placeholder).toBe("Chat in web…");
+    // Review 3a: the old phone placeholder kept `Chat in web…` and lost the
+    // hint to the box's edge. The hint IS the placeholder now, in its short
+    // form; the repository stays in the accessible name (aria-label).
+    expect(input.placeholder).toBe("Ask, plan or paste an issue…");
+    expect(input.getAttribute("aria-label")).toBe("Chat in web");
   });
 });
 

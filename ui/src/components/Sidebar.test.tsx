@@ -599,7 +599,10 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     expect(screen.getByTestId("new-chat-rail")).toBeTruthy();
     expect(screen.getByTestId(`sidebar-rail-project-${P}`)).toBeTruthy();
     expect(screen.queryByTestId("sidebar-link-threads")).toBeNull();
-    expect(screen.getByTestId("sidebar-link-home").textContent).toBe("Today");
+    // Review 3c: the rail's Today is an icon tile, not bare text under the
+    // `+` — the word lives in the aria-label (and the tooltip).
+    expect(screen.getByTestId("sidebar-link-home").getAttribute("aria-label")).toMatch(/^Today/);
+    expect(screen.getByTestId("sidebar-rail-library").getAttribute("aria-label")).toBe("Library");
     expect(screen.getByTestId("user-badge").textContent).toContain("Ada Lovelace");
   });
 

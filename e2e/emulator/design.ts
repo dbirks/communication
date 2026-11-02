@@ -1247,6 +1247,29 @@ const RCN_RAIL_TILES: Landmark = {
   host: "page",
   any: [{ testid: "sidebar-rail-project-*" }, { testid: "sidebar-open" }],
 };
+/** Review round 2 captures (the two 3c states the design draws WITH the
+ * arrows): the ⋯ menu open on a project row, and a rail tile's flyout open.
+ * Both live in the desktop column; at 390 the documented reflow replaces
+ * the column (and the rail) with the phone strip, so the strip's one tap is
+ * each landmark's alternate — the same shape `expanded`/`rail` use. */
+const RCN_PROJECT_MENU: Landmark = {
+  id: "rcn-project-menu",
+  desc: "the project row's ⋯ menu open (at 390, the phone strip's menu button that reaches it)",
+  host: "page",
+  any: [{ testid: "sidebar-project-menu" }, { testid: "sidebar-open" }],
+};
+const RCN_PROJECT_MENU_ITEMS: Landmark = {
+  id: "rcn-project-menu-items",
+  desc: "the ⋯ menu's 'Project settings' entry (at 390, the one tap)",
+  host: "page",
+  any: [{ testid: "project-menu-settings" }, { testid: "sidebar-open" }],
+};
+const RCN_RAIL_FLYOUT: Landmark = {
+  id: "rcn-rail-flyout",
+  desc: "the hovered rail tile's flyout with the project's repositories (at 390, the phone strip's menu button)",
+  host: "page",
+  any: [{ testid: "sidebar-rail-flyout-*" }, { testid: "sidebar-open" }],
+};
 
 /* The repo page's List view (rcn-3a). */
 const RCN_REPO_PAGE: Landmark = {
@@ -2066,6 +2089,12 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_LIBRARY_SECTION,
     RCN_RAIL_EXPAND,
   ],
+  // Review round 2: the two states 3c actually draws — the ⋯ menu open on a
+  // project row (its pointer arrow), and a tile hovered with the flyout open
+  // (its pointer arrow). Same badge, new screen names, so the report pairs
+  // each with the 3c render.
+  "rcn-3c menu": [RCN_COLUMN, RCN_PROJECTS_SECTION, RCN_PROJECT_MENU, RCN_PROJECT_MENU_ITEMS],
+  "rcn-3c flyout": [RCN_COLUMN, RCN_RAIL_TILES, RCN_RAIL_FLYOUT, RCN_RAIL_EXPAND],
 
   // The repo page's List view (3a): chat box on top, the one mixed activity
   // feed with its filter chips, and the WORKFLOWS / OPEN ISSUES side panels.

@@ -133,6 +133,34 @@ const scheduleWarning = {
   input: "issue",
 };
 
+/** One server-shaped `input_unfillable_by_trigger` warning for the tests. */
+function unfillable(kind: "schedule" | "issue", triggerId: string, input: string) {
+  return {
+    code: "input_unfillable_by_trigger",
+    source: "trigger",
+    message: `trigger #opened cannot fill required input "${input}" and it has no default (ADR-0066)`,
+    trigger_id: triggerId,
+    trigger_kind: kind,
+    input,
+  } as const;
+}
+
+/** The 1j review's document: goal and repository join `issue` as required
+ * inputs with no default — the labeled-issue trigger can fill only one. */
+const GOAL_REPO_YAML = DRAFT_YAML.replace(
+  "required: [issue]",
+  "required: [issue, goal, repository]",
+).replace(
+  "      issue:",
+  `      goal:
+        type: string
+        x-communication-input: {type: long_text, label: Goal}
+      repository:
+        type: string
+        x-communication-input: {type: text, label: Repository}
+      issue:`,
+);
+
 function wireDraft(overrides: Partial<Draft> = {}): Draft {
   return {
     id: WIRE_DRAFT_ID,
@@ -433,6 +461,107 @@ describe("InputsTab — who fills the inputs (1j)", () => {
     expect(row.className).toContain("bg-st-waiting-pale-body");
     expect(row.textContent).toContain("! issue is required and a schedule can't fill it");
     expect(row.textContent).toMatch(/Schedule ·/);
+  });
+
+  it("ONE warning line per warning: a schedule that fills no goal and no repository gets both", async () => {
+    // ADR-0066: the rule is per (trigger, input) — two unfillable required
+    // inputs are two server warnings and the row shows both, never the
+    // first one alone.
+    const two: (typeof scheduleWarning)[] = [
+      scheduleWarning,
+      {
+        ...scheduleWarning,
+        message: "goal is required and a schedule can't fill it",
+        input: "goal",
+      },
+    ];
+    mountTab({
+      routes: [
+        {
+          path: DRAFT_PATH,
+          method: "GET",
+          body: wireDraft({
+            validation: {
+              valid: true,
+              warnings: two,
+              digest_scope: "v1alpha1-canonical-1",
+              errors: [],
+              notes: [],
+            },
+          }),
+        },
+      ],
+    });
+    const row = await screen.findByTestId(`who-fills-schedule-${SCHEDULE_ID}`);
+    const lines = within(row).getAllByTestId(/^who-fills-warn-/);
+    expect(lines).toHaveLength(2);
+    expect(lines[0].textContent).toBe("! issue is required and a schedule can't fill it");
+    expect(lines[1].textContent).toBe("! goal is required and a schedule can't fill it");
+  });
+
+  it("the issue trigger shows the server's warnings too: ✓ its fill, one ! per unfillable input", async () => {
+    // The reviewed 1j gap: goal and repository are required with no default,
+    // the labeled-issue trigger fills only `issue`, and the server warned
+    // once per unfillable input — every one of those warnings is a row here
+    // (they used to show on schedules only).
+    const goalRepoDraft = wireDraft({
+      document_yaml: GOAL_REPO_YAML,
+      validation: {
+        valid: true,
+        warnings: [
+          unfillable("issue", TRIGGER_ID, "goal"),
+          unfillable("issue", TRIGGER_ID, "repository"),
+        ],
+        digest_scope: "v1alpha1-canonical-1",
+        errors: [],
+        notes: [],
+      },
+    });
+    mountTab({ routes: [{ path: DRAFT_PATH, method: "GET", body: goalRepoDraft }] });
+    const row = await screen.findByTestId(`who-fills-issue-${TRIGGER_ID}`);
+    // The fill it CAN do still reads as a ✓…
+    expect(screen.getByTestId(`who-fills-issue-line-${TRIGGER_ID}`).textContent).toBe(
+      "✓ issue ← the labeled issue",
+    );
+    // …and each warning the server named gets its own `!` line, verbatim.
+    const goalLine = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-goal`);
+    const repoLine = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-repository`);
+    expect(goalLine.textContent).toBe(
+      `! trigger #opened cannot fill required input "goal" and it has no default (ADR-0066)`,
+    );
+    expect(repoLine.textContent).toBe(
+      `! trigger #opened cannot fill required input "repository" and it has no default (ADR-0066)`,
+    );
+    // The warning marks the whole row pale, as the schedule's does.
+    expect(row.className).toContain("bg-st-waiting-pale-body");
+  });
+
+  it("a warning whose trigger no longer reads is shown, not dropped", async () => {
+    const gone = unfillable("schedule", "s-deleted", "issue");
+    mountTab({
+      routes: [
+        {
+          path: DRAFT_PATH,
+          method: "GET",
+          body: wireDraft({
+            validation: {
+              valid: true,
+              warnings: [scheduleWarning, gone],
+              digest_scope: "v1alpha1-canonical-1",
+              errors: [],
+              notes: [],
+            },
+          }),
+        },
+      ],
+    });
+    // The live schedule row keeps its own warning; the stale one still gets
+    // a line of its own under the panel's warnings-without-a-row block.
+    expect(await screen.findByTestId(`who-fills-warn-${SCHEDULE_ID}-issue`)).toBeTruthy();
+    const orphans = await screen.findByTestId("who-fills-orphans");
+    expect(orphans.textContent).toContain(
+      `! trigger #opened cannot fill required input "issue" and it has no default (ADR-0066)`,
+    );
   });
 
   it("without a server warning the schedule row states the fact, not a guess", async () => {

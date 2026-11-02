@@ -144,6 +144,101 @@ var a66ScheduleFact = TriggerFillFacts{Kind: "schedule", ID: "s-1", ProjectID: "
 var a66IssueTriggerFact = TriggerFillFacts{Kind: "issue", ID: "t-1", ProjectID: "p-1",
 	Name: "octo/widgets #opened", Fills: []string{"issue"}}
 
+// a66GoalRepoPlan is the reviewed 1j document: `goal` (long_text) and
+// `repository` (text) are required with no default next to the required
+// `issue`; only `revision` carries a default. No annotation is needed for
+// the rule — required-without-default is JSON Schema's own reading.
+const a66GoalRepoPlan = `{"version":"v1alpha1-plan-1","nodes":[],"inputs":{` +
+	`"type":"object","required":["goal","issue","repository"],"properties":{` +
+	`"goal":{"type":"string","x-communication-input":{"type":"long_text","label":"Goal"}},` +
+	`"issue":{"type":"object","x-communication-input":{"type":"github_issue","label":"Issue"}},` +
+	`"repository":{"type":"string","x-communication-input":{"type":"text","label":"Repository"}},` +
+	`"revision":{"type":"string","default":"main","x-communication-input":{"type":"branch","label":"Branch"}}}}}`
+
+// The review's gap, pinned server-side: an ISSUE trigger that fills only the
+// issue input leaves every OTHER required input with no default unfillable,
+// and each one is its own warning. The rule is not schedule-only, and the
+// repository the assignment pins fills nothing implicitly (ADR-0066 note).
+func TestADR0066ValidateWarnsPerRequiredInputPerTriggerIncludingIssueTriggers(t *testing.T) {
+	fx := a66Server(t, []TriggerFillFacts{a66IssueTriggerFact}, nil)
+	fx.pipes.draft = DraftView{ID: m4UUID2, PipelineID: m4UUID, Status: "draft",
+		DocumentYAML: "kind: Pipeline\n", SourceKind: "manual",
+		SourceSHA256: strings.Repeat("0", 64), Version: 1}
+	outcome := a66ValidOutcome()
+	outcome.CompiledPlan = json.RawMessage(a66GoalRepoPlan)
+	fx.defs.outcome = outcome
+
+	rec := fx.call(t, "POST", "http://localhost:8080/api/v1/drafts/"+m4UUID2+"/validate", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("validate = %d: %s", rec.Code, rec.Body)
+	}
+	var body ValidateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode validate body: %v", err)
+	}
+	if !body.Valid {
+		t.Errorf("valid = false; warnings must not flip the verdict: %s", rec.Body)
+	}
+	// `issue` is filled by the trigger; `revision` has a default; `goal` and
+	// `repository` are each the trigger's own warning — TWO findings, one per
+	// unfillable required input, both naming the issue trigger.
+	if len(body.Warnings) != 2 {
+		t.Fatalf("warnings = %d, want goal + repository for the issue trigger: %s",
+			len(body.Warnings), rec.Body)
+	}
+	for i, want := range []struct{ triggerID, kind, input string }{
+		{"t-1", "issue", "goal"},
+		{"t-1", "issue", "repository"},
+	} {
+		w := body.Warnings[i]
+		if w.Code != CodeInputUnfillableByTrigger || w.TriggerID != want.triggerID ||
+			w.TriggerKind != want.kind || w.Input != want.input {
+			t.Errorf("warning[%d] = %+v, want %s/%s named by trigger %s (%s)",
+				i, w, want.kind, want.input, want.triggerID, want.kind)
+		}
+		if !strings.Contains(w.Message, want.input) {
+			t.Errorf("warning[%d].message does not name %q: %s", i, want.input, w.Message)
+		}
+	}
+}
+
+// Two triggers, several inputs: the body is sorted (trigger, input), so the
+// UI rows and any diff of the wire body are stable across reads.
+func TestADR0066WarningsAreSortedByTriggerThenInput(t *testing.T) {
+	fx := a66Server(t, []TriggerFillFacts{a66IssueTriggerFact, a66ScheduleFact}, nil)
+	fx.pipes.draft = DraftView{ID: m4UUID2, PipelineID: m4UUID, Status: "draft",
+		DocumentYAML: "kind: Pipeline\n", SourceKind: "manual",
+		SourceSHA256: strings.Repeat("0", 64), Version: 1}
+	outcome := a66ValidOutcome()
+	outcome.CompiledPlan = json.RawMessage(a66GoalRepoPlan)
+	fx.defs.outcome = outcome
+
+	rec := fx.call(t, "POST", "http://localhost:8080/api/v1/drafts/"+m4UUID2+"/validate", "")
+	var body ValidateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The schedule fills nothing → goal, issue, repository; the issue trigger
+	// fills `issue` → goal, repository. Five findings, grouped by trigger id
+	// (s-1 before t-1) and sorted by input inside each trigger.
+	got := make([]string, 0, len(body.Warnings))
+	for _, w := range body.Warnings {
+		if w.Code != CodeInputUnfillableByTrigger {
+			t.Errorf("unexpected warning code %q: %+v", w.Code, w)
+		}
+		got = append(got, w.TriggerID+"/"+w.Input)
+	}
+	want := []string{"s-1/goal", "s-1/issue", "s-1/repository", "t-1/goal", "t-1/repository"}
+	if len(got) != len(want) {
+		t.Fatalf("warnings = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("warnings = %v, want %v (sorted trigger, input)", got, want)
+		}
+	}
+}
+
 func TestADR0066ValidateWarnsWhenTheScheduleCannotFillARequiredIssueInput(t *testing.T) {
 	fx := a66Server(t, []TriggerFillFacts{a66ScheduleFact}, nil)
 	fx.pipes.draft = DraftView{ID: m4UUID2, PipelineID: m4UUID, Status: "draft",

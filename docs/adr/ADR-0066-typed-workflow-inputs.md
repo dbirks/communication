@@ -94,6 +94,29 @@ annotation and sibling keywords are ignored (JSON Schema's forward-compatibility
 future type (e.g. `github_pr`) raises `input_type_unknown` on an older compiler rather than
 silently working.
 
+### Note (2026-11-02, design review round 2) — the warning's reach, and what never fills `repository`
+
+Two questions came out of the 1j review; both are answered here so the rule is not
+re-litigated from the prose:
+
+1. **The warning covers every trigger kind and every required input.**
+   `input_unfillable_by_trigger` is evaluated per (assigned trigger, required input with no
+   default) pair over the whole trigger table of the pipeline — an issue trigger that fills
+   only its mapped `github_issue` input is warned once for each *other* required input
+   (`goal`, `repository`, …) exactly like a schedule is, and the validate/publish bodies are
+   sorted by (trigger, input) so the UI renders one `!` line per warning under the trigger
+   row it names. There is no schedule-only arm.
+2. **The assignment's repository is not an implicit input filler.** ADR-0060's repo pin (and
+   an issue trigger's own `repository_id`) puts a repository behind the **run's** repository
+   field at fire time; it never materialises a `repository` **input** the plan declares —
+   the fire paths stamp only the literal input names the trigger itself carries (a
+   schedule's `inputs` object, an issue trigger's template inputs) plus the resolved
+   `github_issue` mapping. ADR-0060's fixed `repository` name is read *from* the inputs
+   when the trigger supplies it, to resolve a project-wide assignment's run; it is never
+   written *into* them. So a required `repository` input with no default is genuinely
+   unfillable by a trigger that does not name it: the warning is correct, and the
+   run-start refusal (`missing_input`, § “Publish rule”) remains the authority.
+
 ## Consequences
 
 Positive: the form, the Inputs tab and trigger mapping read one derived `[]InputSpec`

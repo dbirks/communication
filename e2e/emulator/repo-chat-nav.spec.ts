@@ -583,6 +583,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
           `design 2c: the ⋯ menu carries its ${testid.replace("project-menu-", "")} entry`,
         ).toBeVisible();
       }
+      // Review round 2: design 3c's LEFT panel is this exact state — the ⋯
+      // menu OPEN, its pointer arrow aimed at the project row — captured at
+      // both widths (the phone's documented reflow replaces the column with
+      // its strip, exactly as for `expanded`/`rail`; see the `rcn-3c menu`
+      // landmarks). screen() resizes through 390 on its way back to 1280,
+      // which unmounts the column and its menu with it, so the Esc step
+      // below reads a menu that is closed — the honest answer either way.
+      await emu.screen("rcn-3c", "menu");
       await page.keyboard.press("Escape");
       await expect(menu, "design 2c: Esc closes the menu").toBeHidden();
     });
@@ -613,6 +621,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         flyout,
         `design 3c: the flyout lists the project's repositories (${FILE_REPO})`,
       ).toContainText(FILE_REPO, { timeout: 15_000 });
+      // Review round 2: design 3c's RIGHT panel is this exact state — a tile
+      // hovered, the flyout OPEN with its pointer arrow crossing the 4px
+      // gap — captured at both widths (the phone documents the rail away;
+      // see the `rcn-3c flyout` landmarks). Nothing moves the mouse while
+      // the two widths are shot, so the hover-driven flyout survives both.
+      await emu.screen("rcn-3c", "flyout");
     });
 
     await test.step("reload — the collapsed state persists, then restore expanded", async () => {
@@ -1290,6 +1304,22 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
         issueRow,
         "design 1j / ADR-0066: the single issue input is filled by the matched issue",
       ).toContainText(/← the labeled issue/i, { timeout: 15_000 });
+      // Review round 2: the seeded trigger fills only the issue input, and
+      // this workflow's `goal` and `repository` are required with no default
+      // — the validate the save just re-ran carries ONE server warning per
+      // (trigger, input), and each one gets its own `!` line on the row
+      // (ADR-0066's `input_unfillable_by_trigger`, the rule that covers
+      // every trigger kind, not just schedules).
+      for (const input of ["goal", "repository"]) {
+        await expect(
+          page.locator(`[data-testid^="who-fills-warn-"][data-testid$="-${input}"]`).first(),
+          `ADR-0066: the unfilled required input ${input} shows the server's warning`,
+        ).toContainText(/^! .*(cannot fill required input|can't fill)/, { timeout: 15_000 });
+      }
+      await expect(
+        issueRow,
+        "ADR-0066: the warnings mark the trigger row waiting-pale",
+      ).toHaveClass(/bg-st-waiting-pale-body/);
     });
 
     await test.step("the draft is the open one, the YAML preview says so", async () => {

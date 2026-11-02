@@ -2,8 +2,11 @@
  * The repo page's chat box (design 3a): one line with an ink border and the
  * hard `2px 2px 0` shadow — a placeholder that names the repository, an
  * agent-profile chip (secondary, 26px) that opens the `ds/Menu` picker, and a
- * primary `Start`. Below 640px the placeholder shortens to just the
- * repository's name — the same prefix, never a mid-word clip.
+ * primary `Start`. Below 640px the placeholder is the verb, not the repo
+ * name: review 3a caught `Chat in web…` keeping the prefix while its hint
+ * (`ask, plan, or paste an issue`) clipped away — at phone width the hint
+ * itself is the shorter sentence, and the repository the chat is born bound
+ * to is already the page's own title.
  *
  * Start creates a conversation BORN BOUND to this repository (ADR-0067: the
  * POST carries `repository` — the name — plus the chosen profile and the typed
@@ -135,7 +138,7 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
           aria-label={`Chat in ${repositoryName}`}
           placeholder={
             phoneWidth
-              ? `Chat in ${repositoryName}…`
+              ? "Ask, plan or paste an issue…"
               : `Chat in ${repositoryName}… ask, plan, or paste an issue`
           }
           className="min-w-0 flex-1 bg-transparent px-2 text-[13px] text-ink outline-none placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"

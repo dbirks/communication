@@ -43,7 +43,15 @@ import {
   type ReactNode,
 } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router";
-import { ChevronDown, ChevronsLeft, ChevronsRight, Ellipsis, Plus } from "lucide-react";
+import {
+  BookOpen,
+  CalendarDays,
+  ChevronDown,
+  ChevronsLeft,
+  ChevronsRight,
+  Ellipsis,
+  Plus,
+} from "lucide-react";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import type { Project } from "../api/types";
 import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
@@ -619,18 +627,34 @@ function LibrarySection() {
   const showFolders = prefs.showWorkflowFolders;
   const workflowsOpen = showFolders && prefs.expanded["library:workflows"] === true;
 
-  const row = (to: string, label: string, testid: string, count: number | undefined) => (
-    <NavLink
-      to={to}
-      data-testid={testid}
-      className={({ isActive }) => `${ROW} ${isActive ? ROW_ACTIVE : ROW_INACTIVE}`}
-    >
-      <span className="w-4 shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {count !== undefined ? (
-        <span className="shrink-0 font-mono text-[10.5px] text-muted">{count}</span>
-      ) : null}
-    </NavLink>
+  // One row shape for the whole LIBRARY block (review 3c): a leading
+  // chevron column, then the link. Workflows earns its ▸ (folders expand);
+  // Steps and Agent profiles reserve the same column empty, so the three
+  // labels start at one x and the lone chevron never misaligns the list.
+  const row = (
+    to: string,
+    label: string,
+    testid: string,
+    count: number | undefined,
+    leading?: ReactNode,
+  ) => (
+    <div key={testid} className="flex items-center gap-1">
+      {leading ?? <span className="size-4 shrink-0" aria-hidden="true" />}
+      <NavLink
+        to={to}
+        data-testid={testid}
+        className={({ isActive }) =>
+          `flex min-w-0 flex-1 items-center gap-2 rounded-[3px] border px-2 py-[4px] text-[12.5px] no-underline ${FOCUS_RING} ${
+            isActive ? ROW_ACTIVE : ROW_INACTIVE
+          }`
+        }
+      >
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {count !== undefined ? (
+          <span className="shrink-0 font-mono text-[10.5px] text-muted">{count}</span>
+        ) : null}
+      </NavLink>
+    </div>
   );
 
   return (
@@ -783,6 +807,7 @@ function RailNewChat({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: ()
       type="button"
       data-testid="new-chat-rail"
       aria-label="New chat"
+      title="New chat"
       onClick={onNewChat}
       className={`grid size-[28px] shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-fill text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
     >
@@ -791,9 +816,47 @@ function RailNewChat({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: ()
   );
 }
 
-/** The rail's label-under-a-tile type (mono 9.5). */
-const RAIL_LABEL =
-  "block font-mono text-[9.5px] leading-[1.2] no-underline text-muted hover:text-ink";
+/**
+ * A rail item: the 30px icon tile the design draws for every labelled start
+ * (Today, Library) — a lucide icon, never bare text under another control's
+ * button (review 3c: the text `Today` sat under the `+` and read as its
+ * caption). The word survives as the tooltip and the aria-label, so the
+ * meaning is never icon alone.
+ */
+function RailItem({
+  to,
+  label,
+  testid,
+  icon,
+  end = false,
+  className = "",
+}: {
+  to: string;
+  label: string;
+  testid: string;
+  icon: ReactNode;
+  end?: boolean;
+  className?: string;
+}) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      data-testid={testid}
+      aria-label={label}
+      title={label}
+      className={({ isActive }) =>
+        `grid size-[30px] shrink-0 place-items-center rounded-[3px] border no-underline ${FOCUS_RING} ${
+          isActive
+            ? "border-ink bg-accent-tint text-ink"
+            : `border-fill-edge bg-surface text-muted hover:bg-fill hover:text-ink ${className}`
+        }`
+      }
+    >
+      {icon}
+    </NavLink>
+  );
+}
 
 /**
  * The collapsed column: a 52px rail (handoff 3c). The mark, `+`, Today, one
@@ -875,24 +938,17 @@ function Rail({
 
         <RailNewChat signedIn={signedIn} onNewChat={onNewChat} />
 
-        <NavLink
+        {/* Today: an icon tile like every other rail item. Amber is the
+            waiting flag the expanded row carries, and the tooltip names the
+            count, so the state is never colour alone. */}
+        <RailItem
           to={routes.home()}
+          label={flags.inbox.needsYou > 0 ? `Today · ${flags.inbox.needsYou} waiting` : "Today"}
+          testid="sidebar-link-home"
           end
-          data-testid="sidebar-link-home"
-          className={({ isActive }) =>
-            `${RAIL_LABEL} ${
-              // Today keeps its word even at 52px; amber is the waiting flag the
-              // expanded row carries, and it is colour-plus-word everywhere else.
-              isActive
-                ? "font-semibold text-ink"
-                : flags.inbox.needsYou > 0
-                  ? "text-st-waiting-tag-fg"
-                  : ""
-            }`
-          }
-        >
-          Today
-        </NavLink>
+          className={flags.inbox.needsYou > 0 ? "text-st-waiting-tag-fg" : ""}
+          icon={<CalendarDays size={15} strokeWidth={1.6} aria-hidden="true" />}
+        />
 
         <div className="h-px w-[28px] shrink-0 bg-line" aria-hidden="true" />
 
@@ -941,13 +997,12 @@ function Rail({
 
         <div className="h-px w-[28px] shrink-0 bg-line" aria-hidden="true" />
 
-        <NavLink
+        <RailItem
           to={routes.workflows()}
-          data-testid="sidebar-rail-library"
-          className={({ isActive }) => `${RAIL_LABEL} ${isActive ? "font-semibold text-ink" : ""}`}
-        >
-          Library
-        </NavLink>
+          label="Library"
+          testid="sidebar-rail-library"
+          icon={<BookOpen size={15} strokeWidth={1.6} aria-hidden="true" />}
+        />
 
         <div className="mt-auto flex w-full flex-col items-center gap-[10px]">
           <button
