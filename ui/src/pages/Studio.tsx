@@ -160,7 +160,7 @@ function StudioFailureTitle({
         ) : null}
       </nav>
       <h1
-        className="min-w-0 flex-1 truncate text-[15px] font-semibold"
+        className="min-w-0 flex-[1_1_100%] text-[15px] font-semibold [overflow-wrap:anywhere] md:flex-1 md:max-w-max"
         data-testid="studio-title"
         title={pipelineName ?? "Workflow draft"}
       >

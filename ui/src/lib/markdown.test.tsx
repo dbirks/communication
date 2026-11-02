@@ -164,6 +164,69 @@ describe("parseMarkdown", () => {
 });
 
 describe("parseInline", () => {
+  /**
+   * The step heading the pass-2 review graded DEFECT on (`run-gate-waiting-*`,
+   * `artifact-plan-md-1280.png`): a bold step that names a file in code and
+   * italicises a word INSIDE the bold. The first parser read the outer `**…**`
+   * run and printed what was inside it verbatim, so the phone and the desktop
+   * both showed the author's backticks and asterisks.
+   */
+  const NESTED_STEP = "**Patch `hello.py` so the gate can be *disarmed* (…)**";
+
+  it("nests code and emphasis INSIDE strong", () => {
+    const runs = parseInline(NESTED_STEP);
+    expect(runs.length).toBe(1);
+    const step = runs[0];
+    if (step.kind !== "strong") throw new Error("the whole step is one bold span");
+    // The span's text is what a reader sees: markers read, not printed.
+    expect(step.text).toBe("Patch hello.py so the gate can be disarmed (…)");
+    expect(step.children?.map((child) => [child.kind, child.text])).toEqual([
+      ["text", "Patch "],
+      ["code", "hello.py"],
+      ["text", " so the gate can be "],
+      ["italic", "disarmed"],
+      ["text", " (…)"],
+    ]);
+    // Nothing in the whole span still carries a marker.
+    expect(step.children?.map((child) => child.text).join("")).not.toMatch(/[`*]/);
+  });
+
+  it("nests strong and code INSIDE emphasis, and a link inside strong", () => {
+    // A `*`-emphasis carrying a strong run: the closer is the LAST `*`, not the
+    // first one the inner `**` leaves behind — a shortest-match regex ate the
+    // sentence apart here.
+    expect(parseInline("*note **this** and `that`*")[0]).toMatchObject({
+      kind: "italic",
+      text: "note this and that",
+      children: [
+        { kind: "text", text: "note " },
+        { kind: "strong", text: "this" },
+        { kind: "text", text: " and " },
+        { kind: "code", text: "that" },
+      ],
+    });
+    expect(parseInline("**see [the plan](https://example.com/p) now**")[0]).toMatchObject({
+      kind: "strong",
+      children: [
+        { kind: "text", text: "see " },
+        { kind: "link", text: "the plan", href: "https://example.com/p" },
+        { kind: "text", text: " now" },
+      ],
+    });
+  });
+
+  it("keeps markup written inside a code span literal, nested or not", () => {
+    expect(parseInline("**run `**not bold**` now**")[0]).toMatchObject({
+      kind: "strong",
+      text: "run **not bold** now",
+      children: [
+        { kind: "text", text: "run " },
+        { kind: "code", text: "**not bold**" },
+        { kind: "text", text: " now" },
+      ],
+    });
+  });
+
   it("marks code spans and strong runs", () => {
     expect(parseInline("write `plan.md` and **prove** it")).toEqual([
       { kind: "text", text: "write " },
@@ -358,6 +421,79 @@ describe("<MarkdownBody>", () => {
   it("renders nothing for an empty body", () => {
     render(<MarkdownBody text="" />);
     expect(screen.getByTestId("markdown-body").children.length).toBe(0);
+  });
+
+  /**
+   * The fragment the pass-2 review graded DEFECT on: a gate step that is a bold
+   * heading, names the file it patches in code, and italicises a word — all
+   * three inside the bold. Nothing here is allowed to reach the reader as
+   * markup characters (`artifact-plan-md-1280.png` showed `` `hello.py` `` and
+   * `*disarmed*` printed at the reader).
+   */
+  const NESTED_STEP = "**Patch `hello.py` so the gate can be *disarmed* (…)**";
+
+  /** The ink a reader gets: `<code>` and `<em>` inside the `<strong>`, with no
+   * marker characters anywhere in the text. */
+  const expectNestedStep = (container: Element): void => {
+    const strong = container.querySelector("strong");
+    expect(strong).not.toBeNull();
+    expect(strong?.querySelector("code")?.textContent).toBe("hello.py");
+    expect(strong?.querySelector("em")?.textContent).toBe("disarmed");
+    expect(strong?.textContent).toBe("Patch hello.py so the gate can be disarmed (…)");
+    expect(container.textContent).not.toContain("`");
+    expect(container.textContent).not.toContain("*");
+  };
+
+  it("nests code and emphasis inside a bold step written as a list item", () => {
+    render(
+      <MarkdownBody
+        text={["1. " + NESTED_STEP, "   - Verification: `pytest`", "2. Run the gate"].join("\n")}
+      />,
+    );
+    const item = screen.getAllByTestId("markdown-list-item")[0];
+    expectNestedStep(item);
+    // …and the plan is still one numbered plan (nesting did not restart it).
+    expect(screen.getByTestId("markdown-list-ordered").textContent).toContain("2.");
+  });
+
+  it("nests code and emphasis inside a bold step written as a heading", () => {
+    render(<MarkdownBody text={"## " + NESTED_STEP} />);
+    expectNestedStep(screen.getByTestId("markdown-heading"));
+  });
+
+  it("nests code and emphasis inside a bold step written as a paragraph", () => {
+    render(<MarkdownBody text={NESTED_STEP} />);
+    expectNestedStep(screen.getByTestId("markdown-paragraph"));
+  });
+
+  it("reads code inside a heading, and emphasis inside strong inside a list item", () => {
+    render(
+      <MarkdownBody
+        text={[
+          "### Gate `disarm` is a *flag* now",
+          "",
+          "- **Undo the gate *carefully* and run `pytest`**",
+        ].join("\n")}
+      />,
+    );
+    const heading = screen.getByTestId("markdown-heading");
+    expect(heading.querySelector("code")?.textContent).toBe("disarm");
+    expect(heading.querySelector("em")?.textContent).toBe("flag");
+    expect(heading.textContent).toBe("Gate disarm is a flag now");
+    const item = screen.getAllByTestId("markdown-list-item")[0];
+    expect(item.querySelector("strong > em")?.textContent).toBe("carefully");
+    expect(item.querySelector("strong > code")?.textContent).toBe("pytest");
+    expect(item.querySelector("strong")?.textContent).toBe(
+      "Undo the gate carefully and run pytest",
+    );
+  });
+
+  it("renders a link nested in strong as an anchor inside the strong", () => {
+    render(<MarkdownBody text={"**Blocked by [the gate](https://example.com/g)**"} />);
+    const link = document.querySelector("strong > a");
+    expect(link?.getAttribute("href")).toBe("https://example.com/g");
+    expect(link?.textContent).toBe("the gate");
+    expect(screen.getByTestId("markdown-paragraph").textContent).toBe("Blocked by the gate");
   });
 });
 

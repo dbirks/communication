@@ -155,6 +155,33 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect(within(header).getByTestId("studio-save")).toBeTruthy();
   });
 
+  it("wraps the workflow name in the header instead of cutting it (pass-2 1g DEFECT)", async () => {
+    // `1g-studio-1280/390.png` showed `Emu plan pass-2-202…` with free header
+    // space beside it. The page is what hands the name down, so prove the pair
+    // end to end: the full name reaches the H1, keeps its `title`, and the
+    // header carries the wrap-not-truncate shape rather than a 52px cap.
+    const longName = "Emu plan pass-2-20261101181828 with a goal that needs room";
+    mount(studioPath, [
+      { path: pipelinePath, body: { ...wirePipeline, display_name: longName } },
+      { path: draftPath, body: parseableDraft(w8Validation as ValidateResponse) },
+    ]);
+    const header = await screen.findByTestId("studio-header");
+    const title = within(header).getByTestId("studio-title");
+    expect(title.textContent).toBe(longName);
+    expect(title.getAttribute("title")).toBe(longName);
+    expect(title.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    expect(title.classList.contains("min-w-0")).toBe(true);
+    expect(header.className).not.toMatch(/(^|\s)md:h-\[52px\](\s|$)/);
+    // The actions stay one right-aligned group, never a squeezed column, and
+    // the header never trades the wrap for a sideways scroll that would push
+    // that group off-screen between 768 and 1024px.
+    const actions = within(header).getByTestId("studio-header-actions");
+    expect(actions.classList.contains("ml-auto")).toBe(true);
+    expect(actions.classList.contains("flex-nowrap")).toBe(true);
+    expect(actions.classList.contains("md:shrink-0")).toBe(true);
+    expect(header.className).not.toMatch(/(^|\s)md:(flex-nowrap|overflow-x-auto)(\s|$)/);
+  });
+
   it("says `unsaved` exactly once — in the draft chip, never the status bar (1g item 4)", async () => {
     // The 2026-10-30 review's 1g item: the word used to print three times over
     // one draft (in the chip, beside the chip, and in the strip). Design 1g

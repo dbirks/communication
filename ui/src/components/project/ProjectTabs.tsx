@@ -72,15 +72,38 @@ export interface ProjectTabsProps {
 }
 
 /**
- * Park the strip on a WHOLE-LABEL boundary. Every candidate offset is a
- * tab edge (the only places a viewport edge can sit without cutting a label):
- * each tab's left, and each tab's right minus the viewport. Of those that
- * keep the ACTIVE tab fully visible, take the one with the fewest tabs
- * straddling either edge — ties broken toward not moving at all. A strip
- * where tabs simply cannot tile the viewport width takes the cleanest
- * compromise: whole at the left edge, the right edge clipped UNDER its fade
- * (which is what the fade is for). No layout, no snap — in jsdom every box
- * measures 0×0, so this is a no-op there by construction.
+ * Park the strip on a WHOLE-LABEL boundary, and (pass-2 review of this brief)
+ * only move it when the reader cannot see the page's own tab at all.
+ *
+ * Every candidate offset is a tab edge (the only places a viewport edge can sit
+ * without cutting a label): each tab's left, and each tab's right minus the
+ * viewport — read in the STRIP's own scroll coordinates, which is what edf5d99
+ * broke. Its cue lane is an in-flow 34px box beside the strip, and a tab's
+ * `offsetLeft` is taken from the WRAPPER the lane shares with the strip, so every
+ * tab sat 34px further right in the arithmetic while `scrollLeft` did not move:
+ * the rule that had been correct was comparing a strip at 118 with tabs that had
+ * each shifted by the width of the cue, and parked the phone wherever the
+ * distorted arithmetic said a boundary was. The strip may not be parked with the
+ * ACTIVE tab off it, so:
+ *
+ * - the active tab is already at least partly on-strip → take the candidate with
+ *   the fewest tabs straddling the LEFT edge (the cue's own edge — a label cut
+ *   there is one the reader cannot finish, and it is the cut the pass-2 review
+ *   saw the cue lane standing across), then the fewest at the right, then the
+ *   SHORTEST move — so a strip that is already where a clean boundary sits never
+ *   moves at all. At 390 that keeps the strip at
+ *   `scrollLeft 0`: `Overview` whole, no left cue, and the active tab's clipped
+ *   tail riding under the RIGHT fade — the shape pass-4 approved (“the right
+ *   edge clipped UNDER its fade”). Before this, `scrollIntoView` pulled the
+ *   active tab whole and the strip settled at `scrollLeft 82`, so the 34px cue
+ *   lane was drawn over the box `Overview` had been scrolled into — “the arrow
+ *   sits on Overview”, the MINOR from `project-1b-workflows-390.png`;
+ * - the active tab is entirely off the strip (the deep link to Settings) → only
+ *   boundaries where it is WHOLE are candidates, fewest cuts then closest, so
+ *   the tab the page was opened on always arrives complete.
+ *
+ * No layout, no snap — in jsdom every box measures 0×0, so this is a no-op there
+ * by construction.
  */
 function snapToWholeLabels(nav: HTMLElement): void {
   const w = nav.clientWidth;
@@ -89,26 +112,62 @@ function snapToWholeLabels(nav: HTMLElement): void {
   const tabs = Array.from(nav.querySelectorAll<HTMLElement>('[data-testid^="project-tab-"]'));
   const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
   if (!active || !tabs.includes(active) || active.offsetWidth <= 0) return;
-  const bounds = tabs.map((t) => ({ l: t.offsetLeft, r: t.offsetLeft + t.offsetWidth }));
+  /** Where the strip's scrollable content begins. `offsetLeft` counts from the
+   * wrapper (which the cue lane is a child of), `scrollLeft` and `clientWidth`
+   * from the strip's own padding box — the lane's 34px is the difference, and it
+   * only appears once the strip has scrolled, which is what made the parking
+   * rule shift under its own feet. */
+  const base = nav.offsetLeft + nav.clientLeft;
+  const bounds = tabs.map((t) => ({
+    l: t.offsetLeft - base,
+    r: t.offsetLeft - base + t.offsetWidth,
+  }));
   const a = bounds[tabs.indexOf(active)];
-  const cuts = (x: number): number => {
+  const at = nav.scrollLeft;
+  // How many labels a viewport EDGE cuts. The LEFT edge is scored first because
+  // that is where the strip's cue lives: a label cut there is a label the reader
+  // cannot finish reading, and the cue lane sits across the part of its box the
+  // clip hides. At `scrollLeft 0` the left edge cuts nothing by construction,
+  // so this ordering never moves a strip that has not been scrolled.
+  const cutAt = (x: number, edge: "left" | "right"): number => {
+    const line = edge === "left" ? x : x + w;
     let cut = 0;
     for (const b of bounds) {
-      if ((b.l < x - 1 && b.r > x + 1) || (b.l < x + w - 1 && b.r > x + w + 1)) cut += 1;
+      if (b.l < line - 1 && b.r > line + 1) cut += 1;
     }
     return cut;
   };
-  const at = nav.scrollLeft;
-  const candidates: number[] = [at, a.l, a.r - w];
+  // Any piece of the active tab on the strip counts as seen: one pixel of a
+  // label plus the cue that says the strip goes on is a tab the reader can read.
+  const onStrip = (x: number): boolean => a.l < x + w - 1 && a.r > x + 1;
+  const whole = (x: number): boolean => a.l >= x - 1 && a.r <= x + w + 1;
+  const mustReveal = !onStrip(at);
+  const keeps = mustReveal ? whole : onStrip;
+  const candidates: number[] = mustReveal ? [] : [at];
   for (const b of bounds) candidates.push(b.l, b.r - w);
-  let best: { x: number; cut: number; dist: number } | null = null;
+  let best: { x: number; left: number; right: number; dist: number } | null = null;
   for (const raw of candidates) {
     if (!Number.isFinite(raw)) continue;
     const x = Math.min(Math.max(raw, 0), max);
-    if (a.l < x - 1 || a.r > x + w + 1) continue; // the active tab must be whole
-    const cut = cuts(x);
-    const dist = Math.abs(x - at);
-    if (!best || cut < best.cut || (cut === best.cut && dist < best.dist)) best = { x, cut, dist };
+    if (!keeps(x)) continue; // never park the strip with its own tab off-screen
+    const score = {
+      x,
+      left: cutAt(x, "left"),
+      right: cutAt(x, "right"),
+      dist: Math.abs(x - at),
+    };
+    const better =
+      !best ||
+      score.left < best.left ||
+      (score.left === best.left &&
+        (score.right < best.right || (score.right === best.right && score.dist < best.dist)));
+    if (better) best = score;
+  }
+  // A tab wider than the strip leaves no boundary that keeps it whole; the
+  // browser's own scroll then beats no answer at all.
+  if (!best && mustReveal) {
+    active.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    return;
   }
   if (best && Math.abs(best.x - at) > 1) nav.scrollLeft = best.x;
 }
@@ -147,32 +206,32 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
     const max = nav.scrollWidth - nav.clientWidth;
     const x = nav.scrollLeft;
     // A pixel of slop each side so the fade never flashes at a rounded edge.
+    // `left` is asked of the STRIP, not of a guess: at `scrollLeft 0` there is
+    // nothing off the left edge, so the cue must not exist at all — a lane that
+    // is drawn while the strip still begins with its first tab is the arrow
+    // sitting on `Overview` (pass-2 review of this brief).
     setFade({ left: x > 1, right: x < max - 1 });
   }, []);
 
-  // The active tab's promise, kept past the first paint: the counts trail the
-  // labels (the `threads 1`, `workflows 3` of design 1b), so a tab GROWS after
-  // its read lands, and a strip that had scrolled the tab exactly into view is
-  // cut again ("Workflov" at 390 — pass-2 review). Every re-layout therefore
-  // pulls the active tab back fully into view: on arrival, whenever a count
-  // arrives (the effects below), and whenever the strip or window resizes.
+  // The strip's rest position, re-read every time the geometry moves: on
+  // arrival, whenever a count lands and widens a label (the `threads 1`,
+  // `workflows 3` of design 1b), and whenever the strip or window resizes. It
+  // does NOT scroll by default — see `snapToWholeLabels` for when a move is what
+  // the reader actually needs, and why the first tab whole at `scrollLeft 0` is
+  // the answer at 390 for every tab the strip can already see.
   const pullActiveIntoView = useCallback(() => {
     const nav = navRef.current;
     if (!nav) return;
     const tab = nav.querySelector<HTMLElement>('[aria-current="page"]');
-    // Scrolls the nearest scrollable ancestor — this `overflow-x-auto` nav —
-    // not the page. Guarded because jsdom has no `scrollIntoView`.
-    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    // `inline: "nearest"` moves as little as it must, which is what leaves a
-    // NEIGHBOUR half off at the other edge: pass-4 review again saw `Overview`
-    // cut mid-word at 390 while `Workflows 3` sat fully in view. The rest of
-    // the pull therefore re-reads the geometry and parks the strip on a
-    // WHOLE-LABEL boundary: of all the offsets where the active tab stays
-    // fully visible, pick one where no tab straddles the strip's left or
-    // right edge (a clean exit when one exists — every tab whole, the fade
-    // covering the rest), else the closest with only the LEFT edge whole;
-    // the right edge then shows its fade as the honest “more”. (If even that
-    // conflicts — a tab wider than the strip — the active tab wins.)
+    if (!tab || tab.offsetWidth <= 0) {
+      // Nothing to measure — a tab that has not laid out yet (and every box in
+      // jsdom): let the browser do its own `nearest` scroll rather than guess.
+      tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      measure();
+      return;
+    }
+    // The strip's own rest position, re-read every time the geometry moves: on
+    // arrival, when a tab count lands and widens a label, and on resize.
     snapToWholeLabels(nav);
     measure();
   }, [measure]);

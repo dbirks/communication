@@ -29,6 +29,14 @@
  * label, because this text is agent output and a click is not a place to
  * re-discover that.
  *
+ * And these nest, because a plan writes them nested: a step heading is bold and
+ * names a file in code INSIDE that bold (`**Patch \`hello.py\` so the gate can
+ * be *disarmed* (…)**`), an emphasis can carry a strong or a link, and a link's
+ * label can carry either. Only a code span is never read again — what an agent
+ * typed between the backticks is what the reader sees. The pass-2 review graded
+ * this DEFECT on `artifact-plan-md-1280.png`, where the first version of the
+ * parser printed the bold run's own backticks and asterisks at the reader.
+ *
  * What is left out stays readable rather than pretty: tables keep their pipe
  * rows as paragraph text, and a marker with nothing to close it is text — which
  * is what markdown itself renders for it.
@@ -84,10 +92,21 @@ export interface MarkdownListItem {
   children: MarkdownBlock[];
 }
 
-/** An inline span: plain text, code, strong, emphasis, or a link with a resolved href. */
+/**
+ * An inline span: plain text, code, strong, emphasis, or a link with a resolved
+ * href.
+ *
+ * `strong`, `italic` and `link` carry the spans written INSIDE them
+ * (`children`) when there is markup in there — `` **Patch `hello.py` so the
+ * gate can be *disarmed*** `` is a strong holding a code span and an emphasis —
+ * and leave it out when the span is one plain run (`**prove**`), which is what
+ * every plan step that does not nest has always been. `text` is the span's text
+ * either way, with the markers read rather than printed.
+ */
 export type MarkdownInline =
-  | { kind: "text" | "code" | "strong" | "italic"; text: string }
-  | { kind: "link"; text: string; href: string | null };
+  | { kind: "text" | "code"; text: string }
+  | { kind: "strong" | "italic"; text: string; children?: MarkdownInline[] }
+  | { kind: "link"; text: string; href: string | null; children?: MarkdownInline[] };
 
 /** A scheme a link may point at; everything else loses its target. */
 const SAFE_LINK = /^https?:\/\//i;
@@ -319,118 +338,335 @@ function newList(ordered: boolean, depth: number, start: number): MarkdownListBl
   return { kind: "list", ordered, depth, start: ordered ? start : 1, items: [] };
 }
 
-/**
- * Inline markup as spans. Code spans win (a `**` inside `` `…` `` is literal),
- * then strong, then emphasis, then links; what does not parse is text, with no
- * markers left behind for a `javascript:` target.
- */
-const CODE_SPAN = /^`([^`]*)`/;
-const STRONG = /^(\*\*|__)([^\r\n]+?)\1/;
-/** `*emphasis*` / `_emphasis_` — one marker, its run closed on the same line. */
-const EMPHASIS = /^([*_])([^\r\n]+?)\1/;
 /** A link target: no spaces, with one level of nested parens (`alert(1)`). */
 const LINK = /^\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))*)(?:\s+"[^"]*")?\)/;
-/** Where the next markup marker starts, in the text after position 0. */
-const NEXT_MARKER = /`|\*|_|\[/;
 /** A letter or digit — what makes `_…_` an underscore INSIDE a word. */
 const WORD_CHAR = /[\p{L}\p{N}]/u;
+/** CommonMark's punctuation: what a delimiter may be flanked by and still mean markup. */
+const PUNCTUATION = /[\p{P}\p{S}]/u;
 
 /**
- * Whether the `marker` run really wraps `content` in emphasis — CommonMark's
- * flanking rule in the two parts that matter here:
+ * Inline markup as spans — and spans INSIDE spans.
  *
- * - the run may not open onto whitespace or onto another of itself (`* …*`,
- *   `**unclosed`) and may not close on whitespace, or `2 * 3 * 4` and a stray
- *   pair of markers start eating prose;
- * - a `*` run closes whatever follows it, but `_` is the intra-word marker in
- *   `snake_case_names`, so an underscore run counts only when neither neighbour
- *   is a letter or digit. `_(read-only)_` after a space is emphasis; the
- *   underscores of `run_pytest_now_` are typography.
+ * The first version matched a `**…**` run and handed the reader the author's own
+ * characters for whatever was inside it, so the gate plan's
+ * `**Patch \`hello.py\` so the gate can be *disarmed* (…)**` printed its
+ * backticks and asterisks (`artifact-plan-md-1280.png`, run-gate-waiting): bold
+ * is a step's shape, and the step still names a file and italicises a word
+ * inside itself. Markdown nests, so this parses in two passes like CommonMark
+ * does:
  *
- * Punctuation at either END of the content is fine — that is the shape a plan
- * writes constantly: `*(read-only — no edits)*`.
+ * 1. `tokeniseInline` walks the line once, cutting out code spans and links
+ *    (whose insides are parsed on their own, so a code span is never read as
+ *    markup at all) and recording every `*`/`_` run with the two answers
+ *    `canOpen`/`canClose` from its neighbours; and
+ * 2. `pairEmphasis` walks those runs left to right, and a closer takes the
+ *    NEAREST unmatched opener of its own marker — which is what makes
+ *    `*a **b** c*` an emphasis holding a strong rather than the eaten-alive
+ *    mess a single find-the-last-asterisk regex produces, and what leaves
+ *    `*a *b*` the literal `*` in front that CommonMark leaves.
+ *
+ * `**` pairs as strong, a single marker as emphasis, and a run longer than the
+ * pair it feeds keeps its leftovers as text. A marker that never pairs is text
+ * (`2 * 3 * 4`, `**unclosed`, a lone backtick, the underscores of
+ * `run_pytest_now_`), exactly as markdown itself renders it, and a
+ * `javascript:` target is still reduced to its label.
  */
-function isEmphasis(
-  marker: string,
-  content: string,
-  before: string,
-  after: string | undefined,
-): boolean {
-  if (content === "" || content[0] === marker) return false;
-  if (/^\s|\s$/.test(content)) return false;
-  if (marker === "*") return true;
-  return !(WORD_CHAR.test(before) || (after !== undefined && WORD_CHAR.test(after)));
+export function parseInline(text: string): MarkdownInline[] {
+  return runsOf(pairEmphasis(tokeniseInline(text ?? "")));
 }
 
 /**
- * Inline markup as spans: `` `code` `` is mono, `**strong**`/`__strong__` is
- * bold, `*emphasis*`/`_emphasis_` is italic, `[label](url)` is a link — and only
- * an `http(s)` link keeps its target. A marker that does not open anything
- * (`2 * 3`, a lone backtick, an intra-word `_`) is text, exactly as markdown
- * itself renders it.
+ * One token of the inline scanner: a run of source with the role the markup
+ * gives it. Delimiter runs are mutable — a pair takes its markers off `run`, and
+ * whatever is left over stays visible text.
  */
-export function parseInline(text: string): MarkdownInline[] {
-  const source = text ?? "";
+interface InlineToken {
+  kind: "text" | "code" | "link" | "delim" | "strong" | "italic";
+  /** What a reader sees: the literal text, a code span's contents, a span's text. */
+  text: string;
+  /** The line of the source this token sits on (emphasis never runs across one). */
+  line: number;
+  /** A link's resolved target, or null when it is not http(s). */
+  href?: string | null;
+  /** A delimiter run: its character, its original and remaining length, and whether its neighbours let it open or close a span. */
+  marker?: string;
+  run?: number;
+  runLength?: number;
+  canOpen?: boolean;
+  canClose?: boolean;
+  /** A span (strong/emphasis) or a link: the tokens its markers wrapped. */
+  children?: InlineToken[];
+}
+
+/** The neighbours of a delimiter run; the edge of the text counts as whitespace. */
+function isSpace(char: string): boolean {
+  return char === "" || /\s/.test(char);
+}
+function isPunctuation(char: string): boolean {
+  return char !== "" && PUNCTUATION.test(char);
+}
+function isWordChar(char: string): boolean {
+  return char !== "" && WORD_CHAR.test(char);
+}
+
+/**
+ * Whether a run of `marker` can open or close a span — CommonMark's flanking
+ * rules, the two parts of which read the characters either side of the run:
+ *
+ * - a run opens when it is tight onto what follows (not onto whitespace) and
+ *   what precedes it is not a bare word character when the run hugs
+ *   punctuation; it closes in the mirror-image case;
+ * - a run that could do BOTH (`snake_case_names`) does neither, which is why an
+ *   intra-word `_` is typography; and
+ * - `_*_` additionally never pairs between letters or digits at all, so
+ *   `run_pytest_now_` keeps every underscore it wrote.
+ */
+function delimiterRun(source: string, at: number, marker: string, line: number): InlineToken {
+  let end = at;
+  while (end < source.length && source[end] === marker) end += 1;
+  const before = at === 0 ? "" : source[at - 1];
+  const after = end < source.length ? source[end] : "";
+  const left =
+    !isSpace(after) && (!isPunctuation(after) || isSpace(before) || isPunctuation(before));
+  const right =
+    !isSpace(before) && (!isPunctuation(before) || isSpace(after) || isPunctuation(after));
+  let canOpen = left && (!right || isPunctuation(before));
+  let canClose = right && (!left || isPunctuation(after));
+  if (marker === "_") {
+    canOpen = canOpen && !isWordChar(before);
+    canClose = canClose && !isWordChar(after);
+  }
+  return {
+    kind: "delim",
+    text: source.slice(at, end),
+    line,
+    marker,
+    run: end - at,
+    runLength: end - at,
+    canOpen,
+    canClose,
+  };
+}
+
+/** The next run of exactly `length` backticks at or after `from`, or -1. */
+function closingBackticks(source: string, from: number, length: number): number {
+  let at = source.indexOf("`", from);
+  while (at !== -1) {
+    let end = at;
+    while (end < source.length && source[end] === "`") end += 1;
+    if (end - at === length) return at;
+    at = source.indexOf("`", end);
+  }
+  return -1;
+}
+
+/** Cut one line of markdown into text, code spans, links and delimiter runs. */
+function tokeniseInline(source: string): InlineToken[] {
+  const tokens: InlineToken[] = [];
+  let buffer = "";
+  let line = 0;
+  const flush = (): void => {
+    if (buffer === "") return;
+    tokens.push({ kind: "text", text: buffer, line });
+    buffer = "";
+  };
+  let at = 0;
+  while (at < source.length) {
+    const char = source[at];
+    if (char === "`") {
+      let end = at;
+      while (end < source.length && source[end] === "`") end += 1;
+      const run = end - at;
+      const close = closingBackticks(source, end, run);
+      if (close !== -1) {
+        // A code span is never parsed further, and its own markers are not its
+        // content: what the author typed between the fences is the text.
+        flush();
+        let content = source.slice(end, close);
+        if (
+          content.length >= 2 &&
+          content.startsWith(" ") &&
+          content.endsWith(" ") &&
+          !/^\s*$/.test(content)
+        ) {
+          content = content.slice(1, -1);
+        }
+        tokens.push({ kind: "code", text: content, line });
+        at = close + run;
+        continue;
+      }
+      buffer += source.slice(at, end);
+      at = end;
+      continue;
+    }
+    if (char === "[") {
+      const link = LINK.exec(source.slice(at));
+      if (link) {
+        flush();
+        const label = tokeniseAndPair(link[1]);
+        const target = link[2];
+        tokens.push({
+          kind: "link",
+          text: plainText(label),
+          line,
+          href: SAFE_LINK.test(target) ? target : null,
+          children: label,
+        });
+        at += link[0].length;
+        continue;
+      }
+      buffer += char;
+      at += 1;
+      continue;
+    }
+    if (char === "*" || char === "_") {
+      flush();
+      const run = delimiterRun(source, at, char, line);
+      tokens.push(run);
+      at += run.runLength ?? 1;
+      continue;
+    }
+    if (char === "\n") line += 1;
+    buffer += char;
+    at += 1;
+  }
+  flush();
+  return tokens;
+}
+
+/**
+ * CommonMark's rule of 3: a run that could both open and close may not pair at
+ * a distance that is a multiple of 3 (unless both runs are), which is what keeps
+ * `*foo*bar*` from reading its own asterisks as emphasis.
+ */
+function blockedByThree(opener: InlineToken, closer: InlineToken): boolean {
+  const eitherServesBoth =
+    (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose);
+  if (!eitherServesBoth) return false;
+  const sum = (opener.runLength ?? 0) + (closer.runLength ?? 0);
+  const bothWhole = (opener.runLength ?? 0) % 3 === 0 && (closer.runLength ?? 0) % 3 === 0;
+  return sum % 3 === 0 && !bothWhole;
+}
+
+/** The nearest still-openable run of the closer's own marker, or -1. */
+function findOpener(openers: InlineToken[], closer: InlineToken): number {
+  for (let index = openers.length - 1; index >= 0; index -= 1) {
+    const candidate = openers[index];
+    if (candidate.marker !== closer.marker) continue;
+    if (!candidate.canOpen || (candidate.run ?? 0) <= 0) {
+      openers.splice(index, 1);
+      continue;
+    }
+    if (blockedByThree(candidate, closer)) continue;
+    return index;
+  }
+  return -1;
+}
+
+/** Tokenise and pair a fragment that stands on its own (a link label). */
+function tokeniseAndPair(source: string): InlineToken[] {
+  return pairEmphasis(tokeniseInline(source));
+}
+
+/** What a list of tokens prints, markers read and leftovers kept. */
+function plainText(tokens: InlineToken[]): string {
+  return tokens.map((token) => token.text).join("");
+}
+
+/**
+ * Pair the delimiter runs into spans, in place. A closer takes the nearest
+ * opener of its marker on the same line; `**` consumes two markers a side and
+ * `*` one, so a run of three leaves a leftover that can still pair again — and
+ * the tokens between a pair become that span's own `children`, which is where
+ * the nesting comes from.
+ */
+function pairEmphasis(tokens: InlineToken[]): InlineToken[] {
+  const openers: InlineToken[] = [];
+  let index = 0;
+  while (index < tokens.length) {
+    const closer = tokens[index];
+    if (closer.kind !== "delim") {
+      index += 1;
+      continue;
+    }
+    // Where the closer lives now: it moves left every time a pair is cut out.
+    let position = index;
+    while (closer.canClose && (closer.run ?? 0) > 0) {
+      const openerIndex = findOpener(openers, closer);
+      if (openerIndex < 0) break;
+      const opener = openers[openerIndex];
+      const openerAt = tokens.indexOf(opener);
+      if (openerAt < 0 || openerAt >= position || opener.line !== closer.line) break;
+      const inner = tokens.slice(openerAt + 1, position);
+      if (inner.length === 0) break;
+      const strong = (opener.run ?? 0) >= 2 && (closer.run ?? 0) >= 2;
+      const used = strong ? 2 : 1;
+      const span: InlineToken = {
+        kind: strong ? "strong" : "italic",
+        text: plainText(inner),
+        line: closer.line,
+        children: inner,
+      };
+      opener.run = (opener.run ?? 0) - used;
+      closer.run = (closer.run ?? 0) - used;
+      // A run that gave fewer markers than it had keeps the rest as the literal
+      // markers CommonMark prints (`***x***`, `*a b**`).
+      for (const run of [opener, closer]) {
+        if ((run.run ?? 0) > 0) run.text = (run.marker ?? "").repeat(run.run ?? 0);
+      }
+      const replacement: InlineToken[] = [];
+      if ((opener.run ?? 0) > 0) replacement.push(opener);
+      replacement.push(span);
+      if ((closer.run ?? 0) > 0) replacement.push(closer);
+      tokens.splice(openerAt, position - openerAt + 1, ...replacement);
+      // Whatever was open BETWEEN the pair is inside the span now; it can never
+      // pair with anything outside it.
+      openers.length = openerIndex;
+      if ((opener.run ?? 0) > 0) openers.push(opener);
+      position = openerAt + replacement.length - ((closer.run ?? 0) > 0 ? 1 : 0);
+      if ((closer.run ?? 0) === 0) break;
+    }
+    if ((closer.run ?? 0) > 0 && closer.canOpen) openers.push(closer);
+    const after = tokens.indexOf(closer);
+    index = after < 0 ? position : after + 1;
+  }
+  return tokens;
+}
+
+/**
+ * A token list as runs, with adjacent plain text merged. A span carries its
+ * nested runs only when there is markup inside it: `**prove**` stays the single
+ * text span it always was, so nothing that read this output before nesting has
+ * to be re-learned.
+ */
+function runsOf(tokens: InlineToken[]): MarkdownInline[] {
   const out: MarkdownInline[] = [];
-  let input = source;
-  /** How much of `source` is consumed — how to ask what came BEFORE this run. */
-  let offset = 0;
   let buffer = "";
   const flush = (): void => {
-    if (buffer !== "") {
-      out.push({ kind: "text", text: buffer });
-      buffer = "";
-    }
+    if (buffer === "") return;
+    out.push({ kind: "text", text: buffer });
+    buffer = "";
   };
-  const take = (count: number): void => {
-    input = input.slice(count);
-    offset += count;
-  };
-  while (input !== "") {
-    const code = CODE_SPAN.exec(input);
-    if (code) {
-      flush();
-      out.push({ kind: "code", text: code[1] });
-      take(code[0].length);
+  for (const token of tokens) {
+    if (token.kind === "text" || token.kind === "delim") {
+      buffer += token.text;
       continue;
     }
-    const strong = STRONG.exec(input);
-    if (strong) {
-      flush();
-      out.push({ kind: "strong", text: strong[2] });
-      take(strong[0].length);
+    flush();
+    if (token.kind === "code") {
+      out.push({ kind: "code", text: token.text });
       continue;
     }
-    const link = LINK.exec(input);
-    if (link) {
-      flush();
-      const target = link[2];
-      out.push({ kind: "link", text: link[1], href: SAFE_LINK.test(target) ? target : null });
-      take(link[0].length);
+    const children = token.children ? runsOf(token.children) : [];
+    const nested = children.length === 1 && children[0].kind === "text";
+    if (token.kind === "link") {
+      const link: MarkdownInline = { kind: "link", text: token.text, href: token.href ?? null };
+      out.push(nested ? link : { ...link, children });
       continue;
     }
-    const emphasis = EMPHASIS.exec(input);
-    if (
-      emphasis !== null &&
-      isEmphasis(
-        emphasis[1],
-        emphasis[2],
-        offset === 0 ? "" : source[offset - 1],
-        input[emphasis[0].length],
-      )
-    ) {
-      flush();
-      out.push({ kind: "italic", text: emphasis[2] });
-      take(emphasis[0].length);
-      continue;
-    }
-    // No span starts here: take the text up to the next marker (or all of it),
-    // and never zero characters — an unclosed marker must not spin the loop.
-    const after = input.slice(1).search(NEXT_MARKER);
-    const next = after < 0 ? input.length : after + 1;
-    const advance = next <= 0 ? 1 : next;
-    buffer += input.slice(0, advance);
-    take(advance);
+    const span: MarkdownInline = { kind: token.kind, text: token.text };
+    out.push(nested ? span : { ...span, children });
   }
   flush();
   return out;
@@ -470,46 +706,59 @@ export function looksLikeMarkdown(text: string): boolean {
   return INLINE_CODE.test(source) || INLINE_STRONG.test(source) || INLINE_LINK.test(source);
 }
 
-/** Render inline markdown to React nodes (text, `<code>`, `<strong>`, `<em>`, `<a>`). */
+/**
+ * Render inline markdown to React nodes (text, `<code>`, `<strong>`, `<em>`,
+ * `<a>`), nested as the author wrote them — a code span inside a bold step is a
+ * `<code>` inside the `<strong>`, never a backtick in the reader's face.
+ */
 export function renderInline(text: string): ReactNode[] {
-  return parseInline(text).map((run, index) => {
-    if (run.kind === "code") {
-      return (
-        <code key={index} className="rounded-[2px] bg-fill px-[3px] font-mono text-[.94em]">
-          {run.text}
-        </code>
-      );
-    }
-    if (run.kind === "strong") {
-      return (
-        <strong key={index} className="font-semibold">
-          {run.text}
-        </strong>
-      );
-    }
-    if (run.kind === "italic") {
-      return (
-        <em key={index} className="italic">
-          {run.text}
-        </em>
-      );
-    }
-    if (run.kind === "link") {
-      return run.href ? (
-        <a
-          key={index}
-          href={run.href}
-          rel="noreferrer noopener"
-          className="text-accent-text hover:text-ink"
-        >
-          {run.text}
-        </a>
-      ) : (
-        <span key={index}>{run.text}</span>
-      );
-    }
-    return <span key={index}>{run.text}</span>;
-  });
+  return parseInline(text).map((run, index) => renderSpan(run, String(index)));
+}
+
+/** One span, and whatever it holds. */
+function renderSpan(run: MarkdownInline, key: string): ReactNode {
+  // A code span's contents are never read as markup, and plain text has nothing
+  // to hold: only strong, emphasis and a link's label carry nested runs.
+  const inner =
+    "children" in run && run.children
+      ? run.children.map((child, index) => renderSpan(child, `${key}-${index}`))
+      : run.text;
+  if (run.kind === "code") {
+    return (
+      <code key={key} className="rounded-[2px] bg-fill px-[3px] font-mono text-[.94em]">
+        {inner}
+      </code>
+    );
+  }
+  if (run.kind === "strong") {
+    return (
+      <strong key={key} className="font-semibold">
+        {inner}
+      </strong>
+    );
+  }
+  if (run.kind === "italic") {
+    return (
+      <em key={key} className="italic">
+        {inner}
+      </em>
+    );
+  }
+  if (run.kind === "link") {
+    return run.href ? (
+      <a
+        key={key}
+        href={run.href}
+        rel="noreferrer noopener"
+        className="text-accent-text hover:text-ink"
+      >
+        {inner}
+      </a>
+    ) : (
+      <span key={key}>{inner}</span>
+    );
+  }
+  return <span key={key}>{inner}</span>;
 }
 
 export interface MarkdownBodyProps {

@@ -463,7 +463,11 @@ export function PipelinePage() {
                 and the H1 already carries the slug whenever the workflow has
                 no other name. */}
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-[8px]">
+          {/* `md:ml-auto` on top of `justify-end`: the header row wraps at
+              `md`, and if the action group ever drops onto a row of its own,
+              auto-margin keeps it flush right instead of drifting to the
+              middle of the header (pass-2 review, 1e MINOR). */}
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-[8px] md:ml-auto">
             {newestPublished ? (
               <Button
                 variant="secondary"

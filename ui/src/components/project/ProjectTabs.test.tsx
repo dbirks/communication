@@ -23,12 +23,63 @@ afterEach(cleanup);
 
 const projectId = "01987b22-0000-7000-8000-abcdef012345";
 
-function mount(active: Parameters<typeof ProjectTabs>[0]["active"]) {
+function mount(
+  active: Parameters<typeof ProjectTabs>[0]["active"],
+  flags: Parameters<typeof ProjectTabs>[0]["flags"] = {},
+) {
   return render(
     <MemoryRouter>
-      <ProjectTabs projectId={projectId} active={active} />
+      <ProjectTabs projectId={projectId} active={active} flags={flags} />
     </MemoryRouter>,
   );
+}
+
+/** One tab change with new counts on it — the live re-read that re-measures the
+ * strip, which `mount` alone cannot show because jsdom lays nothing out. */
+function remount(
+  active: Parameters<typeof ProjectTabs>[0]["active"],
+  flags: Parameters<typeof ProjectTabs>[0]["flags"],
+) {
+  return (
+    <MemoryRouter>
+      <ProjectTabs projectId={projectId} active={active} flags={flags} />
+    </MemoryRouter>
+  );
+}
+
+/**
+ * The strip as the phone really lays it out at 390 — measured on the dev server
+ * at `project-1b-workflows-390`: a 346px viewport over 519px of tabs, the six
+ * labels with their counts between them. jsdom lays nothing out, so a test that
+ * asks where the strip PARKS has to hand it the geometry it would read.
+ */
+const TAB_BOXES: Record<string, [number, number]> = {
+  overview: [0, 80.5],
+  runs: [84.5, 79.4],
+  threads: [167.9, 85.1],
+  workflows: [257, 103],
+  artifacts: [364, 76.1],
+  settings: [444.1, 74.8],
+};
+
+function fakePhoneLayout(): HTMLElement {
+  const nav = screen.getByTestId("project-tabs");
+  let scrollLeft = 0;
+  Object.defineProperty(nav, "clientWidth", { configurable: true, value: 346 });
+  Object.defineProperty(nav, "scrollWidth", { configurable: true, value: 519 });
+  Object.defineProperty(nav, "scrollLeft", {
+    configurable: true,
+    get: () => scrollLeft,
+    set: (value: number) => {
+      scrollLeft = value;
+    },
+  });
+  for (const [key, [left, width]] of Object.entries(TAB_BOXES)) {
+    const tab = screen.getByTestId(`project-tab-${key}`);
+    Object.defineProperty(tab, "offsetLeft", { configurable: true, value: left });
+    Object.defineProperty(tab, "offsetWidth", { configurable: true, value: width });
+  }
+  return nav;
 }
 
 /** jsdom has no layout: every box measures 0×0, so a scroll container always
@@ -72,9 +123,74 @@ describe("the project tab strip at phone width", () => {
     Element.prototype.scrollIntoView = scrolled;
     mount("workflows");
     // The browser stays put vertically (`block: "nearest"`) and moves only as
-    // far sideways as it must — a deep link to Workflows opens showing it.
+    // far sideways as it must — a deep link to a tab the strip cannot see at all
+    // opens showing it. With nothing laid out (every box 0×0) that is the one
+    // case where the component defers to the browser's own scroll.
     expect(scrolled).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
     expect(screen.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("stays at scrollLeft 0, first tab whole, when the strip can already see the active tab", () => {
+    // `project-1b-workflows-390.png`, the MINOR from the pass-2 review: opening
+    // the Workflows tab at 390 scrolled the strip to 82 so its own tab sat
+    // whole, and the 34px cue lane was then drawn across the box `Overview` had
+    // been scrolled into — the arrow on top of the first label. The strip now
+    // only moves for a tab it cannot see at all.
+    const { rerender } = mount("workflows");
+    const nav = fakePhoneLayout();
+    // A count landing re-reads the geometry, exactly as the live read does.
+    rerender(remount("workflows", { workflows: 3 }));
+    expect(nav.scrollLeft).toBe(0);
+    // No cue at the strip's start — not in the DOM at all, so it cannot sit on a
+    // label however it is painted.
+    expect(screen.queryByTestId("project-tabs-fade-left")).toBeNull();
+    // …and `Overview` still begins the strip, whole.
+    const overview = screen.getByTestId("project-tab-overview");
+    expect(overview.offsetLeft).toBeGreaterThanOrEqual(nav.scrollLeft);
+    expect(overview.offsetLeft + overview.offsetWidth).toBeLessThanOrEqual(
+      nav.scrollLeft + nav.clientWidth,
+    );
+    // The tab the page was opened on stays reachable, and the cue that says the
+    // strip continues stands at the edge it is clipped at.
+    expect(screen.getByTestId("project-tabs-fade-right")).toBeTruthy();
+  });
+
+  it("parks a scrolled strip on a boundary where the cue's own edge cuts no label", () => {
+    // The cue lane is 34px wide and sits to the LEFT of the strip, so a strip
+    // that stops mid-label leaves a label the reader cannot finish right beside
+    // it. Every rest position is therefore a tab edge, and of the clean ones the
+    // nearest wins.
+    const { rerender } = mount("workflows");
+    const nav = fakePhoneLayout();
+    nav.scrollLeft = 118; // mid `Runs`: 84.5 + 79.4 = 163.9, so 118 cuts it
+    rerender(remount("workflows", { workflows: 3 }));
+    expect(nav.scrollLeft).toBeCloseTo(84.5, 1);
+    // Nothing straddles the cue's edge any more: every tab is whole in the strip
+    // or wholly behind the cue lane.
+    const cutAtCueEdge = ([left, width]: [number, number]) =>
+      left < nav.scrollLeft - 1 && left + width > nav.scrollLeft + 1;
+    expect(Object.values(TAB_BOXES).some(cutAtCueEdge)).toBe(false);
+    // And the cue stands where it should: the strip is away from its start.
+    expect(screen.getByTestId("project-tabs-fade-left")).toBeTruthy();
+  });
+
+  it("still pulls a tab the strip cannot see at all whole into view (deep link to Settings)", () => {
+    const { rerender } = mount("settings");
+    const nav = fakePhoneLayout();
+    rerender(remount("settings", { threads: 2 }));
+    // Settings runs to the end of the strip, so the strip goes to its furthest
+    // stop and shows the tab it was opened on entire.
+    expect(nav.scrollLeft).toBeCloseTo(172.9, 0);
+    const settings = screen.getByTestId("project-tab-settings");
+    expect(settings.offsetLeft).toBeGreaterThanOrEqual(nav.scrollLeft);
+    expect(settings.offsetLeft + settings.offsetWidth).toBeLessThanOrEqual(
+      nav.scrollLeft + nav.clientWidth + 0.5,
+    );
+    // Now the strip IS away from its start, and the left cue appears — in its
+    // own lane, which is why it still cannot print over a tab.
+    const left = screen.getByTestId("project-tabs-fade-left");
+    expect(left.className.split(/\s+/)).toContain("shrink-0");
+    expect(left.className).not.toContain("absolute");
   });
 
   it("shows the right-hand fade while tabs are off-strip, and no left fade yet", () => {

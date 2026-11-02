@@ -4,12 +4,32 @@
  * chip, the Canvas | YAML segmented control, then the action row (undo/redo
  * icon buttons, Validate, Save, Publish — primary, disabled until publishable).
  *
- * The header is a single 52px row on desktop (≥768px). The publish reason and
- * the validation state live in the StudioStatusBar, and the diff affordance
- * moved there too (`diff vs r<N>`), so this bar keeps only the control and
- * the actions and the row never truncates. Below 768px the header gains two
- * drawer toggles (`Steps` / `Inspect`) that open the palette/inspector over
- * the canvas.
+ * The header is one 52px row on desktop (≥768px) — 52px is a FLOOR
+ * (`min-h-[52px]`), not a cap: the workflow name is a name, and the product
+ * rule is that names and titles WRAP, never truncate (pass-2 review, DEFECT on
+ * 1g-studio-1280/390: `Emu plan pass-2-202…` with ~180px of free header beside
+ * it). So the name owns the free space between the breadcrumb and the action
+ * group (`flex-1; min-w-0`), hugs its own text when there is room
+ * (`md:max-w-max`, which is what keeps the draft chip and the tabs beside it)
+ * and breaks anywhere (`[overflow-wrap:anywhere]`) when there is not — the row
+ * grows past 52px instead of ellipsising. The action group stays right-aligned
+ * by taking whatever space the name did not need (`ml-auto`) and is never
+ * squeezed itself (`md:shrink-0`).
+ *
+ * The 768px row inherits the base `flex-wrap` (there is no `md:flex-nowrap`) rather
+ * than scrolling sideways: a name
+ * that needs its own minimum plus the fixed-width chip/tabs/actions is wider
+ * than a 768px viewport's header, and a `nowrap + overflow-x:auto` header
+ * pushed the Validate/Save/Publish group off-screen there. Wrapping puts the
+ * tabs and the actions on the next row (still flush right, `ml-auto`) — the
+ * 390 reflow rule one breakpoint up: nothing clips, nothing truncates, nothing
+ * is off-screen.
+ *
+ * The publish reason and the validation state live in the StudioStatusBar, and
+ * the diff affordance moved there too (`diff vs r<N>`), so this bar keeps only
+ * the control and the actions. Below 768px the header gains two drawer toggles
+ * (`Steps` / `Inspect`) that open the palette/inspector over the canvas, and the
+ * name drops onto its own line and wraps there too.
  *
  * At 390px the header reflows the SAME content into wrapped rows (the 390
  * reflow rule: the 1280 content and hierarchy in one column): the breadcrumb
@@ -137,18 +157,19 @@ export function StudioHeader({
   // reads `· draft v3 · unsaved`: the mark lives inside it, uppercase like the
   // rest of the chip (CSS, so the accessible/DOM text stays the plain word).
   const chipVersionText = `· DRAFT${versionText}`;
-  // Pass 2 #6 at 390px the header is exactly two rows — row 1: title +
-  // draft chip + undo/redo + the Steps/Inspect icon toggles; row 2: the
-  // Canvas|YAML tabs + Validate/Save/Publish — and never wraps into three.
-  // The breadcrumb (desktop design) hides below md; the icon-only toggles
-  // shrink the phone row.
+  // Pass 2 #6 at 390px the header reflows into wrapped rows (never three tall
+  // rows of squeezed text): row 1 the breadcrumb, row 2 the name on a line of
+  // its own (`flex-[1_1_100%]` below md — it wraps rather than ellipsises),
+  // row 3 the draft chip + undo/redo + the Steps/Inspect icon toggles, row 4
+  // the Canvas|YAML tabs + Validate/Save/Publish flush right (`ml-auto`).
+  // The icon-only toggles shrink the phone rows.
   const iconToggle =
     "inline-flex h-[26px] w-[30px] min-h-[44px] shrink-0 items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0";
   const iconAction =
     "inline-flex h-[26px] w-[30px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40";
   return (
     <header
-      className="flex shrink-0 flex-row flex-wrap items-center gap-x-[8px] gap-y-[8px] border-b border-line bg-surface px-4 py-2 md:h-[52px] md:flex-nowrap md:items-center md:gap-[10px] md:overflow-x-auto md:py-0"
+      className="flex shrink-0 flex-row flex-wrap items-center gap-x-[8px] gap-y-[8px] border-b border-line bg-surface px-4 py-2 md:min-h-[52px] md:items-center md:gap-[10px] md:py-[6px]"
       data-testid="studio-header"
     >
       <nav
@@ -177,7 +198,7 @@ export function StudioHeader({
         </span>
       </nav>
       <h1
-        className="min-w-[80px] flex-1 truncate text-[15px] font-semibold md:max-w-[320px] md:min-w-[160px]"
+        className="min-w-0 flex-[1_1_100%] text-[15px] font-semibold [overflow-wrap:anywhere] md:flex-1 md:max-w-max md:min-w-[160px]"
         data-testid="studio-title"
         title={pipelineName}
       >
@@ -232,9 +253,11 @@ export function StudioHeader({
         ) : null}
       </div>
       <SegmentedControl view={view} onViewChange={onViewChange} />
-      <span className="hidden md:block md:flex-1" />
+      {/* No spacer row-mate: the name already owns the free space, and the
+          action group takes what the name did not need (`ml-auto`), so the
+          actions are flush right at 1280 as well as on the phone's last row. */}
       <div
-        className="ml-auto flex flex-nowrap items-center gap-[4px] md:ml-0 md:min-w-0 md:gap-[8px]"
+        className="ml-auto flex flex-nowrap items-center gap-[4px] md:shrink-0 md:gap-[8px]"
         data-testid="studio-header-actions"
       >
         <span className="flex shrink-0 items-center gap-[4px]">

@@ -1,9 +1,11 @@
 /**
- * StudioHeader layout tests (design 1g): the breadcrumb, the name's 160px
- * floor and ellipsis, the draft chip showing only the parts that are true,
- * the Canvas | YAML tablist, the Runs/Assigned affordances being GONE from
- * the header (design 1g drops them; the testids are retired), and the action
- * buttons keeping a 44px phone tap target.
+ * StudioHeader layout tests (design 1g): the breadcrumb, the name owning the
+ * free header space and WRAPPING it (pass-2 review, 1g-studio-1280/390 DEFECT:
+ * names and titles wrap, never truncate), the draft chip showing only the parts
+ * that are true, the Canvas | YAML tablist, the Runs/Assigned affordances being
+ * GONE from the header (design 1g drops them; the testids are retired), the
+ * action group flush right, and the action buttons keeping a 44px phone tap
+ * target.
  */
 import { cleanup, fireEvent, render, screen, type RenderResult } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
@@ -44,18 +46,65 @@ function renderHeader(overrides: Partial<Parameters<typeof StudioHeader>[0]> = {
 afterEach(cleanup);
 
 describe("StudioHeader", () => {
-  it("renders the breadcrumb Workflows / <folder> / and truncates the name", () => {
+  it("renders the breadcrumb Workflows / <folder> / and wraps the name", () => {
+    // Pass-2 review, DEFECT on 1g-studio-1280/390: the header drew
+    // `Emu plan pass-2-202…` with ~180px of free header beside it. The product
+    // rule is that names and titles wrap, never truncate — so the H1 takes the
+    // free space (`flex-1` + `min-w-0`), stops growing at its own text width
+    // (`md:max-w-max`, which keeps the chip and the tabs beside it), breaks
+    // anywhere (`[overflow-wrap:anywhere]`) and the 52px row is a FLOOR, not a
+    // cap. The old contract (a 320px cap + `truncate`) is gone.
     renderHeader();
     const title = screen.getByTestId("studio-title") as HTMLElement;
+    expect(title.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    expect(title.className).not.toMatch(/(^|\s)(whitespace-nowrap|text-ellipsis)(\s|$)/);
+    expect(title.className).not.toMatch(/(^|\s)md:max-w-\[(\d|\.)+(px|ch|rem)\](\s|$)/);
+    expect(title.classList.contains("md:flex-1")).toBe(true);
+    expect(title.classList.contains("min-w-0")).toBe(true);
+    expect(title.classList.contains("md:max-w-max")).toBe(true);
+    expect(title.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
     expect(title.classList.contains("md:min-w-[160px]")).toBe(true);
-    expect(title.classList.contains("truncate")).toBe(true);
+    // 390: the name sits on a line of its own and wraps there (`flex-basis 100%`
+    // below md, restored to `flex-1` from md up).
+    expect(title.classList.contains("flex-[1_1_100%]")).toBe(true);
+    // The full name stays readable by assistive tech and on hover.
     expect(title.title).toBe(LONG_NAME);
+    const header = screen.getByTestId("studio-header");
+    expect(header.classList.contains("md:min-h-[52px]")).toBe(true);
+    expect(header.className).not.toMatch(/(^|\s)md:h-\[52px\](\s|$)/);
+    // The deficit is never turned into a sideways scroll either: at 768–1023px
+    // a `md:flex-nowrap` + `md:overflow-x-auto` bar pushed the whole
+    // Validate/Save/Publish group off-screen (measured: header scrollWidth 818
+    // in a 784px bar). The header wraps into extra rows instead — the 390
+    // reflow rule one breakpoint up.
+    expect(header.className).not.toMatch(/(^|\s)md:flex-nowrap(\s|$)/);
+    expect(header.className).not.toMatch(/(^|\s)md:overflow-x-auto(\s|$)/);
     const breadcrumb = screen.getByTestId("studio-breadcrumb");
     expect(breadcrumb.textContent).toContain("Workflows");
     expect(breadcrumb.textContent).toContain("delivery");
     expect(
       (screen.getByTestId("studio-breadcrumb-workflows") as HTMLAnchorElement).getAttribute("href"),
     ).toBe("/workflows");
+  });
+
+  it("keeps the action group flush right with the name as the only grower", () => {
+    // The name owns the free space; the actions take what it did not need.
+    // A second `md:flex-1` spacer (the old layout) split that space in two and
+    // re-created the 1280 ellipsis, so the header must have exactly one grower.
+    renderHeader();
+    const header = screen.getByTestId("studio-header");
+    const growers = [...header.children].filter((child) => child.classList.contains("md:flex-1"));
+    expect(growers).toHaveLength(1);
+    expect(growers[0]).toBe(screen.getByTestId("studio-title"));
+    const actions = screen.getByTestId("studio-header-actions");
+    expect(actions.classList.contains("ml-auto")).toBe(true);
+    expect(actions.className).not.toMatch(/(^|\s)md:ml-0(\s|$)/);
+    // The group is never squeezed to make the name fit — its buttons are
+    // `flex-nowrap`, so a shrunk group would clip them off-screen. It keeps its
+    // full width and, when the row is too narrow, wraps onto a row of its own
+    // where `ml-auto` still holds it flush right.
+    expect(actions.classList.contains("md:shrink-0")).toBe(true);
+    expect(actions.className).not.toMatch(/(^|\s)md:min-w-0(\s|$)/);
   });
 
   it("shows only the true parts of the draft chip: version and unsaved", () => {
