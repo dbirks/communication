@@ -16,7 +16,12 @@ journeys are added as screens land.
    `emu.screen(badge, name)`, which captures the page at **1280×900 and
    390×844** and records it against the design render
    `docs/design/handoff-workflows/png/<badge>.png` (Projects Review
-   badges will come under `docs/design/handoff-projects/png/`). Each capture
+   badges come under `docs/design/handoff-projects/png/`; the
+   Repo/Chat/Nav handoff's renders live under
+   `docs/design/handoff-repo-chat-nav/png/` and REUSE the old badge
+   numbers for different screens, so its badges are namespaced `rcn-`:
+   badge `rcn-3a` is that directory's `3a.png`. The per-directory prefix
+   map is `env.ts` `EMU_DESIGN_DIRS`; render files are never renamed.) Each capture
    goes from the **top**: `emu.screen` calls `scrollToTopForCapture` (the
    shared helper in `tests/helpers.ts`) first, because a `fullPage` shot is
    stitched from the page's scroll position and a journey that auto-scrolled a
@@ -248,7 +253,11 @@ button, a section, a field. Specs address elements by
 A landmark is satisfied when **ANY** of its specs matches an element that
 renders — a non-zero box, not `display:none`/`visibility:hidden` — inside
 `<main>` or an open dialog; being scrolled out of view is fine, since the
-screen's own full-page screenshot shows it. `only?: 1280|390` narrows a
+screen's own full-page screenshot shows it. A landmark may opt into
+`host: "page"` to search the WHOLE document instead — only the app-shell
+screens use it (`rcn-3c`: the sidebar column and the assistant popover live
+outside `<main>`), so every per-page list keeps the strict main+dialog
+reading. `only?: 1280|390` narrows a
 landmark to one width, but the phone swap is better expressed as ONE landmark
 whose `any` carries both forms, which is the 390 rule read as a landmark: the
 content is there, or the one tap that reaches it is (`threads-1g`'s list
@@ -256,7 +265,10 @@ landmark accepts the 1280 list pane or the 390 `← Threads` back link).
 
 Coverage cannot lapse: a badge that HAS a design render
 (`docs/design/handoff-workflows/png/<badge>.png`,
-`docs/design/handoff-projects/png/<badge>.png`) and no entry is itself a
+`docs/design/handoff-projects/png/<badge>.png`, or — under the `rcn-`
+namespace, env.ts `EMU_DESIGN_DIRS` —
+`docs/design/handoff-repo-chat-nav/png/<badge-minus-prefix>.png`) and no
+entry is itself a
 `design` defect (`no landmarks defined`), so adding a screen forces a landmark
 list. Screens with no design render at all — `run-gate`, `artifact` — are
 exempt and their `checks.design` trivially passes. A screen name whose tail is
@@ -390,6 +402,49 @@ UI to show what the API serves, or an honest empty state.
   repository list answers 200 and the absence is the client's own read.
   **threads-1g** — `/threads` with nothing selected (the existing thread
   journeys keep the open-thread screens).
+- `repo-chat-nav` (`repo-chat-nav.spec.ts`) — the Repo/Chat/Nav handoff's
+  final picks, under the `rcn-` badge namespace (its renders reuse the old
+  numbers: badge `rcn-2e` is `handoff-repo-chat-nav/png/2e.png`). Admin
+  publishes `Emu rcn <pass>` (the plan-with-approval template plus the
+  ADR-0066 annotations: `goal` as long text, a branch-typed `revision` on a
+  default — the fields the 1k form builds); alice then stands a
+  pass-stamped project with TWO repos — `web` on the lab's `file://`
+  fixture remote and `server` on a REAL tiny public remote
+  (`octocat/Hello-World`; the worker mirrors every repo of a chat's
+  project before a turn, so an unreachable remote would fail the turn's
+  workspace prep outright) — pins the
+  workflow, arms a labeled issue trigger on `server` (the server REFUSES
+  one on `web`: `not_a_github_repository`, and that refusal is exactly the
+  List view's asserted OPEN ISSUES state) and seeds one repo-bound chat
+  (ADR-0067). Seeds resolve-or-create by their pass-stamped slug/name/label:
+  Playwright restarts the worker after a serial-group failure, and a fresh
+  process must reuse the dead one's rows, never 409 on them. The journeys:
+  **rcn-3c** — the one sidebar expanded, the ⋯ project menu, the collapse to
+  the rail, a tile's hover flyout, and the rail surviving a reload (then
+  re-expanded, because the preference lives on alice's account across
+  passes); **rcn-3a** — the feed's empty line, then the page with the chat
+  row, the WORKFLOWS row's trigger/result/Run, the honest
+  `Issue hand-offs need a GitHub repository`, the All/Runs/Chats/Mine chips,
+  typing + Start landing in the new thread, and the runs-read 500 shown as
+  its ProblemBanner with a Retry; **rcn-3b** — List→Lanes, the four lanes
+  with the empty issues lane (no fake cards to drag on a `file://` repo),
+  the choice persisting per repo on reload, back to List; **rcn-2e +
+  rcn-1h** — control returned and taken back, the composer's NEXT TURN
+  RUNS ON picker, the two real agent turns (the waits are capped and fail
+  loudly if the lab's worker cannot run them), the switch divider
+  `… carried over`, AGENTS IN THIS CHAT with its turn ranges; **rcn-2f** —
+  `Make a workflow…` opening the assistant with the chat as context (the
+  app's canned ask is asserted, never the model's answer); **rcn-1j** (admin
+  — the Inputs tab edits the DRAFT and the library role authors it): add
+  `issue`, typed GitHub issue, marked required, saved, and the WHO FILLS
+  rows (by hand asks for the required names; the trigger row reads
+  `✓ issue ← the labeled issue`); **rcn-1k** — the row's Run opening the
+  form whose fields are the pinned revision's declared inputs (goal a
+  textarea, revision a branch field on `main`), Cancelled — no run is ever
+  started on this pin. The pass PAUSES its issue trigger at the end (same
+  rule as repo-triggers). **3d agent mail has no journey**: the inline mail
+  card needs two live agents actually conversing, which a pass cannot stage
+  without faking the answer — the TODO sits in the spec.
 
 Journeys share the pass's lab serially (`workers: 1`); names are
 pass-stamped (`EMU_PASS_ID`) so passes never collide. Cleanup is only for

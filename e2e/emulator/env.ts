@@ -30,13 +30,34 @@ export const EMU_ADMIN_STATE = path.join(EMU_OUT_DIR, "admin.json");
 export const EMU_ALICE_STATE = path.join(EMU_OUT_DIR, "alice.json");
 
 /**
- * The design render directories the report pairs app screenshots with. The
- * Workflows Review renders live today; Projects Review badges will arrive
- * under docs/design/handoff-projects/png/ and are picked up automatically.
+ * One design render directory plus the badge namespace it owns (see
+ * `EMU_DESIGN_DIRS`). A badge resolves inside a directory only when it
+ * carries that directory's prefix, and the file looked up is the badge with
+ * the prefix cut off.
  */
-export const EMU_DESIGN_DIRS = [
-  path.join(repoRoot, "docs", "design", "handoff-workflows", "png"),
-  path.join(repoRoot, "docs", "design", "handoff-projects", "png"),
+export interface EmuDesignDir {
+  dir: string;
+  /**
+   * The badge prefix this directory answers, "" when the badge IS the file
+   * name (the older handoffs, which use the bare 1a…3e badges).
+   */
+  prefix: string;
+}
+
+/**
+ * The design render directories the report pairs app screenshots with. The
+ * Workflows Review renders live under docs/design/handoff-workflows/png/ and
+ * the Projects Review ones under docs/design/handoff-projects/png/, both by
+ * bare badge. handoff-repo-chat-nav reuses the SAME badge range (1a…3e) for
+ * different screens, so its badges are namespaced with the `rcn-` prefix:
+ * `rcn-3a` loads docs/design/handoff-repo-chat-nav/png/3a.png while `3a`'s
+ * absence (and every older badge's identity) is untouched — the namespace is
+ * the loader's, the render files are never renamed.
+ */
+export const EMU_DESIGN_DIRS: EmuDesignDir[] = [
+  { dir: path.join(repoRoot, "docs", "design", "handoff-workflows", "png"), prefix: "" },
+  { dir: path.join(repoRoot, "docs", "design", "handoff-projects", "png"), prefix: "" },
+  { dir: path.join(repoRoot, "docs", "design", "handoff-repo-chat-nav", "png"), prefix: "rcn-" },
 ];
 
 /** Repo root, for reports. */

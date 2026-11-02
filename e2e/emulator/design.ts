@@ -57,6 +57,14 @@ export interface Landmark {
   any: LandmarkSpec[];
   /** Narrow to one width when the documented 390 reflow replaces this part. */
   only?: 1280 | 390;
+  /**
+   * Where to search. Default: `<main>` plus open dialogs. `"page"` widens to
+   * the whole document — the claim an app-SHELL screen needs (the 2c/3c
+   * sidebar column, the assistant popover) since the shell lives OUTSIDE
+   * `<main>` and only its flyouts are dialogs. Used by nothing else, so the
+   * per-page landmark lists keep their strict main-scoped reading.
+   */
+  host?: "page";
 }
 
 /* ------------------------------------------------------------------ shared */
@@ -1152,6 +1160,453 @@ const THREADS_LIST_ERROR: Landmark = {
   any: [{ testid: "threads-list-error" }, { role: "alert" }],
 };
 
+/* ------------------------------------ handoff-repo-chat-nav (rcn-* badges) */
+
+// The repo/chat/nav handoff (docs/design/handoff-repo-chat-nav/) redraws the
+// shell (2c/3c), the repo page (3a/3b), the chat (2e + 1h), the thread →
+// workflow assistant (2f) and the workflow inputs (1j/1k). Its badges are
+// namespaced `rcn-` (env.ts `EMU_DESIGN_DIRS`), so the same numbers the older
+// boards spent keep their own renders. Everything below is structure the app
+// really owns — testids and design copy only; the mock's Northwind/storefront
+// sample data is MOCK_DATA's territory (mockdata.ts), never a landmark.
+
+/** The one left column, at either width; at 390 the documented reflow is the
+ * phone top strip whose menu button is the one tap that reaches the drawer
+ * (Shell.tsx — the rail is a desktop affordance). Host: the shell lives
+ * outside `<main`, so these landmarks read the whole page. */
+const RCN_COLUMN: Landmark = {
+  id: "rcn-sidebar-column",
+  desc: "the one left sidebar column (at 390, the phone strip's menu button that opens it)",
+  host: "page",
+  any: [{ testid: "sidebar" }, { testid: "sidebar-open" }],
+};
+const RCN_NEW_CHAT: Landmark = {
+  id: "rcn-new-chat",
+  desc: "the 'New chat' button (at 390, the one tap that reaches it)",
+  host: "page",
+  any: [{ testid: "new-chat" }, { testid: "new-chat-rail" }, { testid: "sidebar-open" }],
+};
+const RCN_TODAY: Landmark = {
+  id: "rcn-today",
+  desc: "the 'Today' row (was Home)",
+  host: "page",
+  any: [
+    { testid: "sidebar-link-home" },
+    { role: "link", name: /^today$/i },
+    { testid: "sidebar-open" },
+  ],
+};
+const RCN_MY_CHATS: Landmark = {
+  id: "rcn-my-chats",
+  desc: "the 'My chats' row",
+  host: "page",
+  any: [
+    { testid: "sidebar-link-threads" },
+    { role: "link", name: /my chats/i },
+    { testid: "sidebar-open" },
+  ],
+};
+const RCN_PROJECTS_SECTION: Landmark = {
+  id: "rcn-projects-section",
+  desc: "the PROJECTS section with its project tree",
+  host: "page",
+  any: [
+    { text: /^PROJECTS$/ },
+    { testid: "sidebar-project-toggle-*" },
+    { testid: "project-switcher" },
+    { testid: "sidebar-open" },
+  ],
+};
+const RCN_LIBRARY_SECTION: Landmark = {
+  id: "rcn-library-section",
+  desc: "the LIBRARY section (Workflows / Steps / Agent profiles)",
+  host: "page",
+  any: [
+    { text: /^LIBRARY$/ },
+    { testid: "sidebar-link-workflows" },
+    { testid: "sidebar-rail-library" },
+    { testid: "sidebar-open" },
+  ],
+};
+const RCN_EXPANDED_CONTROLS: Landmark = {
+  id: "rcn-collapse-control",
+  desc: "the collapse control on the expanded column's brand row",
+  host: "page",
+  any: [{ testid: "sidebar-collapse" }, { testid: "sidebar-open" }],
+};
+/** The 3c rail: its own controls, with the 390 one tap as the alternate. */
+const RCN_RAIL_EXPAND: Landmark = {
+  id: "rcn-rail-expand",
+  desc: "the rail's expand control",
+  host: "page",
+  any: [{ testid: "sidebar-expand" }, { testid: "sidebar-open" }],
+};
+const RCN_RAIL_TILES: Landmark = {
+  id: "rcn-rail-project-tiles",
+  desc: "the rail's project initials tiles",
+  host: "page",
+  any: [{ testid: "sidebar-rail-project-*" }, { testid: "sidebar-open" }],
+};
+
+/* The repo page's List view (rcn-3a). */
+const RCN_REPO_PAGE: Landmark = {
+  id: "rcn-repo-page",
+  desc: "the repository page",
+  any: [{ testid: "repo-page" }],
+};
+const RCN_REPO_BREADCRUMB: Landmark = {
+  id: "rcn-repo-breadcrumb",
+  desc: "the 'Project / repo' breadcrumb",
+  any: [{ testid: "repo-breadcrumb" }],
+};
+const RCN_REPO_TITLE: Landmark = {
+  id: "rcn-repo-title",
+  desc: "the repository's own H1 (its name is data; its being a title is not)",
+  any: [{ testid: "repo-name" }, { role: "heading", level: 1 }],
+};
+const RCN_VIEW_TOGGLE: Landmark = {
+  id: "rcn-list-lanes-toggle",
+  desc: "the segmented List | Lanes control",
+  any: [
+    { testid: "repo-view-toggle" },
+    { testid: "repo-view-list" },
+    { testid: "repo-view-lanes" },
+  ],
+};
+const RCN_CHAT_BOX: Landmark = {
+  id: "rcn-repo-chat-box",
+  desc: "the repo page's one-line chat box",
+  any: [{ testid: "repo-chat-box" }],
+};
+const RCN_CHAT_INPUT: Landmark = {
+  id: "rcn-repo-chat-input",
+  desc: "the chat box's input ('Chat in <repo>…')",
+  any: [{ testid: "repo-chat-input" }, { role: "textbox", name: /chat in /i }],
+};
+const RCN_CHAT_PROFILE: Landmark = {
+  id: "rcn-repo-chat-profile",
+  desc: "the chat box's agent-profile picker chip",
+  any: [{ testid: "repo-chat-profile" }],
+};
+const RCN_CHAT_START: Landmark = {
+  id: "rcn-repo-chat-start",
+  desc: "the chat box's primary Start verb",
+  any: [{ testid: "repo-chat-start" }, { role: "button", name: /^start$/i }],
+};
+const RCN_FILTER_CHIPS: Landmark = {
+  id: "rcn-activity-filter-chips",
+  desc: "the All · Runs · Chats · Mine filter chips",
+  any: [
+    { testid: "repo-activity-filters" },
+    { testid: "repo-filter-all" },
+    { testid: "repo-filter-runs" },
+    { testid: "repo-filter-chats" },
+    { testid: "repo-filter-mine" },
+  ],
+};
+const RCN_ACTIVITY: Landmark = {
+  id: "rcn-activity-list",
+  desc: "the one activity panel that holds runs and chats together",
+  any: [{ testid: "repo-runs" }, { testid: "repo-activity" }],
+};
+const RCN_ACTIVITY_EMPTY: Landmark = {
+  id: "rcn-activity-empty",
+  desc: "the honest empty activity line ('say something in the chat box above')",
+  any: [
+    { testid: "repo-activity-empty" },
+    { testid: "repo-runs-empty" },
+    { text: /say something in the chat box/i },
+  ],
+};
+const RCN_WORKFLOWS_PANEL: Landmark = {
+  id: "rcn-workflows-panel",
+  desc: "the WORKFLOWS side panel",
+  any: [
+    { testid: "repo-workflows" },
+    { testid: "repo-workflows-empty" },
+    { role: "heading", name: /^WORKFLOWS/i },
+  ],
+};
+const RCN_WORKFLOW_ROW: Landmark = {
+  id: "rcn-workflow-row",
+  desc: "a workflow row in the WORKFLOWS panel",
+  any: [{ testid: "repo-workflow-row-*" }, { testid: "repo-workflow-name-*" }],
+};
+const RCN_WORKFLOW_TRIGGERS: Landmark = {
+  id: "rcn-workflow-trigger-line",
+  desc: "the row's trigger line (GitHub / Schedule / By hand)",
+  any: [
+    { testid: "repo-workflow-triggers-*" },
+    { testid: "repo-lane-workflow-trigger-*" },
+    { text: /^by hand$/i },
+  ],
+};
+const RCN_WORKFLOW_RESULT: Landmark = {
+  id: "rcn-workflow-result-line",
+  desc: "the row's latest-result line",
+  any: [{ testid: "repo-workflow-result-*" }, { testid: "repo-workflow-triggers-*" }],
+};
+const RCN_WORKFLOW_RUN: Landmark = {
+  id: "rcn-workflow-run-button",
+  desc: "the row's compact Run button",
+  any: [{ testid: "repo-workflow-run-*" }, { role: "button", name: /^run$/i }],
+};
+const RCN_ISSUES_PANEL: Landmark = {
+  id: "rcn-open-issues-panel",
+  desc: "the OPEN ISSUES side panel",
+  any: [
+    { testid: "repo-issues" },
+    { testid: "repo-issues-not-github" },
+    { role: "heading", name: /open issues/i },
+  ],
+};
+
+/* The repo page's Lanes view (rcn-3b). */
+const RCN_LANES: Landmark = {
+  id: "rcn-lanes",
+  desc: "the Lanes view",
+  any: [{ testid: "repo-lanes" }],
+};
+const RCN_LANE_WORKFLOWS: Landmark = {
+  id: "rcn-lane-workflows",
+  desc: "the WORKFLOWS chip row",
+  any: [{ testid: "repo-lane-workflows" }, { testid: "repo-lane-workflow-*" }],
+};
+const RCN_LANE_ISSUES: Landmark = {
+  id: "rcn-lane-issues",
+  desc: "the ISSUES lane (the draggable source, or its honest absence)",
+  any: [{ testid: "repo-lane-issues" }, { testid: "repo-lane-issues-not-github" }],
+};
+const RCN_LANE_NEEDS_YOU: Landmark = {
+  id: "rcn-lane-needs-you",
+  desc: "the NEEDS YOU lane",
+  any: [{ testid: "repo-lane-needs-you" }, { testid: "repo-lane-needs-you-empty" }],
+};
+const RCN_LANE_RUNNING: Landmark = {
+  id: "rcn-lane-running",
+  desc: "the RUNNING lane (the drop target)",
+  any: [{ testid: "repo-lane-running" }, { testid: "repo-lane-running-empty" }],
+};
+const RCN_LANE_FINISHED: Landmark = {
+  id: "rcn-lane-finished",
+  desc: "the FINISHED · 7 DAYS lane",
+  any: [{ testid: "repo-lane-finished" }, { testid: "repo-lane-finished-empty" }],
+};
+
+/* The chat (rcn-2e) and its agent picker (rcn-1h). */
+const RCN_CONV_BREADCRUMB: Landmark = {
+  id: "rcn-conversation-breadcrumb",
+  desc: "the thread's breadcrumb",
+  any: [{ testid: "conversation-breadcrumb" }],
+};
+const RCN_CONV_TITLE: Landmark = {
+  id: "rcn-conversation-title",
+  desc: "the thread's title (an H1 — its name is data, its being a title is not)",
+  any: [{ testid: "conversation-title" }, { role: "heading", level: 1 }],
+};
+const RCN_TRANSCRIPT: Landmark = {
+  id: "rcn-transcript",
+  desc: "the transcript",
+  any: [{ testid: "transcript" }, { testid: "transcript-empty" }],
+};
+const RCN_COMPOSER: Landmark = {
+  id: "rcn-composer",
+  desc: "the composer's reply field",
+  any: [{ testid: "composer-input" }],
+};
+const RCN_SEND: Landmark = {
+  id: "rcn-composer-send",
+  desc: "the composer's Send action",
+  any: [{ testid: "composer-send" }, { role: "button", name: /^send$/i }],
+};
+const RCN_AGENT_CHIP: Landmark = {
+  id: "rcn-composer-agent-chip",
+  desc: "the composer's agent chip ('NEXT TURN RUNS ON')",
+  any: [{ testid: "composer-agent-chip" }],
+};
+const RCN_AGENT_MENU: Landmark = {
+  id: "rcn-next-turn-menu",
+  desc: "the open 'NEXT TURN RUNS ON' profile menu",
+  any: [{ testid: "composer-agent-menu" }, { role: "menu" }],
+};
+const RCN_AGENT_MENU_CAPTION: Landmark = {
+  id: "rcn-next-turn-caption",
+  desc: "the menu's NEXT TURN RUNS ON caption",
+  any: [{ text: /next turn runs on/i }],
+};
+const RCN_AGENT_MENU_PROFILES: Landmark = {
+  id: "rcn-menu-profiles",
+  desc: "the menu's agent-profile rows (the current one carries ✓)",
+  any: [
+    { testid: "composer-agent-profile-*" },
+    { testid: "composer-agent-menu" },
+    { text: /✓/ },
+  ],
+};
+const RCN_SWITCH_DIVIDER: Landmark = {
+  id: "rcn-agent-switch-divider",
+  desc: "the centred 'switched to … · transcript and branch carried over' divider",
+  any: [{ testid: "agent-switch-divider" }, { text: /switched to .*carried over/i }],
+};
+const RCN_SIDE_PANEL: Landmark = {
+  id: "rcn-conversation-side-panel",
+  desc: "the chat's side panel holding the thread's context",
+  any: [
+    { testid: "conversation-side-panel" },
+    { testid: "thread-side-panel-aside" },
+    { testid: "thread-side-panel-stack" },
+  ],
+};
+const RCN_WORKS_IN: Landmark = {
+  id: "rcn-works-in",
+  desc: "the panel's WORKS IN section naming the repo",
+  any: [{ testid: "side-panel-works-in" }, { text: /works in/i }],
+};
+const RCN_PANEL_AGENTS: Landmark = {
+  id: "rcn-agents-in-this-chat",
+  desc: "the panel's AGENTS IN THIS CHAT section",
+  any: [{ testid: "side-panel-agents" }, { text: /agents in this chat/i }],
+};
+const RCN_AGENT_TURN_RANGE: Landmark = {
+  id: "rcn-agent-turn-range",
+  desc: "an agent row with its turn range ('turns 1–2')",
+  any: [
+    { testid: "side-panel-agent-row-*" },
+    { testid: "side-panel-agent-range-*" },
+    { text: /\bturns? ?[0-9]/i },
+  ],
+};
+const RCN_ASSISTANT_NOTE: Landmark = {
+  id: "rcn-assistant-note",
+  desc: "the panel's ASSISTANT note offering 'Make a workflow…'",
+  any: [
+    { testid: "assistant-note-workflow" },
+    { role: "button", name: /make a workflow/i },
+    { text: /make a workflow/i },
+  ],
+};
+
+/* Thread → workflow, in the assistant panel (rcn-2f). */
+const RCN_ASSISTANT_PANEL: Landmark = {
+  id: "rcn-assistant-panel",
+  desc: "the assistant panel, opened with the chat as context",
+  host: "page",
+  any: [{ testid: "assistant-popover" }, { testid: "assistant-panel" }],
+};
+const RCN_ASSISTANT_COMPOSER: Landmark = {
+  id: "rcn-assistant-composer",
+  desc: "the assistant panel's composer",
+  host: "page",
+  any: [{ testid: "assistant-composer-input" }, { testid: "assistant-send" }],
+};
+const RCN_ASSISTANT_ASK: Landmark = {
+  id: "rcn-assistant-workflow-ask",
+  desc: "the 'Turn this chat into a workflow' ask the note sent",
+  host: "page",
+  any: [{ text: /turn this chat into a workflow/i }],
+};
+
+/* Workflow inputs (rcn-1j) and the run-by-hand form (rcn-1k). */
+const RCN_INPUTS_TAB: Landmark = {
+  id: "rcn-inputs-tab",
+  desc: "the Inputs tab's own panel grid",
+  any: [{ testid: "inputs-tab" }],
+};
+const RCN_TAB_INPUTS_ACTIVE: Landmark = {
+  id: "rcn-tab-inputs-active",
+  desc: "the Inputs tab shown as the page you are on",
+  any: [{ testid: "workflow-tab-inputs", current: true }],
+};
+const RCN_INPUTS_PANEL: Landmark = {
+  id: "rcn-inputs-panel",
+  desc: "the INPUTS · n panel",
+  any: [
+    { role: "heading", name: /^INPUTS\b/i },
+    { testid: "inputs-header-row" },
+    { testid: "inputs-empty" },
+  ],
+};
+const RCN_INPUTS_HEADER: Landmark = {
+  id: "rcn-inputs-header",
+  desc: "the NAME · TYPE · REQUIRED · DEFAULT header row",
+  any: [{ testid: "inputs-header-row" }],
+};
+const RCN_INPUT_ADD: Landmark = {
+  id: "rcn-input-add",
+  desc: "the '+ add input' verb",
+  any: [{ testid: "input-add" }, { text: /\+ add input/i }],
+};
+const RCN_INPUT_ROWS: Landmark = {
+  id: "rcn-input-rows",
+  desc: "at least one declared input row",
+  any: [{ testid: "input-item-*" }, { testid: "input-row-*" }],
+};
+const RCN_WHO_FILLS: Landmark = {
+  id: "rcn-who-fills",
+  desc: "the WHO FILLS THE INPUTS panel",
+  any: [{ testid: "who-fills" }, { role: "heading", name: /who fills the inputs/i }],
+};
+const RCN_WHO_FILLS_HAND: Landmark = {
+  id: "rcn-who-fills-hand",
+  desc: "the 'Run by hand' row",
+  any: [{ testid: "who-fills-hand" }, { text: /run by hand/i }],
+};
+const RCN_WHO_FILLS_TRIGGER: Landmark = {
+  id: "rcn-who-fills-trigger",
+  desc: "a trigger row saying which input it fills",
+  any: [
+    { testid: "who-fills-issue-*" },
+    { testid: "who-fills-schedule-*" },
+    { text: /← the (opened|labeled) issue/ },
+    { text: /fills no inputs/i },
+  ],
+};
+const RCN_INPUTS_YAML: Landmark = {
+  id: "rcn-inputs-yaml-preview",
+  desc: "the panel's YAML preview of the inputs block",
+  any: [{ testid: "inputs-yaml-preview" }],
+};
+const RCN_DRAFT_CHIP: Landmark = {
+  id: "rcn-draft-chip",
+  desc: "the header's 'draft r<n> · unpublished' chip",
+  any: [{ testid: "workflow-draft-state" }, { text: /draft r\d+ · unpublished/i }],
+};
+const RCN_RUN_DIALOG: Landmark = {
+  id: "rcn-run-form-dialog",
+  desc: "the run-by-hand dialog",
+  any: [{ testid: "run-form-dialog" }, { role: "dialog" }],
+};
+const RCN_RUN_TITLE: Landmark = {
+  id: "rcn-run-form-title",
+  desc: "the 'Run <workflow>' title",
+  any: [{ testid: "run-form-title" }, { role: "heading", name: /^run /i }],
+};
+const RCN_RUN_SUBTITLE: Landmark = {
+  id: "rcn-run-form-subtitle",
+  desc: "the mono '<repo> · pinned r<n>' subtitle",
+  any: [{ testid: "run-form-subtitle" }, { text: /pinned r/i }],
+};
+const RCN_RUN_FIELDS: Landmark = {
+  id: "rcn-run-form-fields",
+  desc: "at least one field built from the workflow's declared inputs",
+  any: [{ testid: "new-run-field-*" }, { testid: "new-run-input-*" }],
+};
+const RCN_RUN_START: Landmark = {
+  id: "rcn-run-form-start",
+  desc: "the 'Start run' primary verb",
+  any: [{ testid: "new-run-submit" }, { role: "button", name: /start run/i }],
+};
+const RCN_RUN_CANCEL: Landmark = {
+  id: "rcn-run-form-cancel",
+  desc: "the form's Cancel verb",
+  any: [{ testid: "new-run-cancel" }, { role: "button", name: /^cancel$/i }],
+};
+const RCN_RUN_HELPER: Landmark = {
+  id: "rcn-run-form-helper",
+  desc: "the footer's helper line",
+  any: [{ testid: "run-form-helper" }],
+};
+
 /* ------------------------------------------------------------- the screens */
 
 /**
@@ -1555,6 +2010,165 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     THREAD_CONTEXT_DISCLOSURE,
   ],
   "threads-1g server-error": [THREADS_HEADING, THREADS_NEW, THREADS_LIST_ERROR],
+
+  /* ---------------------------- handoff-repo-chat-nav (rcn-* badges) */
+
+  // The shell (2c/3c). These screens ARE the app shell, so their landmarks
+  // read the whole page (Landmark.host) — the sidebar lives outside <main>.
+  // At 390 the documented reflow replaces the column (and the rail) with the
+  // phone top strip: every landmark carries that one tap as its alternate.
+  "rcn-3c expanded": [
+    RCN_COLUMN,
+    RCN_NEW_CHAT,
+    RCN_TODAY,
+    RCN_MY_CHATS,
+    RCN_PROJECTS_SECTION,
+    RCN_LIBRARY_SECTION,
+    RCN_EXPANDED_CONTROLS,
+  ],
+  "rcn-3c rail": [
+    RCN_COLUMN,
+    RCN_NEW_CHAT,
+    RCN_TODAY,
+    RCN_RAIL_TILES,
+    RCN_LIBRARY_SECTION,
+    RCN_RAIL_EXPAND,
+  ],
+
+  // The repo page's List view (3a): chat box on top, the one mixed activity
+  // feed with its filter chips, and the WORKFLOWS / OPEN ISSUES side panels.
+  "rcn-3a repo": [
+    RCN_REPO_PAGE,
+    RCN_REPO_BREADCRUMB,
+    RCN_REPO_TITLE,
+    RCN_VIEW_TOGGLE,
+    RCN_CHAT_BOX,
+    RCN_CHAT_INPUT,
+    RCN_CHAT_PROFILE,
+    RCN_CHAT_START,
+    RCN_FILTER_CHIPS,
+    RCN_ACTIVITY,
+    RCN_WORKFLOWS_PANEL,
+    RCN_WORKFLOW_ROW,
+    RCN_WORKFLOW_TRIGGERS,
+    RCN_WORKFLOW_RESULT,
+    RCN_WORKFLOW_RUN,
+    RCN_ISSUES_PANEL,
+  ],
+  // The same page with nothing said yet: the honest empty feed stands in for
+  // the rows (the empty-error rule — a repo the pass created shows absences,
+  // never invented rows).
+  "rcn-3a repo-feed-empty": [
+    RCN_REPO_PAGE,
+    RCN_REPO_BREADCRUMB,
+    RCN_REPO_TITLE,
+    RCN_VIEW_TOGGLE,
+    RCN_CHAT_BOX,
+    RCN_CHAT_INPUT,
+    RCN_CHAT_START,
+    RCN_FILTER_CHIPS,
+    RCN_ACTIVITY_EMPTY,
+    RCN_WORKFLOWS_PANEL,
+    RCN_ISSUES_PANEL,
+  ],
+  // The same page with the runs read failed (server-error.spec.ts's rule):
+  // the page keeps its heading and owns the failure — a ProblemBanner with a
+  // Retry, never a blank feed or the empty line standing in for the break.
+  "rcn-3a server-error": [
+    RCN_REPO_TITLE,
+    RCN_CHAT_BOX,
+    ERROR_PANEL,
+    {
+      id: "rcn-runs-retry",
+      desc: "the activity feed's Retry on its failed runs read",
+      any: [
+        { testid: "repo-runs-retry" },
+        { testid: "repo-activity-chats-retry" },
+        { role: "button", name: /retry/i },
+      ],
+    },
+  ],
+
+  // The repo page's Lanes view (3b): the WORKFLOWS chip row and the four
+  // lanes; the phone stacks them in one column (same testids, no swap).
+  "rcn-3b lanes": [
+    RCN_REPO_PAGE,
+    RCN_REPO_BREADCRUMB,
+    RCN_REPO_TITLE,
+    RCN_VIEW_TOGGLE,
+    RCN_LANES,
+    RCN_LANE_WORKFLOWS,
+    RCN_LANE_ISSUES,
+    RCN_LANE_NEEDS_YOU,
+    RCN_LANE_RUNNING,
+    RCN_LANE_FINISHED,
+  ],
+
+  // The chat (2e) and the composer's agent picker (1h, the same screen with
+  // the 'NEXT TURN RUNS ON' menu open). AGENTS IN THIS CHAT is asserted on
+  // the switched beat only — it needs real turns to have turn ranges; a
+  // landmark may never demand data the pass could not have served.
+  "rcn-2e chat": [
+    RCN_CONV_BREADCRUMB,
+    RCN_CONV_TITLE,
+    RCN_TRANSCRIPT,
+    RCN_COMPOSER,
+    RCN_SEND,
+    RCN_AGENT_CHIP,
+    THREAD_CONTROL,
+    RCN_SIDE_PANEL,
+    RCN_WORKS_IN,
+    RCN_ASSISTANT_NOTE,
+  ],
+  "rcn-2e switched": [
+    RCN_CONV_BREADCRUMB,
+    RCN_CONV_TITLE,
+    RCN_COMPOSER,
+    RCN_AGENT_CHIP,
+    RCN_SWITCH_DIVIDER,
+    RCN_SIDE_PANEL,
+    RCN_PANEL_AGENTS,
+    RCN_AGENT_TURN_RANGE,
+  ],
+  "rcn-1h next-turn-menu": [RCN_CONV_TITLE, RCN_AGENT_CHIP, RCN_AGENT_MENU, RCN_AGENT_MENU_CAPTION, RCN_AGENT_MENU_PROFILES],
+
+  // Thread → workflow (2f): the note's `Make a workflow…` opens the assistant
+  // panel with the chat as context — the ask is the app's own canned line;
+  // what the model answers with is never a landmark.
+  "rcn-2f workflow-draft": [
+    RCN_CONV_TITLE,
+    RCN_ASSISTANT_PANEL,
+    RCN_ASSISTANT_COMPOSER,
+    RCN_ASSISTANT_ASK,
+  ],
+
+  // Workflow inputs authoring (1j) on the workflow page, and the run-by-hand
+  // form (1k) the repo row's Run opens.
+  "rcn-1j inputs": [
+    WF_BREADCRUMB,
+    WF_TITLE,
+    WF_TABS,
+    RCN_TAB_INPUTS_ACTIVE,
+    RCN_DRAFT_CHIP,
+    RCN_INPUTS_TAB,
+    RCN_INPUTS_PANEL,
+    RCN_INPUTS_HEADER,
+    RCN_INPUT_ADD,
+    RCN_INPUT_ROWS,
+    RCN_WHO_FILLS,
+    RCN_WHO_FILLS_HAND,
+    RCN_WHO_FILLS_TRIGGER,
+    RCN_INPUTS_YAML,
+  ],
+  "rcn-1k run-form": [
+    RCN_RUN_DIALOG,
+    RCN_RUN_TITLE,
+    RCN_RUN_SUBTITLE,
+    RCN_RUN_FIELDS,
+    RCN_RUN_HELPER,
+    RCN_RUN_CANCEL,
+    RCN_RUN_START,
+  ],
   // `run-gate` and `artifact` have no design render (see the header), so the
   // run page's read-only graph needs no landmark entry of its own; the claim
   // that the run page is not an editor lives in the specs: no `edge-add-*` /
@@ -1628,12 +2242,18 @@ export async function missingLandmarks(
   width: number,
 ): Promise<Landmark[]> {
   const roots = scopes(page);
+  // A `host: "page"` landmark searches the whole document — the app-shell
+  // claim (the 2c/3c sidebar, the assistant popover) that lives outside
+  // `<main>`. Nothing else opts into it; the per-page lists keep the strict
+  // main-plus-dialog reading.
+  const pageRoots = [page.locator("body")];
   const missing: Landmark[] = [];
   for (const landmark of landmarks) {
     if (landmark.only !== undefined && landmark.only !== width) continue;
+    const scope = landmark.host === "page" ? pageRoots : roots;
     let candidate: Locator | null = null;
     for (const spec of landmark.any) {
-      for (const root of roots) {
+      for (const root of scope) {
         const located = specLocator(root, spec);
         candidate = candidate === null ? located : candidate.or(located);
       }

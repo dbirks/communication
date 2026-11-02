@@ -11,7 +11,9 @@
 //     settle, asserts no sideways scroll (a violation is RECORDED, not
 //     thrown — the screenshot still proves the screen), takes a full-page
 //     screenshot into e2e/emulator/out/<passId>/ and records the screen
-//     with its design render (docs/design/handoff-*/png/<badge>.png).
+//     with its design render (docs/design/handoff-*/png/<badge>.png — the
+//     repo-chat-nav renders are namespaced: badge `rcn-3a` is that handoff's
+//     png/3a.png, see env.ts `EMU_DESIGN_DIRS`).
 //     At 390 it additionally runs the reflow checks (reflow.ts): content
 //     parity with the 1280 inventory, no clipped text without an ellipsis,
 //     and touch targets ≥ 44px — every violation is likewise RECORDED. At
@@ -166,10 +168,20 @@ export function fingerprintOf(
     .slice(0, 16);
 }
 
-/** The badge's design render (absolute path) or null. */
+/**
+ * The badge's design render (absolute path) or null.
+ *
+ * Directories are namespaced (env.ts `EMU_DESIGN_DIRS`): a badge only matches
+ * a directory when it carries that directory's prefix (`rcn-3a` →
+ * handoff-repo-chat-nav/png/3a.png), and the prefix-less directories answer
+ * the bare badges the older journeys always used.
+ */
 export function designPngFor(badge: string): string | null {
-  for (const dir of EMU_DESIGN_DIRS) {
-    const candidate = path.join(dir, `${badge}.png`);
+  for (const { dir, prefix } of EMU_DESIGN_DIRS) {
+    if (prefix !== "" && !badge.startsWith(prefix)) continue;
+    const name = prefix !== "" ? badge.slice(prefix.length) : badge;
+    if (name === "") continue;
+    const candidate = path.join(dir, `${name}.png`);
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   }
   return null;
