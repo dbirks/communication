@@ -228,15 +228,47 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     expect(alerts[0].textContent).toContain("none could be read");
     expect(alerts[0].textContent).not.toContain("invented");
     expect(await screen.findByTestId("threads-list-error")).toBeTruthy();
-    // Pass review 1g defect 5: a failed read no longer BLANKS the thread
-    // column — a dead pane beside the banner read as a broken app. The
-    // column keeps its at-rest prompt (no thread is selected either way),
-    // and the refusal is still said exactly ONCE, in the list column.
-    expect(await screen.findByTestId("threads-no-selection")).toBeTruthy();
+    // Independent review (1g server-error at 1280): the thread column no
+    // longer invites a pick while there is nothing to pick — "No thread
+    // selected / Pick a thread on the left" contradicted the banner beside it.
+    // The column still stands as empty paper (pass review 1g defect 5: a dead
+    // layout read as a broken app) and the refusal is still said exactly ONCE.
+    expect(screen.queryByTestId("threads-no-selection")).toBeNull();
+    expect(screen.queryByText("No thread selected")).toBeNull();
+    expect(screen.queryByText(/Pick a thread on the left/)).toBeNull();
+    const detail = screen.getByTestId("threads-detail-column");
+    expect(detail.textContent).toBe("");
+    const cls = detail.className.split(/\s+/);
+    expect(cls).toContain("bg-paper");
+    expect(cls).toContain("lg:flex");
     expect(await screen.findAllByRole("alert")).toHaveLength(1);
     expect(requests.some((request) => request.url === crossPath && request.method === "GET")).toBe(
       true,
     );
+  });
+
+  it("keeps the at-rest prompt while the list loads and when it answers empty", async () => {
+    // Brief: loading and empty states keep their behaviour — only the error
+    // state goes quiet, because that is the state with nothing to pick.
+    renderApp({ path: "/threads", routes: routes([]) });
+    // Once the shell is up (and the list read still in flight) the column
+    // already holds the prompt.
+    expect(await screen.findByTestId("threads-detail-column")).toBeTruthy();
+    expect(screen.getByTestId("threads-no-selection").textContent).toContain("No thread selected");
+
+    await screen.findByTestId("threads-list-empty");
+    expect(screen.getByTestId("threads-list-empty").textContent).toContain("No threads yet");
+    expect(screen.getByTestId("threads-no-selection").textContent).toContain("No thread selected");
+  });
+
+  it("drops 'No thread selected' from the right pane when the list read errors", async () => {
+    renderApp({
+      path: "/threads",
+      routes: [me, users, { path: "/api/v1/projects", method: "GET", body: { items: [] } }],
+    });
+    await screen.findByTestId("threads-list-error");
+    expect(screen.queryByTestId("threads-no-selection")).toBeNull();
+    expect(screen.queryByText("No thread selected")).toBeNull();
   });
 
   it("walks the keyset page when the list carries a cursor", async () => {

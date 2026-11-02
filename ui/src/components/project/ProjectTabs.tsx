@@ -71,31 +71,31 @@ export interface ProjectTabsProps {
   flags?: ProjectTabFlags;
 }
 
-/** Each cue lane's width — the `w-[34px]` spans in the markup below. A rest
- * position must keep the active tab clear of the RIGHT cue, which overlays the
- * strip's last `TAB_STRIP_CUE_PX` whenever tabs are still off-strip; the left
- * cue is an in-flow lane beside the strip, so it never covers a label. */
+/** Each cue lane's width — the two `w-[34px]` spans in the markup below. Both
+ * cues are in-flow lanes BESIDE the strip, never overlays, so neither arrow can
+ * ever sit on top of a tab label; a lane costs the strip its 34px of width and
+ * the strip clips at the lane's edge instead. */
 export const TAB_STRIP_CUE_PX = 34;
 
 /**
- * Park the strip so the page's OWN tab is WHOLE and clear of the fade cue on
- * either side (pass-2 acceptance review: at 390 the Workflows tab's last
- * letters and its count rode under the right arrow, so the tab you were on
- * looked cut off).
+ * Park the strip so the page's OWN tab is WHOLE inside the visible strip
+ * (pass-2 acceptance review: at 390 the Workflows tab's last letters and its
+ * count rode under the right arrow, so the tab you were on looked cut off).
  *
  * Candidates are the strip's current position and every tab edge — the only
  * places a viewport edge sits between labels — read in the STRIP's own scroll
- * coordinates (tabs' `offsetLeft` counts from the wrapper the left cue lane
- * shares with the strip; `base` removes that shift). A position qualifies only
- * when the active tab's label AND count lie fully inside the strip's CLEAR box
- * (`[x, x + clientWidth]`, minus the right cue while it shows). Of the
- * qualifying positions prefer the fewest labels cut by the LEFT edge (never
- * draw the arrow across `Overview`), then the fewest at the right, then the
- * SHORTEST move — so Overview/Runs/Threads at 390 stay at `scrollLeft 0`, and
- * Workflows moves to the first tab edge that frees its count from the cue.
+ * coordinates (tabs' `offsetLeft` counts from the wrapper the cue lanes share
+ * with the strip; `base` removes that shift). A position qualifies only when
+ * the active tab's label AND count lie fully inside the strip's visible box
+ * (`[x, x + clientWidth]`). Both cues are in-flow lanes beside the strip, so no
+ * cue-width subtraction is needed here: a shown lane is already gone from
+ * `clientWidth`. Of the qualifying positions prefer the fewest labels cut by the
+ * LEFT edge (never cut `Overview` beside the arrow's lane), then the fewest at
+ * the right, then the SHORTEST move — so Overview/Runs/Threads at 390 stay at
+ * `scrollLeft 0`, and Workflows moves to the first tab edge that fits it whole.
  *
  * No layout, no snap — in jsdom every box measures 0×0, so this is a no-op
- * there by construction; a tab too wide for the clear box falls back to the
+ * there by construction; a tab too wide for the visible box falls back to the
  * browser's own `scrollIntoView`.
  */
 function snapToWholeLabels(nav: HTMLElement): void {
@@ -106,10 +106,10 @@ function snapToWholeLabels(nav: HTMLElement): void {
   const active = nav.querySelector<HTMLElement>('[aria-current="page"]');
   if (!active || !tabs.includes(active) || active.offsetWidth <= 0) return;
   /** Where the strip's scrollable content begins. `offsetLeft` counts from the
-   * wrapper (which the cue lane is a child of), `scrollLeft` and `clientWidth`
-   * from the strip's own padding box — the lane's 34px is the difference, and it
-   * only appears once the strip has scrolled, which is what made the parking
-   * rule shift under its own feet. */
+   * wrapper (which the cue lanes are children of), `scrollLeft` and
+   * `clientWidth` from the strip's own padding box — a shown lane's 34px is the
+   * difference, and it only appears once the strip has scrolled, which is what
+   * made the parking rule shift under its own feet. */
   const base = nav.offsetLeft + nav.clientLeft;
   const bounds = tabs.map((t) => ({
     l: t.offsetLeft - base,
@@ -121,7 +121,7 @@ function snapToWholeLabels(nav: HTMLElement): void {
   // a label cut there is one the reader cannot finish, and the left cue lane
   // stands beside the clip. At `scrollLeft 0` the left edge cuts nothing by
   // construction, so this ordering never moves an unscrolled strip for a reason
-  // other than its own tab sitting under the right cue.
+  // other than its own tab not fitting the visible box.
   const cutAt = (x: number, edge: "left" | "right"): number => {
     const line = edge === "left" ? x : x + w;
     let cut = 0;
@@ -130,21 +130,17 @@ function snapToWholeLabels(nav: HTMLElement): void {
     }
     return cut;
   };
-  // The strip's clear box at position x: the right cue overlays its last 34px
-  // exactly while `measure` would draw it (`x < max - 1`), so the active tab —
-  // label and count alike — may not enter that lane. The left cue is in-flow,
-  // never over a label; the strip's left edge is all it costs.
-  const wholeAndClear = (x: number): boolean => {
-    const cue = x < max - 1 ? TAB_STRIP_CUE_PX : 0;
-    return a.l >= x - 1.5 && a.r <= x + w - cue + 1.5;
-  };
+  // The strip's visible box at position x is `[x, x + w]`, full width: both cue
+  // lanes are in-flow and a shown lane is already taken out of `clientWidth`, so
+  // the active tab — label and count alike — need only lie wholly inside it.
+  const wholeAndClear = (x: number): boolean => a.l >= x - 1.5 && a.r <= x + w + 1.5;
   const candidates: number[] = [at];
   for (const b of bounds) candidates.push(b.l, b.r - w);
   let best: { x: number; left: number; right: number; dist: number } | null = null;
   for (const raw of candidates) {
     if (!Number.isFinite(raw)) continue;
     const x = Math.min(Math.max(raw, 0), max);
-    if (!wholeAndClear(x)) continue; // never park the strip with its own tab cut or under a cue
+    if (!wholeAndClear(x)) continue; // never park the strip with its own tab cut by the clip
     const score = {
       x,
       left: cutAt(x, "left"),
@@ -205,15 +201,23 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
     // nothing off the left edge, so the cue must not exist at all — a lane that
     // is drawn while the strip still begins with its first tab is the arrow
     // sitting on `Overview` (pass-2 review of this brief).
-    setFade({ left: x > 1, right: x < max - 1 });
+    // A shown lane narrows the strip, which only widens `max` — the right cue
+    // can never remove itself by appearing, so the state settles instead of
+    // oscillating. Returning the previous object while the booleans are
+    // unchanged keeps a resize-triggered re-render from nudging the layout again
+    // under the ResizeObserver's nose.
+    setFade((prev) => {
+      const next = { left: x > 1, right: x < max - 1 };
+      return prev.left === next.left && prev.right === next.right ? prev : next;
+    });
   }, []);
 
   // The strip's rest position, re-read every time the geometry moves: on
   // arrival, whenever a count lands and widens a label (the `threads 1`,
   // `workflows 3` of design 1b), and whenever the strip or window resizes. It
-  // stays put whenever the active tab is already whole and clear of both cues —
+  // stays put whenever the active tab is already whole inside the strip —
   // `scrollLeft 0` is still the answer at 390 for Overview, Runs and Threads —
-  // and moves only far enough to free the active tab from a cue.
+  // and moves only far enough to fit the active tab wholly.
   const pullActiveIntoView = useCallback(() => {
     const nav = navRef.current;
     if (!nav) return;
@@ -258,31 +262,28 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
   }, [active, flags.needsYou, flags.threads, flags.workflows, pullActiveIntoView]);
 
   return (
-    // `flex`, not a relative overlay box: the LEFT fade is an in-flow lane
-    // beside the strip (see its markup), so its arrow can never sit on top of
-    // a tab label.
-    <div className="relative flex items-stretch" data-testid="project-tabs-wrap">
-      {/* The cue that the strip continues. Pass-3 review: the earlier cap was a
-          solid rectangle in the BAND'S OWN colour over a white band, so it
-          existed in the DOM and inked nothing — the phone showed `Workflov`
-          with no hint of a scroll. It is now a shadow that deepens toward the
-          clipped edge plus a chevron pointing the way the strip still moves.
-          The chevron is an SVG, not a text glyph: a printed character under the
-          cap would sit on top of the clipped tab's own ink, which is the
-          collision the emulator's overlap check reports. It is
-          `pointer-events-none` and `aria-hidden` — every tab link stays in the
-          accessibility tree and stays clickable under it — and it is a
+    // `flex`, not an overlay box: BOTH fades are in-flow lanes beside the
+    // strip (see their markup), so neither arrow can ever sit on top of a tab
+    // label and the strip clips at each lane's edge.
+    <div className="flex items-stretch" data-testid="project-tabs-wrap">
+      {/* The cue that the strip continues past its LEFT edge. It is an in-flow
+          lane (`shrink-0`), not an overlay: the pass-1 review of this brief saw
+          the absolute left arrow drawn on top of `Overview` (“‹verview”) at 390
+          — any tab that enters the strip's left edge crosses a 34px overlay, so
+          an overlaid arrow cannot promise it never covers a label. A lane beside
+          the strip pads the strip by the arrow's width instead: the arrow appears
+          only once the strip has scrolled away from 0 (`fade.left`), and it
+          occupies space the tabs never draw in.
+          Pass-3 review: the earlier cap was a solid rectangle in the BAND'S OWN
+          colour over a white band, so it existed in the DOM and inked nothing —
+          the phone showed `Workflov` with no hint of a scroll. The cues are now a
+          shadow that deepens toward the clipped edge plus a chevron pointing the
+          way the strip still moves. The chevron is an SVG, not a text glyph: a
+          printed character under the cap would sit on top of the clipped tab's
+          own ink, which is the collision the emulator's overlap check reports.
+          Both cues are `pointer-events-none` and `aria-hidden` — every tab link
+          stays in the accessibility tree and stays clickable — and they are
           decoration only, never a control. */}
-      {/* The cue that the strip continues past its LEFT edge. This one is an
-          in-flow lane (`shrink-0`), not an overlay: the pass-1 review of this
-          brief saw the absolute left arrow drawn on top of `Overview`
-          (“‹verview”) at 390 — any tab that enters the strip's left edge
-          crosses a 34px overlay, so an overlaid arrow cannot promise it never
-          covers a label. A lane beside the strip pads the strip by the arrow's
-          width instead: the arrow appears only once the strip has scrolled
-          away from 0 (`fade.left`), and it occupies space the tabs never draw
-          in. It is still `pointer-events-none` and `aria-hidden` — decoration,
-          never a control. */}
       {fade.left ? (
         <span
           aria-hidden="true"
@@ -361,17 +362,22 @@ export function ProjectTabs({ projectId, active, flags = {} }: ProjectTabsProps)
           );
         })}
       </nav>
-      {/* The right cue stays the pass-4 overlay: it darkens toward the strip's
-          end and rides OVER the tab clipped at the edge, which is what that
-          review asked the fade to do (“the right edge clipped UNDER its
-          fade”). The left lane is the brief's fix for the arrow-on-a-label
-          collision; the right cue was not reported, and its whole-label snap
-          parks the edge between labels. */}
+      {/* The cue that the strip continues past its RIGHT edge — the same fix as
+          the left: an in-flow lane (`shrink-0`), not an overlay. The acceptance
+          re-review saw the old absolute right arrow drawn on top of `Workflows`
+          (“Workflo›s”) at 390 — an overlaid arrow cannot promise it never covers
+          a label any more than the left one could. The lane appears only while
+          tabs are still off-strip to the right (`fade.right`), the strip clips at
+          its edge, and no letter is ever drawn under or beside the arrow.
+          Showing the lane narrows the strip, which only widens `max`: the cue can
+          never remove itself by appearing (see `measure`), and the rest positions
+          come from the strip's post-lane `clientWidth`, so toggling the lane
+          settles instead of oscillating. */}
       {fade.right ? (
         <span
           aria-hidden="true"
           data-testid="project-tabs-fade-right"
-          className="pointer-events-none absolute inset-y-0 right-0 flex w-[34px] items-center justify-end"
+          className="pointer-events-none flex w-[34px] shrink-0 items-center justify-end"
           style={{
             background:
               "linear-gradient(to right, transparent, color-mix(in srgb, var(--color-ink) 30%, transparent))",

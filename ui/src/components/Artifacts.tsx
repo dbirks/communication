@@ -384,9 +384,13 @@ function collapseBlankLines(markdown: string): string {
 /**
  * The “Show raw” arm. `width:0` + `min-width:100%` is the point: the JSON's lines
  * are long and unbroken, and a box with a definite width contributes nothing to
- * an ancestor's max-content size, so the payload scrolls inside its own box at
- * 390 instead of pushing the page sideways off the screen
- * (`artifact-plan-md-390.png`).
+ * an ancestor's max-content size, so the payload stays inside its own box at 390
+ * instead of pushing the page sideways off the screen (`artifact-plan-md-390.png`).
+ * The payload then *wraps* inside that box (`whitespace-pre-wrap` +
+ * `[overflow-wrap:anywhere]`): a stored "text" value is one line thousands of
+ * characters long, and cutting it at the right edge mid-word with no sign of a
+ * sideways scrollbar loses the rest of it. Vertical scrolling (`max-h-64` +
+ * `overflow-auto`) is kept for long payloads.
  */
 function RawPayload({ raw }: { raw: string }) {
   const [open, setOpen] = useState(false);
@@ -411,7 +415,7 @@ function RawPayload({ raw }: { raw: string }) {
         tabIndex={0}
         aria-label="stored artifact bytes (raw)"
         style={{ width: 0, minWidth: "100%" }}
-        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        className="mt-[4px] max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         data-testid="artifact-preview-raw"
       >
         {raw}

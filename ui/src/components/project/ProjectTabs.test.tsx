@@ -12,6 +12,11 @@
  *     it PAINTS: pass 3 found the cue present in the DOM and invisible, a solid
  *     cap in the band's own white over a white band, so the tests below ask for
  *     the ink (a gradient toward the clipped edge and a chevron), not a box.
+ *     And it must never sit OVER a label: the acceptance re-review found the
+ *     absolute right arrow printed on top of `Workflows` (“Workflo›s”) at 390 —
+ *     like the left cue before it, the right cue is an in-flow `shrink-0` lane
+ *     beside the strip, so the tests ask both cues for lane classes and no
+ *     `absolute`.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
@@ -130,12 +135,12 @@ describe("the project tab strip at phone width", () => {
     expect(screen.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");
   });
 
-  it("keeps the ACTIVE tab whole and clear of the right cue — Workflows at 390 moves off 0", () => {
+  it("keeps the ACTIVE tab whole in the strip — Workflows at 390 moves off 0", () => {
     // The pass-2 acceptance review DEFECT: the old rule counted an active tab as
     // “seen” if any part of it was on the strip, so Workflows at 390 stayed at
-    // `scrollLeft 0` with its last letters and its count `3` under the right
-    // arrow. The strip now moves to the nearest tab edge that puts the whole
-    // active tab — label and count — clear of the cue lane.
+    // `scrollLeft 0` with its last letters and its count `3` past the clip. The
+    // strip now moves to the nearest tab edge that puts the whole active tab —
+    // label and count — inside the visible box.
     const { rerender } = mount("workflows");
     const nav = fakePhoneLayout();
     // A count landing re-reads the geometry, exactly as the live read does.
@@ -144,29 +149,32 @@ describe("the project tab strip at phone width", () => {
     // keeps `Overview` wholly off-strip rather than cut by the left cue.
     expect(nav.scrollLeft).toBeCloseTo(84.5, 1);
     const workflows = screen.getByTestId("project-tab-workflows");
-    // Whole, and clear of the right cue (which shows at this position: the
-    // strip has not reached its end).
+    // Whole inside the strip (the right cue is a lane BESIDE it, shown at this
+    // position: the strip has not reached its end, so tabs remain off-strip).
     expect(screen.getByTestId("project-tabs-fade-right")).toBeTruthy();
     expect(workflows.offsetLeft).toBeGreaterThanOrEqual(nav.scrollLeft);
     expect(workflows.offsetLeft + workflows.offsetWidth).toBeLessThanOrEqual(
-      nav.scrollLeft + nav.clientWidth - 34 + 0.5,
+      nav.scrollLeft + nav.clientWidth + 0.5,
     );
     // Nothing is cut by the left cue's edge either: every tab is whole in the
     // clear box or wholly behind it.
     const cutAtLeftEdge = ([left, width]: [number, number]) =>
       left < nav.scrollLeft - 1 && left + width > nav.scrollLeft + 1;
     expect(Object.values(TAB_BOXES).some(cutAtLeftEdge)).toBe(false);
-    // The left cue stands in its own in-flow lane — it cannot cover a label.
-    const left = screen.getByTestId("project-tabs-fade-left");
-    expect(left.className.split(/\s+/)).toContain("shrink-0");
-    expect(left.className).not.toContain("absolute");
+    // Both cues stand in their own in-flow lanes — they cannot cover a label.
+    for (const cue of ["project-tabs-fade-left", "project-tabs-fade-right"]) {
+      const lane = screen.getByTestId(cue);
+      expect(lane.className.split(/\s+/)).toContain("shrink-0");
+      expect(lane.className).not.toContain("absolute");
+    }
   });
 
-  it("stays at scrollLeft 0 when the active tab is already whole and clear of the right cue", () => {
-    // Overview, Runs and Threads fit inside the strip minus the 34px right cue
-    // at `scrollLeft 0`, so the shortest move is no move: no cue at the strip's
-    // start (not in the DOM at all), `Overview` whole, the tail clipped only
-    // under the RIGHT fade — where it is not the tab the reader is on.
+  it("stays at scrollLeft 0 when the active tab already fits the strip whole", () => {
+    // Overview, Runs and Threads lie wholly inside the strip at `scrollLeft 0`,
+    // so the shortest move is no move: no cue at the strip's start (not in the
+    // DOM at all), `Overview` whole, the tail clipped only at the RIGHT lane's
+    // edge — where it is not the tab the reader is on, and no letter rides
+    // beside the arrow because the lane is not an overlay.
     for (const tab of ["overview", "runs", "threads"] as const) {
       const { rerender, unmount } = mount(tab);
       const nav = fakePhoneLayout();
@@ -175,9 +183,7 @@ describe("the project tab strip at phone width", () => {
       expect(screen.queryByTestId("project-tabs-fade-left")).toBeNull();
       const active = screen.getByTestId(`project-tab-${tab}`);
       expect(active.offsetLeft).toBeGreaterThanOrEqual(0);
-      expect(active.offsetLeft + active.offsetWidth).toBeLessThanOrEqual(
-        nav.clientWidth - 34 + 0.5,
-      );
+      expect(active.offsetLeft + active.offsetWidth).toBeLessThanOrEqual(nav.clientWidth + 0.5);
       // `Overview` still begins the strip, whole.
       const overview = screen.getByTestId("project-tab-overview");
       expect(overview.offsetLeft + overview.offsetWidth).toBeLessThanOrEqual(
@@ -246,9 +252,12 @@ describe("the project tab strip at phone width", () => {
     // The direction cue is an SVG: a printed glyph under the cap would print on
     // top of the clipped tab's own ink.
     expect(fade.querySelector("svg")).toBeTruthy();
-    // It stays a decoration: the tab under it keeps its click.
+    // It stays a decoration in its own in-flow lane: the arrow is never an
+    // overlay, so no tab can ever be drawn under it.
     expect(fade.getAttribute("aria-hidden")).toBe("true");
     expect(fade.className.split(/\s+/)).toContain("pointer-events-none");
+    expect(fade.className.split(/\s+/)).toContain("shrink-0");
+    expect(fade.className).not.toContain("absolute");
   });
 
   it("shows both fades mid-strip", () => {
@@ -258,15 +267,17 @@ describe("the project tab strip at phone width", () => {
     const right = screen.getByTestId("project-tabs-fade-right");
     expect(left).toBeTruthy();
     expect(right).toBeTruthy();
-    // Both cues darken toward THEIR adjacent edge and carry their chevron. The
-    // LEFT cue is an in-flow lane beside the strip (pass-1 review: the old
-    // absolute left arrow printed “‹verview” over the tab at the edge), so its
-    // shadow darkens toward the strip on its right — and it must never be an
-    // overlay again.
+    // Both cues darken toward THEIR adjacent edge and carry their chevron. Both
+    // are in-flow lanes beside the strip (pass-1 review for the left arrow
+    // printing “‹verview”; the acceptance re-review for the right arrow printing
+    // “Workflo›s”), so the left shadow darkens toward the strip on its right —
+    // and neither may ever be an overlay again.
     expect(left.style.background).toContain("linear-gradient(to right");
     expect(right.style.background).toContain("linear-gradient(to right");
-    expect(left.className.split(/\s+/)).toContain("shrink-0");
-    expect(left.className).not.toContain("absolute");
+    for (const cue of [left, right]) {
+      expect(cue.className.split(/\s+/)).toContain("shrink-0");
+      expect(cue.className).not.toContain("absolute");
+    }
     expect(left.querySelector("svg")).toBeTruthy();
     expect(right.querySelector("svg")).toBeTruthy();
   });

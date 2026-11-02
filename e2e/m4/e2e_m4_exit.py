@@ -4660,10 +4660,50 @@ def c4():
             "and a killed worker is C5's scenario, not C4's")
         return
     show(f"compose pause {owner} — leases stop renewing while the child keeps writing", out[-240:])
-    time.sleep(45)                                  # lease 30s + reconciler tick 15s
+    # The fixed 45s sleep is a poll now (issue #96): the pause only has to outlive
+    # the LEASE (30s from the last renewal) plus one reconciler tick (15s) before
+    # the unpause is honest — exactly the invariant the sleep guaranteed, read from
+    # Postgres's own clock instead of assumed from the driver's. Settled = the row
+    # already says 'interrupted' (the reconciler wrote it during the freeze), or
+    # now() >= lease_expires_at + 15s. Hard cap 45+30=75s; at the cap the arm
+    # FAILs loudly with the ledger read and unpauses anyway (host safety).
+    freeze_last = ["(not yet read)"]
+
+    def frozen_lease_settled():
+        try:
+            rows = psql_rows(psql(
+                f"SELECT coalesce((status = 'interrupted')::text, '-') || '|' || "
+                f"coalesce((now() >= lease_expires_at + interval '15 seconds')::text, '-') "
+                f"|| '|' || coalesce(status, '-') || '|' || "
+                f"coalesce(lease_expires_at::text, 'none') FROM attempts "
+                f"WHERE id = '{att}'"), 4)
+        except RuntimeError as e:
+            show("C4a frozen-lease poll (psql)", str(e)[:200])
+            freeze_last[:] = ["(psql unreadable)"]
+            return None
+        if not rows:
+            freeze_last[:] = ["(no attempt row)"]
+            return None
+        freeze_last[:] = rows[0]
+        if truthy(rows[0][0]) or truthy(rows[0][1]):
+            return "interrupted" if truthy(rows[0][0]) else "expired+tick"
+        return None
+    rotted, _rot_last, frozen_waited = wait_until(frozen_lease_settled,
+                                                  C4A_FREEZE_POLL_CAP_S)
+    show(f"C4a the frozen lease after {frozen_waited:.0f}s of polling "
+         f"(was a fixed sleep(45); cap {C4A_FREEZE_POLL_CAP_S}s)",
+         f"interrupted|expired+tick|status|lease_expires_at = {'|'.join(freeze_last)}")
+    if not rotted:
+        check(f"C4a the paused worker's lease rotted within the "
+              f"{C4A_FREEZE_POLL_CAP_S}s cap", False,
+              f"observed interrupted|expired+tick|status|lease_expires_at = "
+              f"{'|'.join(freeze_last)} after {frozen_waited:.0f}s — a lease that "
+              "survives its own freeze is a product bug; the driver unpauses anyway "
+              "(host safety) and the wake-up poll below carries the fence verdict")
     rc, out = run(COMPOSE + ["unpause", owner])
     unpause_ts = psql("SELECT now()::text")          # Postgres's own clock, § 8's rule
-    check(f"C4a unpause {owner} after 45s of frozen renewals", rc == 0, out[-200:] or unpause_ts)
+    check(f"C4a unpause {owner} after {frozen_waited:.0f}s of frozen renewals "
+          f"(was a fixed 45s)", rc == 0, out[-200:] or unpause_ts)
     turn = live["turn"] != "-"
     before = psql(f"SELECT coalesce(max(global_seq), 0)::text FROM domain_events "
                   f"WHERE attempt_id = '{att}' AND type = 'conversation.message.agent'") \
@@ -4809,8 +4849,35 @@ C5_LIVE_STATES = ("queued", "leased", "running")
 # executed) and skipped (never executed) — 00005's node_executions status CHECK.
 C5_RAN_STATES = ("leased", "running", "succeeded", "failed", "interrupted", "cancelled")
 # § 7.1 C5b's wait: lease 30s + reconciler tick 15s, plus margin for the kill's own rc.
+# The fixed sleep these values once drove is now a POLL CAP (issue #96's profiling
+# pass): every post-kill/post-freeze wait reads the ledger every C5_SETTLE_POLL_S
+# seconds for the condition its sleep was waiting for (the lease expired, the
+# reconciler wrote the terminal row, the run turned retriable) and settles the
+# moment it lands. The floor is unchanged and physical: lease 30s + tick 15s.
+# A poll that reaches its cap never widens an assertion — the observed state falls
+# through to the SAME verdict algebra the old fixed wait graded, which fails loudly.
 C5_KILL_WAIT_S = 50
 C5_KILL_POLL_S = 150
+C5_SETTLE_POLL_S = 3                     # ledger read every 3s while a lease rots
+C5_KILL_SETTLE_CAP_S = C5_KILL_WAIT_S + 30   # hard cap: old fixed wait + 30s
+C4A_FREEZE_POLL_CAP_S = C_FAULT_LEASE_S + 30  # was a fixed sleep(45) at C4a
+
+
+def wait_until(cond, cap_s, poll_s=None):
+    """Poll cond() every poll_s (default C5_SETTLE_POLL_S) seconds until it returns
+    a truthy value or cap_s seconds elapse. This is what the fixed post-kill sleeps
+    became: the old constant is a HARD CAP, never a floor — the settle is read from
+    the ledger. Returns (met, last, waited): `last` is cond()'s final return value,
+    the observed state the caller must print loudly when the cap is reached; every
+    call site grades that observation with its own verdict algebra, never a pass."""
+    poll = C5_SETTLE_POLL_S if poll_s is None else poll_s
+    t0, deadline = time.time(), time.time() + cap_s
+    last = None
+    while True:
+        last = cond()
+        if last or time.time() >= deadline:
+            return bool(last), last, time.time() - t0
+        time.sleep(min(poll, max(0.0, deadline - time.time())))
 # How many times the driver re-arms the kill when the attempt it targeted had
 # ALREADY closed before the signal landed (live4/C5: the twin's /plan step is a
 # printf, so the first kill always arrives after it succeeded — and an idle
@@ -4919,7 +4986,9 @@ def c5_boundary_verdicts(before, after, ready_before, ready_after, uploading_aft
     gate cannot even open without it. The only rows that can still arrive inside this
     window are the until body's `test-<n>.json` evidence, and the body cannot reach its
     publisher that fast: the AFTER reading is taken as soon as the killed attempt stops
-    being live (C5_KILL_WAIT_S=50 plus a 3s-granularity poll), while the first
+    being live (a 3s-granularity poll capped at C5_KILL_SETTLE_CAP_S=80s — the
+    reconciler cannot land before the 30s lease + 15s tick, and even a read that
+    waits out the full cap still precedes the earliest possible new row), while the first
     test_evidence row needs the retry re-leased (~10s backoff), implement[1] held open
     C_FAULT_HOLD_SECONDS=45, then test[1] held open another 45 — ~100s at the earliest,
     and review[1]'s hold pushes it past 145s. A lab slow enough to break that margin
@@ -6719,7 +6788,7 @@ def c5_kill_landed_verdicts(state, tries, proven):
     if state == "live":
         return [(label, False if proven else None,
                  f"the attempt is still live after lease 30s + reconciler 15s + "
-                 f"{C5_KILL_WAIT_S + C5_KILL_POLL_S}s of polling ({proof}) — "
+                 f"{C5_KILL_SETTLE_CAP_S}s of polling ({proof}) — "
                  + ("a frozen, killed worker's lease was never interrupted: product bug, "
                     "suspected internal/pipelines/runtime reconciler" if proven else
                     "the gate cannot say which worker owned the lease"))]
@@ -6915,12 +6984,22 @@ def c5():
             killed = owner
             show(f"{how} — the frozen worker and its child die together "
                  "(no cleanup, no terminal write)", out[-240:] or container)
-            time.sleep(C5_KILL_WAIT_S)       # lease 30s + reconciler tick 15s + margin
-            deadline = time.time() + C5_KILL_POLL_S
-            while time.time() < deadline:
-                if c5_attempt_state(att_row(att)) != "live":
-                    break
-                time.sleep(3)
+            # The fixed sleep(C5_KILL_WAIT_S) + same-condition 3s poll are ONE
+            # ledger poll now (issue #96): settled = the killed attempt left the
+            # live column (the reconciler's interrupted write, or an honest
+            # terminal row — the lease-expiry the sleep was waiting for; floor is
+            # lease 30s + tick 15s). Hard cap C5_KILL_SETTLE_CAP_S; at the cap
+            # kill_state stays 'live' and c5_kill_landed_verdicts FAILs loudly
+            # with that observation and the SIGSTOP proof.
+            def attempt_settled():
+                st = c5_attempt_state(att_row(att))
+                return st if st not in ("live", "") else None
+            _met, _last, kill_waited = wait_until(attempt_settled, C5_KILL_SETTLE_CAP_S)
+            show(f"C5b the killed attempt left the live column after "
+                 f"{kill_waited:.0f}s of polling (cap {C5_KILL_SETTLE_CAP_S}s; "
+                 f"lease 30s + tick 15s + margin — was sleep(50) + a 150s poll)",
+                 "settled" if _met else f"NOT settled — last ledger read "
+                 f"{att_row(att) or '(unreadable)'}")
             kill_state = c5_attempt_state(att_row(att))
             if kill_state in ("interrupted", "live") or (kill_state == "closed" and proven):
                 break
@@ -7330,12 +7409,21 @@ def _c5h_kill_and_grade(alice, facts, run_id):
         killed = owner
         show(f"C5h {how} — the frozen worker dies mid-hold (no cleanup, no terminal "
              f"write)", out[-160:] or container)
-        time.sleep(C5_KILL_WAIT_S)            # lease 30s + reconciler tick 15s + margin
-        deadline = time.time() + C5_KILL_POLL_S
+        # Fixed sleep(C5_KILL_WAIT_S) + same-condition poll collapsed into the
+        # shared 3s ledger wait (see C5b): settled = the killed scratch attempt
+        # left the live column (lease 30s + reconciler 15s is the floor). Hard cap
+        # C5_KILL_SETTLE_CAP_S; reaching it leaves `ledger` at the observed row and
+        # c5h_refusal_verdicts grades 'still live' as the loud FAIL it is.
+        def scratch_settled():
+            st = c5_attempt_state(att_read(att))
+            return st if st not in ("live", "") else None
+        _met, _last, _waited = wait_until(scratch_settled, C5_KILL_SETTLE_CAP_S)
         ledger = att_read(att)
-        while time.time() < deadline and c5_attempt_state(ledger) == "live":
-            time.sleep(3)
-            ledger = att_read(att)
+        if not _met:
+            show(f"C5h the scratch attempt was STILL LIVE after {_waited:.0f}s "
+                 f"(cap {C5_KILL_SETTLE_CAP_S}s)", f"att={att} row={ledger or '(unreadable)'} "
+                 "— the interrupted write never landed; the verdicts below carry that "
+                 "observation as a FAIL, not a guess")
     finally:
         if frozen and not killed:
             rc2, out2, how2 = container_signal(C5_CONT_SIGNAL, frozen)
@@ -8836,7 +8924,13 @@ def _c5e_kill_and_retry(alice, facts, tw, run_id, tag, pol, seed_step, kill_node
         killed = owner
         show(f"compose kill {owner} — the worker and its sandboxed child die together "
              "(ADR-0017 § 4.3's step tree)", out[-240:])
-        time.sleep(C5_KILL_WAIT_S)
+        # The fixed sleep(C5_KILL_WAIT_S) is gone (issue #96): the condition it
+        # waited for is the ledger closing the killed attempt and the scratch run
+        # turning retriable, and _c6d_wait_retriable directly below polls exactly
+        # that every 3s — now measured FROM the kill, so the common case settles
+        # ~45s+ earlier and the cap (C5_KILL_POLL_S) is stricter than the old
+        # sleep+poll total ever was. At the cap it returns the last observed
+        # status and c5e_precondition_verdicts below fails loudly with it.
         run_st = _c6d_wait_retriable(run_id)
     finally:
         if killed:
@@ -9066,16 +9160,28 @@ def c6():
             return
         show(f"compose kill {owner} — the owning worker and its child die together",
              out[-240:])
-        time.sleep(50)                             # lease 30s + reconciler tick 15s + margin
-        deadline, ledger = time.time() + 150, {}
-        while time.time() < deadline:
+        # Fixed sleep(50) + a 150s same-condition poll collapsed into the shared
+        # 3s ledger wait (issue #96): settled = the reconciler wrote the
+        # interrupted row for the killed attempt (the lease 30s + tick 15s the
+        # sleep waited out). Hard cap C5_KILL_SETTLE_CAP_S; at the cap `ledger`
+        # holds the last observed row and c5_interrupted_verdicts below FAILs
+        # loudly with it.
+        c6b_ledger = {}
+
+        def restore_attempt_interrupted():
             row = psql_rows(c6_row(f"SELECT status || '|' || coalesce(error_class,'-') FROM "
                                    f"attempts WHERE id = '{att}'", "killed attempt"), 2)
-            if row and row[0][0] == "interrupted":
-                ledger = dict(zip(("status", "error_class"), row[0]))
-                break
-            ledger = dict(zip(("status", "error_class"), row[0])) if row else {}
-            time.sleep(3)
+            c6b_ledger.clear()
+            c6b_ledger.update(dict(zip(("status", "error_class"), row[0])) if row else {})
+            return c6b_ledger.get("status") == "interrupted" or None
+        _met, _last, c6b_waited = wait_until(restore_attempt_interrupted,
+                                             C5_KILL_SETTLE_CAP_S)
+        ledger = dict(c6b_ledger)
+        show(f"C6b the killed attempt {'closed' if _met else 'was NOT closed'} after "
+             f"{c6b_waited:.0f}s of polling "
+             f"(cap {C5_KILL_SETTLE_CAP_S}s; was sleep(50) + a 150s poll)",
+             f"{ledger.get('status') or '(no row)'} | "
+             f"{ledger.get('error_class') or '(no row)'}")
         c5_emit(c5_interrupted_verdicts(ledger))
         ck_after = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints after kill"))
         ck_after_view = [f"{c['node']}:{c['volume_id']}:{str(c['head'])[:12]}" for c in ck_after]
@@ -9377,7 +9483,13 @@ def _c6d_kill_and_refuse(alice, facts, run_id):
         killed = owner
         show(f"compose kill {owner} — the owning worker and its child die together",
              out[-240:])
-        time.sleep(C5_KILL_WAIT_S)
+        # Fixed sleep(C5_KILL_WAIT_S) gone (issue #96): _c6d_wait_retriable below
+        # already polls the very condition the sleep waited for (the ledger closes
+        # the killed attempt and the run turns retriable) every 3s, now measured
+        # FROM the kill — its cap (C5_KILL_POLL_S) is stricter than the old
+        # sleep+poll total. At the cap it returns the last observed status and
+        # c6d_precondition_verdicts grades it loudly — a run stuck 'running' past
+        # a lease + two ticks is a product bug.
         run_st = _c6d_wait_retriable(run_id)
     finally:
         if killed:
@@ -10903,6 +11015,21 @@ def c8f_tree_depths_sql(root_id, min_depth=1):
             f"SELECT DISTINCT depth::text FROM t WHERE depth >= {min_depth} ORDER BY 1")
 
 
+def c8f_tree_runs_sql(root_id, min_depth=1):
+    """(id, depth, status) of every run BELOW the root at depth >= min_depth,
+    deepest first — the read that says WHICH chain runs are still live, which
+    c8f_tree_depths_sql's depths-only view cannot: the C8f settle condition and
+    the whole-tree cancel issue #96 demands both name runs, not depths. Read-only
+    over the ledger, same recursive shape as c8f_tree_depths_sql — and every
+    status column qualified (test_c4_logic's driver-wide SQL sweep refuses a bare
+    `status` in any query with a JOIN, live4/C4's ambiguity crash)."""
+    return (f"WITH RECURSIVE t AS (SELECT r.id, r.depth, r.status FROM runs r "
+            f"WHERE r.id = '{root_id}' "
+            f"UNION ALL SELECT c.id, c.depth, c.status FROM runs c JOIN t ON c.parent_run_id = t.id) "
+            f"SELECT t.id || '|' || t.depth::text || '|' || t.status FROM t "
+            f"WHERE t.depth >= {min_depth} ORDER BY t.depth DESC, t.id")
+
+
 def c8e_live_arms(alice, admin, facts):
     """C8e — publish the gate's OWN parent revisions (draft -> validate -> publish,
     the C6/C7 route: the seed's revision authors collect_and_continue and revisions
@@ -10967,10 +11094,16 @@ def c8_stop_reason_count(run_id):
 
 
 C8F_LEVELS = ("l1", "l2", "l3")
-C8F_SETTLE_SECONDS = 180     # how long a live depth-2 run gets to grow a depth-3
-                             # child before "none appeared" reads as refusal; shorter
-                             # would mistake advancer latency for a guard
+C8F_SETTLE_SECONDS = 180     # CAP on how long a live depth-2 run gets to grow a
+                             # depth-3 child before "none appeared" reads as
+                             # refusal; shorter would mistake advancer latency for
+                             # a guard. No longer a fixed sleep: the arm settles
+                             # EARLY once every depth-2 run is terminal with no
+                             # depth-3 row (the armed invoke can then book none).
 C8F_ARM_CAP = 900            # per-arm watch cap
+C8F_POLL_S = 10              # depth-tree poll cadence (unchanged by the settle fix)
+C8F_CLEANUP_CAP_S = 90       # how long the cancelled tree gets to go terminal (#96)
+C8F_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "interrupted")
 
 
 def c8f_chain(alice, admin, facts):
@@ -11034,6 +11167,12 @@ def c8f_chain(alice, admin, facts):
         text = c8_sql(c8f_tree_depths_sql(rid, min_depth), "chain depth tree")
         return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
+    def tree_runs(rid, min_depth=1):
+        """[{id, depth, status}] below the root — who is still advancing."""
+        text = c8_sql(c8f_tree_runs_sql(rid, min_depth), "chain run tree")
+        return [dict(zip(("id", "depth", "status"), r))
+                for r in psql_rows(text or "", 3)]
+
     # 2-level arm: root l2 — children at depth 1 and 2 must complete.
     rid2 = post(revs["l2"], "two-level")
     if rid2:
@@ -11050,28 +11189,73 @@ def c8f_chain(alice, admin, facts):
     if not rid3:
         show("C8f three-level chain", "the ceiling run could not be posted")
         return out
-    deadline, settle_from = time.time() + 2 * C8F_ARM_CAP, None
+    deadline = time.time() + 2 * C8F_ARM_CAP
+    settle_t0 = None
     while time.time() < deadline:
         deep = tree_depths(rid3, min_depth=3)
         if deep:
             out["depth3_rows"], out["third_attempted"] = len(deep), True
             break                                # a depth-3 row EXISTS: not a refusal
-        if "2" in tree_depths(rid3):
+        at2 = [row for row in tree_runs(rid3, min_depth=2) if row["depth"] == "2"]
+        if at2:
             out["third_attempted"] = True
-            settle_from = settle_from or time.time() + C8F_SETTLE_SECONDS
-            if settle_from and time.time() >= settle_from:
+            # The 180s window is a CAP, not a fixed sleep (issue #96). Settled
+            # EARLY means every depth-2 run itself reached a terminal row while no
+            # depth-3 row exists: the armed invoke can no longer book a child, so
+            # the absence is final. A still-live depth-2 tree burns the full window
+            # exactly as before — advancer latency is measured, never assumed.
+            if settle_t0 is None:
+                settle_t0 = time.time()
+            if all(row["status"] in C8F_TERMINAL_STATUSES for row in at2):
                 out["depth3_rows"] = 0
+                show("C8f three-level arm settle",
+                     f"{time.time() - settle_t0:.0f}s (cap {C8F_SETTLE_SECONDS}s): every "
+                     f"depth-2 run terminal {sorted(row['status'] for row in at2)}, no "
+                     "depth-3 row — the armed invoke can no longer book one")
                 break
-        time.sleep(10)
+            if time.time() >= settle_t0 + C8F_SETTLE_SECONDS:
+                out["depth3_rows"] = 0
+                show("C8f three-level arm settle",
+                     f"the full {C8F_SETTLE_SECONDS}s window elapsed with the depth-2 "
+                     f"tree still live {sorted(row['status'] for row in at2)} and no "
+                     "depth-3 row — refusal read as the rows show it")
+                break
+        time.sleep(C8F_POLL_S)
     if out["depth3_rows"] is None and out["third_attempted"]:
         out["depth3_rows"] = len(tree_depths(rid3, min_depth=3))   # last honest recount
     if out["depth3_rows"] is None:
         show("C8f three-level arm", "never produced a live depth-2 run inside the cap — "
                                     "the refusal has nothing to stand on (GAP)")
-    # The stuck arm leaves a live run tree behind; cancel it so the lab does not
-    # carry a permanently advancing orphan into the next gate.
+    # Issue #96: cancelling ONLY the root left the depth-2 arm live — its refused
+    # invoke errored on every advancer tick for 28 minutes after C8f returned. The
+    # cleanup cancels EVERY run of the tree (deepest first), then the root, and
+    # proves from the ledger that nothing is left advancing.
+    for row in tree_runs(rid3, min_depth=1):
+        r = alice.post(LB, f"/api/v1/runs/{row['id']}/cancel",
+                       {"reason": "M4 exit C8f ceiling arm (depth-"
+                                  f"{row['depth']} leaf)"})
+        show(f"C8f cleanup POST /runs/{row['id']}/cancel (depth {row['depth']}, "
+             f"was {row['status']}) -> {r.status}", r.text[:160])
     r = alice.post(LB, f"/api/v1/runs/{rid3}/cancel", {"reason": "M4 exit C8f ceiling arm"})
     show(f"C8f cleanup POST /runs/{rid3}/cancel -> {r.status}", r.text[:160])
+    left, cleanup_cap_at = [], time.time() + C8F_CLEANUP_CAP_S
+    while True:
+        live_rows = [f"{row['id'][:8]}@depth{row['depth']}={row['status']}"
+                     for row in tree_runs(rid3, min_depth=1)
+                     if row["status"] not in C8F_TERMINAL_STATUSES]
+        root_st = run_status(rid3)
+        if root_st not in C8F_TERMINAL_STATUSES:
+            live_rows.append(f"{str(rid3)[:8]}@root={root_st}")
+        left = live_rows
+        if not left or time.time() >= cleanup_cap_at:
+            break
+        time.sleep(3)
+    check("C8f cleanup: the ceiling-arm tree leaves NO live run behind (issue #96 "
+          "— the depth-2 arm used to error every advancer tick for 28 min after "
+          "this gate)",
+          not left,
+          f"still advancing {C8F_CLEANUP_CAP_S}s after the cancels: {left[:6]}"
+          if left else "every run of the tree is terminal in the ledger")
     show("C8f three-level arm", f"depth-2 run live: {out['third_attempted']} "
                                 f"depth-3 child runs: {out['depth3_rows']}")
     return out
@@ -12461,7 +12645,7 @@ def c9_wait_for_gate(client, project_id, run_id, cap=900, exclude=()):
                     if (a.get("run_id") == run_id and a.get("state") == "pending"
                             and str(a.get("id")) not in exclude):
                         return str(a["id"])
-        time.sleep(5)
+        time.sleep(1)    # 1s poll (was 5s): the gate row can open between reads; the cap is unchanged
     return None
 
 
@@ -12717,7 +12901,8 @@ def c9_f_wait_expired(aid, run_id, wait_s, want=1, label=""):
             return rows, first_left
         seen = rows
         first_left = first_left if first_left is not None else c9_deadline_left(aid)
-        time.sleep(5)
+        time.sleep(1)    # 1s poll (was 5s): the reconciler's write is the signal, the
+        # wait_s total timeout is unchanged — only the granularity got finer
     show(f"C9f {label}: no expiry within {wait_s}s", f"approval.expired so far={seen}")
     return seen, first_left
 
@@ -12737,7 +12922,8 @@ def c9_f_hold_watch(aid, sib, cap):
         ticks += 1
         now = c9_sibling_progressed(sib)
         ran = now if ran is None or (now is not None and now > ran) else ran
-        time.sleep(5)
+        time.sleep(1)    # 1s poll (was 5s): the window must CLOSE when our gate stops
+        # waiting, not up to 5s later — cap unchanged, only the granularity
     return {"ran": ran, "held": held, "ticks": ticks}
 
 
@@ -23396,13 +23582,19 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
             show(f"{how3} — the frozen worker and its child die together "
                  "(no cleanup, no terminal write)", out3[-200:] or container)
             tick("killed")
-            time.sleep(C5_KILL_WAIT_S)           # lease 30s + reconciler tick 15s + margin
-            deadline = time.time() + C5_KILL_POLL_S
-            while time.time() < deadline:
-                tick(f"reconciling{max(0, int(deadline - time.time()))}")
-                if c5_attempt_state(att_row(att)) != "live":
-                    break
-                time.sleep(6)
+            # Fixed sleep(C5_KILL_WAIT_S) + the 6s-granularity poll collapsed into
+            # ONE 3s ledger poll (issue #96, as in C5b): settled = the killed
+            # attempt left the live column (floor: lease 30s + tick 15s). The page
+            # sampler keeps landing on every poll round. Hard cap
+            # C5_KILL_SETTLE_CAP_S; at the cap facts["state"] stays 'live' and
+            # w5_kill_landed_verdicts FAILs the row loudly with the SIGSTOP proof.
+            w_kill_t0 = time.time()
+
+            def w_reconcile_poll():
+                tick(f"reconciling{int(max(0, C5_KILL_SETTLE_CAP_S - (time.time() - w_kill_t0)))}")
+                st = c5_attempt_state(att_row(att))
+                return st if st not in ("live", "") else None
+            wait_until(w_reconcile_poll, C5_KILL_SETTLE_CAP_S)
             facts["state"] = c5_attempt_state(att_row(att))
             if facts["state"] in ("interrupted", "live") or (
                     facts["state"] == "closed" and facts["proven"]):

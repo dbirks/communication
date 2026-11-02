@@ -7,9 +7,10 @@
  * later; nothing here is wired to it yet.
  *
  * What the right column holds at `/threads` itself: the honest "no thread
- * selected" prompt, or the read's refusal when the cross-project list is
- * unavailable (a server without the ADR-0047 endpoint) — the pane's quiet
- * line plus this banner, said once where the reader looks.
+ * selected" prompt while there are rows to pick, and NOTHING but empty paper
+ * while the cross-project read has failed — the refusal (a server without the
+ * ADR-0047 endpoint, or any failed read) is said once, in the list column that
+ * failed, and this column must not invite a pick that cannot be made.
  *
  * Honesty: no design value is faked — the list endpoint carries neither the
  * repository of a row nor the agent's last line, so the rows say what the
@@ -58,38 +59,48 @@ export interface ThreadsViewProps {
  * 1280, collapsed at 390) is not reported as lost content.
  * On a server failure the list column itself carries the single loud banner
  * (`ThreadListPane ownsError`) so the error still reaches the phone; the thread
- * column does not repeat it (review: the failure was shown twice). It keeps
- * drawing its honest at-rest prompt though — pass review 1g defect 5: hiding
- * the column on a failed read left a BLANK pane beside the banner at 1280, and
- * an empty screen reads as a broken app; "No thread selected" is the true
- * statement of that column either way (no thread is selected), and the one
- * loud refusal still lives in the list.
+ * column does not repeat it (review: the failure was shown twice) and does not
+ * invite picking a thread either — with no rows to pick, "Pick a thread on the
+ * left" contradicted the banner beside it (independent review, 1g
+ * server-error at 1280). The column stays drawn as empty paper (the layout
+ * stands, per pass review 1g defect 5) but says nothing while the read failed.
  */
+export interface ThreadsDetailColumnProps {
+  /** The list read failed: there is nothing to pick, so the column keeps its
+   *  paper and height but holds no prompt (the refusal is the ONE loud banner
+   *  in the list column). */
+  listError?: boolean;
+}
+
 /**
  * The right-hand thread column of the 1g layout, at rest: the honest "no
  * thread selected" prompt. `/threads` draws it beside its own list, and a
  * project's Threads tab (design 1b) draws the SAME column beside the SAME
  * pane filtered to the project — it is the identical at-rest state of the
  * open-thread column, so it lives here once. The host hides the column only
- * below `lg`, where the phone's path to a thread is tapping a row; a failed
- * list read KEEPS it (pass review 1g defect 5: hiding it left a blank pane
- * beside the banner at 1280 — the refusal stays the one loud banner in the
- * list column, and this column's at-rest truth is still "no thread
- * selected").
+ * below `lg`, where the phone's path to a thread is tapping a row. While the
+ * list read is in its error state the column is passed `listError` and holds
+ * NOTHING: the pane on the left is showing a refusal and a Retry, so inviting
+ * the reader to pick a row there would be a lie (independent review, 1g
+ * server-error at 1280). The empty paper column still stands — the layout
+ * never collapses to a blank screen (pass review 1g defect 5) — and the one
+ * loud refusal stays in the list column.
  */
-export function ThreadsDetailColumn() {
+export function ThreadsDetailColumn({ listError = false }: ThreadsDetailColumnProps) {
   return (
     <div
       className="hidden min-h-0 min-w-0 flex-1 flex-col bg-paper lg:flex"
       data-testid="threads-detail-column"
     >
       <div className="flex flex-1 items-center justify-center p-8">
-        <div className="max-w-[380px] space-y-2 text-center" data-testid="threads-no-selection">
-          <h2 className="text-title-m font-semibold">No thread selected</h2>
-          <p className="text-[12.5px] text-muted">
-            Pick a thread on the left to read it here — or start one with New thread.
-          </p>
-        </div>
+        {listError ? null : (
+          <div className="max-w-[380px] space-y-2 text-center" data-testid="threads-no-selection">
+            <h2 className="text-title-m font-semibold">No thread selected</h2>
+            <p className="text-[12.5px] text-muted">
+              Pick a thread on the left to read it here — or start one with New thread.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -108,7 +119,7 @@ export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
       <div className="flex min-h-0 w-full flex-1 border-b border-line-strong bg-surface lg:w-[320px] lg:flex-none lg:border-b-0 lg:border-r">
         <ThreadListPane projectId={projectId} ownsError={list.isError} />
       </div>
-      <ThreadsDetailColumn />
+      <ThreadsDetailColumn listError={list.isError} />
     </div>
   );
 }

@@ -26,7 +26,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { Link, NavLink, useNavigate } from "react-router";
+import { Link, NavLink, useLocation, useNavigate } from "react-router";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
 import { useLayoutPrefs } from "../lib/prefs";
@@ -128,16 +128,43 @@ const SECTION_LABEL = "px-2 pb-1 font-mono text-[10px] tracking-[.06em] text-fai
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring";
 
-/** One repository under a project: indent 14, left rule, mono 11.5. */
+/**
+ * One repository under a project: indent 14, left rule, mono 11.5. The
+ * repository page you are on marks its row the way every other active row in
+ * the column is marked (the Workflows row's `ROW_ACTIVE` ink border), and
+ * NavLink carries the `aria-current="page"` that marks it for assistive tech.
+ */
 function RepoRow({ projectHref, name }: { projectHref: string; name: string }) {
   return (
     <NavLink
       to={`${projectHref}/${name}`}
-      className={`flex items-center gap-2 px-2 py-[3px] font-mono text-[11.5px] text-ink-2 no-underline hover:underline ${FOCUS_RING} rounded-[3px]`}
+      className={({ isActive }) =>
+        `flex items-center gap-2 rounded-[3px] border px-2 py-[3px] font-mono text-[11.5px] no-underline ${FOCUS_RING} ${
+          isActive ? ROW_ACTIVE : "border-transparent text-ink-2 hover:underline"
+        }`
+      }
     >
       <span className="min-w-0 truncate">{name}</span>
     </NavLink>
   );
+}
+
+/**
+ * The project a pathname lives inside: `/p/:projectId/…` and the legacy
+ * `/projects/:projectId/…` redirects (the router replaces them onto `/p/…` a
+ * render later; matching both keeps the tree from flashing closed in
+ * between). Every descendant — the tabs, conversations, members, the
+ * `/p/:projectId/:repo` catch-all — names the same project; anything else
+ * returns `null`.
+ */
+export function projectIdFromPath(pathname: string): string | null {
+  const segments = pathname.split("/").filter((segment) => segment.length > 0);
+  if ((segments[0] !== "p" && segments[0] !== "projects") || !segments[1]) return null;
+  try {
+    return decodeURIComponent(segments[1]);
+  } catch {
+    return segments[1];
+  }
 }
 
 function RepoList({ projectHref, projectId }: { projectHref: string; projectId: string }) {
@@ -158,7 +185,9 @@ function RepoList({ projectHref, projectId }: { projectHref: string; projectId: 
  * The tree mode (the default): one row per project, a chevron that opens the
  * repository list, the project's worst-state flag on the right. Expansion is
  * a saved preference (`expanded["project:<id>"]`), not local state, so it
- * survives a reload.
+ * survives a reload. The project the current route lives inside opens
+ * itself — once per entered project, so a manual collapse is never fought
+ * while the route stays put.
  */
 function ProjectTree() {
   const { prefs, update } = useLayoutPrefs();
@@ -184,6 +213,29 @@ function ProjectTree() {
     setBridge((previous) => ({ ...previous, [`project:${id}`]: open }));
     update({ expanded: { ...prefs.expanded, [`project:${id}`]: open } });
   };
+
+  /**
+   * The design opens the project you are in (Projects Review 1b/1e): when the
+   * route ENTERS a project its tree node expands, through the same saved
+   * preference a chevron click writes — so the repository list reuses the
+   * existing lazy `useRepositories` read, no new endpoint. The expansion
+   * fires once per entered project, never on every render: a manual collapse
+   * sticks for as long as the route stays in that project, and the
+   * auto-expand re-arms only when the route moves to a different project
+   * (leaving the project pages counts as moving away and coming back).
+   */
+  const location = useLocation();
+  const routeProjectId = projectIdFromPath(location.pathname);
+  const autoExpandedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (routeProjectId === autoExpandedFor.current) return;
+    autoExpandedFor.current = routeProjectId;
+    if (routeProjectId === null) return;
+    const key = `project:${routeProjectId}`;
+    if (!(bridge[key] ?? prefs.expanded[key] === true)) {
+      setExpanded(routeProjectId, true);
+    }
+  });
 
   if (projects.isPending) return null;
   if (items.length === 0) {

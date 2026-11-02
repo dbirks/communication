@@ -501,7 +501,7 @@ describe("/artifacts/:artifactId", () => {
     expect(preview.contains(byline)).toBe(true);
   });
 
-  it("keeps the stored payload reachable under a raw toggle that scrolls in its box", async () => {
+  it("keeps the stored payload reachable under a raw toggle that wraps in its box", async () => {
     await renderPublishedPlan(publishedPlan);
     const raw = screen.getByTestId("artifact-preview-raw");
     // Closed by default: the reader saw the envelope for the first time because
@@ -515,6 +515,12 @@ describe("/artifacts/:artifactId", () => {
     // keeps them inside the box at 390 instead of widening the page.
     expect(raw.getAttribute("style")).toContain("min-width: 100%");
     expect(raw.className).toContain("overflow-auto");
+    expect(raw.className).toContain("max-h-64");
+    // The stored "text" value is one line thousands of characters long, which was
+    // being cut mid-word at the right edge with no visible sideways scroll (design
+    // review on 4cbcb80), so the payload wraps inside the box instead.
+    expect(raw.className).toContain("whitespace-pre-wrap");
+    expect(raw.className).toContain("[overflow-wrap:anywhere]");
     fireEvent.click(screen.getByTestId("artifact-raw-toggle"));
     expect(raw.hasAttribute("hidden")).toBe(true);
   });

@@ -153,6 +153,98 @@ describe("the sidebar tree (the default placement)", () => {
   });
 });
 
+describe("the route opens its project and marks its repository (Projects Review 1b/1e)", () => {
+  const projectPath = `/api/v1/projects/${P}`;
+  const reposPath = `/api/v1/projects/${P}/repos`;
+
+  /** The column's reads at a project route, with the PATCH the auto-expand
+   * answers (an optional per-call body drives the collapse-sticks case). */
+  function projectRoutes(patchBody?: unknown): RouteStub[] {
+    return baseRoutes({
+      extra: [
+        { path: projectPath, body: projectFixture },
+        {
+          path: PREFS_PATH,
+          method: "PATCH",
+          body: patchBody ?? prefsDoc({ [`project:${P}`]: true }),
+        },
+      ],
+    });
+  }
+
+  it("opens the project the route is inside without a click", async () => {
+    const { requests } = renderApp({ path: `/p/${P}`, routes: projectRoutes() });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const toggle = within(sidebar).getByTestId(`sidebar-project-toggle-${P}`);
+
+    // Arriving at the project expands the node and its repository list
+    // rides the sidebar's own lazy repos read — no new endpoint.
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"), {
+      timeout: READ_MS,
+    });
+    expect(within(sidebar).getByText("acme-widgets")).toBeTruthy();
+    await waitFor(() => expect(requestsTo(requests, reposPath).length).toBeGreaterThan(0), {
+      timeout: READ_MS,
+    });
+    // The expansion goes through the same saved preference PATCH a click uses.
+    const patches = requestsTo(requests, PREFS_PATH, "PATCH");
+    expect(patches.length).toBeGreaterThan(0);
+    expect(JSON.parse(patches[0].body ?? "{}").layout.expanded[`project:${P}`]).toBe(true);
+  });
+
+  it("marks the repository row of a repository page aria-current=page", async () => {
+    renderApp({ path: `/p/${P}/acme-widgets`, routes: projectRoutes() });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const toggle = within(sidebar).getByTestId(`sidebar-project-toggle-${P}`);
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"), {
+      timeout: READ_MS,
+    });
+
+    const row = within(sidebar).getByRole("link", { name: "acme-widgets" });
+    expect(row.getAttribute("aria-current")).toBe("page");
+    // The same active treatment the Workflows row carries: the ink border.
+    expect(row.className.split(/\s+/)).toContain("border-ink");
+    // A repository page that is not open in the tree stays unmarked: only
+    // the sidebar's own row answers for the route.
+    expect(
+      within(sidebar)
+        .getAllByRole("link")
+        .filter((link) => link.getAttribute("aria-current") === "page")
+        .map((link) => link.getAttribute("href")),
+    ).toContain(`/p/${P}/acme-widgets`);
+  });
+
+  it("keeps a manual collapse while the route stays in the project", async () => {
+    // The PATCH answers: call 1 confirms the auto-expand, call 2 confirms
+    // the manual collapse and holds it closed.
+    const { requests } = renderApp({
+      path: `/p/${P}`,
+      routes: projectRoutes((n: number) => prefsDoc(n === 1 ? { [`project:${P}`]: true } : {})),
+    });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const toggle = within(sidebar).getByTestId(`sidebar-project-toggle-${P}`);
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"), {
+      timeout: READ_MS,
+    });
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("false"), {
+      timeout: READ_MS,
+    });
+    expect(within(sidebar).queryByText("acme-widgets")).toBeNull();
+
+    // The route never moved, so the auto-expand must not fight back: after
+    // everything settles the node is still closed, and exactly the two
+    // writes (expand, collapse) went to the preferences endpoint.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(within(sidebar).queryByText("acme-widgets")).toBeNull();
+    const patches = requestsTo(requests, PREFS_PATH, "PATCH");
+    expect(patches).toHaveLength(2);
+    expect(JSON.parse(patches[1].body ?? "{}").layout.expanded[`project:${P}`]).toBe(false);
+  });
+});
+
 describe("the sidebar switcher (a saved layout preference)", () => {
   it("shows a 36px project button whose listbox ends in 'All projects'", async () => {
     renderApp({
