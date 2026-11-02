@@ -75,6 +75,10 @@ const (
 	CodeReservedNodeID     Code = "reserved_node_id"
 	CodeExpressionBudget   Code = "expression_budget_exceeded"
 
+	// typed workflow inputs (ADR-0066)
+	CodeInputTypeUnknown    Code = "input_type_unknown"
+	CodeInputDefaultInvalid Code = "input_default_invalid"
+
 	// policy / registry
 	CodeKindNotImplemented     Code = "kind_not_implemented"
 	CodeTemplatePublishDefer   Code = "template_publish_deferred"

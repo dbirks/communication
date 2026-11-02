@@ -149,6 +149,7 @@ func (w *walk) run(doc loader.Document) {
 	w.plan.Inputs = spec["inputs"]
 	w.plan.Outputs = spec["outputs"]
 	w.inputs = expr.SchemaFromJSON(spec["inputs"])
+	w.checkInputs(spec["inputs"]) // typed inputs, ADR-0066
 	w.plan.Policies = w.policies(spec["policies"])
 
 	nodesAt := ptr.Root.Child("spec").Child("nodes")

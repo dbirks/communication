@@ -116,6 +116,8 @@ func TestCodesAreThePublicContract(t *testing.T) {
 		"undeclared_root", "cel_function_not_allowed", "non_boolean_expression",
 		"unknown_field", "type_mismatch", "undeclared_output_schema", "reserved_node_id",
 		"expression_budget_exceeded",
+		// typed workflow inputs (ADR-0066)
+		"input_type_unknown", "input_default_invalid",
 		// policy / registry
 		"kind_not_implemented", "template_publish_deferred", "unresolved_node_template",
 		"template_ref_unresolved",
@@ -137,6 +139,7 @@ func TestCodesAreThePublicContract(t *testing.T) {
 		diag.CodeUndeclaredRoot, diag.CodeFunctionNotAllowed, diag.CodeNonBoolean,
 		diag.CodeUnknownField, diag.CodeTypeMismatch, diag.CodeUndeclaredOutput,
 		diag.CodeReservedNodeID, diag.CodeExpressionBudget, diag.CodeKindNotImplemented,
+		diag.CodeInputTypeUnknown, diag.CodeInputDefaultInvalid,
 		diag.CodeTemplatePublishDefer, diag.CodeUnresolvedTemplate, diag.CodeTemplateRefUnresolved,
 		diag.CodeSecretLiteral,
 		diag.CodeInvalidSecretRef, diag.CodeUnknownProfile, diag.CodeUnknownRepository,
