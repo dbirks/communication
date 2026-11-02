@@ -72,6 +72,13 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_counter_verdicts,
     w_form_field_verdicts,
     w_form_opened_verdict,
+    parse_run_inputs,
+    w_checkbox_state,
+    w_run_input_map,
+    w_typed_fill_plan,
+    w_typed_control_verdicts,
+    w_typed_input_verdicts,
+    W_TYPED_NUMBER_FILL,
     w_parse_dom_field_states,
     w_submit_enabled_state,
     W_ASSIGNMENT_LABEL,
@@ -426,6 +433,163 @@ def test_w1_dom_probes_parse():
             w_submit_enabled_state("new-run-submit|true") is False, "")
     _assert("a missing verb reads nothing", w_submit_enabled_state("new-run-submit|missing") is None,
             "")
+
+
+# --- the ledger read behind W1's typed-input arms ---------------------------
+#
+# Actions run 41485001103, job 125424711079: `W1 crashed: AttributeError: 'list'
+# object has no attribute 'splitlines'` (e2e_m4_exit.py:1903 in
+# parse_run_inputs). The leg called run_inputs_read — which ALREADY parses — and
+# handed its list straight back to the text parser. Commit 4fc5a95 is the other
+# half of the same arm: the form now renders `boolean` as a checkbox and
+# `integer` as a number field and posts JSON true / 3, so the ledger values are
+# what the arm grades.
+W1_RUN_INPUTS_RAW = (
+    'acceptance_criteria=default "Tests pass, the plan is followed, and the '
+    'reviewer approves."\n'
+    'fanout=submitted false\n'
+    'fanout_count=submitted ' + W_TYPED_NUMBER_FILL + '\n'
+    'goal=submitted "W1 exit leg: prove the form is schema-driven"\n'
+    'repository=submitted "app"'
+)
+
+W1_TYPED_DOC = {"spec": {"inputs": {
+    "required": ["goal", "repository"],
+    "properties": {
+        "goal": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "minLength": 1},
+        "acceptance_criteria": {"type": "string",
+                                "default": "Tests pass, the plan is followed, "
+                                           "and the reviewer approves."},
+        "fanout": {"type": "boolean", "default": False},
+        "fanout_count": {"type": "integer", "minimum": 0, "maximum": 1000,
+                         "default": 0},
+    }}}}
+
+
+def test_w1_run_input_rows_are_the_parsed_shape_not_text():
+    """The crash, reproduced, and the reader that replaced the double-parse."""
+    rows = parse_run_inputs(W1_RUN_INPUTS_RAW)
+    _assert("the raw SELECT parses to run_inputs rows",
+            {r["name"] for r in rows} == {"acceptance_criteria", "fanout",
+                                          "fanout_count", "goal", "repository"}, rows)
+    # the shape that crashed: run_inputs_read hands back THIS list, and W1 fed it
+    # back to the text parser.
+    crashed = None
+    try:
+        parse_run_inputs(rows)
+    except AttributeError as e:
+        crashed = str(e)
+    _assert("a LIST where text was expected is the 41485001103 crash",
+            crashed is not None and "splitlines" in crashed, crashed)
+    got = w_run_input_map(rows)
+    _assert("the fixed reader takes the parsed rows as-is",
+            got.get("fanout_count") == ("submitted", W_TYPED_NUMBER_FILL)
+            and got.get("fanout") == ("submitted", "false"), got)
+    _assert("a read that never happened is empty, never a second parse",
+            w_run_input_map(None) == {} and w_run_input_map(W1_RUN_INPUTS_RAW) == {},
+            w_run_input_map(None))
+
+
+def test_w1_typed_inputs_are_driven_and_graded_as_json():
+    """4fc5a95: checkbox + number field, JSON types in the body and the ledger."""
+    expected = w_input_expectations(W1_TYPED_DOC)
+    plan = w_typed_fill_plan(expected)
+    by_name = {a["name"]: a for a in plan}
+    _assert("the plan covers exactly the typed fields",
+            set(by_name) == {"fanout", "fanout_count"}, plan)
+    _assert("the boolean renders as a checkbox",
+            by_name.get("fanout", {}).get("control") == "checkbox", plan)
+    _assert("the integer renders as a number field filled off-schema",
+            by_name.get("fanout_count", {}).get("control") == "number"
+            and by_name.get("fanout_count", {}).get("value") == W_TYPED_NUMBER_FILL
+            and W_TYPED_NUMBER_FILL != "0", by_name)
+    _assert("a string field is not a typed arm",
+            not any(a["name"] in ("goal", "repository", "acceptance_criteria")
+                    for a in plan), plan)
+    verdicts = {lbl: ok for lbl, ok, _ in w_typed_input_verdicts(
+        plan, parse_run_inputs(W1_RUN_INPUTS_RAW))}
+    _assert("JSON false and JSON 3 pass", all(v is True for v in verdicts.values()),
+            verdicts)
+    # the pre-4fc5a95 body: the STRINGS the control plane answered 422 to.
+    strings = [{"name": "fanout", "origin": "submitted", "value": '"false"'},
+               {"name": "fanout_count", "origin": "submitted", "value": '"3"'}]
+    str_verdicts = {lbl: ok for lbl, ok, _ in w_typed_input_verdicts(plan, strings)}
+    _assert("a quoted boolean/number is the 422 shape and FAILS",
+            str_verdicts and all(ok is False for ok in str_verdicts.values()),
+            str_verdicts)
+    missing = {lbl: ok for lbl, ok, _ in w_typed_input_verdicts(plan, [])}
+    _assert("a typed field with no run_inputs row fails, never skips",
+            missing and all(ok is False for ok in missing.values()), missing)
+    _assert("the checkbox state probe is read strictly",
+            w_checkbox_state('### Result\n"true"') is True
+            and w_checkbox_state('### Result\n"false"') is False
+            and w_checkbox_state("### Error") is None,
+            (w_checkbox_state("### Result\n\"true\""),
+             w_checkbox_state("### Result\n\"false\""),
+             w_checkbox_state("### Error")))
+
+
+# What the live lab rendered at Actions run 41485001103 / the pre-4fc5a95 form:
+# every typed input came out as a plain TEXTBOX, whose string body the control
+# plane refused. 4fc5a95 draws a checkbox and a number field instead.
+W1_FORM_TYPED_1K = """
+- dialog "Run feature-development" [ref=e1]:
+  - heading "Run feature-development" [level=2] [ref=e2]
+  - combobox "Workflow" [ref=e3]
+  - textbox "goal" [ref=e10]
+  - textbox "repository" [ref=e11]
+  - textbox "acceptance_criteria" [ref=e12]
+  - checkbox "fanout" [ref=e13]
+  - spinbutton "fanout_count" [ref=e14]
+"""
+
+W1_FORM_TYPED_STALE = """
+- heading "Run feature-development" [level=2] [ref=e2]
+- textbox "goal" [ref=e10]
+- textbox "repository" [ref=e11]
+- textbox "acceptance_criteria" [ref=e12]
+- textbox "fanout" [ref=e13]
+- textbox "fanout_count" [ref=e14]
+"""
+
+
+def _typed_roles(nodes, plan):
+    return {a["name"]: (w_field_control_hits(nodes, a["label"], a["name"]) or
+                        [{}])[0].get("role") for a in plan}
+
+
+def test_w1_typed_controls_are_the_checkbox_and_number_field_4fc5a95_drew():
+    """The leg drives the checkbox with `check` and the number field with `fill`,
+    and FAILS the textbox rendering it replaced (live evidence: the lab built at
+    11:54, before 4fc5a95, showed fanout/fanout_count as textboxes)."""
+    plan = w_typed_fill_plan(w_input_expectations(W1_TYPED_DOC))
+    fresh = pw_snapshot_nodes(W1_FORM_TYPED_1K)
+    roles = _typed_roles(fresh, plan)
+    _assert("the 1k dialog's controls are found by name",
+            roles == {"fanout": "checkbox", "fanout_count": "spinbutton"}, roles)
+    fresh_v = {lbl: ok for lbl, ok, _ in w_typed_control_verdicts(plan, roles)}
+    _assert("checkbox + spinbutton pass",
+            fresh_v and all(ok is True for ok in fresh_v.values()), fresh_v)
+    stale = _typed_roles(pw_snapshot_nodes(W1_FORM_TYPED_STALE), plan)
+    stale_v = {lbl: (ok, d) for lbl, ok, d in w_typed_control_verdicts(plan, stale)}
+    _assert("the textbox rendering the leg replaces FAILS",
+            stale_v and all(ok is False for ok, _ in stale_v.values()), stale_v)
+    _assert("a missing control is named as missing",
+            all(ok is False and "no control" in d for _, ok, d in
+                w_typed_control_verdicts(plan, {})),
+            w_typed_control_verdicts(plan, {}))
+    _assert("a string field is never in the control verdicts either",
+            not w_typed_control_verdicts(w_typed_fill_plan(
+                w_input_expectations({"spec": {"inputs": {"properties": {
+                    "goal": {"type": "string"}}}}})), {"goal": "textbox"}), "")
+    # the value arms read the PARSED ledger rows, and they read the same fields
+    _assert("the ledger arm grades the same plan",
+            all(ok is True for _, ok, _ in w_typed_input_verdicts(
+                plan, [{"name": "fanout", "origin": "submitted", "value": "false"},
+                       {"name": "fanout_count", "origin": "submitted",
+                        "value": W_TYPED_NUMBER_FILL}])),
+            w_typed_input_verdicts(plan, []))
 
 
 def test_counter_verdicts():
@@ -2446,6 +2610,9 @@ if __name__ == "__main__":
                test_w1_form_opened_verdict_needs_the_card_not_just_the_url,
                test_w1_form_opened_verdict_reads_the_raised_1k_dialog,
                test_w1_dom_probes_parse,
+               test_w1_run_input_rows_are_the_parsed_shape_not_text,
+               test_w1_typed_inputs_are_driven_and_graded_as_json,
+               test_w1_typed_controls_are_the_checkbox_and_number_field_4fc5a95_drew,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,

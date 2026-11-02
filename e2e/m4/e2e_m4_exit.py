@@ -1897,8 +1897,11 @@ def c1_run_inputs_sql(run_id):
 
 
 def parse_run_inputs(text):
-    """'name=origin value' lines -> [{name, origin, value}]. Pure; a ragged line is
-    dropped, never verdicted (the raw SELECT is shown alongside)."""
+    """'name=origin value' lines -> [{name, origin, value}]. Takes the psql TEXT and
+    nothing else: run_inputs_read returns THIS function's output, so feeding its list
+    back here is the `'list' object has no attribute 'splitlines'` crash that aborted
+    W1 in Actions run 41485001103 — grade the rows directly (w_run_input_map). A
+    ragged line is dropped, never verdicted (the raw SELECT is shown alongside)."""
     out = []
     for line in (text or "").splitlines():
         head, _, value = line.strip().partition(" ")
@@ -21003,6 +21006,100 @@ def w_form_field_verdicts(expected, nodes, dom_states=None):
     return verdicts
 
 
+# --- the TYPED inputs: 4fc5a95's checkbox and number field --------------------
+#
+# The run-by-hand form renders `fanout: {type: boolean}` as a CHECKBOX and
+# `fanout_count: {type: integer}` as a NUMBER field and posts them as JSON
+# `true` / `3`. Before that commit both were textboxes whose STRINGS the control
+# plane refused with `422 expected a boolean`, so W1 must drive them through
+# their OWN controls (`fill` cannot drive a checkbox) and read the JSON type back
+# out of run_inputs — the ledger prints a JSON boolean/number UNQUOTED.
+W_TYPED_NUMBER_FILL = "3"  # non-default: the only value that says the field drove the run
+
+
+def w_typed_fill_plan(expected):
+    """The checkbox/number arms, read off the pinned schema — never by hand. Pure:
+    a string field is not a typed arm, a boolean/integer/number is."""
+    plan = []
+    for f in expected or ():
+        t = str(f.get("type") or f.get("kind") or "").lower()
+        label = f.get("label") or f.get("name")
+        if t == "boolean":
+            plan.append({"name": f["name"], "label": label, "control": "checkbox",
+                         "json": "boolean"})
+        elif t in ("integer", "number"):
+            plan.append({"name": f["name"], "label": label, "control": "number",
+                         "json": "number", "value": W_TYPED_NUMBER_FILL})
+    return plan
+
+
+def w_checkbox_state(text):
+    """The checked state of a `el => String(el.checked)` eval — True/False, or None
+    when the probe said nothing (a verdict never invents one). Pure; the DOM prints
+    lowercase `true`/`false`."""
+    m = re.search(r"\b(true|false)\b", str(text or "").strip().lower())
+    return None if m is None else m.group(1) == "true"
+
+
+def w_run_input_map(rows):
+    """run_inputs_read's PARSED rows -> {name: (origin, value)}. Pure, and the SHAPE
+    is the point: run_inputs_read already calls parse_run_inputs, so a caller that
+    hands its LIST back to that text parser is the
+    `AttributeError: 'list' object has no attribute 'splitlines'` that aborted W1 in
+    Actions run 41485001103. A non-list is a read that never happened ({}), never a
+    second parse."""
+    if not isinstance(rows, list):
+        return {}
+    out = {}
+    for r in rows:
+        if isinstance(r, dict) and r.get("name"):
+            out[str(r["name"])] = (str(r.get("origin") or ""), str(r.get("value") or ""))
+    return out
+
+
+W_TYPED_CONTROL_ROLES = {"checkbox": "checkbox", "number": "spinbutton"}
+
+
+def w_typed_control_verdicts(plan, roles):
+    """One verdict per checkbox/number field: the form drew the CONTROL the JSON
+    type asks for — a boolean as a `checkbox`, an integer/number as a number field
+    (`spinbutton`), which is what 4fc5a95 changed. `roles` is the snapshot read
+    {name: role}; a textbox there is the pre-4fc5a95 rendering (and the string body
+    the control plane 422s), a None means no control was found at all. Pure."""
+    verdicts = []
+    for arm in plan or ():
+        want = W_TYPED_CONTROL_ROLES.get(arm.get("control") or "", "")
+        role = (roles or {}).get(arm.get("name"))
+        verdicts.append((f"{arm['json']} input {arm['name']} renders as a {want}",
+                         role == want,
+                         f"role={role!r} expected={want!r} "
+                         f"({'no control in the snapshot' if role is None else 'read off the snapshot'})"))
+    return verdicts
+
+
+def w_typed_input_verdicts(plan, rows):
+    """One verdict per checkbox/number field: the value the run RECEIVED is the JSON
+    type the schema declares — `true` / `3` in the ledger, not the quoted `"true"` /
+    `"3"` string the server 422s. `rows` is run_inputs_read's PARSED shape (see
+    w_run_input_map); a ragged row is graded on what it says, never repaired."""
+    got = w_run_input_map(rows)
+    verdicts = []
+    for arm in plan or ():
+        row = got.get(arm["name"])
+        if row is None:
+            verdicts.append((f"typed input {arm['name']} reaches the run", False,
+                             "no run_inputs row — the form posted nothing for a field "
+                             f"it renders as a {arm['control']}"))
+            continue
+        value = (row[1] or "").strip()
+        ok = value in ("true", "false") if arm["json"] == "boolean" \
+            else bool(re.fullmatch(r"-?\d+(\.\d+)?", value))
+        verdicts.append((f"typed input {arm['name']} is a JSON {arm['json']}", ok,
+                         f"control={arm['control']} value={value!r} origin={row[0]!r} "
+                         "(unquoted = the JSON type; quoted = the string the server refuses)"))
+    return verdicts
+
+
 # § 6.2's counter set as the Ops page renders it (term + the JSON member).
 W7_COUNTERS = [
     ("attempts queued", ["attempts_by_status", "queued"]),
@@ -22663,8 +22760,9 @@ def w11_internals_verdict(dom_text, observed):
 
 def w1():
     """W1 — the New-run form renders from spec.inputs (goal textarea, repository
-    select, acceptance-criteria with default); the POST carries the Idempotency-Key
-    header; a second Submit click creates ONE run."""
+    select, acceptance-criteria with default, and since 4fc5a95 a boolean as a
+    CHECKBOX and an integer as a NUMBER field posted as JSON true / 3); the POST
+    carries the Idempotency-Key header; a second Submit click creates ONE run."""
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
         gap("W1 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no "
@@ -22803,6 +22901,47 @@ def w1():
         rc2, out = pw("fill", refs[0], value, session="m4w1")
         return rc2 == 0, out[:120]
 
+    # 4fc5a95 renders a boolean input as a CHECKBOX and an integer as a NUMBER
+    # field and posts JSON true / 3. Drive each through its OWN control — `fill`
+    # cannot drive a checkbox — and prove the toggle from the DOM. The box is
+    # released again before submit: turning fan-out on is C8's gate, not W1's.
+    typed_plan = w_typed_fill_plan(expected)
+    checkbox_checked, typed_roles = {}, {}
+    for arm in typed_plan:
+        rc, s = pw_snapshot(session="m4w1")
+        hits = [n for n in w_field_control_hits(pw_snapshot_nodes(s),
+                                                arm["label"], arm["name"])]
+        typed_roles[arm["name"]] = hits[0]["role"] if hits else None
+        if not hits:
+            gap(f"W1 {arm['control']} input {arm['name']}",
+                "no control in the snapshot to drive — the typed field is unprovable")
+            continue
+        ref = hits[0]["ref"]
+        if hits[0]["role"] == "checkbox":
+            rc_chk, _o = pw("check", ref, session="m4w1")
+            _, state = pw("eval", "el => String(el.checked)", ref, session="m4w1")
+            checkbox_checked[arm["name"]] = w_checkbox_state(state)
+            pw("uncheck", ref, session="m4w1")
+            if rc_chk != 0:
+                show(f"W1 checkbox {arm['name']}", f"`check` rc={rc_chk}")
+        elif hits[0]["role"] == "spinbutton":
+            pw("fill", ref, arm["value"], session="m4w1")
+        else:
+            # a TEXTBOX where the schema asked for a checkbox/number field: the
+            # string this control would post is the body the server answers
+            # `422 expected a boolean`, so the arm names the rendering below
+            # (w_typed_control_verdicts) and types into nothing.
+            show(f"W1 typed input {arm['name']}",
+                 f"rendered as role={hits[0]['role']}, not the {arm['control']} the "
+                 f"{arm['json']} type asks for — left unfilled")
+    for label, ok, detail in w_typed_control_verdicts(typed_plan, typed_roles):
+        check(f"W1 {label}", ok, f"{detail} [{shot}]")
+    for name, checked in sorted(checkbox_checked.items()):
+        check(f"W1 the boolean input {name} toggles through its checkbox",
+              checked is True,
+              f"checked after `check`={checked} (released before submit: the fan-out "
+              f"branch is C8's gate) [{shot}]")
+
     for f in expected:
         if f["name"] == "goal":
             fill(f["label"], "W1 exit leg: prove the form is schema-driven", bare=f["name"])
@@ -22851,8 +22990,19 @@ def w1():
     new_run = psql(f"SELECT id FROM runs WHERE project_id = '{project_id}' "
                    f"AND created_at > to_timestamp({before}::double precision) "
                    f"ORDER BY created_at DESC LIMIT 1")
-    inputs = parse_run_inputs(run_inputs_read(new_run)) if new_run else []
-    got = {r["name"]: (r["origin"], r["value"]) for r in inputs}
+    # run_inputs_read ALREADY parses (parse_run_inputs) — its list goes to the
+    # verdicts as-is; handing it back to the text parser is the crash this leg died
+    # on in Actions run 41485001103.
+    input_rows = run_inputs_read(new_run) if new_run else None
+    got = w_run_input_map(input_rows)
+    if typed_plan:
+        if input_rows is None:
+            gap("W1 typed inputs reach the run as JSON",
+                "run_inputs unread — cannot tell a JSON boolean/number from the string "
+                "a 422 came from")
+        else:
+            for label, ok, detail in w_typed_input_verdicts(typed_plan, input_rows):
+                check(f"W1 {label}", ok, f"{detail} [{shot3}]")
     goal_ok = "goal" in got and "W1 exit leg: prove the form is schema-driven" in got["goal"][1]
     repo_ok = ("repository" in got and got["repository"][0] == "submitted"
                and (want or ["app"])[0].strip('"') in got["repository"][1])
