@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { PanelRight } from "lucide-react";
 import { ApiError } from "../api/client";
 import { useConversations, useProject, useTurnSandbox, useWorkspaces } from "../api/queries";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../components/conversation/AgentConversationPanel";
 import { ComposerAgentChip } from "../components/conversation/ComposerAgentChip";
 import { ConversationSidePanel } from "../components/conversation/ConversationSidePanel";
+import { ChatDetailsSheet } from "../components/conversation/ChatDetailsSheet";
 import { AssistantNote } from "../components/conversation/AssistantNote";
 import { openAssistantWorkflowDraft } from "../components/assistant/AssistantPopover";
 import {
@@ -78,6 +80,45 @@ export function sandboxVerdictRecorded(record: TurnSandbox | undefined): boolean
     (record.grants?.length ?? 0) > 0 ||
     (record.denied_what?.length ?? 0) > 0
   );
+}
+
+/**
+ * The standing thread → workflow note's dismissal (design 2e prints
+ * `Make a workflow… dismiss` beside it — rcn-chat-rail-390). That note is
+ * the panel's own suggestion, never a row the server writes: the ADR-0071
+ * notes store carries no such row, so the notes API's `POST …/dismiss`
+ * (which the repo page's notes and this page's REAL notes use) has no id to
+ * point at. The dismissal is persisted per conversation in localStorage
+ * instead — try/catch, because unavailable storage (private mode, quota)
+ * downgrades it to a session-local dismissal, never a thrown render. The
+ * key is per-conversation, per-browser: like the notes' `dismiss` flag it
+ * says "this person did not want to see this suggestion again" — it hides
+ * the note for this thread only, and the notes-store rows keep their own
+ * server-side dismissal beside it.
+ */
+function workflowNoteDismissedKey(conversationId: string): string {
+  return `communication.chat.workflow-note-dismissed.${conversationId}`;
+}
+
+function useWorkflowNoteDismissed(conversationId: string) {
+  const [dismissed, setDismissed] = useState(() => {
+    if (conversationId === "") return false;
+    try {
+      return window.localStorage.getItem(workflowNoteDismissedKey(conversationId)) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismiss = useCallback(() => {
+    setDismissed(true);
+    try {
+      window.localStorage.setItem(workflowNoteDismissedKey(conversationId), "1");
+    } catch {
+      // No storage: the dismissal is session-local, and that is the honest
+      // end of it — nothing else to do.
+    }
+  }, [conversationId]);
+  return { dismissed, dismiss };
 }
 
 export default function ConversationPage({
@@ -142,6 +183,23 @@ export default function ConversationPage({
   // MOUNTS (see Shell's `useIsNarrow` rationale) — the panel never exists
   // twice in the tree.
   const narrow = useIsNarrow();
+  // The phone's Details sheet (rcn-chat-rail-390): below `lg` the rail has no
+  // visible column, so the header's toggle opens the same panel content as a
+  // right-side sheet. `open` is gated on `narrow` too — the sheet is the
+  // phone's affordance, and the toggle that opens it is `lg:hidden`.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const closeDetails = useCallback(() => {
+    setDetailsOpen(false);
+    // The keyboard goes back to the button that opened the sheet — the
+    // shell's own phone drawer keeps the same return (Shell.tsx closeDrawer).
+    detailsToggleRef.current?.focus();
+  }, []);
+  // Design 2e's `Make a workflow… dismiss`: the standing note is the panel's
+  // own (not a notes-store row), so its dismissal is page-held, per
+  // conversation (see `useWorkflowNoteDismissed`).
+  const { dismissed: workflowNoteDismissed, dismiss: dismissWorkflowNote } =
+    useWorkflowNoteDismissed(conversationId);
   // The header's participant line: every person whose prompt the journal
   // carries, in first-message order, through the page's actor directory. An
   // empty transcript names no participants — nothing is invented.
@@ -379,6 +437,10 @@ export default function ConversationPage({
       // generator's `make_workflow` note is the design's replacement for this
       // standing one — not a second button beside it.
       workflowChat={{ id: conversationId, title: conversation.data?.title ?? null }}
+      // Design 2e: `Make a workflow… dismiss` beside the standing note
+      // (rcn-chat-rail-390) — dismissal is per-conversation, page-held.
+      workflowNoteDismissed={workflowNoteDismissed}
+      onDismissWorkflowNote={dismissWorkflowNote}
       assistantNote={noteRows.length > 0 ? assistantNotes : undefined}
     />
   );
@@ -734,7 +796,25 @@ export default function ConversationPage({
             >
               ← Threads
             </Link>
-            {breadcrumb}
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              {breadcrumb}
+              {/* rcn-chat-rail-390: at 390 the side panel has no visible
+                  column, so the header carries the door to it — the same
+                  panel content opens as a right-side sheet. `lg:hidden` is
+                  what hides it at desktop, where the panel is a column. */}
+              <button
+                ref={detailsToggleRef}
+                type="button"
+                data-testid="chat-details-toggle"
+                aria-label="Chat details"
+                aria-expanded={detailsOpen}
+                onClick={() => setDetailsOpen((open) => !open)}
+                className="inline-flex shrink-0 items-center gap-[6px] rounded-[3px] px-2 py-[3px] font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent lg:hidden"
+              >
+                <PanelRight className="h-[14px] w-[14px]" aria-hidden="true" />
+                Details
+              </button>
+            </div>
             {/* Below the pane's `lg` stack breakpoint the header is a
                 column: title (full width, wrapping rather than truncating to
                 a word), then the pill and the acts on their own row. At
@@ -1009,6 +1089,14 @@ export default function ConversationPage({
             {sidePanel}
           </aside>
         )}
+        {/* rcn-chat-rail-390: the phone's Details sheet — the SAME panel
+            content, full height, at the right edge. The open state is the
+            page's; closeDetails returns focus to the header's toggle, and
+            the sheet's own close button, backdrop and Esc all land there.
+            Mounted only below `lg`, where its toggle exists. */}
+        <ChatDetailsSheet open={narrow && detailsOpen} onClose={closeDetails}>
+          {sidePanel}
+        </ChatDetailsSheet>
       </div>
     );
   }

@@ -163,6 +163,18 @@ export interface ConversationSidePanelProps {
    */
   workflowChat?: { id: string; title?: string | null } | null;
   /**
+   * The host's dismissal of the standing thread → workflow note (design 2e
+   * prints `Make a workflow… dismiss` beside it, rcn-chat-rail-390): the
+   * standing note is the panel's OWN — not a row of the notes store (ADR-0071)
+   * the server owns — so dismissing it hides it for this thread without any
+   * write, the way a dismissed notes-store row would disappear. Omit (or
+   * false) for hosts where the standing note cannot be dismissed.
+   */
+  workflowNoteDismissed?: boolean;
+  /** Present a dismiss affordance only when dismissing is real behaviour —
+   * the same contract `AssistantNote.onDismiss` keeps for its rows. */
+  onDismissWorkflowNote?: () => void;
+  /**
    * Override for the note's click-through (tests, or a host with its own
    * assistant surface). Defaults to opening the assistant popover with
    * the chat as context.
@@ -198,30 +210,42 @@ export function ConversationSidePanel({
   links,
   assistantNote,
   workflowChat,
+  workflowNoteDismissed = false,
+  onDismissWorkflowNote,
   onMakeWorkflow,
 }: ConversationSidePanelProps) {
   const agentRows = agents ?? [];
   const turnRows = turns ?? [];
   const skillList = (skills ?? []).filter((skill) => skill.trim() !== "");
   const linkRows = links ?? [];
-  const workflowNote = workflowChat ? (
-    <AssistantNote
-      testId={WORKFLOW_NOTE_TEST_ID}
-      text={`Turn “${workflowChat.title || "this chat"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
-      actions={[
-        makeWorkflowNoteAction(() =>
-          onMakeWorkflow ? onMakeWorkflow(workflowChat) : openAssistantWorkflowDraft(workflowChat),
-        ),
-      ]}
-    />
-  ) : null;
+  // The standing 2f note, and the dismiss the design prints beside its
+  // `Make a workflow…` (rcn-chat-rail-390): the note is the panel's own
+  // suggestion — not a notes-store row — so dismissal is the host's to hold
+  // (per-conversation, in the chat page) and the panel only obeys it.
+  const standingNoteShown = Boolean(workflowChat) && !workflowNoteDismissed;
+  const workflowNote =
+    workflowChat && standingNoteShown ? (
+      <AssistantNote
+        testId={WORKFLOW_NOTE_TEST_ID}
+        text={`Turn “${workflowChat.title || "this chat"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
+        actions={[
+          makeWorkflowNoteAction(() =>
+            onMakeWorkflow
+              ? onMakeWorkflow(workflowChat)
+              : openAssistantWorkflowDraft(workflowChat),
+          ),
+        ]}
+        onDismiss={onDismissWorkflowNote}
+      />
+    ) : null;
   // The 2f entry must always be reachable, so the standing note rides below
   // the store's notes instead of trading places with them. The one thing it
   // must not become is a second `Make a workflow…` button: a note that
   // already offers that action (the generator's own `make_workflow` note)
   // replaces the standing one. AssistantNote stamps `data-action-kind` on
   // every action button, so the panel sees what its slot actually renders
-  // without the host having to describe its notes to it.
+  // without the host having to describe its notes to it. A dismissed
+  // standing note is simply not there — no row, no button, no section.
   const slotBoxRef = useRef<HTMLDivElement | null>(null);
   const [noteOffersMakeWorkflow, setNoteOffersMakeWorkflow] = useState(false);
   // Layout effect, not passive: the decision is taken before the browser
@@ -239,11 +263,12 @@ export function ConversationSidePanel({
     }
     setNoteOffersMakeWorkflow(found);
   }, [assistantNote, workflowChat]);
+  const standingShown = standingNoteShown && !noteOffersMakeWorkflow;
   const slot =
-    assistantNote || (workflowChat && !noteOffersMakeWorkflow) ? (
+    assistantNote || standingShown ? (
       <>
         {assistantNote}
-        {workflowChat && !noteOffersMakeWorkflow ? workflowNote : null}
+        {standingShown ? workflowNote : null}
       </>
     ) : null;
   const hasContent =

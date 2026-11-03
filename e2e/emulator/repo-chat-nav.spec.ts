@@ -843,6 +843,36 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toContainText(FILE_REPO, { timeout: 15_000 });
     });
 
+    await test.step("chat details — the sheet the 390 header opens (rcn-2e)", async () => {
+      // rcn-chat-rail-390: at 390 the rail has no visible column, so the
+      // header's Details toggle opens the SAME panel as a right-side sheet.
+      // screen() shoots both widths from this one state: at 1280 the sheet
+      // is not mounted (its toggle is lg:hidden) and the capture is the page
+      // with the panel's visible column; at 390 the sheet stands open.
+      await page.setViewportSize({ width: 390, height: 844 });
+      const toggle = page.getByTestId("chat-details-toggle");
+      await expect(
+        toggle,
+        "rcn-chat-rail-390: below lg the chat header offers Details",
+      ).toBeVisible();
+      await toggle.click();
+      const sheet = page.getByTestId("chat-details-sheet");
+      await expect(
+        sheet,
+        "Details opens the side panel as a right-side sheet",
+      ).toBeVisible();
+      await expect(
+        sheet.getByTestId("conversation-side-panel"),
+        "the sheet carries the same panel content the aside and stack do",
+      ).toBeVisible();
+      await emu.screen("rcn-2e", "chat-details");
+      // Close it for the journey's remaining steps: Esc on the phone frame
+      // (where the sheet is mounted) — then the desktop frame.
+      await page.keyboard.press("Escape");
+      await expect(sheet, "Esc closes the sheet").toBeHidden();
+      await page.setViewportSize({ width: 1280, height: 900 });
+    });
+
     await test.step("3a server-error — the runs read fails, the page owns it", async () => {
       emu.expectFailure(new RegExp(`/api/v1/projects/${ids.projectId}/runs$`), 500);
       await page.route(new RegExp(`/api/v1/projects/${ids.projectId}/runs$`), (route) =>
@@ -1050,6 +1080,33 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toBeVisible({ timeout: 10 * 60_000 });
       await expect(chip, "the second turn settled").toBeEnabled({ timeout: 10 * 60_000 });
       await emu.screen("rcn-2e", "switched");
+    });
+
+    await test.step("chat details — the sheet with the switched agents (rcn-2e)", async () => {
+      // rcn-chat-rail-390: the same capture on the switched state — the
+      // sheet's AGENTS IN THIS CHAT rows carry the two turns' ranges.
+      await page.setViewportSize({ width: 390, height: 844 });
+      const toggle = page.getByTestId("chat-details-toggle");
+      await expect(
+        toggle,
+        "rcn-chat-rail-390: below lg the chat header offers Details",
+      ).toBeVisible();
+      await toggle.click();
+      const sheet = page.getByTestId("chat-details-sheet");
+      await expect(
+        sheet,
+        "Details opens the side panel as a right-side sheet",
+      ).toBeVisible();
+      await expect(
+        sheet.locator('[data-testid^="side-panel-agent-row-"]').first(),
+        "the sheet lists the agents the turns ran on",
+      ).toBeVisible({ timeout: 30_000 });
+      await emu.screen("rcn-2e", "chat-details-switched");
+      // Same reset: Esc on the phone frame, back to the desktop frame the
+      // picker step below acts in.
+      await page.keyboard.press("Escape");
+      await expect(sheet, "Esc closes the sheet").toBeHidden();
+      await page.setViewportSize({ width: 1280, height: 900 });
     });
 
     await test.step("the picker, captured with the menu open (rcn-1h)", async () => {

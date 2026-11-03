@@ -5,7 +5,7 @@
  * so every assertion below is about what a member actually sees.
  */
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../api/queries";
 import { renderApp } from "../test/render";
 import {
@@ -71,6 +71,168 @@ const staleControlConflict = {
     version: 9,
   },
 };
+
+/**
+ * The phone's Details sheet (rcn-chat-rail-390): below `lg` the context
+ * rail has no visible column, so the thread header's Details toggle opens
+ * the SAME side panel content as a right-side sheet — closed by its close
+ * button, the backdrop and Esc, with focus returning to the toggle. The
+ * toggle itself is a phone-only control (`lg:hidden`): at `lg+` the panel
+ * is a visible column beside the thread. The pane is rendered the way the
+ * emulator journey renders it — the project-less deep link, whose reads
+ * resolve the project from the conversation itself.
+ */
+describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  const threadRoutes: RouteStub[] = [
+    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
+    { path: projectPath, method: "GET", body: projectFixture },
+    { path: "/api/v1/users", method: "GET", body: { items: [] } },
+    { path: conversationPath, method: "GET", body: conversationFixture },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/artifacts`,
+      method: "GET",
+      body: { artifacts: [] },
+    },
+    // The pane's thread list column and the project's summary list (the
+    // WORKS-IN read): neither names a row for this test's thread.
+    { path: "/api/v1/conversations", method: "GET", body: { items: [], next_cursor: null } },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/conversations`,
+      method: "GET",
+      body: { items: [], next_cursor: null },
+    },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+      method: "GET",
+      body: { workspaces: [] },
+    },
+  ];
+
+  /** Answer the shell's narrow query as a `width` px viewport would. */
+  function stubViewport(width: number): void {
+    const narrow = width < 1024;
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: narrow && query.includes("max-width"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }));
+  }
+
+  it("the toggle is the phone's own control — hidden at `lg+`, where the panel is a column", async () => {
+    stubViewport(1280);
+    renderApp({ path: `/threads/${conversationId}`, routes: threadRoutes });
+    const toggle = await screen.findByTestId("chat-details-toggle");
+    // The class is the contract: below `lg` it shows, at `lg+` it is hidden
+    // (the panel beside the thread is the visible rail at those widths).
+    expect(toggle.className.split(/\s+/)).toContain("lg:hidden");
+    expect(toggle.getAttribute("aria-label")).toBe("Chat details");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toContain("Details");
+    // The desktop shape is unchanged: the panel is the aside, no sheet.
+    expect(screen.getByTestId("thread-side-panel-aside")).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+  });
+
+  it("below lg the toggle opens the sheet with the panel content, and Esc closes it with focus returning to the toggle", async () => {
+    stubViewport(390);
+    renderApp({ path: `/threads/${conversationId}`, routes: threadRoutes });
+    const toggle = await screen.findByTestId("chat-details-toggle");
+    // Before the click: no sheet, and the rail rides its stacked place.
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    expect(screen.getByTestId("thread-side-panel-stack")).toBeTruthy();
+    fireEvent.click(toggle);
+    const sheet = await screen.findByTestId("chat-details-sheet");
+    expect(sheet.getAttribute("role")).toBe("dialog");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // The SAME panel the aside and the stack carry — not a re-drawn copy.
+    expect(within(sheet).getByTestId("conversation-side-panel")).toBeTruthy();
+    expect(within(sheet).getByTestId("assistant-note-workflow")).toBeTruthy();
+    // Focus moved into the sheet, at its first control.
+    expect(document.activeElement).toBe(screen.getByTestId("chat-details-close"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // The keyboard went back to the button that opened the sheet.
+    expect(document.activeElement).toBe(toggle);
+    // The stacked panel under the transcript stays where it was.
+    expect(screen.getByTestId("thread-side-panel-stack")).toBeTruthy();
+  });
+
+  it("closing the sheet from its close button (or the backdrop) returns focus to the toggle", async () => {
+    stubViewport(390);
+    renderApp({ path: `/threads/${conversationId}`, routes: threadRoutes });
+    const toggle = await screen.findByTestId("chat-details-toggle");
+    fireEvent.click(toggle);
+    await screen.findByTestId("chat-details-sheet");
+    fireEvent.click(screen.getByTestId("chat-details-close"));
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+    // Open again; the backdrop closes it the same way.
+    fireEvent.click(toggle);
+    await screen.findByTestId("chat-details-sheet");
+    fireEvent.click(screen.getByTestId("chat-details-backdrop"));
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
+});
+
+describe("the standing note's dismiss (design 2e: `Make a workflow… dismiss`)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  it("hides the note on click and persists the dismissal per conversation", async () => {
+    renderApp({ path: `/threads/${conversationId}`, routes: threadRoutesForDismiss() });
+    await screen.findByTestId("conversation-title");
+    expect(screen.getByTestId("assistant-note-workflow")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("assistant-note-workflow-dismiss"));
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
+    expect(
+      window.localStorage.getItem(`communication.chat.workflow-note-dismissed.${conversationId}`),
+    ).toBe("1");
+  });
+
+  it("keeps a previously dismissed note hidden on load", async () => {
+    window.localStorage.setItem(
+      `communication.chat.workflow-note-dismissed.${conversationId}`,
+      "1",
+    );
+    renderApp({ path: `/threads/${conversationId}`, routes: threadRoutesForDismiss() });
+    await screen.findByTestId("conversation-title");
+    // The standing note is gone — with no other data the panel is absent
+    // entirely, which hides it just as thoroughly.
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
+  });
+
+  function threadRoutesForDismiss(): RouteStub[] {
+    return [
+      { path: "/api/v1/me", body: meFixture },
+      { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
+      { path: projectPath, method: "GET", body: projectFixture },
+      { path: "/api/v1/users", method: "GET", body: { items: [] } },
+      { path: conversationPath, method: "GET", body: conversationFixture },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/artifacts`,
+        method: "GET",
+        body: { artifacts: [] },
+      },
+      { path: "/api/v1/conversations", method: "GET", body: { items: [], next_cursor: null } },
+    ];
+  }
+});
 
 describe("/p/:projectId/conversations/:conversationId", () => {
   it("keeps the legacy /projects/:id/conversations/:id address alive as a redirect", async () => {

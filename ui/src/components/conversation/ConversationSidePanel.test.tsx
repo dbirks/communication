@@ -2,7 +2,7 @@
  * The 2e context rail: every section prints only from real data, and the
  * panel with no data at all renders nothing — empty boxes are not sections.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { agentRunStateCopy, ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
@@ -375,6 +375,63 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
 
   it("no chat named, no note — the component never invents one", () => {
     panel({ projectId: projectFixture.id });
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
+  });
+});
+
+/**
+ * The design's `Make a workflow… dismiss` (2e, rcn-chat-rail-390): the
+ * standing note is the panel's own — dismissing it is the host's behaviour
+ * (per-conversation in the chat page), and the panel only offers the link
+ * when that behaviour exists and obeys it when it has happened.
+ */
+describe("the standing note's dismiss (2e)", () => {
+  const chat = { id: "c-42", title: "Search revamp spike" };
+
+  it("offers dismiss beside Make a workflow… when the host can dismiss, and clicking it calls the host", () => {
+    const onDismiss = vi.fn();
+    panel({
+      projectId: projectFixture.id,
+      workflowChat: chat,
+      onDismissWorkflowNote: onDismiss,
+    });
+    expect(screen.getByTestId("assistant-note-workflow-action-make_workflow")).toBeTruthy();
+    const dismiss = screen.getByTestId("assistant-note-workflow-dismiss");
+    expect(dismiss.textContent).toBe("dismiss");
+    fireEvent.click(dismiss);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no dismiss when the host cannot dismiss one", () => {
+    panel({ projectId: projectFixture.id, workflowChat: chat });
+    expect(screen.queryByTestId("assistant-note-workflow-dismiss")).toBeNull();
+  });
+
+  it("hides the standing note entirely once the host dismissed it", () => {
+    panel({
+      projectId: projectFixture.id,
+      workflowChat: chat,
+      workflowNoteDismissed: true,
+      onDismissWorkflowNote: () => {},
+    });
+    expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
+    // Nothing else on the rail names the suggestion either — the section is
+    // gone with the note, not an empty ASSISTANT heading.
+    expect(screen.queryByTestId("side-panel-assistant")).toBeNull();
+    expect(screen.queryByTestId("conversation-side-panel")).toBeNull();
+  });
+
+  it("keeps the host's stored notes beside a dismissed standing note", () => {
+    panel({
+      projectId: projectFixture.id,
+      workflowChat: chat,
+      workflowNoteDismissed: true,
+      assistantNote: (
+        <AssistantNote text="A real note from the notes store." onDismiss={() => {}} />
+      ),
+    });
+    const slot = screen.getByTestId("side-panel-assistant-slot");
+    expect(slot.textContent).toContain("A real note from the notes store.");
     expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
   });
 });

@@ -2196,6 +2196,11 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_PANEL_AGENTS,
     RCN_AGENT_TURN_RANGE,
   ],
+  // The same panel at 390, opened as a sheet from the header's Details
+  // toggle (at 1280 it is the page with the panel's visible column). Only
+  // what both widths show is asserted: the sheet covers the title at 390.
+  "rcn-2e chat-details": [RCN_SIDE_PANEL, RCN_WORKS_IN],
+  "rcn-2e chat-details-switched": [RCN_SIDE_PANEL, RCN_WORKS_IN, RCN_PANEL_AGENTS],
   "rcn-1h next-turn-menu": [RCN_CONV_TITLE, RCN_AGENT_CHIP, RCN_AGENT_MENU, RCN_AGENT_MENU_CAPTION, RCN_AGENT_MENU_PROFILES],
 
   // Thread → workflow (2f): the note's `Make a workflow…` opens the assistant
