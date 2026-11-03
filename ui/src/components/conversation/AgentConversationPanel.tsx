@@ -33,7 +33,10 @@ import {
 } from "react";
 import { Link } from "react-router";
 import { ApiError } from "../../api/client";
-import { useProject, useRepositories } from "../../api/queries";
+import { useAgentProfiles, useProject, useRepositories } from "../../api/queries";
+import { isGitHubRepository, useRepoIssues } from "../../api/issues";
+import { ComposerSkillMenu, type ComposerSkillMenuState } from "./ComposerSkillMenu";
+import { ComposerIssueMenu, type ComposerIssueMenuState } from "./ComposerIssueMenu";
 import { agentDisplayForLauncher, launcherNameSource } from "./agentNames";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import { Button } from "../ds/Button";
@@ -352,6 +355,29 @@ interface ComposerProps {
 const mentionAtCaret = new RegExp(`(?:^|\\s)@([A-Za-z0-9._-]*)$`);
 const mentionSent = /^@(\S+)[ \t]+([\s\S]+)$/;
 
+/**
+ * The composer's `/`-skill and `#`-issue opens (design 2e/1h): the trigger
+ * characters are only meaningful at the very start of the message — a `/` or
+ * `#` mid-sentence is the person's punctuation, not a menu. `skillQueryAtCaret`
+ * is the `/` test: a leading `/` plus whatever the person typed after it (the
+ * filter; the menu is filtered by prefix). `issueQueryAtCaret` is the `#`
+ * test: a leading `#` plus the issue-number prefix the person typed so far.
+ * Either returns the query ("" on the bare trigger character) or `null` =
+ * closed.
+ */
+const skillAtCaret = /^\/([^\s]*)$/;
+const issueAtCaret = /^#(\d*)$/;
+
+export function skillQueryAtCaret(value: string, caret: number): string | null {
+  const match = skillAtCaret.exec(value.slice(0, Math.max(0, caret)));
+  return match ? (match[1] ?? "") : null;
+}
+
+export function issueQueryAtCaret(value: string, caret: number): string | null {
+  const match = issueAtCaret.exec(value.slice(0, Math.max(0, caret)));
+  return match ? (match[1] ?? "") : null;
+}
+
 export function mentionQueryAtCaret(value: string, caret: number): string | null {
   const match = mentionAtCaret.exec(value.slice(0, Math.max(0, caret)));
   return match ? (match[1] ?? "") : null;
@@ -406,9 +432,12 @@ export function AgentConversationComposer({
   const agentMailOn = project.data?.agent_mail_enabled === true;
   // The @-menu's candidates exist only for a controller of a mail-enabled
   // project; the repos read rides the project page's own query key, so this
-  // costs a fetch only on a surface that never showed the list.
+  // costs a fetch only on a surface that never showed the list. A repo-scoped
+  // chat also rides this read: the `#`-menu needs the thread's repository
+  // `git_url` to know whether the remote is GitHub-hosted.
+  const repositoryName = session.data?.repository_name ?? "";
   const repositories = useRepositories(
-    agentMailOn && isController ? (session.data?.project_id ?? "") : "",
+    agentMailOn || (isController && repositoryName !== "") ? (session.data?.project_id ?? "") : "",
   );
   const ownRepo = session.data?.repository_name ?? "";
   const otherRepos = useMemo(
@@ -420,9 +449,54 @@ export function AgentConversationComposer({
   );
   // The @-menu's live query: null = closed, "" = opened on the bare `@`.
   const [mention, setMention] = useState<string | null>(null);
+  // The `/`-skill and `#`-issue live queries: the same null/"" contract.
+  const [skillQuery, setSkillQuery] = useState<string | null>(null);
+  const [issueQuery, setIssueQuery] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
   const mentionOpen = agentMailOn && isController && mention !== null;
+
+  // The SKILLS menu: the profile the NEXT turn runs on is the conversation
+  // read's own `agent_profile_id`; its `apm_contents.skills` are the names
+  // the worker's lock recorded (api `AgentProfile.apm_contents`) — the org
+  // profile list is the read that carries them, and the chip already rode
+  // that key, so this is a cache hit, not a fetch.
+  const profiles = useAgentProfiles();
+  const nextProfile = (profiles.data?.items ?? []).find(
+    (profile) => profile.id === session.data?.agent_profile_id,
+  );
+  const skillMenuState: ComposerSkillMenuState = {
+    profile: nextProfile,
+    loading: profiles.isPending,
+    readFailed: profiles.isError,
+    filter: skillQuery ?? "",
+  };
+  const skillOpen = isController && skillQuery !== null;
+
+  // The ISSUES menu: only a repo-scoped chat whose repository remote is
+  // GitHub-hosted can answer — `isGitHubRepository` is the same guard the
+  // handoff surface uses, so a `file://` or foreign remote opens nothing and
+  // the `#` stays typed punctuation. The conversation read names the thread's
+  // repository (ADR-0065/0067's resolution, `repository_name`); the project's
+  // repos read supplies the row whose `git_url` the guard must inspect. The
+  // open-issues read fires ONLY while the menu is open: the GitHub budget is
+  // per replica IP, and a rendered chat must not spend it.
+  const chatRepository = (repositories.data?.items ?? []).find(
+    (repo) => repo.name === repositoryName,
+  );
+  const repositoryId = chatRepository?.id ?? "";
+  const issuesAnswerable =
+    repositoryName !== "" &&
+    chatRepository !== undefined &&
+    isGitHubRepository(chatRepository.git_url);
+  const issueOpen = isController && issueQuery !== null && issuesAnswerable;
+  const issues = useRepoIssues(session.data?.project_id ?? "", repositoryId, "", issueOpen);
+  const issueMenuState: ComposerIssueMenuState = {
+    issues: issues.data,
+    loading: issues.isPending,
+    readFailed: issues.isError,
+    filter: issueQuery ?? "",
+  };
   // ds `Textarea` accepts no `ref` prop, so the composer's textarea is reached
   // through its own anchor span — the element the menu is already placed
   // against. The change handler caches the same node; this is the path that
@@ -439,8 +513,8 @@ export function AgentConversationComposer({
   // could hit the menu button: the menu answers the pointer and the arrow
   // keys, never a keystroke the textarea should have had.
   useLayoutEffect(() => {
-    if (mentionOpen) inputRef.current?.focus();
-  }, [mentionOpen]);
+    if (mentionOpen || skillOpen || issueOpen) inputRef.current?.focus();
+  }, [mentionOpen, skillOpen, issueOpen]);
 
   // The caret the completion owes the person, applied in the SAME synchronous
   // commit that writes the completed value and only while the field still
@@ -473,8 +547,15 @@ export function AgentConversationComposer({
       pendingCaret.current = null;
     }
     setPrompt(value);
+    const caret = element.selectionStart ?? value.length;
+    // All three menus are keyed to the start of the message, so one caret
+    // read serves them; a message can only owe one menu at a time.
+    if (isController) {
+      setSkillQuery(skillQueryAtCaret(value, caret));
+      setIssueQuery(issueQueryAtCaret(value, caret));
+    }
     if (!agentMailOn || !isController) return;
-    setMention(mentionQueryAtCaret(value, element.selectionStart ?? value.length));
+    setMention(mentionQueryAtCaret(value, caret));
   };
 
   // Replace the open `@query` before the caret with `@<repo> ` — the token
@@ -490,6 +571,35 @@ export function AgentConversationComposer({
     pendingCaret.current = { value: next, position: cut + repo.length + 2 };
     setPrompt(next);
     setMention(null);
+  };
+
+  /** The same completion for the `/`-skill pick: replace the typed `/query`
+   * with `/<skill> ` and park the caret right after it. */
+  const pickSkill = (skill: string) => {
+    const element = composerElement();
+    const value = element?.value ?? prompt;
+    const caret = element?.selectionStart ?? value.length;
+    const query = skillQueryAtCaret(value, caret) ?? skillQuery ?? "";
+    const cut = Math.max(0, caret - query.length - 1);
+    const next = `${value.slice(0, cut)}/${skill} ${value.slice(caret)}`;
+    pendingCaret.current = { value: next, position: cut + skill.length + 2 };
+    setPrompt(next);
+    setSkillQuery(null);
+  };
+
+  /** The same completion for the `#`-issue pick: replace the typed `#query`
+   * with `#<number> ` and park the caret right after it. */
+  const pickIssue = (number: number) => {
+    const element = composerElement();
+    const value = element?.value ?? prompt;
+    const caret = element?.selectionStart ?? value.length;
+    const query = issueQueryAtCaret(value, caret) ?? issueQuery ?? "";
+    const cut = Math.max(0, caret - query.length - 1);
+    const token = `#${number} `;
+    const next = `${value.slice(0, cut)}${token}${value.slice(caret)}`;
+    pendingCaret.current = { value: next, position: cut + token.length };
+    setPrompt(next);
+    setIssueQuery(null);
   };
 
   const submit = (event: FormEvent) => {
@@ -550,12 +660,11 @@ export function AgentConversationComposer({
             disabled={!isController}
             aria-describedby={turnInProgress || !isController ? explainerId : undefined}
             placeholder={
-              // Review 2e: the pinned composer is ONE row tall, so a long
-              // placeholder did not wrap — it was cut at the box's edge
-              // (`Ask the agent for`). The ask is named by the field's own
-              // label; the `@` affordance is the line under the box
-              // (`composer-mail-hint`), which has the room to say it whole.
-              isController ? "Ask the agent…" : nonControllerPlaceholder
+              // Design 2e/1h: the placeholder names the two typed affordances
+              // — `/` opens the skills menu, `#` the open issues — and the
+              // `@` affordance stays with the line under the box
+              // (`composer-mail-hint`) when agent mail is on.
+              isController ? "Reply, / for skills, # for issues…" : nonControllerPlaceholder
             }
           />
           <Menu
@@ -569,6 +678,13 @@ export function AgentConversationComposer({
             data-testid="composer-mail-menu"
             items={menuItems}
           />
+          <ComposerIssueMenu
+            state={issueMenuState}
+            open={issueOpen}
+            onClose={() => setIssueQuery(null)}
+            triggerRef={anchorRef}
+            onPick={pickIssue}
+          />
         </span>
         {agentMailOn && isController ? (
           <p className="font-mono text-[11px] text-muted" data-testid="composer-mail-hint">
@@ -577,6 +693,13 @@ export function AgentConversationComposer({
           </p>
         ) : null}
         {agentPicker}
+        <ComposerSkillMenu
+          state={skillMenuState}
+          open={skillOpen}
+          onOpenChange={(next) => setSkillQuery(next ? "" : null)}
+          onPick={pickSkill}
+          disabled={!isController}
+        />
         <Button
           type="submit"
           variant="primary"

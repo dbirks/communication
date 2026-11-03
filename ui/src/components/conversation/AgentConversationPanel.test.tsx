@@ -32,6 +32,7 @@ import {
   otherUserId,
   projectFixture,
   mockFetch,
+  repositoryId,
   requestsTo,
   turnFixture,
   turnId,
@@ -525,5 +526,206 @@ describe("controller status with no controller (Projects Review 1g)", () => {
       banner.querySelector("[data-testid='attempt-controller-glyph']")?.getAttribute("aria-label"),
     ).toBe(NO_CONTROLLER_LABEL);
     expect(screen.getByTestId("attempt-take-control")).toBeTruthy();
+  });
+});
+
+/**
+ * The composer's `/`-skill and `#`-issue affordances (design 2e/1h):
+ * the placeholder names both, the "/ skill" button opens the ds menu over
+ * the NEXT-turn profile's `apm_contents.skills`, typing `/` opens the same
+ * menu, and typing `#` opens the open-issues menu ONLY for a repo-scoped
+ * chat on a GitHub remote (`isGitHubRepository`, the handoff's own guard).
+ * Picking completes the token at the caret: `/<skill> `, `#<number> `.
+ */
+describe("the composer's / skill and # issue affordances (design 2e/1h)", () => {
+  const reposPath = `/api/v1/projects/${projectFixture.id}/repos`;
+  // The fetch mock strips query strings, so the stub — and `requestsTo` —
+  // key on the path alone; the live read is `…/issues?state=open`.
+  const issuesPath = `/api/v1/projects/${projectFixture.id}/repos/${repositoryId}/issues`;
+
+  /** The thread works in the `backend` repository (ADR-0067's binding). The
+   * read carries `repository_name`; the id arrives from the repos read. */
+  const repoConversation: Conversation = {
+    ...conversationFixture,
+    repository_name: "backend",
+  };
+
+  /** The project's one repository, GitHub-hosted — the issues route can answer. */
+  const githubRepo = {
+    id: repositoryId,
+    project_id: projectFixture.id,
+    name: "backend",
+    git_url: "https://github.com/example/backend.git",
+    default_branch: "main",
+    created_at: "2026-10-14T18:00:00Z",
+  };
+  /** The same row on a local remote — `isGitHubRepository` refuses it. */
+  const localRepo = { ...githubRepo, git_url: "file:///srv/backend" };
+
+  const openIssues = {
+    repository: "example/backend",
+    state: "open",
+    items: [
+      {
+        number: 7,
+        title: "Search pagination",
+        body: "",
+        labels: [],
+        html_url: "https://github.com/example/backend/issues/7",
+        state: "open",
+        updated_at: "2026-10-14T18:00:00Z",
+        body_truncated: false,
+      },
+      {
+        number: 12,
+        title: "Mirror timeout",
+        body: "",
+        labels: [],
+        html_url: "https://github.com/example/backend/issues/12",
+        state: "open",
+        updated_at: "2026-10-14T18:02:00Z",
+        body_truncated: false,
+      },
+    ],
+  };
+
+  const profile = (apm_contents: unknown) => ({ ...claudeProfile, apm_contents });
+
+  /** `routes` minus its default profile stub, so the test supplies the profile's own `apm_contents`. */
+  function skillRoutes(conversation: Conversation, apm_contents: unknown): RouteStub[] {
+    return [
+      { path: "/api/v1/me", body: meFixture },
+      { path: "/api/v1/agent-profiles", body: { items: [profile(apm_contents), codexProfile] } },
+      { path: projectPath, method: "GET", body: projectFixture },
+      { path: "/api/v1/users", method: "GET", body: { items: [] } },
+      { path: conversationPath, method: "GET", body: conversation },
+    ];
+  }
+
+  it("names both typed affordances in the placeholder", async () => {
+    renderPanel(dock(), skillRoutes(conversationFixture, { skills: ["review"], truncated: false }));
+    const input = await screen.findByTestId("composer-input");
+    expect(input.getAttribute("placeholder")).toBe("Reply, / for skills, # for issues…");
+  });
+
+  it("folds the button to a bare / at 390px, keeping its accessible name", async () => {
+    renderPanel(dock(), skillRoutes(conversationFixture, { skills: ["review"], truncated: false }));
+    const button = (await screen.findByTestId("composer-skill-button")) as HTMLElement;
+    expect(button.getAttribute("aria-label")).toBe("Skills");
+    // The glyph always shows; the word collapses below `sm` (640), so at the
+    // 390px phone width the row is `[/]` and fits. jsdom cannot evaluate the
+    // media query, so the contract is the class pair itself.
+    const word = Array.from(button.querySelectorAll("span")).find((span) =>
+      span.textContent?.includes("skill"),
+    ) as HTMLElement;
+    expect(word.className).toContain("hidden");
+    expect(word.className).toContain("sm:inline");
+  });
+
+  it("lists the NEXT-turn profile's skills in the button's menu, and picking inserts `/<skill> `", async () => {
+    renderPanel(
+      dock(),
+      skillRoutes(conversationFixture, { skills: ["review", "refactor"], truncated: false }),
+    );
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    fireEvent.click(screen.getByTestId("composer-skill-button"));
+    const menu = await screen.findByTestId("composer-skill-menu");
+    expect(within(menu).getByTestId("composer-skill-review").textContent).toContain("review");
+    expect(within(menu).getByTestId("composer-skill-refactor").textContent).toContain("refactor");
+    // The conversation runs Claude: the list is Claude's lock, not Codex's.
+    expect(within(menu).queryByTestId(`composer-skill-${codexProfile.id}`)).toBeNull();
+    fireEvent.click(within(menu).getByTestId("composer-skill-refactor"));
+    await waitFor(() => expect(input.value).toBe("/refactor "));
+    expect(screen.queryByTestId("composer-skill-menu")).toBeNull();
+    // The caret parks right after the completed token.
+    expect(input.selectionStart).toBe("/refactor ".length);
+  });
+
+  it("opens the same menu when / starts the message, filtered by what follows", async () => {
+    renderPanel(
+      dock(),
+      skillRoutes(conversationFixture, { skills: ["review", "refactor"], truncated: false }),
+    );
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "/" } });
+    const menu = await screen.findByTestId("composer-skill-menu");
+    expect(within(menu).queryByTestId("composer-skill-refactor")).toBeTruthy();
+    // Typing `ref` narrows to the one skill it starts with.
+    fireEvent.change(input, { target: { value: "/ref" } });
+    input.setSelectionRange(4, 4);
+    await waitFor(() => expect(within(menu).queryByTestId("composer-skill-review")).toBeNull());
+    expect(within(menu).getByTestId("composer-skill-refactor")).toBeTruthy();
+    // An ordinary sentence owes no skill menu — even with a `/` inside it.
+    fireEvent.change(input, { target: { value: "run /build" } });
+    await waitFor(() => expect(screen.queryByTestId("composer-skill-menu")).toBeNull());
+  });
+
+  it("says the skills aren't locked, and says a no-skill lock has none", async () => {
+    renderPanel(dock(), skillRoutes(conversationFixture, null));
+    await screen.findByTestId("composer-input");
+    fireEvent.click(screen.getByTestId("composer-skill-button"));
+    const menu = await screen.findByTestId("composer-skill-menu");
+    expect(menu.textContent).toContain("This agent's skills aren't locked yet.");
+    expect(within(menu).queryByTestId("composer-skill-review")).toBeNull();
+
+    cleanup();
+    renderPanel(dock(), skillRoutes(conversationFixture, { skills: [], truncated: false }));
+    await screen.findByTestId("composer-input");
+    fireEvent.click(screen.getByTestId("composer-skill-button"));
+    const empty = await screen.findByTestId("composer-skill-menu");
+    expect(empty.textContent).toContain("This agent has no skills.");
+  });
+
+  it("opens the issues menu on # for a GitHub repo, and picking inserts `#<number> `", async () => {
+    const { requests } = renderPanel(dock(), [
+      ...skillRoutes(repoConversation, { skills: ["review"], truncated: false }),
+      { path: reposPath, body: { items: [githubRepo] } },
+      { path: issuesPath, body: openIssues },
+    ]);
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    // The chat renders without spending the GitHub read — only `#` asks.
+    expect(requestsTo(requests, issuesPath)).toHaveLength(0);
+    fireEvent.change(input, { target: { value: "#" } });
+    const menu = await screen.findByTestId("composer-issue-menu");
+    // The read fires on the open, so the items land after the answer.
+    expect((await within(menu).findByTestId("composer-issue-7")).textContent).toBe(
+      "#7 Search pagination",
+    );
+    expect((await within(menu).findByTestId("composer-issue-12")).textContent).toBe(
+      "#12 Mirror timeout",
+    );
+    fireEvent.click(within(menu).getByTestId("composer-issue-7"));
+    await waitFor(() => expect(input.value).toBe("#7 "));
+    expect(screen.queryByTestId("composer-issue-menu")).toBeNull();
+    expect(input.selectionStart).toBe("#7 ".length);
+    // The read fired exactly once, on the open.
+    expect(requestsTo(requests, issuesPath)).toHaveLength(1);
+  });
+
+  it("opens no issues menu for a non-GitHub remote — the # stays typed punctuation", async () => {
+    const { requests } = renderPanel(dock(), [
+      ...skillRoutes(repoConversation, { skills: ["review"], truncated: false }),
+      { path: reposPath, body: { items: [localRepo] } },
+      { path: issuesPath, body: openIssues },
+    ]);
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    // Wait for the repos read to land so the guard has run on real data —
+    // the menu stays shut because the remote is not GitHub's.
+    await waitFor(() => expect(requestsTo(requests, reposPath)).toHaveLength(1));
+    fireEvent.change(input, { target: { value: "#" } });
+    expect(screen.queryByTestId("composer-issue-menu")).toBeNull();
+    expect(input.value).toBe("#");
+    // The GitHub budget is never spent for a remote the route would refuse.
+    expect(requestsTo(requests, issuesPath)).toHaveLength(0);
+  });
+
+  it("opens no issues menu for a chat that is not repo-scoped", async () => {
+    renderPanel(dock(), [
+      ...skillRoutes(conversationFixture, { skills: ["review"], truncated: false }),
+      { path: issuesPath, body: openIssues },
+    ]);
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "#" } });
+    expect(screen.queryByTestId("composer-issue-menu")).toBeNull();
   });
 });
