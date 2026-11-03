@@ -31,7 +31,7 @@ import {
   requestsTo,
   type RouteStub,
 } from "../../test/fakes";
-import type { Conversation } from "../../api/types";
+import type { AgentProfile, Conversation } from "../../api/types";
 
 const path = `/p/${projectFixture.id}/conversations/${conversationId}`;
 const conversationPath = `/api/v1/conversations/${conversationId}`;
@@ -653,6 +653,110 @@ describe("the transcript's protocol lines", () => {
     });
     const line = (await screen.findByText(/^Connected to /)).closest("li[title]") as HTMLElement;
     expect(line.textContent).toContain("Connected to Codex");
+  });
+
+  it("names the agent the TURN ran on, not the profile the thread is on now", async () => {
+    // rcn-2e review item 2, end to end, on the lab's exact shape: TWO agent
+    // profiles of one organization launch the SAME executable (`pi`), and the
+    // thread switched between them. `agent.session.connected` carries no
+    // profile — only the launcher — so the fold alone can only name the
+    // thread's CURRENT profile, which misnamed the earlier session. The frame's
+    // binding names the turn it launched, and ADR-0068's turn range names the
+    // agent that turn ran on.
+    const piProfile = (id: string, name: string): AgentProfile => ({
+      id,
+      name,
+      launcher_id: "pi",
+      permission_mode: "ask",
+      created_at: "2026-10-14T18:00:00Z",
+      version: 1,
+    });
+    const implementer = piProfile("01987a71-2222-7000-8000-abcdef0000a1", "m4-implementer");
+    const planner = piProfile("01987a71-2222-7000-8000-abcdef0000a2", "m4-planner");
+    const piThread: Conversation = {
+      ...conversationFixture,
+      agent_profile_id: planner.id,
+      agent_profile_name: "m4-planner",
+      agent_profile_model: null,
+      launcher_id: "pi",
+      agents: [
+        {
+          agent_profile_id: implementer.id,
+          agent_profile_name: "m4-implementer",
+          model: null,
+          first_turn: 1,
+          last_turn: 1,
+          turn_count: 1,
+        },
+        {
+          agent_profile_id: planner.id,
+          agent_profile_name: "m4-planner",
+          model: null,
+          first_turn: 2,
+          last_turn: 2,
+          turn_count: 1,
+        },
+      ],
+    };
+    renderApp({
+      path,
+      routes: routes(piThread, [
+        { path: "/api/v1/agent-profiles", body: { items: [implementer, planner] } },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      const source = FakeEventSource.last();
+      source.emit(
+        conversationEvent("agent.session.connected", {
+          turn_id: "",
+          binding_id: "bind-1",
+          worker_id: workerId,
+          acp_session_id: "s-1",
+          protocol_version: "0.4",
+          launcher_id: "pi",
+          session_origin: "new",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.turn.started", {
+          turn_id: turnId,
+          worker_id: workerId,
+          fencing_token: 1,
+          binding_id: "bind-1",
+          acp_session_id: "s-1",
+          session_origin: "new",
+        }),
+      );
+    });
+    const line = (await screen.findByText(/^Connected to /)).closest("li[title]") as HTMLElement;
+    // The thread runs on m4-planner NOW; this session was the m4-implementer's.
+    expect(line.textContent).toContain("Connected to m4-implementer");
+    // The wire's own word for the executable stays on the tooltip.
+    expect(line.getAttribute("title")).toBe("launcher_id pi");
+  });
+
+  it("puts the agent's sentence under its speaker line, not 40px below it", async () => {
+    // The turn's first chunk arrives as blank lines (the worker flushes its
+    // workspace note, then the harness opens with newlines) and agent text
+    // renders with `whitespace-pre-wrap`, so the reviewed chat printed the
+    // empty lines as a gap between `agent · time` and the sentence.
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.message.agent", {
+          turn_id: turnId,
+          text: "\n\n\n\nOK",
+          final: true,
+        }),
+      );
+    });
+    const item = await screen.findByTestId("transcript-item");
+    const body = item.querySelector("p");
+    expect(body?.textContent).toBe("OK");
+    // The speaker line is unchanged — who and when, above the sentence.
+    expect(within(item).getByTestId("agent-speaker").textContent).toContain("Claude Code");
   });
 
   it("wears the launcher id itself when no read names it, never a guessed product", async () => {

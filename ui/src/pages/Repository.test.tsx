@@ -226,6 +226,20 @@ const endedChat: ConversationSummary = {
   updated_at: "2026-11-01T06:00:00Z",
 };
 
+/**
+ * An `idle` chat — history, no session attached (09). rcn-3b review item 1:
+ * this row used to file under FINISHED · 7 DAYS while the List row beside it
+ * said `pending` and the thread pane said LIVE. It is an open chat, so it is
+ * a RUNNING card.
+ */
+const parkedChat: ConversationSummary = {
+  ...repoChat,
+  id: "01987c33-0003-7000-8000-abcdef012345",
+  title: "Cursor pagination question",
+  status: "idle",
+  updated_at: "2026-11-01T09:45:00Z",
+};
+
 /** The pending gate of the waiting run — the lanes' `Approve` is a link
  * onto this observed gate's route, never an invented one. */
 const pendingGate: Approval = {
@@ -352,7 +366,7 @@ function lanesRoutes(overrides: RouteStub[] = []): RouteStub[] {
     {
       method: "GET",
       path: `${projectPath}/conversations`,
-      body: { items: [repoChat, stalledChat, endedChat] },
+      body: { items: [repoChat, parkedChat, stalledChat, endedChat] },
     },
     {
       method: "POST",
@@ -807,11 +821,41 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
     expect(running.textContent).toContain("Search revamp spike");
     expect(screen.getByTestId(`repo-lane-chat-${testid(repoChat.id)}`)).toBeTruthy();
 
+    // rcn-3b review item 1: an `idle` chat is an OPEN chat — it wears the
+    // same `pending` word the List row beside it wears, it lives in RUNNING,
+    // and it is not counted among the finished week.
+    const parkedCard = screen.getByTestId(`repo-lane-chat-${testid(parkedChat.id)}`);
+    expect(running.contains(parkedCard)).toBe(true);
+    expect(parkedCard.textContent).toContain("Cursor pagination question");
+    expect(parkedCard.textContent).toContain("pending");
+
+    // Glyph AND word on every card (states.ts, handoff rule 06) — the glyph
+    // alone is colour-only signalling, and the FINISHED header carries no
+    // glyph at all without one.
+    expect(screen.getByTestId(`repo-lane-chat-${testid(repoChat.id)}`).textContent).toContain(
+      "running",
+    );
+    expect(screen.getByTestId(`repo-lane-chat-${testid(stalledChat.id)}`).textContent).toContain(
+      "stopped",
+    );
+    expect(screen.getByTestId(`repo-lane-chat-${testid(endedChat.id)}`).textContent).toContain(
+      "noted",
+    );
+    expect(screen.getByTestId("repo-lane-finished").textContent).toContain("✓");
+    expect(runningCard.textContent).toContain("running");
+    expect(screen.getByTestId(`repo-lane-run-${testid(waitingRun.id)}`).textContent).toContain(
+      "need you",
+    );
+
     // FINISHED · 7 DAYS: the done run, the failed run on the failed pale
     // edge, and the ended chat.
     const finished = screen.getByTestId("repo-lane-finished");
     expect(finished.textContent).toContain("Nightly deps");
     expect(finished.textContent).toContain("Why is CI flaky?");
+    // The `idle` chat is not part of the finished week (rcn-3b review 1).
+    expect(
+      finished.querySelector(`[data-testid='repo-lane-chat-${testid(parkedChat.id)}']`),
+    ).toBeNull();
     expect(screen.getByTestId(`repo-lane-run-${testid(failedRun.id)}`).className).toContain(
       "border-st-failed-pale-edge",
     );
@@ -1012,14 +1056,18 @@ describe("buildLanes (3b bucketing, fixed clock)", () => {
     };
     const lanes = buildLanes(
       [waitingRun, runningRun, doneRun, failedRun, stale],
-      [repoChat, stalledChat, endedChat],
+      [repoChat, parkedChat, stalledChat, endedChat],
       now,
     );
-    // Newest activity first inside each lane: the stalled chat (09:30)
-    // beats the waiting run (09:01); the failed run (Nov 1, 07:00) leads
-    // FINISHED, then the ended chat (06:00), then last night's done run.
+    // Newest activity first inside each lane: the parked chat (09:45) and the
+    // stalled chat (09:30) beat the waiting run (09:01); the failed run
+    // (Nov 1, 07:00) leads FINISHED, then the ended chat (06:00), then last
+    // night's done run.
     expect(laneIds(lanes.needsYou)).toEqual([stalledChat.id, waitingRun.id]);
-    expect(laneIds(lanes.running)).toEqual([runningRun.id, repoChat.id]);
+    // `idle` is an OPEN chat, not a finished one (rcn-3b review item 1): the
+    // live-chat lane carries both the attached (`active`) and the unattached
+    // (`idle`) row, and FINISHED keeps only what the wire calls archived.
+    expect(laneIds(lanes.running)).toEqual([parkedChat.id, runningRun.id, repoChat.id]);
     // The run finished 2026-10-01 is outside the FINISHED · 7 DAYS window
     // the header names — it lives on the project's run list, not here.
     expect(laneIds(lanes.finished)).toEqual([failedRun.id, endedChat.id, doneRun.id]);

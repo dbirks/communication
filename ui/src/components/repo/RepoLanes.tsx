@@ -6,13 +6,22 @@
  * never scrolls sideways. Each lane: fill `#efede7` (`bg-fill`), radius 3,
  * padding 10, mono 10/600 caps header.
  *
- * Bucketing is the served statuses and nothing else:
+ * Bucketing is the served statuses and nothing else — the SAME status field
+ * the List view and the thread pane read (`Conversation.status`, `Run.status`),
+ * so one row never wears two states on two screens (rcn-3b review item 1):
  * - NEEDS YOU — `waiting_human`/`paused` runs (attention.ts' gate arms) and
  *   `disconnected` chats (a turn open with its session lost);
- * - RUNNING — `queued`/`preparing`/`running` runs and `active` chats;
- * - FINISHED · 7 DAYS — terminal runs and `idle`/`archived` chats whose last
- *   activity is inside the seven days the header promises; older rows are
- *   out of the window, and the project's run list stays the record.
+ * - RUNNING — `queued`/`preparing`/`running` runs and every chat that is
+ *   still a chat a person can talk in: `active` (a session is attached) and
+ *   `idle` (history, nothing attached, the next prompt opens a session).
+ *   `idle` is NOT finished: ADR `09` spells it "history, nothing attached",
+ *   and the thread pane lists the same row under LIVE whenever its turn is
+ *   open — filing it under FINISHED said the work was over while three other
+ *   surfaces said it was pending, live or running;
+ * - FINISHED · 7 DAYS — terminal runs and `archived` chats (the one status
+ *   the wire spells read-only) whose last activity is inside the seven days
+ *   the header promises; older rows are out of the window, and the project's
+ *   run list stays the record.
  * A waiting card whose pending gate the approvals read observed carries
  * `Approve` — a link onto the existing gate route — and every run/chat card
  * carries its `Open`. A failed card wears the failed pale edge; state is
@@ -80,8 +89,11 @@ const RUNNING_RUN_STATUSES = new Set<string>(["queued", "preparing", "running"])
 const FINISHED_RUN_STATUSES = new Set<string>(["completed", "failed", "cancelled", "interrupted"]);
 /** `disconnected` lost its session with a turn still open (attention.ts). */
 const NEEDS_YOU_CHAT_STATUSES = new Set<string>(["disconnected"]);
-const RUNNING_CHAT_STATUSES = new Set<string>(["active"]);
-const FINISHED_CHAT_STATUSES = new Set<string>(["idle", "archived"]);
+/** `active` has a live session; `idle` is the same open chat with no session
+ * attached (09's own words) — both are live chat cards, not finished work. */
+const RUNNING_CHAT_STATUSES = new Set<string>(["active", "idle"]);
+/** `archived` is the wire's only read-only, ended chat. */
+const FINISHED_CHAT_STATUSES = new Set<string>(["archived"]);
 
 function runActivityAt(run: RunSummary): string {
   return run.finished_at ?? run.started_at ?? run.created_at;
@@ -827,19 +839,18 @@ function RunLaneCard({
       data-testid={`repo-lane-run-${testidOf(run.id)}`}
       title={run.id}
     >
+      {/* Glyph AND word, on one line (states.ts, handoff rule 06) — the
+          List row beside this lane says `running`/`need you` in words, and a
+          lane card that showed only the dot made two cards read the same.
+          rcn-3b review item 1. */}
       <div
         className={`font-mono text-[10px] ${waiting || failedState ? spec.tagFg : "text-muted"}`}
       >
-        {state === "waiting" ||
-        state === "failed" ||
-        state === "interrupted" ||
-        state === "done" ? (
-          <span aria-hidden="true" className="mr-1">
-            {spec.glyph}
-          </span>
-        ) : null}
+        <span aria-hidden="true" className="mr-1">
+          {spec.glyph}
+        </span>
         RUN · {name ?? shortId(run.id)}
-        <span className="sr-only"> ({SHORT_WORD[state]})</span>
+        <span className="ml-1">· {SHORT_WORD[state]}</span>
       </div>
       <Link
         to={routes.run(run.id)}
@@ -901,7 +912,10 @@ function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
           {spec.glyph}
         </span>{" "}
         CHAT
-        <span className="sr-only"> ({SHORT_WORD[state]})</span>
+        {/* The word beside the glyph, not behind `sr-only`: a chat card under
+            RUNNING has to say whether the session is attached (`running`) or
+            the chat is merely open (`pending`) — rcn-3b review item 1. */}
+        <span className="ml-1 font-normal">· {SHORT_WORD[state]}</span>
       </div>
       <div className="mt-1 flex items-start gap-2">
         <Link

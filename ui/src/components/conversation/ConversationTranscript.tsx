@@ -158,6 +158,31 @@ export function segmentTranscript(
     }
   }
   const parts: TranscriptSegment[] = [{ divider: null, mails: [], items: [] }];
+  /** Open the part one cut frame starts. A person's @-ask also closes the
+   * part BEFORE it: the composer's `@<repo> <question>` is that person's own
+   * message (ADR-0072 § 9 journals no turn and no user frame for it, which is
+   * why the reviewed card floated above no message at all), so the transcript
+   * prints it as theirs, directly over the card that answers it. The card
+   * then carries the answer instead of quoting the same sentence twice. */
+  const cut = (frame: EventEnvelope) => {
+    if (frame.type === "conversation.agent.switched") {
+      parts.push({ divider: frame, mails: [], items: [] });
+      return;
+    }
+    const card = mailAskedFromEvent(frame);
+    if (!card) return;
+    if (card.askedByUserId) {
+      parts[parts.length - 1].items.push({
+        kind: "user",
+        id: `mail-ask-${card.linkId}`,
+        turnId: "",
+        authorUserId: card.askedByUserId,
+        text: `@${card.repo} ${card.question}`,
+        at: frame.occurred_at,
+      });
+    }
+    parts.push({ divider: null, mails: [card], items: [] });
+  };
   let next = 0;
   for (const item of items) {
     const itemSeq = seqById.get(item.id);
@@ -166,26 +191,14 @@ export function segmentTranscript(
         next < frames.length &&
         (seqById.get(frames[next].event_id) ?? Number.POSITIVE_INFINITY) < itemSeq
       ) {
-        const frame = frames[next];
-        if (frame.type === "conversation.agent.switched") {
-          parts.push({ divider: frame, mails: [], items: [] });
-        } else {
-          const card = mailAskedFromEvent(frame);
-          if (card) parts.push({ divider: null, mails: [card], items: [] });
-        }
+        cut(frames[next]);
         next += 1;
       }
     }
     parts[parts.length - 1].items.push(item);
   }
   while (next < frames.length) {
-    const frame = frames[next];
-    if (frame.type === "conversation.agent.switched") {
-      parts.push({ divider: frame, mails: [], items: [] });
-    } else {
-      const card = mailAskedFromEvent(frame);
-      if (card) parts.push({ divider: null, mails: [card], items: [] });
-    }
+    cut(frames[next]);
     next += 1;
   }
   // Fold every answered row into its card, then render. Answered rows need

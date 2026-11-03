@@ -34,6 +34,7 @@ import {
 import { describeTurn, projectTranscript, type Transcript } from "../../api/transcript";
 import { useAgentProfiles } from "../../api/queries";
 import { launcherNameResolver, launcherNameSource } from "./agentNames";
+import { nameAgentSessionLines, trimAgentMessageLead } from "./transcriptPresentation";
 import type {
   Conversation,
   ConversationControl,
@@ -236,6 +237,16 @@ export function useConversationSession(
   // exactly one row carries that launcher: two profiles on one executable name
   // nothing, and the fold then prints the launcher id it was given rather than
   // guessing which profile ran.
+  //
+  // rcn-2e review item 2 is the hole that rule left open: when the thread's
+  // CURRENT profile shares its launcher with the profile an earlier turn ran on
+  // (the lab's `m4-implementer` and `m4-planner` both launch `pi`), the
+  // current-row arm answers first and misnames every earlier session — the
+  // reviewed chat's turn 1 read "Connected to m4-planner" under a speaker line
+  // that said `m4-implementer`. `nameAgentSessionLines` below closes it from
+  // the facts the fold has no access to: the turn the launch opened, and the
+  // profile ADR-0068 stamps on that turn's row and derives into
+  // `Conversation.agents`.
   const agentProfiles = useAgentProfiles();
   const agentNameForEvent = useMemo(() => {
     const resolve = launcherNameResolver(
@@ -243,10 +254,22 @@ export function useConversationSession(
     );
     return (launcherId: string): string => resolve(launcherId) ?? launcherId ?? "the agent";
   }, [agentProfiles.data, data, events]);
-  const transcript = useMemo(
-    () => projectTranscript(events, nameOf, turnRows, agentNameForEvent),
-    [events, nameOf, turnRows, agentNameForEvent],
-  );
+  const transcript = useMemo(() => {
+    const folded = projectTranscript(events, nameOf, turnRows, agentNameForEvent);
+    // Two readings the fold cannot make on the frame's own words
+    // (`transcriptPresentation.ts`, rcn-2e review item 2): the session line is
+    // named by the profile the TURN ran on (ADR-0068's turn row and derived
+    // ranges, not the thread's current profile), and an agent's sentence is
+    // pulled up under its speaker line instead of behind the blank lines the
+    // turn's first chunk arrives as.
+    const items = nameAgentSessionLines(trimAgentMessageLead(folded.items), {
+      events,
+      turns: folded.turns,
+      agents: data?.agents,
+      turnRows,
+    });
+    return { ...folded, items };
+  }, [events, nameOf, turnRows, agentNameForEvent, data]);
 
   // `active` is set only while nobody has proved the turn is over: a terminal
   // journal record clears it immediately (the DB would refuse a competing

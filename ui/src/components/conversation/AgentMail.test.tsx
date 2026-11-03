@@ -31,7 +31,14 @@ import { mailAskFromPrompt, mentionQueryAtCaret } from "./AgentConversationPanel
 import { mailAgentLabel } from "./ConversationTranscript";
 
 type ConversationLink = components["schemas"]["ConversationLink"];
-import { MailCard, mailAskedFromEvent, mailAnswerLine, mergeMailAnswered } from "./MailCard";
+import {
+  MailCard,
+  mailAnswerLine,
+  mailAskedFromEvent,
+  mailReadOnlyCopy,
+  mergeMailAnswered,
+  splitWorkspaceNote,
+} from "./MailCard";
 import { segmentTranscript } from "./ConversationTranscript";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
@@ -272,6 +279,156 @@ describe("the transcript mail card", () => {
         ],
       ),
     ).toBeNull();
+  });
+
+  // --- rcn-3d review items 1, 2 and 3 -------------------------------------
+
+  it("keeps the worker's system note out of the answering agent's sentence", () => {
+    // The lab's card, verbatim: the answer arrived as
+    // "workspace: this chat is answering another chat's mail: … (ADR-0072
+    // § 12)…" over the sentence the agent actually wrote, because the worker's
+    // note seam journals a workspace fact as an agent-message chunk and the
+    // mail answer is read back off those chunks.
+    const labAnswer =
+      "workspace: this chat is answering another chat's mail: its repository is " +
+      "mounted read-only in the sandbox, and it runs without asking because the " +
+      "sandbox is the boundary (ADR-0072 § 12). A person's approval lifts the " +
+      'mount to read-write.\n\n\n\n\n\nThis repository is a minimal "Hello World" ' +
+      "project containing nothing but a single README file.";
+    const { container } = render(
+      <MemoryRouter>
+        <MailCard
+          card={{
+            linkId: "l-note",
+            repo: "server",
+            question: "what is in this repository?",
+            turnId: "t",
+            state: "answered",
+            answer: labAnswer,
+            launcher: "pi",
+          }}
+          agentLabel="m4-implementer"
+        />
+      </MemoryRouter>,
+    );
+    const answer = container.querySelector('[data-testid="mail-card-answer"]');
+    // The agent's own words are the answer, and nothing else is.
+    expect(answer?.textContent).toContain("minimal");
+    expect(answer?.textContent).not.toContain("workspace:");
+    expect(answer?.textContent).not.toContain("ADR-0072");
+    expect(answer?.textContent).not.toContain("mounted read-only in the sandbox");
+    // The fact the note carried is still said — in the reader's words, with no
+    // ADR reference in it.
+    const muted = container.querySelector('[data-testid="mail-card-readonly"]');
+    expect(muted?.textContent).toBe("Read-only: this agent can't change server.");
+    expect(muted?.getAttribute("title")).toContain("workspace:");
+  });
+
+  it("leaves an answer that is only the agent's words alone", () => {
+    const split = splitWorkspaceNote(
+      "Cursor-based: ?after=<id>&limit=, max 100.\n\nworkspace: the note seam is not the only word with `workspace:` in it.",
+    );
+    expect(split.note).toBeNull();
+    expect(split.body).toContain("Cursor-based");
+    expect(splitWorkspaceNote("\n\nOK").body).toBe("OK");
+    expect(mailReadOnlyCopy("api")).toBe("Read-only: this agent can't change api.");
+  });
+
+  it("states its own state off the mail frames, not the chat's turn", async () => {
+    renderApp({ path, routes: routes(mailProject) });
+    await screen.findByTestId("conversation-title");
+    // Asked, no answer yet: the card says `asked` in a glyph AND a word.
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.mail.asked", {
+          turn_id: turnId,
+          link_id: "link-state",
+          to_conversation_id: "chat-api-1",
+          repo: "api",
+          question: "Does the webhook retry?",
+          state: "asked",
+        }),
+      );
+    });
+    let card = (await screen.findByTestId("mail-card")) as HTMLElement;
+    expect(within(card).getByTestId("mail-card-state").textContent).toContain("asked");
+
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.mail.answered", {
+          link_id: "link-state",
+          to_conversation_id: "chat-api-1",
+          repo: "api",
+          state: "answered",
+          answer: "Twice, then it parks the delivery.",
+          launcher_id: "codex",
+        }),
+      );
+    });
+    card = (await screen.findByTestId("mail-card")) as HTMLElement;
+    // The answered row flips the card's own state; nothing on the card reads
+    // the chat's turn, which may still say `queued` a few seconds longer.
+    expect(within(card).getByTestId("mail-card-state").textContent).toContain("answered");
+    expect(within(card).queryByTestId("mail-card-pending")).toBeNull();
+  });
+
+  it("shows a person's @-ask as their own message over the card", async () => {
+    // ADR-0072 § 9: the composer's `@<repo> <question>` queues no turn, so no
+    // `conversation.message.user` row exists — the reviewed transcript showed
+    // the card with no user message before it, as though the agent had asked
+    // on its own. The ask IS the person's message, so it reads as one.
+    renderApp({ path, routes: routes(mailProject) });
+    await screen.findByTestId("conversation-title");
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent(
+          "conversation.mail.asked",
+          {
+            turn_id: "",
+            link_id: "link-human",
+            to_conversation_id: "chat-api-1",
+            repo: "api",
+            question: "Does GET /search accept cursor params?",
+            state: "asked",
+          },
+          { actor: { kind: "human", id: meFixture.id } },
+        ),
+      );
+      source.emit(
+        conversationEvent("conversation.mail.answered", {
+          link_id: "link-human",
+          to_conversation_id: "chat-api-1",
+          repo: "api",
+          state: "answered",
+          answer: "Cursor-based: ?after=<id>&limit=, max 100.",
+          launcher_id: "codex",
+        }),
+      );
+    });
+    const card = (await screen.findByTestId("mail-card")) as HTMLElement;
+    const asked = await screen.findByTestId("transcript-item");
+    expect(asked.textContent).toContain(`${meFixture.display_name}:`);
+    expect(asked.textContent).toContain("@api");
+    expect(asked.textContent).toContain("Does GET /search accept cursor params?");
+    // Their message sits directly over the card that answers it, and the card
+    // does not quote the same sentence a second time.
+    expect(card.compareDocumentPosition(asked) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(within(card).queryByTestId("mail-card-question")).toBeNull();
+    // An agent-dispatched ask (§ 3) is not a person's message and keeps its
+    // quote — `emitMailFlow` above renders one with `mail-card-question`.
+    expect(
+      mailAskedFromEvent(
+        conversationEvent("conversation.mail.asked", {
+          turn_id: turnId,
+          link_id: "l",
+          repo: "api",
+          question: "q",
+          state: "asked",
+        }),
+      )?.askedByUserId,
+    ).toBeUndefined();
   });
 });
 
