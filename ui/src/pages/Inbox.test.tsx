@@ -33,6 +33,7 @@ import {
 import { testidOf } from "../lib/format";
 import { attentionTitle } from "../lib/attention";
 import { INBOX_SAFETY_MS } from "./Inbox";
+import { FRAME_BATCH_MS } from "../api/events";
 
 const PROJECTS_PATH = "/api/v1/projects";
 const APPROVALS_PATH = `/api/v1/projects/${wireProjectId}/approvals`;
@@ -408,12 +409,13 @@ describe("/inbox", () => {
 describe("/inbox live refresh", () => {
   afterEach(() => vi.useRealTimers());
 
-  /** Let the mount's fetches settle while every clock is fake: each tick is a
-   * fraction of `INBOX_SAFETY_MS`, so the safety refetch has not fired. */
+  /** Let the mount's fetches settle while every clock is fake: each tick is
+   * one org-frame window (FRAME_BATCH_MS), so the safety refetch (60 s) has
+   * not fired and any emitted frame has had its coalescing window flush. */
   async function settle() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(100);
+        await vi.advanceTimersByTimeAsync(FRAME_BATCH_MS);
       });
     }
   }

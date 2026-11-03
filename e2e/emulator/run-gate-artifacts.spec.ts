@@ -429,20 +429,32 @@ test.describe("run-gate-artifacts (alice)", () => {
       // here on `expect(firstHeading.textContent()).toMatch(/^Plan[:\s]/i)`. That
       // line pinned the MODEL's wording: the plan is live `model.chat` output, and
       // pass-1's plan led with “Implementation Plan: emu gate journey …”, which
-      // says the same thing in the planner's own words. What the PRODUCT controls
-      // is that a `##` line became a heading and that the markup the author wrote
-      // does not survive as ink, so that is what is measured now — never a phrase.
-      // (`lib/markdown.tsx` draws a heading as `p[data-testid="markdown-heading"]`;
-      // the selector also accepts a semantic h1/h2/h3 should the renderer move, so
-      // no assertion depends on which tag the product chose.)
-      const heading = prose.locator('[data-testid="markdown-heading"], h1, h2, h3').first();
-      await expect(heading, "the markdown read: the document has a heading").toBeVisible();
-      const headingText = ((await heading.textContent()) ?? "").replace(/\s+/g, " ").trim();
-      expect(headingText, "the heading carries words").not.toBe("");
+      // says the same thing in the planner's own words.
+      //
+      // The document's contract changed with the plan template (c38956a): the
+      // plan is ONE numbered plain-markdown list and a step is NEVER a heading
+      // line, so a plan that carries no `#` line at all is the contract, not a
+      // defect — and Actions run 41566844565's passes 5 and 6 red-passed on the
+      // old "the document has a heading" line (fingerprint 07a4ef790e42d801):
+      // the model wrote exactly the list the prompt asked for and the heading
+      // locator waited out the whole timeout on a document that was correct.
+      // What the PRODUCT controls now is that the numbered steps render as an
+      // ordered list (not as `1.` paragraphs) and that the markup the author
+      // wrote does not survive as ink — never a phrase, and never a heading
+      // the contract no longer promises.
+      const ordered = prose.locator('[data-testid="markdown-list-ordered"]');
+      await expect(
+        ordered.first(),
+        "the markdown read: the plan's numbered steps render as an ordered list",
+      ).toBeVisible();
+      const firstStep = ordered.locator('[data-testid="markdown-list-item"]').first();
+      await expect(firstStep, "the list carries a step").toBeVisible();
+      const stepText = ((await firstStep.textContent()) ?? "").replace(/\s+/g, " ").trim();
+      expect(stepText, "a step carries words").not.toBe("");
       // A marker that reaches the screen is an UNPARSED line: `##` kept its hashes,
       // `**bold**` its asterisks, `` `code` `` its backticks.
       for (const marker of ["#", "**", "`"]) {
-        expect(headingText, `the heading carries no raw ${marker} markup`).not.toContain(marker);
+        expect(stepText, `the step carries no raw ${marker} markup`).not.toContain(marker);
       }
       expect(
         await prose.evaluate((el) => (el.textContent ?? "").replace(/\s+/g, " ").trim().length),
@@ -452,7 +464,7 @@ test.describe("run-gate-artifacts (alice)", () => {
         prose.locator(
           '[data-testid="markdown-paragraph"], [data-testid="markdown-list"], [data-testid="markdown-list-ordered"], [data-testid="markdown-code"]',
         ),
-        "the markdown read: the body under the heading is structure too",
+        "the markdown read: the document is structure, not one unbroken paragraph",
       ).not.toHaveCount(0);
       await expect(prose, "no API field in the document").not.toContainText("endpoint");
       // Pass-1 design review item 4 is the defect this line exists for: the

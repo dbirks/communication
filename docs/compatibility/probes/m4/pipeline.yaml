@@ -575,9 +575,20 @@ spec:
               mode: output_json
               value: ${{ nodes.test.outputs }}
       resultBindings:
+        # implementation_summary is safe unguarded: implement depends on nothing,
+        # and the default on-failure policy is stop, so a failed implement fails
+        # the scope (child_failed) before the bindings are ever evaluated.
         implementation_summary: ${{ nodes.implement.outputs.summary }}
-        review_feedback: ${{ nodes.review.outputs.evidence }}
-        approved: ${{ nodes.review.outputs.approved }}
+        # review CAN be skipped with no outputs: an upstream body node whose
+        # on-failure policy is continue (e.g. the reviewer the Studio inserts
+        # on the test -> review edge) failing skips review without running it.
+        # An unguarded `nodes.review.outputs.*` is then a `no such key` eval
+        # error — predicate_error — failing the scope instead of letting
+        # passWhen read false and the loop iterate (ADR-0022 § 2). `status`
+        # exists in every state, and `&&` short-circuits on a non-succeeded
+        # review without touching outputs.
+        review_feedback: ${{ nodes.review.status }}
+        approved: ${{ nodes.review.status == 'succeeded' && nodes.review.outputs.approved }}
     outputs:
       type: object
       required: [iterations, approved]

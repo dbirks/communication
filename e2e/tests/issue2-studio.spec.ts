@@ -715,6 +715,12 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
   });
 
   test("A8: assistant drafting proposal", async ({ page }) => {
+    // The proposal is one real agent turn behind it; the global 90 s test
+    // timeout (playwright.config.ts) cut the AGENT_TURN_TIMEOUT_MS wait off
+    // midway (lab run 41566844565: the assistant's caption was still in flight
+    // when the test timer fired, 90 s < the 5-min bounded wait). The wait is
+    // bounded; the test's own clock must allow the whole of it.
+    test.setTimeout(AGENT_TURN_TIMEOUT_MS + 180_000);
     await signIn(page, "admin");
     // A fresh draft: proposals are made against the saved version, and a dirty
     // draft blocks the assistant box entirely.

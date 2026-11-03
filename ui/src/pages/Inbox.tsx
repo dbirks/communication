@@ -27,7 +27,7 @@
  * not refetched, because who you are does not change under a page asking
  * "what needs me now?".
  */
-import { useCallback, useMemo, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { InitialsBox } from "../components/ds/AppBar";
@@ -44,7 +44,7 @@ import {
   useDecideApproval,
 } from "../api/approvals";
 import { problemOf } from "../api/client";
-import { useOrgEvents } from "../api/events";
+import { FRAME_BATCH_MS, useOrgEvents } from "../api/events";
 import { usePipelines } from "../api/pipelines";
 import { queryKeys, useMe, useProjects } from "../api/queries";
 import { useRetryRun, runConflictOf } from "../api/runs";
@@ -72,19 +72,48 @@ export const INBOX_SAFETY_MS = 60_000;
 export default function Inbox() {
   const me = useMe();
   const queryClient = useQueryClient();
-  // C4: a frame re-reads exactly the attention families it names — one
-  // invalidation per family per frame, coalesced by TanStack.
-  const orgEvents = useOrgEvents((event) => {
-    if (event.project_id) {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(event.project_id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.runs(event.project_id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(event.project_id) });
+  // C4: a frame re-reads exactly the attention families it names. The org
+  // stream REPLAYS the caller's whole journal on connect, so an
+  // invalidation per frame turns that replay into a read storm — the
+  // project scope fixed the same shape in `useProjectEvents`, and the
+  // inbox does it here: every frame in a window only marks the dirty
+  // project/conversation ids, and one flush invalidates each id once
+  // (TanStack does NOT dedupe same-tick invalidations — the board and
+  // sidebar carry their own windows for exactly this reason). The lab's
+  // /inbox is where it died: 691 failed loads,
+  // net::ERR_INSUFFICIENT_RESOURCES across the whole page.
+  const dirtyProjectIds = useRef(new Set<string>());
+  const dirtyConversationIds = useRef(new Set<string>());
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushOrgDirty = useCallback(() => {
+    flushTimer.current = null;
+    const projects = dirtyProjectIds.current;
+    const conversations = dirtyConversationIds.current;
+    dirtyProjectIds.current = new Set<string>();
+    dirtyConversationIds.current = new Set<string>();
+    for (const projectId of projects) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(projectId) });
     }
-    if (event.conversation_id) {
+    for (const conversationId of conversations) {
       void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversation(event.conversation_id),
+        queryKey: queryKeys.conversation(conversationId),
       });
     }
+  }, [queryClient]);
+  useEffect(
+    () => () => {
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      dirtyProjectIds.current = new Set<string>();
+      dirtyConversationIds.current = new Set<string>();
+    },
+    [],
+  );
+  const orgEvents = useOrgEvents((event) => {
+    if (event.project_id) dirtyProjectIds.current.add(event.project_id);
+    if (event.conversation_id) dirtyConversationIds.current.add(event.conversation_id);
+    if (!flushTimer.current) flushTimer.current = setTimeout(flushOrgDirty, FRAME_BATCH_MS);
   });
   // Live stream → the frames are the heartbeat; while it is not live a
   // safety refetch keeps the page honest instead of stale.

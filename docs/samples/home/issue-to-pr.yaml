@@ -86,7 +86,9 @@ spec:
     # 1. The plan. A pi agent on the READ-ONLY checkout: it reads the repository
     #    itself, not a survey digest. The reply contract is the probe document's
     #    strict style (docs/compatibility/probes/m4/pipeline.yaml): summary is
-    #    REQUIRED and <=600 chars because the expression language has no join /
+    #    REQUIRED and <=600 chars (the prompt asks for 450 or fewer — the margin
+    #    is deliberate, a model that writes to "600" lands at 699) because the
+    #    expression language has no join /
     #    format function (ADR-0022 § 5) and it is the only plan text a human sees
     #    at the approval gate; steps and test_plan stay in the node outputs.
     - id: plan
@@ -125,10 +127,11 @@ spec:
                     "steps": [{"file": "<repo path>", "action": "<the change to make>"}],
                     "test_plan": "<what the implementer must run to prove it>"}}
           goal is a non-empty string. summary is REQUIRED and is the ONLY plan text
-          a human sees at the approval gate: at most 600 characters, 2-6 short
-          lines, plain text or simple "- " bullets, one planned change per line in
-          order, no JSON, no braces or quotes, nothing that only makes sense next
-          to the full steps array. steps holds at least one step; every step's
+          a human sees at the approval gate: 2-6 short lines, plain text or simple
+          "- " bullets, one planned change per line in order, no JSON, no braces or
+          quotes, nothing that only makes sense next to the full steps array — and
+          at most 450 characters, written well under the 600-character limit the
+          reply is machine-checked against. steps holds at least one step; every step's
           file is a repository path and its action is a non-empty string. test_plan
           is a non-empty string naming the test command(s) the implementer must get
           green. Never wrap plan in a string.
