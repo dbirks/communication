@@ -312,8 +312,13 @@ function RepoWorkflowSideRow({
     })),
   ];
 
+  // `relative` is the ds Menu's contract (its clamp math converts viewport
+  // rects against `panel.parentElement`): the row's `⋯` menu is absolutely
+  // positioned against THIS li. Without it the containing block was the
+  // body, so a row that needed the page scrolled landed its menu outside
+  // the viewport — unreachable by scrolling (Actions run 41547836942).
   return (
-    <li className="py-[10px] first:pt-0" data-testid={`repo-workflow-row-${key}`}>
+    <li className="relative py-[10px] first:pt-0" data-testid={`repo-workflow-row-${key}`}>
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1 space-y-[2px]">
           {/* The header line owns the row's two reading points: the name and
