@@ -477,6 +477,7 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	var (
 		workDir string
 		notes   []string
+		notices []turnNotice
 		unit    *Unit
 	)
 	// ADR-0072 § 12: on the asked side of an agent-mail link, read-only is a
@@ -500,6 +501,13 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		workDir, notes, err = l.work.Prepare(ctx, c.ConversationID, repos)
 		if err != nil {
 			return nil, err
+		}
+		// A workspace note (a clone that failed) is the worker talking, not the
+		// agent answering: it goes to the transcript as a system line, because
+		// a mailed answer turn's agent chunks are quoted verbatim to the asking
+		// chat (ADR-0072 § 7) and must stay the agent's own words.
+		for _, n := range notes {
+			notices = append(notices, turnNotice{kind: events.NoticeKindWorkspace, text: n})
 		}
 	}
 	// The mount is the guarantee only if there is a sandbox to hold it. A turn
@@ -548,8 +556,10 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 			return nil, err
 		}
 		// The transcript says what the launch is, because the stamped mode no
-		// longer does: no prompt will ever arrive on this launcher.
-		notes = append(notes, "this chat is answering another chat's mail: its repository is mounted read-only in the sandbox, and it runs without asking because the sandbox is the boundary (ADR-0072 § 12). A person's approval lifts the mount to read-write.")
+		// longer does: no prompt will ever arrive on this launcher. The line is
+		// a system notice, never agent text — this turn's answer is quoted to
+		// the asking chat from its conversation.message.agent chunks alone.
+		notices = append(notices, turnNotice{kind: events.NoticeKindMailReadOnly, text: "this chat is answering another chat's mail: its repository is mounted read-only in the sandbox, and it runs without asking because the sandbox is the boundary (ADR-0072 § 12). A person's approval lifts the mount to read-write."})
 	case "deny", "preapproved_within_sandbox":
 		modeID = l.cfg.AskModeID(c.LauncherID)
 		if modeID == "" {
@@ -669,7 +679,7 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	// with the matching agent.session.connected just emitted; turn.started
 	// says the same word about this turn.
 	rt.turnOrigin = info.Origin
-	rt.notes = notes
+	rt.notices = notices
 	return ls, nil
 }
 

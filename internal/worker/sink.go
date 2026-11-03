@@ -18,6 +18,8 @@ import (
 //     ms of stream silence, when any non-chunk event arrives, and at turn
 //     end) into readable conversation.message.agent / conversation.thought
 //     rows instead of one row per token;
+//   - worker-authored system lines go out as conversation.notice rows
+//     (sink.notice), never as agent message chunks;
 //   - tool calls/updates are written as previews bounded by MaxPreviewBytes,
 //     flushing pending text first so the transcript order matches what a
 //     human watched;
@@ -25,7 +27,7 @@ import (
 //     once and the sink then refuses further work.
 //
 // Sink methods are called from two directions — the session dispatcher
-// goroutine (emit) and the turn goroutine (note/finish) — so all mutable
+// goroutine (emit) and the turn goroutine (notice/finish) — so all mutable
 // state lives under mu.
 type turnSink struct {
 	w      sinkWriter
@@ -211,27 +213,31 @@ func (s *turnSink) redact(text string) string {
 	return out
 }
 
-// note records a human-readable workspace note (clone failures) as a
-// message chunk: the transcript stays the single place a member learns
-// what happened, and a failed clone must not be fatal.
-func (s *turnSink) note(text string) {
+// notice records one worker-authored system line (a workspace note, the
+// ADR-0072 § 12 read-only explanation) as a conversation.notice row: the
+// transcript stays the single place a member learns what happened, and a
+// failed clone must not be fatal — but the line is not the agent's answer.
+// Mail quotes the turn's conversation.message.agent chunks back to the asking
+// chat (ADR-0072 § 7), so a note journalled as one of those chunks would be
+// served to another chat as the agent's own words.
+func (s *turnSink) notice(kind, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.lost {
 		return
 	}
 	s.flushMsgLocked(false)
-	text = s.redact("workspace: " + text)
+	text = s.redact(text)
 	s.appendLocked(TurnEvent{
-		Type:      events.TypeConversationMessageAgent,
+		Type:      events.TypeConversationNotice,
 		ActorKind: events.ActorKindWorker,
 		ActorID:   s.claim.WorkerID,
-		Payload: events.MessageAgentPayload{
+		Payload: events.NoticePayload{
 			ConversationID: s.claim.ConversationID,
 			TurnID:         s.claim.TurnID,
-			ChunkSeq:       s.nextMsgSeq(),
+			Kind:           kind,
 			Text:           bounded(text, s.w.cfg.MaxChunkBytes),
-			Truncated:      false,
+			Truncated:      len(text) > s.w.cfg.MaxChunkBytes,
 		},
 	})
 }

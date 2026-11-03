@@ -13,6 +13,16 @@ import (
 	"github.com/dbirks/communication/internal/events"
 )
 
+// turnNotice is one system line a turn journals about itself
+// (events.TypeConversationNotice): the kind says what it is about, the text is
+// what a human reads. It is carried apart from the agent's stream because it
+// must never be mistaken for the agent's answer (ADR-0072 § 7 reads only
+// conversation.message.agent chunks as the mail answer).
+type turnNotice struct {
+	kind string
+	text string
+}
+
 // runningTurn is one claimed turn in flight. It owns the cancel signal that
 // unblocks everything (prompt, renewal, permission bridge) and the flags
 // that decide the honest terminal state.
@@ -21,7 +31,7 @@ type runningTurn struct {
 	claim Claim
 
 	sess    atomic.Pointer[liveSession]
-	notes   []string
+	notices []turnNotice
 	sinkRef atomic.Pointer[turnSink]
 
 	// turnOrigin is how this turn met its session — new | resumed | reused
@@ -104,8 +114,8 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 	sess.route = snk.emit
 	sess.turn = rt
 	sess.mu.Unlock()
-	for _, n := range rt.notes {
-		snk.note(n)
+	for _, n := range rt.notices {
+		snk.notice(n.kind, n.text)
 	}
 
 	// Lease renewal: every RenewInterval, fenced. Zero rows = lost.

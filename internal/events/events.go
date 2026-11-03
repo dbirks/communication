@@ -154,9 +154,18 @@ const (
 	// Transcript content.
 	TypeConversationMessageUser  = "conversation.message.user"
 	TypeConversationMessageAgent = "conversation.message.agent"
-	TypeConversationThought      = "conversation.thought"
-	TypeConversationToolCall     = "conversation.tool.call"
-	TypeConversationToolUpdate   = "conversation.tool.update"
+	// TypeConversationNotice is the transcript's system line: something the
+	// worker has to say about the turn (a repository that failed to clone, the
+	// ADR-0072 § 12 read-only mount on a mailed answer turn) that is NOT the
+	// agent's answer. It is a row of its own precisely because the agent's
+	// words are re-read elsewhere — the mail answer is the turn's
+	// conversation.message.agent chunks (ADR-0072 § 7), so a worker note that
+	// rode one of those chunks would be quoted back to the asking chat as if
+	// the agent had said it.
+	TypeConversationNotice     = "conversation.notice"
+	TypeConversationThought    = "conversation.thought"
+	TypeConversationToolCall   = "conversation.tool.call"
+	TypeConversationToolUpdate = "conversation.tool.update"
 
 	// Human decision prompts (spec 09's approval pair, named for the harness).
 	TypeConversationPermissionRequested = "conversation.permission.requested"
@@ -522,6 +531,40 @@ type MessageAgentPayload struct {
 	Truncated      bool   `json:"truncated"`
 	// Final marks the last chunk of a completed turn's answer.
 	Final bool `json:"final"`
+}
+
+// Notice kinds: the stable machine name for what a system line is about.
+// An unknown kind renders as a plain notice, never as an error — the transcript
+// must not depend on a viewer knowing every kind.
+const (
+	// NoticeKindWorkspace: the workspace could not be prepared as asked (a
+	// failed clone), reported on the transcript rather than failing the turn.
+	NoticeKindWorkspace = "workspace"
+	// NoticeKindMailReadOnly: ADR-0072 § 12 — this turn answers another chat's
+	// mail, its repository is mounted read-only, and on a never-asks launcher
+	// the stamped `ask` mode is not what the process ran. The journal says so
+	// instead of leaving the reader to guess from the mode row.
+	NoticeKindMailReadOnly = "mail_readonly"
+)
+
+// ValidNoticeKind reports whether kind is one of the transcript notice kinds.
+func ValidNoticeKind(kind string) bool {
+	return kind == NoticeKindWorkspace || kind == NoticeKindMailReadOnly
+}
+
+// NoticePayload is conversation.notice: one worker-authored system line in the
+// transcript. Kind names what it is about (events.NoticeKind*), Text is the
+// human-readable line (redacted like every other journal text, bounded by the
+// worker's chunk bound and marked Truncated when it had to be cut), and TurnID
+// correlates it with the turn it describes. Nothing here is agent output: a
+// consumer that quotes "what the agent said" reads
+// conversation.message.agent rows and must skip this one (ADR-0072 § 7, § 12).
+type NoticePayload struct {
+	ConversationID string `json:"conversation_id"`
+	TurnID         string `json:"turn_id"`
+	Kind           string `json:"kind"`
+	Text           string `json:"text"`
+	Truncated      bool   `json:"truncated"`
 }
 
 // ThoughtPayload is conversation.thought: agent reasoning surfaced by the

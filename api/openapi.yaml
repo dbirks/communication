@@ -1978,6 +1978,7 @@ paths:
         | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` |
         | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` |
         | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` |
+        | `conversation.notice` | `conversation_id`, `turn_id`, `kind`, `text`, `truncated` (the transcript's system line: a worker-authored note about the turn that is NOT agent output — kind is workspace (a repository that failed to prepare) or mail_readonly (ADR-0072 § 12: this turn answers another chat's mail, its repository is mounted read-only, and on a never-asks launcher the stamped mode is not what ran). Render as a plain system line; never fold it into what the agent said — the mail answer is built from conversation.message.agent rows only) |
         | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` |
         | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` |
         | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` |

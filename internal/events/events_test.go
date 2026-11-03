@@ -281,6 +281,7 @@ func m2Types() []struct {
 		{TypeConversationAgentSwitched, "conversation.agent.switched", AgentSwitchedPayload{}},
 		{TypeConversationMessageUser, "conversation.message.user", MessageUserPayload{}},
 		{TypeConversationMessageAgent, "conversation.message.agent", MessageAgentPayload{}},
+		{TypeConversationNotice, "conversation.notice", NoticePayload{}},
 		{TypeConversationThought, "conversation.thought", ThoughtPayload{}},
 		{TypeConversationToolCall, "conversation.tool.call", ToolCallPayload{}},
 		{TypeConversationToolUpdate, "conversation.tool.update", ToolUpdatePayload{}},
@@ -354,6 +355,9 @@ func TestM2PayloadFieldNames(t *testing.T) {
 		"MessageAgentPayload": {
 			"chunk_seq", "conversation_id", "final", "text", "truncated", "turn_id",
 		},
+		"NoticePayload": {
+			"conversation_id", "kind", "text", "truncated", "turn_id",
+		},
 		"ThoughtPayload": {
 			"chunk_seq", "conversation_id", "text", "truncated", "turn_id",
 		},
@@ -422,6 +426,10 @@ func TestM2PayloadFieldNames(t *testing.T) {
 		},
 		"MessageAgentPayload": MessageAgentPayload{
 			ConversationID: "c-1", TurnID: "t-1", ChunkSeq: 1, Text: "hello", Truncated: true, Final: true,
+		},
+		"NoticePayload": NoticePayload{
+			ConversationID: "c-1", TurnID: "t-1", Kind: NoticeKindMailReadOnly,
+			Text: "this chat is answering another chat's mail", Truncated: true,
 		},
 		"ThoughtPayload": ThoughtPayload{
 			ConversationID: "c-1", TurnID: "t-1", ChunkSeq: 1, Text: "thinking", Truncated: true,

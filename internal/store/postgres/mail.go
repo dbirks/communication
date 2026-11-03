@@ -402,6 +402,13 @@ func trnResolveMailTx(ctx context.Context, tx pgx.Tx, c worker.Claim, o worker.T
 // trnTurnAnswerText reads one turn's whole agent answer from the journal —
 // the chunks the human watched, concatenated, capped. It is the answer
 // because it is the record: no side channel, no re-parse of the live stream.
+//
+// The type filter is the whole contract: `conversation.message.agent` rows are
+// what the agent said, so the worker's own system lines on the same turn
+// (conversation.notice — the ADR-0072 § 12 read-only explanation, a workspace
+// note) are excluded by construction rather than by a reader's text matching.
+// Folding one in would serve the worker's words to the asking chat as the
+// agent's answer (ADR-0072 § 7), which is what this row is quoted for.
 func trnTurnAnswerText(ctx context.Context, tx pgx.Tx, conversationID, turnID string) (string, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT payload->>'text'

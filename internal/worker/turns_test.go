@@ -1211,7 +1211,7 @@ func TestSessionReuseAcrossTurns(t *testing.T) {
 }
 
 // TestWorkspaceNotesLandInTranscript proves clone failures are reported on
-// the transcript (as bounded agent text), not fatal.
+// the transcript (as bounded system notices, never as agent text), not fatal.
 func TestWorkspaceNotesLandInTranscript(t *testing.T) {
 	st := newFakeStore()
 	st.claims = []worker.Claim{testClaim2(t, "deny")}
@@ -1229,12 +1229,20 @@ func TestWorkspaceNotesLandInTranscript(t *testing.T) {
 	recv(t, st.finishing, "finish")
 	found := false
 	for _, ev := range st.snapshotAppends() {
-		if p, ok := ev.Payload.(events.MessageAgentPayload); ok && strings.Contains(p.Text, "clone of x failed") {
+		if p, ok := ev.Payload.(events.NoticePayload); ok && p.Kind == events.NoticeKindWorkspace && strings.Contains(p.Text, "clone of x failed") {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("workspace clone failure never reached the transcript")
+		t.Error("workspace clone failure never reached the transcript as a system notice")
+	}
+	// The whole point of the notice type: the worker's line is not the agent's
+	// answer, so nothing resembling it may ride a message chunk (ADR-0072 § 7
+	// quotes those chunks verbatim into the asking chat).
+	for _, ev := range st.snapshotAppends() {
+		if p, ok := ev.Payload.(events.MessageAgentPayload); ok && strings.Contains(p.Text, "clone of x failed") {
+			t.Errorf("workspace note journalled as an agent message chunk: %q", p.Text)
+		}
 	}
 }
 

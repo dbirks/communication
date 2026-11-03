@@ -154,20 +154,22 @@ func TestMailedTurnRunsOnANeverAsksLauncherUnderTheReadOnlyMount(t *testing.T) {
 		t.Error("sandbox.verified claims the commit axis on a read-only launch")
 	}
 	// The transcript says what the launch is, because the stamped `ask` no
-	// longer does: no prompt will ever arrive on this launcher.
-	if n := noteCount(appended, "mounted read-only"); n == 0 {
-		t.Error("no transcript note said the repository is mounted read-only: a reader of the chat would see a never-asks launch and no explanation of it")
-	} else if noteCount(appended, "runs without asking") == 0 {
-		t.Error("the note did not say the turn runs without asking (ADR-0069's wording, ADR-0072 § 12's reason)")
+	// longer does: no prompt will ever arrive on this launcher. The line is a
+	// system notice, not agent text (ADR-0072 § 12).
+	if n := noticeCount(appended, "mounted read-only"); n == 0 {
+		t.Error("no transcript notice said the repository is mounted read-only: a reader of the chat would see a never-asks launch and no explanation of it")
+	} else if noticeCount(appended, "runs without asking") == 0 {
+		t.Error("the notice did not say the turn runs without asking (ADR-0069's wording, ADR-0072 § 12's reason)")
 	}
 }
 
-// noteCount counts journalled agent-message chunks containing text (the sink
-// writes a workspace note as one chunk, prefixed "workspace: ").
-func noteCount(appended []worker.TurnEvent, text string) int {
+// noticeCount counts journalled conversation.notice rows containing text: the
+// sink writes a worker-authored system line (a workspace note, the § 12
+// read-only explanation) as one of these, never as an agent message chunk.
+func noticeCount(appended []worker.TurnEvent, text string) int {
 	n := 0
 	for _, ev := range appended {
-		if p, ok := ev.Payload.(events.MessageAgentPayload); ok && strings.Contains(p.Text, text) {
+		if p, ok := ev.Payload.(events.NoticePayload); ok && strings.Contains(p.Text, text) {
 			n++
 		}
 	}
@@ -191,8 +193,8 @@ func TestPromptingLauncherKeepsAskOnTopOfTheReadOnlyMount(t *testing.T) {
 	}
 	// And no "it runs without asking" note: on this launcher the prompt really
 	// is coming, so the stamped mode is the mode it runs.
-	if n := noteCount(appended, "runs without asking"); n != 0 {
-		t.Errorf("the prompting arm wrote %d never-asks notes into the transcript", n)
+	if n := noticeCount(appended, "runs without asking"); n != 0 {
+		t.Errorf("the prompting arm wrote %d never-asks notices into the transcript", n)
 	}
 }
 
