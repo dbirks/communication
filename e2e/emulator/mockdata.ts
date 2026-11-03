@@ -266,7 +266,7 @@ export const MOCK_DATA: readonly MockDatum[] = [
   /* ------------------------------------------- fake profiles/models */
   {
     text: "qwen3-8-27b",
-    source: `${WF} 1f/1g — the plan step's MODEL ("model · qwen3-8-27b"); the real sample uses david-birks/qwen3-8-flash-next`,
+    source: `${WF} 1f/1g — the plan step's MODEL ("model · qwen3-8-27b"); the real sample uses david-birks/qwen3-8-27b`,
   },
   {
     text: "claude-code",

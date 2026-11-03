@@ -427,7 +427,7 @@ describe("/artifacts/:artifactId", () => {
   const envelopeJson = JSON.stringify(
     {
       endpoint: "llm-collective.e-gineering.com",
-      model: "david-birks/qwen3-8-flash-next",
+      model: "david-birks/qwen3-8-27b",
       text: modelAnswer,
     },
     null,
@@ -529,8 +529,8 @@ describe("/artifacts/:artifactId", () => {
     await renderPublishedPlan(envelopeJson);
     const prose = screen.getByTestId("artifact-preview-prose");
     expect(prose.textContent).toContain("Confirm fixture integrity");
-    expect(prose.textContent).not.toContain("qwen3-8-flash-next");
-    expect(screen.getByTestId("artifact-preview-raw").textContent).toContain("qwen3-8-flash-next");
+    expect(prose.textContent).not.toContain("qwen3-8-27b");
+    expect(screen.getByTestId("artifact-preview-raw").textContent).toContain("qwen3-8-27b");
     // No byline to rewrite, so the screen invents none.
     expect(screen.queryByTestId("artifact-published-by")).toBeNull();
   });

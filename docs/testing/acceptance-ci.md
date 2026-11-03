@@ -115,7 +115,7 @@ Lab launcher selection: the workflow sets `COMMUNICATION_LAB_LAUNCHER=pi`
 default). The pi launcher's per-turn config comes from `compose.real.yml`
 into the worker containers — `COMMUNICATION_PI_BASE_URL`,
 `COMMUNICATION_PI_MODEL` (default
-`david-birks/qwen3-8-flash-next`, the exact id form pi's `models.json`
+`david-birks/qwen3-8-27b`, the exact id form pi's `models.json`
 carries on the operator host) and `COMMUNICATION_PI_API_KEY_FILE`, which
 inside the container is `/run/comm/llm-api-key`: **the same
 `COMMUNICATION_LLM_API_KEY` secret file**, bind-mounted read-only — no

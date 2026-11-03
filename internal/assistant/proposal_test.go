@@ -703,7 +703,7 @@ func scriptedProposalServer(t *testing.T, answer string) (*httptest.Server, *int
 // failure deterministically (acceptance cc1acd1, 2026-10-27, the only failure
 // of that full acceptance and the only run where A8 had ever failed): the lab's
 // assistant runs a Qwen3-class thinking model
-// (COMMUNICATION_LLM_MODEL=david-birks/qwen3-8-flash-next on
+// (COMMUNICATION_LLM_MODEL=david-birks/qwen3-8-27b on
 // llm-collective.e-gineering.com), whose chat template opens the reasoning
 // block inside the PROMPT. When a gateway serves that turn anyway — the
 // api-a log of that run shows the re-ask firing at 13:42:37 and the route
