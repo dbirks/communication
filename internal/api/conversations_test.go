@@ -70,8 +70,17 @@ type cnvFakeStore struct {
 	// switched records the ADR-0068 switch writes the handler made, so a test
 	// can prove the route forwarded the body unchanged.
 	switched []cnvSwitchCall
-	decided  []cnvDecideCall
-	denied   []cnvDenial
+	// scoped records the ADR-0067 amendment scope writes the handler made,
+	// same purpose: the PATCH body must reach the store verbatim ("" = the
+	// whole project).
+	scoped []cnvScopeCall
+	// repoIDs is the fake project's repositories as ids (ADR-0067 amendment):
+	// the changeScope route speaks ids, and the fake answers a well-formed id
+	// outside this set the way the real store does — 422
+	// repository_not_in_project, identically for every foreign id.
+	repoIDs map[string]string
+	decided []cnvDecideCall
+	denied  []cnvDenial
 	// authFails flips visibility: the fake answers every read as the store
 	// answers a non-member, which is the only way to test that 404 (not 403) is
 	// what an outsider sees on every route.
@@ -116,6 +125,7 @@ type cnvFakeStore struct {
 
 type cnvCreateCall struct{ projectID, profileID, title, prompt, repository string }
 type cnvSwitchCall struct{ conversationID, agentProfileID string }
+type cnvScopeCall struct{ conversationID, repositoryID string }
 type cnvMessageCall struct {
 	conversationID, prompt string
 }
@@ -148,6 +158,7 @@ func cnvNewFakeStore() *cnvFakeStore {
 		controller: cnvTUserA,
 		version:    1,
 		repos:      []string{"acme-api", "zeta"},
+		repoIDs:    map[string]string{"acme-api": cnvFakeRepoAcmeAPI, "zeta": cnvFakeRepoZeta},
 		profiles: []AgentProfileView{
 			{ID: cnvTProfile, Name: "Claude Code", LauncherID: "claude", PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1},
 			{ID: "p-2", Name: "Codex", LauncherID: "codex", PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1},
@@ -579,6 +590,45 @@ func (f *cnvFakeStore) SwitchAgent(_ context.Context, c Caller, conversationID, 
 		f.chat.AgentProfileModel = p.Model
 	}
 	return f.chat, nil
+}
+
+func (f *cnvFakeStore) ChangeScope(_ context.Context, c Caller, conversationID, repositoryID string) (ConversationView, error) {
+	if !f.visible(c) {
+		return ConversationView{}, ErrConversationNotFound
+	}
+	if f.myRole == string(authz.RoleViewer) {
+		return ConversationView{}, ErrConversationForbidden
+	}
+	if f.controller != c.UserID {
+		return ConversationView{}, f.conflict(ConflictNotController,
+			"Alice holds the controller lock; only the controller may change the conversation's repository.", nil)
+	}
+	// The whole project (""), else one of the fake's own repository ids — a
+	// well-formed id outside the set is the real store's 422, identically for
+	// every foreign id so a probe leaks nothing.
+	if repositoryID != "" && f.repoNameByID(repositoryID) == "" {
+		return ConversationView{}, fmt.Errorf("%w: repository_not_in_project: repository_id is not a repository of this conversation's project", ErrConversationValidation)
+	}
+	f.scoped = append(f.scoped, cnvScopeCall{conversationID, repositoryID})
+	if repositoryID == "" {
+		f.chat.RepositoryID = nil
+	} else {
+		id := repositoryID
+		f.chat.RepositoryID = &id
+	}
+	return f.chat, nil
+}
+
+// repoNameByID answers the fake's repositories lookup for the scope route:
+// "" (the whole project) is always legal, an id one of the project's rows
+// carry answers its name, everything else answers "".
+func (f *cnvFakeStore) repoNameByID(id string) string {
+	for name, rid := range f.repoIDs {
+		if rid == id {
+			return name
+		}
+	}
+	return ""
 }
 
 func (f *cnvFakeStore) DecidePermission(_ context.Context, c Caller, conversationID, requestID, optionID string) (PermissionRequestView, error) {

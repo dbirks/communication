@@ -469,6 +469,26 @@ function systemLine(
         noticeKind: kind,
       };
     }
+    case "conversation.scope_changed": {
+      // ADR-0067 amendment: the controller moved the thread's repository
+      // scope. The journal row is the transcript's own evidence, the way the
+      // agent-switch divider is — a scope change a viewer cannot replay cannot
+      // have happened. The to-name is what the row names (null = the whole
+      // project, the unbound answer a pre-ADR-0067 row gives), and the actor
+      // is the envelope's human, never a bare uuid.
+      const actor =
+        str(payload, "actor_user_id") || (event.actor?.kind === "human" ? event.actor.id : "");
+      const to = str(payload, "to_repository_name");
+      const who = actor ? nameOf(actor) : "Someone";
+      return {
+        text: to
+          ? `${who} moved this chat to ${to}`
+          : `${who} moved this chat to the whole project`,
+        raw: `repository_id ${str(payload, "from_repository_id") || "null"} → ${
+          str(payload, "to_repository_id") || "null"
+        }`,
+      };
+    }
     case "conversation.turn.started": {
       const origin = str(payload, "session_origin");
       if (origin === "resumed") return { text: "Turn started on a resumed agent session" };

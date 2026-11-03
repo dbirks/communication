@@ -1748,6 +1748,80 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: patchConversationScope
+      tags: [conversations]
+      summary: Change the repository this conversation works in
+      description: >
+        ADR-0067 amendment: the WORKS IN switcher's write. `repository_id`
+        is a repository of the conversation's project — or `null` for the
+        whole project, which unbinds the thread exactly as a pre-ADR-0067
+        row reads. The same authorization as sending a turn moves it: the
+        human controller (a non-controller is `409` `not_controller`
+        carrying the live control row, a role that cannot write is `403`,
+        a non-member `404` with the audit row). A repository the
+        conversation's project does not have is `422`
+        `repository_not_in_project` — answered identically for every
+        foreign id, so a probe leaks nothing about who else has it; a
+        malformed value is `422` `invalid_repository_id`. A change that
+        lands updates `conversations.repository_id` and journals
+        `conversation.scope_changed` (from/to repository ids and names,
+        null = the whole project, and the actor) in the same transaction —
+        the transcript renders "<person> moved this chat to <repo>" from
+        that row. It touches nothing else: the transcript, the control and
+        the workspace are untouched, and the new scope answers for the
+        next turn's checkout scoping. Moving the scope to what it already
+        is is an idempotent no-op (no write, no event). `200` answers the
+        fresh conversation, its `repository_id`/`repository_name` echoing
+        the moved binding.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ConversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationScopePatch"
+      responses:
+        "200":
+          description: The conversation, its `repository_id` moved.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The caller's role cannot write to the conversation (viewer).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The caller is not the human controller (`not_controller`)
+            or the conversation is archived (`conversation_archived`),
+            carrying the live control row.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ConversationConflictProblem"
+        "422":
+          description: >
+            `invalid_repository_id` (a body value that is not a uuid) or
+            `repository_not_in_project` (a well-formed id that is not one
+            of the conversation's project's repositories).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/conversations/{conversationId}/notes:
     get:
       operationId: listConversationAssistantNotes
@@ -1993,6 +2067,7 @@ paths:
         | `conversation.mail.answered` | `conversation_id`, `link_id`, `from_conversation_id`, `to_conversation_id`, `repo`, `state`, `answer`, `reason`, `launcher_id` (ADR-0072: journaled on BOTH conversations with identical members besides `conversation_id`; `state` is answered (`answer` set), failed (the target turn ended non-completed, OR it ended completed but the agent produced no answer text — e.g. its only stream was the launcher's retry status, which rides conversation.notice — so there is nothing to answer with; `reason` names the plain word, "the agent didn't reply") or expired (the answer deadline passed first; `reason`). `launcher_id` is the target profile's launcher — the card's "← api · Codex" half; no journal row names a model, so none is claimed) |
         | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` |
         | `conversation.agent.switched` | `conversation_id`, `actor_user_id`, `from_agent_profile_id`, `from_profile_name`, `to_agent_profile_id`, `to_profile_name`, `to_launcher_id`, `model`, `transcript_carried_over` (ADR-0068: the divider row — the controller moved the next-turn agent profile between turns; the transcript renders "<person> switched to <agent> · <model> · transcript and branch carried over" from this row alone) |
+        | `conversation.scope_changed` | `conversation_id`, `actor_user_id`, `from_repository_id`, `from_repository_name`, `to_repository_id`, `to_repository_name` (ADR-0067 amendment: the controller moved the thread's repository scope through the update route; the from/to ids and names carry null for the whole project, and the transcript renders "<person> moved this chat to <repo>" from this row alone) |
         | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` |
         | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
 
@@ -7923,6 +7998,33 @@ components:
             linked run's repository); null when none says one. The composer's
             `@`-menu (ADR-0072 § 9) offers the project's OTHER repositories,
             so it needs the thread's own name.
+        repository_id:
+          type: ["string", "null"]
+          format: uuid
+          description: >
+            ADR-0067 amendment: the declared binding behind `repository_name`
+            — `conversations.repository_id` as stored, null when the thread is
+            unbound. The name answers the whole three-arm derivation; the id
+            answers only the declared arm, and it is what the WORKS IN
+            switcher ticks and what `conversation.scope_changed` correlates on.
+            Moved by `PATCH /api/v1/conversations/{conversationId}`.
+    ConversationScopePatch:
+      title: ConversationScopePatch
+      description: >
+        Request body for `patchConversationScope` (ADR-0067 amendment): the
+        repository the thread works in. Absent or `null` is the whole
+        project — unbound.
+      type: object
+      properties:
+        repository_id:
+          type: ["string", "null"]
+          format: uuid
+          description: >
+            A repository of the conversation's project, or null for the whole
+            project. A well-formed id the project does not have — including
+            another project's repository, answered identically so a foreign id
+            leaks nothing — is `422 repository_not_in_project`; a malformed
+            one is `422 invalid_repository_id`.
     ConversationSummary:
       title: ConversationSummary
       description: >

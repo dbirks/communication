@@ -298,6 +298,13 @@ type CnvConversation struct {
 	// (cnvConversationRepository); the composer's @-menu (ADR-0072 § 9)
 	// offers the project's OTHER repositories off it.
 	RepositoryName string
+	// RepositoryID (ADR-0067 amendment) is the detail read's DECLARED scope:
+	// conversations.repository_id as stored, "" when unbound. It answers a
+	// different question than RepositoryName (the three-arm display name) on
+	// purpose: the WORKS IN switcher ticks the declared binding and the PATCH
+	// route's idempotency compares on it, so a thread whose workspace arm
+	// says another name still reads unbound here.
+	RepositoryID string
 	// LinkedChats (ADR-0072) is the agent-mail link list for the detail
 	// read, either direction, newest first (cnvLinkedChats).
 	LinkedChats []CnvLinkedChat
@@ -368,6 +375,26 @@ func cnvConversationRepository(ctx context.Context, q prjQuerier, conversationID
 		return "", fmt.Errorf("postgres: conversation repository: %w", err)
 	}
 	return name, nil
+}
+
+// cnvConversationBinding is the detail read's DECLARED scope (ADR-0067
+// amendment): conversations.repository_id exactly as stored, "" when unbound.
+// It deliberately answers a different question than cnvConversationRepository
+// (the three-arm DISPLAY name): the WORKS IN switcher ticks the declared
+// binding — a thread whose workspace says `server` is still "whole project"
+// in scope until someone binds it — and a primary-key seek is the cost.
+func cnvConversationBinding(ctx context.Context, q prjQuerier, conversationID string) (string, error) {
+	var id string
+	err := q.QueryRow(ctx,
+		"SELECT COALESCE(repository_id::text, '') FROM conversations WHERE id = $1::uuid",
+		conversationID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("postgres: conversation repository binding: %w", err)
+	}
+	return id, nil
 }
 
 // cnvLastAgentLineMax is the wire cap on a list row's last-line preview, in
@@ -854,6 +881,11 @@ func cnvGetConversation(ctx context.Context, q prjQuerier, c Caller, conversatio
 		return CnvConversation{}, err
 	}
 	cv.RepositoryName = repo
+	bound, err := cnvConversationBinding(ctx, q, cv.ID)
+	if err != nil {
+		return CnvConversation{}, err
+	}
+	cv.RepositoryID = bound
 	links, err := cnvLinkedChats(ctx, q, cv.ID)
 	if err != nil {
 		return CnvConversation{}, err
@@ -1859,6 +1891,138 @@ func (s *CnvStore) SwitchAgent(ctx context.Context, c Caller, conversationID, pr
 	// Both the landed switch and the idempotent no-op answer with the fresh
 	// detail read, so the response carries the re-pinned profile and the
 	// derived agents list either way.
+	return cnvGetConversation(ctx, s.Pool, c, conversationID)
+}
+
+// ChangeScope moves the conversation's repository scope (ADR-0067
+// amendment): which repository — or the whole project — the thread works
+// in. The rules the route documents and the database enforces here:
+//
+//   - SAME AUTHORIZATION AS SENDING A TURN. A caller whose role cannot
+//     write gets ErrConversationForbidden (403) out of cnvWritableConversation;
+//     a non-member gets 404 there (ADR-0016 §8). A caller who is not the
+//     human controller gets the *same* 409 PostMessage answers —
+//     cnvControllerConflict carrying the live control row — because the
+//     scope, like the next prompt, is the one driving who moves.
+//   - AN ARCHIVED thread takes no scope change either (409,
+//     conversation_archived), the same refusal PostMessage gives.
+//   - The target is a repository of the conversation's PROJECT, answered
+//     against its own project_id — a foreign id (or any other id that is
+//     not a repositories row of the project) is ErrConversationValidation
+//     (422, repository_not_in_project), answered identically for every
+//     foreign id so a probe leaks nothing about who else has it. The
+//     composite FK of migration 00022 is the second gate, not the first.
+//   - "" is the whole project: the binding goes NULL and the thread reads
+//     unbound exactly as a pre-ADR-0067 row does (ADR-0065's arms answer
+//     the display name from then on).
+//   - Moving the scope to what it already is is an idempotent no-op:
+//     no write, no event — a double-click cannot write twice (the
+//     taking-control rule).
+//
+// A change that lands updates conversations.repository_id and appends
+// conversation.scope_changed in the SAME transaction — with the from/to
+// repository ids (null = the whole project, named by the row's own
+// repositories.name when set) — so a scope move a viewer cannot replay
+// cannot have happened. It touches nothing else: the transcript, the
+// control, the workspace and the branch are untouched, and the new scope
+// answers for the UI's read and for the NEXT turn's checkout scoping (the
+// worker narrows a turn's checkout by this column once it is taught to —
+// ADR-0067 § 7's extension point, no schema or API change needed).
+func (s *CnvStore) ChangeScope(ctx context.Context, c Caller, conversationID, repositoryID string) (CnvConversation, error) {
+	if err := prjRequireCaller(c); err != nil {
+		return CnvConversation{}, err
+	}
+	var conflict *CnvConflict
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		chat, project, org, err := cnvWritableConversation(ctx, tx, c, conversationID)
+		if err != nil {
+			return err
+		}
+		if conflict = cnvControllerConflict(&chat, c); conflict != nil {
+			return conflict
+		}
+		if chat.Status == "archived" {
+			conflict = &CnvConflict{
+				Kind:           ConflictArchived,
+				Detail:         "The conversation is archived; its repository cannot change either.",
+				ConversationID: chat.ID,
+				Control:        &chat.Control,
+			}
+			return conflict
+		}
+
+		// The target: "" = the whole project (a NULL binding); otherwise
+		// one of THIS project's repositories, by id — the create path's
+		// predicate with the lookup key swapped (name → id), the project
+		// scoping done by the SQL, never by the caller.
+		var targetID, targetName string
+		if repositoryID != "" {
+			if !prjValidUUID(repositoryID) {
+				return fmt.Errorf("%w: invalid_repository_id: repository_id must be a uuid", ErrConversationValidation)
+			}
+			if err := tx.QueryRow(ctx, `
+				SELECT id::text, name FROM repositories
+				WHERE id = $1::uuid AND project_id = $2::uuid`, repositoryID, project).
+				Scan(&targetID, &targetName); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("%w: repository_not_in_project: repository_id is not a repository of this conversation's project", ErrConversationValidation)
+				}
+				return fmt.Errorf("postgres: resolve scope repository: %w", err)
+			}
+		}
+
+		// The current binding, id and name off the SAME repositories row the
+		// create path reads its name from: the from-pair of the event, and
+		// the idempotency comparison (the id, not the derived display name —
+		// a thread whose workspace arm answers another name is still bound
+		// where its row says).
+		var fromID, fromName string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(c.repository_id::text, ''), COALESCE(r.name, '')
+			FROM conversations c
+			LEFT JOIN repositories r ON r.id = c.repository_id
+			WHERE c.id = $1::uuid`, conversationID).Scan(&fromID, &fromName); err != nil {
+			return fmt.Errorf("postgres: read conversation scope: %w", err)
+		}
+		if fromID == targetID {
+			// Idempotent: already the scope. No version to burn, no event.
+			return nil
+		}
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE conversations
+			SET repository_id = NULLIF($2::text, '')::uuid, updated_at = now()
+			WHERE id = $1::uuid`, conversationID, targetID); err != nil {
+			return fmt.Errorf("postgres: change conversation scope: %w", err)
+		}
+
+		if _, err := AppendEvent(ctx, tx, events.New{
+			Type:           events.TypeConversationScopeChanged,
+			OrganizationID: org,
+			ProjectID:      project,
+			ConversationID: conversationID,
+			Actor:          events.Human(c.UserID),
+			Payload: events.ScopeChangedPayload{
+				ConversationID:     conversationID,
+				ActorUserID:        c.UserID,
+				FromRepositoryID:   apiNullString(fromID),
+				FromRepositoryName: apiNullString(fromName),
+				ToRepositoryID:     apiNullString(targetID),
+				ToRepositoryName:   apiNullString(targetName),
+			},
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil && !errors.As(err, &conflict) {
+		return CnvConversation{}, err
+	}
+	if conflict != nil {
+		return CnvConversation{}, conflict
+	}
+	// The landed change and the idempotent no-op both answer with the fresh
+	// detail read, so the response carries the moved binding either way.
 	return cnvGetConversation(ctx, s.Pool, c, conversationID)
 }
 
@@ -2962,6 +3126,21 @@ func (a APIConversationStore) SwitchAgent(ctx context.Context, c api.Caller, con
 	return cnvAPIConversation(cv), nil
 }
 
+// ChangeScope implements api.ConversationStore (ADR-0067 amendment): the
+// WORKS IN switcher's write, repositoryID a project repository id or ""
+// for the whole project.
+func (a APIConversationStore) ChangeScope(ctx context.Context, c api.Caller, conversationID, repositoryID string) (api.ConversationView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.ConversationView{}, err
+	}
+	cv, err := s.ChangeScope(ctx, prjAPICaller(c), conversationID, repositoryID)
+	if err != nil {
+		return api.ConversationView{}, cnvAPIErr(err)
+	}
+	return cnvAPIConversation(cv), nil
+}
+
 // CancelTurn implements api.ConversationStore.
 func (a APIConversationStore) CancelTurn(ctx context.Context, c api.Caller, conversationID string) (api.ConversationTurnView, error) {
 	s, err := a.store()
@@ -3209,6 +3388,7 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		AgentProfileModel:  apiNullString(cv.AgentProfileModel),
 		Agents:             agents,
 		RepositoryName:     apiNullString(cv.RepositoryName),
+		RepositoryID:       apiNullString(cv.RepositoryID),
 		LinkedChats:        links,
 	}
 }

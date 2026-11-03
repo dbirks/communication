@@ -435,3 +435,181 @@ describe("the standing note's dismiss (2e)", () => {
     expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
   });
 });
+
+// --- WORKS IN switcher (ADR-0067 amendment) ------------------------------
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { setCsrfToken } from "../../api/client";
+import { resetReplicaName } from "../../api/replica";
+import { queryKeys } from "../../api/queries";
+import { conversationFixture, conversationId, mockFetch, type RouteStub } from "../../test/fakes";
+import type { Conversation, Repository } from "../../api/types";
+
+function scopeRepo(id: string, name: string): Repository {
+  return {
+    id,
+    project_id: projectFixture.id,
+    name,
+    git_url: `https://git.example/${name}.git`,
+    default_branch: "main",
+    created_at: "2026-10-14T18:00:00Z",
+    credential: "none",
+  };
+}
+
+/** The rail with its one live thread: the reads the switcher needs and the
+ * PATCH its pick sends, answered by a throwaway cache. */
+function scopePanel(
+  routes: RouteStub[],
+  extra: Partial<Parameters<typeof ConversationSidePanel>[0]> = {},
+) {
+  setCsrfToken(null);
+  resetReplicaName();
+  const { fetchMock, requests } = mockFetch(routes);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ConversationSidePanel
+          projectId={projectFixture.id}
+          repoName="storefront"
+          workflowChat={{ id: conversationId, title: "Fix the flaky test" }}
+          {...extra}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { ...view, fetchMock, requests, queryClient };
+}
+
+describe("WORKS IN switcher (ADR-0067 amendment)", () => {
+  const repoStore = scopeRepo("01987a79-aaaa-7000-8000-abcdef011111", "storefront");
+  const repoApi = scopeRepo("01987a79-aaaa-7000-8000-abcdef022222", "acme-api");
+
+  it("lists the project's repositories plus the whole project, ticks the declared binding, and patches on a pick", async () => {
+    // The server-side fact the stubs agree on: the binding the thread
+    // carries. The GET answers it on every refetch, the PATCH moves it.
+    let binding: string | null = repoStore.id;
+    const view = scopePanel([
+      {
+        method: "GET",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: () => ({ ...conversationFixture, repository_id: binding }),
+      },
+      {
+        method: "GET",
+        path: `/api/v1/projects/${projectFixture.id}/repos`,
+        body: { items: [repoStore, repoApi] },
+      },
+      {
+        method: "PATCH",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: () => {
+          binding = repoApi.id;
+          return { ...conversationFixture, repository_id: binding };
+        },
+      },
+    ]);
+
+    // The switcher replaces the read-only sentence: the move applies from
+    // the next turn, which is the rail's whole note about it.
+    expect(screen.getByTestId("side-panel-works-in-switch")).toBeTruthy();
+    expect(screen.getByTestId("side-panel-works-in-note").textContent).toBe(
+      "Applies from the next turn.",
+    );
+
+    fireEvent.click(screen.getByTestId("side-panel-works-in-switch"));
+    await screen.findByRole("menu");
+    // Every project repository plus "Whole project" …
+    expect(screen.getByTestId("side-panel-scope-item-whole").textContent).toContain(
+      "Whole project",
+    );
+    await screen.findByTestId("side-panel-scope-item-storefront");
+    await screen.findByTestId("side-panel-scope-item-acme-api");
+    // … the declared binding ticked, nothing else.
+    expect(screen.getByTestId("side-panel-scope-item-storefront").textContent).toContain("✓");
+    expect(screen.getByTestId("side-panel-scope-item-acme-api").textContent).not.toContain("✓");
+    expect(screen.getByTestId("side-panel-scope-item-whole").textContent).not.toContain("✓");
+
+    fireEvent.click(screen.getByTestId("side-panel-scope-item-acme-api"));
+
+    // The pick is one PATCH, its body the id verbatim.
+    let patch: (typeof view.requests)[number] | undefined;
+    await vi.waitFor(() => {
+      patch = view.requests.find(
+        (request) =>
+          request.method === "PATCH" && request.url === `/api/v1/conversations/${conversationId}`,
+      );
+      expect(patch?.body).toBe(JSON.stringify({ repository_id: repoApi.id }));
+    });
+    // The fresh read lands in the shared cache: the page's own
+    // `useConversation` entry, not a second read of its own.
+    await vi.waitFor(() => {
+      const cached = view.queryClient.getQueryData<Conversation>(
+        queryKeys.conversation(conversationId),
+      );
+      expect(cached?.repository_id).toBe(repoApi.id);
+    });
+    // The menu closed with the pick.
+    expect(screen.queryByTestId("side-panel-scope-menu")).toBeNull();
+  });
+
+  it("moves an unbound thread to the whole project and back, patching null for it", async () => {
+    const seen: string[] = [];
+    // One binding, the stubs' shared fact: the GET answers it, the PATCH
+    // moves it.
+    let binding: string | null = repoStore.id;
+    const view = scopePanel([
+      {
+        method: "GET",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: () => ({ ...conversationFixture, repository_id: binding }),
+      },
+      {
+        method: "GET",
+        path: `/api/v1/projects/${projectFixture.id}/repos`,
+        body: { items: [repoStore, repoApi] },
+      },
+      {
+        method: "PATCH",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: (n: number) => {
+          const id = n === 1 ? null : repoStore.id;
+          binding = id;
+          seen.push(n === 1 ? "null" : repoStore.id);
+          return { ...conversationFixture, repository_id: id };
+        },
+      },
+    ]);
+
+    // Whole project first: the binding goes null, the patch says so.
+    fireEvent.click(screen.getByTestId("side-panel-works-in-switch"));
+    await screen.findByRole("menu");
+    fireEvent.click(screen.getByTestId("side-panel-scope-item-whole"));
+    await vi.waitFor(() => {
+      expect(view.requests.filter((r) => r.method === "PATCH").map((r) => r.body)).toEqual([
+        JSON.stringify({ repository_id: null }),
+      ]);
+    });
+    await vi.waitFor(() => {
+      expect(
+        view.queryClient.getQueryData<Conversation>(queryKeys.conversation(conversationId))
+          ?.repository_id,
+      ).toBeNull();
+    });
+
+    // … and back into a repository from the refreshed list.
+    fireEvent.click(screen.getByTestId("side-panel-works-in-switch"));
+    await screen.findByRole("menu");
+    await screen.findByTestId("side-panel-scope-item-storefront");
+    // The refreshed read re-ticks: the whole project is current now.
+    expect(screen.getByTestId("side-panel-scope-item-whole").textContent).toContain("✓");
+    fireEvent.click(screen.getByTestId("side-panel-scope-item-storefront"));
+    await vi.waitFor(() => {
+      expect(view.requests.filter((r) => r.method === "PATCH")).toHaveLength(2);
+      expect(seen).toEqual(["null", repoStore.id]);
+    });
+  });
+});

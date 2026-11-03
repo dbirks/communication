@@ -338,6 +338,69 @@ describe("projectTranscript", () => {
     expect(sys?.kind === "system" && sys.text).toContain("u-zoe");
   });
 
+  it("prints a repository scope move as its own system line, never agent output", () => {
+    const nameOf = (userId: string) => (userId === "u-ada" ? "Ada" : userId);
+    const line = (payload: Record<string, unknown>) => {
+      const transcript = projectTranscript(
+        frames([
+          "conversation.scope_changed",
+          {
+            actor_user_id: "u-ada",
+            from_repository_id: null,
+            from_repository_name: null,
+            to_repository_id: "01987a79-aaaa-7000-8000-abcdef012345",
+            to_repository_name: "server",
+            ...payload,
+          },
+        ]),
+        nameOf,
+      );
+      const system = transcript.items.find((item) => item.kind === "system");
+      return system?.kind === "system" ? system.text : "";
+    };
+
+    // The move names the actor and the repository the row names — the
+    // journal row is the transcript's own evidence, the way the agent-switch
+    // divider is.
+    expect(line({})).toBe("Ada moved this chat to server");
+    // Null is the whole project — the unbound answer, not an empty sentence.
+    expect(line({ to_repository_id: null, to_repository_name: null })).toBe(
+      "Ada moved this chat to the whole project",
+    );
+    // A row without an actor falls back to the envelope's human — the
+    // default directory's "someone (ef012345)" line, never a bare uuid and
+    // never an invented name.
+    expect(
+      projectTranscript(
+        frames([
+          "conversation.scope_changed",
+          {
+            actor_user_id: "",
+            from_repository_id: "01987a79-aaaa-7000-8000-abcdef012345",
+            from_repository_name: "server",
+            to_repository_id: "01987a79-bbbb-7000-8000-abcdef012345",
+            to_repository_name: "api",
+          },
+        ]),
+      ).items.find((item) => item.kind === "system")?.text,
+    ).toBe("someone (ef012345) moved this chat to api");
+    expect(
+      projectTranscript([
+        conversationEvent(
+          "conversation.scope_changed",
+          {
+            actor_user_id: "",
+            from_repository_id: "01987a79-aaaa-7000-8000-abcdef012345",
+            from_repository_name: "server",
+            to_repository_id: null,
+            to_repository_name: null,
+          },
+          { actor: { kind: "system", id: "system" } },
+        ),
+      ]).items.find((item) => item.kind === "system")?.text,
+    ).toBe("Someone moved this chat to the whole project");
+  });
+
   it("suppresses an empty tool input rather than rendering raw braces", () => {
     const spellings = ["{}", " { } ", "[]", "null", "", '{"a":1}'];
     const transcript = projectTranscript(

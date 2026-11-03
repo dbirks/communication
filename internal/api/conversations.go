@@ -327,6 +327,12 @@ type ConversationView struct {
 	// resolution since ADR-0065; the detail carries it so the composer's
 	// @-menu (ADR-0072 § 9) can offer the project's OTHER repositories.
 	RepositoryName *string `json:"repository_name"`
+	// RepositoryID (ADR-0067 amendment) is the DECLARED binding behind the
+	// name above — conversations.repository_id as stored, null when unbound.
+	// The name answers the whole three-arm derivation; the id answers only
+	// the declared arm, and it is what the WORKS IN switcher's tick and the
+	// `conversation.scope_changed` journal row correlate on.
+	RepositoryID *string `json:"repository_id"`
 	// LinkedChats (ADR-0072): the agent-mail links on this conversation,
 	// either direction, newest first; empty when the project's agent-mail
 	// setting has never produced a link here.
@@ -458,6 +464,16 @@ type ConversationStore interface {
 	// On success conversation.agent.switched is journalled and the fresh
 	// conversation view (including the derived agents list) is returned.
 	SwitchAgent(ctx context.Context, c Caller, conversationID, agentProfileID string) (ConversationView, error)
+	// ChangeScope sets the repository the thread works in (ADR-0067
+	// amendment): repositoryID is a project repository id, or "" for the
+	// whole project (null). Same authorization as sending a turn — the
+	// human controller (a non-controller is a *ConversationConflict, a role
+	// that cannot write is ErrConversationForbidden) — and a repository the
+	// conversation's project does not have is ErrConversationValidation
+	// (422, repository_not_in_project; a foreign id leaks nothing). On
+	// success conversation.scope_changed is journalled with the from/to ids
+	// and the fresh conversation view is returned.
+	ChangeScope(ctx context.Context, c Caller, conversationID, repositoryID string) (ConversationView, error)
 	// AuthorizeConversation answers the one question an open stream must keep
 	// asking: may this caller still see this conversation's project?
 	AuthorizeConversation(ctx context.Context, c Caller, conversationID string) (projectID string, err error)
@@ -580,6 +596,7 @@ func RegisterConversations(s *Server, store ConversationStore, profiles ProfileS
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/return-control", http.HandlerFunc(h.returnControl))
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/cancel", http.HandlerFunc(h.cancel))
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/switch-agent", http.HandlerFunc(h.switchAgent))
+	s.HandleAuthed("PATCH /api/v1/conversations/{conversationId}", http.HandlerFunc(h.changeScope))
 	s.HandleAuthed("POST /api/v1/conversations/{conversationId}/permissions/{requestId}", http.HandlerFunc(h.decidePermission))
 	if stream != nil {
 		registerConversationEvents(s, h, stream, evtProductionTiming())
@@ -623,6 +640,13 @@ type cnvPermissionBody struct {
 
 type cnvSwitchAgentBody struct {
 	AgentProfileID string `json:"agent_profile_id"`
+}
+
+// cnvScopeBody is PATCH /api/v1/conversations/{id} (ADR-0067 amendment): the
+// repository the thread works in. nil (absent or JSON null) is the whole
+// project — unbound; a value must be one of the project's repository ids.
+type cnvScopeBody struct {
+	RepositoryID *string `json:"repository_id"`
 }
 
 // --- handlers -----------------------------------------------------------
@@ -910,6 +934,44 @@ func (h *cnvHandlers) switchAgent(w http.ResponseWriter, r *http.Request) {
 	chat, err := h.store.SwitchAgent(r.Context(), c, conversationID, body.AgentProfileID)
 	if err != nil {
 		h.fail(w, r, c, cnvAtConversation("conversation.switch-agent", conversationID), err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, chat)
+}
+
+// changeScope moves the thread's repository scope (ADR-0067 amendment): the
+// WORKS IN switcher's write. The body carries one field — repository_id, a
+// project repository id or null for the whole project. A malformed uuid is
+// refused before any store call (422 invalid_repository_id, the same split
+// this file's create route follows for its `repository` field: a body that
+// names junk is a 422, not a 400); a well-formed id the conversation's
+// project does not have is the store's 422 (repository_not_in_project).
+// Everything else — 403 not a writer, 409 not the controller, 409 archived —
+// is the store's answer, rendered by fail().
+func (h *cnvHandlers) changeScope(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	conversationID := r.PathValue("conversationId")
+
+	var body cnvScopeBody
+	if err := DecodeJSON(r, &body); err != nil {
+		h.badRequest(w, r, err)
+		return
+	}
+	repositoryID := ""
+	if body.RepositoryID != nil {
+		repositoryID = *body.RepositoryID
+		if !validUUID(repositoryID) {
+			cnvInvalid(w, "invalid_repository_id: repository_id must be a uuid or null.")
+			return
+		}
+	}
+
+	chat, err := h.store.ChangeScope(r.Context(), c, conversationID, repositoryID)
+	if err != nil {
+		h.fail(w, r, c, cnvAtConversation("conversation.scope", conversationID), err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, chat)

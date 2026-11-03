@@ -150,6 +150,13 @@ const (
 	// transcript renders "<person> switched to <agent> · <model> · transcript
 	// and branch carried over" from this row, never from a UI-local guess.
 	TypeConversationAgentSwitched = "conversation.agent.switched"
+	// TypeConversationScopeChanged is the ADR-0067 amendment row: the
+	// controller moved the conversation's repository scope (a project
+	// repository, or null = the whole project) through the update route. The
+	// transcript renders "<person> moved this chat to <repo>" from this row,
+	// the way the divider renders from the switch row — a scope change a
+	// viewer cannot replay cannot have happened.
+	TypeConversationScopeChanged = "conversation.scope_changed"
 
 	// Transcript content.
 	TypeConversationMessageUser  = "conversation.message.user"
@@ -506,6 +513,21 @@ type AgentSwitchedPayload struct {
 	// TranscriptCarriedOver is the divider's claim spelled as data: the
 	// transcript and the branch carry over; only the session changes.
 	TranscriptCarriedOver bool `json:"transcript_carried_over"`
+}
+
+// ScopeChangedPayload is conversation.scope_changed (ADR-0067 amendment). The
+// actor is the envelope's actor (the controller who moved the scope); the
+// from/to pairs are what the transcript system line renders. Nulls are the
+// whole project: the thread is unbound, exactly as a pre-ADR-0067 row reads.
+// Only the scope moved — the transcript, the control and the workspace are
+// untouched, and the new scope answers for the NEXT turn's checkout scoping.
+type ScopeChangedPayload struct {
+	ConversationID     string  `json:"conversation_id"`
+	ActorUserID        string  `json:"actor_user_id"`
+	FromRepositoryID   *string `json:"from_repository_id"`
+	FromRepositoryName *string `json:"from_repository_name"`
+	ToRepositoryID     *string `json:"to_repository_id"`
+	ToRepositoryName   *string `json:"to_repository_name"`
 }
 
 // MessageUserPayload is conversation.message.user: the prompt the controller

@@ -7,9 +7,15 @@
  *
  * - WORKS IN — the repository the thread works in (ADR-0067's resolution:
  *   the declared binding, else the workspace, else the linked run — the host
- *   resolves it and hands the name down). Read-only: `conversations.
- *   repository_id` is written once and never moved by any API path, so there
- *   is no control here to switch it.
+ *   resolves it and hands the name down). A switcher since the ADR-0067
+ *   amendment: the host's chat id (the `workflowChat` prop) opens the ds
+ *   Menu — the project's repositories plus "Whole project", the declared
+ *   binding ticked — and its pick is `PATCH /api/v1/conversations/{id}`.
+ *   The transcript renders the move as its own system line (the journal's
+ *   `conversation.scope_changed` row), and the new scope answers from the
+ *   next turn, which the section's one muted line says. A host with no chat
+ *   id renders the read-only sentence instead: with nothing to patch, the
+ *   rail says so rather than offering a control that cannot act.
  * - BRANCH — the conversation workspace's run ref, plus the count of
  *   modified paths the workspace manifest records. A PR link has no
  *   structured source today (the draft-PR ask is the rail's prompt flow, and
@@ -45,6 +51,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { ReactNode } from "react";
 import { routes } from "../../lib/routes";
+import { Menu, type MenuEntry } from "../ds/Menu";
 import { STATES, type StateName } from "../ds/states";
 import {
   AssistantNote,
@@ -53,6 +60,8 @@ import {
   makeWorkflowNoteAction,
 } from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
+import { useChangeConversationScope } from "../../api/conversations";
+import { useConversation, useRepositories } from "../../api/queries";
 import { agentLabel } from "./ConversationTranscript";
 import { NO_BRANCH_YET } from "./threadBranch";
 import type { TurnRecord } from "../../api/transcript";
@@ -197,6 +206,86 @@ function SectionTitle({ htmlFor, children }: { htmlFor: string; children: ReactN
  * (`assistant-note-workflow-action-make_workflow`). */
 const WORKFLOW_NOTE_TEST_ID = "assistant-note-workflow";
 
+/**
+ * The WORKS IN switcher (ADR-0067 amendment): the project's repositories plus
+ * "Whole project", the declared binding ticked, one pick = one PATCH.
+ *
+ * The tick reads the DECLARED binding off the conversation detail
+ * (`repository_id`, this thread's own cache entry — the page's read is
+ * shared, so no second request) rather than the displayed name: the name is
+ * the three-arm derivation, and a thread whose WORKSPACE says `server` is
+ * still "whole project" in scope until someone binds it. An in-flight pick
+ * disables every row; the fresh response the mutation writes back re-ticks
+ * the list without the host having to say anything.
+ */
+export function WorksInSwitcher({
+  projectId,
+  conversationId,
+  testId = "side-panel-works-in-switch",
+}: {
+  projectId: string;
+  conversationId: string;
+  testId?: string;
+}) {
+  const { data: conversation } = useConversation(conversationId);
+  const { data: repositories } = useRepositories(projectId);
+  const change = useChangeConversationScope();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const currentId = conversation?.repository_id ?? null;
+  const items: MenuEntry[] = [
+    {
+      id: "whole-project",
+      label: "Whole project",
+      checked: currentId === null,
+      disabled: change.isPending,
+      testId: "side-panel-scope-item-whole",
+      onSelect: () => {
+        change.mutate({ conversationId, repositoryId: null });
+        setOpen(false);
+      },
+    },
+    ...(repositories?.items ?? []).map((repo) => ({
+      id: repo.id,
+      label: repo.name,
+      checked: repo.id === currentId,
+      disabled: change.isPending,
+      testId: `side-panel-scope-item-${repo.name}`,
+      onSelect: () => {
+        change.mutate({ conversationId, repositoryId: repo.id });
+        setOpen(false);
+      },
+    })),
+  ];
+  return (
+    <span className="relative inline-flex">
+      <button
+        ref={triggerRef}
+        type="button"
+        data-testid={testId}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Switch the repository this chat works in"
+        onClick={() => setOpen((value) => !value)}
+        className="ml-[4px] inline-flex h-[18px] items-center rounded-[3px] border border-line-strong bg-surface px-[3px] font-mono text-[10px] text-muted hover:border-ink hover:text-ink"
+      >
+        {open ? "▴" : "▾"}
+      </button>
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        triggerRef={triggerRef}
+        side="bottom"
+        align="end"
+        width={200}
+        ariaLabel="Switch the repository this chat works in"
+        data-testid="side-panel-scope-menu"
+        items={items}
+      />
+    </span>
+  );
+}
+
 export function ConversationSidePanel({
   projectId,
   repoName,
@@ -285,28 +374,42 @@ export function ConversationSidePanel({
       {repoName ? (
         <section aria-labelledby="side-panel-works-in-heading" data-testid="side-panel-works-in">
           <SectionTitle htmlFor="side-panel-works-in-heading">Works in</SectionTitle>
-          <p className="mt-1 min-w-0 break-words font-mono text-[12px] text-ink">
-            <Link
-              to={routes.repository(projectId, repoName)}
-              className="text-accent-text hover:text-ink"
-              data-testid="side-panel-repo-link"
-            >
-              {repoName}
-            </Link>
-            {/* The workspace state rides the same line: one section, one
-                sentence, the same words the header's meta line prints. */}
-            {worksInNote ? (
-              <span className="text-muted" data-testid="side-panel-works-in-state">
-                {" · "}
-                {worksInNote}
-              </span>
+          <div className="mt-1 flex min-w-0 items-center">
+            <p className="min-w-0 break-words font-mono text-[12px] text-ink">
+              <Link
+                to={routes.repository(projectId, repoName)}
+                className="text-accent-text hover:text-ink"
+                data-testid="side-panel-repo-link"
+              >
+                {repoName}
+              </Link>
+              {/* The workspace state rides the same line: one section, one
+                  sentence, the same words the header's meta line prints. */}
+              {worksInNote ? (
+                <span className="text-muted" data-testid="side-panel-works-in-state">
+                  {" · "}
+                  {worksInNote}
+                </span>
+              ) : null}
+            </p>
+            {/* The ADR-0067 amendment switcher, beside the name. It sits
+                outside the paragraph — the menu's box is a `div`, and a `p`
+                may not contain one (the browser's re-parenting would rip the
+                menu out of the React tree). Present only where the host
+                names this thread: with no chat id there is nothing to patch,
+                and the rail says so below rather than offering a control
+                that cannot act. */}
+            {workflowChat ? (
+              <WorksInSwitcher projectId={projectId} conversationId={workflowChat.id} />
             ) : null}
-          </p>
+          </div>
           <p
             className="mt-1 text-[11.5px] leading-[1.5] text-faint"
             data-testid="side-panel-works-in-note"
           >
-            Read-only — a thread's repository is recorded when it opens and never moves.
+            {workflowChat
+              ? "Applies from the next turn."
+              : "Read-only — a thread's repository is recorded when it opens and never moves."}
           </p>
         </section>
       ) : null}

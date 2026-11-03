@@ -136,6 +136,55 @@ binding from a later checkout.
    the workspace binding. Both are honest extension points of "the thread was
    opened for this repo", not contradictions of it.
 
+## Amendment: scope can change (2026-11-02)
+
+Round-7 design review (the chat side panel's WORKS IN switcher, design 2e)
+showed the read-only binding to be a defect, not a rule: ADR-0067 never
+decided the scope is immutable, and the worker does not yet narrow a turn's
+checkout by the column, so moving it is a metadata change that takes effect
+for what the UI and later turns read — no workspace, branch or transcript is
+rewritten. This ADR is therefore amended, not superseded:
+
+1. **Route.** `PATCH /api/v1/conversations/{conversationId}` (operation
+   `patchConversationScope`) carries `ConversationScopePatch`:
+   `repository_id`, a repository of the conversation's project or `null` for
+   the whole project (absent = null). The same authorization as sending a
+   turn moves it — the human controller (a non-controller is 409
+   `not_controller` carrying the live control row; a role that cannot write
+   is 403; a non-member 404 with the audit row); an archived thread answers
+   409 `conversation_archived`. A repository the conversation's project does
+   not have is 422 `repository_not_in_project` — answered identically for
+   every foreign id, so a probe leaks nothing about who else has it; the
+   composite FK of 00022 remains the second gate. A malformed body value is
+   422 `invalid_repository_id`. The response is the fresh conversation, whose
+   `repository_id` (the declared binding, null when unbound) joins
+   `repository_name` on the detail read.
+2. **Event.** A landed move updates `conversations.repository_id` and
+   appends `conversation.scope_changed` in the same transaction —
+   `conversation_id`, `actor_user_id`, and the from/to `repository_id`/
+   `repository_name` pairs (null = the whole project) — so a scope move a
+   viewer cannot replay cannot have happened. The transcript renders
+   "<person> moved this chat to <repo>" from that row alone, as a muted
+   system line the way the ADR-0068 divider renders from its row. Moving the
+   scope to what it already is is an idempotent no-op: no write, no event.
+3. **Effect.** The new scope answers from the next turn: the UI's reads
+   (detail and list rows — the declared arm outranks the workspace and run
+   arms exactly as at creation) and, once the worker is taught to scope
+   checkouts by the column (§ 7's extension point), the turn's checkout. The
+   transcript, the control, the workspace and the branch are untouched; a
+   turn already in flight keeps the scope it started under, which keeps the
+   move a pure metadata write safe at any moment between control checks.
+
+Verification: `internal/api/conversation_scope_test.go` (handler contract:
+422 codes, the null arm, the store-forwarding),
+`internal/store/postgres/conversation_scope_test.go` (real PostgreSQL:
+the column write, the event's from/to pairs, the idempotent no-op, foreign
+and unknown ids refused with nothing written, viewer/non-member/non-
+controller refused with nothing journaled, the archived 409),
+`ui/src/components/conversation/ConversationSidePanel.test.tsx` (the
+switcher's menu, tick and PATCH) and `ui/src/api/transcript.test.ts` (the
+system line).
+
 ## Consequences
 
 - Positive: the repo page's `Start` is one request, its feed is one request

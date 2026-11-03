@@ -54,6 +54,7 @@ export const M2_EVENT_TYPES = [
   "conversation.turn.failed",
   "conversation.turn.interrupted",
   "conversation.control.transferred",
+  "conversation.scope_changed",
   "conversation.mail.asked",
   "conversation.mail.answered",
   "agent.session.connected",
