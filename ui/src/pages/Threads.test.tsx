@@ -99,8 +99,11 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     expect(liveRow.textContent).toContain(projectFixture.name);
     expect(liveRow.textContent).toContain("Claude Code");
     expect(liveRow.textContent).toMatch(/\d+[smhd]/);
-    // The status is a glyph; the word appears only for disconnected.
-    expect(within(earlierRow).queryByText("idle", { exact: false })).toBeNull();
+    // rcn-6 review 1: an idle chat with nothing queued reads as `idle`, never
+    // as the queued `pending`; the other worded statuses (disconnected, and
+    // archived) still ride the worded table alongside their glyph.
+    expect(within(earlierRow).queryByText("idle", { exact: false })).toBeTruthy();
+    expect(within(earlierRow).queryByText("pending", { exact: false })).toBeNull();
     const disconnected = await screen.findByTestId(`thread-row-${disconnectedRow.id}`);
     expect(disconnected.textContent).toContain("disconnected");
 

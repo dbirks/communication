@@ -71,6 +71,12 @@ export interface AssistantPanelProps {
    * the conversation stays. Expanded: the `opened from …` chip.
    */
   contextLabel: string;
+  /**
+   * The chat the panel was opened FROM (the 2f thread → workflow draft ask).
+   * When set, the header chip reads `from “<title>”` instead of the bare
+   * section name the `contextLabel` would show (`opened from threads`).
+   */
+  chatContext?: string | null;
   /** Transcript, oldest first; `change` rows are rendered by the chip. */
   messages: AssistantMessage[];
   trustLevel: TrustLevel;
@@ -386,6 +392,7 @@ function EmptyState({
 export function AssistantPanel({
   variant,
   contextLabel,
+  chatContext = null,
   messages,
   trustLevel,
   onTrustLevelChange,
@@ -549,10 +556,14 @@ export function AssistantPanel({
       {/* 2f review: the 400px (or 358px on a phone) popover header cannot fit
         the full wording next to the trust pill, and the row must never break
         onto two lines — the popover keeps just the ＋ on screen, with the
-        wording in the accessible name and the tooltip. */}
+        wording in the accessible name and the tooltip. rcn-6 review: that ＋
+        (a fullwidth character) rendered as an unlabelled blue bar in the
+        lab font, so it is the same lucide `Plus` icon the wide header uses —
+        the tooltip (`title`) and the accessible name carry the meaning. */}
       {narrowHeader ? (
         <>
-          ＋<span className="sr-only"> New</span>
+          <Plus size={13} strokeWidth={2} aria-hidden className="shrink-0" />
+          <span className="sr-only">New conversation</span>
         </>
       ) : (
         <>
@@ -611,13 +622,33 @@ export function AssistantPanel({
           <span className="text-[14px] text-ink" style={{ fontWeight: 600 }}>
             Assistant
           </span>
-          {contextLabel ? (
+          {/* The chip truncates (review 2f: `opened from threads` wrapped
+              onto three lines and pushed the row off the screen). `min-w-0`
+              is what lets a flex item give its width back. When the panel was
+              opened FROM a specific chat (the 2f docked draft ask) it names
+              THAT chat — `from “<title>”` — not the bare section name
+              (rcn-6 review). */}
+          {chatContext ? (
+            <span
+              data-testid="assistant-opened-from"
+              title={`from ${chatContext}`}
+              className="min-w-0 max-w-[42%] truncate"
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 10.5,
+                border: "1px solid var(--color-line-strong)",
+                borderRadius: 4,
+                background: "var(--color-fill)",
+                color: "var(--color-ink-2)",
+                padding: "2px 7px",
+              }}
+            >
+              {`from ${chatContext}`}
+            </span>
+          ) : contextLabel ? (
             <span
               data-testid="assistant-opened-from"
               title={`opened from ${contextLabel}`}
-              // The chip truncates (review 2f: `opened from threads` wrapped
-              // onto three lines and pushed the row off the screen). `min-w-0`
-              // is what lets a flex item give its width back.
               className="min-w-0 max-w-[42%] truncate"
               style={{
                 fontFamily: "var(--font-mono)",

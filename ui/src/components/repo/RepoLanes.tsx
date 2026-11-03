@@ -60,7 +60,7 @@ import type {
 import { VARIANT_CLASS } from "../ds/Button";
 import { Menu, type MenuEntry } from "../ds/Menu";
 import { ProgressStrip } from "../ds/ProgressStrip";
-import { runStepSegments } from "./RepoActivity";
+import { runStepSegments, conversationWord } from "./RepoActivity";
 import { triggerLine } from "./RepoWorkflowPanel";
 import { CONVERSATION_STATE, RUN_STATE, SHORT_WORD, STATES } from "../ds/states";
 import { Spinner } from "../Feedback";
@@ -914,8 +914,9 @@ function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
         CHAT
         {/* The word beside the glyph, not behind `sr-only`: a chat card under
             RUNNING has to say whether the session is attached (`running`) or
-            the chat is merely open (`pending`) — rcn-3b review item 1. */}
-        <span className="ml-1 font-normal">· {SHORT_WORD[state]}</span>
+            the chat is merely open (`idle`). `idle`, not `pending` — an open
+            chat with no turn queued is not waiting work (rcn-6 review 1). */}
+        <span className="ml-1 font-normal">· {conversationWord(conversation, state)}</span>
       </div>
       <div className="mt-1 flex items-start gap-2">
         <Link

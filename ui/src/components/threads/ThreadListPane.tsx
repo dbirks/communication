@@ -122,8 +122,10 @@ function isLive(conversation: ConversationSummary): boolean {
   return conversation.status === "active" || conversation.has_active_turn === true;
 }
 
-/** The one-line mono meta under a row title. The design's worded statuses
- *  are exactly these two — every other status rides on the glyph alone. */
+/** The worded statuses on the mono meta line. `idle` gets its own word too:
+ *  an open chat with nothing attached reads as `idle`, not as the queued
+ *  `·` glyph alone (rcn-6 review 1 — it must not read as `pending`). Every
+ *  other status rides on the glyph alone. */
 const ROW_STATUS_WORDS: Partial<Record<ConversationSummary["status"], string>> = {
   disconnected: "disconnected",
   archived: "archived",
@@ -230,7 +232,15 @@ function ThreadItem({
   const queryClient = useQueryClient();
   const state: StateName = stateOf(CONVERSATION_STATE[conversation.status]);
   const spec = STATES[state];
-  const word = ROW_STATUS_WORDS[conversation.status];
+  // `idle` reads as `idle` (an open chat with nothing queued), never as the
+  // queued `·`-only row that reads as `pending`; a turn in flight says
+  // `pending`. The rest ride the worded-status table (rcn-6 review 1).
+  const word =
+    conversation.status === "idle"
+      ? conversation.has_active_turn
+        ? "pending"
+        : "idle"
+      : ROW_STATUS_WORDS[conversation.status];
   const repo = conversation.repository_name ?? null;
   // The served line is the agent's own text; the ONE shared preview helper
   // strips its leading markdown markers and inline emphasis, so the row

@@ -227,6 +227,31 @@ describe("ds Menu placement and the pointer arrow", () => {
     expect(112 + 180).toBe(300 - 8); // the clamp sits on the margin
   });
 
+  it("keeps an 8px right gutter when a wide menu opens near the right edge on a narrow viewport", () => {
+    // The rcn-6 1h report: the NEXT TURN RUNS ON menu (260px wide, opens
+    // above the composer's agent chip) had its right edge nearly touching
+    // the viewport at a 390px phone width. The chip sits well to the right
+    // (left 217), so an unclamped box would run from 217 to 477 — far past
+    // the 390px edge. The clamp must pull it back to an 8px gutter.
+    render(<Harness items={ITEMS} width={260} side="top" />);
+    const trigger = screen.getByTestId("trigger");
+    trigger.getBoundingClientRect = () => rect(217, 300, 100, 26);
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      writable: true,
+      value: 700,
+    });
+    fireEvent.click(trigger);
+    const panel = screen.getByTestId("panel");
+    // 390 - 8 - 260 = 122 is the rightmost legal left; the trigger's 217 is
+    // clamped down to it, leaving exactly the 8px gutter on the right edge.
+    expect(panel.style.left).toBe("122px");
+    expect(122 + 260).toBe(390 - 8);
+    // A trigger that already fits must NOT be dragged: the gutter is a
+    // ceiling, not a target.
+  });
+
   it("flips above the trigger when the bottom edge has no room", () => {
     render(<Harness items={ITEMS} height={100} />);
     const trigger = screen.getByTestId("trigger");

@@ -74,6 +74,22 @@ function rowState(row: ActivityRow): StateName {
   return CONVERSATION_STATE[row.conversation?.status ?? ""] ?? "info";
 }
 
+/**
+ * The word a chat row / card carries beside its glyph (rcn-6 review 1).
+ * `pending` is the queued set's word and means a turn is actually queued or in
+ * flight — an `idle` chat (open, nothing attached) has no turn, so it reads as
+ * `idle`, not `pending`. Every other status rides the state set's own word.
+ */
+export function conversationWord(
+  conversation: Pick<ConversationSummary, "status" | "has_active_turn">,
+  state: StateName,
+): string {
+  if (conversation.status === "idle") {
+    return conversation.has_active_turn ? "pending" : "idle";
+  }
+  return SHORT_WORD[state];
+}
+
 const STEP_TO_SEGMENT: Record<string, ProgressSegment["kind"]> = {
   succeeded: "done",
   running: "running",
@@ -397,12 +413,12 @@ function ActivityRowView({
         <span aria-hidden="true" className={`font-mono text-[11px] ${spec.tagFg}`}>
           {spec.glyph}
         </span>
-        <span className="sr-only">{SHORT_WORD[state]}</span>
+        <span className="sr-only">{conversationWord(conversation, state)}</span>
         <span className="font-mono text-[10px] font-semibold text-accent-text">CHAT</span>
         <span className="min-w-0">
           <span className="flex min-w-0 items-baseline gap-[3px] text-[12.5px] text-ink">
             <span className="min-w-0 truncate font-semibold">{conversation.title}</span>
-            <span className="shrink-0">{`· ${SHORT_WORD[state]}`}</span>
+            <span className="shrink-0">{`· ${conversationWord(conversation, state)}`}</span>
           </span>
           <RowMetaMobile
             testid={`repo-chat-meta-${testidOf(conversation.id)}`}

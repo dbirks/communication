@@ -208,6 +208,27 @@ describe("AssistantPanel (expanded)", () => {
     expect(fresh.textContent).toContain("New");
   });
 
+  /**
+   * rcn-6 review: the docked panel opened FROM a chat names THAT chat in the
+   * header chip — `from “<title>”` — not the bare section name `threads`.
+   */
+  it("docked from a chat: the chip names the chat, not the section", () => {
+    const { container } = render(
+      <AssistantPanel
+        variant="docked"
+        {...panelProps}
+        contextLabel="threads"
+        chatContext="Refactor the settings page"
+        onShrink={() => {}}
+      />,
+    );
+    const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
+    expect(panel.dataset.variant).toBe("docked");
+    const chip = screen.getByTestId("assistant-opened-from");
+    expect(chip.textContent).toBe("from Refactor the settings page");
+    expect(chip.title).toBe("from Refactor the settings page");
+  });
+
   it("esc closes the expanded view too, and a busy turn shows thinking…", () => {
     const onClose = vi.fn();
     renderPanel({ onClose, busy: true, messages: [userMessage("hi")] });
@@ -233,7 +254,11 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
     expect(button.className).toContain("ds-btn--ghost");
     expect(button.title).toBe("New conversation");
-    expect(button.textContent).toBe("＋ New");
+    // The narrow header's glyph is the lucide Plus (an SVG, so it adds no text
+    // to the name); the wording lives in the sr-only span and the tooltip
+    // (rcn-6 review: the old fullwidth ＋ rendered as an unlabelled blue bar).
+    expect(button.querySelector("svg")).toBeTruthy();
+    expect(button.textContent).toBe("New conversation");
     fireEvent.click(button);
     expect(onNew).toHaveBeenCalledTimes(1);
     // No Recent menu without the switch callback.

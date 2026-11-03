@@ -95,6 +95,13 @@ export interface AssistantOpenRequest {
   expanded?: boolean;
   docked?: boolean;
   entity?: NonNullable<AssistantMessageContext["entity"]>;
+  /**
+   * The chat's title, when the ask is drafted FROM a specific chat (the 2f
+   * thread → workflow path). It is what the panel's header chip names — the
+   * person reads `from “<title>”`, not the bare section name `threads`
+   * (rcn-6 review). Never the id, which rides `entity`.
+   */
+  entityTitle?: string;
 }
 
 /**
@@ -115,6 +122,8 @@ export function openAssistantWorkflowDraft(chat: { id: string; title?: string | 
     expanded: true,
     docked: true,
     entity: { kind: "conversation", id: chat.id },
+    // The header chip names the chat it was opened from, not `threads`.
+    entityTitle: title ?? undefined,
   };
   window.dispatchEvent(
     new CustomEvent<AssistantOpenRequest>(ASSISTANT_OPEN_EVENT, {
@@ -290,6 +299,12 @@ export default function AssistantPopover() {
    * the expanded view.
    */
   const [mode, setMode] = useState<"popover" | "expanded" | "docked">("popover");
+  /**
+   * The chat title the panel was opened FROM (the 2f thread → workflow ask).
+   * When set, the header chip reads `from “<title>”` instead of the bare
+   * section name `threads` (rcn-6 review). Cleared on any other open.
+   */
+  const [dockedChatTitle, setDockedChatTitle] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(
     choice?.conversationId ?? null,
   );
@@ -513,6 +528,13 @@ export default function AssistantPopover() {
         openedByDraftAsk.current = true;
         setMode(request.docked ? "docked" : "expanded");
       }
+      // Name the chat the panel opened from in the header chip; every other
+      // open (a bare ⌘K ask, the palette) carries no chat title and clears it.
+      setDockedChatTitle(
+        typeof request.entityTitle === "string" && request.entityTitle.trim()
+          ? request.entityTitle
+          : null,
+      );
       setOpen(true);
       const text = typeof request.text === "string" ? request.text.trim() : "";
       if (text.length > 0) void send(text, true, request.entity);
@@ -607,6 +629,9 @@ export default function AssistantPopover() {
   // level and the same round-trips: only the frame differs.
   const panelProps = {
     contextLabel,
+    // The chat the panel was opened from (2f docked draft ask); names the
+    // header chip `from “<title>”` instead of the section name (rcn-6 review).
+    chatContext: dockedChatTitle,
     messages,
     trustLevel,
     onTrustLevelChange: (level: TrustLevel) => setTrustLevel(level),

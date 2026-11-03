@@ -821,13 +821,14 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
     expect(running.textContent).toContain("Search revamp spike");
     expect(screen.getByTestId(`repo-lane-chat-${testid(repoChat.id)}`)).toBeTruthy();
 
-    // rcn-3b review item 1: an `idle` chat is an OPEN chat — it wears the
-    // same `pending` word the List row beside it wears, it lives in RUNNING,
-    // and it is not counted among the finished week.
+    // rcn-6 review 1: an `idle` chat (open, no turn queued) reads as `idle`,
+    // never `pending` — it lives in RUNNING, and it is not counted among the
+    // finished week.
     const parkedCard = screen.getByTestId(`repo-lane-chat-${testid(parkedChat.id)}`);
     expect(running.contains(parkedCard)).toBe(true);
     expect(parkedCard.textContent).toContain("Cursor pagination question");
-    expect(parkedCard.textContent).toContain("pending");
+    expect(parkedCard.textContent).toContain("idle");
+    expect(parkedCard.textContent).not.toContain("pending");
 
     // Glyph AND word on every card (states.ts, handoff rule 06) — the glyph
     // alone is colour-only signalling, and the FINISHED header carries no
