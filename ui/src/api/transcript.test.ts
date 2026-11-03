@@ -662,6 +662,95 @@ describe("the transcript's system notes (conversation.notice)", () => {
     expect(note?.kind === "system" && note.noticeKind).toBe("sandbox_remounted");
   });
 
+  it("collapses a run of the launcher's retry status lines into one muted line", () => {
+    // The round-6 defect on the wire: pi's transport retry state streamed as
+    // four agent message chunks. The sink now journals each as a
+    // conversation.notice (kind agent_retry); the fold must say it ONCE.
+    const transcript = projectTranscript(
+      frames(
+        ["conversation.message.user", { submitted_by: "u1", text: "Reply with exactly OK" }],
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 1/3, waiting 2s)…" },
+        ],
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 2/3, waiting 4s)…" },
+        ],
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 3/3, waiting 8s)…" },
+        ],
+        ["conversation.notice", { kind: "agent_retry", text: "Retry finished, resuming." }],
+      ),
+    );
+
+    // ONE system line for the whole series — the three attempt lines count,
+    // the "resuming" line does not — and none of the wire's lines shows.
+    const systems = transcript.items.filter((item) => item.kind === "system");
+    expect(systems).toHaveLength(1);
+    expect(systems[0]?.kind === "system" && systems[0].text).toBe(
+      "Retrying the model… (3 attempts)",
+    );
+    expect(systems[0]?.kind === "system" && systems[0].noticeKind).toBe("agent_retry");
+    for (const item of transcript.items) {
+      if ("text" in item) {
+        expect(item.text).not.toContain("Retrying (attempt");
+        expect(item.text).not.toContain("Retry finished");
+      }
+    }
+    // No agent message at all: the series was never the agent's words.
+    expect(transcript.items.map((item) => item.kind)).toEqual(["user", "system"]);
+  });
+
+  it("keeps the answer after a retry series, and counts a lone attempt line as one", () => {
+    // The series streams first, the model resumes and answers: the answer is
+    // the agent's own row, and the muted line sits above it, not in it.
+    const transcript = projectTranscript(
+      frames(
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 1/2, waiting 2s)…" },
+        ],
+        ["conversation.notice", { kind: "agent_retry", text: "Retry finished, resuming." }],
+        ["conversation.message.agent", { text: "OK", final: true }],
+      ),
+    );
+    expect(transcript.items.map((item) => item.kind)).toEqual(["system", "agent"]);
+    const system = transcript.items[0];
+    expect(system?.kind === "system" && system.text).toBe("Retrying the model… (1 attempt)");
+    const agent = transcript.items[1];
+    expect(agent?.kind === "agent" && agent.text).toBe("OK");
+
+    // A different run (another turn) after an intervening line starts fresh:
+    // two series, two muted lines, each counting its own attempts.
+    const second = projectTranscript(
+      frames(
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 1/3, waiting 2s)…" },
+        ],
+        ["conversation.message.agent", { text: "first answer", final: true }],
+        ["conversation.message.user", { submitted_by: "u1", text: "again" }],
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 1/3, waiting 2s)…" },
+        ],
+        [
+          "conversation.notice",
+          { kind: "agent_retry", text: "Retrying (attempt 2/3, waiting 4s)…" },
+        ],
+      ),
+    );
+    const secondSystems = second.items
+      .filter((item) => item.kind === "system")
+      .map((item) => (item.kind === "system" ? item.text : ""));
+    expect(secondSystems).toEqual([
+      "Retrying the model… (1 attempt)",
+      "Retrying the model… (2 attempts)",
+    ]);
+  });
+
   it("never puts a notice's text in the agent's mouth", () => {
     const transcript = projectTranscript(
       frames(

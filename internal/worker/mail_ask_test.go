@@ -66,7 +66,7 @@ func launcherCredentialDirs(launcherID string) ([]string, error) {
 // loop running one `ask` claim, and hands back the terminal outcome, the launch
 // request (if any) and the sandbox.verified row the loop journalled.
 // `access` nil means the store does not speak § 12's port at all.
-func runMailedTurn(t *testing.T, access *worker.MailRepoAccess, accessErr error, launcherID string) (worker.TurnOutcome, domain.SessionRequest, events.SandboxVerifiedPayload, int, []worker.TurnEvent) {
+func runMailedTurn(t *testing.T, access *worker.MailRepoAccess, accessErr error, launcherID string, answerChunks ...string) (worker.TurnOutcome, domain.SessionRequest, events.SandboxVerifiedPayload, int, []worker.TurnEvent) {
 	t.Helper()
 	fx := newUnitFixture(t)
 	fx.svc.LauncherAuth = launcherCredentialDirs
@@ -94,7 +94,10 @@ func runMailedTurn(t *testing.T, access *worker.MailRepoAccess, accessErr error,
 	inner.repos = []worker.Repo{{ID: uuidFor("repo"), Name: "backend", GitURL: fx.seedRepo(), DefaultBranch: "main"}}
 
 	sess := newFakeSession(domain.SessionInfo{})
-	sess.promptFn = func(context.Context, *fakeSession) (domain.StopReason, error) {
+	sess.promptFn = func(_ context.Context, s *fakeSession) (domain.StopReason, error) {
+		for _, chunk := range answerChunks {
+			s.send(domain.ConversationEvent{Kind: "message_chunk", Text: chunk})
+		}
 		return domain.StopEndTurn, nil
 	}
 	ff := &fakeFactory{sessions: []*fakeSession{sess}}

@@ -545,11 +545,26 @@ const (
 	// the stamped `ask` mode is not what the process ran. The journal says so
 	// instead of leaving the reader to guess from the mode row.
 	NoticeKindMailReadOnly = "mail_readonly"
+	// NoticeKindAgentRetry: the launcher's own transport retry status (pi
+	// streams "Retrying (attempt n/m, waiting xs)…" lines as agent message
+	// chunks) arrived on the stream; the worker routed each line here, out of
+	// the agent's words, so it never reaches the answer, the thread preview
+	// or the mail answer (round-6 review defect).
+	NoticeKindAgentRetry = "agent_retry"
+	// NoticeKindNoReply: a completed turn whose whole answer was empty (the
+	// agent produced no message text at all). The transcript says so instead
+	// of leaving the reader to infer it from a blank turn — and a mail
+	// answered by such a turn settles failed, never "answered" with no words.
+	NoticeKindNoReply = "no_reply"
 )
 
 // ValidNoticeKind reports whether kind is one of the transcript notice kinds.
 func ValidNoticeKind(kind string) bool {
-	return kind == NoticeKindWorkspace || kind == NoticeKindMailReadOnly
+	switch kind {
+	case NoticeKindWorkspace, NoticeKindMailReadOnly, NoticeKindAgentRetry, NoticeKindNoReply:
+		return true
+	}
+	return false
 }
 
 // NoticePayload is conversation.notice: one worker-authored system line in the

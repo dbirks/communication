@@ -7,6 +7,10 @@ package worker_test
 // the answer (ADR-0072 § 7, internal/store/postgres/mail.go trnTurnAnswerText).
 // A note journalled as one of those chunks therefore becomes the agent's own
 // words on the wire: the UI can hide it, the data is still wrong.
+//
+// The fixture turn carries a real answer, exactly as the scenario models it:
+// a completed turn WITH agent text journals no no_reply line, so the read-only
+// note is the turn's only system line.
 
 import (
 	"strings"
@@ -21,7 +25,7 @@ import (
 // this conversation and turn, and no agent-message chunk carries it.
 func TestMailedTurnNoteIsASystemNoticeNotAgentText(t *testing.T) {
 	asked := worker.MailRepoAccess{Asked: true}
-	_, _, _, _, appended := runMailedTurn(t, &asked, nil, "pi")
+	_, _, _, _, appended := runMailedTurn(t, &asked, nil, "pi", "the search endpoint wires to the index reader.")
 
 	notices := 0
 	for _, ev := range appended {
@@ -55,16 +59,26 @@ func TestMailedTurnNoteIsASystemNoticeNotAgentText(t *testing.T) {
 	}
 
 	// The negative half, which is the bug: the worker's line must not ride an
-	// agent chunk, because those chunks ARE the mail answer.
+	// agent chunk, because those chunks ARE the mail answer. The fixture turn's
+	// real answer must be there too: a completed turn WITH text journals no
+	// no_reply line, so the read-only note is the only system line.
+	answerRows := 0
 	for _, ev := range appended {
 		if ev.Type != events.TypeConversationMessageAgent {
 			continue
 		}
+		answerRows++
 		if p, ok := ev.Payload.(events.MessageAgentPayload); ok {
 			if agentChunkCarriesNote(p.Text) {
 				t.Errorf("agent-message chunk carries the worker's note: %q", p.Text)
 			}
+			if p.Text != "the search endpoint wires to the index reader." {
+				t.Errorf("agent-message chunk = %q, want the fixture answer unchanged", p.Text)
+			}
 		}
+	}
+	if answerRows != 1 {
+		t.Fatalf("journalled %d agent-message rows, want the fixture answer as exactly 1", answerRows)
 	}
 }
 

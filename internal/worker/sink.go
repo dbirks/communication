@@ -111,6 +111,17 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 	}
 	switch ev.Kind {
 	case "message_chunk":
+		// The launcher's own transport retry status arrives as agent message
+		// chunks (pi-acp streams "Retrying (attempt n/m, waiting xs)…"). It is
+		// harness noise, not the agent's answer: route the whole status line
+		// to a conversation.notice (kind agent_retry) so it never reaches the
+		// answer, the thread-list preview or the mail, which all quote this
+		// turn's conversation.message.agent rows (round-6 review defect).
+		if line := retryStatusLine(ev.Text); line != "" {
+			s.flushMsgLocked(false)
+			s.retryNoticeLocked(line)
+			return
+		}
 		s.msg.WriteString(ev.Text)
 		if s.full.Len() < MailScanCap {
 			s.full.WriteString(ev.Text)
@@ -242,9 +253,30 @@ func (s *turnSink) notice(kind, text string) {
 	})
 }
 
+// retryNoticeLocked journals one launcher retry status line as a
+// conversation.notice row (kind agent_retry) instead of agent message text.
+// Caller holds mu; the plain notice() helper would deadlock on it.
+func (s *turnSink) retryNoticeLocked(line string) {
+	s.appendLocked(TurnEvent{
+		Type:      events.TypeConversationNotice,
+		ActorKind: events.ActorKindWorker,
+		ActorID:   s.claim.WorkerID,
+		Payload: events.NoticePayload{
+			ConversationID: s.claim.ConversationID,
+			TurnID:         s.claim.TurnID,
+			Kind:           events.NoticeKindAgentRetry,
+			Text:           s.redact(line),
+		},
+	})
+}
+
 // finish flushes everything and closes the sink on the caller's (detached)
 // context. When completed, the last agent-text chunk carries final=true
-// (ADR-0016 §7: "final ends it").
+// (ADR-0016 §7: "final ends it"). A completed turn that never said a word —
+// its whole stream was the launcher's retry status, routed to notices — ends
+// with an honest line instead of a blank: the transcript says so, and the
+// mail resolution (which reads this journal for the answer) settles failed
+// rather than "answered" with nothing.
 func (s *turnSink) finish(ctx context.Context, completed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -256,6 +288,19 @@ func (s *turnSink) finish(ctx context.Context, completed bool) {
 	}
 	s.flushThoughtLocked()
 	s.flushMsgLocked(completed)
+	if completed && s.full.Len() == 0 {
+		s.appendLocked(TurnEvent{
+			Type:      events.TypeConversationNotice,
+			ActorKind: events.ActorKindWorker,
+			ActorID:   s.claim.WorkerID,
+			Payload: events.NoticePayload{
+				ConversationID: s.claim.ConversationID,
+				TurnID:         s.claim.TurnID,
+				Kind:           events.NoticeKindNoReply,
+				Text:           "The agent didn't reply.",
+			},
+		})
+	}
 	s.closed = true
 }
 

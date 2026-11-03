@@ -564,10 +564,10 @@ describe("InputsTab — who fills the inputs (1j)", () => {
     const goalLine = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-goal`);
     const repoLine = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-repository`);
     expect(goalLine.textContent).toBe(
-      "! goal is required and the issue trigger 'opened' can't fill it",
+      "! goal is required and the issue trigger for label factory can't fill it",
     );
     expect(repoLine.textContent).toBe(
-      "! repository is required and the issue trigger 'opened' can't fill it",
+      "! repository is required and the issue trigger for label factory can't fill it",
     );
     for (const line of [goalLine, repoLine]) {
       expect(line.getAttribute("title")).toContain("cannot fill required input");
@@ -681,7 +681,7 @@ describe("InputsTab — who fills the inputs (1j)", () => {
     );
     const line = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-issue`);
     expect(line.textContent).toBe(
-      "! the issue trigger 'opened' maps issue input 'issue', which this workflow doesn't declare",
+      "! the issue trigger for label factory maps issue input 'issue', which this workflow doesn't declare",
     );
     expect(line.getAttribute("title")).toContain("ADR-0066");
   });

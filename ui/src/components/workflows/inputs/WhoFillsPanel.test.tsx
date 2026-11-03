@@ -160,12 +160,27 @@ describe("WhoFillsPanel warning rows", () => {
   it("keeps the fact uuid, the repository handle and the ADR number out of the reading line", async () => {
     mount();
     const line = await screen.findByTestId(`who-fills-warn-${TRIGGER_ID}-ticket`);
+    // Round-6: the trigger is named by its human label (the row's own
+    // "label factory" badge), never by the raw event token 'labeled'.
     expect(line.textContent).toBe(
-      "! ticket is required and the issue trigger 'labeled' can't fill it",
+      "! ticket is required and the issue trigger for label factory can't fill it",
     );
     const triggerRow = screen.getByTestId(`who-fills-issue-${TRIGGER_ID}`);
     expect(triggerRow.textContent).not.toContain(TRIGGER_ID);
     expect(triggerRow.textContent).not.toContain("ADR-0066");
     expect(triggerRow.textContent).not.toContain("server #labeled");
+    expect(triggerRow.textContent).not.toContain("'labeled'");
+  });
+
+  it("names an orphan trigger's warning without a raw token when no row carries its labels", async () => {
+    mount();
+    // The GONE trigger's labels live on a row the reads no longer show, so
+    // its line falls back to the plain name — the raw 'opened' token is
+    // still reachable in the tooltip, never in the sentence.
+    const line = await screen.findByTestId(`who-fills-warn-${GONE_TRIGGER_ID}-removed`);
+    expect(line.textContent).toBe(
+      "! the issue trigger maps issue input 'removed', which this workflow doesn't declare",
+    );
+    expect(line.textContent).not.toContain("'opened'");
   });
 });

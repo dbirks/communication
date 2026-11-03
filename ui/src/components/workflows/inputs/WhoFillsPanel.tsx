@@ -91,7 +91,7 @@ function warningsForTrigger(warnings: readonly ValidateWarning[], triggerId: str
  * sentence is now composed from `input` + `trigger_kind` + `trigger_label`;
  * the server's own line is never dropped, it rides the tooltip.
  */
-function warningLines(warnings: readonly ValidateWarning[]) {
+function warningLines(warnings: readonly ValidateWarning[], humanName?: string) {
   return warnings.map((warning, index) => (
     <p
       key={`${warning.trigger_id ?? "trigger"}-${warning.input ?? "input"}-${index}`}
@@ -100,31 +100,37 @@ function warningLines(warnings: readonly ValidateWarning[]) {
       data-server-says={warning.message}
       title={warning.message}
     >
-      {`! ${unfillableWords(warning)}`}
+      {`! ${unfillableWords(warning, humanName)}`}
     </p>
   ));
 }
 
 /**
- * The author's sentence for one server fill warning: "`ticket` is required and
- * the issue trigger 'labeled' can't fill it", or — for a
- * `trigger_issue_input_unmapped` finding — "the issue trigger 'labeled' maps
- * issue input `issue`, which this workflow doesn't declare".
+ * The author's sentence for one server fill warning: "`ticket` is required
+ * and the issue trigger for label `factory` can't fill it", or — for a
+ * `trigger_issue_input_unmapped` finding — "the issue trigger for label
+ * `factory` maps issue input `issue`, which this workflow doesn't declare".
  *
  * Nothing here decides WHICH input is short — the server named it. A
  * schedule says "a schedule", which is ADR-0066's own framing (a schedule
  * fills no run input; defaults carry the rest) and needs no cron echo beside
- * a heading that already prints it. With no `input` field — a control plane
- * predating the fields — no sentence can be built honestly, so the server's
- * line is returned whole: a raw operator sentence beats a wrong author one.
+ * a heading that already prints it.
+ *
+ * The trigger is named by its HUMAN label (the `humanName` the row builds
+ * from the trigger's labels, "the issue trigger for label factory"), never
+ * by the raw event token the server carries (`trigger_label`, "labeled"): a
+ * quoted machine token reads as a different kind of thing than the trigger
+ * the row's own heading names (rcn-1j round-6). The raw token stays in the
+ * line's tooltip — the server's full line — where an operator can still see
+ * it. With no `input` field — a control plane predating the fields — no
+ * sentence can be built honestly, so the server's line is returned whole: a
+ * raw operator sentence beats a wrong author one.
  */
-export function unfillableWords(warning: ValidateWarning): string {
+export function unfillableWords(warning: ValidateWarning, humanName?: string): string {
   if (!warning.input) return warning.message;
   const trigger =
     warning.trigger_kind === "issue"
-      ? warning.trigger_label
-        ? `the issue trigger '${warning.trigger_label}'`
-        : "the issue trigger"
+      ? (humanName ?? "the issue trigger")
       : warning.trigger_kind === "schedule"
         ? "a schedule"
         : "this trigger";
@@ -208,6 +214,15 @@ export function WhoFillsPanel({ specs, groups, loading, error, warnings }: WhoFi
                   const mappedInDraft =
                     mapped !== null && issueSpecs.some((s) => s.name === mapped);
                   const eventWord = trigger.event === "opened" ? "opened" : "labeled";
+                  // The warning's own name for this trigger, in the words the
+                  // row's heading already prints: the human label, not the raw
+                  // event token the server carries.
+                  const triggerName =
+                    trigger.labels.length === 1
+                      ? `the issue trigger for label ${trigger.labels[0]}`
+                      : trigger.labels.length > 1
+                        ? `the issue trigger for labels ${trigger.labels.join(", ")}`
+                        : undefined;
                   const triggerWarnings = warningsForTrigger(all, trigger.id);
                   // One row may not both claim an input is filled and warn
                   // that it is not. The ✓ is this panel reading the DRAFT's
@@ -262,7 +277,7 @@ export function WhoFillsPanel({ specs, groups, loading, error, warnings }: WhoFi
                                 : "the trigger maps no issue input yet"}
                         </p>
                       )}
-                      {warningLines(triggerWarnings)}
+                      {warningLines(triggerWarnings, triggerName)}
                     </div>
                   );
                 }),

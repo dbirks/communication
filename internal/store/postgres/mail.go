@@ -314,7 +314,18 @@ func trnResolveMailTx(ctx context.Context, tx pgx.Tx, c worker.Claim, o worker.T
 		if err != nil {
 			return err
 		}
-		answer = &text
+		if text == "" {
+			// The turn ended completed but the agent never said a word (its
+			// only stream was the launcher's retry status, journalled as a
+			// conversation.notice). An "answered" link with no answer would
+			// read as a success with nothing behind it; the honest word is
+			// failed, with the reason the asking chat can act on.
+			state = events.MailStateFailed
+			r := "the agent didn't reply"
+			reason = &r
+		} else {
+			answer = &text
+		}
 	} else {
 		state = events.MailStateFailed
 		r := "the answering turn ended " + o.Status
@@ -406,7 +417,10 @@ func trnResolveMailTx(ctx context.Context, tx pgx.Tx, c worker.Claim, o worker.T
 // The type filter is the whole contract: `conversation.message.agent` rows are
 // what the agent said, so the worker's own system lines on the same turn
 // (conversation.notice — the ADR-0072 § 12 read-only explanation, a workspace
-// note) are excluded by construction rather than by a reader's text matching.
+// note, the launcher's agent_retry status lines) are excluded by construction
+// rather than by a reader's text matching. An empty result is returned as
+// "" and is the caller's decision: a completed turn with no agent text is a
+// failed answer ("the agent didn't reply"), never an answered one.
 // Folding one in would serve the worker's words to the asking chat as the
 // agent's answer (ADR-0072 § 7), which is what this row is quoted for.
 func trnTurnAnswerText(ctx context.Context, tx pgx.Tx, conversationID, turnID string) (string, error) {
@@ -435,9 +449,6 @@ func trnTurnAnswerText(ctx context.Context, tx pgx.Tx, conversationID, turnID st
 	text := strings.TrimSpace(b.String())
 	if len(text) > MailAnswerCap {
 		text = string([]rune(text)[:MailAnswerCap]) + "\u2026"
-	}
-	if text == "" {
-		text = "(the agent said nothing)"
 	}
 	return text, nil
 }

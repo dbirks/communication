@@ -129,3 +129,107 @@ func TestMailAnswerExcludesWorkerSystemNotices(t *testing.T) {
 		t.Errorf("asked chat conversation.notice rows = %d, want 2 (the note must stay in its own transcript)", n)
 	}
 }
+
+// TestMailAnsweredTurnWithNoAgentTextSettlesFailed is the round-6 defect at the
+// source: the launcher streams its retry status as agent message chunks, so a
+// turn whose only "answer" is that series can end completed with zero agent
+// words. With the retry lines routed to conversation.notice (kind
+// agent_retry) there are no conversation.message.agent rows at all, and the
+// link must settle FAILED with an honest reason — never "answered" carrying an
+// empty answer that the mail card would render as a success with nothing behind
+// it.
+func TestMailAnsweredTurnWithNoAgentTextSettlesFailed(t *testing.T) {
+	f := cnvSetup(t)
+	amRepo(t, f, "web")
+	amRepo(t, f, "api")
+	amSetEnabled(t, f, true)
+	st := amStore(f)
+
+	chatA := amChat(t, f, f.alice, "search chat", "how is search wired?", "web")
+	claimA := amClaim(t, f, chatA.ActiveTurn.ID)
+	results, err := st.DispatchMail(f.ctx(), claimA, []worker.MailAsk{{Repo: "api", Question: "where is search wired?"}})
+	if err != nil || results[0].State != events.MailStateAsked {
+		t.Fatalf("DispatchMail: %+v err=%v", results, err)
+	}
+	linkID := results[0].LinkID
+	var toConv, targetTurn string
+	f.queryRow(t, `
+		SELECT l.to_conversation_id::text, t.id::text
+		FROM conversation_links l
+		JOIN conversation_turns t ON t.mail_link_id = l.id
+		WHERE l.id = $1::uuid`, linkID).into(t, &toConv, &targetTurn)
+	if err := st.FinishTurn(f.ctx(), claimA, worker.TurnOutcome{Status: events.TurnStatusCompleted, StopReason: "end_turn"}); err != nil {
+		t.Fatalf("FinishTurn asking: %v", err)
+	}
+
+	// The answering turn exactly as the sink now writes it: the whole retry
+	// series as agent_retry notices, the no_reply line, and NO agent chunks.
+	claimT := amClaim(t, f, targetTurn)
+	for _, line := range []string{
+		"Retrying (attempt 1/3, waiting 2s)…",
+		"Retrying (attempt 2/3, waiting 4s)…",
+		"Retrying (attempt 3/3, waiting 8s)…",
+		"Retry finished, resuming.",
+	} {
+		if err := st.AppendTurnEvent(f.ctx(), claimT, worker.TurnEvent{
+			Type: events.TypeConversationNotice, ActorKind: events.ActorKindWorker, ActorID: f.worker,
+			Payload: events.NoticePayload{ConversationID: toConv, TurnID: targetTurn, Kind: events.NoticeKindAgentRetry, Text: line},
+		}); err != nil {
+			t.Fatalf("AppendTurnEvent retry notice: %v", err)
+		}
+	}
+	if err := st.AppendTurnEvent(f.ctx(), claimT, worker.TurnEvent{
+		Type: events.TypeConversationNotice, ActorKind: events.ActorKindWorker, ActorID: f.worker,
+		Payload: events.NoticePayload{ConversationID: toConv, TurnID: targetTurn, Kind: events.NoticeKindNoReply, Text: "The agent didn't reply."},
+	}); err != nil {
+		t.Fatalf("AppendTurnEvent no_reply notice: %v", err)
+	}
+	if err := st.FinishTurn(f.ctx(), claimT, worker.TurnOutcome{Status: events.TurnStatusCompleted, StopReason: "end_turn"}); err != nil {
+		t.Fatalf("FinishTurn target: %v", err)
+	}
+
+	// The link settles failed, with the honest reason, and carries no answer.
+	state, linkAnswer, reason := amLinkState(t, f, linkID)
+	if state != events.MailStateFailed {
+		t.Fatalf("link state = %q, want %q (a completed turn with no agent words is not an answer)", state, events.MailStateFailed)
+	}
+	if linkAnswer != "" {
+		t.Errorf("link answer = %q, want empty: there were no agent words to answer with", linkAnswer)
+	}
+	if reason == "" || !strings.Contains(reason, "didn't reply") {
+		t.Errorf("link reason = %q, want the plain 'the agent didn't reply' word", reason)
+	}
+
+	// Both mail.answered rows say failed, and the asking chat's follow-up names
+	// the failure instead of quoting an answer that does not exist.
+	for _, conv := range []string{chatA.ID, toConv} {
+		var payload string
+		f.queryRow(t, `SELECT payload::text FROM domain_events
+			WHERE conversation_id = $1::uuid AND type = $2`, conv, events.TypeConversationMailAnswered).into(t, &payload)
+		if payload == "" {
+			t.Fatalf("conversation %s has no mail.answered row", conv)
+		}
+		if !strings.Contains(payload, `"state": "failed"`) {
+			t.Errorf("conversation %s mail.answered state is not failed: %s", conv, payload)
+		}
+		if strings.Contains(payload, `"state": "answered"`) {
+			t.Errorf("conversation %s mail.answered claims answered with no answer: %s", conv, payload)
+		}
+	}
+	var followup string
+	f.queryRow(t, `
+		SELECT prompt FROM conversation_turns
+		WHERE conversation_id = $1::uuid AND status = 'queued' AND id <> $2`,
+		chatA.ID, chatA.ActiveTurn.ID).into(t, &followup)
+	if followup == "" {
+		t.Fatal("the asking chat got no follow-up turn")
+	}
+	if !strings.Contains(followup, "did not get an answer") || !strings.Contains(followup, "didn't reply") {
+		t.Errorf("asking chat follow-up = %q, want it to name the no-reply failure", followup)
+	}
+	for _, probe := range []string{"Retrying (attempt", "Retry finished, resuming"} {
+		if strings.Contains(followup, probe) {
+			t.Errorf("asking chat follow-up carries the launcher's retry status (%q): %q", probe, followup)
+		}
+	}
+}

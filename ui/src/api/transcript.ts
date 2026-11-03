@@ -402,9 +402,29 @@ function noteWords(text: string): string {
  */
 function noticeWords(kind: string, text: string): string {
   if (kind === "mail_readonly") return "Read-only: this agent can't change this repository.";
+  if (kind === "agent_retry") return RETRY_SERIES_BASE;
   const words = noteWords(text);
   if (!words) return "System note";
   return kind === "workspace" ? `Workspace: ${words}` : words;
+}
+
+/** The base words for the launcher's retry status (kind `agent_retry`). The
+ * fold collapses a run of retry lines into ONE muted line; the attempt count
+ * is appended by the fold, which is the only place that sees the whole run.
+ */
+const RETRY_SERIES_BASE = "Retrying the model…";
+
+/** The worker's own line that counts as one model attempt (as opposed to the
+ * series' closing "Retry finished, resuming." line, which the model resuming
+ * is not an attempt). Anchored on the whole line, the same narrow shape the
+ * worker classifies on.
+ */
+const RETRY_ATTEMPT_LINE = /^Retrying \(attempt \d+\/\d+, waiting \d+s\)(…|\.\.\.)$/;
+
+/** The collapsed line's words: the base plus the attempt count the fold saw. */
+export function retrySeriesWords(attempts: number): string {
+  if (attempts <= 0) return RETRY_SERIES_BASE;
+  return `${RETRY_SERIES_BASE} (${attempts} attempt${attempts === 1 ? "" : "s"})`;
 }
 
 /** Plain-language line for the journal rows that are not message content. */
@@ -763,6 +783,32 @@ export function projectTranscript(
           }
         }
         const line = systemLine(event, payload, nameOf, agentName);
+        if (line?.noticeKind === "agent_retry") {
+          // The launcher's retry status lines collapse into ONE muted line:
+          // a run of consecutive agent_retry notices is one retry series, and
+          // the reader gets "Retrying the model… (N attempts)" — never four
+          // machine lines. The count is the number of attempt lines in the run
+          // (the closing "Retry finished, resuming." is the model resuming, not
+          // an attempt). Any intervening item (an answer, a tool, a different
+          // note) ends the run, so the next retry line starts a fresh one.
+          const isAttempt = RETRY_ATTEMPT_LINE.test(str(payload, "text").trim());
+          const prev = items[items.length - 1];
+          if (prev !== undefined && prev.kind === "system" && prev.noticeKind === "agent_retry") {
+            const m = prev.text.match(/\((\d+) attempts?\)$/);
+            const count = (m ? Number(m[1]) : 0) + (isAttempt ? 1 : 0);
+            prev.text = retrySeriesWords(count);
+          } else {
+            push({
+              kind: "system",
+              id: event.event_id,
+              text: retrySeriesWords(isAttempt ? 1 : 0),
+              ...(line.raw ? { raw: line.raw } : {}),
+              noticeKind: line.noticeKind,
+              at,
+            });
+          }
+          break;
+        }
         if (line)
           push({
             kind: "system",

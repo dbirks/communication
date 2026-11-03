@@ -24,6 +24,7 @@
  *   a per-message skill today; the day the journal names one, this is the
  *   place it lands.
  */
+import { useEffect, useState } from "react";
 import Transcript from "../Transcript";
 import { useAgentProfiles } from "../../api/queries";
 import type { TranscriptItem } from "../../api/transcript";
@@ -114,6 +115,44 @@ export function splitAtAgentSwitches(
     next += 1;
   }
   return parts;
+}
+
+/**
+ * The transcript's bottom padding, in px: the height of the thread's pinned
+ * composer. At short viewports (the 390 review) the composer is tall and the
+ * transcript scroller is short, so the last transcript line can sit flush
+ * under the composer with no room to scroll it clear. Reserving one composer's
+ * height as bottom padding gives the scroller room to lift the final line out
+ * from under the box. The composer is a page-level sibling (not a child of
+ * this component) and its height varies with width and the textarea, so it is
+ * measured live and follows resizes. A surface with no such composer (the
+ * legacy page, an embedded reuse) reserves nothing.
+ */
+export function useComposerHeight(testid = "thread-composer-pin"): number {
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    let ro: ResizeObserver | null = null;
+    const measure = () => {
+      const el = document.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+      setHeight(el ? el.offsetHeight : 0);
+      if (el && typeof ResizeObserver !== "undefined") {
+        // A remounted composer is a new node: re-observe it.
+        ro?.disconnect();
+        ro = new ResizeObserver(() => setHeight(el.offsetHeight));
+        ro.observe(el);
+      } else {
+        ro?.disconnect();
+        ro = null;
+      }
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [testid]);
+  return height;
 }
 
 export interface ConversationTranscriptProps {
@@ -289,8 +328,13 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
       agentNameForLauncher,
     );
 
+  // One composer's height of bottom padding: at short viewports the pinned
+  // composer leaves little scroller, so the transcript reserves room for the
+  // composer to keep the final line clear of it (the 390 review).
+  const composerHeight = useComposerHeight();
+
   return (
-    <>
+    <div style={composerHeight > 0 ? { paddingBottom: composerHeight } : undefined}>
       {parts.map((part, index) => {
         const label = part.divider
           ? agentLabel(
@@ -330,6 +374,6 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
           </div>
         );
       })}
-    </>
+    </div>
   );
 }
