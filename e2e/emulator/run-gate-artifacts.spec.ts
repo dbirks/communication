@@ -12,6 +12,7 @@
 // calls can take minutes.
 import { expect, test } from "./fixtures.js";
 import { collectPlanNumbering, judgePlanNumbering } from "./plan-steps.js";
+import { collectDocumentProse, escapedMarkdownFault } from "./markdown-ink.js";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
 const SCHED_NAME = `Emu sched ${EMU_PASS_ID}`;
@@ -107,10 +108,9 @@ test.describe("run-gate-artifacts (alice)", () => {
       // 1e834db816afb354). Ask for it at page level, exactly like rcn-1k
       // (repo-chat-nav.spec.ts) does, and prove it renders before clicking.
       const submit = page.getByTestId("new-run-submit");
-      await expect(
-        submit,
-        "design 1k: the dialog's footer carries the Start run verb",
-      ).toBeVisible({ timeout: 20_000 });
+      await expect(submit, "design 1k: the dialog's footer carries the Start run verb").toBeVisible(
+        { timeout: 20_000 },
+      );
       await submit.click({ timeout: 20_000 });
       // A start the ceiling refuses must say so on screen — the form answers
       // the `409` with the reason AND a link to the run that holds the slot.
@@ -296,9 +296,7 @@ test.describe("run-gate-artifacts (alice)", () => {
         "the run page at the gate renders its run title (a missing title is the defect this waits for)",
       ).toBeVisible({ timeout: 30_000 });
       expect(
-        await gateTitle.evaluate(
-          (el: HTMLElement) => el.scrollWidth - el.clientWidth,
-        ),
+        await gateTitle.evaluate((el: HTMLElement) => el.scrollWidth - el.clientWidth),
         "the run's own title gives way horizontally inside its box (item 3)",
       ).toBeLessThanOrEqual(0);
       // The run page offers the decision from the gate card itself or from
@@ -378,9 +376,7 @@ test.describe("run-gate-artifacts (alice)", () => {
         "a clean completed run says nothing about Retry",
       ).toHaveCount(0);
       expect(
-        await finishedTitle.evaluate(
-          (el: HTMLElement) => el.scrollWidth - el.clientWidth,
-        ),
+        await finishedTitle.evaluate((el: HTMLElement) => el.scrollWidth - el.clientWidth),
         "the run's own title gives way horizontally inside its box on the finished run",
       ).toBeLessThanOrEqual(0);
       await emu.screen("run-gate", "completed");
@@ -459,7 +455,20 @@ test.describe("run-gate-artifacts (alice)", () => {
         "the markdown read: the body under the heading is structure too",
       ).not.toHaveCount(0);
       await expect(prose, "no API field in the document").not.toContainText("endpoint");
-      await expect(prose, "no escaped markdown in the document").not.toContainText("\\n");
+      // Pass-1 design review item 4 is the defect this line exists for: the
+      // page printed the `model.chat` envelope with the plan escaped INSIDE
+      // it, so the reader saw `\n` where the document's line breaks were.
+      // The escape signature lives in the document's PROSE: CommonMark
+      // renders a code span exactly as the author typed it, and a plan that
+      // quotes `printf 'README.md\nhello.py\n…\n'` carries `\n` there as
+      // SHELL, not as escaping. Pass-3 of Actions run 41542324484
+      // (fingerprint 5b0127b528fd724f) reds on exactly that — its plan
+      // numbered 1…6, rendered its code spans, and had no escape anywhere in
+      // its prose. The rule, and the fixtures that hold both halves (a
+      // quoted shell command passes; an escaped sentence does not), are in
+      // `markdown-ink.ts` / `reflow-markdown-ink.spec.ts`.
+      const documentProse = await prose.evaluate(collectDocumentProse);
+      expect(escapedMarkdownFault(documentProse), "no escaped markdown in the document").toBe("");
       await expect(
         page.getByTestId("artifact-published-by"),
         "the byline is plain words",

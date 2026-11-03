@@ -305,6 +305,54 @@ describe("parseInline", () => {
   it("keeps markup inside a code span literal", () => {
     expect(parseInline("`**not bold**`")).toEqual([{ kind: "code", text: "**not bold**" }]);
   });
+
+  it("spends a backslash escape on the punctuation it names", () => {
+    // CommonMark 0.31 § 2.4: the escaped character is text and is never
+    // markup again. A plan whose author typed `\*\*Step\*\*` (or `\# Notes`)
+    // means the punctuation, and the backslash is not part of what they
+    // wanted to read — printing it is "escaped markdown in the document"
+    // (`run-gate-artifacts.spec.ts`).
+    expect(parseInline("\\*not emphasis\\*")).toEqual([{ kind: "text", text: "*not emphasis*" }]);
+    expect(parseInline("\\*\\*not strong\\*\\*")).toEqual([
+      { kind: "text", text: "**not strong**" },
+    ]);
+    expect(parseInline("\\# 7 keeps its hash")).toEqual([
+      { kind: "text", text: "# 7 keeps its hash" },
+    ]);
+    expect(parseInline("\\`not code\\`")).toEqual([{ kind: "text", text: "`not code`" }]);
+    expect(parseInline("[label](https://e.com) \\[")).toEqual([
+      { kind: "link", text: "label", href: "https://e.com" },
+      { kind: "text", text: " [" },
+    ]);
+  });
+
+  it("leaves a backslash that escapes nothing exactly where it was typed", () => {
+    // Only ASCII punctuation is escapable: `\n`, `\t` and a trailing
+    // backslash are the characters a plan wrote, and they stay ink — which is
+    // what keeps an envelope leak (`…text":"Plan:\\n\\n## Step…`) visible to
+    // the journey instead of quietly becoming a line break.
+    expect(parseInline("printf 'README.md\\nhello.py'")).toEqual([
+      { kind: "text", text: "printf 'README.md\\nhello.py'" },
+    ]);
+    expect(parseInline("a trailing backslash\\")).toEqual([
+      { kind: "text", text: "a trailing backslash\\" },
+    ]);
+    expect(parseInline("`README.md\\nhello.py`")).toEqual([
+      { kind: "code", text: "README.md\\nhello.py" },
+    ]);
+  });
+
+  it("reads emphasis around an escaped marker, not because of it", () => {
+    // `*a\*b*` is emphasis whose inner text carries one literal asterisk: the
+    // escape neither breaks the span nor opens one, and the run's flanking
+    // neighbours are what the reader meets (`\*a*` is `*a` plus a lone `*`).
+    expect(parseInline("*a\\*b*")).toEqual([{ kind: "italic", text: "a*b" }]);
+    expect(
+      parseInline("\\*a*b")
+        .map((run) => run.text)
+        .join(""),
+    ).toBe("*a*b");
+  });
 });
 
 describe("<MarkdownBody>", () => {
@@ -528,6 +576,22 @@ describe("<MarkdownBody>", () => {
     expect(link?.getAttribute("href")).toBe("https://example.com/g");
     expect(link?.textContent).toBe("the gate");
     expect(screen.getByTestId("markdown-paragraph").textContent).toBe("Blocked by the gate");
+  });
+
+  it("renders an escaped marker as the character, not as a backslash in the reader's face", () => {
+    // The pass-2 review graded printed markup as a defect; the mirror case is
+    // printed ESCAPES. A plan step that escaped its own bold, and a bullet
+    // whose marker the author escaped, both reach the reader as words.
+    render(
+      <MarkdownBody
+        text={["\\*\\*Step 1\\*\\* holds no bold", "", "\\- not a bullet, a dash"].join("\n")}
+      />,
+    );
+    const paragraphs = screen.getAllByTestId("markdown-paragraph");
+    expect(paragraphs[0].textContent).toBe("**Step 1** holds no bold");
+    expect(paragraphs[0].querySelector("strong")).toBeNull();
+    expect(paragraphs[1].textContent).toBe("- not a bullet, a dash");
+    expect(document.querySelectorAll('[data-testid="markdown-list"]')).toHaveLength(0);
   });
 });
 

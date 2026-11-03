@@ -27,7 +27,14 @@
  * `*emphasis*`/`_emphasis_` become italic, `[label](url)` becomes a link — and
  * only an `http(s)` link: a `javascript:` or `file:` target is reduced to its
  * label, because this text is agent output and a click is not a place to
- * re-discover that.
+ * re-discover that. A backslash before ASCII punctuation is CommonMark's
+ * escape: the character it precedes is what the author wanted to READ
+ * (`\*` is `*`, `\#` is `#`, an escaped list marker is a marker with no list),
+ * the backslash itself is not, and the escaped character never becomes a
+ * delimiter. Inside a code span nothing is escaped and nothing is read: what
+ * the author typed between the backticks is what stands, `printf 'a\nb'`
+ * included — that is markup kept honest, not escaped markup leaking into the
+ * plan's prose.
  *
  * And these nest, because a plan writes them nested: a step heading is bold and
  * names a file in code INSIDE that bold (`**Patch \`hello.py\` so the gate can
@@ -117,6 +124,15 @@ const ORDERED = /^([ \t]*)(\d+)([.)])\s+(.*)$/;
 const QUOTE = /^>[ \t]?(.*)$/;
 const RULE = /^[ \t]*(?:([-*_])[ \t]*){3,}$/;
 const FENCE = /^[ \t]*(```+|~~~+)(.*)$/;
+
+/**
+ * CommonMark's escapable set: ASCII punctuation (the ranges `0x21–0x2F`,
+ * `0x3A–0x40`, `0x5B–0x5F`, `0x7B–0x7E`). A backslash before anything else —
+ * a letter, a digit, a space — is not an escape and stays the character the
+ * author typed, which is why `README.md\nhello.py` inside a code span, or a
+ * lone `\n` in prose, still reads with its backslash.
+ */
+const ESCAPABLE = /[!-/:-@[-`{-~]/;
 
 /** The leading marker stripped from a list item's text. */
 function listItemMarker(text: string): string {
@@ -399,6 +415,18 @@ interface InlineToken {
   children?: InlineToken[];
 }
 
+/**
+ * The character a delimiter run hugs on its left, with any escape spent: a
+ * run written straight after `\*` sits against `*`, the character the author
+ * asked to see, not against the backslash.
+ */
+function logicalBefore(source: string, at: number): string {
+  if (at === 0) return "";
+  const raw = source[at - 1];
+  if (raw === "\\" && at >= 2 && ESCAPABLE.test(source[at - 2])) return source[at - 2];
+  return raw;
+}
+
 /** The neighbours of a delimiter run; the edge of the text counts as whitespace. */
 function isSpace(char: string): boolean {
   return char === "" || /\s/.test(char);
@@ -425,7 +453,10 @@ function isWordChar(char: string): boolean {
 function delimiterRun(source: string, at: number, marker: string, line: number): InlineToken {
   let end = at;
   while (end < source.length && source[end] === marker) end += 1;
-  const before = at === 0 ? "" : source[at - 1];
+  // The character the run hugs, as the reader meets it: a backslash is spent
+  // escaping what follows it, so in `\*a*b` the run's real neighbour is `*`,
+  // not the backslash the escape left behind.
+  const before = logicalBefore(source, at);
   const after = end < source.length ? source[end] : "";
   const left =
     !isSpace(after) && (!isPunctuation(after) || isSpace(before) || isPunctuation(before));
@@ -474,6 +505,15 @@ function tokeniseInline(source: string): InlineToken[] {
   let at = 0;
   while (at < source.length) {
     const char = source[at];
+    if (char === "\\" && ESCAPABLE.test(source[at + 1] ?? "")) {
+      // An escaped punctuation character is text, and it is text the emphasis
+      // and code-span scanners never see: `\*not emphasis\*` and `\# not a
+      // heading` reach the reader as `*not emphasis*` and `# not a heading`
+      // with the backslash spent.
+      buffer += source[at + 1];
+      at += 2;
+      continue;
+    }
     if (char === "`") {
       let end = at;
       while (end < source.length && source[end] === "`") end += 1;

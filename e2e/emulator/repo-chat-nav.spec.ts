@@ -66,7 +66,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test, apiMutate } from "./fixtures.js";
-import { EMU_ADMIN_STATE, EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID, EMU_REPO_ROOT } from "./env.js";
+import {
+  EMU_ADMIN_STATE,
+  EMU_ALICE_STATE,
+  EMU_BASE_URL,
+  EMU_PASS_ID,
+  EMU_REPO_ROOT,
+} from "./env.js";
 import { LAB_LAUNCHER } from "../tests/lab-launcher.js";
 
 const WF_NAME = `Emu rcn ${EMU_PASS_ID}`;
@@ -243,7 +249,7 @@ function seedYaml(slug: string): string {
   text = goalEdit;
   const revisionEdit = text.replace(
     /^ {2}outputs:$/m,
-    "      revision:\n        type: string\n        default: \"main\"\n        x-communication-input:\n          type: branch\n          label: Revision\n  outputs:",
+    '      revision:\n        type: string\n        default: "main"\n        x-communication-input:\n          type: branch\n          label: Revision\n  outputs:',
   );
   expect(
     revisionEdit,
@@ -397,9 +403,7 @@ function remoteDefaultBranch(url: string): string {
  * the List view's asserted empty state on `web`). */
 async function ensureRepos(page: Page): Promise<void> {
   if (ids.fileRepoId !== "" && ids.ghRepoId !== "") return;
-  const list = await page.request.get(
-    `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`,
-  );
+  const list = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`);
   expect(list.status(), "the repository list answers").toBe(200);
   const repos = (await list.json()) as { items?: { id: string; name: string }[] };
   const find = (name: string): string =>
@@ -624,18 +628,18 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     emu.expectFailure(issuesReadOf(ids.projectId));
     await test.step("expanded (2c): New chat, Today, My chats, PROJECTS, LIBRARY", async () => {
       await page.goto(`/p/${ids.projectId}`);
-      await expect(page.getByTestId("sidebar"), "design 2c: the one left column renders").toBeVisible(
-        { timeout: 30_000 },
-      );
+      await expect(
+        page.getByTestId("sidebar"),
+        "design 2c: the one left column renders",
+      ).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId("new-chat"), "design 2c: New chat").toBeVisible();
       await expect(
         page.getByTestId("sidebar-link-home"),
         "design 2c: the row is Today (was Home)",
       ).toContainText(/today/i);
-      await expect(
-        page.getByTestId("sidebar-link-threads"),
-        "design 2c: My chats",
-      ).toContainText(/my chats/i);
+      await expect(page.getByTestId("sidebar-link-threads"), "design 2c: My chats").toContainText(
+        /my chats/i,
+      );
       await expect(
         page.getByTestId(`sidebar-project-toggle-${ids.projectId}`),
         "design 2c: the PROJECTS tree carries the project",
@@ -816,10 +820,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       const lab = await labProfiles(page);
       await page.getByTestId("repo-chat-profile").click();
       const profileMenu = page.getByTestId("repo-chat-profile-menu");
-      await expect(
-        profileMenu,
-        "the chat box's profile chip opens the picker",
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(profileMenu, "the chat box's profile chip opens the picker").toBeVisible({
+        timeout: 10_000,
+      });
       await profileMenu.getByTestId(chatBoxProfileTestid(lab[0].id)).click();
       await expect(
         page.getByTestId("repo-chat-profile"),
@@ -1002,8 +1005,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // lab seeds a single launcher profile does the switch fall back to
       // any other profile (the pre-rule behaviour).
       const next =
-        list.find((profile) => profile.id !== currentProfileId && profile.launcher_id === LAB_LAUNCHER) ??
-        list.find((profile) => profile.id !== currentProfileId);
+        list.find(
+          (profile) => profile.id !== currentProfileId && profile.launcher_id === LAB_LAUNCHER,
+        ) ?? list.find((profile) => profile.id !== currentProfileId);
       expect(
         next,
         "the lab seeds more than one agent profile, so the picker has somewhere to switch to",
@@ -1016,10 +1020,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "design 1h: the menu captions itself",
       ).toBeVisible();
       await menu.getByTestId(`composer-agent-profile-${next!.id}`).click();
-      await expect(
-        chip,
-        `the chip moves to ${next!.name}`,
-      ).toContainText(next!.name, { timeout: 30_000 });
+      await expect(chip, `the chip moves to ${next!.name}`).toContainText(next!.name, {
+        timeout: 30_000,
+      });
       await expect(
         page.getByTestId("agent-switch-divider"),
         "design 2e: the switch prints its centred divider in the transcript",
@@ -1267,16 +1270,47 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // arm of the messages route (§ 9), not a prompt turn.
       await composer.pressSequentially("@");
       const askItem = page.getByTestId(`composer-mail-repo-${GH_REPO}`);
-      await expect(
-        askItem,
-        "the @-menu lists the other repo's agent as askable",
-      ).toBeVisible({ timeout: 15_000 });
+      await expect(askItem, "the @-menu lists the other repo's agent as askable").toBeVisible({
+        timeout: 15_000,
+      });
       await expect(page.getByTestId("composer-mail-repo-web")).toHaveCount(0);
       await askItem.click();
-      await expect(composer, "picking the repo completes the @ token").toHaveValue(
-        `@${GH_REPO} `,
-      );
-      await composer.type(MAIL_QUESTION);
+      await expect(composer, "picking the repo completes the @ token").toHaveValue(`@${GH_REPO} `);
+      // The mention's caret restore must have LANDED before the next
+      // character. `pickMention` parks the caret in a `requestAnimationFrame`
+      // (AgentConversationPanel.tsx), so it can fire in the middle of a
+      // keystroke train: on Actions run 41542324484 an unthrottled
+      // `locator.type()` got one character in before the restore, the restore
+      // moved the caret back to just after `@<repo> `, and the question rode
+      // into the ask as `MU-Q-…sentence.E` — the first character walking to
+      // the end. The value assertion above does not see that (it re-reads the
+      // value, not the caret), so the journey waits for the caret to be
+      // parked with focus in the composer, then types at a speed a person's
+      // hands actually have.
+      await expect
+        .poll(
+          () =>
+            composer.evaluate((el: HTMLTextAreaElement) =>
+              document.activeElement === el &&
+              el.selectionStart === el.value.length &&
+              el.selectionEnd === el.value.length
+                ? "parked"
+                : `caret ${el.selectionStart}/${el.value.length}, focused ${document.activeElement === el}`,
+            ),
+          {
+            message:
+              "the @-menu's caret restore lands before the next keystroke — a caret that moves under the person's typing reorders what they typed (run 41542324484)",
+            timeout: 15_000,
+          },
+        )
+        .toBe("parked");
+      await composer.pressSequentially(MAIL_QUESTION, { delay: 40 });
+      // …and the composer is where a lost or moved character is caught, with
+      // its own words, rather than three steps later inside the mail card.
+      await expect(
+        composer,
+        "the composer holds the @ token and the question whole before the Ask",
+      ).toHaveValue(`@${GH_REPO} ${MAIL_QUESTION}`);
       const send = page.getByTestId("composer-send");
       await expect(
         send,
@@ -1300,17 +1334,23 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "the card's bar names the asked repo",
       ).toContainText(/asked the agent in/i);
       await expect(page.getByTestId("mail-card-bar").first()).toContainText(GH_REPO);
+      // The question rides the ASKING CHAT verbatim. Where the transcript
+      // prints it is the surface's choice — the § 9 ask is a person's message,
+      // and round-5 part A renders it as the person's own line above the card
+      // (`ConversationTranscript`'s `mail-ask-<link>` user item, still
+      // uncommitted here) rather than a quote inside the card — so the journey
+      // holds the whole sentence in the transcript it just sent it into,
+      // instead of pinning one component's test id. The full question, not
+      // just this pass's token: a reordered or truncated ask fails HERE.
       await expect(
-        page.getByTestId("mail-card-question").first(),
+        page.getByTestId("conversation-main"),
         "the question rode through verbatim (it carries this pass's token)",
-      ).toContainText(MAIL_QUESTION_TOKEN);
+      ).toContainText(MAIL_QUESTION, { timeout: 30_000 });
       await expect(
         page.getByTestId("side-panel-link-chat-0"),
         "design 3d: LINKED CHATS lists the linked chat for `server`",
       ).toContainText(GH_REPO, { timeout: 30_000 });
-      await expect(page.getByTestId("side-panel-link-state-0")).toContainText(
-        /asked|answered/i,
-      );
+      await expect(page.getByTestId("side-panel-link-state-0")).toContainText(/asked|answered/i);
     });
 
     await test.step("the answer arrives", async () => {
@@ -1386,9 +1426,11 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       await ensureWorkflow(page);
       expect(ids.pipelineId, "the admin seed published the workflow").toMatch(/^[0-9a-f-]{36}$/);
       await page.goto(`/workflows/${ids.pipelineId}?tab=inputs`);
-      await expect(page.getByTestId("inputs-tab"), "design 1j: the Inputs tab renders").toBeVisible({
-        timeout: 30_000,
-      });
+      await expect(page.getByTestId("inputs-tab"), "design 1j: the Inputs tab renders").toBeVisible(
+        {
+          timeout: 30_000,
+        },
+      );
       await expect(page.getByTestId("workflow-tab-inputs")).toHaveAttribute("aria-current", "page");
       await expect(
         page.getByTestId("input-add"),
@@ -1412,18 +1454,20 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       // check-and-click is polled until the editor stands open, never raced.
       const editor = page.getByTestId("input-editor-issue");
       await expect
-        .poll(async () => {
+        .poll(
+          async () => {
             if (!(await editor.isVisible().catch(() => false))) {
               await row.locator('[data-testid^="input-row-"]').click({ timeout: 5_000 });
               await editor.waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
             }
-          return editor.isVisible().catch(() => false);
-        },
-        {
-          timeout: 30_000,
-          message: "design 1j: the row expands into the accent-wash editor",
-        },
-      ).toBe(true);
+            return editor.isVisible().catch(() => false);
+          },
+          {
+            timeout: 30_000,
+            message: "design 1j: the row expands into the accent-wash editor",
+          },
+        )
+        .toBe(true);
       await page.getByTestId("input-required-issue").click();
       await page.getByTestId("input-save-issue").click();
       await expect(
@@ -1450,34 +1494,35 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       await page.getByTestId("input-add-type").selectOption("text");
       await page.getByTestId("input-add-save").click();
       const row = page.getByTestId("input-item-ticket");
-      await expect(
-        row,
-        "design 1j: the second saved input joins the list",
-      ).toBeVisible({ timeout: 30_000 });
+      await expect(row, "design 1j: the second saved input joins the list").toBeVisible({
+        timeout: 30_000,
+      });
       const editor = page.getByTestId("input-editor-ticket");
       await expect
-        .poll(async () => {
+        .poll(
+          async () => {
             if (!(await editor.isVisible().catch(() => false))) {
               await row.locator('[data-testid^="input-row-"]').click({ timeout: 5_000 });
               await editor.waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
             }
-          return editor.isVisible().catch(() => false);
-        },
-        {
-          timeout: 30_000,
-          message: "design 1j: the new row expands into its editor",
-        },
-      ).toBe(true);
+            return editor.isVisible().catch(() => false);
+          },
+          {
+            timeout: 30_000,
+            message: "design 1j: the new row expands into its editor",
+          },
+        )
+        .toBe(true);
       await page.getByTestId("input-required-ticket").click();
       await page.getByTestId("input-save-ticket").click();
       await expect(
         page.getByTestId("input-editor-ticket"),
         "the editor closes on a saved input",
       ).toBeHidden({ timeout: 30_000 });
-      await expect(
-        row,
-        "design 1j: `ticket` is required and carries no default",
-      ).toContainText(/required/i, { timeout: 30_000 });
+      await expect(row, "design 1j: `ticket` is required and carries no default").toContainText(
+        /required/i,
+        { timeout: 30_000 },
+      );
     });
 
     await test.step("WHO FILLS THE INPUTS — by hand, and the labeled-issue trigger", async () => {
@@ -1491,10 +1536,9 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
         "ADR-0066: the hand line names the required input with no default",
       ).toContainText(/ticket/i, { timeout: 15_000 });
       const issueRow = page.locator('[data-testid^="who-fills-issue-"]').first();
-      await expect(
-        issueRow,
-        "design 1j: the seeded issue trigger gets its row",
-      ).toBeVisible({ timeout: 30_000 });
+      await expect(issueRow, "design 1j: the seeded issue trigger gets its row").toBeVisible({
+        timeout: 30_000,
+      });
       await expect(
         issueRow,
         "design 1j / ADR-0066: the single issue input is filled by the matched issue",
@@ -1525,10 +1569,18 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
         ticketWarn,
         "round-4 defect 3: the sentence carries no fact id, no ADR citation",
       ).not.toContainText(/01[0-9a-f]{7}-|adr-/i);
+      // The attribute NAME is a plain string: `toHaveAttribute` takes
+      // `name: string` and looks that name up verbatim, so a RegExp name is
+      // asked of the element as the literal attribute "/title/i" — Playwright
+      // then reports `Received string: ""` / `unexpected value "null"` on a
+      // row whose `title` carries the whole server sentence (Actions run
+      // 41542324484: this line was red in all six passes with the tooltip
+      // visibly present in the resolved DOM node). The contract is unchanged:
+      // the raw server sentence rides the row's `title` tooltip.
       await expect(
         ticketWarn,
         "the raw warning stays in the tooltip for whoever debugs the form",
-      ).toHaveAttribute(/title/i, /cannot fill required input "ticket".*ADR-0066/i, {
+      ).toHaveAttribute("title", /cannot fill required input "ticket".*ADR-0066/i, {
         timeout: 15_000,
       });
       // And the inputs the trigger DOES template get no warning: the panel
