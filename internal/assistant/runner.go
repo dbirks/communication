@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ADR-0050 part 2 (decisions 2–4): the multi-turn tool-loop turn runner.
@@ -325,6 +326,7 @@ Rules you must not break:
 - When two or more concrete choices would lead to different actions and you cannot tell which the user means, call ui.question once with 2-4 short options. Do not guess.
 - To open a page, call ui.navigate with an app route; never write a URL yourself.
 - When the user asks for a change the tools can make (draft edit, navigation, start/retry a run, a decision), do it in the same turn: locate the target (workflow.draft for a named workflow, else palette.search → the workflow's open draft or latest revision), read it (draft.get), apply (draft.apply), and answer with what changed.
+- NEVER answer an explicit draft-edit request ("add a step named X after Y in the draft", "make that change now") with prose alone: without a draft.apply call this turn NOTHING has changed, and describing or promising the change is a failed turn, not an answer. Make the call; ui.question is for a genuinely ambiguous target only.
 - Only ask a follow-up question (ui.question) when the target or intent is genuinely ambiguous; never answer an edit request with a description of search results.
 - A request that names the destination step and the new step's name is NOT ambiguous merely because config details (such as who approves) are unstated: take the convention the draft already shows for that node kind (a sibling step's config, then the kind's obvious default). A write gated by the caller's trust level returns to a human on the confirm card before anything changes, so proposing with the convention is safe; asking instead only stalls a decision the card already makes.
 - Reply in short markdown (under 1500 characters). Do not write links: the app renders its own jump buttons from the data you saw.
@@ -559,6 +561,9 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 	messages := r.conversationEnvelope(req)
 	modelRuns := 0
 	toolRuns := 0
+	// ADR-0073 applied to the assistant loop: ONE in-turn feedback retry
+	// when the model answers an explicit draft-edit ask without acting.
+	nudged := false
 	var (
 		calls    []ToolCall
 		results  []toolOutcome
@@ -572,6 +577,10 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 		// runner keeps its own bounded caps (MaxRunnerModelCalls / MaxRunnerToolCalls);
 		// v1's ask route keeps its smaller MaxModelCalls / MaxToolCalls.
 		if modelRuns >= MaxRunnerModelCalls {
+			// A change already applied this turn must not outlive the failed
+			// turn: the route stores nothing, and a mutated draft with no
+			// change row is invisible and un-undoable (lab run 41560172301).
+			r.rollbackApplied(ctx, req, changes)
 			return nil, failure(FailCallCap,
 				"the turn reached the "+fmt.Sprint(MaxRunnerModelCalls)+" completion cap without an answer", 503)
 		}
@@ -584,6 +593,10 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 		if bad != nil {
 			r.b.logger().Warn("assistant conversation egress failed",
 				"code", bad.Code)
+			// The egress died mid-turn: anything this turn already applied
+			// is rolled back, so the UI's "not sent — send it again" is
+			// true of the draft too and the retry meets a clean slate.
+			r.rollbackApplied(ctx, req, changes)
 			return nil, bad
 		}
 		if len(ans.ToolCalls) == 0 {
@@ -594,7 +607,26 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 			if strings.TrimSpace(answerText) == "" {
 				// An answer that was nothing but a remark about the injection
 				// guard carried no answer: the same refusal as an empty one.
+				r.rollbackApplied(ctx, req, changes)
 				return nil, failure(FailBadModelResponse, "the completion carried no answer text", 502)
+			}
+			// ADR-0073 applied to the assistant loop (same idea as the
+			// invalid_output retry feedback): an explicit draft-edit ask
+			// answered with text and no draft.apply changed nothing. The lab
+			// shows flash-next doing exactly this (journey f, runs
+			// 41458760870 / 41560172301); the human "Please make that change
+			// now." follow-up is a workaround for a rule the prompt already
+			// states, so the runner feeds the omission back ONCE and lets the
+			// model correct itself inside the same turn. A text answer after
+			// the nudge ships as the answer — the nudge is bounded, not a
+			// trap.
+			if !nudged && looksLikeDraftEditAsk(q) && !turnActed(calls, changes) {
+				nudged = true
+				r.b.logger().Warn("assistant answered a draft-edit ask without acting — retrying once with feedback")
+				messages = append(messages,
+					chatMessage{Role: "assistant", Content: text(ans.Text)},
+					chatMessage{Role: "user", Content: text(editAskFeedback)})
+				continue
 			}
 			return r.finish(&Answer{
 				AnswerMarkdown: answerText,
@@ -696,6 +728,100 @@ func (r *ConversationRunner) finish(ans *Answer, q *TurnQuestion, ap *TurnApprov
 	res.Approval = ap
 	res.Changes = changes
 	return res
+}
+
+// --- the ADR-0073 feedback retry applied to the assistant loop ----------
+
+// The three parts of an explicit draft-edit ask: a change verb, a step-shaped
+// noun, and a draft/pipeline/workflow scope. Requiring all three keeps the
+// nudge off the flows that legitimately answer in prose: read-only reads
+// (“what steps does the draft have?” name no verb), the ambiguous
+// “change the workflow” asks the question-card flow exists to clarify (lab
+// p789 questions), and the chat→workflow step-list turn (“turn this chat
+// into a workflow” names no verb and no draft).
+var (
+	draftEditVerb  = regexp.MustCompile(`(?i)\b(add|insert|append|rename|remove|delete|drop|move|reorder|change|update|edit|wire|set)\b`)
+	draftEditNoun  = regexp.MustCompile(`(?i)\b(steps?|nodes?|stages?|gates?|approvals?)\b`)
+	draftEditScope = regexp.MustCompile(`(?i)\b(draft|drafts|pipeline|pipelines|workflow|workflows)\b`)
+	// A plain “Please make that change now.” follow-up — the words a real
+	// user sends when the first answer described instead of acted (the
+	// journey's own follow-up shape). An interrogative is out: '?' vetoes.
+	draftEditFollowUp = regexp.MustCompile(`(?i)\b(make|apply|do)\b[^?!]{0,24}\b(change|edit)\b`)
+)
+
+// looksLikeDraftEditAsk reports whether the current message explicitly asks
+// for a draft step to be added/removed/renamed (or follows up demanding the
+// change be made). Deterministic by construction: the nudge must not depend
+// on a model's opinion about the previous answer.
+func looksLikeDraftEditAsk(ask string) bool {
+	t := strings.TrimSpace(ask)
+	if strings.ContainsRune(t, '?') {
+		return false // a question wants prose or a card, not a write
+	}
+	if draftEditFollowUp.MatchString(t) {
+		return true
+	}
+	return draftEditVerb.MatchString(t) && draftEditNoun.MatchString(t) && draftEditScope.MatchString(t)
+}
+
+// editAskFeedback is the retry turn ADR-0073 owes the assistant loop: it
+// names the omission (no draft.apply call, nothing changed) and states the
+// two acceptable moves, never the missing answer itself.
+const editAskFeedback = "feedback: the user asked you to change the draft, and this turn has made no change: " +
+	"you answered with text and no draft.apply call, so the draft is untouched. " +
+	"Call workflow.draft and draft.get if you still need the target, then draft.apply to make exactly the requested change. " +
+	"Only if the request is genuinely ambiguous may you call ui.question instead. Do not answer this feedback with text alone."
+
+// turnActed reports whether the turn has already mutated real state (any
+// change row, or a draft.apply that executed) — then the answer follows
+// action and the feedback nudge would be a lie.
+func turnActed(calls []ToolCall, changes []ChangeRecord) bool {
+	if len(changes) > 0 {
+		return true
+	}
+	for _, c := range calls {
+		if c.Name == "draft.apply" && c.OK {
+			return true
+		}
+	}
+	return false
+}
+
+// rollbackApplied gives ADR-0034's “a failed turn stores nothing” its
+// literal meaning for the draft too: when a turn dies after a draft.apply
+// already landed (lab run 41560172301: the completion after the edit
+// failed, POST answered 503, the UI truthfully said “your question was not
+// sent” while the draft stayed mutated and the changes list stayed empty),
+// each undoable edit is reversed through the same closed inverse the undo
+// card uses — newest first, so stacked edits unwind in order — and the
+// retried ask meets the draft exactly as it was. Changes with no closed
+// inverse (a run already started, a navigation) stand: this promises only
+// to undo what it knows how to undo. Best effort: a rollback that itself
+// fails is logged, and the turn still reports its original failure.
+func (r *ConversationRunner) rollbackApplied(ctx context.Context, req TurnRequest, changes []ChangeRecord) {
+	if r.draft == nil || len(changes) == 0 {
+		return
+	}
+	c := ctx
+	if ctx.Err() != nil {
+		// The caller's context is done (client gone / shutdown): the draft
+		// still moved and still must come back, so the cleanup keeps the
+		// context's values but not its cancellation, on its own short leash.
+		c = context.WithoutCancel(ctx)
+	}
+	c, cancel := context.WithTimeout(c, 15*time.Second)
+	defer cancel()
+	u := DraftEditUndoer{Draft: r.draft}
+	for i := len(changes) - 1; i >= 0; i-- {
+		ch := changes[i]
+		if ch.Kind != "draft_edit" || len(ch.UndoPayload) == 0 {
+			continue
+		}
+		if err := u.UndoChange(c, req.Caller, ch.TargetRef, ch.UndoPayload); err != nil {
+			r.b.logger().Warn("assistant failed turn could not roll back a draft edit",
+				"change", ch.TargetRef, "err", err.Error())
+		}
+	}
 }
 
 func nonNilCalls(calls []ToolCall) []ToolCall {

@@ -710,6 +710,8 @@ func TestConversationSystemPromptActsOnEditRequests(t *testing.T) {
 		"and answer with what changed",
 		"Only ask a follow-up question (ui.question)",
 		"never answer an edit request with a description of search results",
+		"NEVER answer an explicit draft-edit request",
+		"describing or promising the change is a failed turn, not an answer",
 		"To open a page, call ui.navigate with an app route",
 	} {
 		if !strings.Contains(conversationSystemPrompt, want) {
