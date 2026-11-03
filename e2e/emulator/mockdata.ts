@@ -264,10 +264,9 @@ export const MOCK_DATA: readonly MockDatum[] = [
   { text: "77c1d0e", source: `${PR} 1d — STATUS "clean · head 77c1d0e"` },
 
   /* ------------------------------------------- fake profiles/models */
-  {
-    text: "qwen3-8-27b",
-    source: `${WF} 1f/1g — the plan step's MODEL ("model · qwen3-8-27b"); the real sample uses david-birks/qwen3-8-27b`,
-  },
+  // The mock's plan-step MODEL ("model · qwen3-8-27b", ${WF} 1f/1g) is no longer
+  // listed: since b784011 the lab really runs david-birks/qwen3-8-27b, so the text
+  // is real data on every screen that names the model, not an invented value.
   {
     text: "claude-code",
     source: `${PR} 1a/1f — "profile: claude-code"; no real launcher or profile has this id`,

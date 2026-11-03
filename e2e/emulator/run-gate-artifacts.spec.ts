@@ -452,9 +452,17 @@ test.describe("run-gate-artifacts (alice)", () => {
       const stepText = ((await firstStep.textContent()) ?? "").replace(/\s+/g, " ").trim();
       expect(stepText, "a step carries words").not.toBe("");
       // A marker that reaches the screen is an UNPARSED line: `##` kept its hashes,
-      // `**bold**` its asterisks, `` `code` `` its backticks.
+      // `**bold**` its asterisks, `` `code` `` its backticks. Text inside a
+      // rendered code span is the author's literal (pass-6 of run 41701559069
+      // quoted the fixture banner `# m4 exit fixture` in code), so the scan reads
+      // the step's prose with its <code> elements removed.
+      const proseText = await firstStep.evaluate((el) => {
+        const copy = el.cloneNode(true) as HTMLElement;
+        copy.querySelectorAll("code, pre").forEach((c) => c.remove());
+        return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+      });
       for (const marker of ["#", "**", "`"]) {
-        expect(stepText, `the step carries no raw ${marker} markup`).not.toContain(marker);
+        expect(proseText, `the step carries no raw ${marker} markup`).not.toContain(marker);
       }
       expect(
         await prose.evaluate((el) => (el.textContent ?? "").replace(/\s+/g, " ").trim().length),
