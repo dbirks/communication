@@ -423,6 +423,12 @@ export function AgentConversationComposer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
   const mentionOpen = agentMailOn && isController && mention !== null;
+  // ds `Textarea` accepts no `ref` prop, so the composer's textarea is reached
+  // through its own anchor span — the element the menu is already placed
+  // against. The change handler caches the same node; this is the path that
+  // works before the first keystroke.
+  const composerElement = () =>
+    inputRef.current ?? anchorRef.current?.querySelector("textarea") ?? null;
   const candidates = otherRepos.filter((name) =>
     name.toLowerCase().startsWith((mention ?? "").toLowerCase()),
   );
@@ -436,10 +442,36 @@ export function AgentConversationComposer({
     if (mentionOpen) inputRef.current?.focus();
   }, [mentionOpen]);
 
+  // The caret the completion owes the person, applied in the SAME synchronous
+  // commit that writes the completed value and only while the field still
+  // holds exactly that value. A `requestAnimationFrame` restore (8408a14) ran a
+  // frame LATE: a fast typist (and Playwright) had already put keystrokes in the
+  // field, so the parked caret jumped back into the middle of the question and
+  // the rest of it was typed out of order — run 41542324484, passes 1–4, lost
+  // "the question rode through verbatim" exactly that way. Any keystroke clears
+  // the pending restore first: after that the person owns the caret.
+  const pendingCaret = useRef<{ value: string; position: number } | null>(null);
+  useLayoutEffect(() => {
+    const pending = pendingCaret.current;
+    if (pending === null) return;
+    pendingCaret.current = null;
+    const element = composerElement();
+    // The menu took focus when it opened and never gives it back on a pick, so
+    // the composer reclaims it — but the caret only moves for the value the
+    // completion itself wrote.
+    element?.focus();
+    if (element !== null && element.value === pending.value) {
+      element.setSelectionRange(pending.position, pending.position);
+    }
+  }, [prompt]);
+
   const onPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value;
     const element = event.currentTarget;
     inputRef.current = element;
+    if (pendingCaret.current !== null && pendingCaret.current.value !== value) {
+      pendingCaret.current = null;
+    }
     setPrompt(value);
     if (!agentMailOn || !isController) return;
     setMention(mentionQueryAtCaret(value, element.selectionStart ?? value.length));
@@ -449,19 +481,15 @@ export function AgentConversationComposer({
   // the send path parses back into `mail_to` — and park the caret right
   // after it, ready for the question.
   const pickMention = (repo: string) => {
-    const element = inputRef.current;
+    const element = composerElement();
     const value = element?.value ?? prompt;
     const caret = element?.selectionStart ?? value.length;
     const query = mentionQueryAtCaret(value, caret) ?? mention ?? "";
     const cut = Math.max(0, caret - query.length - 1);
     const next = `${value.slice(0, cut)}@${repo} ${value.slice(caret)}`;
+    pendingCaret.current = { value: next, position: cut + repo.length + 2 };
     setPrompt(next);
     setMention(null);
-    requestAnimationFrame(() => {
-      const position = cut + repo.length + 2;
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(position, position);
-    });
   };
 
   const submit = (event: FormEvent) => {

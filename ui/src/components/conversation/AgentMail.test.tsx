@@ -518,6 +518,29 @@ function mailRoutes(project: Project): RouteStub[] {
   ]);
 }
 
+/**
+ * Types `text` into `element` the way a browser does: every character is
+ * inserted at the live caret (not at the end of the value) and dispatched as
+ * its own change event, with no delay and no frame boundary between them — the
+ * shape a fast typist and Playwright's `fill`-less `type` produce. jsdom leaves
+ * the caret wherever a programmatic value write put it, so the caret is moved
+ * after the typed character by hand; that is the browser behavior the composer
+ * must not fight.
+ */
+function typeLikeABrowser(element: HTMLTextAreaElement, text: string) {
+  for (const char of text) {
+    const start = element.selectionStart ?? element.value.length;
+    const end = element.selectionEnd ?? start;
+    const value = `${element.value.slice(0, start)}${char}${element.value.slice(end)}`;
+    fireEvent.change(element, { target: { value } });
+    const caret = start + char.length;
+    element.setSelectionRange(caret, caret);
+  }
+}
+
+/** Lets any caret restore queued in `requestAnimationFrame` run. */
+const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
 describe("the composer @-menu (ADR-0072 § 9)", () => {
   it("lists the project's other repositories and completes the token on pick", async () => {
     const { fetchMock } = renderApp({ path, routes: mailRoutes(mailProject) });
@@ -539,6 +562,39 @@ describe("the composer @-menu (ADR-0072 § 9)", () => {
     fireEvent.click(within(menu).getByTestId("composer-mail-repo-api"));
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe("@api "));
     expect(screen.queryByTestId("composer-mail-menu")).toBeNull();
+    // The caret rides the completion: it parks right after `@api `, so the
+    // question starts typing there — and it is still there after the frame the
+    // restore had to wait for before (run 41542324484's failing check).
+    await nextFrame();
+    const area = input as HTMLTextAreaElement;
+    expect(area.selectionStart).toBe("@api ".length);
+    expect(area.selectionEnd).toBe("@api ".length);
+  });
+
+  it("types a long question verbatim straight after a completion", async () => {
+    renderApp({ path, routes: mailRoutes(mailProject) });
+    await screen.findByTestId("conversation-title");
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "@ap" } });
+    input.setSelectionRange(3, 3);
+    const menu = await screen.findByTestId("composer-mail-menu");
+    const apiItem = await within(menu).findByTestId("composer-mail-repo-api");
+    fireEvent.click(apiItem);
+
+    // The person does not wait for the paint: the whole question is typed
+    // while the completion's commit is still settling, across a frame boundary
+    // and on both sides of it.
+    const first = "why does the runner restart twice before the first";
+    const second = " test even runs when I only edit a comment?";
+    typeLikeABrowser(input, first);
+    await nextFrame();
+    typeLikeABrowser(input, second);
+    await nextFrame();
+
+    expect(input.value).toBe(`@api ${first}${second}`);
+    // And the caret is where the typing left it, not parked back into the
+    // middle of the question.
+    expect(input.selectionStart).toBe(input.value.length);
   });
 
   it("sending `@<repo> <question>` posts mail_to — not a prompt", async () => {
