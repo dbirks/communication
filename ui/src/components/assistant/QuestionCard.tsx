@@ -5,8 +5,8 @@ import type { AssistantQuestionPayload } from "./types";
  * 2c "AWAITING YOUR ANSWER"; ADR-0050 Decision 3) — restyled for the
  * thread → workflow card (design 2f "asks structured questions as
  * cards"): an accent-wash body, the accent mono caps
- * `QUESTION {ordinal} OF {total}`, the question, then the option
- * buttons. Whatever the user taps — an option, the free-text
+ * `QUESTION {ordinal}` framing (design 2f: "QUESTION 1 OF 2"), the
+ * question, then the option buttons. Whatever the user taps — an option, the free-text
  * affordance, the composer input or the mic — is sent back to the model
  * as plain text: `onAnswer` is called with the option's LABEL verbatim
  * (the `value` never travels; ADR-0050: "the client posts the label
@@ -28,13 +28,18 @@ export interface QuestionCardProps {
    * version) or when the callback is given.
    */
   onFreeText?: () => void;
-  /** 1-based position among the conversation's questions (2f's header). */
+  /**
+   * 1-based position of this question among the conversation's question rows
+   * (2f's `QUESTION N` framing). The ordinal is real transcript data — the
+   * row's place among the questions the conversation actually asked.
+   */
   ordinal?: number;
   /**
-   * The number of questions the conversation has asked so far. A single OPEN
-   * question prints no count at all (`headerShown`): 2f asks one question per
-   * turn, and "Question 1 of 1" reads as the first of a list the reader is
-   * told to wait for (rcn-2f review item 2).
+   * The total number of questions, ONLY when the wire carries one. The
+   * assistant asks one question per turn, so the transcript can never know
+   * the total in advance — a made-up `of M` is a promise the flow cannot
+   * keep (rcn-2f round 7: show `QUESTION 1` only when the total is unknown,
+   * never invent a count).
    */
   total?: number;
   /**
@@ -53,13 +58,12 @@ export function QuestionCard({
   answeredLabel,
 }: QuestionCardProps) {
   const answered = question.answered_by != null;
-  // The honest count (rcn-2f review item 2): "Question 1 of 2" is true of a
-  // conversation whose transcript holds two questions and of nothing else.
-  // A single open question is not the first of anything — and the assistant
-  // that has asked the one question it may ask per turn has no second to
-  // show — so a lone open card wears no count. An ANSWERED one wears "1 of
-  // 1": the list it looked like being is closed, and the answer is on record.
-  const headerShown = ordinal != null && total != null && (total > 1 || answered);
+  // The framing (design 2f "QUESTION 1 OF 2"): the index the transcript can
+  // prove — this card's place among the conversation's questions. The total
+  // prints ONLY when the wire supplies a real one; the one-question-per-turn
+  // flow never knows how many questions are coming, so "QUESTION 1" is the
+  // honest ceiling (rcn-2f round 7).
+  const headerShown = ordinal != null;
 
   return (
     <div
@@ -71,7 +75,7 @@ export function QuestionCard({
           data-testid="assistant-question-header"
           className="m-0 font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-accent-text"
         >
-          {`Question ${ordinal} of ${total}`}
+          {total != null ? `Question ${ordinal} of ${total}` : `Question ${ordinal}`}
         </p>
       ) : null}
       <p className="mt-[4px] whitespace-pre-wrap text-[13px] leading-[1.45] text-ink">

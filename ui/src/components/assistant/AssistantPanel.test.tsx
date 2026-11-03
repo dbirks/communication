@@ -236,6 +236,66 @@ describe("AssistantPanel (expanded)", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * rcn-2f round 7: the `Open draft` action beside the composer — the design's
+   * `Or tell me what to change… Open draft` row. It links the REAL library
+   * draft the assistant saved: the server tags the creating answer's link
+   * `Open draft` (workflow.create_draft → links[]), so the button is hidden
+   * until such a turn exists, never a door to an unsaved draft.
+   */
+  const savedDraftMessage = (route: string): AssistantMessage => ({
+    id: "m-saved",
+    kind: "assistant",
+    payload: {
+      kind: "assistant",
+      answer_markdown: "Draft saved in the library.",
+      links: [{ label: "Open draft", route }],
+      tool_calls: [],
+    },
+    created_at: "2026-10-20T10:02:00Z",
+  });
+
+  it("Open draft: hidden until a turn links the saved draft, then opens it (2f)", () => {
+    const onGo = vi.fn();
+    const { rerender } = render(
+      <AssistantPanel variant="docked" {...panelProps} onGo={onGo} onShrink={() => {}} />,
+    );
+    expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
+    rerender(
+      <AssistantPanel
+        variant="docked"
+        {...panelProps}
+        onGo={onGo}
+        onShrink={() => {}}
+        messages={[savedDraftMessage("/workflows/01PIPE")]}
+      />,
+    );
+    const button = screen.getByTestId("assistant-open-draft");
+    expect(button.textContent).toBe("Open draft");
+    fireEvent.click(button);
+    expect(onGo).toHaveBeenCalledWith("/workflows/01PIPE");
+  });
+
+  it("Open draft: the newest saved draft supersedes the earlier door", () => {
+    const onGo = vi.fn();
+    render(
+      <AssistantPanel
+        variant="docked"
+        {...panelProps}
+        onGo={onGo}
+        onShrink={() => {}}
+        messages={[savedDraftMessage("/workflows/01OLD"), savedDraftMessage("/workflows/01NEW")]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("assistant-open-draft"));
+    expect(onGo).toHaveBeenCalledWith("/workflows/01NEW");
+  });
+
+  it("Open draft: the 400px popover's row stays dense — the draft door rides the transcript link there", () => {
+    renderPanel({ messages: [savedDraftMessage("/workflows/01PIPE")] });
+    expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
+  });
 });
 
 /**

@@ -110,37 +110,23 @@ describe("QuestionCard", () => {
     ).toBe(true);
   });
 
-  it("carries the 2f card header when the transcript numbers the questions", () => {
+  /**
+   * rcn-2f round 7: the card ALWAYS frames itself with the index the
+   * transcript can prove — its place among the conversation's questions —
+   * and prints the total ONLY when the wire carries a real one. The
+   * one-question-per-turn flow cannot know how many questions are coming,
+   * so a card with no total says `QUESTION 1`, never an invented count.
+   */
+  it("frames the question with the transcript's index; the total only when the wire carries one", () => {
     const { rerender } = render(
-      <QuestionCard question={question()} onAnswer={() => {}} ordinal={1} total={2} />,
+      <QuestionCard question={question()} onAnswer={() => {}} ordinal={1} />,
     );
+    expect(screen.getByTestId("assistant-question-header").textContent).toBe("Question 1");
+    // The wire's own total is real data, not a promise.
+    rerender(<QuestionCard question={question()} onAnswer={() => {}} ordinal={1} total={2} />);
     expect(screen.getByTestId("assistant-question-header").textContent).toBe("Question 1 of 2");
+    // The transcript numbers nothing → no header.
     rerender(<QuestionCard question={question()} onAnswer={() => {}} />);
     expect(screen.queryByTestId("assistant-question-header")).toBeNull();
-  });
-
-  /**
-   * rcn-2f review item 2: the lab's reply announced TWO things the chat left
-   * open and then held ONE question, and the card's own header — `Question 1
-   * of 1` — was the last piece of that lie on screen. Design 2f asks ONE
-   * question per turn, so a single OPEN question is not the first of a list:
-   * it prints no count. Once it is answered the list is closed and the count
-   * is a fact, so the card says so.
-   */
-  it("prints no count on the one question the conversation is asking", () => {
-    const { rerender } = render(
-      <QuestionCard question={question()} onAnswer={() => {}} ordinal={1} total={1} />,
-    );
-    expect(screen.queryByTestId("assistant-question-header")).toBeNull();
-    // Answered, the same card is honestly the one question it asked.
-    rerender(
-      <QuestionCard
-        question={question({ answered_by: "01K1user-msg" })}
-        onAnswer={() => {}}
-        ordinal={1}
-        total={1}
-      />,
-    );
-    expect(screen.getByTestId("assistant-question-header").textContent).toBe("Question 1 of 1");
   });
 });

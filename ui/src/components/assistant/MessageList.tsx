@@ -39,9 +39,11 @@ export function MessageList({
 }: MessageListProps) {
   // Design 2f numbers the question cards the transcript really holds:
   // the ordinal is the row's position among the conversation's question
-  // rows and the total is how many it has asked so far ("QUESTION 1 OF
-  // 2" as honest transcript data, not a model-invented count). An
-  // answered card also learns WHICH label the reply quoted, so the
+  // rows — real transcript data. The TOTAL is not passed: the assistant
+  // asks one question per turn, so the transcript cannot know how many
+  // questions are coming, and a made-up `of M` is a promise the flow
+  // cannot keep (rcn-2f round 7: `QUESTION 1`, never an invented count).
+  // An answered card also learns WHICH label the reply quoted, so the
   // chosen option can carry its ink border and bold.
   const questionIds = messages
     .map((message) => (message.payload.kind === "question" ? message.id : null))
@@ -145,7 +147,6 @@ export function MessageList({
                 onAnswer={onAnswerQuestion}
                 onFreeText={onFreeText}
                 ordinal={questionIds.indexOf(message.id) + 1}
-                total={questionIds.length}
                 answeredLabel={answeredLabelFor(message.payload)}
               />
             );
@@ -226,8 +227,10 @@ function stepLineOf(raw: string): StepLine | null {
 
 /**
  * Split one answer paragraph into prose runs and step-list runs: a run of
- * two or more consecutive step lines is the draft step list (a stray ✓ line
- * stays prose, as before); everything else renders as the prose it is.
+ * consecutive step lines is the draft step list (a lone step line is held
+ * as a single-line run here — the WHOLE answer decides below whether it is
+ * a one-line list or a stray ✓ line, because the model may separate its
+ * step lines with blank lines and the app must not fall back to prose).
  */
 type AnswerChunk = { type: "prose"; text: string } | { type: "steps"; lines: StepLine[] };
 
@@ -242,8 +245,7 @@ function chunkParagraph(paragraph: string): AnswerChunk[] {
   };
   const flushSteps = () => {
     if (steps.length === 0) return;
-    if (steps.length < 2) prose.push(...steps.map((line) => `${line.glyph} ${line.rest}`));
-    else chunks.push({ type: "steps", lines: steps });
+    chunks.push({ type: "steps", lines: steps });
     steps = [];
   };
   for (const raw of paragraph.split("\n")) {
@@ -259,6 +261,37 @@ function chunkParagraph(paragraph: string): AnswerChunk[] {
   flushSteps();
   flushProse();
   return chunks;
+}
+
+/**
+ * The answer-wide verdict on step runs (rcn-2f round 7): step lines the
+ * model separated with blank lines are ONE list — the rows ride in the
+ * transcript as it was posted, not as a paragraph of stray prose. Runs
+ * that are still a single line after the merge are the stray-✓-line case
+ * and fall back to the prose they are; a real draft step list has at least
+ * two steps.
+ */
+function settleStepChunks(chunks: AnswerChunk[]): AnswerChunk[] {
+  const out: AnswerChunk[] = [];
+  let run: StepLine[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    if (run.length < 2) {
+      out.push({ type: "prose", text: run.map((line) => `${line.glyph} ${line.rest}`).join("\n") });
+    } else {
+      out.push({ type: "steps", lines: run });
+    }
+    run = [];
+  };
+  for (const chunk of chunks) {
+    if (chunk.type === "steps") run.push(...chunk.lines);
+    else {
+      flush();
+      out.push(chunk);
+    }
+  }
+  flush();
+  return out;
 }
 
 /**
@@ -337,19 +370,18 @@ function AnswerProse({ text }: { text: string }) {
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0);
+  const chunks = settleStepChunks(paragraphs.flatMap((paragraph) => chunkParagraph(paragraph)));
   return (
     <div data-testid="assistant-answer" className="space-y-[6px]">
-      {paragraphs.flatMap((paragraph, index) =>
-        chunkParagraph(paragraph).map((chunk, chunkIndex) =>
-          chunk.type === "steps" ? (
-            <StepList key={`${index}:${chunkIndex}`} lines={chunk.lines} />
-          ) : (
-            <MarkdownBody
-              key={`${index}:${chunkIndex}`}
-              text={chunk.text}
-              paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
-            />
-          ),
+      {chunks.map((chunk, index) =>
+        chunk.type === "steps" ? (
+          <StepList key={index} lines={chunk.lines} />
+        ) : (
+          <MarkdownBody
+            key={index}
+            text={chunk.text}
+            paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
+          />
         ),
       )}
     </div>

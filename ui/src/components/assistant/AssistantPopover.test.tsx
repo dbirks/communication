@@ -252,13 +252,15 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
  * the visible ask is one human sentence, and the conversation id rides the
  * POST as structured context.
  *
- * rcn-2f review item 1 changed WHERE that panel stands: at 1280 it was a
- * full-page takeover, so the chat the draft is being read from — and the
-column it sits in — vanished behind a centred column on blank white. Design 2f
-does the draft in the assistant panel NEXT TO the chat, so the request now
-opens the DOCKED variant, mounted over a page that is still there. */
+ * rcn-2f round 7 changed WHERE that panel stands: at 1280 the fixed-right
+ * sheet sat ON TOP of the chat ("Return control" cut off, the composer's
+ * agent picker reading "m4-planne", user bubbles truncated). Design 2f
+ * docks it BESIDE the chat — the panel reserves its 450px on the shell's
+ * main area (the `data-assistant-dock` flag + the injected CSS), so the
+ * chat column narrows and nothing is covered.
+ */
 describe("thread → workflow draft ask (2f)", () => {
-  it("opens the docked panel and posts the human ask with the chat as context entity", async () => {
+  it("docks the panel beside the chat: reserves its width on the shell's main area", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -266,8 +268,8 @@ describe("thread → workflow draft ask (2f)", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/p/01P/conversations/c-42"]}>
-          {/* The chat the draft is drafted FROM, still mounted under the
-              surface: the takeover left nothing of it on screen. */}
+          {/* The chat the draft is drafted FROM, still mounted beside the
+              dock: the dock reserves its column instead of covering it. */}
           <p data-testid="chat-behind">Search revamp spike</p>
           <AssistantPopover />
         </MemoryRouter>
@@ -276,14 +278,26 @@ describe("thread → workflow draft ask (2f)", () => {
     act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
     const panel = await screen.findByTestId("assistant-panel");
     expect(panel.getAttribute("data-variant")).toBe("docked");
-    // The surface is the right-hand dock, not the viewport: `inset-0` with no
-    // `lg:left-auto` is what covered the chat at 1280 (its own column is
-    // 720px, so the sheet leaves the thread readable beside it on a desktop).
+    // The sheet is the right-hand column, and it reserves that width on the
+    // shell's main area: the flag on the document element plus the CSS that
+    // shrinks the content column and steps the thread page's fixed rails
+    // aside while the dock is open.
     const dock = screen.getByTestId("assistant-popover");
     expect(dock.getAttribute("data-dock")).toBe("right");
     expect(dock.className).toContain("lg:left-auto");
     expect(dock.className).toContain("lg:w-[450px]");
-    // And the chat it drafts from is still in the tree behind the dock.
+    expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
+    const style = dock.querySelector("style") as HTMLStyleElement | null;
+    expect(style?.textContent).toContain("margin-right: 450px");
+    expect(style?.textContent).toContain("width: calc(100% - 450px)");
+    expect(style?.textContent).toContain("max-width: none");
+    expect(style?.textContent).toContain("html[data-assistant-dock=on] main");
+    expect(style?.textContent).toContain('[data-testid="thread-list-pane"]');
+    expect(style?.textContent).toContain('[data-testid="thread-side-panel-aside"]');
+    // The reservation is desktop-only: below the Shell's phone width the
+    // sheet takes the screen and reserves no width at all.
+    expect(style?.textContent).toContain("@media (min-width: 1024px)");
+    // And the chat it drafts from is still in the tree beside the dock.
     expect(screen.getByTestId("chat-behind")).toBeTruthy();
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     const body = JSON.parse(stub.posted[0].body) as {
@@ -293,6 +307,26 @@ describe("thread → workflow draft ask (2f)", () => {
     expect(body.text).toBe("Turn the chat \u201CSearch revamp spike\u201D into a workflow");
     expect(body.text).not.toContain("c-42");
     expect(body.context?.entity).toEqual({ kind: "conversation", id: "c-42" });
+  });
+
+  it("releases the reserved width the moment the dock stands down", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/p/01P/conversations/c-42"]}>
+          <AssistantPopover />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
+    await screen.findByTestId("assistant-panel");
+    expect(document.documentElement.getAttribute("data-assistant-dock")).toBe("on");
+    // Shrink: back to the 400px popover; the column is the chat's again.
+    fireEvent.click(screen.getByTestId("assistant-shrink"));
+    expect(document.documentElement.getAttribute("data-assistant-dock")).toBeNull();
   });
 });
 

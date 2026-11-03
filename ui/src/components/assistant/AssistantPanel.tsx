@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Minimize2, Plus } from "lucide-react";
 import { Button } from "../ds/Button";
 import { formatAge } from "../../lib/format";
@@ -25,6 +25,13 @@ import type { AssistantChange, AssistantMessage, TrustLevel } from "./types";
  * `variant="popover"` is the 400px bottom-right panel (1px ink border,
  * radius 4, hard 2px shadow); `variant="expanded"` is the full content
  * area with the conversation column centred at max 680px.
+ *
+ * When a turn's answer links the library draft the assistant saved
+ * (design 2f: the server's `Open draft → /workflows/…` link rides the
+ * answer's `links[]`), the wide variants carry that link back into the
+ * footer as the `Open draft` action the design draws beside the composer
+ * (rcn-2f round 7). It is hidden until such a turn exists — the panel
+ * never offers a door to a draft nobody saved.
  */
 /**
  * What an ask round-trip may report back (assistant-lost-ask): a send that
@@ -518,6 +525,24 @@ export function AssistantPanel({
     [onAnswerQuestion, watchSend],
   );
 
+  /**
+   * Design 2f (rcn-2f round 7): the `Open draft` action beside the composer.
+   * The server tags the saved draft's link `Open draft` on the answer that
+   * created it (workflow.create_draft → links[]); the newest such link is
+   * the draft the person is drafting — a later save supersedes the earlier
+   * door. `null` while no turn has saved one: the button stays hidden, not
+   * disabled, until the draft exists.
+   */
+  const draftLink = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message.payload.kind !== "assistant") continue;
+      const link = message.payload.links.find((candidate) => candidate.label === "Open draft");
+      if (link) return link;
+    }
+    return null;
+  }, [messages]);
+
   // A carried-over ask the caller lost (the palette's question): back into
   // the composer, once per token.
   const lastRestoreTokenRef = useRef<number | null>(null);
@@ -780,6 +805,22 @@ export function AssistantPanel({
             onToggle={() => (speech.listening ? finishListening() : startListening())}
             disabled={busy}
           />
+        ) : null}
+        {/* Design 2f: `Or tell me what to change…` sits beside `Open draft`.
+            The wide variants only — the popover's 400px row already holds
+            the context chip, the mic and Send, and the draft door stays
+            reachable in the transcript's `Go ›` link row while there. */}
+        {!popover && draftLink ? (
+          <Button
+            variant="ghost"
+            compact
+            data-testid="assistant-open-draft"
+            title="Open the draft in the library"
+            className="shrink-0"
+            onClick={() => onGo(draftLink.route)}
+          >
+            Open draft
+          </Button>
         ) : null}
         <Button
           variant="primary"

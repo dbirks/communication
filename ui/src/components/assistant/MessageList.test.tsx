@@ -194,7 +194,9 @@ describe("MessageList", () => {
       />,
     );
     const headers = screen.getAllByTestId("assistant-question-header");
-    expect(headers.map((h) => h.textContent)).toEqual(["Question 1 of 2", "Question 2 of 2"]);
+    // The index the transcript proves; the total the one-question-per-turn
+    // flow cannot know, so it is not printed (rcn-2f round 7).
+    expect(headers.map((h) => h.textContent)).toEqual(["Question 1", "Question 2"]);
     const options = screen.getAllByTestId("assistant-question-option");
     // first card: the reply quoted its second option verbatim → inked
     const chosen = options.find((o) => o.getAttribute("data-selected") === "true");
@@ -309,6 +311,60 @@ describe("MessageList", () => {
     expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Plan");
     expect(within(rows[0]).getByTestId("assistant-step-profile").textContent).toBe("Claude Code");
     // …and the intro line stays its own prose paragraph.
+    expect(screen.getByTestId("assistant-answer").textContent).toContain(
+      "I read the chat. Drafting Adapter swap",
+    );
+  });
+
+  /**
+   * rcn-2f round 7: the lab's step list reached the transcript with blank
+   * lines between its rows — one line per paragraph — and the old
+   * paragraph-bound rule fell back to a block of stray ✓ prose. The rows are
+   * the draft's step list as the assistant posted them: blank lines between
+   * them are the model's spacing, not a list boundary.
+   */
+  it("keeps a step list whole across the blank lines between its rows (rcn-2f round 7)", () => {
+    const answer = (text: string): AssistantMessage => ({
+      ...assistantMessage(),
+      payload: {
+        ...assistantMessage().payload,
+        answer_markdown: text,
+        links: [],
+      } as AssistantMessage["payload"],
+    });
+    render(
+      <MessageList
+        messages={[
+          answer(
+            "I read the chat. Drafting Adapter swap → PR in the library:\n\n" +
+              "✓ Plan — Claude Code · opus\n\n" +
+              "✓ Implement — Codex · gpt-5\n\n" +
+              "● Review — Codex · skill review\n\n" +
+              "· Open draft PR — Codex · gpt-5",
+          ),
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    // One list, four rows, in the order posted — not four prose lines.
+    const lists = screen.getAllByTestId("assistant-step-list");
+    expect(lists).toHaveLength(1);
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows).toHaveLength(4);
+    expect(rows.map((row) => row.getAttribute("data-state"))).toEqual([
+      "done",
+      "done",
+      "current",
+      "later",
+    ]);
+    expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Plan");
+    expect(within(rows[2]).getByTestId("assistant-step-profile").textContent).toBe(
+      "Codex · skill review",
+    );
+    // The intro stays its own prose paragraph.
     expect(screen.getByTestId("assistant-answer").textContent).toContain(
       "I read the chat. Drafting Adapter swap",
     );

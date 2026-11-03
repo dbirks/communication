@@ -60,6 +60,41 @@ import type { ComposerRestore } from "./AssistantPanel";
 /** The palette's Ask row opens the popover (and carries its question). */
 export const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
 
+/** The docked panel's width (design 2f): the 450px right-hand column. */
+const DOCK_WIDTH_PX = 450;
+
+/**
+ * rcn-2f round 7: while the dock stands, the SHELL's content column reserves
+ * the dock's width instead of letting the 450px sheet cover it — at 1280 the
+ * old fixed-right sheet sat ON TOP of the chat ("Return control" cut off, the
+ * composer's picker truncated, user bubbles clipped). Design 2f docks the
+ * panel BESIDE the chat: the column narrows, nothing is covered.
+ *
+ * The reservation is a CSS variable's worth of width on the app shell's
+ * `main` (the one element every page renders under), applied only while
+ * `html[data-assistant-dock="on"]` is set and only at the desktop width where
+ * the dock is a column — below 1024 the sheet is full-screen and reserves
+ * nothing. `main` is width-capped and centred (`mx-auto max-w-5xl`), so a bare
+ * `margin-right` has no room to push at 1280 (probed live: the column still
+ * painted under the sheet); the reservation therefore also takes the cap off
+ * and narrows the column to the space that remains beside the dock. On the
+ * thread page the two fixed rails (the 320px thread list and the 280px
+ * context panel) step aside while the dock is open, so the transcript — the
+ * thing the draft is read from — keeps a real column instead of a sliver.
+ */
+const DOCK_RESERVATION_CSS = `@media (min-width: 1024px) {
+  html[data-assistant-dock=on] main {
+    margin-right: ${DOCK_WIDTH_PX}px;
+    width: calc(100% - ${DOCK_WIDTH_PX}px);
+    max-width: none;
+  }
+  html[data-assistant-dock=on] [data-testid="thread-list-pane"],
+  html[data-assistant-dock=on] [data-testid="thread-side-panel-aside"] {
+    display: none;
+  }
+}
+`;
+
 /** The jump palette's open event; ⌘K while the assistant is up dispatches it. */
 const PALETTE_OPEN_EVENT = "communication:palette-open";
 
@@ -555,6 +590,22 @@ export default function AssistantPopover() {
     if (latest) setConversationId(latest.id);
   }, [open, conversationId, awaitingNew, conversations.data]);
 
+  /**
+   * rcn-2f round 7: the dock reserves its width on the shell's main area
+   * (the `margin-right` above) by flagging the document element — the
+   * attribute is the only state the injected CSS reads, so shrink/close
+   * (any mode change) releases the column the instant the dock stands down.
+   */
+  useEffect(() => {
+    const root = document.documentElement;
+    if (open && mode === "docked") {
+      root.setAttribute("data-assistant-dock", "on");
+    } else {
+      root.removeAttribute("data-assistant-dock");
+    }
+    return () => root.removeAttribute("data-assistant-dock");
+  }, [open, mode]);
+
   /** `Retry` / `Not now` on a pending approval_request (ADR-0050 Decision 4).
    * The decision post carries ONLY the request id — `{confirm: <id>}` or
    * `{dismiss: <id>}` — never `text` (the handler 400s a decision post that
@@ -655,18 +706,20 @@ export default function AssistantPopover() {
   return (
     <>
       {mode === "docked" ? (
-        // 2f (rcn-2f review item 1): the thread → workflow assistant is
-        // DOCKED RIGHT of the chat it drafts from — the thread, its composer
-        // and the column all stay on screen, because the draft is the chat’s
-        // and a person reads one against the other. Below 1024px — the
-        // Shell’s own phone width, the same question that collapses this
-        // chat’s context rail under the transcript — a 450px dock would
-        // leave nothing of the thread, so the panel takes the screen instead.
+        // 2f (rcn-2f round 7): the thread → workflow assistant stands
+        // BESIDE the chat it drafts from — the sheet is the right-hand
+        // column, and the injected reservation (the `data-assistant-dock`
+        // flag + the CSS below) shrinks the shell's content column by that
+        // same width, so the thread, its header and its composer stay on
+        // screen whole instead of clipped under the sheet. Below 1024px —
+        // the Shell's own phone width — a column would leave nothing of the
+        // thread, so the panel takes the screen and reserves no width.
         <div
           className="fixed inset-0 z-40 flex flex-col bg-surface lg:inset-y-0 lg:left-auto lg:w-[450px] lg:border-l lg:border-line-strong"
           data-testid="assistant-popover"
           data-dock="right"
         >
+          <style>{DOCK_RESERVATION_CSS}</style>
           {sendError ? <div className="px-[10px] pt-[8px]">{errorLine}</div> : null}
           <AssistantPanel
             variant="docked"
