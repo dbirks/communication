@@ -118,4 +118,29 @@ describe("QuestionCard", () => {
     rerender(<QuestionCard question={question()} onAnswer={() => {}} />);
     expect(screen.queryByTestId("assistant-question-header")).toBeNull();
   });
+
+  /**
+   * rcn-2f review item 2: the lab's reply announced TWO things the chat left
+   * open and then held ONE question, and the card's own header — `Question 1
+   * of 1` — was the last piece of that lie on screen. Design 2f asks ONE
+   * question per turn, so a single OPEN question is not the first of a list:
+   * it prints no count. Once it is answered the list is closed and the count
+   * is a fact, so the card says so.
+   */
+  it("prints no count on the one question the conversation is asking", () => {
+    const { rerender } = render(
+      <QuestionCard question={question()} onAnswer={() => {}} ordinal={1} total={1} />,
+    );
+    expect(screen.queryByTestId("assistant-question-header")).toBeNull();
+    // Answered, the same card is honestly the one question it asked.
+    rerender(
+      <QuestionCard
+        question={question({ answered_by: "01K1user-msg" })}
+        onAnswer={() => {}}
+        ordinal={1}
+        total={1}
+      />,
+    );
+    expect(screen.getByTestId("assistant-question-header").textContent).toBe("Question 1 of 1");
+  });
 });

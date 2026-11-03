@@ -460,6 +460,101 @@ describe("the failed turn (error-details-r6)", () => {
     fireEvent.click(details.querySelector("summary") as HTMLElement);
     expect((notice.querySelector("details") as HTMLDetailsElement).open).toBe(true);
   });
+
+  /** `internal/worker/launchfailure.go` — the sentence a launcher that will not
+   * start without a sign-in sends. The launcher id is the executable the worker
+   * spawns; the profile row on this very read is the agent the member chose
+   * (ADR-0068), and ADR-0068 round 4 is why the pair is worth resolving: the
+   * review watched a Codex sign-in print as a broken repository. */
+  const NOT_SIGNED_IN =
+    'worker: launcher "claude" is not signed in on this worker: the agent refused ' +
+    "session/new because it requires a sign-in, JSON-RPC code -32000 \u2014 check this " +
+    "launcher's credential directory on the worker that owns the turn";
+
+  it("names the AGENT a sign-in refusal came from, in the words the member chose (rcn-2f review item 3)", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: turnId,
+          submitted_by: meFixture.id,
+          text: "Run the specs.",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.turn.failed", { turn_id: turnId, message: NOT_SIGNED_IN }),
+      );
+    });
+
+    const notice = await screen.findByTestId("turn-failed");
+    // "Claude Code", not `claude`: the profile the thread runs, not the binary.
+    expect(within(notice).getByTestId("turn-failed-plain").textContent).toBe(
+      "Claude Code isn't signed in on this worker, so this turn couldn't start.",
+    );
+    // The evidence is untouched behind the disclosure.
+    expect(within(notice).getByTestId("turn-failed-server").textContent).toContain(
+      'launcher "claude" is not signed in',
+    );
+  });
+
+  it("marks the agent run that failed in the side panel (rcn-2f review item 3)", async () => {
+    // The rail's AGENTS rows are ADR-0068's turn RANGES; the journal's turn
+    // rows are the only thing that says how a turn in a range ended. Wiring
+    // `transcript.turns` through is what lights the marker — without it the
+    // failed run of a thread reads exactly like a finished one.
+    const oneTurnPerRun: Conversation = {
+      ...conversationFixture,
+      agents: [
+        {
+          agent_profile_id: claudeProfile.id,
+          agent_profile_name: claudeProfile.name,
+          model: "opus",
+          first_turn: 1,
+          last_turn: 1,
+          turn_count: 1,
+        },
+        {
+          agent_profile_id: codexProfile.id,
+          agent_profile_name: codexProfile.name,
+          model: "gpt-5",
+          first_turn: 2,
+          last_turn: 2,
+          turn_count: 1,
+        },
+      ],
+    };
+    renderApp({ path, routes: routes(oneTurnPerRun) });
+    await screen.findByTestId("conversation-title");
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: turnId,
+          submitted_by: meFixture.id,
+          text: "Start the workspace.",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.turn.failed", { turn_id: turnId, message: NOT_SIGNED_IN }),
+      );
+    });
+
+    await screen.findByTestId("turn-failed");
+    const panel = await screen.findByTestId("conversation-side-panel");
+    // Turn 1 is Claude Code's whole run, so that row wears the state —
+    // glyph and word, never colour alone.
+    const marker = within(panel).getByTestId("side-panel-agent-state-0");
+    expect(marker.textContent).toContain("failed");
+    expect(within(panel).getByTestId("side-panel-agent-row-0").textContent).toContain(
+      "Claude Code",
+    );
+    // Codex's run (turn 2) is not in this journal at all: an absent fact
+    // prints no state rather than borrowing its neighbour's.
+
+    expect(within(panel).queryByTestId("side-panel-agent-state-1")).toBeNull();
+  });
 });
 
 describe("one repository fact for the header and the rail (ADR-0067)", () => {

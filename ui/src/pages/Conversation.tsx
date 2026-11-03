@@ -361,6 +361,11 @@ export default function ConversationPage({
       branch={threadBranchLabel}
       filesChanged={filesChanged}
       agents={data.agents ?? null}
+      // The rail's "· × failed" marker (rcn-2f review item 3, the wiring left
+      // unhooked since ADR-0068's agent ranges landed): `agents` says WHICH
+      // turns a profile ran, the journal's turn rows say how they ended, and
+      // `agentRunStateCopy` needs both to say `Codex · gpt-5 turn 2 · × failed`.
+      turns={transcript.turns}
       // ADR-0072 agent mail: the rail's LINKED CHATS list reads the detail's
       // linked_chats (both directions, with the link's state).
       links={data.linked_chats ?? null}

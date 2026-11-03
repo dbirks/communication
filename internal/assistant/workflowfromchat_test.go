@@ -582,3 +582,196 @@ func TestDraftingRulesPutTheListBeforeTheQuestionAndNeverRepeatIt(t *testing.T) 
 		t.Errorf("the few-shot's text half repeats the question it asks:\n%s", shot)
 	}
 }
+
+// --- the reply the rcn-2f review sent back --------------------------------
+//
+// One answer carried three defects at once: it COUNTED questions the turn
+// would never ask ("Two things the chat leaves open:" printed above ONE
+// question card and a `used 2 tools` line), and its step lines named a role
+// ("— agent", "— condition", "— trigger") rather than the agent profile or the
+// owner that would run the step. Design 2f is one question per turn, a step
+// list where every line names who runs it, and a reply that promises nothing
+// the flow cannot deliver. The rules are the contract; the post-check under
+// the count rule is the net.
+
+func TestDraftingRulesNeverAnnounceAQuestionCount(t *testing.T) {
+	for _, want := range []string{
+		"Never announce a COUNT of questions",
+		`"Two things the chat leaves open:"`,
+		"ONE question per turn",
+		"ask the one the next step waits on",
+	} {
+		if !strings.Contains(conversationSystemPrompt, want) {
+			t.Fatalf("the conversation system prompt must carry the question-count rule %q", want)
+		}
+	}
+	// The few-shot models the rule: the example's text half never counts.
+	mark := strings.Index(conversationSystemPrompt, "Example of the step-list answer shape")
+	if mark < 0 {
+		t.Fatalf("the drafting few-shot is gone:\n%s", conversationSystemPrompt)
+	}
+	shot := conversationSystemPrompt[mark:]
+	if strings.Contains(strings.ToLower(shot), "things the chat leaves open") ||
+		strings.Contains(strings.ToLower(shot), "a few questions") {
+		t.Fatalf("the few-shot models the count the rules forbid:\n%s", shot)
+	}
+}
+
+// Every step line names who runs it — the rule, AND the few-shot that teaches
+// it. `· Open draft PR` with nothing after it is the shape the review caught:
+// the person reading a draft cannot tell what runs that step, and the step list
+// is the one thing this flow exists to show.
+func TestDraftingRulesStepLineNamesAnAgentProfileOrOwner(t *testing.T) {
+	for _, want := range []string{
+		"<glyph> <step name> — <agent profile or owner>",
+		"EVERY step line names WHO does that step",
+	} {
+		if !strings.Contains(conversationSystemPrompt, want) {
+			t.Fatalf("the conversation system prompt must carry the step-owner rule %q", want)
+		}
+	}
+	mark := strings.Index(conversationSystemPrompt, "I read the chat. Drafting")
+	if mark < 0 {
+		t.Fatalf("the drafting few-shot lost its step list:\n%s", conversationSystemPrompt)
+	}
+	shot := conversationSystemPrompt[mark:]
+	if at := strings.Index(shot, "(the ui.question half"); at >= 0 {
+		shot = shot[:at]
+	}
+	lines := strings.Split(strings.TrimSpace(shot), "\n")
+	steps := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "\u2713") && !strings.HasPrefix(line, "\u25cf") &&
+			!strings.HasPrefix(line, "\u00b7") {
+			continue
+		}
+		steps++
+		_, profile, found := strings.Cut(line, " \u2014 ")
+		if !found || strings.TrimSpace(profile) == "" {
+			t.Errorf("the few-shot step line names no agent profile or owner: %q", line)
+		}
+	}
+	if steps < 4 {
+		t.Fatalf("the few-shot's step list is gone (saw %d step lines)", steps)
+	}
+}
+
+// The net under the count rule, on the text itself.
+func TestDropDanglingLeadIn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in, want string
+	}{
+		// The review's own reply: the count line and its gap go, the reading
+		// that came before it stays word for word.
+		"review reply": {
+			in: "Read the chat — a request from alice and an agent answering OK.\n" +
+				"That is the whole pattern, so a faithful workflow is short:\n" +
+				"• Receive request — Codex · repo web\n" +
+				"• Draft reply — Codex · repo web\n\n" +
+				"Two things the chat leaves open:",
+			want: "Read the chat — a request from alice and an agent answering OK.\n" +
+				"That is the whole pattern, so a faithful workflow is short:\n" +
+				"• Receive request — Codex · repo web\n" +
+				"• Draft reply — Codex · repo web",
+		},
+		"bolded": {
+			in:   "I read the chat.\n\n**Two things the chat leaves open:**",
+			want: "I read the chat.",
+		},
+		// A lead-in that DOES introduce its list is design 2f's own first
+		// sentence: the colon opens content, so nothing is dangling.
+		"kept: introduces the list": {
+			in: "Drafting Adapter swap → PR in the library:\n" +
+				"✓ Plan — Claude Code · opus\n● Review — Codex · skill review",
+			want: "Drafting Adapter swap → PR in the library:\n" +
+				"✓ Plan — Claude Code · opus\n● Review — Codex · skill review",
+		},
+		// The count line only dangles when the colon ENDS it: a reader's own
+		// sentence that names a count and then says what it is stays.
+		"kept: the list is on the line": {
+			in:   "Two things the chat leaves open: whether review repeats, and what starts it.",
+			want: "Two things the chat leaves open: whether review repeats, and what starts it.",
+		},
+		"kept: a plain colon": {
+			in:   "Here is what I could see:",
+			want: "Here is what I could see:",
+		},
+		"only the announcement": {in: "A few questions:", want: ""},
+	} {
+		if got := dropDanglingLeadIn(tc.in); got != tc.want {
+			t.Errorf("%s: dropDanglingLeadIn =\n%q\nwant\n%q", name, got, tc.want)
+		}
+	}
+}
+
+// The post-check runs on the answer that ships: the reading stays, the promised
+// count line does not, and the question card is still the one question asked.
+func TestRunnerDropsADanglingQuestionCountLeadIn(t *testing.T) {
+	reader := &fakeChatReader{visible: chatTranscriptFixture()}
+	model := newFakeModel(t,
+		step{toolCalls: []toolCallRequest{toolCall("chat.transcript", map[string]any{"conversation_id": "c-1"})}},
+		step{
+			text: "Read the chat — a request from alice and an agent answering OK, on repo web.\n" +
+				"• Reply on the thread — Codex · repo web\n" +
+				"• Verify the reply matches the requested form\n\n" +
+				"Two things the chat leaves open:",
+			toolCalls: []toolCallRequest{toolCall("ui.question", map[string]any{
+				"prompt": "Which agent profile should the workflow's reply step run as?",
+				"options": `[{"label":"m4-planner","value":"planner"},` +
+					`{"label":"m4-implementer","value":"implementer"}]`,
+			})},
+		},
+	)
+	r := newFromChatRunner(t, model, reader, &fakeLibrary{})
+	res := runTurnText(t, r, "Turn this chat into a workflow", TrustAskRisky)
+	if res.Question == nil || len(res.Question.Options) != 2 {
+		t.Fatalf("the question card was lost with its lead-in: %+v", res.Question)
+	}
+	got := res.Answer.AnswerMarkdown
+	if strings.Contains(got, "leaves open") {
+		t.Fatalf("the dangling lead-in reached the reader:\n%s", got)
+	}
+	for _, want := range []string{
+		"Read the chat", "• Reply on the thread — Codex · repo web",
+		"• Verify the reply matches the requested form",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the answer lost its reading (%q):\n%s", want, got)
+		}
+	}
+}
+
+// A lead-in that introduces real content is not dangling, and the net must not
+// touch it: the step list the review asked for arrives under its own sentence.
+func TestRunnerKeepsALeadInThatIntroducesTheStepList(t *testing.T) {
+	model := newFakeModel(t, step{text: "Drafting the reply flow in the library:\n" +
+		"✓ Receive request — Codex · repo web\n● Verify the reply — Codex · repo web"})
+	r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+	got := runOne(t, r, TrustAskRisky).Answer.AnswerMarkdown
+	if !strings.Contains(got, "Drafting the reply flow in the library:") {
+		t.Fatalf("the filter ate a lead-in that introduced its list:\n%s", got)
+	}
+}
+
+// A question turn whose entire text was the promised count carries the card
+// alone: filling the hole with the prompt would print the same sentence twice,
+// once in prose and once in the card — the defect the round-4 review named.
+func TestRunnerQuestionTurnWithOnlyALeadInCarriesTheCardAlone(t *testing.T) {
+	model := newFakeModel(t, step{
+		text: "Two things the chat leaves open:",
+		toolCalls: []toolCallRequest{toolCall("ui.question", map[string]any{
+			"prompt":  "Should Review repeat until clean?",
+			"options": `[{"label":"Repeat, max 3","value":"repeat"},{"label":"Run once","value":"once"}]`,
+		})},
+	})
+	r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+	res := runOne(t, r, TrustAskRisky)
+	if res.Question == nil {
+		t.Fatal("the question card was lost")
+	}
+	if res.Answer != nil && strings.Contains(res.Answer.AnswerMarkdown, "repeat until clean") {
+		t.Fatalf("the question was restated as prose beside its own card:\n%s",
+			res.Answer.AnswerMarkdown)
+	}
+}

@@ -225,6 +225,18 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
   // only when the conversation row and its switch dividers do not answer.
   const agentProfiles = useAgentProfiles();
 
+  /**
+   * The agent a `launcher_id` names, in the words the person chose — the read
+   * the failed-turn notice asks for when the worker says
+   * `launcher "codex" is not signed in` (rcn-2f review item 3): the sentence
+   * names the agent ("Codex isn't signed in on this worker…"), and only a
+   * launcher no read names falls back to the executable it was given. The same
+   * resolver the mail cards use: one conversation read, one answer.
+   */
+  const nameSource = launcherNameSource(data, events, agentProfiles.data?.items ?? []);
+  const agentNameForLauncher = (launcherId: string) =>
+    agentDisplayForLauncher(launcherId, nameSource)?.name ?? null;
+
   // The label for the run before any switch.
   let initial = "agent";
   if (!switched) {
@@ -269,7 +281,13 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
    * `Transcript`, as before.
    */
   const runFor = (items: TranscriptItem[], agentName: string, keyBase: string) =>
-    renderSplitAtTurnFailures(items, events, keyBase, (list) => transcriptFor(list, agentName));
+    renderSplitAtTurnFailures(
+      items,
+      events,
+      keyBase,
+      (list) => transcriptFor(list, agentName),
+      agentNameForLauncher,
+    );
 
   return (
     <>

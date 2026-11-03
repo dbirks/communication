@@ -34,6 +34,7 @@ import {
 import { Link } from "react-router";
 import { ApiError } from "../../api/client";
 import { useProject, useRepositories } from "../../api/queries";
+import { agentDisplayForLauncher, launcherNameSource } from "./agentNames";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import { Button } from "../ds/Button";
 import { Menu, type MenuEntry } from "../ds/Menu";
@@ -811,7 +812,20 @@ function PanelInner({
         {empty.copy}
       </p>
     ) : (
-      renderSplitAtTurnFailures(items, session.events, "panel", transcriptFor)
+      renderSplitAtTurnFailures(
+        items,
+        session.events,
+        "panel",
+        transcriptFor,
+        // rcn-2f review item 3: this surface names the agent a failed turn
+        // was run by, from the conversation's own profile row and the switch
+        // dividers in its stream — `launcher "codex" is not signed in` reads
+        // as "Codex isn't signed in on this worker, so this turn couldn't
+        // start." A launcher neither read names keeps the machine's word.
+        (launcherId) =>
+          agentDisplayForLauncher(launcherId, launcherNameSource(data, session.events, []))?.name ??
+          null,
+      )
     );
 
   const composerBlock = (

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import MessageList from "./MessageList";
 import type { AssistantMessage } from "./types";
 
@@ -261,7 +261,17 @@ describe("MessageList", () => {
     expect(rows[0].getAttribute("data-state")).toBe("done");
     expect(rows[2].getAttribute("data-state")).toBe("current");
     expect(rows[3].getAttribute("data-state")).toBe("later");
-    expect(rows[0].textContent).toContain("Plan — Claude Code · opus");
+    // 2f draws the step word on the left and WHO runs it in machine type at
+    // the row's end, so the row is two members, not one sentence: the dash
+    // the server's rule puts between them is a delimiter, not text (rcn-2f
+    // review item 2 — the profile used to ride inside the prose).
+    expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Plan");
+    expect(within(rows[0]).getByTestId("assistant-step-profile").textContent).toBe(
+      "Claude Code · opus",
+    );
+    // A step the draft names no owner for prints alone: inventing one would
+    // claim a fact no read gave.
+    expect(within(rows[3]).queryByTestId("assistant-step-profile")).toBeNull();
     // the saved draft's `Open draft` link navigates through the caller
     fireEvent.click(screen.getByTestId("assistant-link"));
     expect(onGo).toHaveBeenCalledWith("/workflows/pl-9");
@@ -296,11 +306,53 @@ describe("MessageList", () => {
     const rows = screen.getAllByTestId("assistant-step-row");
     expect(rows).toHaveLength(3);
     expect(rows[1].getAttribute("data-state")).toBe("current");
-    expect(rows[0].textContent).toContain("Plan — Claude Code");
+    expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Plan");
+    expect(within(rows[0]).getByTestId("assistant-step-profile").textContent).toBe("Claude Code");
     // …and the intro line stays its own prose paragraph.
     expect(screen.getByTestId("assistant-answer").textContent).toContain(
       "I read the chat. Drafting Adapter swap",
     );
+  });
+
+  /**
+   * rcn-2f review item 2: the profile is a MEMBER of the row, not the tail of
+   * its sentence — so splitting the line at the dash is the renderer's whole
+   * job, and a step name with a hyphen of its own must survive it.
+   */
+  it("splits the step from its owner at the dash, not at the first hyphen", () => {
+    const answer = (text: string): AssistantMessage => ({
+      ...assistantMessage(),
+      payload: {
+        ...assistantMessage().payload,
+        answer_markdown: text,
+        links: [],
+      } as AssistantMessage["payload"],
+    });
+    render(
+      <MessageList
+        messages={[
+          answer(
+            "✓ Draft-reply — Codex · gpt-5\n● Verify the reply — m4-planner · opus\n· Open the PR",
+          ),
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Draft-reply");
+    expect(within(rows[0]).getByTestId("assistant-step-profile").textContent).toBe("Codex · gpt-5");
+    expect(within(rows[1]).getByTestId("assistant-step-name").textContent).toBe("Verify the reply");
+    expect(within(rows[1]).getByTestId("assistant-step-profile").textContent).toBe(
+      "m4-planner · opus",
+    );
+    // An owner-less line still reads as a step; the row simply prints no member.
+    expect(within(rows[2]).getByTestId("assistant-step-name").textContent).toBe("Open the PR");
+    expect(within(rows[2]).queryByTestId("assistant-step-profile")).toBeNull();
+    // Screen readers get the owner as words, not as a floating label.
+    expect(rows[0].textContent).toContain("runs on Codex · gpt-5");
   });
 
   it("leaves a stray ✓ line as prose (a step list needs ≥ 2 marked lines)", () => {

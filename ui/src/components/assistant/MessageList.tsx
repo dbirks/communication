@@ -189,6 +189,27 @@ interface StepLine {
   rest: string;
 }
 
+/**
+ * The step line's own shape (design 2f, rcn-2f review item 2): a dash and the
+ * agent profile or owner that runs the step — `✓ Plan — Claude Code · opus`.
+ * The dash must stand on BOTH sides: a step named "Draft-reply" keeps its own
+ * hyphen, and a later "— Codex" is still the profile.
+ */
+const STEP_PROFILE_MARK = /\s[\u2014\u2013-]\s/;
+
+/** Split one step line into its step and who runs it. */
+function stepPartsOf(rest: string): { step: string; profile: string | null } {
+  const at = rest.search(STEP_PROFILE_MARK);
+  if (at < 0) return { step: rest.trim(), profile: null };
+  const step = rest.slice(0, at).trim();
+  const profile = rest
+    .slice(at)
+    .replace(/^[\s\u2014\u2013-]+/, "")
+    .trim();
+  if (!step || !profile) return { step: rest.trim(), profile: null };
+  return { step, profile };
+}
+
 function stepLineOf(raw: string): StepLine | null {
   let line = raw.trim();
   const bullet = /^(?:[-*+]|\d+[.)])\s+/.exec(line);
@@ -249,31 +270,56 @@ function StepList({ lines }: { lines: StepLine[] }) {
   return (
     <div data-testid="assistant-step-list" className="flex flex-col gap-[2px] py-[2px]">
       {lines.map((line, index) => (
-        <p
-          key={index}
-          data-testid="assistant-step-row"
-          data-state={line.glyph === "✓" ? "done" : line.glyph === "●" ? "current" : "later"}
-          className="m-0 flex items-baseline gap-[6px] text-[12.5px] leading-[1.5] text-ink"
-        >
-          <span
-            aria-hidden="true"
-            className={`w-[12px] flex-shrink-0 text-center ${
-              line.glyph === "✓"
-                ? "text-st-done-pale-fg"
-                : line.glyph === "●"
-                  ? "text-accent"
-                  : "text-faint"
-            }`}
-          >
-            {line.glyph}
-          </span>
-          <span className="min-w-0">{line.rest}</span>
-          <span className="sr-only">
-            {line.glyph === "✓" ? " (done)" : line.glyph === "●" ? " (next)" : " (later)"}
-          </span>
-        </p>
+        <StepRow key={index} line={line} />
       ))}
     </div>
+  );
+}
+
+/**
+ * One row of the draft step list: the glyph (never colour alone, per
+ * states.ts), the step, and WHO runs it — the profile or owner after the
+ * dash, in machine type at the row's end (design 2f). A line that names no
+ * profile is still a step the person can read; the row prints it alone rather
+ * than inventing an owner that no read names.
+ */
+function StepRow({ line }: { line: StepLine }) {
+  const { step, profile } = stepPartsOf(line.rest);
+  return (
+    <p
+      data-testid="assistant-step-row"
+      data-state={line.glyph === "✓" ? "done" : line.glyph === "●" ? "current" : "later"}
+      className="m-0 flex items-baseline gap-[6px] text-[12.5px] leading-[1.5] text-ink"
+    >
+      <span
+        aria-hidden="true"
+        className={`w-[12px] flex-shrink-0 text-center ${
+          line.glyph === "✓"
+            ? "text-st-done-pale-fg"
+            : line.glyph === "●"
+              ? "text-accent"
+              : "text-faint"
+        }`}
+      >
+        {line.glyph}
+      </span>
+      <span data-testid="assistant-step-name" className="min-w-0 flex-1 truncate">
+        {step}
+      </span>
+      {profile ? (
+        <span
+          data-testid="assistant-step-profile"
+          className="max-w-[45%] shrink-0 truncate font-mono text-[11px] text-faint"
+          title={profile}
+        >
+          {profile}
+        </span>
+      ) : null}
+      <span className="sr-only">
+        {line.glyph === "✓" ? " (done)" : line.glyph === "●" ? " (next)" : " (later)"}
+      </span>
+      {profile ? <span className="sr-only">{` runs on ${profile}`}</span> : null}
+    </p>
   );
 }
 

@@ -30,7 +30,12 @@ export interface QuestionCardProps {
   onFreeText?: () => void;
   /** 1-based position among the conversation's questions (2f's header). */
   ordinal?: number;
-  /** The number of questions the conversation has asked so far. */
+  /**
+   * The number of questions the conversation has asked so far. A single OPEN
+   * question prints no count at all (`headerShown`): 2f asks one question per
+   * turn, and "Question 1 of 1" reads as the first of a list the reader is
+   * told to wait for (rcn-2f review item 2).
+   */
   total?: number;
   /**
    * The option label the user answered with, when the transcript's reply
@@ -48,13 +53,20 @@ export function QuestionCard({
   answeredLabel,
 }: QuestionCardProps) {
   const answered = question.answered_by != null;
+  // The honest count (rcn-2f review item 2): "Question 1 of 2" is true of a
+  // conversation whose transcript holds two questions and of nothing else.
+  // A single open question is not the first of anything — and the assistant
+  // that has asked the one question it may ask per turn has no second to
+  // show — so a lone open card wears no count. An ANSWERED one wears "1 of
+  // 1": the list it looked like being is closed, and the answer is on record.
+  const headerShown = ordinal != null && total != null && (total > 1 || answered);
 
   return (
     <div
       data-testid="assistant-question"
       className="rounded-[4px] border border-accent-ring bg-accent-wash px-[10px] py-[8px]"
     >
-      {ordinal != null && total != null ? (
+      {headerShown ? (
         <p
           data-testid="assistant-question-header"
           className="m-0 font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-accent-text"

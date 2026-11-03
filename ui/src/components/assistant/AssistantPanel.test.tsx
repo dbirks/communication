@@ -171,6 +171,43 @@ describe("AssistantPanel (expanded)", () => {
     expect(onShrink).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * rcn-2f review item 1: design 2f is drafted in the assistant panel NEXT TO
+   * the chat, so the `docked` variant is the same full-size surface laid out
+   * for the ~450px column it is handed — it fills that width instead of
+   * centring a 680px conversation inside it, and its header keeps the popover's
+   * icon-only controls (the row is 450px wide whatever the screen's width is,
+   * so viewport-driven wording would run off its right edge).
+   */
+  it("docked: fills the column it is handed, with icon-only header controls", () => {
+    const onShrink = vi.fn();
+    const { container } = render(
+      <AssistantPanel
+        variant="docked"
+        {...panelProps}
+        contextLabel="threads"
+        onShrink={onShrink}
+        onNewConversation={() => {}}
+      />,
+    );
+    const panel = container.querySelector('[data-testid="assistant-panel"]') as HTMLElement;
+    expect(panel.dataset.variant).toBe("docked");
+    // No centred 680px column: the dock's own width is the conversation's.
+    expect(panel.style.maxWidth).toBe("");
+    expect(panel.style.width).toBe("100%");
+    expect(screen.getByTestId("assistant-opened-from").textContent).toBe("opened from threads");
+    // The two header controls name themselves to assistive tech and the
+    // tooltip, and print an icon or a ＋ on screen.
+    const shrink = screen.getByTestId("assistant-shrink");
+    expect(shrink.getAttribute("aria-label")).toBe("Shrink to popover");
+    expect(shrink.querySelector(".sr-only")?.textContent).toBe("Shrink to popover");
+    fireEvent.click(shrink);
+    expect(onShrink).toHaveBeenCalledTimes(1);
+    const fresh = screen.getByTestId("assistant-new-conversation");
+    expect(fresh.getAttribute("aria-label")).toBe("New conversation");
+    expect(fresh.textContent).toContain("New");
+  });
+
   it("esc closes the expanded view too, and a busy turn shows thinking…", () => {
     const onClose = vi.fn();
     renderPanel({ onClose, busy: true, messages: [userMessage("hi")] });

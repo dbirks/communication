@@ -248,11 +248,17 @@ describe("assistant send failure honesty (503 degraded mapping)", () => {
 });
 
 /** 2f acceptance review: `Make a workflow…` opens the assistant PANEL at its
- * normal size (the expanded variant — never the small floating popover over
- * the chat's composer), the visible ask is one human sentence, and the
- * conversation id rides the POST as structured context. */
+ * normal size — never the small floating popover over the chat's composer —
+ * the visible ask is one human sentence, and the conversation id rides the
+ * POST as structured context.
+ *
+ * rcn-2f review item 1 changed WHERE that panel stands: at 1280 it was a
+ * full-page takeover, so the chat the draft is being read from — and the
+column it sits in — vanished behind a centred column on blank white. Design 2f
+does the draft in the assistant panel NEXT TO the chat, so the request now
+opens the DOCKED variant, mounted over a page that is still there. */
 describe("thread → workflow draft ask (2f)", () => {
-  it("opens the expanded panel and posts the human ask with the chat as context entity", async () => {
+  it("opens the docked panel and posts the human ask with the chat as context entity", async () => {
     const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -260,13 +266,25 @@ describe("thread → workflow draft ask (2f)", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/p/01P/conversations/c-42"]}>
+          {/* The chat the draft is drafted FROM, still mounted under the
+              surface: the takeover left nothing of it on screen. */}
+          <p data-testid="chat-behind">Search revamp spike</p>
           <AssistantPopover />
         </MemoryRouter>
       </QueryClientProvider>,
     );
     act(() => openAssistantWorkflowDraft({ id: "c-42", title: "Search revamp spike" }));
     const panel = await screen.findByTestId("assistant-panel");
-    expect(panel.getAttribute("data-variant")).toBe("expanded");
+    expect(panel.getAttribute("data-variant")).toBe("docked");
+    // The surface is the right-hand dock, not the viewport: `inset-0` with no
+    // `lg:left-auto` is what covered the chat at 1280 (its own column is
+    // 720px, so the sheet leaves the thread readable beside it on a desktop).
+    const dock = screen.getByTestId("assistant-popover");
+    expect(dock.getAttribute("data-dock")).toBe("right");
+    expect(dock.className).toContain("lg:left-auto");
+    expect(dock.className).toContain("lg:w-[450px]");
+    // And the chat it drafts from is still in the tree behind the dock.
+    expect(screen.getByTestId("chat-behind")).toBeTruthy();
     await waitFor(() => expect(stub.posted).toHaveLength(1));
     const body = JSON.parse(stub.posted[0].body) as {
       text: string;

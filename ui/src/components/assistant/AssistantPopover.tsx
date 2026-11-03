@@ -49,7 +49,12 @@ import {
   useUndoAllAssistantChanges,
   useUndoAssistantChange,
 } from "../../api/assistant";
-import type { AssistantChange, AssistantMessage, AssistantMessageContext } from "./types";
+import type {
+  AssistantChange,
+  AssistantMessage,
+  AssistantMessageContext,
+  TrustLevel,
+} from "./types";
 import type { ComposerRestore } from "./AssistantPanel";
 
 /** The palette's Ask row opens the popover (and carries its question). */
@@ -80,18 +85,26 @@ export function openAssistantPopover(text?: string): void {
  */
 export interface AssistantOpenRequest {
   text: string;
+  /**
+   * Open the full AssistantPanel instead of the bottom-right popover. A
+   * ⌘K ask that wants the whole content area leaves `docked` unset; the
+   * thread → workflow ask sets it, because design 2f is done in a panel
+   * BESIDE the chat (rcn-2f review item 1) and a full-page takeover hides the
+   * very transcript the draft is read from.
+   */
   expanded?: boolean;
+  docked?: boolean;
   entity?: NonNullable<AssistantMessageContext["entity"]>;
 }
 
 /**
  * Thread → workflow (design 2f): `Make a workflow…` opens the assistant
- * PANEL (the full-size AssistantPanel, not the floating popover) with the
- * chat as context. The ask is one human sentence — `Turn the chat “title”
- * into a workflow` — and the conversation id travels as the message's
- * structured context entity, never in the visible text (the assistant
- * reads the transcript through its caller-checked `chat.transcript` tool;
- * the id alone authorizes nothing).
+ * PANEL (the full-size AssistantPanel, never the floating popover) DOCKED
+ * RIGHT of the chat it drafts from, with that chat as context. The ask is one
+ * human sentence — `Turn the chat “title” into a workflow` — and the
+ * conversation id travels as the message's structured context entity, never
+ * in the visible text (the assistant reads the transcript through its
+ * caller-checked `chat.transcript` tool; the id alone authorizes nothing).
  */
 export function openAssistantWorkflowDraft(chat: { id: string; title?: string | null }): void {
   const title = chat.title?.trim();
@@ -100,6 +113,7 @@ export function openAssistantWorkflowDraft(chat: { id: string; title?: string | 
       ? `Turn the chat \u201C${title}\u201D into a workflow`
       : "Turn this chat into a workflow",
     expanded: true,
+    docked: true,
     entity: { kind: "conversation", id: chat.id },
   };
   window.dispatchEvent(
@@ -269,7 +283,13 @@ export default function AssistantPopover() {
   // re-adopting the caller's newest one.
   const [choice] = useState(readChoice);
   const [open, setOpen] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  /**
+   * Which size the surface stands in: the 400px popover, the 2c expanded
+   * view over the content area, or the 2f panel docked right of the chat.
+   * Only one at a time; `shrink` and `expand` move it back to the popover and
+   * the expanded view.
+   */
+  const [mode, setMode] = useState<"popover" | "expanded" | "docked">("popover");
   const [conversationId, setConversationId] = useState<string | null>(
     choice?.conversationId ?? null,
   );
@@ -477,11 +497,12 @@ export default function AssistantPopover() {
 
   // The palette's Ask row (a bare string) and the structured 2f draft ask
   // both open the surface here: the string opens the popover, an
-  // `AssistantOpenRequest` may open the full panel and names its entity as
-  // the ask's structured context. A panel opened expanded by the draft ask
-  // closes completely on esc (it never falls back to the floating popover
-  // over the chat's composer — the 2f review).
-  const openedExpandedByAsk = useRef(false);
+  // `AssistantOpenRequest` may open the full panel — docked beside the chat
+  // when the request says so — and names its entity as the ask's structured
+  // context. A panel the draft ask opened closes completely on esc (it never
+  // falls back to the floating popover over the chat's composer — the 2f
+  // review).
+  const openedByDraftAsk = useRef(false);
   useEffect(() => {
     const onOpen = (event: Event) => {
       closeOtherMenus();
@@ -489,8 +510,8 @@ export default function AssistantPopover() {
       const request: AssistantOpenRequest =
         typeof detail === "string" ? { text: detail } : (detail ?? { text: "" });
       if (request.expanded) {
-        openedExpandedByAsk.current = true;
-        setExpanded(true);
+        openedByDraftAsk.current = true;
+        setMode(request.docked ? "docked" : "expanded");
       }
       setOpen(true);
       const text = typeof request.text === "string" ? request.text.trim() : "";
@@ -557,16 +578,16 @@ export default function AssistantPopover() {
   ) : null;
 
   const close = useCallback(() => setOpen(false), []);
-  const shrink = useCallback(() => setExpanded(false), []);
-  /** esc / close on a panel the draft ask opened expanded: close the whole
-   * surface (the 2f panel never shrinks back into the floating box). */
+  const shrink = useCallback(() => setMode("popover"), []);
+  /** esc / close on a panel the draft ask opened: close the whole surface
+   * (the 2f panel never shrinks back into the floating box). */
   const closeExpanded = useCallback(() => {
-    if (openedExpandedByAsk.current) {
-      openedExpandedByAsk.current = false;
+    if (openedByDraftAsk.current) {
+      openedByDraftAsk.current = false;
       setOpen(false);
-      setExpanded(false);
+      setMode("popover");
     } else {
-      setExpanded(false);
+      setMode("popover");
     }
   }, []);
 
@@ -582,9 +603,54 @@ export default function AssistantPopover() {
   const contextLabel = contextLabelOf(location.pathname);
   const changes: AssistantChange[] = changesQuery.data?.changes ?? [];
 
+  // Every size of the surface holds the same conversation, the same trust
+  // level and the same round-trips: only the frame differs.
+  const panelProps = {
+    contextLabel,
+    messages,
+    trustLevel,
+    onTrustLevelChange: (level: TrustLevel) => setTrustLevel(level),
+    changes,
+    onUndoChange: (changeId: string) => undoChange.mutate(changeId),
+    onUndoAll: () => conversationId && undoAll.mutate({ conversationId }),
+    suggestions: SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS,
+    onSend: (text: string) => send(text),
+    onAnswerQuestion: (label: string) => send(label),
+    composerRestore,
+    onConfirmApproval: (messageId: string) => answerApproval(messageId, true),
+    onDismissApproval: (messageId: string) => answerApproval(messageId, false),
+    onGo: (route: string) => navigate(route),
+    onNewConversation: startNew,
+    recentConversations,
+    activeConversationId: conversationId,
+    onSwitchConversation: switchConversation,
+    busy: post.isPending || createConversation.isPending,
+  };
+
   return (
     <>
-      {expanded ? (
+      {mode === "docked" ? (
+        // 2f (rcn-2f review item 1): the thread → workflow assistant is
+        // DOCKED RIGHT of the chat it drafts from — the thread, its composer
+        // and the column all stay on screen, because the draft is the chat’s
+        // and a person reads one against the other. Below 1024px — the
+        // Shell’s own phone width, the same question that collapses this
+        // chat’s context rail under the transcript — a 450px dock would
+        // leave nothing of the thread, so the panel takes the screen instead.
+        <div
+          className="fixed inset-0 z-40 flex flex-col bg-surface lg:inset-y-0 lg:left-auto lg:w-[450px] lg:border-l lg:border-line-strong"
+          data-testid="assistant-popover"
+          data-dock="right"
+        >
+          {sendError ? <div className="px-[10px] pt-[8px]">{errorLine}</div> : null}
+          <AssistantPanel
+            variant="docked"
+            {...panelProps}
+            onShrink={shrink}
+            onClose={closeExpanded}
+          />
+        </div>
+      ) : mode === "expanded" ? (
         // 2c: the expanded overlay over the content area; the conversation
         // column is centred at 680px inside the panel itself.
         <div
@@ -594,27 +660,9 @@ export default function AssistantPopover() {
           {sendError ? <div className="px-[10px] pt-[8px]">{errorLine}</div> : null}
           <AssistantPanel
             variant="expanded"
-            contextLabel={contextLabel}
-            messages={messages}
-            trustLevel={trustLevel}
-            onTrustLevelChange={(level) => setTrustLevel(level)}
-            changes={changes}
-            onUndoChange={(changeId) => undoChange.mutate(changeId)}
-            onUndoAll={() => conversationId && undoAll.mutate({ conversationId })}
-            suggestions={SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS}
-            onSend={(text) => send(text)}
-            onAnswerQuestion={(label) => send(label)}
-            composerRestore={composerRestore}
-            onConfirmApproval={(messageId) => answerApproval(messageId, true)}
-            onDismissApproval={(messageId) => answerApproval(messageId, false)}
-            onGo={(route) => navigate(route)}
-            onNewConversation={startNew}
-            recentConversations={recentConversations}
-            activeConversationId={conversationId}
-            onSwitchConversation={switchConversation}
+            {...panelProps}
             onShrink={shrink}
             onClose={closeExpanded}
-            busy={post.isPending || createConversation.isPending}
           />
         </div>
       ) : (
@@ -626,27 +674,9 @@ export default function AssistantPopover() {
           {sendError ? errorLine : null}
           <AssistantPanel
             variant="popover"
-            contextLabel={contextLabel}
-            messages={messages}
-            trustLevel={trustLevel}
-            onTrustLevelChange={(level) => setTrustLevel(level)}
-            changes={changes}
-            onUndoChange={(changeId) => undoChange.mutate(changeId)}
-            onUndoAll={() => conversationId && undoAll.mutate({ conversationId })}
-            suggestions={SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS}
-            onSend={(text) => send(text)}
-            onAnswerQuestion={(label) => send(label)}
-            composerRestore={composerRestore}
-            onConfirmApproval={(messageId) => answerApproval(messageId, true)}
-            onDismissApproval={(messageId) => answerApproval(messageId, false)}
-            onGo={(route) => navigate(route)}
-            onNewConversation={startNew}
-            recentConversations={recentConversations}
-            activeConversationId={conversationId}
-            onSwitchConversation={switchConversation}
-            onExpand={() => setExpanded(true)}
+            {...panelProps}
+            onExpand={() => setMode("expanded")}
             onClose={close}
-            busy={post.isPending || createConversation.isPending}
           />
         </div>
       )}

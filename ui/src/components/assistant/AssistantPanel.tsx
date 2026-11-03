@@ -58,7 +58,13 @@ export interface RecentConversation {
 }
 
 export interface AssistantPanelProps {
-  variant: "popover" | "expanded";
+  /**
+   * `popover`: the 400px floating box. `expanded`: the ⌘K assistant over the
+   * content area, its conversation centred at 680px. `docked` (design 2f,
+   * rcn-2f review item 1): the SAME full-size panel, laid out for the column
+   * it is handed beside the chat it drafts from.
+   */
+  variant: "popover" | "expanded" | "docked";
   /**
    * Popover: the page-context chip label (`home`, `feature-delivery`,
    * `run 9c1e`…) shown in the composer; it updates on navigation while
@@ -515,6 +521,12 @@ export function AssistantPanel({
   }, [composerRestore, restoreDraft]);
 
   const popover = variant === "popover";
+  // The dock is as narrow as the popover even on a wide screen — it stands
+  // beside the chat, not over it — so its header keeps the popover's
+  // icon-only controls, whose wording rides the accessible name and the
+  // tooltip. The 2c expanded view has the viewport's width to spend.
+  const docked = variant === "docked";
+  const narrowHeader = popover || docked;
 
   // ui-newconv: the header's New conversation / Recent controls. The
   // popover's 400px header is tight (ASSISTANT + trust pill + expand +
@@ -538,7 +550,7 @@ export function AssistantPanel({
         the full wording next to the trust pill, and the row must never break
         onto two lines — the popover keeps just the ＋ on screen, with the
         wording in the accessible name and the tooltip. */}
-      {popover ? (
+      {narrowHeader ? (
         <>
           ＋<span className="sr-only"> New</span>
         </>
@@ -556,7 +568,7 @@ export function AssistantPanel({
       conversations={recentConversations.slice(0, 5)}
       activeId={activeConversationId}
       onSwitch={onSwitchConversation}
-      compact={popover}
+      compact={narrowHeader}
     />
   ) : null;
 
@@ -637,9 +649,13 @@ export function AssistantPanel({
                 size={13}
                 strokeWidth={2}
                 aria-hidden
-                className="shrink-0 min-[640px]:hidden"
+                className={docked ? "shrink-0" : "shrink-0 min-[640px]:hidden"}
               />
-              <span className="hidden min-[640px]:inline">Shrink to popover</span>
+              {/* The dock is 450px at any screen width, so its label is
+                  icon-only there too (rcn-2f review item 1). */}
+              <span className={docked ? "sr-only" : "hidden min-[640px]:inline"}>
+                Shrink to popover
+              </span>
             </button>
           ) : null}
           <span className="font-mono text-[10px] text-faint">esc</span>
@@ -765,6 +781,31 @@ export function AssistantPanel({
           background: "var(--color-surface)",
           display: "flex",
           flexDirection: "column",
+        }}
+      >
+        {header}
+        {body}
+        {footer}
+      </div>
+    );
+  }
+
+  // Docked (design 2f, rcn-2f review item 1) and expanded (2c) hold the same
+  // panel; only the column differs. The dock fills the width it is handed —
+  // `AssistantPopover` places it right of the chat, which is never taken off
+  // screen — and never centres a 680px column inside a 450px one.
+  if (docked) {
+    return (
+      <div
+        data-testid="assistant-panel"
+        data-variant="docked"
+        style={{
+          width: "100%",
+          height: "100%",
+          background: "var(--color-surface)",
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
         }}
       >
         {header}

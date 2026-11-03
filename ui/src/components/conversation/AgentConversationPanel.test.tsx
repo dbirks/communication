@@ -137,6 +137,47 @@ describe("AgentConversationPanel (dock)", () => {
     expect(screen.getByTestId("controller-badge").textContent).toContain("in control");
   });
 
+  /**
+   * rcn-2f review item 3 (the wiring that never landed with ADR-0068's agent
+   * naming): the dock owns the transcript too, and its failed turn must read
+   * as the AGENT the person chose, not the executable the worker spawned.
+   * `internal/worker/launchfailure.go` says `launcher "claude" is not signed
+   * in`; the conversation's own profile row is the read that names it.
+   */
+  it("names the agent behind a sign-in refusal, in the words the member chose", async () => {
+    renderPanel(dock(), routes(conversationFixture));
+    await screen.findByTestId("dock-open-conversation");
+
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          submitted_by: meFixture.id,
+          text: "Run the tests.",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.turn.failed", {
+          turn_id: turnId,
+          message:
+            'worker: launcher "claude" is not signed in on this worker: the agent refused ' +
+            "session/new because it requires a sign-in, JSON-RPC code -32000 \u2014 check " +
+            "this launcher's credential directory on the worker that owns the turn",
+        }),
+      );
+    });
+
+    const notice = await screen.findByTestId("turn-failed");
+    expect(within(notice).getByTestId("turn-failed-plain").textContent).toBe(
+      "Claude Code isn't signed in on this worker, so this turn couldn't start.",
+    );
+    // The launcher id is gone from the reading line: it is in the disclosure.
+    expect(within(notice).getByTestId("turn-failed-plain").textContent).not.toMatch(/launcher/);
+    expect(within(notice).getByTestId("turn-failed-server").textContent).toContain(
+      'launcher "claude" is not signed in',
+    );
+  });
+
   it("shows a disabled Take control to a viewer, and says watching is all they may do", async () => {
     renderPanel(dock(), routes(controlledByOther, "viewer"));
     const take = await screen.findByTestId("take-control");
