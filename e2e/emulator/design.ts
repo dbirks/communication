@@ -2201,6 +2201,16 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   // what both widths show is asserted: the sheet covers the title at 390.
   "rcn-2e chat-details": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-2e chat-details-switched": [RCN_SIDE_PANEL, RCN_WORKS_IN, RCN_PANEL_AGENTS],
+  // The WORKS IN scope switcher (ADR-0067 amendment): the panel with its WORKS
+  // IN section, captured with the menu CLOSED. The 390 frame remounts the side
+  // panel under the transcript (thread-side-panel-aside → -stack) and resets the
+  // menu's open state, and reflow.ts proves every side-panel-* id item-by-item
+  // at BOTH widths — an open menu (present at 1280, absent at 390) would file a
+  // false "390 lost" reflow defect. So only what both widths show is asserted
+  // here; the menu's own structure (the ds Menu, its pointer arrow, the repo
+  // rows, the tick) is asserted in the journey at the 1280 frame.
+  "rcn-2e works-in-menu": [RCN_SIDE_PANEL, RCN_WORKS_IN],
+  "rcn-2e works-in-moved": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-1h next-turn-menu": [RCN_CONV_TITLE, RCN_AGENT_CHIP, RCN_AGENT_MENU, RCN_AGENT_MENU_CAPTION, RCN_AGENT_MENU_PROFILES],
 
   // Thread → workflow (2f): the note's `Make a workflow…` opens the assistant

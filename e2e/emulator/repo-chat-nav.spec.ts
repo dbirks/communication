@@ -25,7 +25,11 @@
 //   rcn-2e + rcn-1h — the chat: control handoff, the composer's agent chip
 //            ("NEXT TURN RUNS ON"), a real turn on one profile, a switch to
 //            another (the transcript divider), a second real turn, and the
-//            side panel's AGENTS IN THIS CHAT with its turn ranges.
+//            side panel's AGENTS IN THIS CHAT with its turn ranges. The WORKS
+//            IN switcher (ADR-0067 amendment) moves the chat to "Whole
+//            project" and back — the ds Menu's rows and tick, and the
+//            transcript's "moved this chat to …" system line in both
+//            directions.
 //   rcn-2f — the side panel's `Make a workflow…` opens the assistant panel
 //            with the chat as context. The ask is the app's own canned line;
 //            what the model answers with is deliberately NOT asserted.
@@ -1118,6 +1122,118 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await emu.screen("rcn-1h", "next-turn-menu");
       await page.keyboard.press("Escape");
       await expect(menu, "Esc closes the picker").toBeHidden({ timeout: 10_000 });
+    });
+
+    await test.step("WORKS IN — the scope switcher moves the chat to the whole project and back", async () => {
+      // The ADR-0067 amendment's WORKS IN switcher (3ae47e6): the panel's repo
+      // name carries a ▾ button that opens a ds Menu of the project's
+      // repositories plus "Whole project", the DECLARED binding ticked, one
+      // pick = one `PATCH /api/v1/conversations/{id}`. The journal's
+      // `conversation.scope_changed` row is the transcript's own evidence —
+      // the move prints its system line ("<person> moved this chat to …"),
+      // and the new scope answers from the next turn. This step moves and
+      // moves BACK, leaving the chat bound to the repo it was born in.
+      const worksIn = page.getByTestId("side-panel-works-in");
+      await expect(
+        worksIn,
+        "design 2e: the panel's WORKS IN names the repo the chat works in",
+      ).toContainText(FILE_REPO);
+      const switcher = page.getByTestId("side-panel-works-in-switch");
+      await expect(
+        switcher,
+        "the repo name carries the scope switcher (the host names this chat)",
+      ).toBeVisible();
+      await switcher.click();
+      const scopeMenu = page.getByTestId("side-panel-scope-menu");
+      await expect(scopeMenu, "the switcher opens the scope menu").toBeVisible({
+        timeout: 10_000,
+      });
+      await expect(switcher, "the trigger reports the menu open").toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+      await expect(scopeMenu, "the scope surface is the ds Menu").toHaveRole("menu");
+      await expect(
+        scopeMenu.getByTestId("menu-arrow"),
+        "the ds Menu carries its pointer arrow",
+      ).toBeVisible();
+      await expect(scopeMenu.getByRole("menuitem"), "the menu's rows").toHaveCount(3);
+      await expect(
+        scopeMenu.getByTestId("side-panel-scope-item-whole"),
+        "the menu offers Whole project",
+      ).toContainText(/whole project/i);
+      await expect(
+        scopeMenu.getByTestId(`side-panel-scope-item-${FILE_REPO}`),
+        "the menu lists the chat's repository",
+      ).toContainText(FILE_REPO);
+      await expect(
+        scopeMenu.getByTestId(`side-panel-scope-item-${GH_REPO}`),
+        "the menu lists the project's other repository",
+      ).toContainText(GH_REPO);
+      await expect(
+        scopeMenu.getByTestId(`side-panel-scope-item-${FILE_REPO}`),
+        "the repo the chat works in is the one ticked",
+      ).toContainText(new RegExp(`✓\\s*${FILE_REPO}`));
+      await expect(
+        scopeMenu.getByTestId("side-panel-scope-item-whole"),
+        "Whole project is not ticked while the chat is bound",
+      ).not.toContainText("✓");
+      // The capture goes with the menu CLOSED, on purpose: screen() shoots
+      // both widths from this state, and at 390 the panel re-mounts under the
+      // transcript (thread-side-panel-aside → -stack, the rcn-chat-rail-390
+      // swap), which resets the menu's open state — the menu then stands at
+      // 1280 only, and reflow.ts's per-item parity would file it as "390
+      // lost" content. The menu's structure is the assertions above; the
+      // landmark list for these two screens is what both widths show.
+      await page.keyboard.press("Escape");
+      await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
+      await emu.screen("rcn-2e", "works-in-menu");
+
+      // Pick "Whole project": the panel's state answers (the tick moves —
+      // the switcher reads the DECLARED binding the PATCH wrote back), and
+      // the transcript prints the journal's scope-changed system line.
+      await switcher.click();
+      await expect(scopeMenu, "the switcher reopens for the pick").toBeVisible({
+        timeout: 10_000,
+      });
+      await scopeMenu.getByTestId("side-panel-scope-item-whole").click();
+      await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
+      await expect(
+        page.getByText(/moved this chat to the whole project/i),
+        "the transcript prints the journal's scope-changed system line",
+      ).toBeVisible({ timeout: 30_000 });
+      await switcher.click();
+      await expect(scopeMenu, "the switcher reopens to show the panel's state").toBeVisible({
+        timeout: 10_000,
+      });
+      // The tick reads the DECLARED binding the PATCH wrote back to the
+      // conversation cache (useChangeConversationScope's setQueryData) — allow
+      // that write-back to settle, the same async the transcript line waited on.
+      await expect(
+        scopeMenu.getByTestId("side-panel-scope-item-whole"),
+        "the panel's state text answers the move — Whole project is ticked",
+      ).toContainText("✓", { timeout: 10_000 });
+      await expect(
+        scopeMenu.getByTestId(`side-panel-scope-item-${FILE_REPO}`),
+        "the old binding's tick is gone",
+      ).not.toContainText("✓", { timeout: 10_000 });
+      await page.keyboard.press("Escape");
+      await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
+      await emu.screen("rcn-2e", "works-in-moved");
+
+      // Back to the repo the chat was born in (ADR-0067) — the second move
+      // proves the system line renders in both directions, and the pass's
+      // rows stay honest for whichever journey reads this chat later.
+      await switcher.click();
+      await expect(scopeMenu, "the switcher reopens for the move back").toBeVisible({
+        timeout: 10_000,
+      });
+      await scopeMenu.getByTestId(`side-panel-scope-item-${FILE_REPO}`).click();
+      await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
+      await expect(
+        page.getByText(new RegExp(`moved this chat to ${FILE_REPO}`, "i")),
+        "the move back prints its own scope-changed system line",
+      ).toBeVisible({ timeout: 30_000 });
     });
   });
 
