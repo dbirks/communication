@@ -1,11 +1,11 @@
 /**
- * The two things the journal fold cannot say on its own, fixed on the way out
+ * The three things the journal fold cannot say on its own, fixed on the way out
  * of a conversation session (rcn-2e review item 2).
  *
- * Both live here rather than in `api/transcript.ts` because both need facts
+ * They live here rather than in `api/transcript.ts` because each needs facts
  * the fold does not hold: the fold turns frames into lines and knows only what
- * a frame carries; these need the conversation's derived turn ranges and the
- * surface's own turn rows.
+ * a frame carries; these need the conversation's derived turn ranges, the
+ * surface's own turn rows and the thread's own repository.
  *
  * 1. `nameAgentSessionLines` — the `Connected to …` line.
  *    `agent.session.connected` carries a LAUNCHER (`pi`), never a profile. Two
@@ -30,7 +30,16 @@
  *    and the sentence under it. A blank leading line carries no information;
  *    it is stripped, and only at the start — an indented first line, or a gap
  *    inside the message, is the agent's own formatting and stays.
+ *
+ * 3. `plainNoticeLines` — the worker's system note in this thread's words.
+ *    `conversation.notice` names the KIND of a system line (`workspace`,
+ *    `mail_readonly`) and the worker's own sentence, but never the repository
+ *    it is about; the thread's row does. The fold's line is already readable —
+ *    this says it the way the thread says it: `Read-only: this agent can't
+ *    change server.`
  */
+import { mailReadOnlyCopy } from "./MailCard";
+import { TURN_FAILURE_FALLBACK, turnFailureWords } from "./TurnFailureNotice";
 import type { TranscriptItem, TurnRecord } from "../../api/transcript";
 import type { EventEnvelope } from "../../api/types";
 
@@ -186,6 +195,64 @@ export function trimAgentMessageLead(items: TranscriptItem[]): TranscriptItem[] 
   const out = items.map((item) => {
     if (item.kind !== "agent") return item;
     const text = item.text.replace(LEADING_BLANK_LINES, "");
+    if (text === item.text) return item;
+    touched = true;
+    return { ...item, text };
+  });
+  return touched ? out : items;
+}
+
+export interface NoticeLineSource {
+  /** The stream this surface folded, in arrival order: a notice line's words
+   * are its own frame's, and the fold is not the only reader of them. */
+  events: readonly EventEnvelope[];
+  /** The thread's own repository — the one a `mail_readonly` note is about, and
+   * the fact the frame does not carry (ADR-0072 § 12 mounts THIS conversation's
+   * repository read-only for the answer turn). Empty or absent keeps the fold's
+   * repository-free sentence: nothing is invented.
+   */
+  repositoryName?: string | null | undefined;
+  /** Names the agent a `launcher_id` is, for the workspace classes whose
+   * sentence names one. */
+  agentName?: ((launcherId: string) => string | null) | null;
+}
+
+/**
+ * Say each `conversation.notice` line in this thread's words.
+ *
+ * The fold already renders every notice as a readable muted system line with
+ * the wire's kind on its tooltip. What it cannot know lives on the surface: the
+ * repository a read-only mount is about, and the plain sentence this build
+ * already writes for a workspace that failed to prepare.
+ *
+ * A kind no arm claims — including one the worker invents later — keeps the
+ * worker's own line: that is the honest reading of a note this app has no words
+ * for yet, and an unknown kind is a notice, never an error.
+ *
+ * Exported for tests: it runs on plain data (items, frames, the thread's row).
+ */
+export function plainNoticeLines(
+  items: TranscriptItem[],
+  source: NoticeLineSource,
+): TranscriptItem[] {
+  if (!items.some((item) => item.kind === "system" && item.noticeKind)) return items;
+  const byId = new Map(committedFrames(source.events).map((frame) => [frame.event_id, frame]));
+  const repository = source.repositoryName?.trim() ?? "";
+  let touched = false;
+  const out = items.map((item) => {
+    if (item.kind !== "system" || !item.noticeKind) return item;
+    const note = str(byId.get(item.id)?.payload, "text");
+    let text = item.text;
+    if (item.noticeKind === "mail_readonly" && repository) {
+      text = mailReadOnlyCopy(repository);
+    } else if (item.noticeKind === "workspace" && note) {
+      // `turnFailureWords` is this build's table for a worker's workspace
+      // diagnostic. Its catch-all sentence claims a turn that FAILED, and a
+      // note rides a turn that kept going — so a note no class claims keeps the
+      // fold's line rather than being called a failure it is not.
+      const words = turnFailureWords(note, source.agentName ?? null);
+      if (words !== TURN_FAILURE_FALLBACK) text = words;
+    }
     if (text === item.text) return item;
     touched = true;
     return { ...item, text };

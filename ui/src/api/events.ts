@@ -42,6 +42,7 @@ export const M2_EVENT_TYPES = [
   "conversation.created",
   "conversation.message.user",
   "conversation.message.agent",
+  "conversation.notice",
   "conversation.thought",
   "conversation.tool.call",
   "conversation.tool.update",

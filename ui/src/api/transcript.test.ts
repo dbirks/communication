@@ -595,3 +595,86 @@ describe("submitted_via (ADR-0062)", () => {
     expect(user?.kind === "user" ? "submittedVia" in user : true).toBe(false);
   });
 });
+
+/** `conversation.notice` — the worker's own system line (09-api-events-data).
+ * It is a transcript row, never agent output: this turn's answer is quoted to
+ * the asking chat from `conversation.message.agent` rows alone (ADR-0072 § 7),
+ * so a note that folded into the agent's text would be quoted as if the agent
+ * had written it. */
+describe("the transcript's system notes (conversation.notice)", () => {
+  const mailReadOnlyText =
+    "this chat is answering another chat's mail: its repository is mounted read-only in " +
+    "the sandbox, and it runs without asking because the sandbox is the boundary " +
+    "(ADR-0072 § 12). A person's approval lifts the mount to read-write.";
+  const workspaceNote =
+    'workspace: mirror /repos/emu/server.git has no branch "main" to base server on ' +
+    "(ADR-0017 D2 refuses a branch-name guess)";
+
+  const systemTexts = (items: ReturnType<typeof projectTranscript>["items"]) =>
+    items.flatMap((item) => (item.kind === "system" ? [item.text] : []));
+
+  it("folds each notice into its own system line, beside the agent's message", () => {
+    const transcript = projectTranscript(
+      frames(
+        ["conversation.notice", { kind: "workspace", text: workspaceNote }],
+        ["conversation.message.agent", { text: "A single README.", final: true }],
+        ["conversation.notice", { kind: "mail_readonly", text: mailReadOnlyText }],
+      ),
+    );
+
+    // The agent's sentence is exactly the agent's, and the notes are lines of
+    // their own — one per frame, in commit order.
+    expect(transcript.items.map((item) => item.kind)).toEqual(["system", "agent", "system"]);
+    const agent = transcript.items[1];
+    expect(agent?.kind === "agent" && agent.text).toBe("A single README.");
+    expect(systemTexts(transcript.items)).toEqual([
+      // The fold has no better words for a workspace note than the worker's, so
+      // it prints the worker's line without the wire's prefix — and never an
+      // ADR reference, which is not a sentence a member can act on.
+      'Workspace: mirror /repos/emu/server.git has no branch "main" to base server on',
+      // The read-only note's sentence names a repository the frame does not
+      // carry, so the fold stays repository-free; the thread's own row supplies
+      // the name (`plainNoticeLines`, transcriptPresentation.ts).
+      "Read-only: this agent can't change this repository.",
+    ]);
+  });
+
+  it("keeps the notice's kind off the visible line and on the tooltip's data", () => {
+    const transcript = projectTranscript(
+      frames(["conversation.notice", { kind: "mail_readonly", text: mailReadOnlyText }]),
+    );
+    const note = transcript.items[0];
+    expect(note?.kind === "system" && note.noticeKind).toBe("mail_readonly");
+    expect(note?.kind === "system" && note.raw).toBe("kind mail_readonly");
+  });
+
+  it("renders a kind this build has no words for as the worker's own line", () => {
+    // A kind the worker invents later must not be an error, and must not be
+    // dropped: an unknown notice is still a system line.
+    const transcript = projectTranscript(
+      frames([
+        "conversation.notice",
+        { kind: "sandbox_remounted", text: "workspace: the mount changed under this turn" },
+      ]),
+    );
+    const note = transcript.items[0];
+    expect(note?.kind === "system" && note.text).toBe("the mount changed under this turn");
+    expect(note?.kind === "system" && note.noticeKind).toBe("sandbox_remounted");
+  });
+
+  it("never puts a notice's text in the agent's mouth", () => {
+    const transcript = projectTranscript(
+      frames(
+        ["conversation.message.agent", { text: "Answer.", final: true }],
+        ["conversation.notice", { kind: "mail_readonly", text: mailReadOnlyText }],
+        ["conversation.notice", { kind: "workspace", text: workspaceNote }],
+      ),
+    );
+    const printed = transcript.items.flatMap((item) => (item.kind === "agent" ? [item.text] : []));
+    expect(printed.join(" ")).toBe("Answer.");
+    // Nothing on the fold's visible surface quotes the wire's vocabulary.
+    for (const line of transcript.items.flatMap((item) => ("text" in item ? [item.text] : []))) {
+      expect(line).not.toContain("ADR-");
+    }
+  });
+});

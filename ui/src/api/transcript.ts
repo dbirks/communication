@@ -124,6 +124,17 @@ export type TranscriptItem =
       id: string;
       text: string;
       at: string;
+      /** Set on a `conversation.notice` line: the worker's machine name for
+       * what the note is about (`workspace`, `mail_readonly`, or a kind this
+       * build has no words for). A surface that knows more than the frame
+       * does — which repository the note names, which profile ran the turn —
+       * upgrades the sentence from this (`transcriptPresentation.ts`); every
+       * other reader keeps the fold's plain line.
+       *
+       * The kind is never printed on its own: it is the wire's vocabulary, and
+       * a system line is read by a person.
+       */
+      noticeKind?: string;
       /**
        * The wire's own words for this line (`stop_reason end_turn`,
        * `launcher_id claude`), rendered only as a `title` tooltip.
@@ -366,13 +377,43 @@ export function stopReasonWords(reason: string | null | undefined): string {
   }
 }
 
+/** The note's own words, minus the wire's: the `workspace: ` the worker's note
+ * seam writes is a machine's prefix, and an ADR reference is not a sentence a
+ * member can act on. Nothing else is rewritten — a note this build has no
+ * better words for is the honest line the worker wrote. */
+function noteWords(text: string): string {
+  return text
+    .replace(/^workspace:\s*/i, "")
+    .replace(/\s*\((?:[^)]*\bADR-\d+[^)]*)\)/gi, "")
+    .replace(/\s+([.,;])/g, "$1")
+    .replace(/ {2,}/g, " ")
+    .trim();
+}
+
+/**
+ * The transcript's muted system line for a `conversation.notice` frame.
+ *
+ * Kinds the app has its own words for are said in those words; anything else
+ * renders as the worker's line, never as an error and never as agent output
+ * (09-api-events-data: a consumer that quotes "what the agent said" reads
+ * `conversation.message.agent` rows only). The repository a note names is not
+ * on the frame, so the read-only kind keeps a repository-free sentence here —
+ * the surface that holds the thread's own repository names it.
+ */
+function noticeWords(kind: string, text: string): string {
+  if (kind === "mail_readonly") return "Read-only: this agent can't change this repository.";
+  const words = noteWords(text);
+  if (!words) return "System note";
+  return kind === "workspace" ? `Workspace: ${words}` : words;
+}
+
 /** Plain-language line for the journal rows that are not message content. */
 function systemLine(
   event: EventEnvelope,
   payload: Record<string, unknown>,
   nameOf: (userId: string) => string,
   agentName?: (launcherId: string) => string,
-): { text: string; raw?: string } | null {
+): { text: string; raw?: string; noticeKind?: string } | null {
   switch (event.type) {
     case "conversation.created":
       // The Projects handoff's first copy rule: “Conversations” becomes
@@ -395,6 +436,18 @@ function systemLine(
       if (reason === "returned") return { text: `Control returned to ${nameOf(to)}` };
       if (reason === "taken") return { text: `Control taken by ${nameOf(to)}` };
       return { text: `Control transferred to ${nameOf(to)} (${reason})` };
+    }
+    case "conversation.notice": {
+      // A worker-authored system line (a repository that failed to prepare, a
+      // mail answer running over a read-only mount). It is never folded into
+      // what the agent said, and it names its kind so a surface with more
+      // facts than the frame can say them.
+      const kind = str(payload, "kind");
+      return {
+        text: noticeWords(kind, str(payload, "text")),
+        raw: kind ? `kind ${kind}` : "kind (none reported)",
+        noticeKind: kind,
+      };
     }
     case "conversation.turn.started": {
       const origin = str(payload, "session_origin");
@@ -716,6 +769,7 @@ export function projectTranscript(
             id: event.event_id,
             text: line.text,
             ...(line.raw ? { raw: line.raw } : {}),
+            ...(line.noticeKind ? { noticeKind: line.noticeKind } : {}),
             at,
           });
         break;

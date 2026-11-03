@@ -1,7 +1,8 @@
 /**
- * The two post-fold readings a conversation surface needs (rcn-2e review
- * item 2), proven on plain data: frames, turn records and the derived agent
- * ranges — no React, no stream.
+ * The post-fold readings a conversation surface needs — the Connected-to line
+ * and the blank lead an agent's sentence arrives behind (rcn-2e review item 2),
+ * and the worker's system note in this thread's words — proven on plain data:
+ * frames, turn records and the derived agent ranges. No React, no stream.
  *
  * The lab case that started this: one organization ran `m4-implementer` and
  * `m4-planner` on the SAME launcher (`pi`). The thread switched profiles
@@ -13,8 +14,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { conversationEvent, meFixture, turnId } from "../../test/fakes";
-import { nameAgentSessionLines, trimAgentMessageLead } from "./transcriptPresentation";
+import {
+  nameAgentSessionLines,
+  plainNoticeLines,
+  trimAgentMessageLead,
+} from "./transcriptPresentation";
 import { projectTranscript } from "../../api/transcript";
+import type { EventEnvelope } from "../../api/types";
 import type { TranscriptItem } from "../../api/transcript";
 
 const implementer = "01987a75-1101-7000-8000-000000000001";
@@ -220,5 +226,89 @@ describe("trimAgentMessageLead (the speaker line and its sentence, no gap)", () 
       system("Turn completed", "s-1"),
     ];
     expect(trimAgentMessageLead(items)).toBe(items);
+  });
+});
+
+/**
+ * `conversation.notice` in this thread's words. The frame names a KIND and the
+ * worker's sentence; it never names the repository the note is about, and it
+ * knows nothing of the plain sentences this build already writes for a
+ * workspace that failed to prepare. Those two facts live on the surface.
+ */
+describe("plainNoticeLines (a system note names what it is about)", () => {
+  const mailReadOnlyText =
+    "this chat is answering another chat's mail: its repository is mounted read-only in " +
+    "the sandbox, and it runs without asking because the sandbox is the boundary " +
+    "(ADR-0072 § 12). A person's approval lifts the mount to read-write.";
+  const noteFrame = (kind: string, text: string, seq: number) =>
+    conversationEvent("conversation.notice", { turn_id: turnId, kind, text }, { global_seq: seq });
+
+  const fold = (events: EventEnvelope[]) => projectTranscript(events);
+  const noticeText = (items: TranscriptItem[], index = 0): string | undefined =>
+    items
+      .filter(
+        (item): item is Extract<TranscriptItem, { kind: "system" }> =>
+          item.kind === "system" && item.noticeKind !== undefined,
+      )
+      .map((item) => item.text)[index];
+
+  it("names this thread's own repository on a read-only mail answer", () => {
+    const events = [noteFrame("mail_readonly", mailReadOnlyText, 1)];
+    const folded = fold(events);
+    // The fold alone cannot say which repository — it is the thread's row that
+    // knows, and only this layer holds it.
+    expect(noticeText(folded.items)).toBe("Read-only: this agent can't change this repository.");
+    const items = plainNoticeLines(folded.items, { events, repositoryName: "server" });
+    expect(noticeText(items)).toBe("Read-only: this agent can't change server.");
+  });
+
+  it("stays repository-free when the thread names no repository", () => {
+    const events = [noteFrame("mail_readonly", mailReadOnlyText, 1)];
+    const folded = fold(events);
+    for (const repositoryName of [undefined, null, "  "]) {
+      expect(noticeText(plainNoticeLines(folded.items, { events, repositoryName }))).toBe(
+        "Read-only: this agent can't change this repository.",
+      );
+    }
+  });
+
+  it("says a workspace note in the plain words this build already owns", () => {
+    // The lab's note, verbatim: `internal/workspace/git`'s branch refusal, ADR
+    // reference and all. `turnFailureWords` has the reader's sentence for it.
+    const events = [
+      noteFrame(
+        "workspace",
+        'workspace: mirror /repos/emu/server.git has no branch "main" to base server on ' +
+          "(ADR-0017 D2 refuses a branch-name guess)",
+        1,
+      ),
+    ];
+    const folded = fold(events);
+    const items = plainNoticeLines(folded.items, { events, repositoryName: "server" });
+    expect(noticeText(items)).toBe(
+      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+    );
+  });
+
+  it("never calls a note no class claims a failed turn", () => {
+    // A note rides a turn that kept going. `turnFailureWords`' catch-all says
+    // "This turn failed.", which would be a different claim about a different
+    // fact — so an unclaimed note keeps the fold's honest line.
+    const events = [noteFrame("workspace", "workspace: the mount is roomier than we asked", 1)];
+    const folded = fold(events);
+    const items = plainNoticeLines(folded.items, { events, repositoryName: "server" });
+    expect(noticeText(items)).toBe("Workspace: the mount is roomier than we asked");
+  });
+
+  it("leaves an unknown kind, and a stream with no notices, alone", () => {
+    const events = [noteFrame("sandbox_remounted", "workspace: the mount changed", 1)];
+    const folded = fold(events);
+    expect(noticeText(plainNoticeLines(folded.items, { events }))).toBe("the mount changed");
+    // No notice at all: the same array, untouched — the other readings own
+    // their lines.
+    const plain = fold([
+      conversationEvent("conversation.turn.started", { turn_id: turnId }, { global_seq: 9 }),
+    ]);
+    expect(plainNoticeLines(plain.items, { events })).toBe(plain.items);
   });
 });

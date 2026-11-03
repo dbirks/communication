@@ -37,7 +37,6 @@ import {
   mailAskedFromEvent,
   mailReadOnlyCopy,
   mergeMailAnswered,
-  splitWorkspaceNote,
 } from "./MailCard";
 import { segmentTranscript } from "./ConversationTranscript";
 import { render } from "@testing-library/react";
@@ -283,18 +282,13 @@ describe("the transcript mail card", () => {
 
   // --- rcn-3d review items 1, 2 and 3 -------------------------------------
 
-  it("keeps the worker's system note out of the answering agent's sentence", () => {
-    // The lab's card, verbatim: the answer arrived as
-    // "workspace: this chat is answering another chat's mail: … (ADR-0072
-    // § 12)…" over the sentence the agent actually wrote, because the worker's
-    // note seam journals a workspace fact as an agent-message chunk and the
-    // mail answer is read back off those chunks.
-    const labAnswer =
-      "workspace: this chat is answering another chat's mail: its repository is " +
-      "mounted read-only in the sandbox, and it runs without asking because the " +
-      "sandbox is the boundary (ADR-0072 § 12). A person's approval lifts the " +
-      'mount to read-write.\n\n\n\n\n\nThis repository is a minimal "Hello World" ' +
-      "project containing nothing but a single README file.";
+  it("prints the answering agent's answer whole and says nothing about the mount", () => {
+    // The card is what the other repo's agent SAID. The worker's system note —
+    // the read-only mount, the repository that failed to prepare — has its own
+    // journal row now (`conversation.notice`), so there is nothing to cut out
+    // of the answer and nothing to apologise for: no `workspace:` paragraph, no
+    // tooltip carrying the wire's note, no read-only line on this card. The
+    // answer thread's own transcript says that fact (the next test).
     const { container } = render(
       <MemoryRouter>
         <MailCard
@@ -304,7 +298,9 @@ describe("the transcript mail card", () => {
             question: "what is in this repository?",
             turnId: "t",
             state: "answered",
-            answer: labAnswer,
+            answer:
+              'This repository is a minimal "Hello World" project containing nothing but a ' +
+              "single README file.",
             launcher: "pi",
           }}
           agentLabel="m4-implementer"
@@ -312,26 +308,54 @@ describe("the transcript mail card", () => {
       </MemoryRouter>,
     );
     const answer = container.querySelector('[data-testid="mail-card-answer"]');
-    // The agent's own words are the answer, and nothing else is.
     expect(answer?.textContent).toContain("minimal");
-    expect(answer?.textContent).not.toContain("workspace:");
-    expect(answer?.textContent).not.toContain("ADR-0072");
-    expect(answer?.textContent).not.toContain("mounted read-only in the sandbox");
-    // The fact the note carried is still said — in the reader's words, with no
-    // ADR reference in it.
-    const muted = container.querySelector('[data-testid="mail-card-readonly"]');
-    expect(muted?.textContent).toBe("Read-only: this agent can't change server.");
-    expect(muted?.getAttribute("title")).toContain("workspace:");
+    expect(answer?.textContent).toContain("single README file");
+    expect(container.querySelector('[data-testid="mail-card-readonly"]')).toBeNull();
   });
 
-  it("leaves an answer that is only the agent's words alone", () => {
-    const split = splitWorkspaceNote(
-      "Cursor-based: ?after=<id>&limit=, max 100.\n\nworkspace: the note seam is not the only word with `workspace:` in it.",
-    );
-    expect(split.note).toBeNull();
-    expect(split.body).toContain("Cursor-based");
-    expect(splitWorkspaceNote("\n\nOK").body).toBe("OK");
-    expect(mailReadOnlyCopy("api")).toBe("Read-only: this agent can't change api.");
+  it("says a read-only mail answer on the answering thread, in plain words", async () => {
+    // The lab's frame, verbatim in kind and words: `internal/worker/turnloop.go`
+    // journals the § 12 mount as a system notice on the thread that ANSWERED,
+    // and its sentence is the worker's — wire enum, ADR reference and all. The
+    // reader gets the fact in this thread's words, naming this thread's own
+    // repository; the agent's sentence stays on its own line.
+    renderApp({
+      path,
+      routes: routes(mailProject, [
+        { path: conversationPath, body: { ...mailConversation, repository_name: "server" } },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.agent", {
+          turn_id: turnId,
+          text: "It is a minimal Hello World project with a single README.",
+          final: true,
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.notice", {
+          turn_id: turnId,
+          kind: "mail_readonly",
+          text:
+            "this chat is answering another chat's mail: its repository is mounted " +
+            "read-only in the sandbox, and it runs without asking because the sandbox is the " +
+            "boundary (ADR-0072 § 12). A person's approval lifts the mount to read-write.",
+        }),
+      );
+    });
+
+    const note = await screen.findByText("Read-only: this agent can't change server.");
+    // A muted system line, not a message from the agent: the wire's kind rides
+    // the tooltip only, and no sentence on screen quotes the worker's note.
+    expect(note.closest("li")?.textContent).toBe(`i${mailReadOnlyCopy("server")}`);
+    expect(note.getAttribute("title")).toBe("kind mail_readonly");
+    expect(screen.queryByText(/mounted read-only in the sandbox/)).toBeNull();
+    expect(screen.queryByText(/ADR-/)).toBeNull();
+    // The agent's own answer is untouched by the note beside it.
+    expect(screen.getByText(/minimal Hello World project/).textContent).toContain("single README");
   });
 
   it("states its own state off the mail frames, not the chat's turn", async () => {

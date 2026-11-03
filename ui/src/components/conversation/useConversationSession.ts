@@ -34,7 +34,11 @@ import {
 import { describeTurn, projectTranscript, type Transcript } from "../../api/transcript";
 import { useAgentProfiles } from "../../api/queries";
 import { launcherNameResolver, launcherNameSource } from "./agentNames";
-import { nameAgentSessionLines, trimAgentMessageLead } from "./transcriptPresentation";
+import {
+  nameAgentSessionLines,
+  plainNoticeLines,
+  trimAgentMessageLead,
+} from "./transcriptPresentation";
 import type {
   Conversation,
   ConversationControl,
@@ -262,12 +266,18 @@ export function useConversationSession(
     // ranges, not the thread's current profile), and an agent's sentence is
     // pulled up under its speaker line instead of behind the blank lines the
     // turn's first chunk arrives as.
-    const items = nameAgentSessionLines(trimAgentMessageLead(folded.items), {
-      events,
-      turns: folded.turns,
-      agents: data?.agents,
-      turnRows,
-    });
+    const items = plainNoticeLines(
+      nameAgentSessionLines(trimAgentMessageLead(folded.items), {
+        events,
+        turns: folded.turns,
+        agents: data?.agents,
+        turnRows,
+      }),
+      // A worker's system note names its kind and never the repository it is
+      // about — the thread's own row does, and this is the surface that holds
+      // it (`plainNoticeLines`).
+      { events, repositoryName: data?.repository_name, agentName: agentNameForEvent },
+    );
     return { ...folded, items };
   }, [events, nameOf, turnRows, agentNameForEvent, data]);
 

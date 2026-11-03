@@ -1276,35 +1276,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("composer-mail-repo-web")).toHaveCount(0);
       await askItem.click();
       await expect(composer, "picking the repo completes the @ token").toHaveValue(`@${GH_REPO} `);
-      // The mention's caret restore must have LANDED before the next
-      // character. `pickMention` parks the caret in a `requestAnimationFrame`
-      // (AgentConversationPanel.tsx), so it can fire in the middle of a
-      // keystroke train: on Actions run 41542324484 an unthrottled
-      // `locator.type()` got one character in before the restore, the restore
-      // moved the caret back to just after `@<repo> `, and the question rode
-      // into the ask as `MU-Q-…sentence.E` — the first character walking to
-      // the end. The value assertion above does not see that (it re-reads the
-      // value, not the caret), so the journey waits for the caret to be
-      // parked with focus in the composer, then types at a speed a person's
-      // hands actually have.
-      await expect
-        .poll(
-          () =>
-            composer.evaluate((el: HTMLTextAreaElement) =>
-              document.activeElement === el &&
-              el.selectionStart === el.value.length &&
-              el.selectionEnd === el.value.length
-                ? "parked"
-                : `caret ${el.selectionStart}/${el.value.length}, focused ${document.activeElement === el}`,
-            ),
-          {
-            message:
-              "the @-menu's caret restore lands before the next keystroke — a caret that moves under the person's typing reorders what they typed (run 41542324484)",
-            timeout: 15_000,
-          },
-        )
-        .toBe("parked");
-      await composer.pressSequentially(MAIL_QUESTION, { delay: 40 });
+      // The caret rides the completion: `pickMention` parks it in the SAME
+      // synchronous commit that writes `@<repo> ` (AgentConversationPanel.tsx),
+      // and only while the field still holds that exact value. It used to wait a
+      // `requestAnimationFrame`, which an unthrottled keystroke train outran —
+      // the caret jumped back behind the typing and the question rode into the
+      // ask out of order (Actions run 41542324484, passes 1–4). So the journey
+      // types the way a person does: no throttle, no waiting for the caret.
+      await composer.pressSequentially(MAIL_QUESTION);
       // …and the composer is where a lost or moved character is caught, with
       // its own words, rather than three steps later inside the mail card.
       await expect(

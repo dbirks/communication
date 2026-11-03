@@ -76,42 +76,16 @@ export function mailCardState(state?: MailCardData["state"]): { name: StateName;
 }
 
 /**
- * The worker's own system note, kept out of the answering agent's sentence
- * (rcn-3d review item 1).
+ * What a read-only mail answer means to the person reading it: the asked repo's
+ * agent cannot edit that repo. No ADR reference, no wire enum.
  *
- * The note is not the agent talking: `internal/worker/sink.go`'s note seam
- * journals a workspace fact as a `conversation.message.agent` chunk prefixed
- * `workspace: ` (the seam exists for a failed clone, which the chat must learn
- * about), and the mail answer is read back as that turn's journaled agent
- * chunks — so the note arrived in the card as the first paragraph of an
- * answer, ADR reference and all.
- *
- * The reader still needs the fact, in the reader's words: `Read-only: this
- * agent can't change server.` — what the note means for them, with no wire
- * enum or ADR number in it. A note that does not lead the answer is the
- * agent's own text about its workspace and stays where it is; the split is
- * bounded to the leading paragraph the seam writes.
+ * This is the sentence the ANSWERING thread's transcript prints as its muted
+ * system line (a `conversation.notice` of kind `mail_readonly` names no
+ * repository, so the thread's own row supplies it — `plainNoticeLines`). It was
+ * once the card's own line, reached by cutting the worker's `workspace: `
+ * paragraph out of the answer text; the note has its own journal row now, so
+ * the card never carries it and the answer is printed whole.
  */
-export const WORKSPACE_NOTE_PREFIX = "workspace: ";
-
-export function splitWorkspaceNote(answer: string): { note: string | null; body: string } {
-  const text = answer.replace(/^(?:[ \t]*\r?\n)+/, "");
-  if (!text.startsWith(WORKSPACE_NOTE_PREFIX)) return { note: null, body: text };
-  const lines = text.split(/\r?\n/);
-  let end = 0;
-  while (end < lines.length && lines[end].trim() !== "") end += 1;
-  return {
-    note: lines.slice(0, end).join(" ").trim(),
-    body: lines
-      .slice(end)
-      .join("\n")
-      .replace(/^(?:[ \t]*\r?\n)+/, "")
-      .trimEnd(),
-  };
-}
-
-/** What the note means to the person reading the card: the asked repo's agent
- * cannot edit that repo. No ADR reference, no wire words. */
 export function mailReadOnlyCopy(repo: string): string {
   return `Read-only: this agent can't change ${repo}.`;
 }
@@ -200,7 +174,6 @@ export interface MailCardProps {
 export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardProps) {
   const state = mailCardState(card.state);
   const spec = STATES[state.name];
-  const answer = card.answer === undefined ? null : splitWorkspaceNote(card.answer);
   return (
     <li
       data-testid={testId}
@@ -256,18 +229,6 @@ export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardPro
           >
             {mailAnswerLine(card, agentLabel)}
           </span>
-          {answer?.note ? (
-            // The worker's system note, out of the answer and said in the
-            // reader's words (rcn-3d review item 1); the wire's own note stays
-            // on the tooltip for whoever needs the evidence.
-            <span
-              className="font-mono text-[10.5px] text-muted"
-              data-testid={`${testId}-readonly`}
-              title={answer.note}
-            >
-              {mailReadOnlyCopy(card.repo)}
-            </span>
-          ) : null}
           {card.state === "answered" ? (
             // The answer is the other repo's agent's own markdown (rcn-3d
             // review item 4): printed raw it arrived with its backticks
@@ -275,10 +236,11 @@ export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardPro
             // a sentence. `MarkdownBody` is the app's own reader — React text
             // nodes, never HTML (ADR-0020) — so an answer that carries
             // formatting reads as formatting and one that does not reads
-            // exactly as it did. What it does NOT carry is the worker's
-            // system note (`splitWorkspaceNote`).
+            // exactly as it did. It is the agent's whole answer: the worker's
+            // system note is its own journal row now
+            // (`conversation.notice`), never a paragraph to cut out.
             <MarkdownBody
-              text={answer?.body ?? ""}
+              text={card.answer ?? ""}
               paragraphClassName="m-0 text-[12.5px] leading-[1.45] text-ink-2"
             />
           ) : (
