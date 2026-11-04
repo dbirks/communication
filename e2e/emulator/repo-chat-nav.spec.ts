@@ -32,7 +32,11 @@
 //            directions.
 //   rcn-2f — the side panel's `Make a workflow…` opens the assistant panel
 //            with the chat as context. The ask is the app's own canned line;
-//            what the model answers with is deliberately NOT asserted.
+//            what the model answers with is deliberately NOT asserted. Run
+//            as the ORG ADMIN (rcn-review11-2f): the library draft the flow
+//            saves needs the library role, which alice — the project
+//            maintainer — does not hold, so her entry is disabled with the
+//            reason and the journey verifies the flow on the admin session.
 //   rcn-1j — the Inputs tab: add a GitHub-issue input and a required text
 //            input no trigger fills, save the draft, and read the WHO FILLS
 //            rows — the by-hand line, the trigger's ✓ and the server's `!`.
@@ -1318,106 +1322,126 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
   });
 
-  test("thread → workflow — Make a workflow… opens the assistant with the chat", async ({
-    page,
-    emu,
-  }) => {
-    // Round-9 defect A: the 2f capture fired while the model was still
-    // "thinking…" — the drafting waits below can take a live-model turn each,
-    // so this test gets its own headroom on top of the group's default.
-    test.setTimeout(28 * 60_000);
-    await test.step("the side panel's note and its Make a workflow… action", async () => {
-      expect(ids.chatId, "the chat journey left its thread").toMatch(/^[0-9a-f-]{36}$/);
-      await page.goto(`/threads/${ids.chatId}`);
-      const note = page.getByTestId("assistant-note-workflow");
-      await expect(
-        note,
-        "design 2e: the panel's ASSISTANT slot carries the workflow suggestion note",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(note).toContainText(/make a workflow/i);
-    });
+  // Thread → workflow (design 2f) — run as the ORG ADMIN, not alice.
+  // The library draft the flow saves needs the library role (spec
+  // 01-domain-model: a project maintainer may publish a shared pipeline
+  // "only with library role"), and the fail-closed reading holds: only an
+  // organization admin has it today. For alice — the project maintainer —
+  // the rail's `Make a workflow…` entry is disabled with the reason
+  // (rcn-review11-2f), so the journey verifies the flow as the admin
+  // session the 1j authoring journey already uses; the org admin reads
+  // alice's thread (org-wide visibility) and the draft save succeeds.
+  test.describe("thread → workflow (the library-draft actor is the org admin)", () => {
+    test.use({ storageState: EMU_ADMIN_STATE });
 
-    await test.step("the assistant panel opens with the chat as context (2f)", async () => {
-      // The ask must name THIS thread: the shipped canned line (e211688) is
-      // `Turn the chat “<title>” into a workflow` — only a title-less chat
-      // falls back to `Turn this chat into a workflow` — so the chat's own
-      // title, read from the API, is what proves the note opened the panel on
-      // this conversation rather than on some generic subject. The model's
-      // answer is never asserted.
-      const conv = await page.request.get(`${EMU_BASE_URL}/api/v1/conversations/${ids.chatId}`);
-      expect(conv.status(), "the conversation read answers").toBe(200);
-      const chatTitle = (((await conv.json()) as { title?: string }).title ?? "").trim();
-      expect(chatTitle, "this journey's chat carries a title the ask can name").not.toBe("");
-      await page.getByTestId("assistant-note-workflow-action-make_workflow").click();
-      await expect(
-        page.getByTestId("assistant-popover"),
-        "design 2f: Make a workflow… opens the assistant panel",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page
-          .getByText(
-            new RegExp(
-              `turn the chat [^\n]*${escapeForRegex(chatTitle)}[^\n]* into a workflow`,
-              "i",
-            ),
-          )
-          .first(),
-        `the note's ask travels to the panel naming this chat (${chatTitle}) — the app's own canned line; the model's answer is never asserted`,
-      ).toBeVisible({ timeout: 30_000 });
-      // Round-9 defect A: capture ONLY after the answer has landed — the
-      // `thinking…` line (AssistantPanel `assistant-thinking`) is gone AND
-      // the answer carries at least one of the design's drafting elements:
-      // the step list (`assistant-step-list`), a QUESTION card
-      // (`assistant-question`) or the draft door — `Open draft`
-      // (`assistant-open-draft`) in the wide panel, the transcript's `Go ›`
-      // link row (`assistant-link`) in this 400px popover (MessageList.tsx /
-      // QuestionCard.tsx / AssistantPanel.tsx). A question card IS the
-      // design's state — capturing it is the right 2f. Bounded, generous
-      // for a live model, the way the turn legs bound their waits.
-      const thinking = page.getByTestId("assistant-thinking");
-      const thinkDeadline = Date.now() + 10 * 60_000;
-      let thinkingGone = false;
-      for (;;) {
-        if ((await thinking.count()) === 0) {
-          thinkingGone = true;
-          break;
-        }
-        if (Date.now() >= thinkDeadline) break;
-        await page.waitForTimeout(2_000);
-      }
-      expect(
-        thinkingGone,
-        "design 2f: the assistant stopped thinking within the live-model budget",
-      ).toBe(true);
-      const draftingLocators = [
-        page.getByTestId("assistant-step-list"),
-        page.getByTestId("assistant-question"),
-        page.getByTestId("assistant-open-draft"),
-        page.getByTestId("assistant-link"),
-      ];
-      const lastAnswer = page.locator('[data-testid="assistant-msg-assistant"]').last();
-      let drafted = false;
-      let answerText = "";
-      const draftDeadline = Date.now() + 10 * 60_000;
-      for (;;) {
-        if ((await lastAnswer.count()) > 0) {
-          answerText = (await lastAnswer.innerText()).trim();
-        }
-        for (const locator of draftingLocators) {
-          if ((await locator.count()) > 0) {
-            drafted = true;
+    test("thread → workflow — Make a workflow… opens the assistant with the chat", async ({
+      page,
+      emu,
+    }) => {
+      // Round-9 defect A: the 2f capture fired while the model was still
+      // "thinking…" — the drafting waits below can take a live-model turn each,
+      // so this test gets its own headroom on top of the group's default.
+      test.setTimeout(28 * 60_000);
+      await test.step("the side panel's note and its Make a workflow… action", async () => {
+        expect(ids.chatId, "the chat journey left its thread").toMatch(/^[0-9a-f-]{36}$/);
+        await page.goto(`/threads/${ids.chatId}`);
+        const note = page.getByTestId("assistant-note-workflow");
+        await expect(
+          note,
+          "design 2e: the panel's ASSISTANT slot carries the workflow suggestion note",
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(note).toContainText(/make a workflow/i);
+        // The admin holds the library role, so the entry is the enabled one
+        // (alice, its maintainer, sees it disabled with the reason — the
+        // UI's own tests assert that half, rcn-review11-2f).
+        await expect(
+          page.getByTestId("assistant-note-workflow-action-make_workflow"),
+          "the admin holds the library role, so the 2f entry is pressable",
+        ).toBeEnabled();
+      });
+
+      await test.step("the assistant panel opens with the chat as context (2f)", async () => {
+        // The ask must name THIS thread: the shipped canned line (e211688) is
+        // `Turn the chat “<title>” into a workflow` — only a title-less chat
+        // falls back to `Turn this chat into a workflow` — so the chat's own
+        // title, read from the API, is what proves the note opened the panel on
+        // this conversation rather than on some generic subject. The model's
+        // answer is never asserted.
+        const conv = await page.request.get(`${EMU_BASE_URL}/api/v1/conversations/${ids.chatId}`);
+        expect(conv.status(), "the conversation read answers").toBe(200);
+        const chatTitle = (((await conv.json()) as { title?: string }).title ?? "").trim();
+        expect(chatTitle, "this journey's chat carries a title the ask can name").not.toBe("");
+        await page.getByTestId("assistant-note-workflow-action-make_workflow").click();
+        await expect(
+          page.getByTestId("assistant-popover"),
+          "design 2f: Make a workflow… opens the assistant panel",
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(
+          page
+            .getByText(
+              new RegExp(
+                `turn the chat [^\n]*${escapeForRegex(chatTitle)}[^\n]* into a workflow`,
+                "i",
+              ),
+            )
+            .first(),
+          `the note's ask travels to the panel naming this chat (${chatTitle}) — the app's own canned line; the model's answer is never asserted`,
+        ).toBeVisible({ timeout: 30_000 });
+        // Round-9 defect A: capture ONLY after the answer has landed — the
+        // `thinking…` line (AssistantPanel `assistant-thinking`) is gone AND
+        // the answer carries at least one of the design's drafting elements:
+        // the step list (`assistant-step-list`), a QUESTION card
+        // (`assistant-question`) or the draft door — `Open draft`
+        // (`assistant-open-draft`) in the wide panel, the transcript's `Go ›`
+        // link row (`assistant-link`) in this 400px popover (MessageList.tsx /
+        // QuestionCard.tsx / AssistantPanel.tsx). A question card IS the
+        // design's state — capturing it is the right 2f. Bounded, generous
+        // for a live model, the way the turn legs bound their waits.
+        const thinking = page.getByTestId("assistant-thinking");
+        const thinkDeadline = Date.now() + 10 * 60_000;
+        let thinkingGone = false;
+        for (;;) {
+          if ((await thinking.count()) === 0) {
+            thinkingGone = true;
             break;
           }
+          if (Date.now() >= thinkDeadline) break;
+          await page.waitForTimeout(2_000);
         }
-        if (drafted || Date.now() >= draftDeadline) break;
-        await page.waitForTimeout(2_000);
-      }
-      expect(
-        drafted,
-        `design 2f: the answer must carry the drafting state — a step list, a QUESTION card or the draft door (Open draft). What the model actually answered: "${answerText.slice(0, 500)}"`,
-      ).toBe(true);
-      await emu.screen("rcn-2f", "workflow-draft");
-      await page.keyboard.press("Escape");
+        expect(
+          thinkingGone,
+          "design 2f: the assistant stopped thinking within the live-model budget",
+        ).toBe(true);
+        const draftingLocators = [
+          page.getByTestId("assistant-step-list"),
+          page.getByTestId("assistant-question"),
+          page.getByTestId("assistant-open-draft"),
+          page.getByTestId("assistant-link"),
+        ];
+        const lastAnswer = page.locator('[data-testid="assistant-msg-assistant"]').last();
+        let drafted = false;
+        let answerText = "";
+        const draftDeadline = Date.now() + 10 * 60_000;
+        for (;;) {
+          if ((await lastAnswer.count()) > 0) {
+            answerText = (await lastAnswer.innerText()).trim();
+          }
+          for (const locator of draftingLocators) {
+            if ((await locator.count()) > 0) {
+              drafted = true;
+              break;
+            }
+          }
+          if (drafted || Date.now() >= draftDeadline) break;
+          await page.waitForTimeout(2_000);
+        }
+        expect(
+          drafted,
+          `design 2f: the answer must carry the drafting state — a step list, a QUESTION card or the draft door (Open draft). What the model actually answered: "${answerText.slice(0, 500)}"`,
+        ).toBe(true);
+        await emu.screen("rcn-2f", "workflow-draft");
+        await page.keyboard.press("Escape");
+      });
     });
   });
 

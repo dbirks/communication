@@ -220,9 +220,24 @@ func (r *ConversationRunner) execWorkflowCreateDraft(ctx context.Context, c Call
 			reason = "forbidden"
 		}
 		r.b.logger().Info("assistant library draft create refused", "tool", name, "reason", reason)
+		payload := json.RawMessage(`{"error":"unavailable","detail":"the draft service did not answer"}`)
+		if reason == "forbidden" {
+			// The rcn-review11-2f round: a bare `forbidden` left the model no
+			// words of its own for the denial, so it reported "the create call
+			// was denied (forbidden)" with no reason while the drafting rules
+			// still pressed it to claim a saved draft. The refusal travels with
+			// the plain reason the library's own gate gives: the caller does
+			// not hold the library role, and NOTHING was saved.
+			blob, _ := json.Marshal(map[string]any{
+				"error":  "forbidden",
+				"detail": "the shared workflow library refused this caller: it does not hold the organization's library role, and the draft was NOT saved",
+				"hint":   "say plainly that the draft was not saved and why (saving to the library needs the library role the caller lacks); do not say the draft was created or saved, and do not offer an Open draft link",
+			})
+			payload = json.RawMessage(bounded(string(blob), maxDraftGetBytes))
+		}
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(map[string]string{
 			"slug": args.slug, "display_name": args.displayName,
-		}), OK: false, Reason: reason}}
+		}), OK: false, Reason: reason}, payload: payload}
 	}
 	if res.DraftID == "" || res.PipelineID == "" {
 		// The face answered without naming its rows: record nothing and

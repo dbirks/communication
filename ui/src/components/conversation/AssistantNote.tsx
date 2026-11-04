@@ -21,6 +21,15 @@ export interface AssistantNoteAction {
   icon?: never;
   /** Extra classes for the button (the 2f card's primary variant). */
   className?: string;
+  /**
+   * Present the entry as one the caller CANNOT take (the 2f entry for a
+   * caller without the library role, rcn-review11-2f): the button is
+   * disabled and `title` is its reason tooltip — the note stays, the
+   * promise does not. A disabled action never fires `onSelect`.
+   */
+  disabled?: boolean;
+  /** The reason tooltip for a disabled action (why the caller cannot take it). */
+  title?: string;
 }
 
 export interface AssistantNoteProps {
@@ -49,6 +58,23 @@ export const MAKE_WORKFLOW_ACTION_ID = "make_workflow";
  */
 export function makeWorkflowNoteAction(onSelect: () => void): AssistantNoteAction {
   return { id: MAKE_WORKFLOW_ACTION_ID, label: "Make a workflow…", onSelect };
+}
+
+/**
+ * The 2f entry for a caller who CANNOT save a library draft (no library
+ * role — spec 01: a project maintainer may touch the shared pipeline
+ * library "only with library role"): the action is offered but disabled,
+ * with the reason in its tooltip, so the entry does not promise a draft
+ * the caller cannot create (rcn-review11-2f).
+ */
+export function makeWorkflowNoteActionDisabled(reason: string): AssistantNoteAction {
+  return {
+    id: MAKE_WORKFLOW_ACTION_ID,
+    label: "Make a workflow…",
+    onSelect: () => {},
+    disabled: true,
+    title: reason,
+  };
 }
 
 /**
@@ -101,8 +127,14 @@ export function AssistantNote({
               type="button"
               data-testid={`${testId}-action-${action.id}`}
               data-action-kind={action.id}
+              disabled={action.disabled}
+              title={action.title}
               onClick={action.onSelect}
-              className={`font-mono text-[11.5px] text-accent-text hover:text-ink ${action.className ?? ""}`}
+              className={`font-mono text-[11.5px] ${
+                action.disabled
+                  ? "cursor-not-allowed text-faint"
+                  : "text-accent-text hover:text-ink"
+              } ${action.className ?? ""}`}
             >
               {action.label}
             </button>

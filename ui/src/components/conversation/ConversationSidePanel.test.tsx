@@ -33,7 +33,14 @@ const agents: ConversationChatAgent[] = [
   },
 ];
 
-function panel(props: Parameters<typeof ConversationSidePanel>[0]) {
+function panel(
+  props: Parameters<typeof ConversationSidePanel>[0],
+  // The 2f entry reads the caller's library role off the shared me read
+  // (rcn-review11-2f): default the caller to one who HOLDS it, so the
+  // journey-shaped tests see the entry enabled exactly as the journey's
+  // admin session does. Pass `false` for the maintainer's honest state.
+  isOrgAdmin = true,
+) {
   // A throwaway query cache: the WORKS IN switcher reads the thread's own
   // binding through the shared conversation read (round-8 item 3), and those
   // tests pass a `workflowChat` without a repository name — the section now
@@ -41,6 +48,9 @@ function panel(props: Parameters<typeof ConversationSidePanel>[0]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
+  // Seed the me read the standing note's gate reads: an unread identity is
+  // not a right, and the tests assert the gated state, not the fetch.
+  queryClient.setQueryData(queryKeys.me, { ...meFixture, is_org_admin: isOrgAdmin });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
@@ -292,6 +302,32 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
     expect(seen).toHaveLength(0);
   });
 
+  it("disables Make a workflow… for a caller without the library role, with the reason (rcn-review11-2f)", () => {
+    // The journey's alice is a project maintainer: the spec lets her touch
+    // the shared pipeline library "only with library role" (01-domain-model),
+    // so the entry must not promise a library draft she cannot create. The
+    // note stays (the suggestion stands) — the action is disabled, its
+    // tooltip is the reason, and a click opens nothing.
+    const seen: Event[] = [];
+    const listener = (event: Event) => seen.push(event);
+    window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
+    try {
+      panel({ projectId: projectFixture.id, workflowChat: chat }, false);
+      const note = screen.getByTestId("assistant-note-workflow");
+      expect(note.textContent).toContain("Make a workflow\u2026");
+      const action = screen.getByTestId(
+        "assistant-note-workflow-action-make_workflow",
+      ) as HTMLButtonElement;
+      expect(action.disabled).toBe(true);
+      expect(action.title).toMatch(/library role/i);
+      expect(action.title).toMatch(/organization admins hold it/i);
+      action.click();
+    } finally {
+      window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
+    }
+    expect(seen, "a disabled entry must not open the assistant").toHaveLength(0);
+  });
+
   it("the standing Make a workflow… rides below the host's notes, not in place of them", () => {
     // The notes-generate-wire worker used to make a real note replace the
     // standing 2f entry, hiding it whenever the panel had a note. The
@@ -458,7 +494,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setCsrfToken } from "../../api/client";
 import { resetReplicaName } from "../../api/replica";
 import { queryKeys } from "../../api/queries";
-import { conversationFixture, conversationId, mockFetch, type RouteStub } from "../../test/fakes";
+import {
+  conversationFixture,
+  conversationId,
+  meFixture,
+  mockFetch,
+  type RouteStub,
+} from "../../test/fakes";
 import type { Conversation, Repository } from "../../api/types";
 
 function scopeRepo(id: string, name: string): Repository {

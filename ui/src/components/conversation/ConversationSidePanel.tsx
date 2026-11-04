@@ -48,6 +48,14 @@
  *   printed two headings and the first note's `dismiss` butted against the
  *   second); the notes inside are grouped, so they are rows of one section
  *   with room between them.
+ * - The 2f entry is HONEST about the caller's own right (rcn-review11-2f):
+ *   saving a library draft needs the library role (spec 01: a project
+ *   maintainer may publish a shared pipeline "only with library role"),
+ *   read the same way as every other library surface — `me.is_org_admin`
+ *   through `hasLibraryRole`. A caller without it still sees the note (the
+ *   suggestion stands), but the `Make a workflow…` action is disabled with
+ *   the reason in its tooltip, so the entry never promises a library draft
+ *   the caller cannot create.
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router";
@@ -60,10 +68,12 @@ import {
   AssistantNoteGroup,
   MAKE_WORKFLOW_ACTION_ID,
   makeWorkflowNoteAction,
+  makeWorkflowNoteActionDisabled,
 } from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { useChangeConversationScope } from "../../api/conversations";
-import { useConversation, useRepositories } from "../../api/queries";
+import { useConversation, useMe, useRepositories } from "../../api/queries";
+import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../../lib/pipeline/authoring";
 import { agentLabel } from "./ConversationTranscript";
 import { NO_BRANCH_YET } from "./threadBranch";
 import type { TurnRecord } from "../../api/transcript";
@@ -365,6 +375,14 @@ export function ConversationSidePanel({
   // `Make a workflow…` (rcn-chat-rail-390): the note is the panel's own
   // suggestion — not a notes-store row — so dismissal is the host's to hold
   // (per-conversation, in the chat page) and the panel only obeys it.
+  //
+  // The entry's own honesty (rcn-review11-2f): the library draft the flow
+  // saves needs the library role, read the same single way as every other
+  // library surface (authoring.hasLibraryRole off `me.is_org_admin`). An
+  // unread identity is not a right — the action stays disabled until the
+  // read says otherwise, the same rule the authoring surfaces keep.
+  const { data: me } = useMe();
+  const canSaveToLibrary = hasLibraryRole(me);
   const standingNoteShown = Boolean(workflowChat) && !workflowNoteDismissed;
   const workflowNote =
     workflowChat && standingNoteShown ? (
@@ -372,11 +390,15 @@ export function ConversationSidePanel({
         testId={WORKFLOW_NOTE_TEST_ID}
         text={`Turn “${workflowChat.title || "this chat"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
         actions={[
-          makeWorkflowNoteAction(() =>
-            onMakeWorkflow
-              ? onMakeWorkflow(workflowChat)
-              : openAssistantWorkflowDraft(workflowChat),
-          ),
+          canSaveToLibrary
+            ? makeWorkflowNoteAction(() =>
+                onMakeWorkflow
+                  ? onMakeWorkflow(workflowChat)
+                  : openAssistantWorkflowDraft(workflowChat),
+              )
+            : makeWorkflowNoteActionDisabled(
+                `you can't save this as a library workflow — saving needs ${LIBRARY_ROLE_LABEL} (organization admins hold it)`,
+              ),
         ]}
         onDismiss={onDismissWorkflowNote}
       />

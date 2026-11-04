@@ -382,6 +382,15 @@ func TestWorkflowCreateDraftDeniedByTheUnderlyingService(t *testing.T) {
 	if len(res.Changes) != 0 || len(res.Answer.Links) != 0 {
 		t.Fatalf("a refused create logged changes or links: %+v %+v", res.Changes, res.Answer.Links)
 	}
+	// The rcn-review11-2f round: the denial travels to the MODEL with a plain
+	// reason (the library role, and the fact that nothing was saved), so the
+	// answer can say why instead of a bare "denied (forbidden)" with no words.
+	result := userMessages(model.seen(1))
+	for _, want := range []string{"forbidden", "library role", "NOT saved"} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("the denied create's tool result does not carry the plain reason %q:\n%s", want, result)
+		}
+	}
 }
 
 // --- the trust gate (ask_all) and the confirm path --------------------------
@@ -638,6 +647,11 @@ func TestDraftingRulesInTheSystemPrompt(t *testing.T) {
 		"NEVER publish",
 		"untrusted data",
 		"✓ Plan",
+		// The rcn-review11-2f round: a denied create must never be claimed as
+		// saved — the caller lacks the library role, and the answer says so.
+		"A workflow.create_draft that answers forbidden was NOT saved",
+		"library role the caller lacks",
+		"make no Open draft promise",
 	} {
 		if !strings.Contains(conversationSystemPrompt, want) {
 			t.Fatalf("the conversation system prompt must carry the drafting rule %q", want)

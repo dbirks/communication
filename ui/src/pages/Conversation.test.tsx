@@ -1532,7 +1532,16 @@ describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", 
     const listener = (event: Event) => seen.push(event);
     window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
     try {
-      renderApp({ path, routes: routes(conversationFixture) });
+      // The 2f entry is gated on the library role (rcn-review11-2f): the
+      // click-through contract is verified for a caller who HOLDS it —
+      // the me stub answers org admin first, ahead of the fixture's default.
+      renderApp({
+        path,
+        routes: [
+          { path: "/api/v1/me", body: { ...meFixture, is_org_admin: true } },
+          ...routes(conversationFixture),
+        ],
+      });
       await screen.findByTestId("conversation-title");
       fireEvent.click(await screen.findByTestId("assistant-note-workflow-action-make_workflow"));
     } finally {
