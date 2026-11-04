@@ -11,9 +11,17 @@
  * two directories this reads. The design's `project / repo · agent` mono
  * line and the last agent line under a row are served data, not guesses:
  * ADR-0065 put `repository_name` and `last_agent_line` on
- * `ConversationSummary`. Both are null when the thread has no repository
- * binding or the agent has not spoken (and absent from an older server), so
- * those rows honestly fall back to `project · agent` with no last line.
+ * `ConversationSummary`. The repository members are ONE fact — null
+ * together, or the repository the thread works in — and a null id is the
+ * wire's "works in the whole project" word (ADR-0067 amendment), so the
+ * row prints `project / Whole project` instead of dropping the scope
+ * segment. (The summary's three-arm derivation can still name a moved
+ * thread's old workspace repository; the host's `declaredScope` prop
+ * carries the one fact only the detail read has — the declared binding —
+ * and outranks the derivation for the row it names.) Both fields are
+ * null when the thread has no repository binding or the agent has not
+ * spoken (and absent from an older server), so those rows honestly fall
+ * back to `project · agent` with no last line.
  *
  * Search and the chips: a project-filtered pane sends the debounced title
  * search and `from runs` to the list route as `q`/`origin` (ADR-0043) — the
@@ -181,6 +189,7 @@ function ThreadGroup({
   selectedId,
   projectName,
   profileName,
+  declaredScope,
 }: {
   testid: string;
   label: string;
@@ -189,6 +198,7 @@ function ThreadGroup({
   selectedId: string;
   projectName: (id: string) => string;
   profileName: (id: string) => string;
+  declaredScope?: { id: string; repositoryId: string | null };
 }) {
   if (rows.length === 0) return null;
   return (
@@ -202,6 +212,7 @@ function ThreadGroup({
             selected={conversation.id === selectedId}
             projectName={projectName(conversation.project_id)}
             profileName={profileName(conversation.agent_profile_id)}
+            declaredScope={declaredScope}
           />
         ))}
       </ul>
@@ -213,17 +224,32 @@ function ThreadGroup({
  *  (ADR-0065's `repository_name`; no binding → the project alone, as before),
  *  then the last line the agent wrote whenever the wire serves one — never
  *  faked. Selection is the raised treatment: ink edge, hard shadow, accent
- *  wash. */
+ *  wash.
+ *
+ *  The scope segment answers the chat's SCOPE, not its workspace: the row's
+ *  `repository_id` is the same fact as its `repository_name` (the wire keeps
+ *  them together — "null exactly when `repository_id` is null"), so a row
+ *  that answers `repository_id: null` names no repository even when the name
+ *  member carries one — a name beside a null id is the three-arm derivation's
+ *  workspace checkout, not the chat's scope, and the row says so (rcn-review13
+ *  item 1: a moved chat's row kept printing the workspace's repository). A
+ *  host that has read one row in detail hands down its declared scope
+ *  (`declaredScope`): the summary row still answers the workspace arm for a
+ *  moved thread, but the declared binding — null, the whole project — is the
+ *  fact only the detail read carries, and it outranks the derivation for the
+ *  row it names. */
 function ThreadItem({
   conversation,
   selected,
   projectName,
   profileName,
+  declaredScope,
 }: {
   conversation: ConversationSummary;
   selected: boolean;
   projectName: string;
   profileName: string;
+  declaredScope?: { id: string; repositoryId: string | null };
 }) {
   // gh-69: a pointer that lands on a row warms that thread's detail read (a
   // 60s-fresh prefetch per row), so the click itself opens the thread without
@@ -242,13 +268,20 @@ function ThreadItem({
         : "idle"
       : ROW_STATUS_WORDS[conversation.status];
   const repo = conversation.repository_name ?? null;
-  // A row the server answers `repository_id: null` names no repository by
-  // choice — a moved or born-unbound chat working in the whole project
-  // (ADR-0067 amendment) — and the row says so instead of dropping the scope
-  // segment entirely (rcn-review12 works-in-moved). A row a control plane
+  // The row's OWN declared scope is the null arm: `repository_id: null` is
+  // the wire's "works in the whole project" (ADR-0067 amendment), and the
+  // name member beside it is the derivation's workspace checkout, not a
+  // scope — never a repository (rcn-review13 item 1). A row a control plane
   // predating the field answers (undefined) keeps the old `project · agent`
   // shape: no read says that thread is unbound.
-  const scope = repo ?? (conversation.repository_id === null ? "Whole project" : null);
+  const wholeProjectRow = conversation.repository_id === null;
+  // The host's detail read knows the declared scope of the row it opens, and
+  // null says the whole project even while the summary's three-arm derivation
+  // still names the old workspace's repository (rcn-review13 item 1 — the
+  // SELECTED row kept naming the project's first repository after the move).
+  const declared =
+    declaredScope && declaredScope.id === conversation.id ? declaredScope.repositoryId : undefined;
+  const scope = declared === null || wholeProjectRow ? "Whole project" : repo;
   // The served line is the agent's own text; the ONE shared preview helper
   // strips its leading markdown markers and inline emphasis, so the row
   // leads with the sentence, not a bullet (pass-1 review).
@@ -301,6 +334,15 @@ export interface ThreadListPaneProps {
   /** The thread rendered in the pane beside this list, when one is. */
   selectedId?: string;
   /**
+   * The declared scope (ADR-0067 amendment: `repository_id` as stored —
+   * null = the whole project) of a row the host has ALREADY read in detail.
+   * The summary rows answer the three-arm derivation, and a thread moved to
+   * the whole project still carries its old workspace's repository in that
+   * derivation — so for the one row the host can prove, the declared scope
+   * outranks the name the summary derives (rcn-review13 item 1).
+   */
+  declaredScope?: { id: string; repositoryId: string | null };
+  /**
    * Whether this pane is the ONLY error surface for the failed read. When the
    * pane sits alone (the `/threads` list column, which stays visible at every
    * width), it owns a loud `role="alert"` banner — the one place the reader
@@ -318,6 +360,7 @@ export interface ThreadListPaneProps {
 export function ThreadListPane({
   projectId = "",
   selectedId = "",
+  declaredScope,
   ownsError = false,
 }: ThreadListPaneProps) {
   const [search, setSearch] = useState("");
@@ -500,6 +543,7 @@ export function ThreadListPane({
                   selectedId={selectedId}
                   projectName={projectName}
                   profileName={profileName}
+                  declaredScope={declaredScope}
                 />
                 <ThreadGroup
                   testid="threads-group-earlier"
@@ -509,6 +553,7 @@ export function ThreadListPane({
                   selectedId={selectedId}
                   projectName={projectName}
                   profileName={profileName}
+                  declaredScope={declaredScope}
                 />
               </div>
               {list.nextCursor !== null || cursor ? (

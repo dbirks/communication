@@ -32,6 +32,18 @@ const wholeProjectRow: ConversationSummary = {
   repository_name: null,
 };
 
+// rcn-review13 item 1: the row the wire can still answer after a move —
+// `repository_id` null by the row's own contract while the other
+// repository member carries the workspace's checkout name. The id is the
+// scope fact; the name beside it is not a scope.
+const movedRowWithStaleName: ConversationSummary = {
+  ...conversationSummaryFixture,
+  id: "01987a63-9999-7000-8000-abcdef000009",
+  title: "Emu rcn pass-2 — 2026-11-03",
+  repository_id: null,
+  repository_name: "server",
+};
+
 const boundRow: ConversationSummary = {
   ...conversationSummaryFixture,
   id: "01987a63-2222-7000-8000-abcdef000002",
@@ -72,7 +84,10 @@ function routes(): RouteStub[] {
     { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
     {
       path: "/api/v1/conversations",
-      body: { items: [wholeProjectRow, boundRow, runRow, newlineRow], next_cursor: null },
+      body: {
+        items: [wholeProjectRow, movedRowWithStaleName, boundRow, runRow, newlineRow],
+        next_cursor: null,
+      },
     },
   ];
 }
@@ -100,6 +115,22 @@ describe("thread list rows name the chat's scope, and only the wire's", () => {
     expect(row.textContent).toContain(`${projectFixture.name} / server`);
     expect(row.textContent).toContain(claudeProfile.name);
   });
+
+  it(
+    "a row whose own id says null never prints a repository, even with the name member set (rcn-review13)",
+    { timeout: 15_000 },
+    async () => {
+      renderApp({ path: "/threads", routes: routes() });
+      const row = await screen.findByTestId(`thread-row-${movedRowWithStaleName.id}`);
+      // The row's `repository_id: null` is the wire's "works in the whole
+      // project" — the `repository_name` beside it is the derivation's
+      // workspace checkout, not the chat's scope. Never a repository.
+      expect(row.textContent).toContain(
+        `${projectFixture.name} / Whole project · ${claudeProfile.name}`,
+      );
+      expect(row.textContent).not.toContain("server");
+    },
+  );
 });
 
 describe("thread list previews stay readable for structured output", () => {
@@ -148,8 +179,14 @@ describe("thread list previews stay readable for structured output", () => {
 
 describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
   // The chat is bound to `web` until the switcher moves it to the whole
-  // project; the list row the pane reads is the same binding.
+  // project. The list row the pane reads answers the three-arm derivation:
+  // the declared binding while it is set — and AFTER the move, the workspace
+  // arm keeps naming the project's other repository (rcn-review13 item 1:
+  // the selected row printed `Emu / server` while the header said Whole
+  // project). The pane's `declaredScope` (the detail read's own
+  // `repository_id`) is what must outrank that derivation for this row.
   const webRepoId = "01987a79-aaaa-7000-8000-abcdef044444";
+  const serverRepoId = "01987a79-bbbb-7000-8000-abcdef044444";
   const webRepo = {
     id: webRepoId,
     project_id: projectFixture.id,
@@ -159,6 +196,12 @@ describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
     created_at: "2026-10-14T18:00:00Z",
     credential: "none",
   };
+  const serverRepo = {
+    ...webRepo,
+    id: serverRepoId,
+    name: "server",
+    git_url: "https://git.example/server.git",
+  };
   const boundConversationDetail: Conversation = {
     ...conversationFixture,
     repository_id: webRepoId,
@@ -167,7 +210,8 @@ describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
   const movedConversationDetail: Conversation = {
     ...conversationFixture,
     repository_id: null,
-    repository_name: null,
+    // the detail's three-arm name keeps answering the workspace's checkout
+    repository_name: "server",
   };
   const boundListRow: ConversationSummary = {
     ...conversationSummaryFixture,
@@ -176,8 +220,9 @@ describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
   };
   const movedListRow: ConversationSummary = {
     ...conversationSummaryFixture,
-    repository_id: null,
-    repository_name: null,
+    // the workspace arm answers for both members after the move
+    repository_id: serverRepoId,
+    repository_name: "server",
   };
 
   it(
@@ -194,7 +239,7 @@ describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
           { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
           {
             path: `/api/v1/projects/${projectFixture.id}/repos`,
-            body: { items: [webRepo] },
+            body: { items: [webRepo, serverRepo] },
           },
           {
             // The cross-project thread list the pane reads: the first answer
@@ -253,12 +298,18 @@ describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
       expect(patch).toBeTruthy();
 
       // The fresh conversation lands in the shared cache …
-      // … and every list the pane reads follows it: the selected row now
-      // says the whole project, with the header and the switcher agreeing.
+      // … and every list the pane reads follows it: even though the refetched
+      // row still answers the workspace arm (`server`), the selected row says
+      // the whole project — the detail's declared scope outranks the
+      // derivation (rcn-review13 item 1) — with the header and switcher
+      // agreeing.
       await vi.waitFor(() =>
         expect(screen.getByTestId(`thread-row-${conversationId}`).textContent).toContain(
           `${projectFixture.name} / Whole project`,
         ),
+      );
+      expect(screen.getByTestId(`thread-row-${conversationId}`).textContent).not.toContain(
+        "server",
       );
       expect(screen.getByTestId("conversation-meta").textContent).toContain("Whole project");
       expect(screen.getByTestId("side-panel-works-in-switch").textContent).toContain(

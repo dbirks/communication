@@ -595,4 +595,121 @@ describe("useStickyTranscript", () => {
     expect(column.scrollTop).toBe(500);
     column.remove();
   });
+
+  // rcn-review13 item 2: the scope-change refetch/invalidation can re-key
+  // the transcript's list — the ref's DIV is replaced while the hook stays
+  // mounted. The pin's decisions must survive the replacement in BOTH
+  // polarities: a pinned reader re-sticks over the fresh nodes, and a
+  // reader who climbed up to keep reading is not yanked to the newest row.
+  // (The ref callback mocks each node's rect before the hook's effect runs —
+  // in a real browser the layout the effect reads is the settled one.)
+  function Harness({ key1, model }: { key1: number; model: PaneModel }) {
+    const contentRef = useStickyTranscript();
+    return (
+      <div
+        key={key1}
+        ref={(el) => {
+          if (el !== null) mockContentRect(el, model);
+          contentRef(el);
+        }}
+        data-testid="sticky-content"
+      />
+    );
+  }
+
+  function mountReplacable(model: PaneModel) {
+    const scroller = mountPane(model);
+    const view = render(<Harness key1={1} model={model} />, { container: scroller });
+    const content = scroller.querySelector<HTMLDivElement>("[data-testid='sticky-content']");
+    if (!content) throw new Error("the harness content did not land in the scroller");
+    return { scroller, view, content };
+  }
+
+  function replaceNode(scroller: HTMLElement, model: PaneModel, view: ReturnType<typeof render>) {
+    view.rerender(<Harness key1={2} model={model} />);
+    const content = scroller.querySelector<HTMLDivElement>("[data-testid='sticky-content']");
+    if (!content) throw new Error("the replacement content did not land in the scroller");
+    return content;
+  }
+
+  it("keeps a pinned reader pinned across a re-render that replaces the content node", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const { scroller, view, content } = mountReplacable(model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500); // pinned at the newest row
+
+    // The scope-change refetch re-keys the list: the ref's div is replaced.
+    const replaced = replaceNode(scroller, model, view);
+    // The replacement re-sticks on the same place (the content is the same
+    // size) — the pin was not dropped by the new node.
+    fireResize(replaced);
+    expect(scroller.scrollTop).toBe(500);
+    // …and the next row the stream lands keeps the view at the newest row:
+    // the pin's decision survived the replacement.
+    model.contentBottom = 1100;
+    fireResize(replaced);
+    expect(scroller.scrollTop).toBe(800);
+    scroller.remove();
+  });
+
+  it("does not yank a reader who was reading history when a re-render replaces the content node", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const { scroller, view, content } = mountReplacable(model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500);
+    // The reader climbs to an old reply: far out of the pin band.
+    act(() => {
+      model.scrollTop = 100;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    // The refetch re-keys the list. The replacement must NOT re-read the
+    // view as a fresh first sight (pinned=true) — that would scroll the
+    // reader's place away under the new rows.
+    const replaced = replaceNode(scroller, model, view);
+    model.contentBottom = 1100; // rows landed while the reader read
+    fireResize(replaced);
+    expect(scroller.scrollTop).toBe(100); // the reader keeps their place
+    scroller.remove();
+  });
+
+  it("resets to pinned when the transcript collapses to nothing — a new conversation's journal starts on the same surface", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const { scroller, content } = mountReplacable(model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500);
+    // The reader climbs up — then the surface switches to another
+    // conversation: its journal starts empty, the transcript collapses to
+    // nothing, and "opening a chat starts at the newest row" must hold.
+    act(() => {
+      model.scrollTop = 100;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    model.contentBottom = 40; // "No transcript yet"
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(0); // the fresh, empty transcript pinned
+    // …and the first rows the stream replays follow the pin.
+    model.contentBottom = 900;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(600);
+    scroller.remove();
+  });
 });

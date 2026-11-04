@@ -7,9 +7,11 @@
  * `dismiss`.
  *
  * The notes are model-written, per user (ADR-0071). This component renders
- * ONLY what the caller hands it — with no notes it renders nothing at all (no
- * placeholder, no hard-coded rule): there are no rules here to fall back to,
- * by the design's own refusal of them.
+ * ONLY what the caller hands it — with no notes it says so in one muted
+ * line under the section's own heading (rcn-review13 item 3): an absent
+ * section made the panel's existence unreadable, and a placeholder ROW would
+ * be a fake note. No placeholder note, no hard-coded rule — the honest
+ * empty state is the design's own refusal of them, made visible.
  */
 export interface AssistantNote {
   /** Stable id — the dismiss/action keys on it. */
@@ -31,7 +33,33 @@ export interface AssistantNotesProps {
 const MAX_NOTES = 3;
 
 export function AssistantNotes({ notes, onDismiss }: AssistantNotesProps) {
-  if (notes.length === 0) return null;
+  if (notes.length === 0) {
+    // The section is the reader's contract, not the notes': with nothing
+    // noticed yet the heading still stands, in its muted (never the accent
+    // "the assistant spoke") skin, with one honest line about what lands
+    // here (rcn-review13 item 3 — a hidden section left the reviewer
+    // unable to tell whether the panel was built at all).
+    return (
+      <section
+        aria-labelledby="repo-assistant-notes-heading"
+        className="rounded-[3px] border border-line-soft bg-surface px-[10px] py-[8px]"
+        data-testid="repo-assistant-notes"
+      >
+        <h2
+          id="repo-assistant-notes-heading"
+          className="font-mono text-[10.5px] font-semibold tracking-[.06em] text-muted"
+        >
+          ASSISTANT NOTICED
+        </h2>
+        <p
+          className="mt-[4px] text-[12px] leading-[17px] text-muted"
+          data-testid="repo-assistant-notes-empty"
+        >
+          Nothing noticed yet — the assistant adds notes here as it works on this repo.
+        </p>
+      </section>
+    );
+  }
   const shown = notes.slice(0, MAX_NOTES);
   return (
     <section

@@ -131,10 +131,18 @@ function renderFeed(notes: AssistantNoteList | null, overrides: RouteStub[] = []
 }
 
 describe("ASSISTANT NOTICED on the repository page", () => {
-  it("renders nothing while the store holds nothing", async () => {
+  it("keeps the ASSISTANT NOTICED heading with its honest empty line while the store holds nothing", async () => {
     renderFeed(null);
     await waitFor(() => expect(screen.getByTestId("repo-chat-box")).toBeTruthy());
-    expect(screen.queryByTestId("repo-assistant-notes")).toBeNull();
+    // rcn-review13 item 3: the section is the reader's contract, not the
+    // notes' — an empty store shows the heading and one muted line, never
+    // a placeholder note and never a missing section.
+    const panel = screen.getByTestId("repo-assistant-notes");
+    expect(panel.textContent).toContain("ASSISTANT NOTICED");
+    expect(screen.getByTestId("repo-assistant-notes-empty").textContent).toContain(
+      "Nothing noticed yet",
+    );
+    expect(panel.querySelector("[data-testid^='repo-assistant-note-'")).toBeNull();
   });
 
   it("draws the notes the store served, newest first, with the store's own labels", async () => {
@@ -267,6 +275,8 @@ describe("ASSISTANT NOTICED on the repository page", () => {
     } finally {
       spy.mockRestore();
     }
-    expect(screen.queryByTestId("repo-assistant-notes")).toBeNull();
+    expect(screen.getByTestId("repo-assistant-notes-empty").textContent).toContain(
+      "Nothing noticed yet",
+    );
   });
 });

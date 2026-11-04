@@ -612,10 +612,14 @@ describe("the chat box", () => {
     expect(error.textContent).toContain("Repository not found");
   });
 
-  it("renders nothing of ASSISTANT NOTICED without a notes source", async () => {
+  it("shows the ASSISTANT NOTICED heading with its honest empty state when no notes source is served", async () => {
     renderFeed();
     await screen.findByTestId("repo-page");
-    expect(screen.queryByTestId("repo-assistant-notes")).toBeNull();
+    // rcn-review13 item 3: the section never vanishes — the heading stands
+    // with one muted line, never a placeholder note.
+    expect(screen.getByTestId("repo-assistant-notes-empty").textContent).toContain(
+      "Nothing noticed yet",
+    );
   });
 });
 

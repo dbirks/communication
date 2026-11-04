@@ -814,7 +814,14 @@ export default function ConversationPage({
           className="hidden w-[320px] shrink-0 border-r border-line-strong lg:block"
           data-testid="thread-list-pane"
         >
-          <ThreadListPane selectedId={conversationId} />
+          <ThreadListPane
+            selectedId={conversationId}
+            declaredScope={
+              data.repository_id !== undefined
+                ? { id: conversationId, repositoryId: data.repository_id }
+                : undefined
+            }
+          />
         </div>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <header className="shrink-0 border-b border-line-strong bg-surface px-5 pt-[10px] pb-[12px] lg:px-6">

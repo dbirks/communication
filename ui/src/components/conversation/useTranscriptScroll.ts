@@ -42,6 +42,17 @@
  * transcript is still streaming in. The reader never moved the view, so the
  * pin holds and follows the grown bottom instead.
  *
+ * The pin's DECISIONS — is the reader at the newest row, and the offset the
+ * pin last placed the view at — are kept in a ref across the effect re-runs,
+ * so a re-render that replaces the content NODE while the hook stays mounted
+ * (the scope-change refetch/invalidation re-keying the transcript's list,
+ * rcn-review13 item 2) does not reset them: a pinned reader re-sticks over
+ * the fresh nodes, and a reader reading history is not yanked to the newest
+ * row by the replacement. The ref resets inside the effect only when the
+ * transcript collapses to nothing — a new conversation's journal starting on
+ * the same surface — so "opening a chat starts at the newest row" still
+ * holds for the new conversation.
+ *
  * The hook returns a ref for the content container. A surface that renders
  * its transcript later than its first paint (the panel's loading state, then
  * the transcript) is handled: the ref callback re-arms the pin when the
@@ -60,7 +71,7 @@
  * what re-runs the pin, so the newest row follows the pane's scroller even
  * though the pane's scroller is not the transcript component's own element.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** How far from the newest row still counts as "at the newest row" (the
  * review's ~80px: a reply that lands while the last line sits 80px up still
@@ -150,24 +161,42 @@ export function findScrollableAncestor(el: Element | null): HTMLElement | null {
  * that stands above the transcript only after its layout settles (the 1280
  * thread pane, an embedded reuse) is picked up by the next row, reflow or
  * resize instead of waiting for the content to remount.
+ *
+ * The pin's DECISIONS (is the reader at the newest row, and where the pin
+ * last put the view) live in a ref, so a re-render that replaces the content
+ * NODE while the hook stays mounted — the scope-change refetch/invalidation
+ * re-keying the transcript's list (rcn-review13 item 2) — keeps them: a
+ * pinned reader re-sticks on the same place over the fresh nodes instead of
+ * the replacement re-reading the view, and a reader who climbed up to keep
+ * reading is not yanked to the newest row by the replacement. A ref vanishes
+ * only when the hook's component unmounts, so a fresh surface starts pinned
+ * from first sight again. The one reset inside the ref: the transcript
+ * collapsing to nothing (a new conversation's journal starting on the same
+ * surface) — its pin decisions belong to the previous conversation, and
+ * "opening a chat starts at the newest row" must hold for the new one.
  */
 export function useStickyTranscript(): (el: HTMLElement | null) => void {
   const [content, setContent] = useState<HTMLElement | null>(null);
   const setRef = useCallback((el: HTMLElement | null) => {
     setContent((prev) => (prev === el ? prev : el));
   }, []);
+  // The decisions OUTSIDE the effect: an effect re-run for a replaced content
+  // node must not reset the reader's state (see the header note).
+  const pin = useRef({ pinned: true, lastPinnedTop: null as number | null });
 
   useEffect(() => {
     if (content === null) return;
 
-    // Pinned from first sight: opening a chat starts at the newest row.
-    let pinned = true;
+    // Pinned from first sight: opening a chat starts at the newest row —
+    // unless this same surface already knew the reader from a previous
+    // transcript the refetch replaced, in which case the ref says.
+    let pinned = pin.current.pinned;
     // The offset the pin last put the view at (read back from the scroller,
     // so the browser's clamp of an over-max write is what is compared).
     // A scroll event that still finds the view there is the pin's own event
     // (or a re-clamp) — see the header note on the replay race — never a
     // reader movement, so the pin holds across it.
-    let lastPinnedTop: number | null = null;
+    let lastPinnedTop = pin.current.lastPinnedTop;
     let observedScroller: HTMLElement | null = null;
     let ro: ResizeObserver | null = null;
 
@@ -177,15 +206,31 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
      * answered on the next pin input, not on the content's next remount. */
     const scrollerNow = () => findScrollableAncestor(content);
 
+    const remember = () => {
+      pin.current.pinned = pinned;
+      pin.current.lastPinnedTop = lastPinnedTop;
+    };
+
     const stick = () => {
       const scroller = scrollerNow();
       if (scroller === null) return;
+      const contentBottom = contentBottomInScroller(content, scroller);
+      // The transcript collapsed to nothing: a new conversation's journal is
+      // starting on this surface, and the decisions this ref holds belong to
+      // the previous conversation. Opening a chat starts at the newest row —
+      // so does starting from the first frame of a retained one.
+      if (contentBottom < 2 * NEAR_BOTTOM_PX) {
+        pinned = true;
+        lastPinnedTop = null;
+        remember();
+      }
       if (pinned) {
-        scroller.scrollTop = pinPosition(contentBottomInScroller(content, scroller), scroller);
+        scroller.scrollTop = pinPosition(contentBottom, scroller);
         // The browser clamps an over-max write: compare the offset it kept,
         // not the one requested, so the re-stick loop stays a fixed point.
         lastPinnedTop = scroller.scrollTop;
       }
+      remember();
       // The owning scroller can change under the pin (the pane's column
       // reflows, its side panel mounts or unmounts, an embed wraps the
       // transcript in a scroller after its own mount): the observation
@@ -224,6 +269,7 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
       }
       pinned = isNearContentBottom(contentBottomInScroller(content, scroller), scroller);
       if (pinned) stick();
+      remember();
     };
 
     // 1280 ↔ 390: the view keeps its pin (or its place) across the resize —

@@ -311,10 +311,17 @@ describe("the feed's load-failure card (review 3a, item 2)", () => {
 });
 
 describe("AssistantNotes", () => {
-  it("renders nothing at all without notes — no placeholder, no rule", () => {
-    const { container } = render(<AssistantNotes notes={[]} />);
-    expect(container.innerHTML).toBe("");
-    expect(screen.queryByTestId("repo-assistant-notes")).toBeNull();
+  it("keeps the heading with its honest empty line without notes — no placeholder, no rule", () => {
+    render(<AssistantNotes notes={[]} />);
+    // rcn-review13 item 3: the section is the reader's contract — the
+    // heading stands with one muted line; a placeholder note would be a
+    // fake one.
+    const panel = screen.getByTestId("repo-assistant-notes");
+    expect(panel.textContent).toContain("ASSISTANT NOTICED");
+    expect(screen.getByTestId("repo-assistant-notes-empty").textContent).toContain(
+      "Nothing noticed yet",
+    );
+    expect(panel.querySelector("[data-testid^='repo-assistant-note-'")).toBeNull();
   });
 
   it("renders up to three notes, each with its action and dismiss", () => {
