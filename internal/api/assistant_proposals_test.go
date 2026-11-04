@@ -245,6 +245,49 @@ func TestDraftProposalRefusesInvalidModelOutput(t *testing.T) {
 	}
 }
 
+// TestDraftProposalRefusalNamesApprovers is the 422's half of the approver
+// amendment: a human.approval insert the model answered WITHOUT approver
+// roles (or with a role outside the closed set) is refused naming the
+// reason the validator gives — the fix the caller (or the conversation
+// loop) can act on.
+func TestDraftProposalRefusalNamesApprovers(t *testing.T) {
+	cases := []struct {
+		name    string
+		answer  string
+		wantFix string
+	}{
+		{"no roles names approver_roles and the valid set",
+			`{"op":"insert_on_edge","from":"plan","to":"approve","kind":"human.approval","id":"check1","summary":"gate"}`,
+			"approver_roles"},
+		{"a role outside the schema enum names the role",
+			`{"op":"insert_on_edge","from":"plan","to":"approve","kind":"human.approval","id":"check1","config":{"summary":"gate"},"approver_roles":["wizard"],"summary":"gate"}`,
+			"wizard"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			drafts := &proposalDrafts{draft: proposalDraftFixture()}
+			model := &proposalModel{answers: []string{tc.answer}}
+			s := proposalMount(t, AssistantDeps{Pipelines: drafts, Profiles: drafts}, model)
+			rec := proposalPost(t, s, map[string]any{
+				"draft_id": "draft-1", "version": 1, "instruction": "add an approval gate",
+			})
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 (%s)", rec.Code, rec.Body)
+			}
+			var out struct {
+				Code   string `json:"code"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode: %v (%s)", err, rec.Body)
+			}
+			if out.Code != "assistant_proposal_invalid" || !strings.Contains(out.Detail, tc.wantFix) {
+				t.Fatalf("problem = %+v, want the fix %q named", out, tc.wantFix)
+			}
+		})
+	}
+}
+
 // TestDraftProposalHappyPath pins the 200: one completion through the broker,
 // a validated insert_on_edge, the touched node ids, the version for the Apply
 // PUT — and a draft row the store never wrote.

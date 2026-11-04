@@ -355,3 +355,52 @@ widening it further is a design change that comes back through this ADR.
 Verified: `go test -race ./internal/assistant/...` — a scripted
 10-completion turn succeeds; the 13th completion is refused with the v2
 message.
+
+## Amendment 3 (2026-10-28) — a refused `draft.apply` names its fix, and the closed op set gains `update_approvers` + `approver_roles`
+
+Accepted. Two lab failures in shell-journey leg f (the ⌘K ask “add a human
+approval step after X”) pinned the change:
+
+1. **The refusal travels to the model with its fix.** A refused
+   `draft.apply` previously answered `proposal_invalid` with no actionable
+   reason; the model retried blind and finally asked the user instead of
+   editing. Now the tool result the loop feeds the model carries the
+   validator’s own words — the stable reason code (`unknown_kind`,
+   `bad_id`, `target_has_dependents`, `approver_missing`, `unknown_role`,
+   …) plus the detail that names the offending field/value, the closest
+   valid value and the closed sets — so the model corrects the arguments in
+   the SAME turn (bounded by the existing tool cap). Argument-shape
+   mistakes (a non-integer `version`, a `config` that is not a JSON object)
+   are the same `proposal_invalid` with their own fix, no longer a
+   misleading “the draft moved”. Details are the validator’s words about the
+   draft the caller just read: no secrets, no ids the caller cannot see.
+2. **The closed op set (ADR-0044 §2, applied here as `draft.apply`) gains
+   one op and one argument.** `update_approvers {node, approver_roles}`
+   replaces an existing `human.approval` node’s approver roles (its closed
+   inverse restores the PREVIOUS roles the server recorded). The insert ops
+   gain a top-level `approver_roles` argument: a `human.approval` insert
+   MUST carry at least one role from the schema’s `approverRoles` enum
+   (`maintainer`, `contributor` — a `viewer` is read-only and never an
+   approver) plus a `config.summary`, because a gate nobody may decide is a
+   dead step; roles on any other kind, roles hidden inside `config`, or a
+   role outside the enum are each refused with the fix named. The `POST
+   /assistant/draft-proposals` route shares the same validator and answers
+   the same new reasons. `api/openapi.yaml` (and the regenerated
+   `ui/src/api/schema.d.ts`) document `update_approvers` and
+   `approver_roles`. The Studio’s `applyProposal` preview dispatch
+   (`ui/src/lib/pipeline/proposalOps.ts`) predates the fourth op; until it
+   grows the arm, an `update_approvers` proposal is refused at the preview,
+   never applied.
+
+No boundary change: the ops still apply through the version-checked draft
+PUT with the caller’s own write right, the edited document still re-runs the
+same loader + schema validation before it may be written, and the trust gate
+(`ask_all`) validates with the same `planDraftEdit` before carding. The
+public `AssistantDraftProposalOp` oneOf is extended additively (a fourth
+member + an array field on the insert ops).
+
+Verified: `go test -count=1 ./internal/assistant/... ./internal/api/...`
+(new unit tests: a refusal names the fix and the model retries in-turn;
+`update_approvers` applies and its closed inverse restores the previous
+roles; a `human.approval` insert without a role, or with a role outside the
+enum, is refused naming the valid set).

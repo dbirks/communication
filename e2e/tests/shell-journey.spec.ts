@@ -196,6 +196,47 @@ async function draftsContaining(
   return (await recentDrafts(request, state.pipeline.id)).filter((d) => d.yaml.includes(marker));
 }
 
+/** True when the marshaled draft YAML carries a node with this id AND this
+ * kind. The server marshals documents with alphabetized keys, so each node
+ * block's `id:` line is immediately followed by its `kind:` line — matching
+ * the two as one block is what "a step named X of kind Y is in the draft"
+ * means (a substring of the raw YAML is not: it can live in a prompt, or
+ * in a different node's id). */
+function yamlHasNodeOfKind(yaml: string, id: string, kind: string): boolean {
+  const re = new RegExp(`(^|\\n)[ \\t]*id: ${id}[ \\t]*\\n[ \\t]*kind: ${kind}`);
+  return re.test(yaml);
+}
+
+/** The newest drafts of the pipeline carrying a node with this id AND this
+ * kind — the leg-f "landed" gate: the draft must contain a step named
+ * journey_check of the approval kind, wherever a follow-up landed it. */
+async function draftsContainingStep(
+  request: APIRequestContext,
+  id: string,
+  kind: string,
+): Promise<{ id: string; yaml: string }[]> {
+  return (await recentDrafts(request, state.pipeline.id)).filter((d) =>
+    yamlHasNodeOfKind(d.yaml, id, kind),
+  );
+}
+
+/** The raw YAML of one open draft, via the same API the journey already
+ * uses for its draft reads. */
+async function draftYaml(request: APIRequestContext, draftId: string): Promise<string> {
+  const d = await request.get(`${BASE_URL}/api/v1/drafts/${draftId}`);
+  if (!d.ok()) throw new Error(`GET /drafts/${draftId} -> ${d.status()}`);
+  return ((await d.json()) as { document_yaml: string }).document_yaml;
+}
+
+/** The top-level structure of a marshaled draft: every top-level node's id
+ * and its dependsOn, in document order — "the draft returned to its
+ * original content" means this structure is back. */
+function topNodeSignature(yaml: string): string {
+  return parseTopLevelNodes(yaml)
+    .map((n) => `${n.id}=[${n.dependsOn.join(",")}]`)
+    .join(" ");
+}
+
 interface DocNode {
   id: string;
   dependsOn: string[];
@@ -1029,7 +1070,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     // node computed below exists in the draft the assistant finds, then go
     // back to the workflow page for the ⌘K popover.
     await openFreshDraft(page, state.pipeline.id);
+    const freshDraftId = new URL(page.url()).pathname.split("/").pop() as string;
     console.log(`journey f: this run's fresh draft of r${state.revisionBefore + 1} is open`);
+    // The undo-all gate's baseline: the draft's content BEFORE the ask, so
+    // "returns to its original content" is proven, not guessed.
+    const originalDraftYaml = await draftYaml(page.request, freshDraftId);
     await gotoApp(page, `/workflows/${state.pipeline.id}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
 
@@ -1054,7 +1099,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await checkShellScreen(page, "assistant-popover", stopWatching ?? undefined);
 
     // The marker must not predate the ask (a crashed earlier journey run).
-    const stale = await draftsContaining(page.request, ASSISTANT_STEP_NAME);
+    const stale = await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval");
     if (stale.length > 0)
       throw new Error(
         `pre-existing lab state: draft(s) ${stale
@@ -1128,6 +1173,16 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       return text.slice(0, 400);
     };
     for (;;) {
+      // The draft itself is the gate: a step that IS in the draft — named
+      // journey_check, of the approval kind — counts as landed, whatever
+      // follow-up landed it (the journey must not fail because the step
+      // arrived on a follow-up turn while the loop was counting turns).
+      const landed =
+        (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length > 0;
+      if (landed) {
+        console.log(`journey f: the assistant landed ${ASSISTANT_STEP_NAME} — loop done`);
+        break;
+      }
       const error = page.getByTestId("assistant-error");
       if (await error.isVisible().catch(() => false)) {
         const errorText = ((await error.textContent()) ?? "(no text)").trim();
@@ -1248,11 +1303,6 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         console.log(`journey f: approval card retried (turn ${followUps}/3)`);
         continue;
       }
-      const landed = (await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0;
-      if (landed) {
-        console.log(`journey f: the assistant landed ${ASSISTANT_STEP_NAME} — loop done`);
-        break;
-      }
       // e2e-jf2: the turn ended WITHOUT acting — no error, no question card and
       // no approval card (all handled above) and the draft still lacks the
       // marker. Lab evidence (model flint): a turn can end by describing what
@@ -1264,7 +1314,10 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       // clears / a new assistant message appears — before following up.
       await waitForAssistantTurn(page);
       // The turn may have landed while we waited; the draft is the gate.
-      if ((await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0) break;
+      if (
+        (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length > 0
+      )
+        break;
       // assistant-lost-ask: the failure can surface only during that wait. The
       // error branch above re-sends the SAME ask, so hand it over — a plain
       // follow-up here would reach a conversation that never got the ask.
@@ -1296,24 +1349,32 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       await page.getByTestId("assistant-change-chip-toggle").click();
     await expect(chipRow).toBeVisible();
 
-    const withMarker = await draftsContaining(page.request, ASSISTANT_STEP_NAME);
+    const withStep = await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval");
     await evidence(
       page,
       `journey-f-changed-${STAMP}`,
-      `the assistant's change chip counts its change(s), and the draft …${withMarker[0].id.slice(-8)}'s YAML now contains ${ASSISTANT_STEP_NAME} (via the API)`,
+      `the assistant's change chip counts its change(s), and the draft …${withStep[0].id.slice(-8)} now carries a step named ${ASSISTANT_STEP_NAME} of the human.approval kind (via the API)`,
     );
 
-    // Undo all — the draft no longer contains it (via API).
+    // Undo all — the draft no longer contains the step, and its content is
+    // back to the original captured before the ask (via the API).
     await page.getByTestId("assistant-change-undo-all").click();
     await expect
-      .poll(async () => (await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length, {
+      .poll(async () => (
+        (await draftsContainingStep(page.request, ASSISTANT_STEP_NAME, "human.approval")).length
+      ), {
         timeout: 60_000,
       })
       .toBe(0);
+    const restoredYaml = await draftYaml(page.request, freshDraftId);
+    expect(
+      topNodeSignature(restoredYaml),
+      "undo all: the draft returned to its original content",
+    ).toBe(topNodeSignature(originalDraftYaml));
     await evidence(
       page,
       `journey-f-undone-${STAMP}`,
-      `undo all: no draft of ${PIPELINE_SLUG} contains ${ASSISTANT_STEP_NAME} any more (via the API)`,
+      `undo all: no draft of ${PIPELINE_SLUG} carries a step named ${ASSISTANT_STEP_NAME} of the approval kind any more, and the draft …${freshDraftId.slice(-8)} is back to its original content (via the API)`,
     );
   });
 });

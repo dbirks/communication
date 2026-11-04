@@ -27,7 +27,8 @@ func TestDraftApplyRefusalNamesTheFixAndRetries(t *testing.T) {
 	good := toolCall("draft.apply", map[string]any{
 		"draft_id": "d-1", "version": "1", "op": "insert_on_edge",
 		"from": "plan", "to": "check", "kind": "human.approval", "id": "journey_check",
-		"config": `{"summary":"approve the change before it proceeds"}`,
+		"config":         `{"summary":"approve the change before it proceeds"}`,
+		"approver_roles": `["maintainer"]`,
 	})
 	model := newFakeModel(t,
 		step{toolCalls: []toolCallRequest{bad}},

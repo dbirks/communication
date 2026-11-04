@@ -116,7 +116,8 @@ func TestValidateProposalProbePipeline(t *testing.T) {
 		want string
 	}{
 		{"accept insert_after terminal node",
-			Proposal{Op: OpInsertAfter, After: "review", Kind: "human.approval", ID: "approve_review", Config: map[string]any{}},
+			Proposal{Op: OpInsertAfter, After: "review", Kind: "human.approval", ID: "approve_review",
+				Config: map[string]any{"summary": "approve the review"}, ApproverRoles: []string{"maintainer"}},
 			""},
 		{"accept insert_after publish_verified",
 			Proposal{Op: OpInsertAfter, After: "publish_verified", Kind: "process.exec", ID: "notify"},
@@ -561,9 +562,9 @@ func TestProposalAnswerRepair(t *testing.T) {
 // budget: no turn ever asks twice. A re-ask that is refused too leaves the
 // FIRST answer and therefore the ORIGINAL error standing.
 func TestProposalStructuralAnswerRepair(t *testing.T) {
-	const refused = `{"op":"insert_after","after":"test","kind":"human.approval","id":"approve_test","config":{},"summary":"Approve after the tests"}`
-	const accepted = `{"op":"insert_after","after":"review","kind":"human.approval","id":"approve_review","config":{},"summary":"Approve after the review"}`
-	const refusedAgain = `{"op":"insert_after","after":"plan","kind":"human.approval","id":"approve_plan","config":{},"summary":"Approve right after the plan"}`
+	const refused = `{"op":"insert_after","after":"test","kind":"human.approval","id":"approve_test","config":{"summary":"go"},"approver_roles":["maintainer"],"summary":"Approve after the tests"}`
+	const accepted = `{"op":"insert_after","after":"review","kind":"human.approval","id":"approve_review","config":{"summary":"go"},"approver_roles":["maintainer"],"summary":"Approve after the review"}`
+	const refusedAgain = `{"op":"insert_after","after":"plan","kind":"human.approval","id":"approve_plan","config":{"summary":"go"},"approver_roles":["maintainer"],"summary":"Approve right after the plan"}`
 	probe := probeDoc(t)
 	summaries, err := json.Marshal(probe.Summaries())
 	if err != nil {

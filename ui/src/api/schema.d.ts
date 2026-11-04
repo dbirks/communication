@@ -2523,8 +2523,8 @@ export interface paths {
     put?: never;
     /**
      * Propose one structural draft change from the assistant
-     * @description ADR-0044's single drafting move. The caller names the draft, the draft version the editor is viewing, and asks in plain words for exactly one change from the closed op set (`insert_after`, `insert_on_edge`, `update_prompt`). The server makes ONE completion through the ADR-0034 broker with a compact node summary — never a config value or a secret — and validates the model's answer against the draft itself; anything that fails the structural check is `422` `assistant_proposal_invalid` with the reason named in `detail`, and the model is not re-asked.
-     *     The server NEVER writes the draft: the response is the validated op, the node ids to highlight, and the draft version the proposal was checked against, and the human applies it with the ordinary version-checked `PUT /drafts/{id}` echoing that version — so a proposal widens no authorization boundary and can never publish. Insert ops may only carry an executable node kind: the schema's validate-only kinds (`parallel`, `join`, `gate`, `git.commit`, `git.publish`, `integration.query`, `integration.action`) are not proposed. `draft_id` travels in the body, not a path parameter — the draft is the caller's own read, never something a path could probe.
+     * @description ADR-0044's single drafting move. The caller names the draft, the draft version the editor is viewing, and asks in plain words for exactly one change from the closed op set (`insert_after`, `insert_on_edge`, `update_prompt`, `update_approvers`). The server makes ONE completion through the ADR-0034 broker with a compact node summary — never a config value or a secret — and validates the model's answer against the draft itself; anything that fails the structural check is `422` `assistant_proposal_invalid` with the reason named in `detail`, and the model is not re-asked.
+     *     The server NEVER writes the draft: the response is the validated op, the node ids to highlight, and the draft version the proposal was checked against, and the human applies it with the ordinary version-checked `PUT /drafts/{id}` echoing that version — so a proposal widens no authorization boundary and can never publish. Insert ops may only carry an executable node kind: the schema's validate-only kinds (`parallel`, `join`, `gate`, `git.commit`, `git.publish`, `integration.query`, `integration.action`) are not proposed. A `human.approval` insert must carry `approver_roles` (the closed set `maintainer`, `contributor` — the schema's approverRoles enum) together with a `config.summary`, and `update_approvers` changes the roles of an existing `human.approval` node. `draft_id` travels in the body, not a path parameter — the draft is the caller's own read, never something a path could probe.
      */
     post: operations["proposeDraftChange"];
     delete?: never;
@@ -5753,7 +5753,7 @@ export interface components {
      */
     AssistantDraftProposal: {
       op: components["schemas"]["AssistantDraftProposalOp"];
-      /** @description The node ids the op moves or creates: the new node plus the endpoints of the edge it rewrites (`[id, after]` for `insert_after`, `[id, from, to]` for `insert_on_edge`, `[node]` for `update_prompt`). The Studio canvas highlights them. */
+      /** @description The node ids the op moves or creates: the new node plus the endpoints of the edge it rewrites (`[id, after]` for `insert_after`, `[id, from, to]` for `insert_on_edge`, `[node]` for `update_prompt` and `update_approvers`). The Studio canvas highlights them. */
       node_ids: string[];
       /** @description The model's one-line summary of the change (the preview caption). */
       summary: string;
@@ -5767,7 +5767,8 @@ export interface components {
     AssistantDraftProposalOp:
       | components["schemas"]["AssistantProposalInsertAfter"]
       | components["schemas"]["AssistantProposalInsertOnEdge"]
-      | components["schemas"]["AssistantProposalUpdatePrompt"];
+      | components["schemas"]["AssistantProposalUpdatePrompt"]
+      | components["schemas"]["AssistantProposalUpdateApprovers"];
     /**
      * AssistantProposalInsertAfter
      * @description Insert a new node after `after`, depending on it. Refused when the target has dependents already (`target_has_dependents`), is not in the draft (`unknown_node`), or the new id breaks the identifier pattern (`bad_id`) or collides with an existing node (`id_taken`).
@@ -5783,6 +5784,7 @@ export interface components {
       kind: components["schemas"]["AssistantProposalKind"];
       id: components["schemas"]["AssistantProposalNodeId"];
       config?: components["schemas"]["AssistantProposalConfig"];
+      approver_roles?: components["schemas"]["AssistantProposalApproverRoles"];
     };
     /**
      * AssistantProposalInsertOnEdge
@@ -5801,6 +5803,7 @@ export interface components {
       kind: components["schemas"]["AssistantProposalKind"];
       id: components["schemas"]["AssistantProposalNodeId"];
       config?: components["schemas"]["AssistantProposalConfig"];
+      approver_roles?: components["schemas"]["AssistantProposalApproverRoles"];
     };
     /**
      * AssistantProposalUpdatePrompt
@@ -5817,6 +5820,25 @@ export interface components {
       /** @description The new prompt text (trimmed; empty is refused). */
       prompt: string;
     };
+    /**
+     * AssistantProposalUpdateApprovers
+     * @description Replace the approver roles of an existing `human.approval` node. Refused on any other kind (`wrong_kind`), when the node is not in the draft (`unknown_node`), when no roles are named (`approver_missing`), or when a role is outside the closed set (`unknown_role`).
+     */
+    AssistantProposalUpdateApprovers: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      op: "update_approvers";
+      /** @description The `human.approval` node whose approver roles change. */
+      node: string;
+      approver_roles: components["schemas"]["AssistantProposalApproverRoles"];
+    };
+    /**
+     * AssistantProposalApproverRoles
+     * @description The roles that may approve a `human.approval` node — the pipeline schema's `approverRoles` enum verbatim (a `viewer` is read-only and never an approver), at least one, no duplicates.
+     */
+    AssistantProposalApproverRoles: ("maintainer" | "contributor")[];
     /**
      * AssistantProposalKind
      * @description The executable node kinds a proposal may insert. The schema's validate-only kinds are deliberately absent — the same list the draft's `kind` catalog names as runnable today.

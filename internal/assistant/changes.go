@@ -29,11 +29,14 @@ import (
 // InverseOp is the closed inverse of one applied draft op
 // (decision 5's table): insert_after / insert_on_edge invert to
 // delete_node; update_prompt inverts to update_prompt with the PREVIOUS
-// prompt text the server recorded.
+// prompt text the server recorded; update_approvers inverts to
+// update_approvers with the PREVIOUS approverRoles list the server
+// recorded (an empty list is "remove the key").
 type InverseOp struct {
-	Op     string `json:"op"` // delete_node | update_prompt
-	Node   string `json:"node"`
-	Prompt string `json:"prompt,omitempty"`
+	Op            string   `json:"op"` // delete_node | update_prompt | update_approvers
+	Node          string   `json:"node"`
+	Prompt        string   `json:"prompt,omitempty"`
+	ApproverRoles []string `json:"approver_roles,omitempty"`
 }
 
 // draftUndoPayload is the assistant_changes.undo_payload document for a
@@ -51,9 +54,10 @@ type draftUndoPayload struct {
 var ErrInverseNotApplicable = errors.New("assistant: the inverse op does not structurally apply")
 
 // inverseFor builds the closed inverse of one applied op.
-// previousPrompt is the prompt text BEFORE the update_prompt edit (the
-// server's own record).
-func inverseFor(p Proposal, previousPrompt string) (InverseOp, bool) {
+// previousPrompt is the prompt text BEFORE the update_prompt edit and
+// previousApprovers the approverRoles list BEFORE the update_approvers edit
+// (both are the server's own record, read from the draft before the edit).
+func inverseFor(p Proposal, previousPrompt string, previousApprovers []string) (InverseOp, bool) {
 	switch p.Op {
 	case "insert_after", "insert_on_edge":
 		if p.ID == "" {
@@ -65,6 +69,11 @@ func inverseFor(p Proposal, previousPrompt string) (InverseOp, bool) {
 			return InverseOp{}, false
 		}
 		return InverseOp{Op: "update_prompt", Node: p.Node, Prompt: previousPrompt}, true
+	case "update_approvers":
+		if p.Node == "" {
+			return InverseOp{}, false
+		}
+		return InverseOp{Op: "update_approvers", Node: p.Node, ApproverRoles: previousApprovers}, true
 	default:
 		return InverseOp{}, false
 	}
@@ -148,6 +157,29 @@ func setMappingKey(m *yaml.Node, key string, v *yaml.Node) {
 		}
 	}
 	m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: key}, v)
+}
+
+// removeMappingKey deletes one key from a mapping node (a no-op when the
+// mapping is nil or the key is absent).
+func removeMappingKey(m *yaml.Node, key string) {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content = append(m.Content[:i], m.Content[i+2:]...)
+			return
+		}
+	}
+}
+
+// stringSeq is a YAML sequence of the given scalar strings.
+func stringSeq(values ...string) *yaml.Node {
+	seq := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, v := range values {
+		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: v})
+	}
+	return seq
 }
 
 // nodesLists walks every nodes sequence the document holds: spec.nodes and
@@ -288,6 +320,16 @@ func applyDraftOp(text []byte, p Proposal) ([]byte, error) {
 			}
 			setMappingKey(node, "config", cfg)
 		}
+		if p.Kind == humanApprovalKind && len(p.ApproverRoles) > 0 {
+			// The approver roles are part of the insert itself (not a
+			// second edit): the node lands able to be decided.
+			cfg := mapValue(node, "config")
+			if cfg == nil || cfg.Kind != yaml.MappingNode {
+				cfg = newMapping()
+				setMappingKey(node, "config", cfg)
+			}
+			setMappingKey(cfg, "approverRoles", stringSeq(p.ApproverRoles...))
+		}
 		switch p.Op {
 		case "insert_after":
 			setDependsOn(nodeMapping{node: node}, []string{p.After})
@@ -324,6 +366,17 @@ func applyDraftOp(text []byte, p Proposal) ([]byte, error) {
 			setMappingKey(nm.node, "config", cfg)
 		}
 		setMappingKey(cfg, "prompt", &yaml.Node{Kind: yaml.ScalarNode, Value: p.Prompt})
+	case "update_approvers":
+		nm, err := findNodeMapping(root, p.Node)
+		if err != nil {
+			return nil, err
+		}
+		cfg := mapValue(nm.node, "config")
+		if cfg == nil || cfg.Kind != yaml.MappingNode {
+			cfg = newMapping()
+			setMappingKey(nm.node, "config", cfg)
+		}
+		setMappingKey(cfg, "approverRoles", stringSeq(p.ApproverRoles...))
 	default:
 		return nil, fmt.Errorf("unknown op %q", p.Op)
 	}
@@ -433,6 +486,32 @@ func applyInverse(text []byte, inv InverseOp) ([]byte, error) {
 				ErrInverseNotApplicable, inv.Node)
 		}
 		setMappingKey(cfg, "prompt", &yaml.Node{Kind: yaml.ScalarNode, Value: inv.Prompt})
+	case "update_approvers":
+		nm, err := findNodeMapping(root, inv.Node)
+		if err != nil {
+			return nil, fmt.Errorf("%w: the node %q is no longer in the draft",
+				ErrInverseNotApplicable, inv.Node)
+		}
+		cfg := mapValue(nm.node, "config")
+		if len(inv.ApproverRoles) == 0 {
+			// The edit added approverRoles; the inverse removes the key
+			// (and the config mapping it created, restoring the document
+			// byte for byte).
+			if cfg == nil || cfg.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("%w: the node %q no longer carries approver roles",
+					ErrInverseNotApplicable, inv.Node)
+			}
+			removeMappingKey(cfg, "approverRoles")
+			if len(cfg.Content) == 0 {
+				removeMappingKey(nm.node, "config")
+			}
+		} else {
+			if cfg == nil || cfg.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("%w: the node %q no longer carries approver roles",
+					ErrInverseNotApplicable, inv.Node)
+			}
+			setMappingKey(cfg, "approverRoles", stringSeq(inv.ApproverRoles...))
+		}
 	default:
 		return nil, fmt.Errorf("%w: unknown inverse op %q", ErrInverseNotApplicable, inv.Op)
 	}

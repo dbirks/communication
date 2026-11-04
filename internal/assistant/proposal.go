@@ -30,11 +30,16 @@ import (
 // the single budget (issue2 A8 lab fixes), and a re-ask that still fails
 // leaves the original 422 standing.
 
-// The three ops of the closed set (ADR-0044 § 2).
+// The four ops of the closed set (ADR-0044 § 2, the ADR-0050 amendment of
+// 2026-10-28 adds update_approvers): insert_after, insert_on_edge,
+// update_prompt and update_approvers (change a human.approval node's
+// approver roles).
 const (
-	OpInsertAfter  = "insert_after"
-	OpInsertOnEdge = "insert_on_edge"
-	OpUpdatePrompt = "update_prompt"
+	OpInsertAfter     = "insert_after"
+	OpInsertOnEdge    = "insert_on_edge"
+	OpUpdatePrompt    = "update_prompt"
+	OpUpdateApprovers = "update_approvers"
+	humanApprovalKind = "human.approval"
 )
 
 // executableKinds is the kind set a proposal may insert: the compiler's
@@ -149,19 +154,23 @@ const PromptPreviewLimit = 400
 
 // Proposal is ONE validated operation. Config travels for insert ops
 // (secretRefs stay refs, never values — the draft's own bytes are the
-// source); Prompt for update_prompt. Extra fields the model adds are dropped
-// by the typed decode, so the response carries only the validated shape.
+// source); Prompt for update_prompt; ApproverRoles for the insert ops
+// (a human.approval node must name who may approve it, validated against
+// the closed project-role set) and for update_approvers. Extra fields the
+// model adds are dropped by the typed decode, so the response carries only
+// the validated shape.
 type Proposal struct {
-	Op      string         `json:"op"`
-	After   string         `json:"after,omitempty"`
-	From    string         `json:"from,omitempty"`
-	To      string         `json:"to,omitempty"`
-	Node    string         `json:"node,omitempty"`
-	Kind    string         `json:"kind,omitempty"`
-	ID      string         `json:"id,omitempty"`
-	Config  map[string]any `json:"config,omitempty"`
-	Prompt  string         `json:"prompt,omitempty"`
-	Summary string         `json:"summary,omitempty"`
+	Op            string         `json:"op"`
+	After         string         `json:"after,omitempty"`
+	From          string         `json:"from,omitempty"`
+	To            string         `json:"to,omitempty"`
+	Node          string         `json:"node,omitempty"`
+	Kind          string         `json:"kind,omitempty"`
+	ID            string         `json:"id,omitempty"`
+	Config        map[string]any `json:"config,omitempty"`
+	Prompt        string         `json:"prompt,omitempty"`
+	ApproverRoles []string       `json:"approver_roles,omitempty"`
+	Summary       string         `json:"summary,omitempty"`
 }
 
 // ProposalError is a structural refusal with the stable reason the 422's
@@ -179,9 +188,15 @@ type Proposal struct {
 //	condition_source      the edge source is a condition node
 //	error_route           the edge is an onFailure.errorRoute
 //	edge_guarded          the target's when/config reads nodes.<from>.*
-//	wrong_kind            update_prompt on a node that is not agent.acp
+//	wrong_kind            update_prompt on a node that is not agent.acp,
+//	                      or update_approvers on a node that is not human.approval
 //	prompt_kind_not_supported update_prompt on a model.chat node
 //	empty_prompt          update_prompt with no prompt text
+//	approver_missing      a human.approval insert or update_approvers names no roles
+//	unknown_role          a role that is not an assignable project role
+//	approvers_wrong_kind approver_roles on an insert that is not human.approval
+//	approver_in_config    approverRoles hidden inside the insert's config map
+//	                      (it is a top-level argument, not a config key)
 type ProposalError struct {
 	Reason string
 	Detail string
@@ -196,17 +211,20 @@ func proposalError(reason, format string, args ...any) *ProposalError {
 // DocNode is one node of the draft tree: the members ValidateProposal and
 // the model summary need, never the raw config (secrets do not travel to the
 // model). ConfigText is the compact JSON of when+config used ONLY for the
-// edge-guard mention check.
+// edge-guard mention check. ApproverRoles is the human.approval node's
+// approverRoles list, read so update_approvers can record the previous
+// value for its closed inverse.
 type DocNode struct {
-	ID         string
-	Kind       string
-	Scope      string // "" at the top level, the enclosing scope node's id
-	DependsOn  []string
-	When       string
-	Profile    string
-	Prompt     string
-	ErrorRoute string // the node's own onFailure.errorRoute, when set
-	ConfigText string // compact JSON of the config ("" when absent)
+	ID            string
+	Kind          string
+	Scope         string // "" at the top level, the enclosing scope node's id
+	DependsOn     []string
+	When          string
+	Profile       string
+	Prompt        string
+	ErrorRoute    string // the node's own onFailure.errorRoute, when set
+	ConfigText    string // compact JSON of the config ("" when absent)
+	ApproverRoles []string
 }
 
 // Doc is the draft's node tree: spec.nodes plus the children every scope
@@ -264,6 +282,9 @@ func (d *Doc) append(nodes []any, scope string) error {
 		if cfg != nil {
 			n.Profile = nodeString(cfg["profile"])
 			n.Prompt = nodeString(cfg["prompt"])
+			if roles, ok := cfg["approverRoles"].([]any); ok {
+				n.ApproverRoles = nodeStrings(roles)
+			}
 			if blob, err := json.Marshal(cfg); err == nil {
 				n.ConfigText = string(blob)
 			}
@@ -369,6 +390,9 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 		if err := validateInsertKindID(d, p); err != nil {
 			return err
 		}
+		if err := validateInsertApprovers(p); err != nil {
+			return err
+		}
 		after, ok := d.Find(p.After)
 		if !ok {
 			return unknownNodeError(d, p.After)
@@ -380,6 +404,9 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 		return nil
 	case OpInsertOnEdge:
 		if err := validateInsertKindID(d, p); err != nil {
+			return err
+		}
+		if err := validateInsertApprovers(p); err != nil {
 			return err
 		}
 		from, ok := d.Find(p.From)
@@ -425,15 +452,94 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 			return proposalError("empty_prompt", "prompt is required and must be non-empty")
 		}
 		return nil
+	case OpUpdateApprovers:
+		node, ok := d.Find(p.Node)
+		if !ok {
+			return unknownNodeError(d, p.Node)
+		}
+		if node.Kind != humanApprovalKind {
+			return proposalError("wrong_kind",
+				"update_approvers edits the approver roles of a %s node; node %q is %s", humanApprovalKind, p.Node, node.Kind)
+		}
+		return approverRolesError(p.ApproverRoles)
 	default:
 		return proposalError("unknown_op", "op %q is not one of %s", p.Op, strings.Join(validOpList(), ", "))
 	}
 }
 
+// validateInsertApprovers is the approver half of the two insert ops:
+// an approver role travels as the top-level approver_roles argument,
+// never inside the config map; a human.approval insert must carry at least
+// one valid role (a gate nobody may decide is a dead step), and a role on
+// any other kind is refused — the config has no approver slot to put it in.
+func validateInsertApprovers(p Proposal) *ProposalError {
+	if _, inConfig := p.Config["approverRoles"]; inConfig {
+		return proposalError("approver_in_config",
+			"approverRoles is a top-level argument (approver_roles) of the insert op, not a key of the node's config; move it out of config")
+	}
+	if p.Kind == humanApprovalKind {
+		if err := approverRolesError(p.ApproverRoles); err != nil {
+			return err
+		}
+		summary, _ := p.Config["summary"].(string)
+		if len([]rune(strings.TrimSpace(summary))) == 0 {
+			return proposalError("missing_summary",
+				"a human.approval node's config must carry a summary: give config {\"summary\":\"<one line the approver will see>\"} together with approver_roles")
+		}
+		return nil
+	}
+	if len(p.ApproverRoles) > 0 {
+		return proposalError("approvers_wrong_kind",
+			"approver_roles only applies to a %s node; the kind you asked for is %q", humanApprovalKind, p.Kind)
+	}
+	return nil
+}
+
 // validOpList is the closed op set (ADR-0044 § 2) in stable order — what the
 // draft.apply tool's description and the unknown_op refusal name.
 func validOpList() []string {
-	return []string{OpInsertAfter, OpInsertOnEdge, OpUpdatePrompt}
+	return []string{OpInsertAfter, OpInsertOnEdge, OpUpdatePrompt, OpUpdateApprovers}
+}
+
+// approverRoleList is the closed set of roles a human.approval node may
+// name as approvers: the shipped pipeline schema's approverRoles enum
+// (maintainer and contributor — the two roles that may ACT on a project;
+// viewer is read-only and never an approver), in stable order. It is the
+// list the refusals and the tool description show, and it must stay equal
+// to the schema's enum: the draft-edit path re-validates the edited
+// document against that schema anyway.
+func approverRoleList() []string {
+	return []string{"contributor", "maintainer"}
+}
+
+// isApproverRole reports whether role is a role the schema allows in a
+// human.approval's approverRoles.
+func isApproverRole(role string) bool {
+	for _, r := range approverRoleList() {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+// approverRolesError validates one op's ApproverRoles the way the draft
+// needs them: at least one role, every role from the closed project-role
+// set. The refusal names the offending role AND the valid set, so the
+// model can correct it in the same turn.
+func approverRolesError(roles []string) *ProposalError {
+	if len(roles) == 0 {
+		return proposalError("approver_missing",
+			"a human.approval node must name who may approve it: give approver_roles with at least one role from: %s",
+			strings.Join(approverRoleList(), ", "))
+	}
+	for _, role := range roles {
+		if !isApproverRole(role) {
+			return proposalError("unknown_role",
+				"role %q is not a role the approval step can name; valid approver roles are: %s", role, strings.Join(approverRoleList(), ", "))
+		}
+	}
+	return nil
 }
 
 // unknownNodeError is the unknown_node refusal with the draft's own node
@@ -686,7 +792,7 @@ func proposalAnswerDefect(doc *Doc, raw string) proposalDefect {
 	if err != nil {
 		return proposalDefect{repair: proposalRepairInstruction, malformed: true, present: true}
 	}
-	if doc == nil || (p.Op != OpInsertAfter && p.Op != OpInsertOnEdge && p.Op != OpUpdatePrompt) {
+	if doc == nil || (p.Op != OpInsertAfter && p.Op != OpInsertOnEdge && p.Op != OpUpdatePrompt && p.Op != OpUpdateApprovers) {
 		return proposalDefect{}
 	}
 	if verr := ValidateProposal(doc, p); verr != nil {
@@ -704,10 +810,11 @@ func proposalAnswerDefect(doc *Doc, raw string) proposalDefect {
 // turn, so the two sides must keep agreeing on it.
 func ProposalPrompt(summariesJSON []byte, profiles []string, instruction string) (string, string) {
 	system := proposalSystemLead + `Answer with exactly one JSON object — a single JSON object, never a JSON array — and no other text, one of:
-{"op":"insert_after","after":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
-{"op":"insert_on_edge","from":"<existing node id>","to":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
+{"op":"insert_after","after":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"approver_roles":["<role>"],"summary":"<one short sentence>"}
+{"op":"insert_on_edge","from":"<existing node id>","to":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"approver_roles":["<role>"],"summary":"<one short sentence>"}
 {"op":"update_prompt","node":"<existing node id>","prompt":"<the new prompt text>","summary":"<one short sentence>"}
-Rules: kind is one of ` + strings.Join(executableKindList(), ", ") + `. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. insert_after is only possible when the node named by "after" has no dependents in its scope: if depends_on of ANY node in the draft names it, insert_after is invalid for it and you MUST use insert_on_edge with "from" set to that node and "to" set to one of its dependents (split the first such edge). insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names or kinds.
+{"op":"update_approvers","node":"<existing human.approval node id>","approver_roles":["<role>"],"summary":"<one short sentence>"}
+Rules: kind is one of ` + strings.Join(executableKindList(), ", ") + `. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. A human.approval node's approver_roles is REQUIRED on its insert (and on update_approvers): a non-empty list drawn ONLY from ` + strings.Join(approverRoleList(), ", ") + ` — never put approverRoles inside the config object. insert_after is only possible when the node named by "after" has no dependents in its scope: if depends_on of ANY node in the draft names it, insert_after is invalid for it and you MUST use insert_on_edge with "from" set to that node and "to" set to one of its dependents (split the first such edge). insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names, roles or kinds.
 Worked example: the draft has nodes tests and review, where review depends on tests. Instruction \"insert a code reviewer after tests\" => the target node already has a dependent, so the answer is {\"op\":\"insert_on_edge\",\"from\":\"tests\",\"to\":\"review\",\"kind\":\"agent.acp\",\"id\":\"code_reviewer\",\"config\":{\"profile\":\"m4-reviewer\",\"prompt\":\"Review the code.\"},\"summary\":\"Insert a code reviewer between tests and review\"} — NOT insert_after.`
 	user := proposalDraftSummaryLead
 	user += string(summariesJSON)

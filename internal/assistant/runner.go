@@ -241,19 +241,20 @@ func (r *ConversationRunner) registerTools() {
 		})
 		reg(runnerTool{
 			name: "draft.apply",
-			desc: `Apply ONE structural change to a pipeline draft through the version-checked draft PUT. ops (required args in {…}): insert_after {after: existing node id, kind, id} — a new node after an existing node, valid only when that node has no dependents; insert_on_edge {from, to, kind, id} — a new node split on the from->to edge; update_prompt {node, prompt} — replaces an agent.acp node's prompt. Both insert ops take an optional config: a JSON object of scalar values (for an agent.acp node: {"profile":"…","prompt":"…"}). Valid node kinds: ` + strings.Join(executableKindList(), ", ") + `. A human approval step is kind "human.approval", never "approval". The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. draft_id and the version draft.get returned are required so a stale edit cannot win. If the result is proposal_invalid, its detail names the fix and the valid values: correct the arguments and retry.`,
+			desc: `Apply ONE structural change to a pipeline draft through the version-checked draft PUT. ops (required args in {…}): insert_after {after: existing node id, kind, id} — a new node after an existing node, valid only when that node has no dependents; insert_on_edge {from, to, kind, id} — a new node split on the from->to edge; update_prompt {node, prompt} — replaces an agent.acp node's prompt; update_approvers {node, approver_roles} — replaces a human.approval node's approver roles. Both insert ops take an optional config: a JSON object of scalar values (for an agent.acp node: {"profile":"…","prompt":"…"}). A human.approval node's insert MUST carry approver_roles: a JSON array of the roles that may approve it (valid roles: maintainer, contributor — a viewer is read-only and never an approver), e.g. ["maintainer"] — do NOT put approverRoles inside config. Valid node kinds: ` + strings.Join(executableKindList(), ", ") + `. A human approval step is kind "human.approval", never "approval". The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. draft_id and the version draft.get returned are required so a stale edit cannot win. If the result is proposal_invalid, its detail names the fix and the valid values: correct the arguments and retry.`,
 			props: map[string]any{
-				"draft_id": stringProp("the draft id"),
-				"version":  stringProp("the draft version draft.get returned"),
-				"op":       stringProp("insert_after | insert_on_edge | update_prompt"),
-				"after":    stringProp("insert_after: the node the new one follows"),
-				"from":     stringProp("insert_on_edge: the source node of the edge"),
-				"to":       stringProp("insert_on_edge: the target node of the edge"),
-				"node":     stringProp("update_prompt: the node whose prompt changes"),
-				"kind":     stringProp("insert ops: the new node's kind"),
-				"id":       stringProp("insert ops: the new node's id"),
-				"prompt":   stringProp("update_prompt: the full new prompt text"),
-				"config":   stringProp("insert ops: a JSON object of scalar config values for the new node"),
+				"draft_id":       stringProp("the draft id"),
+				"version":        stringProp("the draft version draft.get returned"),
+				"op":             stringProp("insert_after | insert_on_edge | update_prompt | update_approvers"),
+				"after":          stringProp("insert_after: the node the new one follows"),
+				"from":           stringProp("insert_on_edge: the source node of the edge"),
+				"to":             stringProp("insert_on_edge: the target node of the edge"),
+				"node":           stringProp("update_prompt: the node whose prompt changes; update_approvers: the human.approval node whose approver roles change"),
+				"kind":           stringProp("insert ops: the new node's kind"),
+				"id":             stringProp("insert ops: the new node's id"),
+				"prompt":         stringProp("update_prompt: the full new prompt text"),
+				"config":         stringProp("insert ops: a JSON object of scalar config values for the new node"),
+				"approver_roles": stringProp("human.approval inserts and update_approvers: a JSON array of the project roles that may approve, e.g. [\"maintainer\"]"),
 			},
 			require: []string{"draft_id", "version", "op"},
 		})
@@ -1264,7 +1265,8 @@ func (r *ConversationRunner) runDraftApply(ctx context.Context, c Caller, name s
 	tl, _ := r.localTool(name)
 	args, err := parseToolArgs(tl, call.Function.Arguments)
 	if err != nil {
-		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"}}
+		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"},
+			payload: badArgumentsPayload(err)}
 	}
 	summary, change, aerr := r.applyDraft(ctx, c, args)
 	if aerr != nil {
@@ -1315,7 +1317,8 @@ func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name
 	tl, _ := r.localTool(name)
 	args, err := parseToolArgs(tl, call.Function.Arguments)
 	if err != nil {
-		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"}}
+		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"},
+			payload: badArgumentsPayload(err)}
 	}
 	if _, perr := r.planDraftEdit(ctx, c, args); perr != nil {
 		return r.draftApplyRefusal(name, args, perr)
@@ -1323,24 +1326,40 @@ func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name
 	return r.gated(name, call)
 }
 
+// badArgumentsPayload is the model-facing detail for a call whose argument
+// JSON the parser refused: it names WHAT was malformed (a stable reason and
+// the parser's own message, capped) so the model can re-send the call with
+// corrected arguments in the same turn. It names no project facts.
+func badArgumentsPayload(err error) json.RawMessage {
+	return json.RawMessage(`{"error":"bad_arguments","detail":` + quoteJSON(bounded(err.Error(), 200)) + `}`)
+}
+
 // proposalInvalidPayload is the tool result a refused draft.apply returns
 // to the model: the stable reason, the validator's detail (which names the
-// closest valid kind and the draft's own node ids), and the closed sets for
-// reference, all bounded by the draft tool's cap.
+// offending field/value, the closest valid value and the draft's own node
+// ids), and the closed sets for reference, all bounded by the draft tool's
+// cap. Secrets and ids the caller cannot see never travel: the details are
+// the validator's own words about the draft the caller just read.
 func proposalInvalidPayload(err error) json.RawMessage {
 	detail := err.Error()
+	reason := ""
 	var perr *ProposalError
 	if errors.As(err, &perr) {
 		// The validator's own words beat the wrapped chain for the model:
 		// they already carry the reason, the suggestion and the valid set.
 		detail = perr.Detail
+		reason = perr.Reason
 	}
-	blob, _ := json.Marshal(map[string]any{
+	body := map[string]any{
 		"error":       "proposal_invalid",
 		"detail":      bounded(detail, 512),
 		"valid_ops":   validOpList(),
 		"valid_kinds": executableKindList(),
-	})
+	}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	blob, _ := json.Marshal(body)
 	return json.RawMessage(bounded(string(blob), maxDraftGetBytes))
 }
 
@@ -1375,7 +1394,7 @@ func (r *ConversationRunner) planDraftEdit(ctx context.Context, c Caller, args m
 		args = map[string]string{}
 	}
 	if args["draft_id"] == "" || args["version"] == "" || args["op"] == "" {
-		return nil, errors.New("draft_id, version and op are required")
+		return nil, fmt.Errorf("%w: draft_id, version and op are required", ErrDraftInvalid)
 	}
 	p := Proposal{
 		Op:     args["op"],
@@ -1390,13 +1409,20 @@ func (r *ConversationRunner) planDraftEdit(ctx context.Context, c Caller, args m
 	if args["config"] != "" {
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(args["config"]), &cfg); err != nil {
-			return nil, errors.New("config is not a json object")
+			return nil, fmt.Errorf("%w: config is not a json object", ErrDraftInvalid)
 		}
 		p.Config = cfg
 	}
+	if args["approver_roles"] != "" {
+		var roles []string
+		if err := json.Unmarshal([]byte(args["approver_roles"]), &roles); err != nil || len(roles) == 0 {
+			return nil, fmt.Errorf("%w: approver_roles must be a json array of role names, e.g. [\"maintainer\"]", ErrDraftInvalid)
+		}
+		p.ApproverRoles = roles
+	}
 	version, err := parseDraftVersion(args["version"])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %s", ErrDraftInvalid, err)
 	}
 	doc, err := r.draft.GetDocument(ctx, c, args["draft_id"])
 	if err != nil {
@@ -1413,9 +1439,11 @@ func (r *ConversationRunner) planDraftEdit(ctx context.Context, c Caller, args m
 		return nil, fmt.Errorf("%w: the draft document does not load", ErrDraftInvalid)
 	}
 	prevPrompt := ""
-	if p.Op == "update_prompt" {
+	var prevApprovers []string
+	if p.Op == "update_prompt" || p.Op == "update_approvers" {
 		if n, found := d.Find(p.Node); found {
 			prevPrompt = n.Prompt
+			prevApprovers = n.ApproverRoles
 		}
 	}
 	if vErr := ValidateProposal(d, p); vErr != nil {
@@ -1432,7 +1460,7 @@ func (r *ConversationRunner) planDraftEdit(ctx context.Context, c Caller, args m
 		summary = "Draft edit: " + p.Op
 	}
 	var undo json.RawMessage
-	if inv, isUndoable := inverseFor(p, prevPrompt); isUndoable {
+	if inv, isUndoable := inverseFor(p, prevPrompt, prevApprovers); isUndoable {
 		undo, _ = json.Marshal(draftUndoPayload{DraftID: args["draft_id"], Inverse: inv})
 	}
 	// Org-scoped drafts carry no project id (doc.ProjectID is "" when the

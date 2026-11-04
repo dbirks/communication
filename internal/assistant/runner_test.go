@@ -639,8 +639,8 @@ func TestRunnerToolCap(t *testing.T) {
 }
 
 // TestGatedDraftEditBouncesInvalid: under ask_all, a draft.apply whose op
-// would leave the draft not validating (a human.approval node with no
-// config block — the schema requires one) is NOT carded. The gate runs the
+// names no approver roles (the closed set requires them — a gate
+// nobody may decide is a dead step) is NOT carded. The gate runs the
 // same read/validate the confirm path runs and, on refusal, feeds the
 // proposal_invalid result back to the model (which retries within the turn)
 // instead of recording a card the caller can never confirm. Only the model's
@@ -654,7 +654,8 @@ func TestGatedDraftEditBouncesInvalid(t *testing.T) {
 	validApply := toolCall("draft.apply", map[string]any{
 		"draft_id": "d-1", "version": "1", "op": "insert_after",
 		"after": "check", "kind": "human.approval", "id": "trust_check",
-		"config": `{"summary":"approve the plan"}`,
+		"config":         `{"summary":"approve the plan"}`,
+		"approver_roles": `["maintainer"]`,
 	})
 	model := newFakeModel(t,
 		step{toolCalls: []toolCallRequest{invalidApply}},

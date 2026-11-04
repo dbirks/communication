@@ -33,7 +33,8 @@ var ErrDraftForbidden = errors.New("api: the caller may see the draft but may no
 // draft. The detail names the reason (unknown_op, unknown_kind, bad_id,
 // id_taken, unknown_node, target_has_dependents, no_edge, scope_mismatch,
 // guarded_target, condition_source, error_route, edge_guarded, wrong_kind,
-// prompt_kind_not_supported, empty_prompt).
+// prompt_kind_not_supported, empty_prompt, approver_missing, unknown_role,
+// approvers_wrong_kind, approver_in_config).
 const assistantProposalInvalidCode = "assistant_proposal_invalid"
 
 // assistantDraftProposalInstructionCap is the instruction length bound
