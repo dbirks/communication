@@ -8,11 +8,14 @@
  * surface with no such composer (the legacy page, an embedded reuse) reserves
  * nothing.
  */
-import { cleanup, render, renderHook, waitFor } from "@testing-library/react";
+import { cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { ConversationTranscript, useComposerHeight } from "./ConversationTranscript";
+import { projectTranscript } from "../../api/transcript";
+import { conversationEvent } from "../../test/fakes";
+import type { EventEnvelope } from "../../api/types";
 import type { ConversationSession } from "./useConversationSession";
 
 afterEach(() => {
@@ -88,6 +91,68 @@ describe("the transcript's composer padding (round 6, the 390 review)", () => {
  * test's own numbers (the scroller's scroll facts and the transcript's
  * rect) and the ResizeObserver is a stub the test fires when a row lands.
  */
+describe("the agent row's writing… indicator (the terminal-turn fix)", () => {
+  /** A surface session whose transcript is the fold of the given frames —
+   * the same shape the page's session holds, so the surface reads the rows
+   * the journal actually committed. */
+  function sessionFor(events: EventEnvelope[]): ConversationSession {
+    const { items, turns } = projectTranscript(events);
+    return {
+      data: undefined,
+      transcript: { items, turns, throughSeq: 0 },
+      events,
+      isController: true,
+      nameOf: (id: string) => id,
+      onDecide: () => {},
+      decidingRequestId: null,
+      decide: { error: null, isError: false, variables: undefined },
+    } as unknown as ConversationSession;
+  }
+
+  function renderSession(events: EventEnvelope[]) {
+    return render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ConversationTranscript session={sessionFor(events)} />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("shows writing… while the turn runs, and drops it when the terminal line lands", () => {
+    const streaming = [
+      conversationEvent("conversation.turn.started", { session_origin: "new" }, { global_seq: 1 }),
+      conversationEvent(
+        "conversation.message.agent",
+        { text: "Half of the answer" },
+        {
+          global_seq: 2,
+        },
+      ),
+    ];
+    const running = renderSession(streaming);
+    expect(
+      screen.getByText("writing…"),
+      "the row is mid-stream, so the reader sees writing…",
+    ).toBeTruthy();
+    running.unmount();
+
+    // The turn ends and no frame ever carries the final-chunk flag — the
+    // exact stream that left the indicator up over "Turn completed".
+    const settled = [
+      ...streaming,
+      conversationEvent(
+        "conversation.turn.completed",
+        { stop_reason: "end_turn" },
+        {
+          global_seq: 3,
+        },
+      ),
+    ];
+    const { container } = renderSession(settled);
+    expect(container.textContent).not.toContain("writing…");
+    expect(screen.getByText(/Turn completed/), "the terminal line is on screen").toBeTruthy();
+  });
+});
+
 describe("the transcript's pin to the newest row (rcn-review10)", () => {
   const roCallbacks = new Set<() => void>();
   class ResizeObserverStub {

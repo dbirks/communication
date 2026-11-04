@@ -593,6 +593,21 @@ export function projectTranscript(
     return record;
   };
 
+  /**
+   * The moment the turn reaches a terminal state, its agent message can
+   * never receive another chunk: the reader's "writing…" state ends with
+   * the turn, not with a final-chunk flag that a lossy or truncated stream
+   * may never deliver — the defect that left "● writing…" on the row after
+   * the transcript already printed "Turn completed". A terminal journal
+   * record is proof no chunk follows: the turn row and its terminal event
+   * commit in one transaction (ADR-0014, the same reading `describeTurn`
+   * stands on). A final frame that still arrives keeps the flag it sets.
+   */
+  const markAgentFinal = (turnId: string) => {
+    const item = agentByTurn.get(turnId);
+    if (item) item.final = true;
+  };
+
   for (const event of events) {
     // Replay-safe: the same `global_seq` must never be folded twice.
     if (seen.has(event.global_seq)) continue;
@@ -782,20 +797,24 @@ export function projectTranscript(
               case "completed":
                 record.status = "completed";
                 record.stopReason = str(payload, "stop_reason") || null;
+                markAgentFinal(turnId);
                 break;
               case "cancelled":
                 record.status = "cancelled";
                 record.stopReason = str(payload, "stop_reason") || null;
                 record.requestedBy = str(payload, "requested_by") || null;
+                markAgentFinal(turnId);
                 break;
               case "failed":
                 record.status = "failed";
                 record.stopReason = str(payload, "stop_reason") || null;
+                markAgentFinal(turnId);
                 break;
               case "interrupted":
                 // No stop reason: nothing reported one (migration 00003 says so).
                 record.status = "interrupted";
                 record.interruptReason = str(payload, "reason") || null;
+                markAgentFinal(turnId);
                 break;
               default:
                 break;

@@ -250,6 +250,77 @@ describe("projectTranscript", () => {
     expect(JSON.stringify(transcript.items)).not.toContain("fencing");
   });
 
+  describe("the agent row's writing… ends with the turn (no final flag required)", () => {
+    /** A streamed agent message whose turn ends at the named terminal event —
+     * no frame ever carries `final: true`, the exact lossy stream that left
+     * "writing…" on the row after "Turn completed" printed. */
+    const agentThenTerminal = (terminal: string) =>
+      frames(
+        ["conversation.turn.started", { session_origin: "new" }],
+        ["conversation.message.agent", { text: "Half of the answer, " }],
+        ["conversation.message.agent", { text: "with no final flag to follow" }],
+        [terminal, {}],
+      );
+
+    it("keeps the row writing… while the turn is still running", () => {
+      const transcript = projectTranscript(
+        frames(
+          ["conversation.turn.started", { session_origin: "new" }],
+          ["conversation.message.agent", { text: "streaming" }],
+        ),
+      );
+      const agent = transcript.items.find((item) => item.kind === "agent");
+      expect(agent?.kind === "agent" && agent.final).toBe(false);
+    });
+
+    for (const [terminal, status] of [
+      ["conversation.turn.completed", "completed"],
+      ["conversation.turn.cancelled", "cancelled"],
+      ["conversation.turn.failed", "failed"],
+      ["conversation.turn.interrupted", "interrupted"],
+    ] as const) {
+      it(`a ${status} turn ends the row's writing… even without the final chunk flag`, () => {
+        const transcript = projectTranscript(agentThenTerminal(terminal));
+        const agent = transcript.items.find((item) => item.kind === "agent");
+        expect(agent?.kind === "agent" && agent.text).toBe(
+          "Half of the answer, with no final flag to follow",
+        );
+        expect(agent?.kind === "agent" && agent.final).toBe(true);
+        // The turn record itself still carries the terminal status.
+        expect(transcript.turns[0]?.status).toBe(status);
+      });
+    }
+
+    it("a terminal line for one turn does not end another turn's row", () => {
+      const transcript = projectTranscript(
+        frames(
+          ["conversation.message.agent", { text: "turn one" }],
+          ["conversation.turn.completed", {}],
+          [
+            "conversation.message.agent",
+            { turn_id: "01987b99-1111-7000-8000-abcdef012345", text: "turn two, mid-stream" },
+          ],
+        ),
+      );
+      const agents = transcript.items.filter((item) => item.kind === "agent");
+      expect(agents.map((agent) => (agent.kind === "agent" ? agent.final : false))).toEqual([
+        true,
+        false,
+      ]);
+    });
+
+    it("a final frame that still arrives keeps its flag across the terminal line", () => {
+      const transcript = projectTranscript(
+        frames(
+          ["conversation.message.agent", { text: "full answer", final: true }],
+          ["conversation.turn.completed", {}],
+        ),
+      );
+      const agent = transcript.items.find((item) => item.kind === "agent");
+      expect(agent?.kind === "agent" && agent.final).toBe(true);
+    });
+  });
+
   it("says how each turn met its session — new, reused and resumed are distinct copy", () => {
     const copies: Record<string, string> = {
       new: "Turn started on a new agent session",

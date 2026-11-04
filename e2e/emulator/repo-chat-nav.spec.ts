@@ -134,20 +134,79 @@ function escapeForRegex(value: string): string {
  * a composer/header reflow moved the visible bottom with no content growth
  * and nothing re-pinned.
  *
- * `chatPinGap` is the width-local geometry read: the newest row (the last
- * `transcript-item` in document order — the fold renders segments in order)
- * minus the composer's own top (`thread-composer-pin`), in pixels. ≤ 0 is
+ * `chatPinGap` is the width-local geometry read: the newest VISIBLE row of
+ * the VISIBLE chat column (the last `transcript-item` inside the thread
+ * page's own `conversation-main`, hidden copies filtered out) minus the
+ * visible composer's own top (`thread-composer-pin`), in pixels. ≤ 0 is
  * the invariant.
+ *
+ * Why the locators are scoped this way (the 1280 false failure, run
+ * 41800986449): a document-wide `querySelectorAll` measures whichever
+ * copy the DOM happens to hold last — a row in another surface's
+ * transcript, a phone-width stack, or a row scrolled OUT of the visible
+ * window of a DIFFERENT scroller — and that element's layout rect is not
+ * what the reader sees at this width. The capture that went with the false
+ * failure showed the thread's own newest rows fully clear of its own
+ * composer, while the document-wide read reported the opposite.
  */
-async function chatPinGap(page: Page): Promise<number | null> {
+
+/**
+ * The newest VISIBLE transcript row of the visible chat column, or null
+ * when the column (or a visible row of it) is not on screen. Rows the
+ * scroller has scrolled out of its visible window still report their
+ * LAYOUT rect — exactly the rows the pin must bring back into view — so
+ * only their display state is filtered, never their scroll position: a
+ * regression that hides the newest row under the composer leaves a
+ * visible row whose bottom sits below the composer's top, and this read
+ * fails on it.
+ */
+async function visibleLastTranscriptRow(page: Page): Promise<number | null> {
   return page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"));
-    const row = rows.length > 0 ? rows[rows.length - 1].getBoundingClientRect() : null;
-    const composer =
-      document.querySelector<HTMLElement>("[data-testid='thread-composer-pin']")?.getBoundingClientRect() ?? null;
-    if (row === null || composer === null) return null;
-    return row.bottom - composer.top;
+    const visible = (el: HTMLElement): boolean => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+      let node: HTMLElement | null = el;
+      while (node !== null && node !== document.documentElement) {
+        const style = getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        node = node.parentElement;
+      }
+      return true;
+    };
+    const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+    if (main === null) return null;
+    const rows = Array.from(
+      main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"),
+    ).filter(visible);
+    return rows.length > 0 ? rows[rows.length - 1].getBoundingClientRect().bottom : null;
   });
+}
+
+/** The top of the chat's own VISIBLE pinned composer, or null when it is
+ * not on screen (another surface's composer is not this chat's pin). */
+async function visibleComposerTop(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const composer =
+      document.querySelector<HTMLElement>("[data-testid='thread-composer-pin']") ?? null;
+    if (composer === null) return null;
+    const rect = composer.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return null;
+    let node: HTMLElement | null = composer;
+    while (node !== null && node !== document.documentElement) {
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return null;
+      node = node.parentElement;
+    }
+    return rect.top;
+  });
+}
+
+async function chatPinGap(page: Page): Promise<number | null> {
+  const rowBottom = await visibleLastTranscriptRow(page);
+  if (rowBottom === null) return null;
+  const composerTop = await visibleComposerTop(page);
+  if (composerTop === null) return null;
+  return rowBottom - composerTop;
 }
 
 /** Bounded assertion of the pin's geometry at the page's current width —
@@ -177,7 +236,25 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
   // The reflow — and the hook's re-pin on it — lands a beat after the resize.
   await page.waitForTimeout(400);
   await page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"));
+    // The same scoping the geometry read uses: the VISIBLE row of the
+    // VISIBLE chat column, so the pin is re-established on the row the
+    // reader sees at this width.
+    const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+    if (main === null) return;
+    const visible = (el: HTMLElement): boolean => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+      let node: HTMLElement | null = el;
+      while (node !== null && node !== document.documentElement) {
+        const style = getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        node = node.parentElement;
+      }
+      return true;
+    };
+    const rows = Array.from(
+      main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"),
+    ).filter(visible);
     const lastRow = rows[rows.length - 1];
     if (lastRow === undefined) return;
     let node: HTMLElement | null = lastRow.parentElement;
@@ -191,8 +268,7 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
       node = node.parentElement;
     }
     if (scroller === null) return;
-    const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
-    const content = main === null ? null : Array.from(main.children).find((el) => el.contains(lastRow));
+    const content = Array.from(main.children).find((el) => el.contains(lastRow));
     if (content === null) return;
     const contentBottom =
       content.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
