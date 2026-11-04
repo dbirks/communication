@@ -65,6 +65,20 @@ type RuntimeStore struct {
 	// so a replica driving two revisions never drives either with the wrong
 	// graph).
 	Adv *runtime.Advancer
+	// Children is the deployment's child resolver for a store that drives
+	// passes WITHOUT an advancer shell: the conversation-side takeover
+	// transactions (HumanTakeoverTx / ResumeFromHumanTakeoverTx) settle on
+	// NewRuntimeStore(nil, nil) shapes whose "no advancer" meaning is "this
+	// caller does not schedule", exactly as before the run's plan became the
+	// source of its program — but their follow-up advances CAN still land on
+	// a run whose other branch is a pipeline.invoke WAITING on a child, and
+	// pollInvoke must be able to poll it. advancerForTx carries this resolver
+	// into the bare per-pass advancer it builds for such a store; a resolver
+	// that rides the pass's context sees the CALLER's transaction (see
+	// withPassTx), so the child's status — and any child a fresh pass books —
+	// commits with the takeover, or with nothing. nil = no resolver wired;
+	// the engine's ErrNoChildResolver refusal is then the honest answer.
+	Children runtime.ChildResolver
 	// Now is the deployment's clock; tests drive it (the reconciler
 	// poll's hermetic twin, § 5.4).
 	Now func() time.Time
@@ -254,7 +268,14 @@ func (s *RuntimeStore) advancerForTx(ctx context.Context, tx pgx.Tx, runID strin
 	// parent's rows anyway. The pass's own context is the parent — the caller's
 	// cancellation is what must stop the in-pass writes — so a deployment
 	// context on AdvancerDeps is not carried into a pass (nothing in this build
-	// sets one; grep AdvancerDeps{ shows Children only).
+	// sets one; grep AdvancerDeps{ shows Children only). A store wired without
+	// an advancer shell contributes its child resolver to the bare pass advancer
+	// it is building, so return-control's resume advance polls a waiting
+	// pipeline.invoke instead of dying on it (the advance-children-nil lab
+	// failure).
+	if adv.Deps.Children == nil {
+		adv.Deps.Children = s.Children
+	}
 	adv.Deps.Context = withPassTx(ctx, tx)
 	prog, err := hydrateProgramTx(ctx, tx, runID)
 	if err != nil {
@@ -483,10 +504,27 @@ func (s *RuntimeStore) Retry(ctx context.Context, runID, requestedBy string, tar
 
 // takeoverRuntime is the adapter the CONVERSATION-side transactions drive: it
 // owns no pool because its transaction is the caller's, and it carries no
-// advancer because advancerForTx rebuilds the right one from the run row's own
-// plan_snapshot on every call. There is one RuntimeStore per mutation, exactly
-// as there is one throwaway MemStore per transaction.
-func takeoverRuntime() *RuntimeStore { return NewRuntimeStore(nil, nil) }
+// advancer shell because advancerForTx rebuilds the right one from the run
+// row's own plan_snapshot on every call (the "no advancer" meaning the
+// conversation path has always had: this caller does not schedule). There is
+// one RuntimeStore per mutation, exactly as there is one throwaway MemStore
+// per transaction.
+//
+// What it DOES wire is the child resolver, the same M4Children implementation
+// the serve driver uses (cmd/communication/serve.go): the return-control's
+// follow-up advance can land on a run whose other branch is a pipeline.invoke
+// WAITING on a child, and pollInvoke must be able to poll it. The resolver
+// rides the caller's transaction through advancerForTx's withPassTx — its
+// RunStore carries no pool, because runOn(ctx, pool) answers with the pass's
+// transaction whenever one is present — so the child's status and any child
+// a fresh pass books commit with the takeover, or with nothing.
+func takeoverRuntime() *RuntimeStore {
+	children := &M4Children{Runs: &RunStore{}}
+	rs := NewRuntimeStore(nil, nil)
+	rs.Children = children
+	children.Runtime = rs
+	return rs
+}
 
 // HumanTakeover is contract § 5.3 / ADR-0016 § 5's run half of a takeover:
 // the attempt closes interrupted{human_takeover} and the run pauses with that

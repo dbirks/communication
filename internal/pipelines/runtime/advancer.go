@@ -96,6 +96,16 @@ type Advancer struct {
 // the replica's in-flight work) down with it.
 var ErrNoProgram = errors.New("runtime: no compiled program for this run")
 
+// ErrNoChildResolver is the typed refusal a pass returns when a WAITING
+// pipeline.invoke must be polled but no ChildResolver is wired. A fresh
+// booking refuses itself in advanceInvoke's honest no-resolver arm (the node
+// fails as infra there, with the pass committed); a row that is ALREADY
+// waiting has a live child the deployment lost the ability to read, so the
+// pass must not mutate state it cannot observe: it refuses with this error
+// and rolls back, and the caller logs it (the driver retries on the next
+// tick) instead of letting a nil resolver dereference take the request down.
+var ErrNoChildResolver = errors.New("runtime: no child resolver is wired")
+
 // ErrChildDepthExceeded is the named budget error a ChildResolver returns
 // (wrapped) when the host refuses to book a child beyond ADR-0023 § 7's
 // engine ceiling (maxChildDepth ≤ 2, runs_depth_check). It is a budget, not
@@ -1390,6 +1400,14 @@ func (ac *advanceCtx) failChildDepth(row *NodeExecution) error {
 }
 
 func (ac *advanceCtx) pollInvoke(pn *compiler.Node, row *NodeExecution, iv Invocation) error {
+	if ac.deps.Children == nil {
+		// The node is already waiting on a child this deployment cannot poll:
+		// refusing (not panicking, not failing the node) leaves the row exactly
+		// as the hydrated transaction wrote it, so the next pass from a replica
+		// that IS wired polls the child as if nothing happened.
+		return fmt.Errorf("%w: run %s node %s waits on child run %s",
+			ErrNoChildResolver, ac.st.Run.ID, row.InstanceKey, iv.ChildRunID)
+	}
 	ctx := ac.deps.Context
 	if ctx == nil {
 		ctx = context.TODO()
