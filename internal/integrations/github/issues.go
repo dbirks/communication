@@ -125,6 +125,13 @@ type IssueQuery struct {
 	// Sort is the GitHub listing sort key (e.g. "updated"); empty means the
 	// endpoint default.
 	Sort string
+	// Direction is the GitHub listing direction (asc|desc); empty means the
+	// endpoint default. The issue-trigger poll lists updated desc so a page
+	// that reaches an item older than its `Since` bound has reached the end
+	// of what the poll re-opened (ADR-0056 § 5, 2026-11-04 amendment).
+	Direction string
+	// Page is the 1-based listing page to fetch; 0 (or 1) asks for the first.
+	Page int
 }
 
 // IssueLister is the query surface: read issues, change nothing. It is the

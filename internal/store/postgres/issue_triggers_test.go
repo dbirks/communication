@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -147,6 +149,11 @@ type itIssueLister struct {
 	// — the skew dial the store's GitHub-clock arming reads (the lab ran
 	// ~50 s ahead of GitHub's clock; a test dials +/-60 s through this).
 	githubDate func() time.Time
+
+	// queries records the URL query of every LIST request the store sent —
+	// the assertion surface for the server-side listing shape (labels, sort,
+	// direction, per_page, page, since) without a second network layer.
+	queries []url.Values
 }
 
 // ProbeGithubNow forwards to the real Client, so store tests exercise the
@@ -180,6 +187,24 @@ func itServeIssues(issues func() []itWireIssue) http.HandlerFunc {
 			}
 			sinceTS = &ts
 		}
+		// The listing pagination GitHub answers: per_page rows (default 30,
+		// cap 100) of page N (1-based), newest-updated first — the contract
+		// the trigger's page loop pages against.
+		per := 30
+		if s := q.Get("per_page"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				per = n
+			}
+		}
+		if per > 100 {
+			per = 100
+		}
+		page := 1
+		if s := q.Get("page"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				page = n
+			}
+		}
 		var out []itWireIssue
 		for _, it := range issues() {
 			if sinceTS != nil {
@@ -202,6 +227,22 @@ func itServeIssues(issues func() []itWireIssue) http.HandlerFunc {
 			}
 			out = append(out, it)
 		}
+		// GitHub's sort=updated&direction=desc contract: newest updated
+		// first, stable across pages — the ordering the trigger's
+		// "older-than-since" stop condition and its paging depend on.
+		sort.SliceStable(out, func(i, j int) bool {
+			ti, _ := time.Parse(time.RFC3339, out[i].UpdatedAt)
+			tj, _ := time.Parse(time.RFC3339, out[j].UpdatedAt)
+			return ti.After(tj)
+		})
+		start := (page - 1) * per
+		if start >= len(out) {
+			out = out[:0]
+		} else if start+per < len(out) {
+			out = out[start : start+per]
+		} else {
+			out = out[start:]
+		}
 		_ = json.NewEncoder(w).Encode(out)
 	}
 }
@@ -213,7 +254,10 @@ func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLi
 	}
 	l := &itIssueLister{issues: get}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/octo/widgets/issues", handler)
+	mux.HandleFunc("/repos/octo/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
+		l.queries = append(l.queries, r.URL.Query())
+		handler.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/repos/octo/widgets/issues/", l.serveEvents)
 	mux.HandleFunc("/rate_limit", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

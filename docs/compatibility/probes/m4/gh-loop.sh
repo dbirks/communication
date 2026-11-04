@@ -29,7 +29,11 @@
 #      draft=true and a head ref starting comm/issue-.
 # One `PASS`/`FAIL` line per issue with the run id and PR URL; on FAIL the
 # failing node's error (attempt detail via GET /runs/{id}/nodes/{ne}) and the
-# run's last journal events (SELECT-only psql). Exit non-zero on any FAIL.
+# run's last journal events (SELECT-only psql). After each issue's verdict
+# (PASS or FAIL) the driver comments that issue with the run named and
+# CLOSES it on the throwaway repo — the trigger's labeled backlog must stay
+# bounded, and the draft PR from the run is deliberately left open. Exit
+# non-zero on any FAIL.
 #
 # THE ADMIN CSRF TOKEN. lib.sh's m4_jar keys the cookie jar on the USER alone
 # (jars/<user>.jar under M4_PROBE_ROOT_BASE), not on the probe: so when this
@@ -364,6 +368,32 @@ gh_read_pr() { # gh_read_pr <pr-url> — fetches the pull; leaves body + prints 
     return 0
 }
 
+# gh_close_issue <run-id-or-none> — after the issue's verdict (PASS or FAIL),
+# comment it with the run named and close it on the throwaway repo, through
+# the SAME token mechanism as the issue creation (the Authorization line
+# streams into curl's stdin and is never printed or written; a failed close
+# is a WARNING, never a verdict flip — the verdict was already recorded).
+# Draft PRs from the run are deliberately left open: only the ISSUE is
+# closed, keeping the trigger's labeled backlog bounded.
+gh_close_issue() {
+    local run="${1:-none}"
+    jq -cn --arg body "gh-loop verdict: run ${run} for issue #${ISSUE_NUMBER} (${GH_REPO}) has completed — closing the issue to keep the trigger's labeled backlog bounded. The run's draft PR is left open." '{body:$body}' \
+        > "$WORK/close-comment.json" \
+        || { say "issue #${ISSUE_NUMBER}: WARNING could not encode the close comment (jq)"; return 1; }
+    gh_api POST "/repos/$GH_REPO/issues/$ISSUE_NUMBER/comments" "$WORK/close-comment.json"
+    case "$LAST_STATUS" in
+        201) say "issue #${ISSUE_NUMBER}: verdict comment posted (run ${run})" ;;
+        *)   say "issue #${ISSUE_NUMBER}: WARNING close comment failed ($LAST_NOTE)" ;;
+    esac
+    jq -cn '{state:"closed"}' > "$WORK/close-body.json" \
+        || { say "issue #${ISSUE_NUMBER}: WARNING could not encode the close body (jq)"; return 1; }
+    gh_api PATCH "/repos/$GH_REPO/issues/$ISSUE_NUMBER" "$WORK/close-body.json"
+    case "$LAST_STATUS" in
+        200) say "issue #${ISSUE_NUMBER}: closed (run ${run})" ;;
+        *)   say "issue #${ISSUE_NUMBER}: WARNING close failed ($LAST_NOTE)" ;;
+    esac
+}
+
 # ---- the loop for one issue ----------------------------------------------------
 run_one() { # run_one <n> — creates the ticket, drives the run, prints the verdict
     local n="$1" t0 now ST RUN_ID APPR APPR_VER DRAFT HEAD REF PR_URL
@@ -386,6 +416,7 @@ run_one() { # run_one <n> — creates the ticket, drives the run, prints the ver
         if [ $((now - t0)) -ge "$FIRE_WAIT" ]; then
             say "FAIL run=- issue=#${ISSUE_NUMBER} pr=- — no run appeared for trigger ref $REF within ${FIRE_WAIT}s; trigger state below"
             run_sql "SELECT '      T ' || id || ' enabled=' || enabled::text || ' last_error=' || COALESCE(last_error,'-') || ' last_polled=' || COALESCE(last_polled_at::text,'never') FROM issue_triggers WHERE project_id = '$PROJECT_ID'" | head -5
+            gh_close_issue ""
             FAILS=$((FAILS + 1)); return
         fi
         [ $(((now - t0) % 60)) -lt "$STEP" ] && say "issue #${ISSUE_NUMBER}: waiting for the trigger fire ($((now - t0))s / ${FIRE_WAIT}s)"
@@ -418,6 +449,7 @@ run_one() { # run_one <n> — creates the ticket, drives the run, prints the ver
         if [ $((now - t0)) -ge "$RUN_WAIT" ]; then
             say "FAIL run=$RUN_ID issue=#${ISSUE_NUMBER} pr=- — still $ST after ${RUN_WAIT}s (not terminal inside the window)"
             dump_failure "$RUN_ID"
+            gh_close_issue "$RUN_ID"
             FAILS=$((FAILS + 1)); return
         fi
         [ $(((now - t0) % 120)) -lt "$STEP" ] && say "issue #${ISSUE_NUMBER}: run $ST ($((now - t0))s / ${RUN_WAIT}s)"
@@ -428,6 +460,7 @@ run_one() { # run_one <n> — creates the ticket, drives the run, prints the ver
     if [ "$ST" != "completed" ]; then
         say "FAIL run=$RUN_ID issue=#${ISSUE_NUMBER} pr=- — run status $ST, not completed"
         dump_failure "$RUN_ID"
+        gh_close_issue "$RUN_ID"
         FAILS=$((FAILS + 1)); return
     fi
     req admin GET "/api/v1/runs/$RUN_ID/nodes" || loud "GET run nodes"
@@ -443,10 +476,12 @@ print(""); ' "$WORK/nodes.json" 2>/dev/null || echo '')
     if ! printf '%s' "$PR_URL" | grep -qE '^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$'; then
         say "FAIL run=$RUN_ID issue=#${ISSUE_NUMBER} pr=${PR_URL:--} — implement outputs.pr_url is not a github.com/.../pull/N URL"
         dump_failure "$RUN_ID"
+        gh_close_issue "$RUN_ID"
         FAILS=$((FAILS + 1)); return
     fi
     if ! gh_read_pr "$PR_URL"; then
         say "FAIL run=$RUN_ID issue=#${ISSUE_NUMBER} pr=$PR_URL — GitHub GET failed ($LAST_NOTE); response: $(m4_oneline < "$WORK/gh-resp.json")"
+        gh_close_issue "$RUN_ID"
         FAILS=$((FAILS + 1)); return
     fi
     DRAFT=$(jget "$LAST_BODY_FILE" draft || echo '?')
@@ -454,9 +489,11 @@ print(""); ' "$WORK/nodes.json" 2>/dev/null || echo '')
     case "$HEAD" in comm/issue-*) HEAD_OK=yes ;; *) HEAD_OK=no ;; esac
     if [ "$DRAFT" = "true" ] && [ "$HEAD_OK" = "yes" ]; then
         say "PASS run=$RUN_ID issue=#${ISSUE_NUMBER} pr=$PR_URL (draft=true head=$HEAD)"
+        gh_close_issue "$RUN_ID"
         return
     fi
     say "FAIL run=$RUN_ID issue=#${ISSUE_NUMBER} pr=$PR_URL — observed draft=$DRAFT head=$HEAD (want draft=true, head starting comm/issue-)"
+    gh_close_issue "$RUN_ID"
     FAILS=$((FAILS + 1))
 }
 

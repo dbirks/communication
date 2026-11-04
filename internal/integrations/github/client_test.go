@@ -227,6 +227,52 @@ func TestListIssuesRejectsAnUnknownState(t *testing.T) {
 	}
 }
 
+// TestListIssuesSendsDirectionPageAndSecondGranularSince pins the busy-repo
+// listing shape (ADR-0056 § 5, 2026-11-04 amendment): the poll's cursor
+// travels as an ISO 8601 second-granular `since`, the pages as `page`, the
+// newest-updated-first order as `sort=updated&direction=desc`.
+func TestListIssuesSendsDirectionPageAndSecondGranularSince(t *testing.T) {
+	c, stub := ghiClient(t, 0, nil, `[]`)
+	since := time.Date(2026, 11, 4, 10, 15, 30, 456000000, time.UTC) // sub-second
+	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
+		IssueQuery{State: StateOpen, Sort: "updated", Direction: "desc", Page: 3, Since: since, Labels: []string{"a", "b"}}, ""); err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	q := stub.gotQuery
+	if got := q.Get("direction"); got != "desc" {
+		t.Errorf("direction = %q, want desc", got)
+	}
+	if got := q.Get("page"); got != "3" {
+		t.Errorf("page = %q, want 3", got)
+	}
+	if got := q.Get("sort"); got != "updated" {
+		t.Errorf("sort = %q, want updated", got)
+	}
+	// GitHub's since is YYYY-MM-DDTHH:MM:SSZ: the sub-second cursor must
+	// truncate to whole seconds, never carry fractional seconds.
+	if got := q.Get("since"); got != "2026-11-04T10:15:30Z" {
+		t.Errorf("since = %q, want 2026-11-04T10:15:30Z (second-granular ISO 8601)", got)
+	}
+	if got := q.Get("labels"); got != "a,b" {
+		t.Errorf("labels = %q, want the comma-joined any-of set", got)
+	}
+
+	// Page 1 (and 0) omit the param; an unknown direction is refused before
+	// any request goes out.
+	c2, stub2 := ghiClient(t, 0, nil, `[]`)
+	if _, err := c2.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"},
+		IssueQuery{Page: 1}, ""); err != nil {
+		t.Fatalf("ListIssues (page 1): %v", err)
+	}
+	if got := stub2.gotQuery.Get("page"); got != "" {
+		t.Errorf("page 1 sent page=%q, want the param omitted", got)
+	}
+	if _, err := c2.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"},
+		IssueQuery{Direction: "sideways"}, ""); err == nil {
+		t.Fatal("direction=sideways: want an error, got none")
+	}
+}
+
 func TestListIssuesEscapesTheRepositoryNameIntoThePath(t *testing.T) {
 	// A name with a slash must not become a second path segment: that is how
 	// "/repos/o/r/../../someother/thing" style escapes are stopped.

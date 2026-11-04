@@ -126,6 +126,15 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery, 
 	if sort := strings.TrimSpace(q.Sort); sort != "" {
 		query.Set("sort", sort)
 	}
+	if dir := strings.TrimSpace(q.Direction); dir != "" {
+		if dir != "asc" && dir != "desc" {
+			return nil, fmt.Errorf("github: unknown direction %q (want asc or desc)", q.Direction)
+		}
+		query.Set("direction", dir)
+	}
+	if q.Page > 1 {
+		query.Set("page", strconv.Itoa(q.Page))
+	}
 	if len(q.Labels) > 0 {
 		query.Set("labels", strings.Join(q.Labels, ","))
 	} else if label := strings.TrimSpace(q.Label); label != "" {
@@ -134,8 +143,11 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery, 
 	if !q.Since.IsZero() {
 		// GitHub's `since` is an ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ, UTC,
 		// second-granular and inclusive): a Unix-seconds value is refused with
-		// 422 "The since parameter needs to be in ISO 8601 format".
-		query.Set("since", q.Since.UTC().Format(time.RFC3339))
+		// 422 "The since parameter needs to be in ISO 8601 format", and the
+		// truncation to whole seconds keeps a sub-second cursor on GitHub's
+		// own ruler (the truncation only ever WIDENS the inclusive bound —
+		// a safe direction, the replay answers green).
+		query.Set("since", q.Since.UTC().Truncate(time.Second).Format(time.RFC3339))
 	}
 	target := c.base() + "/repos/" + url.PathEscape(repo.Owner) + "/" +
 		url.PathEscape(repo.Name) + "/issues?" + query.Encode()

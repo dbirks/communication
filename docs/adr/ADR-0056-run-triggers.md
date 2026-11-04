@@ -209,3 +209,56 @@ past it (GitHub's `since` is inclusive, so the issue re-surfaces on every
 later poll until its timeline catches up, at which point it fires or is
 decisively refused). Silent-permanent-skip was the failure; retry is the
 answer.
+
+## Amendment (2026-11-04) — the poll is bounded work independent of backlog size
+
+§ 5's poll fetched a single page (`PerPage: 100`, no `page` parameter, the
+label filter applied client-side and only for single-label triggers, no
+`direction`) and advanced the cursor to that page's newest update when it
+committed — or discarded everything when the poll bound spent first. The
+gh-loop of 2026-11-04 (Actions run 41815322185, `dbirks/comms-test-repo-1`)
+showed the cost on a busy repo: every run filed two issues labeled
+`comm:go` and never closed them, so the listing grew to ~141 labeled
+issues; the single unfiltered page could not reach a NEW issue inside the
+30 s poll bound, `last_error` read
+`issue trigger poll bound of 30s spent mid-listing: context deadline
+exceeded` on every beat, and the cursor never moved — every poll
+restarted from the top of the same backlog and the trigger never fired.
+
+The poll's listing is fixed, with the cursor semantics restated:
+
+- **Server-side, newest-updated first.** The listing asks GitHub for
+  `state=open`, the trigger's any-of labels as the server-side `labels=`
+  filter (comma-joined, so a multi-label trigger stops listing EVERY
+  issue), `sort=updated`, `direction=desc`, `per_page=100`. `direction`
+  and `page` join the `IssueQuery` surface; `since` is sent second-
+  granular (GitHub's ISO 8601 contract) — the truncation only ever
+  widens the inclusive bound, a safe direction.
+- **The bound on what is re-offered.** Each poll lists with
+  `since = cursor_at − 60 s overlap` (the 60 s covers the cursor's own
+  second, the ties that share it, and the page a cut-loose poll never
+  reached; the replay the overlap re-offers is answered by the
+  idempotency key, not by a second run). The FIRST poll — no cursor yet —
+  rides the armed no-backfill baseline (`created_at − 2 min` on the
+  armed clock, § the 2026-10-25 amendments) instead of listing the whole
+  repository: an issue last updated before the trigger existed is neither
+  a label event nor an opened event the intent subscribed to.
+- **Page until the bound is behind.** The poll pages until a page is
+  short, or an item is older than the `since` bound (the listing is
+  updated-desc, so that is the end of what the poll re-opened).
+- **Progress persists, beats resume.** A poll whose bound expires
+  mid-listing commits the beat's progress — the fires it landed and the
+  cursor past them — and hands the remaining pages to the next beat,
+  which resumes from the committed cursor; a cut-loose poll no longer
+  restarts from the top. A failed page commits the same way (the
+  earlier pages' fires ride the fire transaction). The assignment
+  ceiling is re-checked between pages, this transaction's own uncommitted
+  fires counted as live.
+- **Already-fired skips cheaply.** Before any timeline read or fire, a
+  `(trigger, issue)` pair is checked against `run_idempotency_keys`
+  (`issue-<trigger id>-<number>`); a pair that already owns a run skips
+  in one indexed check, so a busy repository's re-poll is one lookup per
+  already-fired issue, never a page of network calls. The
+  no-double-fire, no-backfill and replay-is-DONE rules are unchanged —
+  this amendment only changes HOW the listing reaches the issues those
+  rules decide on.

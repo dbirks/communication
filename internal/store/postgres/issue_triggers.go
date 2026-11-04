@@ -77,9 +77,23 @@ const issueTriggerTickBatch = 100
 // The serve tick runs this pass on its own ticker.
 const issueTriggerPollInterval = 60 * time.Second
 
+// issueTriggerListPerPage bounds one GitHub listing page of the poll.
+const issueTriggerListPerPage = 100
+
+// issueTriggerCursorOverlap is how far below the persisted cursor the next
+// poll re-opens: GitHub's `since` is inclusive and second-granular, so the
+// cursor's own second re-offers its boundary issue (the replay the
+// idempotency key answers cheaply), and the overlap covers the items that
+// share that second or sat behind a page a cut-loose poll never reached.
+// Sixty seconds is one beat of the poll interval: wide enough to absorb
+// second-granular listing ties, narrow enough that a busy repository's
+// re-served window stays small, and every re-served issue that already
+// fired skips in one indexed check (no second network call).
+const issueTriggerCursorOverlap = 60 * time.Second
+
 // issueTriggerPollTimeout bounds the EXTERNAL half of ONE poll of ONE
-// trigger: the credential resolve, the GitHub issue list, the GitHub clock
-// read and the per-issue label timelines. It exists because the fire runs a
+// trigger: the credential resolve, the GitHub issue list pages, the GitHub
+// clock read and the per-issue label timelines. It exists because the fire runs a
 // network call inside an open row lock, and the 2026-10-25 lab proved what
 // happens without a bound: one parked poll held the trigger row and the
 // project's journal advisory lock forever — last_polled_at was never
@@ -745,12 +759,25 @@ func issueTriggerDueIDs(ctx context.Context, pool *pgxpool.Pool, now time.Time, 
 // Two contexts, in the two directions one fire can die. `ctx` bounds the
 // FIRE TRANSACTION — every statement, the run creates, the cursor write and
 // the commit; `pollCtx` bounds only the calls OUTSIDE this database: the
-// credential resolve, GitHub's issue list, its clock and its label
-// timelines. A hung GitHub spends pollCtx and the transaction is rolled back
-// with its cause recorded; a busy Postgres spends nothing but its own clock
-// and still commits its fire (the 2026-10-27 flake: one 2 s poll deadline
-// borrowed for both meant a healthy journal append under load lost the run
-// it had already created).
+// credential resolve, GitHub's issue list pages, its clock and its label
+// timelines. A hung GitHub spends pollCtx and the transaction still commits
+// whatever the beat processed (its cause on last_error); a busy Postgres
+// spends nothing but its own clock and still commits its fire (the
+// 2026-10-27 flake: one 2 s poll deadline borrowed for both meant a healthy
+// journal append under load lost the run it had already created).
+//
+// The listing is bounded work independent of the repository's backlog
+// (ADR-0056 § 5, 2026-11-04 amendment): the trigger's any-of labels ride
+// GitHub's server-side `labels` filter with state=open, sort=updated and
+// direction=desc, the `since` bound re-opens from the cursor minus
+// issueTriggerCursorOverlap (the first poll — no cursor — rides the armed
+// no-backfill baseline instead of the whole repository), and the poll pages
+// until a page is short or an item is older than the bound. A poll whose
+// bound expires mid-listing COMMITS the beat's progress — its fires and its
+// cursor — and hands the remaining pages to the next beat, which resumes
+// from the committed cursor; a cut-loose poll never restarts from the top.
+// An already-fired (trigger, issue) pair skips in one indexed check on
+// run_idempotency_keys, before any timeline read or fire.
 func (s *IssueTriggerStore) fireIssueTrigger(ctx, pollCtx context.Context, id string, now time.Time, lister github.IssueLister) (int, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -834,17 +861,6 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx, pollCtx context.Context, id st
 		return 0, err
 	}
 
-	ghQuery := github.IssueQuery{
-		State:   github.StateOpen,
-		Sort:    "updated",
-		PerPage: 100,
-	}
-	if it.CursorAt != nil {
-		ghQuery.Since = *it.CursorAt
-	}
-	if len(it.Labels) == 1 {
-		ghQuery.Labels = it.Labels
-	}
 	token := ""
 	if credentialID != "" {
 		// ADR-0061 § 5: a credentialed repository polls AS itself. A resolve
@@ -856,18 +872,16 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx, pollCtx context.Context, id st
 			return s.recordIssueTriggerPoll(ctx, pollCtx, tx, id, now, err)
 		}
 	}
-	issues, err := lister.ListIssues(pollCtx, repo, ghQuery, token)
-	if err != nil {
-		return s.recordIssueTriggerPoll(ctx, pollCtx, tx, id, now, err)
-	}
 
 	// Arm the trigger on GitHub's own clock (migration 00018, ADR-0056
-	// amendment): the labeled-event comparison must never pit the database's
-	// clock against GitHub's — the lab's 50 s skew silently "backfilled" a
-	// label applied after the trigger existed. The baseline is measured once,
-	// on the first poll that can read GitHub's Date, and kept forever (COALESCE
-	// below); until then (and for a lister with no clock at all) the poll
-	// degrades to created_at, loudly, at WARN.
+	// amendment) BEFORE any page is fetched: the first poll's `since` rides
+	// the armed baseline below, so the clock read precedes the listing rather
+	// than following it. The labeled-event comparison must never pit the
+	// database's clock against GitHub's — the lab's 50 s skew silently
+	// "backfilled" a label applied after the trigger existed. The baseline is
+	// measured once, on the first poll that can read GitHub's Date, and kept
+	// forever (COALESCE below); until then (and for a lister with no clock at
+	// all) the poll degrades to created_at, loudly, at WARN.
 	armed := it.GithubCreatedAt
 	if armed == nil {
 		if clk, ok := lister.(github.IssueClock); ok {
@@ -892,6 +906,33 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx, pollCtx context.Context, id st
 		cutoff = armed.Add(-issueTriggerLabelTolerance)
 	}
 
+	// The listing's lower bound on updated_at (GitHub's inclusive `since`).
+	// A poll that has a cursor re-opens from the cursor minus the overlap:
+	// GitHub's since is second-granular, so the cursor's own second re-offers
+	// its boundary issue (the replay the idempotency key answers cheaply),
+	// and the overlap covers the items that share that second or sat behind a
+	// page a cut-loose poll never reached. The FIRST poll (no cursor) rides
+	// the armed no-backfill baseline instead of listing the whole repository:
+	// an issue last updated before the trigger existed is neither a label
+	// event nor an opened event the intent subscribed to, and a busy repo's
+	// backlog must not ride every listing (the 2026-11-04 gh-loop: ~141
+	// labeled issues against a 30 s bound that never reached the new one).
+	sinceBound := cutoff
+	if it.CursorAt != nil {
+		sinceBound = it.CursorAt.Add(-issueTriggerCursorOverlap)
+	}
+	ghQuery := github.IssueQuery{
+		State:     github.StateOpen,
+		Sort:      "updated",
+		Direction: "desc",
+		PerPage:   issueTriggerListPerPage,
+		// The trigger's any-of set rides GitHub's server-side `labels`
+		// filter (comma-joined, any-of): a multi-label trigger used to list
+		// EVERY issue and filter client-side.
+		Labels: it.Labels,
+		Since:  sinceBound,
+	}
+
 	fired := 0
 	cursor := it.CursorAt
 	// heldBack is the oldest updated_at among issues whose label evidence was
@@ -900,92 +941,162 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx, pollCtx context.Context, id st
 	// (the events API is eventually consistent — an invisible event is not a
 	// verdict).
 	var heldBack *time.Time
-	for _, issue := range issues {
+	complete := false // reached the older-than-since end of the listing
+	boundSpent := false
+	for page := 1; !complete && !boundSpent; page++ {
 		if pollCtx.Err() != nil {
-			// The poll bound was spent partway through the listing (a label
-			// timeline that went quiet is the usual cause). Do NOT keep deciding
-			// on the degraded updated_at proxy with a deadline nobody is
-			// watching: abort, roll the whole fire back with it, and let the net
-			// record. Nothing committed, the cursor did not move, and the
-			// idempotency keys make the next beat's re-fire safe (ADR-0063's
-			// atomic-fire trade, applied to a cut-loose poll).
-			return 0, fmt.Errorf("issue trigger poll bound of %s spent mid-listing: %w", s.pollTimeout(), pollCtx.Err())
+			boundSpent = true
+			break
 		}
-		if it.Event == "opened" {
-			// No backfill: an issue created before the trigger was authored is
-			// never fired by the `opened` arm — measured on the armed clock
-			// when there is one, same skew rule as the labeled arm.
-			if issue.CreatedAt.IsZero() || issue.CreatedAt.Before(cutoff) {
-				continue
+		ghQuery.Page = page
+		issues, err := lister.ListIssues(pollCtx, repo, ghQuery, token)
+		if err != nil {
+			// A failed page still commits whatever the beat already
+			// processed: recordIssueTriggerPoll commits THIS transaction —
+			// the fires the earlier pages landed ride in it — with the cause
+			// on last_error, and the cursor stays where it stood; the next
+			// beat re-derives from rows and the idempotency keys answer the
+			// re-offered issues cheaply.
+			return s.recordIssueTriggerPoll(ctx, pollCtx, tx, id, now, err)
+		}
+		for _, issue := range issues {
+			if !issue.UpdatedAt.IsZero() && issue.UpdatedAt.Before(sinceBound) {
+				// The listing is updated-desc: everything from here on is
+				// older than the bound this poll re-opened at — the rest of
+				// the backlog is old news for this intent.
+				complete = true
+				break
 			}
-		}
-		if !issueLabelsMatch(issue.Labels, it.Labels) {
-			continue
-		}
-		if it.Event == "labeled" {
-			switch verdict := issueLabelTiming(pollCtx, lister, s.logger(), repo, issue, it.Labels, token, cutoff, armed != nil); verdict {
-			case labelVerdictUndecided:
-				// The watch label is ON the issue but its labeled event is not
-				// (yet) visible — GitHub's event timeline lagging, a truncated
-				// read, an events outage that outlived the updated_at proxy.
-				// Neither fire nor refuse: hold the cursor behind this issue
-				// and retry on the next polls. #16's shape: one poll's
-				// confidence was permanent silence.
-				s.logger().DebugContext(ctx, "issue trigger's label timeline is not conclusive yet; holding the cursor for a retry",
-					slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
-				if heldBack == nil || issue.UpdatedAt.Before(*heldBack) {
-					t := issue.UpdatedAt
-					heldBack = &t
-				}
-				continue
-			case labelVerdictStale:
-				// Decisively no-backfill (ADR-0056 amendment of 2026-10-25): a
-				// watched-label event is visible and predates the armed
-				// baseline. The cursor moves past it — a NEW label bumps
-				// updated_at past the cursor and returns the issue to a later
-				// listing on its merits.
-				s.logger().DebugContext(ctx, "issue trigger skipped an issue whose watched label predates the trigger",
+			if pollCtx.Err() != nil {
+				// The poll bound was spent between or inside page reads. Do
+				// NOT keep deciding with a deadline nobody is watching: fall
+				// through to the commit-progress path below, which lands this
+				// beat's fires and cursor and hands the remaining pages to
+				// the next beat — a cut-loose poll no longer restarts from
+				// the top.
+				boundSpent = true
+				break
+			}
+			// The cheap path first: a (trigger, issue) pair that already owns
+			// a run skips its timeline read and its fire in one indexed
+			// check, so a busy repository's re-poll is one lookup per
+			// already-fired issue, never a page of network calls.
+			key := "issue-" + it.ID + "-" + fmt.Sprint(issue.Number)
+			var alreadyFired bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS (SELECT 1 FROM run_idempotency_keys WHERE project_id = $1::uuid AND key = $2)`,
+				it.ProjectID, key).Scan(&alreadyFired); err != nil {
+				return 0, fmt.Errorf("postgres: check idempotency key for issue trigger %s issue %s#%d: %w",
+					id, repo.String(), issue.Number, err)
+			}
+			if alreadyFired {
+				s.logger().DebugContext(ctx, "issue trigger re-saw an already-fired issue; skipping cheaply",
 					slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
 				if cursor == nil || issue.UpdatedAt.After(*cursor) {
 					t := issue.UpdatedAt
 					cursor = &t
 				}
 				continue
-			case labelVerdictFresh:
-				// fall through to the fire below
+			}
+			if it.Event == "opened" {
+				// No backfill: an issue created before the trigger was authored is
+				// never fired by the `opened` arm — measured on the armed clock
+				// when there is one, same skew rule as the labeled arm.
+				if issue.CreatedAt.IsZero() || issue.CreatedAt.Before(cutoff) {
+					continue
+				}
+			}
+			if !issueLabelsMatch(issue.Labels, it.Labels) {
+				continue
+			}
+			if it.Event == "labeled" {
+				switch verdict := issueLabelTiming(pollCtx, lister, s.logger(), repo, issue, it.Labels, token, cutoff, armed != nil); verdict {
+				case labelVerdictUndecided:
+					// The watch label is ON the issue but its labeled event is not
+					// (yet) visible — GitHub's event timeline lagging, a truncated
+					// read, an events outage that outlived the updated_at proxy.
+					// Neither fire nor refuse: hold the cursor behind this issue
+					// and retry on the next polls. #16's shape: one poll's
+					// confidence was permanent silence.
+					s.logger().DebugContext(ctx, "issue trigger's label timeline is not conclusive yet; holding the cursor for a retry",
+						slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
+					if heldBack == nil || issue.UpdatedAt.Before(*heldBack) {
+						t := issue.UpdatedAt
+						heldBack = &t
+					}
+					continue
+				case labelVerdictStale:
+					// Decisively no-backfill (ADR-0056 amendment of 2026-10-25): a
+					// watched-label event is visible and predates the armed
+					// baseline. The cursor moves past it — a NEW label bumps
+					// updated_at past the cursor and returns the issue to a later
+					// listing on its merits.
+					s.logger().DebugContext(ctx, "issue trigger skipped an issue whose watched label predates the trigger",
+						slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
+					if cursor == nil || issue.UpdatedAt.After(*cursor) {
+						t := issue.UpdatedAt
+						cursor = &t
+					}
+					continue
+				case labelVerdictFresh:
+					// fall through to the fire below
+				}
+			}
+			n, ferr := s.fireIssue(ctx, tx, it, pin, repo, issue)
+			if ferr != nil {
+				return 0, ferr
+			}
+			fired += n
+			if cursor == nil || issue.UpdatedAt.After(*cursor) {
+				t := issue.UpdatedAt
+				cursor = &t
 			}
 		}
-		n, ferr := s.fireIssue(ctx, tx, it, pin, repo, issue)
-		if ferr != nil {
-			return 0, ferr
+		if len(issues) < issueTriggerListPerPage {
+			complete = true
 		}
-		fired += n
-		if cursor == nil || issue.UpdatedAt.After(*cursor) {
-			t := issue.UpdatedAt
-			cursor = &t
+		if !complete && !boundSpent {
+			// The ceiling re-checked between pages: this transaction's own
+			// uncommitted fires count as live, so the beat commits its
+			// progress and hands the rest of the listing to the next poll
+			// instead of outrunning the assignment's ceiling.
+			live, err := scheduleLiveRuns(ctx, tx, it.AssignmentID)
+			if err != nil {
+				return 0, err
+			}
+			if live >= pin.maxConcurrent {
+				s.logger().WarnContext(ctx, "issue trigger fire deferred at the assignment ceiling mid-listing; committing the beat's progress, the remainder resumes next poll",
+					slog.String("issue_trigger_id", id),
+					slog.Int("live_runs", live), slog.Int("max_concurrent_runs", pin.maxConcurrent))
+				if err := s.recordIssueTriggerProgress(ctx, tx, id, now, cursor, armed, ""); err != nil {
+					return 0, err
+				}
+				return fired, nil
+			}
 		}
 	}
+
 	if heldBack != nil && (cursor == nil || heldBack.Before(*cursor)) {
 		cursor = heldBack
 	}
 
-	var cursorArg any = cursor
-	if cursor != nil {
-		cursorArg = *cursor
+	if boundSpent {
+		// The poll bound expired mid-listing: commit the beat's progress —
+		// the fires that landed and the cursor past them — and hand the
+		// remaining pages to the next beat, which resumes from this cursor
+		// instead of restarting from the top. The beat still reports failure
+		// (a cut-loose poll is a failing beat, not a green one); the marker
+		// keeps fireIssueTriggerBounded from overwriting this cause.
+		msg := fmt.Sprintf("issue trigger poll bound of %s spent mid-listing; %d fire(s) and the cursor committed — the remainder resumes next beat", s.pollTimeout(), fired)
+		if err := s.recordIssueTriggerProgress(ctx, tx, id, now, cursor, armed, msg); err != nil {
+			return 0, err
+		}
+		return fired, fmt.Errorf("issue trigger poll bound of %s spent mid-listing: %w; %w",
+			s.pollTimeout(), pollCtx.Err(), errIssueTriggerPollRecorded)
 	}
-	var armedArg any
-	if armed != nil {
-		armedArg = *armed
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE issue_triggers
-		SET cursor_at = $1, last_polled_at = $2, last_error = '',
-		    github_created_at = COALESCE(github_created_at, $4::timestamptz)
-		WHERE id = $3::uuid`, cursorArg, now, id, armedArg); err != nil {
-		return 0, fmt.Errorf("postgres: advance issue trigger %s: %w", id, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("postgres: commit issue trigger fire %s: %w", id, err)
+
+	if err := s.recordIssueTriggerProgress(ctx, tx, id, now, cursor, armed, ""); err != nil {
+		return 0, err
 	}
 	if fired > 0 {
 		s.logger().InfoContext(ctx, "issue trigger fired",
@@ -1395,6 +1506,41 @@ func (s *IssueTriggerStore) recordIssueTriggerDeferred(ctx context.Context, tx p
 	return nil
 }
 
+// recordIssueTriggerProgress is the beat's bookkeeping commit once the poll
+// got as far as listing: the cursor (or its held-back position),
+// last_polled_at, the armed baseline when it landed this beat, and
+// last_error (cleared when empty). Every exit of a poll that processed
+// something — the clean listing, the bound-spent mid-listing cut, and the
+// mid-listing ceiling deferral — lands here, so the progress a beat
+// completed (its fires included, they ride this transaction) is committed
+// and never discarded: the next beat resumes from the row, and the
+// idempotency keys keep any replay green.
+func (s *IssueTriggerStore) recordIssueTriggerProgress(ctx context.Context, tx pgx.Tx, id string, now time.Time, cursor, armed *time.Time, lastError string) error {
+	msg := lastError
+	if len(msg) > maxIssueTriggerErrorLen {
+		msg = msg[:maxIssueTriggerErrorLen]
+	}
+	var cursorArg any
+	if cursor != nil {
+		cursorArg = *cursor
+	}
+	var armedArg any
+	if armed != nil {
+		armedArg = *armed
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE issue_triggers
+		SET cursor_at = $1, last_polled_at = $2, last_error = $3,
+		    github_created_at = COALESCE(github_created_at, $4::timestamptz)
+		WHERE id = $5::uuid`, cursorArg, now, msg, armedArg, id); err != nil {
+		return fmt.Errorf("postgres: advance issue trigger %s: %w", id, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit issue trigger fire %s: %w", id, err)
+	}
+	return nil
+}
+
 // labelVerdict is the `labeled` arm's three-valued answer for one issue.
 type labelVerdict int
 
@@ -1477,12 +1623,16 @@ func issueLabelTiming(ctx context.Context, lister github.IssueLister, log *slog.
 }
 
 // recordIssueTriggerPoll is the shared answer for a poll that failed — a
-// credential that would not resolve or a GitHub list that did not land: the
-// honest half of "never crash the tick". The failure is recorded on the row
-// (bounded message) on the FIRE TRANSACTION's own context — the poll's
+// credential that would not resolve or a GitHub list page that did not land:
+// the honest half of "never crash the tick". The failure is recorded on the
+// row (bounded message) on the FIRE TRANSACTION's own context — the poll's
 // deadline is exactly what such a failure spends, and the record must not
-// die with it — the trigger stays due for the next beat, the tick answers
-// (0, nil) and keeps going.
+// die with it — the trigger stays due for the next beat, and the tick
+// answers (0, nil) and keeps going. The commit also lands whatever the beat
+// had already processed on the pages it did fetch (their fires ride this
+// transaction); the cursor stays where it stood, so the next beat re-opens
+// from the same position and the idempotency keys answer the re-offered
+// issues cheaply.
 //
 // One arm is not "upstream answered badly" but "upstream never answered": when
 // the POLLS's bound is what expired while the transaction is still healthy,
