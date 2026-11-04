@@ -78,6 +78,7 @@ import {
   EMU_ADMIN_STATE,
   EMU_ALICE_STATE,
   EMU_BASE_URL,
+  EMU_OUT_DIR,
   EMU_PASS_ID,
   EMU_REPO_ROOT,
 } from "./env.js";
@@ -251,8 +252,35 @@ async function expectChatPinLive(page: Page, width: number): Promise<void> {
     });
     const rowBottom = await visibleLastTranscriptRow(page);
     const composerTop = await visibleComposerTop(page);
+    // Every scroll container from the newest row up, and the document: which
+    // one scrolls, where it sits and how tall its content is.
+    const scrollers = await page.evaluate(() => {
+      const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+      const rows = main
+        ? Array.from(main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"))
+        : [];
+      const out: string[] = [];
+      let node: HTMLElement | null = rows.length > 0 ? rows[rows.length - 1] : main;
+      while (node !== null) {
+        const st = getComputedStyle(node);
+        if (
+          node.scrollHeight > node.clientHeight + 1 ||
+          st.overflowY === "auto" ||
+          st.overflowY === "scroll"
+        ) {
+          out.push(
+            `${node.tagName.toLowerCase()}${node.dataset.testid ? `[${node.dataset.testid}]` : ""}.${st.overflowY} top=${node.scrollTop} sh=${node.scrollHeight} ch=${node.clientHeight}`,
+          );
+        }
+        node = node.parentElement;
+      }
+      out.push(`window.scrollY=${window.scrollY} doc.sh=${document.documentElement.scrollHeight}`);
+      return out;
+    });
+    const shot = `${EMU_OUT_DIR}/pin-failure-${width}.png`;
+    await page.screenshot({ path: shot }).catch(() => undefined);
     throw new Error(
-      `${(error as Error).message.split("\n")[0]} — measured rowBottom=${rowBottom} composerTop=${composerTop} probe=${JSON.stringify(probe)}`,
+      `${(error as Error).message.split("\n")[0]} — measured rowBottom=${rowBottom} composerTop=${composerTop} probe=${JSON.stringify(probe)} scrollers=${JSON.stringify(scrollers)} shot=${shot}`,
     );
   }
 }
