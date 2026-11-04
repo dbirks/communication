@@ -1111,6 +1111,22 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     /** Error kinds already retried — assistant-lost-ask allows one each. */
     const retriedErrors = new Set<string>();
     const deadline = Date.now() + AGENT_TURN_TIMEOUT_MS;
+    /**
+     * EVIDENCE: the popover's last assistant reply, truncated to 400 chars.
+     * The assistant's replies never reach any server log, so when a
+     * follow-up turn does not land the step the reply text is the only
+     * way to see WHY it did not — log it on every such turn.
+     */
+    const lastAssistantReply = async (): Promise<string> => {
+      const replies = page.getByTestId("assistant-msg-assistant");
+      const n = await replies.count();
+      if (n === 0) return "(no assistant reply rendered)";
+      const text = (((await replies.nth(n - 1).textContent()) ?? "").trim() || "(empty)").replace(
+        /\s+/g,
+        " ",
+      );
+      return text.slice(0, 400);
+    };
     for (;;) {
       const error = page.getByTestId("assistant-error");
       if (await error.isVisible().catch(() => false)) {
@@ -1164,10 +1180,12 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
           `the assistant errored: ${errorText} — is the assistant tool loop (be-as-loop) / popover wiring (p7-wire) live in this lab? (no ${kind} retry left after ${followUps} follow-up turn(s))`,
         );
       }
-      if (followUps >= 3)
+      if (followUps >= 3) {
+        console.log(`EVIDENCE leg-f-followup-${followUps}: ${await lastAssistantReply()}`);
         throw new Error(
           `the assistant still has not landed ${ASSISTANT_STEP_NAME} after 3 follow-up turns`,
         );
+      }
       if (
         await page
           .getByTestId("assistant-question")
@@ -1213,6 +1231,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         await waitForAssistantTurn(page);
         followUps += 1;
         console.log(`journey f: question answered with "${label}" (turn ${followUps}/3)`);
+        console.log(`EVIDENCE leg-f-followup-${followUps}: ${await lastAssistantReply()}`);
         continue;
       }
       if (
@@ -1254,11 +1273,14 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       console.log(
         `journey f: turn ended without acting — one plain follow-up (turn ${followUps}/3)`,
       );
+      console.log(`EVIDENCE leg-f-followup-${followUps}: ${await lastAssistantReply()}`);
       await sendThroughComposer("Please make that change now.");
-      if (Date.now() > deadline)
+      if (Date.now() > deadline) {
+        console.log(`EVIDENCE leg-f-followup-${followUps}: ${await lastAssistantReply()}`);
         throw new Error(
           `no draft of ${PIPELINE_SLUG} carries ${ASSISTANT_STEP_NAME} after the ask — the assistant never landed the change (assistant tool loop be-as-loop?)`,
         );
+      }
       await waitForAssistantTurn(page);
     }
 

@@ -562,8 +562,14 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 	modelRuns := 0
 	toolRuns := 0
 	// ADR-0073 applied to the assistant loop: ONE in-turn feedback retry
-	// when the model answers an explicit draft-edit ask without acting.
+	// when the model answers an explicit draft-edit ask without acting. The
+	// ask counts as open on a follow-up turn too when the conversation
+	// still owes it: the newest transcript row is the still-unanswered
+	// question card the reply answers, and the user message that asked it
+	// was an explicit draft-edit ask (the reply travels as plain text that
+	// carries no edit verbs of its own, e.g. the option's label).
 	nudged := false
+	editAskOpen := looksLikeDraftEditAsk(q) || editAskOpenInHistory(req.History, q)
 	var (
 		calls    []ToolCall
 		results  []toolOutcome
@@ -620,7 +626,7 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 			// model correct itself inside the same turn. A text answer after
 			// the nudge ships as the answer — the nudge is bounded, not a
 			// trap.
-			if !nudged && looksLikeDraftEditAsk(q) && !turnActed(calls, changes) {
+			if !nudged && editAskOpen && !turnActed(calls, changes) {
 				nudged = true
 				r.b.logger().Warn("assistant answered a draft-edit ask without acting — retrying once with feedback")
 				messages = append(messages,
@@ -762,6 +768,53 @@ func looksLikeDraftEditAsk(ask string) bool {
 		return true
 	}
 	return draftEditVerb.MatchString(t) && draftEditNoun.MatchString(t) && draftEditScope.MatchString(t)
+}
+
+// maxEditAskReplyRunes bounds the reply a still-open question card may
+// carry: an option label is capped at 120 characters at the card, and free
+// text that long already carries its own words. Longer text is the user's
+// own topic, not the reply the card owes.
+const maxEditAskReplyRunes = 160
+
+// editAskOpenInHistory reports whether the transcript ends on a draft-edit
+// ask the current message answers: the newest row is a question card that
+// is still open (answered_by unset — the reply is what stamps it), the
+// reply is the card's own shape (not an interrogative, bounded length),
+// and the user message of the turn that asked it is an explicit draft-edit
+// ask. The reply itself — the option's label or a short free-text answer —
+// carries no edit verbs, so looksLikeDraftEditAsk on the current message
+// alone is blind to the turn that owes the edit, and the ADR-0073
+// omission feedback would not fire on exactly the follow-up the journey
+// sends after a question card.
+func editAskOpenInHistory(history []HistoryMessage, reply string) bool {
+	last := len(history) - 1
+	if last < 0 || history[last].Kind != "question" {
+		return false
+	}
+	var qv map[string]any
+	if err := json.Unmarshal(history[last].Payload, &qv); err != nil {
+		return false
+	}
+	if ab, ok := qv["answered_by"]; ok && ab != nil {
+		return false // the card is already answered; this reply owes nothing to it
+	}
+	if strings.ContainsRune(reply, '?') || len([]rune(reply)) > maxEditAskReplyRunes {
+		return false // a new topic or a question of its own, not the card's reply
+	}
+	// Walk back to the user row of the turn that asked the card (the
+	// append order is user, assistant, change rows, question).
+	for i := last - 1; i >= 0; i-- {
+		if history[i].Kind != "user" {
+			continue
+		}
+		var uv map[string]any
+		if err := json.Unmarshal(history[i].Payload, &uv); err != nil {
+			return false
+		}
+		s, _ := uv["text"].(string)
+		return looksLikeDraftEditAsk(s)
+	}
+	return false
 }
 
 // editAskFeedback is the retry turn ADR-0073 owes the assistant loop: it
