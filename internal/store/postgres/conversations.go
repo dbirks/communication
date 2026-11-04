@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -630,10 +631,11 @@ func cnvAgentLineScalars(fields []cnvJSONField) string {
 // one JSON object at all (prose, an unclosed or non-JSON fence, a truncated
 // multi-chunk tail, invalid JSON that merely starts with `{`, an array, an
 // object whose only strings are too deep to be a headline). The caller then
-// renders the raw text as it always did, so a message that merely happens to
-// contain a brace is untouched and nothing is invented. The whole message is
-// parsed before the first line is taken, so a pretty-printed object is read as
-// an object rather than as its opening brace.
+// asks cnvJSONFragment whether the chunk is structured output of that
+// kind — and if so answers cnvStructuredOutputLine, so a message that merely
+// happens to contain a brace is still untouched and nothing is invented.
+// The whole message is parsed before the first line is taken, so a
+// pretty-printed object is read as an object rather than as its opening brace.
 func cnvStructuredAgentText(chunk string) string {
 	text := cnvUnfenceAgentChunk(chunk)
 	// Cheap gate first: only a brace-wrapped body can be an object, and this
@@ -661,6 +663,75 @@ func cnvStructuredAgentText(chunk string) string {
 	return ""
 }
 
+// cnvStructuredOutputLine is what the row says when the agent's last message
+// is structured output that carries no line the structured arm can read:
+// the plain word, never the blob's punctuation (round-11 review: a chunked
+// plan node's tail printed `"]}}` under a run row).
+const cnvStructuredOutputLine = "structured output"
+
+// cnvJSONLiteralsRE is the JSON words a fragment check discounts before it
+// asks "structure only".
+var cnvJSONLiteralsRE = regexp.MustCompile(`\b(?:true|false|null)\b`)
+
+// cnvStripJSONStrings drops a JSON text's string literals — quoted runs,
+// escape-aware, an unterminated final string included — and returns what is
+// left: the document's bare structure. String content may carry any
+// character, prose included, so it never counts toward the structure test.
+func cnvStripJSONStrings(text string) string {
+	var b strings.Builder
+	inString := false
+	escaped := false
+	for _, r := range text {
+		if inString {
+			switch r {
+			case '\\':
+				escaped = !escaped
+			case '"':
+				if !escaped {
+					inString = false
+				}
+			}
+			continue
+		}
+		if r == '"' {
+			inString = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// cnvJSONFragment reports whether a chunk is a piece of a JSON document the
+// structured arm does not read as one whole: the tail — or head — of a
+// structured output the worker's chunk cap split mid-blob (the row would
+// otherwise print the tail's punctuation, `"]}}`), a top-level array, or an
+// object the structured arm answers with no line. The test is exact: once
+// the string literals are gone, nothing but JSON structure may be left —
+// delimiters, commas, colons, numbers, the literals true/false/null, and
+// whitespace — and the text must carry at least one delimiter, so ordinary
+// prose, even prose that mentions a brace, is untouched. A cap cut inside a
+// string literal leaves its opening quote to the gate (which admits it) and
+// the strip (which discards the run to the end of the chunk) — a mid-string
+// tail is still recognized.
+func cnvJSONFragment(chunk string) bool {
+	text := strings.TrimSpace(chunk)
+	if text == "" || !strings.ContainsAny(text, "{}[]\"") {
+		return false
+	}
+	rest := cnvJSONLiteralsRE.ReplaceAllString(cnvStripJSONStrings(text), "")
+	for _, r := range rest {
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+		case r == '{' || r == '}' || r == '[' || r == ']' || r == ',' || r == ':':
+		case r >= '0' && r <= '9' || r == '+' || r == '-' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // cnvLastAgentLine renders one agent transcript chunk as the list row's
 // preview: the first non-empty line, trimmed, cut to cnvLastAgentLineMax runes
 // with a trailing ellipsis when longer. A chunk that is one JSON object, or one
@@ -668,11 +739,18 @@ func cnvStructuredAgentText(chunk string) string {
 // output), is read through cnvStructuredAgentText FIRST — the whole message is
 // parsed before a line is taken — so the row shows the agent's summary, its
 // nested `plan.goal`, or its `approved: true` verdict instead of
-// `{"summary": "…` / `{"approved": true,`. "" (rendered as JSON null by apiNullString) means no
-// line: no chunk at all, or only whitespace.
+// `{"summary": "…` / `{"approved": true,`. A chunk that IS structured output
+// the structured arm cannot read — a JSON the worker's chunk cap split
+// mid-blob, so only its tail or head is the newest chunk, a top-level array,
+// an object with no readable line — answers cnvStructuredOutputLine instead:
+// the row says what the message is and never prints `"]}}`. "" (rendered as
+// JSON null by apiNullString) means no line: no chunk at all, or only
+// whitespace.
 func cnvLastAgentLine(chunk string) string {
 	if structured := cnvStructuredAgentText(chunk); structured != "" {
 		chunk = structured
+	} else if cnvJSONFragment(chunk) {
+		return cnvStructuredOutputLine
 	}
 	for _, raw := range strings.Split(chunk, "\n") {
 		line := strings.TrimSpace(raw)

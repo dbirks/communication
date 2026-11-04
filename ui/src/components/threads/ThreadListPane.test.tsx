@@ -35,6 +35,19 @@ const boundRow: ConversationSummary = {
   repository_name: "server",
 };
 
+// A run-origin thread whose agent ended on structured output: the server's
+// preview rule (internal/store/postgres/conversations.go) reads the blob's own
+// `summary`/`title` when one is there and otherwise answers the plain word —
+// a chunk the worker's cap split mid-blob never reaches the row as `"]}}`.
+const runRow: ConversationSummary = {
+  ...conversationSummaryFixture,
+  id: "01987a63-3333-7000-8000-abcdef000003",
+  title: "run 01a1a4f5 /plan attempt 1",
+  status: "idle",
+  origin: "run",
+  last_agent_line: "structured output",
+};
+
 function routes(): RouteStub[] {
   return [
     { path: "/api/v1/me", body: meFixture },
@@ -42,7 +55,7 @@ function routes(): RouteStub[] {
     { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
     {
       path: "/api/v1/conversations",
-      body: { items: [wholeProjectRow, boundRow], next_cursor: null },
+      body: { items: [wholeProjectRow, boundRow, runRow], next_cursor: null },
     },
   ];
 }
@@ -67,4 +80,27 @@ describe("thread list rows name the chat's scope, and only the wire's", () => {
     expect(row.textContent).toContain(`${projectFixture.name} / server`);
     expect(row.textContent).toContain(claudeProfile.name);
   });
+});
+
+describe("thread list previews stay readable for structured output", () => {
+  it(
+    "a run row ending on structured output shows the served plain word, muted — never JSON punctuation",
+    { timeout: 15_000 },
+    async () => {
+      renderApp({ path: "/threads", routes: routes() });
+      const row = await screen.findByTestId(`thread-row-${runRow.id}`);
+      const lastLine = screen.getByTestId(`thread-last-line-${runRow.id}`);
+      // The server answers `structured output` for a blob it cannot read as a
+      // headline (or a chunk the cap split mid-blob); the row prints it verbatim,
+      // in the muted preview line — round-11 saw `"]}}` under the run's title.
+      expect(lastLine.textContent).toBe("structured output");
+      expect(lastLine.className).toContain("text-muted");
+      expect(row.textContent).not.toContain("]}}");
+      expect(row.textContent).not.toContain('{"plan');
+      // The thread sits in the EARLIER group: an idle run thread is not live.
+      const earlier = screen.getByTestId("threads-group-earlier");
+      expect(earlier.textContent).toContain(runRow.title);
+      expect(screen.getByTestId("threads-group-live").textContent).not.toContain(runRow.title);
+    },
+  );
 });

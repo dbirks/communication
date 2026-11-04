@@ -130,3 +130,62 @@ func TestConversationListLastAgentLineNewestChunk(t *testing.T) {
 		}
 	}
 }
+
+// TestConversationListJSONTailLastAgentLine pins the round-11 defect against
+// the real read: the worker's chunk cap (DefaultMaxChunkBytes) splits a run
+// node's structured output mid-blob, so the NEWEST agent chunk is its tail.
+// The row must say `structured output` — never the blob's punctuation, the
+// `"]}}` the list printed.
+func TestConversationListJSONTailLastAgentLine(t *testing.T) {
+	f := cnvSetup(t)
+	ctx := f.ctx()
+
+	chunkedPlan := f.cnvCreate(t, f.alice, "run 01a1a4f5 /plan attempt 1", "")
+	clAgentMessage(t, f, chunkedPlan.ID,
+		`{`+"\n"+`  "plan": {`+"\n"+`    "goal": "Add saved cards to checkout",`+"\n"+`    "steps": [`+"\n"+`      "implement",`+"\n"+`      "test"`+"\n"+`    ]`+"\n"+`  }`+"\n")
+	clAgentMessage(t, f, chunkedPlan.ID,
+		"\n"+`  "files": ["a.ts",`+"\n"+`    "b.ts"]}}`)
+
+	bareTail := f.cnvCreate(t, f.alice, "run 01a1a4f5 /review attempt 2", "")
+	clAgentMessage(t, f, bareTail.ID, "\n"+`"]}}`)
+
+	want := map[string]string{
+		chunkedPlan.ID: "structured output",
+		bareTail.ID:    "structured output",
+	}
+
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	for _, cv := range items {
+		if w, ok := want[cv.ID]; ok && cv.LastAgentLine != w {
+			t.Errorf("row %s: last_agent_line = %q, want %q", cv.ID, cv.LastAgentLine, w)
+		}
+		if n := utf8.RuneCountInString(cv.LastAgentLine); n > cnvLastAgentLineMax {
+			t.Errorf("row %s: preview is %d runes, over the cap of %d", cv.ID, n, cnvLastAgentLineMax)
+		}
+	}
+
+	// The /threads page read shares the renderer, so the same tails answer the
+	// same line there.
+	xp := APICrossProjectStore{Pool: f.pool}
+	views, _, err := xp.ListVisibleConversations(ctx,
+		api.Caller{UserID: f.bob, OrganizationID: f.orgID}, 50, "")
+	if err != nil {
+		t.Fatalf("ListVisibleConversations: %v", err)
+	}
+	byView := map[string]api.ConversationSummaryView{}
+	for _, v := range views {
+		byView[v.ID] = v
+	}
+	for id, w := range want {
+		v, ok := byView[id]
+		if !ok {
+			t.Fatalf("cross-project list misses conversation %s", id)
+		}
+		if v.LastAgentLine == nil || *v.LastAgentLine != w {
+			t.Errorf("cross row %s: last_agent_line = %v, want %q", id, v.LastAgentLine, w)
+		}
+	}
+}

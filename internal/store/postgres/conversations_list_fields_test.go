@@ -422,8 +422,11 @@ func TestConversationListRunThreadRepository(t *testing.T) {
 // the cap, cut on a rune boundary; "" = no line at all. The JSON arms are the
 // run-node shape: an agent whose last message IS its structured output reads
 // as its own words — a headline key at depth 0 or nested one object down, else
-// the first string found breadth-first, else its scalars as `key: value` —
-// never as braces, and never as a paraphrase.
+// the first string found breadth-first, else its scalars as `key: value`. A
+// piece of a structured output the whole-message arm cannot read — a chunk the
+// worker's cap split mid-blob, a top-level array, an object with no readable
+// line — says `structured output`, never its punctuation (`"]}}` is never a
+// row, round-11 review), and never a paraphrase.
 func TestCnvLastAgentLine(t *testing.T) {
 	cases := []struct {
 		name, chunk, want string
@@ -449,8 +452,9 @@ func TestCnvLastAgentLine(t *testing.T) {
 		{"nested goal (plan.goal)", `{"plan": {"goal": "Add a docstring to add() in app.py", "files": ["app.py"]}, "risk": "low"}`, "Add a docstring to add() in app.py"},
 		{"depth 0 beats depth 1", `{"notes": "outer note", "plan": {"summary": "nested summary"}}`, "outer note"},
 		{"depth 1 follows key priority", `{"meta": {"title": "meta title"}, "plan": {"goal": "the goal"}}`, "the goal"},
-		// …but a string three containers deep is the schema's shape, not a line.
-		{"too deep for a headline", `{"meta": {"a": {"b": {"c": "too deep"}}}}`, `{"meta": {"a": {"b": {"c": "too deep"}}}}`},
+		// …but a string three containers deep is the schema's shape, not a line:
+		// the row says the message is structured output, not the blob.
+		{"too deep for a headline", `{"meta": {"a": {"b": {"c": "too deep"}}}}`, "structured output"},
 		{"blank summary falls through", `{"summary": "   ", "goal": "real goal"}`, "real goal"},
 		{"pretty-printed object", "{\n  \"summary\": \"Multi line object.\",\n  \"ok\": true\n}", "Multi line object."},
 		{"multi-line verdict with a reason", "{\n  \"approved\": true,\n  \"reason\": \"The patch is safe.\"\n}", "The patch is safe."},
@@ -459,7 +463,7 @@ func TestCnvLastAgentLine(t *testing.T) {
 		{"no-string object reads its scalars", `{"count": 3, "ok": true}`, "count: 3 · ok: true"},
 		{"reviewer verdict with no words", "{\n  \"approved\": true,\n  \"blocking\": 0,\n  \"waived\": null\n}", "approved: true · blocking: 0 · waived: null"},
 		{"string in a nested array is still found", `{"plan": {"files": ["a.go"]}}`, "a.go"},
-		{"no string and no scalar keeps the raw text", `{"plan": {"files": []}}`, `{"plan": {"files": []}}`},
+		{"no string and no scalar says structured output", `{"plan": {"files": []}}`, "structured output"},
 		{"prose with a brace inside", `he said {yes} to the plan`, "he said {yes} to the plan"},
 		// the fenced shape: the wrapper comes off before the object is read.
 		{"fenced json reads as its summary", "```json\n{\"summary\": \"hidden\"}\n```", "hidden"},
@@ -469,14 +473,26 @@ func TestCnvLastAgentLine(t *testing.T) {
 		{"other fences stay prose", "```go\nfunc main() {}\n```", "```go"},
 		{"prose after the closing fence stays prose", "```json\n{\"summary\": \"x\"}\n```\nthat is all", "```json"},
 		{"unclosed fence stays prose", "```json\n{\"summary\": \"x\"}", "```json"},
-		{"json array is not an object", `["one", "two"]`, `["one", "two"]`},
-		{"truncated chunk keeps the raw text", `{"summary": "cut off mid obj`, `{"summary": "cut off mid obj`},
-		{"invalid json that starts with a brace keeps the raw text", `{"approved": true, "reason": }`, `{"approved": true, "reason": }`},
-		{"invalid multi-line json degrades to its first line", "{\n  \"approved\": true,,\n}", "{"},
-		{"trailing prose after the object", `{"summary": "x"} done`, `{"summary": "x"} done`},
-		{"two objects are not one", `{"summary": "a"}{"summary": "b"}`, `{"summary": "a"}{"summary": "b"}`},
+		{"json array is structured output", `["one", "two"]`, "structured output"},
+		{"top-level array with no string still says it", `[1, 2, 3]`, "structured output"},
+		// the chunked shape: the worker's cap split the blob, so the newest
+		// chunk is a tail (or head) of it — the row says what it is.
+		{"json tail after a chunk cap", `  "files": ["a.ts", "b.ts"]}}`, "structured output"},
+		{"bare closing tail", `"]}}`, "structured output"},
+		{"tail ending on a closing quote", `"note": "done"` + "\n" + `}`, "structured output"},
+		{"tail carrying literals", `"approved": true,` + "\n" + `  "blocking": 0]}}`, "structured output"},
+		{"head cut mid-object", "\n{\n  \"summary\": \"cut off mid obj", "structured output"},
+		{"head cut inside a string literal", `  "description": "a very long plan th`, "structured output"},
+		{"truncated chunk says structured output", `{"summary": "cut off mid obj`, "structured output"},
+		{"invalid json that starts with a brace says structured output", `{"approved": true, "reason": }`, "structured output"},
+		{"invalid multi-line json says structured output", "{\n  \"approved\": true,,\n}", "structured output"},
+		{"trailing prose after the object stays prose", `{"summary": "x"} done`, `{"summary": "x"} done`},
+		{"two objects are structured output", `{"summary": "a"}{"summary": "b"}`, "structured output"},
 		{"leading blank lines around the object", "\n {\"goal\": \"padded\"} ", "padded"},
-		{"empty object keeps the raw text", `{}`, `{}`},
+		{"empty object says structured output", `{}`, "structured output"},
+		// prose that merely mentions JSON is untouched.
+		{"prose about a tail stays prose", `closed out the plan, and the files were [a.ts, b.ts] — done`, "closed out the plan, and the files were [a.ts, b.ts] — done"},
+		{"plain numbers stay plain", `1, 2, 3`, "1, 2, 3"},
 		{"a long extracted line is still capped", `{"summary": "` + strings.Repeat("s", cnvLastAgentLineMax+10) + `"}`, strings.Repeat("s", cnvLastAgentLineMax-1) + "…"},
 		{"a scalar verdict is still capped", `{"approved": ` + strings.Repeat("9", cnvLastAgentLineMax+10) + `}`, "approved: " + strings.Repeat("9", cnvLastAgentLineMax-11) + "…"},
 	}
