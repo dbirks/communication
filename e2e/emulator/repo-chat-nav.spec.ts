@@ -1124,6 +1124,29 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(menu, "Esc closes the picker").toBeHidden({ timeout: 10_000 });
     });
 
+  });
+
+  test("chat — WORKS IN moves the chat's scope and back", async ({ page, emu }) => {
+    // Its own test, deliberately: as the chat journey's final step the
+    // combined 22-minute leg exhausted the test budget before
+    // `works-in-moved` was ever captured (run 41735462805) — the report
+    // could not tell whether the budget ran out or a click waited forever.
+    // Every action here is bounded, and after each capture the switcher
+    // proves itself back at 1280 before the next click.
+    await test.step("re-enter the chat on its own", async () => {
+      expect(ids.chatId, "the chat journey left its thread").toMatch(/^[0-9a-f-]{36}$/);
+      await page.goto(`/threads/${ids.chatId}`);
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await expect(
+        page.getByTestId("conversation-title"),
+        "the chat renders before the switcher is touched",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByTestId("thread-side-panel-aside"),
+        "the side panel's aside renders at 1280 before the switcher is touched",
+      ).toBeVisible({ timeout: 30_000 });
+    });
+
     await test.step("WORKS IN — the scope switcher moves the chat to the whole project and back", async () => {
       // The ADR-0067 amendment's WORKS IN switcher (3ae47e6): the panel's repo
       // name carries a ▾ button that opens a ds Menu of the project's
@@ -1143,7 +1166,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         switcher,
         "the repo name carries the scope switcher (the host names this chat)",
       ).toBeVisible();
-      await switcher.click();
+      await switcher.click({ timeout: 15_000 });
       const scopeMenu = page.getByTestId("side-panel-scope-menu");
       await expect(scopeMenu, "the switcher opens the scope menu").toBeVisible({
         timeout: 10_000,
@@ -1189,20 +1212,31 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
       await emu.screen("rcn-2e", "works-in-menu");
 
+      // After each capture the switcher proves itself back at 1280 before
+      // the next click: screen() resizes through 390 on its way back to
+      // 1280, and a capture that left the panel re-mounted is exactly where
+      // a click can hang with no bound of its own.
+      await expect(switcher, "the switcher is back at 1280 after the capture").toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(switcher, "the switcher is back at 1280 after the capture").toBeEnabled({
+        timeout: 15_000,
+      });
+
       // Pick "Whole project": the panel's state answers (the tick moves —
       // the switcher reads the DECLARED binding the PATCH wrote back), and
       // the transcript prints the journal's scope-changed system line.
-      await switcher.click();
+      await switcher.click({ timeout: 15_000 });
       await expect(scopeMenu, "the switcher reopens for the pick").toBeVisible({
         timeout: 10_000,
       });
-      await scopeMenu.getByTestId("side-panel-scope-item-whole").click();
+      await scopeMenu.getByTestId("side-panel-scope-item-whole").click({ timeout: 15_000 });
       await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
       await expect(
         page.getByText(/moved this chat to the whole project/i),
         "the transcript prints the journal's scope-changed system line",
       ).toBeVisible({ timeout: 30_000 });
-      await switcher.click();
+      await switcher.click({ timeout: 15_000 });
       await expect(scopeMenu, "the switcher reopens to show the panel's state").toBeVisible({
         timeout: 10_000,
       });
@@ -1221,14 +1255,25 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
       await emu.screen("rcn-2e", "works-in-moved");
 
+      // Same re-probe after the second capture (see above): the switcher
+      // must be back at 1280 and pressable before the move-back click.
+      await expect(switcher, "the switcher is back at 1280 after the capture").toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(switcher, "the switcher is back at 1280 after the capture").toBeEnabled({
+        timeout: 15_000,
+      });
+
       // Back to the repo the chat was born in (ADR-0067) — the second move
       // proves the system line renders in both directions, and the pass's
       // rows stay honest for whichever journey reads this chat later.
-      await switcher.click();
+      await switcher.click({ timeout: 15_000 });
       await expect(scopeMenu, "the switcher reopens for the move back").toBeVisible({
         timeout: 10_000,
       });
-      await scopeMenu.getByTestId(`side-panel-scope-item-${FILE_REPO}`).click();
+      await scopeMenu.getByTestId(`side-panel-scope-item-${FILE_REPO}`).click({
+        timeout: 15_000,
+      });
       await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
       await expect(
         page.getByText(new RegExp(`moved this chat to ${FILE_REPO}`, "i")),
