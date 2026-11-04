@@ -119,15 +119,12 @@ export function splitAtAgentSwitches(
 }
 
 /**
- * The transcript's bottom padding, in px: the height of the thread's pinned
- * composer. At short viewports (the 390 review) the composer is tall and the
- * transcript scroller is short, so the last transcript line can sit flush
- * under the composer with no room to scroll it clear. Reserving one composer's
- * height as bottom padding gives the scroller room to lift the final line out
- * from under the box. The composer is a page-level sibling (not a child of
- * this component) and its height varies with width and the textarea, so it is
- * measured live and follows resizes. A surface with no such composer (the
- * legacy page, an embedded reuse) reserves nothing.
+ * The height of the thread's pinned composer, in px, measured live so it
+ * follows resizes — a page-level sibling of the transcript whose height
+ * varies with width and the textarea. Returns 0 on a surface with no such
+ * composer. (The transcript used to reserve this as its own bottom padding,
+ * rcn-review12 removed that — the composer never overlaps the scroller —
+ * the read is kept for any surface that needs the composer's live height.)
  */
 export function useComposerHeight(testid = "thread-composer-pin"): number {
   const [height, setHeight] = useState(0);
@@ -329,23 +326,19 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
       agentNameForLauncher,
     );
 
-  // One composer's height of bottom padding: at short viewports the pinned
-  // composer leaves little scroller, so the transcript reserves room for the
-  // composer to keep the final line clear of it (the 390 review).
-  const composerHeight = useComposerHeight();
-
-  // The thread's pin (rcn-review10): the newest row — an agent chunk, a
-  // reply, a switch divider, a scope-change line — stays at the bottom of the
-  // pane's scroller on first load and whenever the reader is at the bottom;
-  // the composer padding above makes the last row land fully clear of the
-  // pinned composer. A reader who has scrolled up to read keeps their place.
+  // The thread's pin (rcn-review10, rcn-review11, rcn-review12): the newest row
+  // — an agent chunk, a reply, a switch divider, a scope-change line — stays at
+  // the bottom of the pane's scroller on first load and whenever the reader is
+  // at the bottom. The composer is a sibling BELOW the scroller (never
+  // overlapping it), so the pin's target is the transcript's own bottom edge:
+  // reserving the composer's height as content padding used to push the pin a
+  // whole composer too low at phone width, hiding the first rows while a
+  // full-composer gap sat under the last one. A reader who has scrolled up to
+  // read keeps their place.
   const transcriptRef = useStickyTranscript();
 
   return (
-    <div
-      ref={transcriptRef}
-      style={composerHeight > 0 ? { paddingBottom: composerHeight } : undefined}
-    >
+    <div ref={transcriptRef}>
       {parts.map((part, index) => {
         const label = part.divider
           ? agentLabel(

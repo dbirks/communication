@@ -1,14 +1,14 @@
 /**
- * The transcript reserves ONE COMPOSER'S HEIGHT as bottom padding (round 6,
- * the 390 review): at short viewports the composer pinned to the bottom of
- * the pane leaves the scroller little room, so the transcript's last line must
- * be scrollable clear of the box instead of sitting flush under it. The
- * padding is measured from the composer itself — a page-level sibling, whose
- * height varies with width and the textarea — so it follows the composer; a
- * surface with no such composer (the legacy page, an embedded reuse) reserves
- * nothing.
+ * The transcript's pin (rcn-review10, rcn-review11, rcn-review12): the pane's
+ * scroller — the transcript's nearest scrollable ancestor, a page-level
+ * sibling — stays with the newest row. The composer is a sibling BELOW the
+ * scroller, never overlapping it, so the pin's target is the transcript's own
+ * bottom edge: no reserved padding, nothing scrolled while the content fits.
+ * jsdom lays out nothing, so the geometry is the test's own numbers (the
+ * scroller's scroll facts and the transcript's rect) and the ResizeObserver is
+ * a stub the test fires when a row lands.
  */
-import { cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
@@ -33,6 +33,21 @@ function composerStub(height: number) {
   return el;
 }
 
+describe("useComposerHeight", () => {
+  it("measures the thread's pinned composer when it is on the page", () => {
+    const composer = composerStub(183);
+    const { result, unmount } = renderHook(() => useComposerHeight());
+    expect(result.current).toBe(183);
+    unmount();
+    composer.remove();
+  });
+
+  it("answers zero on a surface with no composer", () => {
+    const { result } = renderHook(() => useComposerHeight());
+    expect(result.current).toBe(0);
+  });
+});
+
 const emptySession = {
   data: undefined,
   transcript: { items: [], turns: [], throughSeq: 0 },
@@ -44,48 +59,8 @@ const emptySession = {
   decide: { error: null, isError: false, variables: undefined },
 } as unknown as ConversationSession;
 
-function renderTranscript() {
-  const client = new QueryClient();
-  return render(
-    <QueryClientProvider client={client}>
-      <ConversationTranscript session={emptySession} />
-    </QueryClientProvider>,
-  );
-}
-
-describe("useComposerHeight", () => {
-  it("measures the thread's pinned composer when it is on the page", () => {
-    const composer = composerStub(183);
-    const { result, unmount } = renderHook(() => useComposerHeight());
-    expect(result.current).toBe(183);
-    unmount();
-    composer.remove();
-  });
-
-  it("reserves nothing on a surface with no composer", () => {
-    const { result } = renderHook(() => useComposerHeight());
-    expect(result.current).toBe(0);
-  });
-});
-
-describe("the transcript's composer padding (round 6, the 390 review)", () => {
-  it("gives the transcript a bottom padding equal to the composer's height", async () => {
-    const composer = composerStub(183);
-    const { container } = renderTranscript();
-    const wrapper = container.firstElementChild as HTMLElement;
-    await waitFor(() => expect(wrapper.style.paddingBottom).toBe("183px"));
-    composer.remove();
-  });
-
-  it("adds no padding where no composer is mounted", async () => {
-    const { container } = renderTranscript();
-    const wrapper = container.firstElementChild as HTMLElement;
-    await waitFor(() => expect(wrapper.style.paddingBottom).toBe(""));
-  });
-});
-
 /**
- * The pin (rcn-review10, rcn-review11): the pane's scroller — the
+ * The pin (rcn-review10, rcn-review11, rcn-review12): the pane's scroller — the
  * transcript's nearest scrollable ancestor, a page-level sibling — stays
  * with the newest row. jsdom lays out nothing, so the geometry is the
  * test's own numbers (the scroller's scroll facts and the transcript's
@@ -176,7 +151,7 @@ describe("the transcript's pin to the newest row (rcn-review10)", () => {
     });
   }
 
-  /** The transcript's own bottom (its reserved composer padding included),
+  /** The transcript's own bottom (the newest row's edge),
    * mocked the way a laid-out browser would report it: the content is the
    * whole scroller content here, so its bottom is the scroller's scroll
    * height minus the current offset. */
@@ -218,8 +193,8 @@ describe("the transcript's pin to the newest row (rcn-review10)", () => {
     fireRowLanded();
     expect(scroller.scrollTop).toBe(700);
     // A reply lands: the content grows, and the pinned view follows it —
-    // the pin lands the transcript's own bottom, so the composer padding the
-    // transcript reserved keeps the last row clear of the composer.
+    // the pin lands the transcript's own bottom, which is what keeps the
+    // last row clear of the composer that sits below the scroller.
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1400 });
     fireRowLanded();
     expect(scroller.scrollTop).toBe(1100);

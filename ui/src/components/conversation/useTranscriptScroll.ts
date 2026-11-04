@@ -15,9 +15,12 @@
  * below it sit the thread-details disclosure and, at phone width, the whole
  * side-panel stack. Pinning the scroller's max left that trailing content in
  * the visible bottom and the newest row ABOVE it, out of view. The hook
- * instead lands the transcript's own bottom (the content element, including
- * its reserved composer-height padding) exactly at the scroller's visible
- * bottom, so the newest row ends fully clear of the composer at every width.
+ * instead lands the transcript's own bottom edge exactly at the scroller's
+ * visible bottom. The composer is a sibling BELOW the scroller (never
+ * overlapping it), so that is what keeps the newest row fully clear of it:
+ * when the content fits, the pin clamps at zero and nothing scrolls, and
+ * when it overflows the newest row sits above the composer with nothing
+ * hidden at the top while any spare room remains (rcn-review12).
  *
  * The pin re-runs on every movement of the view's bottom edge: new rows grow
  * the content (ResizeObserver on it), and a composer or header reflow
@@ -93,10 +96,11 @@ export function isNearContentBottom(
 }
 
 /**
- * The scroll position that lands `content`'s bottom — the transcript's end,
- * including its reserved composer-height padding — exactly on the scroller's
- * visible bottom edge. Content that trails the transcript (the thread-details
- * disclosure, the phone's side-panel stack) stays below the pinned view.
+ * The scroll position that lands `content`'s bottom — the transcript's end —
+ * exactly on the scroller's visible bottom edge. Content that trails the
+ * transcript (the thread-details disclosure, the phone's side-panel stack)
+ * stays below the pinned view, and a transcript that fits inside the
+ * scroller clamps at zero: nothing scrolls while it is fully visible.
  */
 export function pinPosition(
   contentBottom: number,

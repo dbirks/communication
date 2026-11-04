@@ -75,8 +75,8 @@ interface PaneModel {
   /** The scroller's top edge in viewport coordinates (stable). */
   scrollerTop: number;
   clientHeight: number;
-  /** The transcript content's bottom, in the scroller's content coordinates
-   * (its reserved composer-height padding included). */
+  /** The transcript content's bottom — the newest row's edge — in the
+   * scroller's content coordinates. */
   contentBottom: number;
   /** The trailing content below the transcript (details, the phone's side
    * panel) — what the scroller's raw max would leave in view. */
@@ -294,9 +294,35 @@ describe("useStickyTranscript", () => {
     // The browser's first observer callback reports the laid-out size; the
     // test plays that moment with the pane's real geometry in place.
     fireResize(content);
-    // The raw max would be 1100 (1400 - 300) — the pin lands at 800 - 300,
-    // so the trailing 600px of details/side panel stays below the view.
     expect(scroller.scrollTop).toBe(500);
+    scroller.remove();
+  });
+
+  it("scrolls NOTHING while the content fits — a short transcript stays at the top with every row visible", () => {
+    // rcn-review12, the 390 defect: the old pin target sat a whole composer
+    // below the newest row, so a transcript that fit inside the scroller
+    // still scrolled and hid its first rows. The pin's target is the
+    // transcript's own bottom: shorter than the view means offset zero.
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 260, // shorter than the 300px view — it fits
+      below: 200, // the trailing details/side-panel content still overflows
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(0);
+    // …and new rows keep the view at the top until the content overflows.
+    model.contentBottom = 290;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(0);
+    // Overflow begins: the pin lifts the newest row to the visible bottom,
+    // and only then — never earlier — does it move the top edge.
+    model.contentBottom = 420;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(120);
     scroller.remove();
   });
 

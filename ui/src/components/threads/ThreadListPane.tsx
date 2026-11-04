@@ -242,6 +242,13 @@ function ThreadItem({
         : "idle"
       : ROW_STATUS_WORDS[conversation.status];
   const repo = conversation.repository_name ?? null;
+  // A row the server answers `repository_id: null` names no repository by
+  // choice — a moved or born-unbound chat working in the whole project
+  // (ADR-0067 amendment) — and the row says so instead of dropping the scope
+  // segment entirely (rcn-review12 works-in-moved). A row a control plane
+  // predating the field answers (undefined) keeps the old `project · agent`
+  // shape: no read says that thread is unbound.
+  const scope = repo ?? (conversation.repository_id === null ? "Whole project" : null);
   // The served line is the agent's own text; the ONE shared preview helper
   // strips its leading markdown markers and inline emphasis, so the row
   // leads with the sentence, not a bullet (pass-1 review).
@@ -271,7 +278,7 @@ function ThreadItem({
           </span>
         </span>
         <span className="block truncate pl-[17px] font-mono text-[10.5px] text-muted">
-          {repo ? `${projectName} / ${repo}` : projectName} · {profileName}
+          {scope ? `${projectName} / ${scope}` : projectName} · {profileName}
           {word ? ` · ${word}` : ""}
         </span>
         {preview ? (

@@ -48,6 +48,12 @@ export function useChangeConversationScope() {
     onSuccess: (conversation) => {
       queryClient.setQueryData(queryKeys.conversation(conversation.id), conversation);
       invalidateConversation(queryClient, conversation.id, conversation.project_id);
+      // The shell's cross-project thread list (ThreadListPane's
+      // `["conversations", "cross-project", …]` read) is NOT project-scoped,
+      // so `invalidateConversation`'s project-prefix invalidation never
+      // reaches it — its row would keep naming the old repository until a
+      // manual refresh (rcn-review12 works-in-moved).
+      void queryClient.invalidateQueries({ queryKey: ["conversations", "cross-project"] });
     },
   });
 }

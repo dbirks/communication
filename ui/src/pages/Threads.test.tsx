@@ -156,10 +156,13 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
       "Pushed the fix; CI is green now.",
     );
 
-    // Nulls and a missing field (an older server's row, `liveManual`) both
-    // fall back honestly: the project alone, and no last line.
+    // An explicit null binding (rcn-review12) reads the whole project; a
+    // missing field (an older server's row, `liveManual`) falls back to the
+    // project alone. Both keep no last line.
     const unboundRow = await screen.findByTestId(`thread-row-${unbound.id}`);
-    expect(unboundRow.textContent).toContain(`${projectFixture.name} · Claude Code`);
+    expect(unboundRow.textContent).toContain(
+      `${projectFixture.name} / Whole project · Claude Code`,
+    );
     expect(unboundRow.textContent).not.toContain("communication");
     expect(screen.queryByTestId(`thread-last-line-${unbound.id}`)).toBeNull();
     expect(screen.queryByTestId(`thread-last-line-${liveManual.id}`)).toBeNull();
