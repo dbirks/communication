@@ -264,19 +264,38 @@ function chunkParagraph(paragraph: string): AnswerChunk[] {
 }
 
 /**
+ * The drafting intro of design 2f ("I read the chat. Drafting <name> in the
+ * library:"): the paragraph a step list was announced under. It is the only
+ * context in which a ONE-step run is a step list rather than a stray ✓ line —
+ * the workflow the chat proved in a single step really is one step, and the
+ * design draws it as the list it is. The line must END on the colon that
+ * opens the list, and must name the draft, the library or the workflow it
+ * is being drawn for: a random "✓ done." line that merely mentions the word
+ * "drafting" mid-sentence is not an intro.
+ */
+const DRAFTING_INTRO_MARK = /\b(draft\w*|librar\w*|workflow\w*)\b/i;
+
+function isDraftingIntro(chunk: AnswerChunk | undefined): boolean {
+  if (chunk?.type !== "prose") return false;
+  const text = chunk.text.trimEnd();
+  return text.endsWith(":") && DRAFTING_INTRO_MARK.test(text);
+}
+
+/**
  * The answer-wide verdict on step runs (rcn-2f round 7): step lines the
  * model separated with blank lines are ONE list — the rows ride in the
  * transcript as it was posted, not as a paragraph of stray prose. Runs
  * that are still a single line after the merge are the stray-✓-line case
- * and fall back to the prose they are; a real draft step list has at least
- * two steps.
+ * and fall back to the prose they are — unless the line stands directly
+ * under a drafting intro (rcn-review10-2f), in which case the draft has
+ * exactly one step and the row is the list.
  */
 function settleStepChunks(chunks: AnswerChunk[]): AnswerChunk[] {
   const out: AnswerChunk[] = [];
   let run: StepLine[] = [];
   const flush = () => {
     if (run.length === 0) return;
-    if (run.length < 2) {
+    if (run.length < 2 && !isDraftingIntro(out[out.length - 1])) {
       out.push({ type: "prose", text: run.map((line) => `${line.glyph} ${line.rest}`).join("\n") });
     } else {
       out.push({ type: "steps", lines: run });

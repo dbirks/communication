@@ -151,6 +151,17 @@ func newFromChatRunner(t *testing.T, model *fakeModel, chats ChatTranscriptReade
 	})
 }
 
+// newFromChatRunnerWithDraft is the same wiring with the draft service the
+// test owns, so a flow can script the workflow.draft lookup and the
+// version-checked PUT the settled fork goes through.
+func newFromChatRunnerWithDraft(t *testing.T, model *fakeModel, chats ChatTranscriptReader, library LibraryDraftCreator, draft *fakeDraftService) *ConversationRunner {
+	t.Helper()
+	return NewConversationRunner(ConversationRunnerDeps{
+		Broker: newTestBroker(t, model, newFakeStore()), Draft: draft,
+		Chats: chats, Library: library,
+	})
+}
+
 func runTurnText(t *testing.T, r *ConversationRunner, text string, trust TrustLevel, history ...HistoryMessage) *TurnResult {
 	t.Helper()
 	res, f := r.RunTurn(context.Background(), TurnRequest{
@@ -432,15 +443,24 @@ func TestWorkflowCreateDraftGateRefusesAnInvalidDocumentBeforeTheCard(t *testing
 	}
 }
 
-// --- the whole flow: transcript → step list → questions → answers → draft --
+// --- the whole flow: transcript → step list + draft → questions → answers --
+//
+// The ordering the rcn-review10-2f round-10 review pinned: the design's
+// "Drafting <name> in the library" means the draft EXISTS while the first
+// question is open, so the flow saves the draft in the same turn as the
+// step list and the question — and a later answer updates that same draft
+// rather than saving a second one.
 
-func TestWorkflowDraftFlowFromChatNeverPublishes(t *testing.T) {
+func TestWorkflowDraftFlowSavesTheDraftBeforeTheFirstQuestion(t *testing.T) {
 	reader := &fakeChatReader{visible: chatTranscriptFixture()}
 	library := &fakeLibrary{}
 	model := newFakeModel(t,
-		// Turn 1: read the chat, then post the step list AND the first
-		// structured question in the same turn.
+		// Turn 1: read the chat, save the library draft, then post the
+		// step list AND the first structured question — the SAME turn.
 		step{toolCalls: []toolCallRequest{toolCall("chat.transcript", map[string]any{"conversation_id": "c-1"})}},
+		step{toolCalls: []toolCallRequest{toolCall("workflow.create_draft", map[string]any{
+			"slug": "adapter-swap-to-pr", "display_name": "Adapter swap → PR", "document": fromChatYAML,
+		})}},
 		step{
 			text: "I read the chat. Drafting Adapter swap → PR in the library:\n" +
 				"✓ Plan — Claude Code · opus\n✓ Approval — maintainer\n" +
@@ -450,13 +470,81 @@ func TestWorkflowDraftFlowFromChatNeverPublishes(t *testing.T) {
 				"options": `[{"label":"Repeat, max 3","value":"repeat"},{"label":"Run once","value":"once"}]`,
 			})},
 		},
-		// Turn 2 (after the plain-text answer): save the library draft.
+	)
+	r := newFromChatRunner(t, model, reader, library)
+	first := runTurnText(t, r, "Turn this chat into a workflow", TrustAskRisky)
+	if first.Question == nil || len(first.Question.Options) != 2 {
+		t.Fatalf("turn 1 = %+v, want the structured question with its two options", first.Question)
+	}
+	// "Drafting … in the library" is only true while the question is open
+	// if the draft already exists: the same turn that asked saved it.
+	if library.count() != 1 || library.lastCaller() != testCaller {
+		t.Fatalf("creates = %d, want the draft saved as the caller in the question's own turn", library.count())
+	}
+	// The order within the turn: the read, then the save, then the question —
+	// the person is never asked about a draft that does not exist yet.
+	calls := first.Answer.ToolCalls
+	at := func(name string) int {
+		for i, c := range calls {
+			if c.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	if at("chat.transcript") < 0 || at("workflow.create_draft") < 0 || at("ui.question") < 0 {
+		t.Fatalf("turn 1 calls = %+v, want transcript, create_draft and question", calls)
+	}
+	if !(at("chat.transcript") < at("workflow.create_draft") && at("workflow.create_draft") < at("ui.question")) {
+		t.Fatalf("call order = %+v, want transcript → create_draft → question", calls)
+	}
+	// The Open draft link rides the question's own answer, so the panel's
+	// door is already open while the card is on screen.
+	if len(first.Answer.Links) != 1 || first.Answer.Links[0].Label != "Open draft" ||
+		first.Answer.Links[0].Href != "/workflows/pl-9" {
+		t.Fatalf("links = %+v, want the Open draft link on the question's answer", first.Answer.Links)
+	}
+}
+
+func TestWorkflowDraftFlowFromChatNeverPublishes(t *testing.T) {
+	reader := &fakeChatReader{visible: chatTranscriptFixture()}
+	library := &fakeLibrary{}
+	draft := newFakeDraftService()
+	draft.doc = []byte(fromChatYAML)
+	draft.locatorRef = "adapter-swap-to-pr"
+	draft.locatorView = PipelineDraftView{
+		PipelineID:  "pl-9",
+		Slug:        "adapter-swap-to-pr",
+		DisplayName: "Adapter swap → PR",
+		Draft:       &OpenDraft{DraftID: "d-1", Version: 1, Status: "draft"},
+	}
+	model := newFakeModel(t,
+		// Turn 1: read the chat, save the library draft, then post the step
+		// list AND the first structured question in the same turn.
+		step{toolCalls: []toolCallRequest{toolCall("chat.transcript", map[string]any{"conversation_id": "c-1"})}},
 		step{toolCalls: []toolCallRequest{toolCall("workflow.create_draft", map[string]any{
 			"slug": "adapter-swap-to-pr", "display_name": "Adapter swap → PR", "document": fromChatYAML,
 		})}},
-		step{text: "Saved the library draft. Open draft to review it in the Studio — publishing is yours."},
+		step{
+			text: "I read the chat. Drafting Adapter swap → PR in the library:\n" +
+				"✓ Plan — Claude Code · opus\n✓ Approval — maintainer\n" +
+				"✓ Implement — Codex · gpt-5\n● Review — Codex · skill review\n· Open draft PR",
+			toolCalls: []toolCallRequest{toolCall("ui.question", map[string]any{
+				"prompt":  "In the chat, review ran once and Codex fixed what it found. Should it repeat until clean?",
+				"options": `[{"label":"Repeat, max 3","value":"repeat"},{"label":"Run once","value":"once"}]`,
+			})},
+		},
+		// Turn 2 (after the plain-text answer): the settled fork changes the
+		// shape — UPDATE the saved draft; do not save a second one.
+		step{toolCalls: []toolCallRequest{toolCall("workflow.draft", map[string]any{"pipeline": "adapter-swap-to-pr"})}},
+		step{toolCalls: []toolCallRequest{toolCall("draft.get", map[string]any{"draft_id": "d-1"})}},
+		step{toolCalls: []toolCallRequest{toolCall("draft.apply", map[string]any{
+			"draft_id": "d-1", "version": "1", "op": "update_prompt",
+			"node": "review", "prompt": "Review the change; repeat until the diff is clean (max 3 rounds)",
+		})}},
+		step{text: "Updated the saved draft — Review now repeats until clean. Open draft to review it in the Studio — publishing is yours."},
 	)
-	r := newFromChatRunner(t, model, reader, library)
+	r := newFromChatRunnerWithDraft(t, model, reader, library, draft)
 
 	first := runTurnText(t, r, "Turn this chat into a workflow", TrustAskRisky)
 	if first.Question == nil || len(first.Question.Options) != 2 {
@@ -464,6 +552,9 @@ func TestWorkflowDraftFlowFromChatNeverPublishes(t *testing.T) {
 	}
 	if !strings.Contains(first.Answer.AnswerMarkdown, "✓ Plan") || !strings.Contains(first.Answer.AnswerMarkdown, "● Review") {
 		t.Fatalf("turn 1 answer carries no step list:\n%s", first.Answer.AnswerMarkdown)
+	}
+	if library.count() != 1 {
+		t.Fatalf("creates = %d, want the library draft saved in the question's own turn", library.count())
 	}
 
 	history := []HistoryMessage{
@@ -476,9 +567,18 @@ func TestWorkflowDraftFlowFromChatNeverPublishes(t *testing.T) {
 		t.Fatalf("turn 2 = %+v/%+v, want a settled turn", second.Question, second.Approval)
 	}
 	if library.count() != 1 {
-		t.Fatalf("creates = %d, want the library draft saved once", library.count())
+		t.Fatalf("creates = %d, want exactly one draft — the settled fork updates the saved one", library.count())
 	}
-	if !strings.Contains(second.Answer.AnswerMarkdown, "Saved") {
+	if draft.replaceCalls != 1 {
+		t.Fatalf("version-checked PUTs = %d, want the fork applied to the saved draft", draft.replaceCalls)
+	}
+	draft.mu.Lock()
+	updated := string(draft.doc)
+	draft.mu.Unlock()
+	if !strings.Contains(updated, "repeat until the diff is clean (max 3 rounds)") {
+		t.Fatalf("the saved draft was not updated with the settled fork:\n%s", updated)
+	}
+	if !strings.Contains(second.Answer.AnswerMarkdown, "Updated") {
 		t.Fatalf("turn 2 answer = %q", second.Answer.AnswerMarkdown)
 	}
 	// Never publishes: the flow logged no publish change, and the only
@@ -533,7 +633,8 @@ func TestDraftingRulesInTheSystemPrompt(t *testing.T) {
 		"chat.transcript first",
 		"STEP LIST",
 		"ONE question per turn",
-		"save it ONCE with workflow.create_draft",
+		"The library draft exists BEFORE you ask anything",
+		"do not save a second draft",
 		"NEVER publish",
 		"untrusted data",
 		"✓ Plan",

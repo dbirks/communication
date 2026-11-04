@@ -431,6 +431,94 @@ describe("MessageList", () => {
     );
     expect(screen.queryByTestId("assistant-step-list")).toBeNull();
   });
+
+  // rcn-review10-2f: the live flow answered "Drafting it as a one-step
+  // workflow in the library:" with exactly ONE step line — a workflow the
+  // chat proved in a single step. That line is the draft's step list, not
+  // prose: the drafting intro (ending on the colon that opens the list,
+  // naming the draft / library / workflow) is the signal.
+  it("renders a ONE-step draft as the step list when a drafting intro precedes it (rcn-review10-2f)", () => {
+    render(
+      <MessageList
+        messages={[
+          {
+            ...assistantMessage(),
+            payload: {
+              ...assistantMessage().payload,
+              answer_markdown:
+                "I read the chat. Drafting it as a one-step workflow in the library:\n\n✓ Reply — m4-planner",
+            } as AssistantMessage["payload"],
+          },
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const lists = screen.getAllByTestId("assistant-step-list");
+    expect(lists).toHaveLength(1);
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Reply");
+    expect(within(rows[0]).getByTestId("assistant-step-profile").textContent).toBe("m4-planner");
+    // The intro stays prose — only the marked line is the list.
+    const answer = screen.getByTestId("assistant-answer");
+    expect(answer.textContent).toContain("Drafting it as a one-step workflow in the library:");
+  });
+
+  it("keeps the one-step list a list when intro and step share one paragraph (rcn-review10-2f)", () => {
+    render(
+      <MessageList
+        messages={[
+          {
+            ...assistantMessage(),
+            payload: {
+              ...assistantMessage().payload,
+              answer_markdown: "Drafting Reply in the library:\n✓ Reply — m4-planner",
+            } as AssistantMessage["payload"],
+          },
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByTestId("assistant-step-name").textContent).toBe("Reply");
+  });
+
+  it("still leaves a lone ✓ line as prose unless a drafting intro opened it (rcn-review10-2f)", () => {
+    // A colon line that does NOT name the draft / library / workflow, and
+    // a drafting mention that does not end on the colon: neither is an
+    // intro, so the stray ✓ line stays prose.
+    for (const text of [
+      "Here is the summary:\n\n✓ Done today",
+      "Drafting it as a one-step workflow, as we discussed\n\n✓ Reply — m4-planner",
+    ]) {
+      const { unmount } = render(
+        <MessageList
+          messages={[
+            {
+              ...assistantMessage(),
+              payload: {
+                ...assistantMessage().payload,
+                answer_markdown: text,
+              } as AssistantMessage["payload"],
+            },
+          ]}
+          onAnswerQuestion={() => {}}
+          onConfirmApproval={() => {}}
+          onDismissApproval={() => {}}
+          onGo={() => {}}
+        />,
+      );
+      expect(screen.queryByTestId("assistant-step-list")).toBeNull();
+      unmount();
+    }
+  });
 });
 
 /**
