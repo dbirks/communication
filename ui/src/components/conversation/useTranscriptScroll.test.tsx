@@ -106,12 +106,10 @@ function makeRect(top: number, bottom: number) {
  * inside the scroller, so a pin at the scroller's raw max would leave it in
  * view.
  */
-function mountPane(model: PaneModel): HTMLDivElement {
-  const scroller = document.createElement("div");
-  scroller.style.overflowY = "auto";
-  scroller.appendChild(document.createElement("div")); // the trailing details/panel content
-  document.body.appendChild(scroller);
-
+/** The scroll facts and the box, mocked on `el` from the model — the same
+ * invariants a real scroller honors, on whichever element the layout makes
+ * the scroller. */
+function mockScrollerGeometry(scroller: HTMLElement, model: PaneModel): void {
   const scrollMax = () => Math.max(0, model.contentBottom + model.below - model.clientHeight);
   Object.defineProperty(scroller, "scrollTop", {
     configurable: true,
@@ -130,7 +128,26 @@ function mountPane(model: PaneModel): HTMLDivElement {
   });
   scroller.getBoundingClientRect = () =>
     makeRect(model.scrollerTop, model.scrollerTop + model.clientHeight);
+}
+
+function mountPane(model: PaneModel): HTMLDivElement {
+  const scroller = document.createElement("div");
+  scroller.style.overflowY = "auto";
+  scroller.appendChild(document.createElement("div")); // the trailing details/panel content
+  document.body.appendChild(scroller);
+  mockScrollerGeometry(scroller, model);
   return scroller;
+}
+
+/** The harness content's rect from the model: it moves with the scroll the
+ * way a real browser's would (height 100px, the model's contentBottom is its
+ * bottom in the scroller's content coordinates). */
+function mockContentRect(content: HTMLElement, model: PaneModel): void {
+  content.getBoundingClientRect = () =>
+    makeRect(
+      model.scrollerTop + model.contentBottom - model.scrollTop - 100,
+      model.scrollerTop + model.contentBottom - model.scrollTop,
+    );
 }
 
 /** The hook wired to the transcript content inside the model's scroller.
@@ -146,11 +163,7 @@ function renderStickyContent(scroller: HTMLElement, model: PaneModel): HTMLDivEl
   render(<Harness />, { container: scroller });
   const content = scroller.querySelector<HTMLDivElement>("[data-testid='sticky-content']");
   if (!content) throw new Error("the harness content did not land in the scroller");
-  content.getBoundingClientRect = () =>
-    makeRect(
-      model.scrollerTop + model.contentBottom - model.scrollTop - 100,
-      model.scrollerTop + model.contentBottom - model.scrollTop,
-    );
+  mockContentRect(content, model);
   return content;
 }
 
@@ -427,13 +440,99 @@ describe("useStickyTranscript", () => {
     scroller.remove();
   });
 
-  it("is a no-op where the content has no scrollable ancestor", () => {
-    function Bare() {
+  it("moves the pin to the scroller that now owns the transcript when a reflow re-binds the ancestor chain", () => {
+    // The content mounts with an inner box as its nearest scrollable ancestor
+    // (an embedded reuse's own scrollbox); the layout then reflows — the
+    // inner box stops scrolling and the OUTER pane owns the scroll. The pin
+    // must follow the ownership, not keep driving the box it pinned first.
+    const innerModel: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const outerModel: PaneModel = {
+      scrollerTop: 60,
+      clientHeight: 500,
+      contentBottom: 1000,
+      below: 200,
+      scrollTop: 0,
+    };
+    const outer = document.createElement("div");
+    const inner = document.createElement("div");
+    inner.style.overflowY = "auto";
+    outer.appendChild(inner);
+    document.body.appendChild(outer);
+
+    function Harness() {
       const contentRef = useStickyTranscript();
-      return <div ref={contentRef} />;
+      return <div ref={contentRef} data-testid="sticky-content" />;
     }
-    render(<Bare />);
-    // Nothing is observed, and firing would only touch other tests' stubs.
-    expect(ResizeObserverStub.instances).toHaveLength(0);
+    render(<Harness />, { container: inner });
+    const content = inner.querySelector<HTMLDivElement>("[data-testid='sticky-content']");
+    if (!content) throw new Error("the harness content did not land in the inner box");
+    mockScrollerGeometry(inner, innerModel);
+    mockContentRect(content, innerModel);
+
+    fireResize(content);
+    expect(inner.scrollTop).toBe(500); // 800 - 300, on the inner box
+
+    // The reflow: the inner box stops scrolling; the outer pane takes the
+    // scroll, with its own box facts.
+    inner.style.overflowY = "visible";
+    outer.style.overflowY = "auto";
+    mockScrollerGeometry(outer, outerModel);
+    content.getBoundingClientRect = () =>
+      makeRect(
+        outerModel.scrollerTop + outerModel.contentBottom - outerModel.scrollTop - 100,
+        outerModel.scrollerTop + outerModel.contentBottom - outerModel.scrollTop,
+      );
+    fireResize(content);
+    expect(outer.scrollTop).toBe(500); // 1000 - 500, on the OUTER scroller
+    expect(inner.scrollTop).toBe(500); // the stale box is left alone
+    outer.remove();
+  });
+
+  it("stays armed where the content has no scrollable ancestor, and pins the moment one stands above it", () => {
+    // The 1280 thread pane's failure shape: the transcript lands before the
+    // column settles into its `overflow-y-auto` scroller. The hook must not
+    // give up at mount — it stays armed, and the first pin input after the
+    // layout settles resolves the pane's scroller and pins on it.
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const column = document.createElement("div");
+    document.body.appendChild(column);
+
+    function Harness() {
+      const contentRef = useStickyTranscript();
+      return <div ref={contentRef} data-testid="sticky-content" />;
+    }
+    render(<Harness />, { container: column });
+    const content = column.querySelector<HTMLDivElement>("[data-testid='sticky-content']");
+    if (!content) throw new Error("the harness content did not land in the column");
+
+    // No scrollable ancestor yet: the content is watched, and firing with
+    // the column still non-scrolling pins nothing.
+    expect(ResizeObserverStub.instances).toHaveLength(1);
+    column.style.overflowY = "visible";
+    column.getBoundingClientRect = () =>
+      makeRect(model.scrollerTop, model.scrollerTop + model.clientHeight);
+    mockContentRect(content, model);
+    fireResize(content);
+
+    // The layout settles: the column becomes the pane's scroller. The next
+    // pin input (the content's own resize — a row just landed) re-resolves
+    // and pins on it.
+    column.style.overflowY = "auto";
+    mockScrollerGeometry(column, model);
+    fireResize(content);
+    expect(column.scrollTop).toBe(500);
+    column.remove();
   });
 });

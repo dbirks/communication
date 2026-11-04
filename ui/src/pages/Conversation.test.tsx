@@ -1715,3 +1715,204 @@ describe("the chat's scope is its declared binding (rcn-2e works-in-moved)", () 
     expect(trigger.textContent).not.toContain("Whole project");
   });
 });
+
+/**
+ * The 1280 thread pane's pin (rcn-review12): the pane's scroller is an
+ * element the transcript component does NOT own — it wraps `conversation-main`
+ * and the composer is its sibling after — and it must be the element the pin
+ * drives. The hook re-resolves the nearest scrollable ancestor at run time
+ * and re-resolves it on every pin run, so the pane's scroller is picked up
+ * even when the column settles into it after the transcript's first paint,
+ * and every row landing over the stream keeps the newest row on the visible
+ * bottom.
+ *
+ * jsdom lays out nothing, so the geometry is the test's own little model
+ * (mocked rects + scroll facts) and the `ResizeObserver` is a stub the test
+ * fires — what the test pins is the pane's structure and the hook's
+ * decisions, not a browser layout.
+ */
+describe("the 1280 thread pane's pin drives the pane's own scroller (rcn-review12)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** The same RO stub contract the hook's own suite uses: the instances
+   * record what they observe, and the test fires a content-grows event the
+   * way the browser would. */
+  class ResizeObserverStub {
+    static instances: ResizeObserverStub[] = [];
+    readonly cb: (entries: unknown[], observer: unknown) => void;
+    observed: Element[] = [];
+    constructor(cb: (entries: unknown[], observer: unknown) => void) {
+      this.cb = cb;
+      ResizeObserverStub.instances.push(this);
+    }
+    observe(el: Element): void {
+      this.observed.push(el);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      ResizeObserverStub.instances = ResizeObserverStub.instances.filter((o) => o !== this);
+    }
+  }
+
+  function fireResize(el: Element): void {
+    act(() => {
+      ResizeObserverStub.instances.forEach((observer) => {
+        if (observer.observed.includes(el)) observer.cb([], observer);
+      });
+    });
+  }
+
+  const rect = (top: number, bottom: number): DOMRect =>
+    ({
+      top,
+      bottom,
+      left: 0,
+      right: 0,
+      x: 0,
+      y: top,
+      width: 720,
+      height: bottom - top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+
+  it("keeps the newest row at the pane scroller's visible bottom as rows land over the stream", async () => {
+    ResizeObserverStub.instances = [];
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
+    renderApp({
+      path: `/threads/${conversationId}`,
+      routes: routes(conversationFixture, [
+        { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
+      ]),
+    });
+    await screen.findByTestId("thread-pane-page");
+
+    // The structure the pin must drive: the `overflow-y-auto` scroller wraps
+    // `conversation-main`, and the composer is its sibling AFTER it — not
+    // part of the transcript, and not the scroller's own bottom.
+    const main = screen.getByTestId("conversation-main");
+    const composer = screen.getByTestId("thread-composer-pin");
+    const scroller = main.parentElement as HTMLElement;
+    expect(scroller, "conversation-main sits in the pane's scroller").toBeTruthy();
+    expect(scroller.className.split(/\s+/)).toContain("overflow-y-auto");
+    expect(scroller.nextElementSibling, "the composer is the scroller's next sibling").toBe(
+      composer,
+    );
+
+    // jsdom applies no Tailwind styles, so the inline style stands in for
+    // the computed `overflow-y` the browser reads (the test harness supplies
+    // the layout the hook walks; the app code is untouched).
+    scroller.style.overflowY = "auto";
+
+    const model = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800, // the transcript's own bottom, content coordinates
+      below: 160, // the thread-details disclosure below the transcript
+      scrollTop: 0,
+    };
+    const scrollMax = () => Math.max(0, model.contentBottom + model.below - model.clientHeight);
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => model.scrollTop,
+      set: (value: number) => {
+        model.scrollTop = Math.min(Math.max(0, value), scrollMax());
+      },
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => model.contentBottom + model.below,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => model.clientHeight,
+    });
+    scroller.getBoundingClientRect = () =>
+      rect(model.scrollerTop, model.scrollerTop + model.clientHeight);
+
+    // The transcript content the hook pins: the child of conversation-main
+    // that holds the rows. Its rect moves with the scroll, the way a real
+    // browser's would.
+    const content = main.firstElementChild as HTMLElement;
+    const mockContentRect = () => {
+      content.getBoundingClientRect = () =>
+        rect(
+          model.scrollerTop + model.contentBottom - model.scrollTop - 100,
+          model.scrollerTop + model.contentBottom - model.scrollTop,
+        );
+    };
+    mockContentRect();
+
+    // The journal lands over the stream — turn one, then turn two. Each
+    // growth is the content's own resize: the pin's input.
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: turnId,
+          submitted_by: meFixture.id,
+          text: "How is billing wired today?",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.message.agent", {
+          turn_id: turnId,
+          text: "One client, six call sites.",
+          final: true,
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.turn.completed", {
+          turn_id: turnId,
+          stop_reason: "end_turn",
+        }),
+      );
+    });
+    expect((await screen.findAllByTestId("transcript-item")).length).toBeGreaterThanOrEqual(3);
+
+    // The rows grew the content: the pin lands the transcript's OWN bottom
+    // on the scroller's visible bottom — not the scroller's raw max, which
+    // would drag the thread-details disclosure into view and leave the
+    // newest row above it.
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(model.contentBottom - model.clientHeight);
+    expect(model.scrollTop).toBeLessThanOrEqual(scrollMax());
+
+    // Turn two's rows land while the reader is still at the newest row:
+    // the pin follows them, staying at its own max and never past the
+    // scroller's.
+    const turnTwo = "01987a73-5555-7000-8000-abcdef000002";
+    model.contentBottom = 1100;
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: turnTwo,
+          submitted_by: meFixture.id,
+          text: "OK, do the ledger move now.",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.message.agent", {
+          turn_id: turnTwo,
+          text: "The ledger owns rounding from here on.",
+          final: true,
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.turn.completed", {
+          turn_id: turnTwo,
+          stop_reason: "end_turn",
+        }),
+      );
+    });
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(model.contentBottom - model.clientHeight);
+    expect(model.scrollTop).toBeLessThanOrEqual(scrollMax());
+    // The newest row of the column is the last one in the DOM — the pin's
+    // target never fell off it.
+    const rows = screen.getAllByTestId("transcript-item");
+    expect(rows.at(-1)).toBeTruthy();
+  });
+});
