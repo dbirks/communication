@@ -1322,6 +1322,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     page,
     emu,
   }) => {
+    // Round-9 defect A: the 2f capture fired while the model was still
+    // "thinking…" — the drafting waits below can take a live-model turn each,
+    // so this test gets its own headroom on top of the group's default.
+    test.setTimeout(28 * 60_000);
     await test.step("the side panel's note and its Make a workflow… action", async () => {
       expect(ids.chatId, "the chat journey left its thread").toMatch(/^[0-9a-f-]{36}$/);
       await page.goto(`/threads/${ids.chatId}`);
@@ -1360,6 +1364,58 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
           .first(),
         `the note's ask travels to the panel naming this chat (${chatTitle}) — the app's own canned line; the model's answer is never asserted`,
       ).toBeVisible({ timeout: 30_000 });
+      // Round-9 defect A: capture ONLY after the answer has landed — the
+      // `thinking…` line (AssistantPanel `assistant-thinking`) is gone AND
+      // the answer carries at least one of the design's drafting elements:
+      // the step list (`assistant-step-list`), a QUESTION card
+      // (`assistant-question`) or the draft door — `Open draft`
+      // (`assistant-open-draft`) in the wide panel, the transcript's `Go ›`
+      // link row (`assistant-link`) in this 400px popover (MessageList.tsx /
+      // QuestionCard.tsx / AssistantPanel.tsx). A question card IS the
+      // design's state — capturing it is the right 2f. Bounded, generous
+      // for a live model, the way the turn legs bound their waits.
+      const thinking = page.getByTestId("assistant-thinking");
+      const thinkDeadline = Date.now() + 10 * 60_000;
+      let thinkingGone = false;
+      for (;;) {
+        if ((await thinking.count()) === 0) {
+          thinkingGone = true;
+          break;
+        }
+        if (Date.now() >= thinkDeadline) break;
+        await page.waitForTimeout(2_000);
+      }
+      expect(
+        thinkingGone,
+        "design 2f: the assistant stopped thinking within the live-model budget",
+      ).toBe(true);
+      const draftingLocators = [
+        page.getByTestId("assistant-step-list"),
+        page.getByTestId("assistant-question"),
+        page.getByTestId("assistant-open-draft"),
+        page.getByTestId("assistant-link"),
+      ];
+      const lastAnswer = page.locator('[data-testid="assistant-msg-assistant"]').last();
+      let drafted = false;
+      let answerText = "";
+      const draftDeadline = Date.now() + 10 * 60_000;
+      for (;;) {
+        if ((await lastAnswer.count()) > 0) {
+          answerText = (await lastAnswer.innerText()).trim();
+        }
+        for (const locator of draftingLocators) {
+          if ((await locator.count()) > 0) {
+            drafted = true;
+            break;
+          }
+        }
+        if (drafted || Date.now() >= draftDeadline) break;
+        await page.waitForTimeout(2_000);
+      }
+      expect(
+        drafted,
+        `design 2f: the answer must carry the drafting state — a step list, a QUESTION card or the draft door (Open draft). What the model actually answered: "${answerText.slice(0, 500)}"`,
+      ).toBe(true);
       await emu.screen("rcn-2f", "workflow-draft");
       await page.keyboard.press("Escape");
     });
