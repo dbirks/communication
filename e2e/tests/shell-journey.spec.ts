@@ -196,15 +196,33 @@ async function draftsContaining(
   return (await recentDrafts(request, state.pipeline.id)).filter((d) => d.yaml.includes(marker));
 }
 
-/** True when the marshaled draft YAML carries a node with this id AND this
- * kind. The server marshals documents with alphabetized keys, so each node
- * block's `id:` line is immediately followed by its `kind:` line — matching
- * the two as one block is what "a step named X of kind Y is in the draft"
- * means (a substring of the raw YAML is not: it can live in a prompt, or
- * in a different node's id). */
+/** True when the draft YAML carries a list item (a node) whose own `id`
+ * is this id AND whose own `kind` is this kind, in any key order — the two
+ * keys must sit at the same item's key indent (on the dash line or below
+ * it), so an id inside a prompt or another node's nested block never
+ * counts. Run 41762538136 (72c1829) showed the earlier "kind on the line
+ * right after id" regex missing a node the assistant had really inserted
+ * (`journey_check`, human.approval), because a key sorted between them. */
 function yamlHasNodeOfKind(yaml: string, id: string, kind: string): boolean {
-  const re = new RegExp(`(^|\\n)[ \\t]*id: ${id}[ \\t]*\\n[ \\t]*kind: ${kind}`);
-  return re.test(yaml);
+  const lines = yaml.split("\n");
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const idRe = new RegExp(`^id:\\s*["']?${esc(id)}["']?\\s*$`);
+  const kindRe = new RegExp(`^kind:\\s*["']?${esc(kind)}["']?\\s*$`);
+  for (let i = 0; i < lines.length; i++) {
+    const dash = lines[i].match(/^(\s*)- (.*)$/);
+    if (!dash) continue;
+    const keyIndent = dash[1].length + 2;
+    const keys: string[] = [dash[2].trim()];
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.trim() === "") continue;
+      const indent = line.match(/^(\s*)/)![1].length;
+      if (indent < keyIndent) break;
+      if (indent === keyIndent) keys.push(line.trim());
+    }
+    if (keys.some((k) => idRe.test(k)) && keys.some((k) => kindRe.test(k))) return true;
+  }
+  return false;
 }
 
 /** The newest drafts of the pipeline carrying a node with this id AND this
