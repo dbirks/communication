@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1231,11 +1232,19 @@ func (a APIRunStore) RetryRun(ctx context.Context, c api.Caller, runID string, i
 		}
 		return api.RunView{}, err
 	}
-	updated, err := a.Runs.GetRun(ctx, r.ID)
+	// The reopen already committed inside the detached settle pass, so the
+	// response reflects a durable fact. Read it back on a context detached
+	// from the request's cancellation (bounded, like the pass's own
+	// deadline): a client that navigated away mid-pass must not turn a
+	// committed retry into a false 500 — the run.retried journal row, already
+	// persisted, is what the timeline reads, and it survives the cancel.
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	updated, err := a.Runs.GetRun(readCtx, r.ID)
 	if err != nil {
 		return api.RunView{}, err
 	}
-	return a.m4RunReadView(ctx, a.Runs.Pool, updated, role)
+	return a.m4RunReadView(readCtx, a.Runs.Pool, updated, role)
 }
 
 // m4RecordRetryInputs upserts the retry's inputs as run_inputs rows with

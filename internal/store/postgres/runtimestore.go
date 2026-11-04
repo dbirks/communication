@@ -156,12 +156,29 @@ func (s *RuntimeStore) settle(ctx context.Context, runID string,
 	if !prjValidUUID(runID) {
 		return fmt.Errorf("postgres: RuntimeStore addresses runs by their ledger uuid, got %q", runID)
 	}
+	// A caller whose context is already cancelled gets the honest refusal
+	// before any work begins: the request walked away before the mutation
+	// started, so nothing is applied and nothing is journaled.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Every pool-owned pass gets its own deadline (see PassTimeout): a lock
 	// held by a wedged peer must never pin this transaction open past the
-	// bound. The deferred rollback runs on a FRESH context, because
-	// rolling back with the pass's own (possibly expired) context is what
-	// lets a refused pass sit on its locks until the connection dies.
-	pctx, cancel := context.WithTimeout(ctx, s.passTimeout())
+	// bound. The deadline rides context.WithoutCancel, NOT the caller's
+	// cancellation: once the pass has started, an authorized mutation
+	// commits — or times out — on this bound, because rolling back an
+	// in-flight settle on the caller's cancel is what un-applies a decision
+	// the request was already authorized to make. The lab (commit 5b15443,
+	// api-b request a6764060d10b264cf5d027a2ca07fdf0) proved it: the
+	// browser's navigation cancelled the retry's request context 25 ms in,
+	// settle rolled back, and the run.retried row the retry was accepted to
+	// apply never persisted — a 500 and a run that silently never retried.
+	// Cancellation before the pass (the check above) still refuses; only a
+	// cancel arriving mid-pass is what the detach exists for. The deferred
+	// rollback runs on a FRESH context, because rolling back with the pass's
+	// own (possibly expired) context is what lets a refused pass sit on its
+	// locks until the connection dies.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.passTimeout())
 	defer cancel()
 	ctx = pctx
 	tx, err := s.Pool.Begin(ctx)
