@@ -212,12 +212,38 @@ async function chatPinGap(page: Page): Promise<number | null> {
 /** Bounded assertion of the pin's geometry at the page's current width —
  * the LIVE state the capture is about to shoot. */
 async function expectChatPinLive(page: Page, width: number): Promise<void> {
-  await expect
-    .poll(() => chatPinGap(page), {
-      timeout: 10_000,
-      message: `the newest transcript row must end fully above the composer at ${width} (the thread's pin)`,
-    })
-    .toBeLessThanOrEqual(1);
+  try {
+    await expect
+      .poll(() => chatPinGap(page), {
+        timeout: 10_000,
+        message: `the newest transcript row must end fully above the composer at ${width} (the thread's pin)`,
+      })
+      .toBeLessThanOrEqual(1);
+  } catch (error) {
+    // Name what was measured, so a failure says whether the pin is broken
+    // or a locator found nothing (b10ef47 failed every pass with the 1280
+    // capture showing the newest row well above the composer).
+    const probe = await page.evaluate(() => {
+      const mains = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='conversation-main']"));
+      const main = mains[0] ?? null;
+      const rows = main ? Array.from(main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']")) : [];
+      const last = rows.length > 0 ? rows[rows.length - 1] : null;
+      const composers = document.querySelectorAll("[data-testid='thread-composer-pin']").length;
+      return {
+        mains: mains.length,
+        rows: rows.length,
+        lastRowRect: last ? JSON.stringify(last.getBoundingClientRect()) : null,
+        lastRowText: last ? (last.textContent ?? "").slice(0, 80) : null,
+        composers,
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+      };
+    });
+    const rowBottom = await visibleLastTranscriptRow(page);
+    const composerTop = await visibleComposerTop(page);
+    throw new Error(
+      `${(error as Error).message.split("\n")[0]} — measured rowBottom=${rowBottom} composerTop=${composerTop} probe=${JSON.stringify(probe)}`,
+    );
+  }
 }
 
 /**
