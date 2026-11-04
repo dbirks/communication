@@ -145,6 +145,14 @@ type TurnLoop struct {
 	stopCh chan struct{}           // closed by Drain: stop claiming
 	closed bool
 
+	// claimWatch is the stall observer for this loop's claim iterations
+	// (stallwatch.go, worker-stall-2): it also marks on the in-flight turn's
+	// stream progress, because the claim loop's iteration IS that turn — a
+	// turn wedged behind a silent peer is a claim loop that cannot iterate.
+	// Set in Start; nil before then (in-process tests that drive runTurn
+	// directly) keeps the marks a no-op.
+	claimWatch *stallWatch
+
 	// running tracks the in-flight runTurn for drain.
 	running sync.WaitGroup
 	cur     atomic.Pointer[runningTurn]
@@ -254,6 +262,13 @@ func (l *TurnLoop) Start(ctx context.Context) error {
 		slog.Duration("lease_ttl", l.cfg.LeaseTTL),
 		slog.Duration("renew", l.cfg.RenewInterval),
 	)
+	// The claim loop's stall observer (stallwatch.go): one WARN, with the
+	// process's goroutine dump, if this loop stops iterating — the lab's
+	// 17-minute silence must be greppable in two minutes, not discovered at
+	// teardown.
+	l.claimWatch = newStallWatch("turn claim loop", l.log)
+	l.claimWatch.start()
+	defer l.claimWatch.stop()
 	// Journal wake-ups (cancel/permission decisions) refresh both watches
 	// early; without them the ≤1 s polls carry the load.
 	wakeCtx, wakeStop := context.WithCancel(ctx)
@@ -280,6 +295,10 @@ func (l *TurnLoop) Start(ctx context.Context) error {
 		default:
 		}
 
+		// One claim iteration is one progress mark: a claim that cannot even
+		// reach the store (a wedged database) stops the marks and the watch
+		// speaks for the loop.
+		l.claimWatch.mark()
 		claim, ok, err := l.store.ClaimTurn(ctx, workerID)
 		if err != nil {
 			if ctx.Err() != nil || l.stopping() {
@@ -454,7 +473,20 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		// old instance (binding closed, agent.session.disconnected journalled,
 		// conversation moved to idle) and falling through to a NEW session on
 		// the new profile in the SAME prepared workspace/branch.
-		if s.profileID == c.AgentProfileID || c.AgentProfileID == "" {
+		sameProfile := s.profileID == c.AgentProfileID || c.AgentProfileID == ""
+		switch {
+		case sameProfile && acp.PeerGone(s.handle):
+			// The peer may have gone in the meantime: a harness that exits
+			// after its turn (the lab's pi-acp) leaves the instance in the map
+			// with its process gone. Reuse is a same-PROCESS promise — riding
+			// a dead one claims a `reused` origin for a launch that did not
+			// happen and fails the next turn on a connection that is already
+			// closed (worker-stall-2, lab run 41921504494). Retire it the same
+			// way the switch retires it, then start fresh below.
+			l.mu.Unlock()
+			l.closeSession(ctx, s, "process_exited")
+			l.mu.Lock()
+		case sameProfile:
 			l.mu.Unlock()
 			rt.session(s)
 			// Honest turn origin: this turn rides a session an earlier turn
@@ -462,11 +494,12 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 			// "Session reuse semantics": continue_live).
 			rt.turnOrigin = events.SessionOriginReused
 			return s, nil
+		default:
+			stale := s
+			l.mu.Unlock()
+			l.closeSession(ctx, stale, "agent_switched")
+			l.mu.Lock()
 		}
-		stale := s
-		l.mu.Unlock()
-		l.closeSession(ctx, stale, "agent_switched")
-		l.mu.Lock()
 	}
 	l.mu.Unlock()
 

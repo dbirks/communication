@@ -104,7 +104,13 @@ func (r *Runtime) StartWithOptions(ctx context.Context, spec domain.AgentLaunchS
 	h.conn = acp.NewClientSideConnection(h, stdin, stdout)
 	h.attachProcess(cmd, stdout)
 
-	if err := h.handshake(ctx, spec, opts); err != nil {
+	// The handshake is bounded on the caller's context: the caller may be
+	// unbounded (an attempt without a node timeoutSeconds), and a peer that
+	// answers no initialize must not be waited out forever (handshakeTimeout).
+	hctx, hcancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer hcancel()
+
+	if err := h.handshake(hctx, spec, opts); err != nil {
 		// Reap the process before reporting failure.
 		_ = h.Close()
 		return nil, err
@@ -146,6 +152,20 @@ func (r *ringBuffer) String() string {
 // still hold the stderr pipe; this is the wall that keeps the worker from
 // waiting that orphan out forever.
 const waitDelay = 10 * time.Second
+
+// handshakeTimeout bounds the initialize + session/load + session/new (+
+// set_mode) sequence against a live but unresponsive peer. It runs on the
+// caller's context, which on the worker's attempt path carries no deadline
+// of its own (a node without timeoutSeconds stamps deadline_at NULL and the
+// attempt context is unbounded) — so without this bound a harness that
+// starts its process and never answers initialize parks the whole worker:
+// the claim loop behind it, the retry claim waiting for its terminal, the
+// gate that the run's approval owes its open (worker-stall-2, lab run
+// 41921504494: 17 minutes of silence, one "connection closed" at teardown).
+// A healthy agent answers in well under a second; 30 s is generous, and
+// spending it fails the session honestly so the worker moves on. A var so
+// tests drive the bound.
+var handshakeTimeout = 30 * time.Second
 
 // maxStderrBytes bounds captured agent stderr to the last 64 KiB.
 const maxStderrBytes = 64 * 1024

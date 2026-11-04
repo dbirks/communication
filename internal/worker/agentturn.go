@@ -725,10 +725,20 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// the buffer because text before a tool call is not the final answer.
 	final := &agentText{}
 	transcript := a.attemptTranscript(ctx, c, conv, sink)
+	// The attempt's stall-progress seam (stallwatch.go, worker-stall-2): the
+	// worker's attemptSink marks on transcript traffic and the prompt's
+	// answer; an executor sink that cannot mark simply stays silent, and the
+	// watch still bounds its silence from the attempt's own marks.
+	markProgress := func() {}
+	if m, ok := sink.(interface{ StallMark() }); ok {
+		markProgress = m.StallMark
+	}
+	markProgress() // the attempt is running: progress from this point
 	pdone := make(chan struct{})
 	go func() {
 		defer close(pdone)
 		for ev := range sess.Events() {
+			markProgress()
 			final.add(ev)
 			transcript.emit(ev)
 		}
@@ -751,6 +761,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	stopAsked := false
 	select {
 	case p := <-pproc:
+		markProgress() // the prompt answered: the longest stretch is behind
 		stop, promptErr = p.stop, p.err
 	case <-ctx.Done():
 		// § 4 step 11: send ACP session/cancel, wait the grace window, then
@@ -1133,6 +1144,15 @@ func (r redactingAttemptSink) Stopping() <-chan struct{} {
 		return nil
 	}
 	return r.inner.Stopping()
+}
+
+// StallMark forwards the attempt's stall-progress seam past the redaction
+// wrapper (stallwatch.go, worker-stall-2): the redactor sees journal
+// payloads, and progress is not a payload.
+func (r redactingAttemptSink) StallMark() {
+	if m, ok := r.inner.(interface{ StallMark() }); ok {
+		m.StallMark()
+	}
 }
 
 // redactResult applies the same black box to what the attempt returns: the

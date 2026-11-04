@@ -239,10 +239,18 @@ func (l *AttemptLoop) Start(ctx context.Context) error {
 		slog.Int("capacity", l.cfg.Capacity),
 		slog.Duration("renew", l.cfg.RenewInterval),
 	)
+	// The claim loop's stall observer (stallwatch.go, worker-stall-2): the
+	// attempts run on their own goroutines, so the claim loop keeps
+	// iterating while they fly — it trips only when claiming itself cannot
+	// progress (a wedged store contact), and its dump says exactly so.
+	cw := newStallWatch("attempt claim loop", l.log)
+	cw.start()
+	defer cw.stop()
 	for {
 		if l.stopping() || ctx.Err() != nil {
 			return nil
 		}
+		cw.mark()
 		free := l.cfg.Capacity - int(l.inflight.Load())
 		if free > 0 {
 			claims, err := l.store.ClaimAttempts(ctx, workerID, free)
@@ -353,6 +361,20 @@ type runningAttempt struct {
 
 	stopCh   chan struct{} // graceful-stop ask (drain); closed once
 	stopOnce sync.Once
+
+	// stall is the attempt's stall observer (stallwatch.go, worker-stall-2):
+	// the executor marks progress through it as transcript traffic lands and
+	// when the prompt answers, so a peer that is alive but silent is the one
+	// shape that trips the watch.
+	stall *stallWatch
+}
+
+// markStall reports one progress tick for the attempt (transcript traffic,
+// the prompt's answer). Nil-safe so the executor can call it unconditionally.
+func (rt *runningAttempt) markStall() {
+	if rt.stall != nil {
+		rt.stall.mark()
+	}
 }
 
 // requestStop asks the executor to finish honestly.
@@ -385,6 +407,16 @@ func (l *AttemptLoop) runAttempt(ctx context.Context, c AttemptClaim) {
 		l.running.Done()
 		l.attemptsDone.Add(1)
 	}()
+	// The attempt's own stall observer (stallwatch.go, worker-stall-2): the
+	// lab's 17-minute wedge, in exactly this shape, becomes one WARN with
+	// the process's goroutine dump at the two-minute mark instead of a
+	// discovery at teardown. It is diagnostic only — it never fails the
+	// attempt.
+	aw := newStallWatch("attempt "+c.AttemptID, l.log)
+	aw.start()
+	defer aw.stop()
+	aw.mark()
+
 	base := context.WithoutCancel(ctx)
 	actx, acancel := context.WithCancel(base)
 	defer acancel()
@@ -394,7 +426,7 @@ func (l *AttemptLoop) runAttempt(ctx context.Context, c AttemptClaim) {
 		defer dcancel()
 	}
 
-	rt := &runningAttempt{loop: l, claim: c, cancel: acancel, stopCh: make(chan struct{})}
+	rt := &runningAttempt{loop: l, claim: c, cancel: acancel, stopCh: make(chan struct{}), stall: aw}
 	l.mu.Lock()
 	l.active[c.AttemptID] = rt
 	l.mu.Unlock()
@@ -436,12 +468,19 @@ func (l *AttemptLoop) runAttempt(ctx context.Context, c AttemptClaim) {
 // attemptRenewLoop mirrors renewLoop: a rejected renewal is the
 // authoritative word that we are stale.
 func (l *AttemptLoop) attemptRenewLoop(tctx, base context.Context, c AttemptClaim, rt *runningAttempt) {
+	// The renewal loop's own stall observer: it marks on every iteration, so
+	// it fires only when the renewal itself cannot iterate (a wedged store
+	// contact) — the attempt's silence is the attempt watch's job.
+	rw := newStallWatch("attempt lease renewal "+c.AttemptID, l.log)
+	rw.start()
+	defer rw.stop()
 	for {
 		select {
 		case <-tctx.Done():
 			return
 		case <-l.clock.After(l.cfg.RenewInterval):
 		}
+		rw.mark()
 		ctx, cancel := context.WithTimeout(base, l.cfg.RenewInterval)
 		err := l.store.RenewAttempt(ctx, c)
 		cancel()
@@ -766,6 +805,12 @@ func (s attemptSink) AppendEvent(ctx context.Context, ev AttemptEvent) error {
 }
 
 func (s attemptSink) Stopping() <-chan struct{} { return s.rt.stopCh }
+
+// StallMark carries the attempt's stall-progress seam to the executor
+// (stallwatch.go, worker-stall-2): a transcript event or the prompt's
+// answer is progress, and a peer that is alive but silent is the shape the
+// watch exists for.
+func (s attemptSink) StallMark() { s.rt.markStall() }
 
 func nzAny(in []any) []any {
 	if in == nil {

@@ -24,6 +24,11 @@ type fakeStore struct {
 	claims  []worker.Claim
 	claimed chan struct{} // pinged per successful claim
 
+	// claimGate, if set, is consulted before each claim is handed out; an
+	// error is returned to the loop as the claim error (tests order claims
+	// against out-of-process events, e.g. a peer having exited).
+	claimGate func() error
+
 	renewErr       error
 	renewCalls     int
 	renewed        chan error // each renewal outcome (nil or the error) delivered
@@ -102,7 +107,13 @@ func (f *fakeStore) ClaimTurn(ctx context.Context, workerID string) (worker.Clai
 			c.WorkerID = workerID
 		}
 	}
+	gate := f.claimGate
 	f.mu.Unlock()
+	if ok && gate != nil {
+		if err := gate(); err != nil {
+			return c, false, err
+		}
+	}
 	if ok {
 		select {
 		case f.claimed <- struct{}{}:

@@ -79,6 +79,23 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 	l.cur.Store(rt)
 	defer l.cur.Store(nil)
 
+	// The in-flight turn's stall observer (stallwatch.go, worker-stall-2):
+	// it marks on stream traffic and on the turn's own milestones, so a peer
+	// that is alive but silent is the one shape that trips it — the lab's
+	// 17-minute silence, greppable after two minutes with the goroutine dump.
+	// The claim loop behind this turn marks through it too, because its
+	// iteration IS this turn.
+	tw := newStallWatch("turn "+c.TurnID, l.log)
+	tw.start()
+	defer tw.stop()
+	progress := func() {
+		tw.mark()
+		if cw := l.claimWatch; cw != nil {
+			cw.mark()
+		}
+	}
+	progress()
+
 	sess, err := l.sessionFor(base, c, rt)
 	if err != nil {
 		l.log.Error("session unavailable",
@@ -111,8 +128,15 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 		tcancel()
 	})
 	rt.sinkRef.Store(snk)
+	// Every stream event is turn progress: the sink emits on the dispatcher
+	// goroutine, so a live peer's chunks keep the stall watch armed off, and
+	// a silent peer is the only shape that lets the watch fire.
+	route := snk.emit
 	sess.mu.Lock()
-	sess.route = snk.emit
+	sess.route = func(ev domain.ConversationEvent) {
+		route(ev)
+		progress()
+	}
 	sess.turn = rt
 	sess.mu.Unlock()
 	for _, n := range rt.notices {
@@ -126,6 +150,7 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 	go l.cancelWatch(tctx, base, c, rt, wake)
 
 	reason, promptErr := sess.handle.Prompt(tctx, l.turnPrompt(base, c))
+	progress()
 
 	// A transport death that outran the turn is the one failure a reader of
 	// this log must never have to reconstruct from a bare failed terminal:
@@ -265,12 +290,19 @@ func (l *TurnLoop) abandon(c Claim) {
 // renewLoop renews the lease every RenewInterval; a rejected renewal is the
 // authoritative word that we are stale.
 func (l *TurnLoop) renewLoop(tctx, base context.Context, c Claim, rt *runningTurn) {
+	// The renewal loop's own stall observer: it marks on every iteration, so
+	// it fires only when the renewal itself cannot iterate (a wedged store
+	// contact) — the in-flight turn's silence is the turn watch's job.
+	rw := newStallWatch("lease renewal "+c.TurnID, l.log)
+	rw.start()
+	defer rw.stop()
 	for {
 		select {
 		case <-tctx.Done():
 			return
 		case <-l.clock.After(l.cfg.RenewInterval):
 		}
+		rw.mark()
 		ctx, cancel := context.WithTimeout(base, l.cfg.RenewInterval)
 		err := l.store.RenewLease(ctx, c)
 		cancel()
