@@ -342,6 +342,40 @@ describe("useStickyTranscript", () => {
     scroller.remove();
   });
 
+  it("keeps the pin when the journal outpaces the pin's own scroll event — a fast replay grows the content past the band before the event is read", () => {
+    // The 1280 first-load failure: the retained journal drips down the
+    // stream faster than the pin's own scroll events clear. The browser
+    // processes a pin write's scroll event LATER than the layout that
+    // followed it, so the next batch of rows is already laid out when the
+    // event is read — the view still sits where the pin put it, but the
+    // content's bottom now lies past the band below the visible bottom.
+    // Read naively that is a reader who climbed away; it is not, so the pin
+    // holds and follows the grown bottom instead of dropping.
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500);
+    // 600px of growth — far past the 80px band — landed before the pin's
+    // own scroll event is processed, with the view unmoved.
+    model.contentBottom = 1400;
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(scroller.scrollTop).toBe(1100); // the pin followed the grown bottom
+    // …and keeps following each later row.
+    model.contentBottom = 1700;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(1400);
+    scroller.remove();
+  });
+
   it("does not move a reader who has scrolled up to read", () => {
     const model: PaneModel = {
       scrollerTop: 100,

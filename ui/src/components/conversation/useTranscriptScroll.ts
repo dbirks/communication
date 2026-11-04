@@ -27,6 +27,18 @@
  * pin band re-sticks on the spot; one that climbs out of it keeps the
  * reader's place.
  *
+ * The pin's own writes are told apart from reader movement by the offset the
+ * pin last placed the view at: a scroll event that fires on the scroller is
+ * processed LATER than the layout that preceded it, so a fast journal replay
+ * (the 1280 first load — the retained journal drips down the stream faster
+ * than the pin's own scroll events clear) lands the next batch of rows
+ * between a pin write and its scroll event. The band check then reads the
+ * GROWN content: the view sits where the pin put it, but the newest row now
+ * lies more than the band below the visible bottom — read naively, that is a
+ * reader who climbed away, and the pin is dropped at the exact moment the
+ * transcript is still streaming in. The reader never moved the view, so the
+ * pin holds and follows the grown bottom instead.
+ *
  * The hook returns a ref for the content container. A surface that renders
  * its transcript later than its first paint (the panel's loading state, then
  * the transcript) is handled: the ref callback re-arms the pin when the
@@ -146,6 +158,12 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
 
     // Pinned from first sight: opening a chat starts at the newest row.
     let pinned = true;
+    // The offset the pin last put the view at (read back from the scroller,
+    // so the browser's clamp of an over-max write is what is compared).
+    // A scroll event that still finds the view there is the pin's own event
+    // (or a re-clamp) — see the header note on the replay race — never a
+    // reader movement, so the pin holds across it.
+    let lastPinnedTop: number | null = null;
     let observedScroller: HTMLElement | null = null;
     let ro: ResizeObserver | null = null;
 
@@ -160,6 +178,9 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
       if (scroller === null) return;
       if (pinned) {
         scroller.scrollTop = pinPosition(contentBottomInScroller(content, scroller), scroller);
+        // The browser clamps an over-max write: compare the offset it kept,
+        // not the one requested, so the re-stick loop stays a fixed point.
+        lastPinnedTop = scroller.scrollTop;
       }
       // The owning scroller can change under the pin (the pane's column
       // reflows, its side panel mounts or unmounts, an embed wraps the
@@ -181,10 +202,22 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
      * spot; anywhere else the reader keeps their place until they return
      * within NEAR_BOTTOM_PX. A stick() of our own lands exactly at the row,
      * so its scroll event re-computes pinned as true and re-sticks to the
-     * same position — the loop is fixed-point, not spin. */
+     * same position — the loop is fixed-point, not spin.
+     *
+     * The replay race the last sentence must survive: the browser processes
+     * the pin's own scroll event LATER than the layout that followed the
+     * write, so a fast journal can have grown the content past the band
+     * before the event is read. Where the view still sits at the offset the
+     * pin last placed it, the reader has not moved — re-pin on the spot
+     * rather than dropping the pin over content that grew under it. */
     const onScroll = (event: Event) => {
       const scroller = scrollerNow();
       if (scroller === null || event.target !== scroller) return;
+      if (lastPinnedTop !== null && Math.abs(scroller.scrollTop - lastPinnedTop) <= 1) {
+        pinned = true;
+        stick();
+        return;
+      }
       pinned = isNearContentBottom(contentBottomInScroller(content, scroller), scroller);
       if (pinned) stick();
     };
