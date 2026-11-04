@@ -1,8 +1,11 @@
+import type { ReactElement } from "react";
 import { Button } from "../ds/Button";
 import { MarkdownBody } from "../../lib/markdown";
+import { useDraft } from "../../api/pipelines";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
-import type { AssistantAnswerPayload, AssistantMessage } from "./types";
+import { draftStepRows, openDraftIdOf } from "./draftSteps";
+import type { AssistantAnswerPayload, AssistantMessage, AssistantQuestionPayload } from "./types";
 
 /**
  * The assistant transcript (2a/2c/3d). Presentational: messages flow in as
@@ -59,6 +62,29 @@ export function MessageList({
       payload.options.slice(0, 4).find((option) => option.label.trim() === text)?.label ?? null
     );
   };
+  // Design 2f round 12: the answer's still-open question card — the question
+  // row that follows the answer before anything else of a later turn (a user
+  // reply, another answer, an approval ask). The transcript's question row is
+  // the answer's question: the server asks one question per turn.
+  const openQuestionFor = (messageId: string): AssistantQuestionPayload | null => {
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return null;
+    for (let i = index + 1; i < messages.length; i += 1) {
+      const next = messages[i];
+      switch (next.payload.kind) {
+        case "question":
+          return next.payload.answered_by == null ? next.payload : null;
+        case "user":
+        case "assistant":
+        case "approval_request":
+          return null;
+        default:
+          // approval_response / change echoes do not close the turn.
+          continue;
+      }
+    }
+    return null;
+  };
   return (
     <div data-testid="assistant-messages" className="flex flex-col gap-[8px]">
       {messages.map((message) => {
@@ -107,7 +133,11 @@ export function MessageList({
                 data-testid="assistant-msg-assistant"
                 className="px-[10px] py-[8px]"
               >
-                <AnswerProse text={message.payload.answer_markdown} />
+                <AnswerProse
+                  text={message.payload.answer_markdown}
+                  draftId={openDraftIdOf(message.payload.links)}
+                  openQuestion={openQuestionFor(message.id)}
+                />
                 {message.payload.links.length > 0 ? (
                   <div data-testid="assistant-links" className="flex flex-col gap-[4px] pt-[2px]">
                     {message.payload.links.map((link, index) => (
@@ -337,23 +367,31 @@ function StepList({ lines }: { lines: StepLine[] }) {
  */
 function StepRow({ line }: { line: StepLine }) {
   const { step, profile } = stepPartsOf(line.rest);
+  return <StepRowInner glyph={line.glyph} step={step} profile={profile} />;
+}
+
+function StepRowInner({
+  glyph,
+  step,
+  profile,
+}: {
+  glyph: (typeof STEP_GLYPHS)[number];
+  step: string;
+  profile: string | null;
+}) {
   return (
     <p
       data-testid="assistant-step-row"
-      data-state={line.glyph === "✓" ? "done" : line.glyph === "●" ? "current" : "later"}
+      data-state={glyph === "✓" ? "done" : glyph === "●" ? "current" : "later"}
       className="m-0 flex items-baseline gap-[6px] text-[12.5px] leading-[1.5] text-ink"
     >
       <span
         aria-hidden="true"
         className={`w-[12px] flex-shrink-0 text-center ${
-          line.glyph === "✓"
-            ? "text-st-done-pale-fg"
-            : line.glyph === "●"
-              ? "text-accent"
-              : "text-faint"
+          glyph === "✓" ? "text-st-done-pale-fg" : glyph === "●" ? "text-accent" : "text-faint"
         }`}
       >
-        {line.glyph}
+        {glyph}
       </span>
       <span data-testid="assistant-step-name" className="min-w-0 flex-1 truncate">
         {step}
@@ -368,7 +406,7 @@ function StepRow({ line }: { line: StepLine }) {
         </span>
       ) : null}
       <span className="sr-only">
-        {line.glyph === "✓" ? " (done)" : line.glyph === "●" ? " (next)" : " (later)"}
+        {glyph === "✓" ? " (done)" : glyph === "●" ? " (next)" : " (later)"}
       </span>
       {profile ? <span className="sr-only">{` runs on ${profile}`}</span> : null}
     </p>
@@ -383,26 +421,96 @@ function StepRow({ line }: { line: StepLine }) {
  * can render as the app's origin (ADR-0020). The draft step list is split
  * out first: its ✓ / ● / · glyphs carry a state word, which is a states.ts
  * contract this generic reader does not know about.
+ *
+ * Design 2f round 12: when the answer carries the saved draft's `Open draft`
+ * link (`draftId`), the list is the DRAFT's real steps — the model's step
+ * lines are dropped from the prose and never drawn as the list, while its
+ * prose paragraphs stay. Without a draft, the model's own step lines stand
+ * — downgraded, though: a ✓ is never shown while this answer's question card
+ * is still open, because nothing is settled until the question is answered.
  */
-function AnswerProse({ text }: { text: string }) {
+function AnswerProse({
+  text,
+  draftId,
+  openQuestion,
+}: {
+  text: string;
+  draftId: string | null;
+  openQuestion: AssistantQuestionPayload | null;
+}) {
   const paragraphs = text
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0);
   const chunks = settleStepChunks(paragraphs.flatMap((paragraph) => chunkParagraph(paragraph)));
+  const lines = chunks.flatMap((chunk) => (chunk.type === "steps" ? chunk.lines : []));
+  const modelLines =
+    openQuestion === null
+      ? lines
+      : lines.map((line) => (line.glyph === "✓" ? { ...line, glyph: "·" as const } : line));
+  const firstSteps = chunks.findIndex((chunk) => chunk.type === "steps");
+  const draftList = (key?: string | number): ReactElement => (
+    <DraftStepList
+      key={key}
+      draftId={draftId as string}
+      lines={modelLines}
+      openQuestion={openQuestion}
+    />
+  );
   return (
     <div data-testid="assistant-answer" className="space-y-[6px]">
-      {chunks.map((chunk, index) =>
-        chunk.type === "steps" ? (
-          <StepList key={index} lines={chunk.lines} />
-        ) : (
+      {chunks.map((chunk, index) => {
+        if (chunk.type === "steps") {
+          if (draftId === null) return <StepList key={index} lines={modelLines} />;
+          // The draft is the list: its steps stand where the model's lines
+          // first appeared; later model step runs are dropped, not drawn.
+          return index === firstSteps ? draftList(index) : null;
+        }
+        return (
           <MarkdownBody
             key={index}
             text={chunk.text}
             paragraphClassName="m-0 text-[13px] leading-[1.45] text-ink"
           />
-        ),
-      )}
+        );
+      })}
+      {draftId !== null && firstSteps === -1 ? draftList("draft") : null}
+    </div>
+  );
+}
+
+/**
+ * The draft-backed step list (design 2f round 12): the saved draft's
+ * top-level nodes in document order, each with the agent profile / kind
+ * label that runs it — the draft is the list, not the model's marks.
+ * Until the document is available (still loading, or the read / parse
+ * failed) the model's own lines stand in so the list is never empty; the
+ * moment the document reads, only ITS steps are drawn.
+ */
+function DraftStepList({
+  draftId,
+  lines,
+  openQuestion,
+}: {
+  draftId: string;
+  lines: StepLine[];
+  openQuestion: AssistantQuestionPayload | null;
+}) {
+  const { data, isError } = useDraft(draftId);
+  const rows =
+    data !== undefined && !isError ? draftStepRows(data.document_yaml, openQuestion) : null;
+  return (
+    <div data-testid="assistant-step-list" className="flex flex-col gap-[2px] py-[2px]">
+      {rows !== null
+        ? rows.map((row) => (
+            <StepRowInner
+              key={row.name}
+              glyph={row.state === "done" ? "✓" : row.state === "current" ? "●" : "·"}
+              step={row.name}
+              profile={row.profile}
+            />
+          ))
+        : lines.map((line, index) => <StepRow key={index} line={line} />)}
     </div>
   );
 }

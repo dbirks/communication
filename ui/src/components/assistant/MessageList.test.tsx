@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 import MessageList from "./MessageList";
 import type { AssistantMessage } from "./types";
+import { queryKeys } from "../../api/queries";
+import type { Draft } from "../../api/types";
+import { mockFetch } from "../../test/fakes";
 
 afterEach(() => {
   cleanup();
@@ -517,6 +522,211 @@ describe("MessageList", () => {
       );
       expect(screen.queryByTestId("assistant-step-list")).toBeNull();
       unmount();
+    }
+  });
+});
+
+/**
+ * Design 2f round 12: the step list is the SAVED DRAFT's steps, not the
+ * model's prose marks. When the answer carries the `Open draft` link, the
+ * list renders from the draft's document (fetched through the drafts API);
+ * with a question card still open, no ✓ appears anywhere; without a draft
+ * link the model's lines stand but their ✓ downgrades to ·.
+ */
+const DRAFT_DOCUMENT_YAML = `apiVersion: communication.dev/v1alpha1
+kind: PipelineDefinition
+spec:
+  nodes:
+    - id: draft_reply
+      kind: agent.acp
+      config:
+        profile: m4-planner
+    - id: gate
+      kind: human.approval
+      dependsOn: [draft_reply]
+      config:
+        summary: "Approve the reply"
+        approverRoles: [maintainer]
+    - id: publish
+      kind: agent.acp
+      dependsOn: [gate]
+      config:
+        profile: m4-implementer
+`;
+
+const savedAnswer = (): AssistantMessage => ({
+  id: "m-draft",
+  kind: "assistant",
+  payload: {
+    kind: "assistant",
+    answer_markdown:
+      "I read the chat. Drafting EMU-RCN reply OK in the library — saved.\n\n" +
+      "✓ Reply OK — m4-planner\n✓ Reply OK — m4-implementer\n\n" +
+      "The draft currently uses one step; the fork is which profile runs it.",
+    links: [{ label: "Open draft", route: "/workflows/01PL/drafts/d-9" }],
+    tool_calls: [],
+  },
+  created_at: "2026-10-20T10:00:05Z",
+});
+
+const openQuestionRow = (): AssistantMessage => ({
+  id: "m-qq",
+  kind: "question",
+  payload: {
+    kind: "question",
+    prompt: "The draft currently uses one step; the fork is which profile runs it?",
+    options: [
+      { label: "m4-planner", value: "planner" },
+      { label: "m4-implementer", value: "implementer" },
+    ],
+    allow_free_text: true,
+    answered_by: null,
+  },
+  created_at: "2026-10-20T10:00:10Z",
+});
+
+function renderWithDraftCache(
+  ui: ReactElement,
+  draft: { id: string; documentYaml?: string } | null,
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  if (draft !== null) {
+    const documentYaml = draft.documentYaml ?? DRAFT_DOCUMENT_YAML;
+    queryClient.setQueryData(queryKeys.draft(draft.id), {
+      id: draft.id,
+      pipeline_id: "01PL",
+      status: "draft",
+      document_yaml: documentYaml,
+      source_kind: "assistant",
+      source_sha256: "sha256:0",
+      ui_layout: {},
+      digest_scope: "sha256:0",
+      revision_digest: null,
+      plan_digest: null,
+      published_revision_id: null,
+      version: 1,
+      edited_by: "01J",
+      created_at: "2026-10-20T10:00:00Z",
+      updated_at: "2026-10-20T10:00:00Z",
+    } satisfies Draft);
+  }
+  render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  return queryClient;
+}
+
+describe("MessageList draft-backed step list (design 2f round 12)", () => {
+  it("lists the SAVED DRAFT's steps — never the model's marks — with an open question: the bound node ●, no ✓ anywhere", () => {
+    renderWithDraftCache(
+      <MessageList
+        messages={[savedAnswer(), openQuestionRow()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+      { id: "d-9" },
+    );
+    const rows = screen.getAllByTestId("assistant-step-row");
+    // three nodes from the document — not the model's two "Reply OK" lines
+    expect(rows.map((row) => within(row).getByTestId("assistant-step-name").textContent)).toEqual([
+      "draft_reply",
+      "gate",
+      "publish",
+    ]);
+    expect(
+      rows.map((row) => within(row).getByTestId("assistant-step-profile").textContent),
+    ).toEqual(["m4-planner", "gate", "m4-implementer"]);
+    // the node the open question's options bind is ●; the rest are ·; no ✓
+    expect(rows.map((row) => row.getAttribute("data-state"))).toEqual([
+      "current",
+      "later",
+      "later",
+    ]);
+    // the model's own step lines are gone; its prose survives
+    expect(screen.queryByText(/Reply OK/)).toBeNull();
+    const answer = screen.getByTestId("assistant-answer");
+    expect(answer.textContent).toContain("EMU-RCN reply OK in the library — saved.");
+    expect(answer.textContent).toContain("The draft currently uses one step");
+  });
+
+  it("marks every draft step ✓ when the answer saved the draft and no question is open", () => {
+    renderWithDraftCache(
+      <MessageList
+        messages={[savedAnswer()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+      { id: "d-9" },
+    );
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.getAttribute("data-state"))).toEqual(["done", "done", "done"]);
+    expect(screen.queryByText(/Reply OK/)).toBeNull();
+  });
+
+  it("without a draft link keeps the model's lines but downgrades ✓ to · while its question is open", () => {
+    const answer = (): AssistantMessage => ({
+      ...savedAnswer(),
+      id: "m-nodraft",
+      payload: {
+        kind: "assistant",
+        answer_markdown:
+          "I read the chat. Drafting it in the library:\n\n" +
+          "✓ Plan — Claude Code · opus\n● Review — Codex · skill review\n· Open draft PR",
+        links: [],
+        tool_calls: [],
+      } as AssistantMessage["payload"],
+    });
+    renderWithDraftCache(
+      <MessageList
+        messages={[answer(), openQuestionRow()]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+      null,
+    );
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows.map((row) => within(row).getByTestId("assistant-step-name").textContent)).toEqual([
+      "Plan",
+      "Review",
+      "Open draft PR",
+    ]);
+    // the first line's ✓ is downgraded; the ● the model drew stays ●
+    expect(rows.map((row) => row.getAttribute("data-state"))).toEqual([
+      "later",
+      "current",
+      "later",
+    ]);
+  });
+
+  it("falls back to the model's lines — downgraded — when the draft read fails", async () => {
+    mockFetch([]);
+    try {
+      renderWithDraftCache(
+        <MessageList
+          messages={[savedAnswer(), openQuestionRow()]}
+          onAnswerQuestion={() => {}}
+          onConfirmApproval={() => {}}
+          onDismissApproval={() => {}}
+          onGo={() => {}}
+        />,
+        null,
+      );
+      const rows = await screen.findAllByTestId("assistant-step-row");
+      // the draft read 404'd (no stub), so the model's lines stand again —
+      // both its ✓ downgraded to · while the question is open
+      expect(rows.map((row) => within(row).getByTestId("assistant-step-name").textContent)).toEqual(
+        ["Reply OK", "Reply OK"],
+      );
+      expect(rows.map((row) => row.getAttribute("data-state"))).toEqual(["later", "later"]);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });
