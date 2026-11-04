@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 )
@@ -125,6 +126,23 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 	go l.cancelWatch(tctx, base, c, rt, wake)
 
 	reason, promptErr := sess.handle.Prompt(tctx, l.turnPrompt(base, c))
+
+	// A transport death that outran the turn is the one failure a reader of
+	// this log must never have to reconstruct from a bare failed terminal:
+	// say which session died mid-turn, so the next "worker went silent after
+	// a peer close" is greppable in seconds (lab run 41789603709). Stops we
+	// initiated (cancel/drain/lease loss, promptErr context.Canceled) are not
+	// peer deaths — their arms already speak for themselves.
+	if promptErr != nil && !errors.Is(promptErr, context.Canceled) {
+		if info, ok := acp.SessionDisconnect(sess.handle); ok {
+			l.log.Warn("acp session died mid-turn; ending the turn failed instead of waiting on a dead harness",
+				slog.String("turn_id", c.TurnID),
+				slog.String("conversation_id", c.ConversationID),
+				slog.String("reason", info.Reason),
+				slog.String("detail", bounded(info.Detail, 240)),
+			)
+		}
+	}
 
 	// Let trailing stream updates arrive — still routed to the sink —
 	// before the transcript closes; updates racing the turn result would

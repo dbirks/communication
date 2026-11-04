@@ -152,6 +152,9 @@ services:
       dockerfile: worker/Dockerfile
     # worker-b shares this build; nobody may pull the dev tag.
     user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+    # Defence in depth (worker-acp-disconnect-hang): the worker must come back
+    # if the process ever dies under it; the code fix is in the acp teardown.
+    restart: unless-stopped
     volumes:
       # Shared workspace root (bind, host-inspectable) — both workers see the
       # same /workspaces tree ONLY so the harness legs can watch; per ADR-0017
@@ -224,6 +227,8 @@ services:
     # replicas against the `migrate` build); never pulled.
     pull_policy: never
     user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+    # Defence in depth (worker-acp-disconnect-hang), same as worker-a.
+    restart: unless-stopped
     volumes:
       - .harness/workspaces:/workspaces
       - repos-b:/repos

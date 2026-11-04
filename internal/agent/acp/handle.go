@@ -293,6 +293,11 @@ const eventBuffer = 1024
 // microseconds of certainty.
 const disconnectReapWait = 500 * time.Millisecond
 
+// reapWaitAfterKill is the bounded reap after the group SIGKILL in
+// waitProcess: cmd.WaitDelay already caps the pipe wait, this is the margin
+// on top of it.
+const reapWaitAfterKill = 15 * time.Second
+
 // emit publishes one normalized event. It never drops the oldest unread
 // event: when the buffer is full it blocks until space frees up or the
 // handle's context is cancelled. Events lost are only those emitted after
@@ -525,27 +530,76 @@ func (h *handle) Close() error {
 	return waitErr
 }
 
-// waitProcess runs the shutdown ladder: EOF wait ≤5s → SIGTERM ≤5s →
-// SIGKILL.
+// waitProcess runs the shutdown ladder: EOF wait ≤5s → SIGTERM the whole
+// process group ≤5s → SIGKILL the group, then a bounded reap wait. The
+// signals target the GROUP (Setpgid at launch made the harness's pid its
+// pgid), not the direct process: a harness that closed its stdio often
+// leaves descendants behind that still hold the stderr pipe, and
+// cmd.Wait waits on the copier that reads it — so killing only the direct
+// process wedges the reap, and with it every caller of Close (lab run
+// 41789603709: the turn loop stood still behind one dead session for the
+// rest of the lab). cmd.WaitDelay bounds the copier even when a descendant
+// escaped the group, so the final wait below is belt-and-braces.
 func (h *handle) waitProcess() error {
-	select {
-	case <-h.exited:
+	if h.waitExited(5 * time.Second) {
 		return nil
-	case <-time.After(5 * time.Second):
 	}
 	// Ask the agent to exit; exec.CommandContext's own kill-on-ctx stays as
-	// the last resort for the process group if this is ignored.
-	if err := h.cmd.Process.Signal(syscall.SIGTERM); err != nil && h.logger != nil {
+	// the last resort for the direct process if this is ignored.
+	if err := h.signalProcessGroup(syscall.SIGTERM); err != nil && h.logger != nil {
 		h.logger.Debug("acp: SIGTERM failed", "err", err)
 	}
+	if h.waitExited(5 * time.Second) {
+		return nil
+	}
+	if err := h.signalProcessGroup(syscall.SIGKILL); err != nil && h.logger != nil {
+		h.logger.Debug("acp: SIGKILL failed", "err", err)
+	}
+	// The group is dead or will be: the reap is bounded by cmd.WaitDelay plus
+	// the margin below, and an overrun is named rather than absorbed.
+	if h.waitExited(reapWaitAfterKill) {
+		return errors.New("acp: agent process required SIGKILL")
+	}
+	if h.logger != nil {
+		h.logger.Warn("acp: the harness process group did not reap within the bounded wait; retiring the session and leaving the stragglers to the OS",
+			slog.String("session_id", h.sessionID))
+	}
+	return errors.New("acp: agent process required SIGKILL")
+}
+
+// waitExited reports whether cmd.Wait has agreed the process is gone within
+// the window.
+func (h *handle) waitExited(wait time.Duration) bool {
 	select {
 	case <-h.exited:
-		return nil
-	case <-time.After(5 * time.Second):
+		return true
+	case <-time.After(wait):
+		return false
 	}
-	_ = h.cmd.Process.Kill()
-	<-h.exited
-	return errors.New("acp: agent process required SIGKILL")
+}
+
+// signalProcessGroup sends sig to the harness's whole process group and, as
+// the direct-process fallback, to the harness itself: a harness that
+// re-parented itself out of the group is still the process we must retire,
+// and a pid the kernel has already reused answers ESRCH, which means the
+// group is already gone.
+func (h *handle) signalProcessGroup(sig syscall.Signal) error {
+	p := h.cmd.Process
+	if p == nil {
+		return nil
+	}
+	var firstErr error
+	if err := syscall.Kill(-p.Pid, sig); err != nil {
+		if !errors.Is(err, syscall.ESRCH) {
+			firstErr = err
+		}
+	}
+	if err := p.Signal(sig); err != nil {
+		if !errors.Is(err, syscall.ESRCH) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // ---------------------------------------------------------------------------

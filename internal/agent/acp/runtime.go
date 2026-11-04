@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/dbirks/communication/internal/domain"
@@ -46,6 +48,20 @@ func (r *Runtime) StartWithOptions(ctx context.Context, spec domain.AgentLaunchS
 
 	cmd := exec.CommandContext(ctx, spec.Executable, spec.Args...) //nolint:gosec // launcher argv is governed by the profile, no shell
 	cmd.Dir = spec.WorkDir
+	// The harness runs in its own process group (pid == pgid). A closed stdio
+	// is not a dead harness: an agent that dies mid-turn usually leaves
+	// orphaned descendants holding the stderr pipe, and cmd.Wait waits on the
+	// copied descriptor until that pipe sees EOF — so a signal aimed at the
+	// direct process alone leaves Wait (and therefore handle.Close, and the
+	// worker's turn loop behind it) parked forever (lab run 41789603709). The
+	// teardown ladder in handle.waitProcess signals this group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// WaitDelay is the backstop for the same wedge in the case a descendant
+	// escaped the group (setsid) and still holds a pipe: it bounds how long
+	// cmd.Wait may wait for the copy goroutines after the process itself is
+	// gone, so the reap can never outlive a deadline.
+	cmd.WaitDelay = waitDelay
+
 	// No inheritance. Falling back to os.Environ() here handed every launched
 	// agent the worker's whole environment, `COMMUNICATION_DATABASE_URL`
 	// included (ADR-0019 D1 names this as the leak to close). A launch with no
@@ -124,6 +140,12 @@ func (r *ringBuffer) String() string {
 	defer r.mu.Unlock()
 	return string(r.buf)
 }
+
+// waitDelay bounds cmd.Wait's wait for the stdio copy goroutines once the
+// harness process is gone. A grandchild that escaped the process group may
+// still hold the stderr pipe; this is the wall that keeps the worker from
+// waiting that orphan out forever.
+const waitDelay = 10 * time.Second
 
 // maxStderrBytes bounds captured agent stderr to the last 64 KiB.
 const maxStderrBytes = 64 * 1024

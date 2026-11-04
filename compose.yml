@@ -294,6 +294,9 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     command: ["worker"]
+    # Defence in depth (worker-acp-disconnect-hang): the worker must come back
+    # if the process ever dies under it; the code fix is in the acp teardown.
+    restart: unless-stopped
     environment:
       COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
       COMMUNICATION_WORKER_NAME: worker-1

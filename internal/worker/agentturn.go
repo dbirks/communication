@@ -778,6 +778,19 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// turn was in flight? ACP handles answer (acp.DisconnectReporter); a
 	// session that cannot answer is honest absence, not a disconnect.
 	discInfo, midTurnDisc := acp.SessionDisconnect(sess)
+	if midTurnDisc && promptErr != nil && !stopAsked && ctx.Err() == nil {
+		// The transport died while the turn was in flight and no stop we own
+		// (cancel/drain/lease loss) explains it: name it in the worker log with
+		// the attempt and turn ids, so a wedged or wedging worker is greppable
+		// instead of silent (lab run 41789603709). Stops we initiated are not
+		// peer deaths — their arms already speak for themselves.
+		a.logger().Warn("acp session died mid-turn; the attempt ends failed instead of waiting on a dead harness",
+			slog.String("attempt_id", c.AttemptID),
+			slog.String("turn_id", conv.TurnID),
+			slog.String("reason", discInfo.Reason),
+			slog.String("detail", bounded(discInfo.Detail, 240)),
+		)
+	}
 	// The CLI's own last words, read while the handle is alive. The transport
 	// records only *that* a process died; a harness killed by a model gateway
 	// or a sandbox usually said so on stderr first, and the attempt's ledger
