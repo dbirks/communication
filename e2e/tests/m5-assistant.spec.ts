@@ -105,7 +105,6 @@ const TOOL_NAMES = [
   "approval.decide",
   "permission.allow",
   "pipeline.publish",
-  "pipeline.publish",
 ];
 
 interface AssistantLinkServed {
