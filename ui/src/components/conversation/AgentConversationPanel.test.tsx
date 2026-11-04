@@ -608,18 +608,42 @@ describe("the composer's / skill and # issue affordances (design 2e/1h)", () => 
     expect(input.getAttribute("placeholder")).toBe("Reply, / for skills, # for issues…");
   });
 
-  it("folds the button to a bare / at 390px, keeping its accessible name", async () => {
+  it("keeps the '/ skill' label visible at 390px too, not a bare /", async () => {
     renderPanel(dock(), skillRoutes(conversationFixture, { skills: ["review"], truncated: false }));
     const button = (await screen.findByTestId("composer-skill-button")) as HTMLElement;
     expect(button.getAttribute("aria-label")).toBe("Skills");
-    // The glyph always shows; the word collapses below `sm` (640), so at the
-    // 390px phone width the row is `[/]` and fits. jsdom cannot evaluate the
-    // media query, so the contract is the class pair itself.
+    // Round-8 review: a lone "/" on its own row named nothing, so the word
+    // no longer folds below `sm` — "/ skill" is the visible label at every
+    // width (the controls row under the textbox keeps all three controls
+    // without overflow, because the agent chip shrinks).
     const word = Array.from(button.querySelectorAll("span")).find((span) =>
       span.textContent?.includes("skill"),
     ) as HTMLElement;
-    expect(word.className).toContain("hidden");
-    expect(word.className).toContain("sm:inline");
+    expect(word.className).not.toContain("hidden");
+    expect(word.className).not.toContain("sm:inline");
+    expect(button.textContent).toBe("/skill");
+  });
+
+  it("gives the textbox its own full row and the controls one row below (design 2e)", async () => {
+    renderPanel(dock(), skillRoutes(conversationFixture, { skills: ["review"], truncated: false }));
+    const input = (await screen.findByTestId("composer-input")) as HTMLTextAreaElement;
+    // The textbox owns its row — `flex-1 min-w-0` takes the remaining width,
+    // so the full "Reply, / for skills, # for issues…" placeholder fits at
+    // 1280 instead of clipping beside the controls.
+    const box = input.parentElement as HTMLElement;
+    expect(box.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["w-full", "min-w-0", "flex-1"]),
+    );
+    // The / skill button and Send share ONE row under the textbox, and that
+    // row is a sibling of the textbox row in the form.
+    const send = screen.getByTestId("composer-send");
+    const row = send.parentElement as HTMLElement;
+    expect(row.className.split(/\s+/)).toContain("flex");
+    const skill = screen.getByTestId("composer-skill-button");
+    // The button sits in its own `relative` wrapper (its menu's anchor);
+    // that wrapper is what the row holds.
+    expect(skill.parentElement?.parentElement).toBe(row);
+    expect(box.parentElement).toBe(row.parentElement);
   });
 
   it("lists the NEXT-turn profile's skills in the button's menu, and picking inserts `/<skill> `", async () => {

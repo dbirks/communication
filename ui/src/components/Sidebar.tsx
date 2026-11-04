@@ -1238,12 +1238,18 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
         </aside>
 
         {/* The "⋯" menu is anchored to its row but mounted outside the
-            scrolling column, so the 220px scroller never cuts it. */}
+            scrolling column, so the 220px scroller never cuts it. Round-8
+            design review item 4: it flies out to the RIGHT of the sidebar,
+            beside the row (design 3c — the old bottom drop covered the rows
+            below inside the narrow column). In the mobile drawer (390) the
+            right side has no room, so it falls back to the bottom drop
+            there — the drawer's column is wider than the menu, and the
+            ds Menu's viewport clamp keeps it on screen. */}
         <Menu
           open={openMenuProject !== null}
           onClose={closeProjectMenu}
           triggerRef={menuTrigger}
-          side="bottom"
+          side={variant === "drawer" ? "bottom" : "right"}
           align="end"
           width={190}
           height={160}

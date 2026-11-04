@@ -34,10 +34,19 @@ const agents: ConversationChatAgent[] = [
 ];
 
 function panel(props: Parameters<typeof ConversationSidePanel>[0]) {
+  // A throwaway query cache: the WORKS IN switcher reads the thread's own
+  // binding through the shared conversation read (round-8 item 3), and those
+  // tests pass a `workflowChat` without a repository name — the section now
+  // renders the switcher there too, so the provider is the panel's floor.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
   return render(
-    <MemoryRouter>
-      <ConversationSidePanel {...props} />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ConversationSidePanel {...props} />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -362,13 +371,17 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
     });
     expect(screen.queryByTestId("assistant-note-workflow")).toBeNull();
     rerender(
-      <MemoryRouter>
-        <ConversationSidePanel
-          projectId={projectFixture.id}
-          assistantNote={hostNote(false)}
-          workflowChat={chat}
-        />
-      </MemoryRouter>,
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <MemoryRouter>
+          <ConversationSidePanel
+            projectId={projectFixture.id}
+            assistantNote={hostNote(false)}
+            workflowChat={chat}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     expect(screen.getByTestId("assistant-note-workflow")).toBeTruthy();
   });
@@ -418,7 +431,10 @@ describe("the standing note's dismiss (2e)", () => {
     // Nothing else on the rail names the suggestion either — the section is
     // gone with the note, not an empty ASSISTANT heading.
     expect(screen.queryByTestId("side-panel-assistant")).toBeNull();
-    expect(screen.queryByTestId("conversation-side-panel")).toBeNull();
+    // The panel itself survives on its own data: a named thread always shows
+    // its WORKS IN switcher (round-8 item 3 made the section the switcher's,
+    // not the repository name's), so "no notes" is no longer "no panel".
+    expect(screen.getByTestId("side-panel-works-in")).toBeTruthy();
   });
 
   it("keeps the host's stored notes beside a dismissed standing note", () => {
@@ -554,6 +570,100 @@ describe("WORKS IN switcher (ADR-0067 amendment)", () => {
     });
     // The menu closed with the pick.
     expect(screen.queryByTestId("side-panel-scope-menu")).toBeNull();
+  });
+
+  it("wears the scope name and caret in ONE select-style trigger (round-8 review item 3)", async () => {
+    scopePanel([
+      {
+        method: "GET",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: { ...conversationFixture, repository_id: repoStore.id },
+      },
+      {
+        method: "GET",
+        path: `/api/v1/projects/${projectFixture.id}/repos`,
+        body: { items: [repoStore, repoApi] },
+      },
+    ]);
+    // The trigger IS the scope name now — "storefront ▾" — not a
+    // label-less ▾ box beside a separate link.
+    const trigger = (await screen.findByTestId("side-panel-works-in-switch")) as HTMLButtonElement;
+    expect(trigger.textContent).toContain("storefront");
+    expect(trigger.textContent).toContain("▾");
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.getAttribute("aria-label")).toBe("Switch the repository this chat works in");
+    // The menu is the section's one door: the standalone repository-page
+    // link no longer rides beside the switcher.
+    expect(screen.queryByTestId("side-panel-repo-link")).toBeNull();
+  });
+
+  it("names the whole project on an unbound thread the reads do not name, without the hint", async () => {
+    // The host's resolved name is absent (no binding, no workspace repo), so
+    // the trigger's word is the scope itself: "Whole project ▾".
+    scopePanel(
+      [
+        {
+          method: "GET",
+          path: `/api/v1/conversations/${conversationId}`,
+          body: { ...conversationFixture, repository_id: null },
+        },
+        {
+          method: "GET",
+          path: `/api/v1/projects/${projectFixture.id}/repos`,
+          body: { items: [repoStore, repoApi] },
+        },
+      ],
+      { repoName: null },
+    );
+    const trigger = await screen.findByTestId("side-panel-works-in-switch");
+    // The switcher falls back to the host's resolved name until the thread's
+    // own binding read lands; only the read's null claims "Whole project".
+    await vi.waitFor(() => expect(trigger.textContent).toContain("Whole project"));
+    // Already whole project: switching there buys nothing, so no hint.
+    expect(screen.queryByTestId("side-panel-works-in-switch-hint")).toBeNull();
+  });
+
+  it("owes the other-repos hint only to a bound chat in a multi-repo project", async () => {
+    // Bound to one of TWO repositories: the hint is due, from the panel's
+    // own repos read (no extra fetch — the count is that read's length).
+    scopePanel([
+      {
+        method: "GET",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: { ...conversationFixture, repository_id: repoStore.id },
+      },
+      {
+        method: "GET",
+        path: `/api/v1/projects/${projectFixture.id}/repos`,
+        body: { items: [repoStore, repoApi] },
+      },
+    ]);
+    const hint = await screen.findByTestId("side-panel-works-in-switch-hint");
+    expect(hint.textContent).toBe(
+      "Switch to Whole project to let the agent read the project's other repos.",
+    );
+    // "Applies from the next turn." stays the section's standing note.
+    expect(screen.getByTestId("side-panel-works-in-note").textContent).toBe(
+      "Applies from the next turn.",
+    );
+
+    cleanup();
+    // One repository: there are no other repos to read, so no hint.
+    scopePanel([
+      {
+        method: "GET",
+        path: `/api/v1/conversations/${conversationId}`,
+        body: { ...conversationFixture, repository_id: repoStore.id },
+      },
+      {
+        method: "GET",
+        path: `/api/v1/projects/${projectFixture.id}/repos`,
+        body: { items: [repoStore] },
+      },
+    ]);
+    await screen.findByTestId("side-panel-works-in-switch");
+    expect(screen.queryByTestId("side-panel-works-in-switch-hint")).toBeNull();
   });
 
   it("moves an unbound thread to the whole project and back, patching null for it", async () => {

@@ -370,9 +370,12 @@ describe("the context rail (2e side panel) from the reads", () => {
     renderApp({ path, routes: routes(conversationFixture) });
     await screen.findByTestId("conversation-title");
     const panel = await screen.findByTestId("conversation-side-panel");
-    // No read names a repository, a branch, files or agent ranges: every
-    // data section is absent.
-    expect(within(panel).queryByTestId("side-panel-works-in")).toBeNull();
+    // No read names a branch, files or agent ranges: those data sections
+    // are absent. WORKS IN alone stays — a named thread's scope switcher
+    // is its own fact, and no read naming a repository hides it (round-8
+    // design review item 3 made the section the switcher's, not the
+    // repository name's).
+    expect(within(panel).getByTestId("side-panel-works-in-switch")).toBeTruthy();
     expect(within(panel).queryByTestId("side-panel-branch")).toBeNull();
     expect(within(panel).queryByTestId("side-panel-files-changed")).toBeNull();
     expect(within(panel).queryByTestId("side-panel-agent-range-0")).toBeNull();

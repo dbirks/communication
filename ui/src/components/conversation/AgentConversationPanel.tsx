@@ -329,10 +329,9 @@ interface ComposerProps {
   /** The page's "Prompt" heading; the dock keeps the form compact. */
   heading?: boolean;
   /**
-   * A control that rides the form's line after the input — the chat page's
-   * ADR-0068 agent chip (`ComposerAgentChip`). Surfaces that do not pass it
-   * (the attempt dock: a run-attempt thread cannot switch agents) are
-   * unchanged.
+   * A control for the row under the textbox — the chat page's ADR-0068 agent
+   * chip (`ComposerAgentChip`). Surfaces that do not pass it (the attempt
+   * dock: a run-attempt thread cannot switch agents) are unchanged.
    */
   agentPicker?: ReactNode;
 }
@@ -650,7 +649,15 @@ export function AgentConversationComposer({
         <label className="sr-only" htmlFor={inputId}>
           Prompt for the agent
         </label>
-        <span ref={anchorRef} className="relative block">
+        {/* Design 2e: the textbox owns the whole row — `flex-1 min-w-0` lets
+            it take every remaining px beside nothing, so the full
+            "Reply, / for skills, # for issues…" placeholder fits at 1280
+            instead of clipping; the chip, the / skill button and Send sit
+            in their own row below it. In a host that sets the form to a
+            wrapping flex row (the chat pane's ink box), the `w-full` keeps
+            the box on its own line; the textarea itself wraps rather than
+            clip if the layout is ever too narrow for the placeholder. */}
+        <span ref={anchorRef} className="relative block w-full min-w-0 flex-1">
           <Textarea
             id={inputId}
             data-testid={ids.composerInput}
@@ -692,29 +699,36 @@ export function AgentConversationComposer({
             agent runs read-only.
           </p>
         ) : null}
-        {agentPicker}
-        <ComposerSkillMenu
-          state={skillMenuState}
-          open={skillOpen}
-          onOpenChange={(next) => setSkillQuery(next ? "" : null)}
-          onPick={pickSkill}
-          disabled={!isController}
-        />
-        <Button
-          type="submit"
-          variant="primary"
-          data-testid={ids.composerSend}
-          // Enabled for the controller only, and never while a turn is open:
-          // the API refuses a second prompt into a running turn (01 invariant,
-          // 06 "do not send competing prompts"), so we say so instead of failing.
-          disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
-        >
-          {sendMessage.isPending
-            ? "Sending…"
-            : mailAskFromPrompt(prompt, otherRepos) !== null
-              ? "Ask"
-              : "Send"}
-        </Button>
+        {/* The controls row: the next-turn agent chip, the / skill button
+            and Send share ONE line under the textbox (design 2e). The chip
+            is a caller-supplied node whose own box truncates; the row wraps
+            only when even that cannot fit (390 keeps all three on the line
+            because the chip shrinks). */}
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+          {agentPicker}
+          <ComposerSkillMenu
+            state={skillMenuState}
+            open={skillOpen}
+            onOpenChange={(next) => setSkillQuery(next ? "" : null)}
+            onPick={pickSkill}
+            disabled={!isController}
+          />
+          <Button
+            type="submit"
+            variant="primary"
+            data-testid={ids.composerSend}
+            // Enabled for the controller only, and never while a turn is open:
+            // the API refuses a second prompt into a running turn (01 invariant,
+            // 06 "do not send competing prompts"), so we say so instead of failing.
+            disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
+          >
+            {sendMessage.isPending
+              ? "Sending…"
+              : mailAskFromPrompt(prompt, otherRepos) !== null
+                ? "Ask"
+                : "Send"}
+          </Button>
+        </div>
       </form>
       {!isController ? (
         <p

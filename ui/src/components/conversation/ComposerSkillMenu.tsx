@@ -17,8 +17,10 @@
  * - a lock with zero skills → "no skills";
  * - `truncated` → a muted "and more…" line after the capped list.
  *
- * At narrow widths (390px phones) the word collapses and the button is just
- * `/`, wearing its `aria-label` ("Skills") instead.
+ * The visible label is "/ skill" at EVERY width, 390px phones included
+ * (round-8 review: a lone "/" on its own row named nothing) — the word is
+ * short enough that the chip, the button and Send still share the one row
+ * under the textbox without overflow.
  */
 import { useRef } from "react";
 import type { AgentProfile } from "../../api/types";
@@ -130,11 +132,10 @@ export function ComposerSkillMenu({
         className="inline-flex h-[28px] items-center gap-[3px] rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[11.5px] text-ink hover:border-ink disabled:cursor-not-allowed disabled:text-muted"
       >
         <span aria-hidden="true">/</span>
-        {/* 390px: the row is tight, so the word drops out and the glyph alone
-            names the button (its accessible name stays "Skills"). */}
-        <span aria-hidden="true" className="hidden sm:inline">
-          skill
-        </span>
+        {/* The word never folds: "skill" is short enough that "/ skill" and
+            the caret-free label fit the 390px controls row with the chip and
+            Send (round-8 review item 2); the accessible name stays "Skills". */}
+        <span aria-hidden="true">skill</span>
       </button>
       <Menu
         open={open}

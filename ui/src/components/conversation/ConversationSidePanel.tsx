@@ -210,6 +210,13 @@ const WORKFLOW_NOTE_TEST_ID = "assistant-note-workflow";
  * The WORKS IN switcher (ADR-0067 amendment): the project's repositories plus
  * "Whole project", the declared binding ticked, one pick = one PATCH.
  *
+ * The trigger is ONE bordered select-style button wearing the scope's own
+ * name and the caret ("storefront ▾", "Whole project ▾") — round-8 review
+ * item 3 replaced the name-plus-label-less-▾-box pair with the single
+ * control, so at a 390px rail the row reads as one select, not a stretched
+ * second box. The testid and aria attributes the e2e journeys read live on
+ * that one button.
+ *
  * The tick reads the DECLARED binding off the conversation detail
  * (`repository_id`, this thread's own cache entry — the page's read is
  * shared, so no second request) rather than the displayed name: the name is
@@ -217,14 +224,23 @@ const WORKFLOW_NOTE_TEST_ID = "assistant-note-workflow";
  * still "whole project" in scope until someone binds it. An in-flight pick
  * disables every row; the fresh response the mutation writes back re-ticks
  * the list without the host having to say anything.
+ *
+ * Under the trigger, when the project holds more than one repository and the
+ * chat is bound to one of them, the quiet hint says what switching to the
+ * whole project buys: the agent can read the other repos. The count is the
+ * project's repositories read — the one this component already loads, so
+ * the hint owes no fetch; one repo (or an unbound chat) owes no hint.
  */
 export function WorksInSwitcher({
   projectId,
   conversationId,
+  displayName,
   testId = "side-panel-works-in-switch",
 }: {
   projectId: string;
   conversationId: string;
+  /** The scope name the host already resolved (the panel's `repoName`). */
+  displayName?: string | null;
   testId?: string;
 }) {
   const { data: conversation } = useConversation(conversationId);
@@ -233,6 +249,24 @@ export function WorksInSwitcher({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const currentId = conversation?.repository_id ?? null;
+  // The trigger's own word: the scope the host already resolved (the name
+  // the header prints — the declared binding, else the workspace's repo,
+  // else nothing), or "Whole project" when nothing is bound and no read
+  // names a repository. The DECLARED binding still owns the tick and the
+  // hint; the name is the three-arm derivation, so a thread whose WORKSPACE
+  // says `server` reads `server` here while the menu ticks `Whole project`
+  // until someone binds it — the same split the section always kept
+  // between the name and the switcher's state. A binding the panel's reads
+  // never name is a "…", not a guess.
+  const boundName =
+    currentId !== null
+      ? (displayName ?? repositories?.items.find((repo) => repo.id === currentId)?.name)
+      : undefined;
+  const scopeName = boundName ?? (currentId !== null ? "…" : (displayName ?? "Whole project"));
+  // The other-repos hint: only a BOUND chat (the declared binding names a
+  // repository) inside a multi-repo project.
+  const otherRepos = (repositories?.items ?? []).length;
+  const hintDue = repositories !== undefined && otherRepos > 1 && currentId !== null;
   const items: MenuEntry[] = [
     {
       id: "whole-project",
@@ -258,7 +292,7 @@ export function WorksInSwitcher({
     })),
   ];
   return (
-    <span className="relative inline-flex">
+    <span className="relative block min-w-0">
       <button
         ref={triggerRef}
         type="button"
@@ -267,10 +301,21 @@ export function WorksInSwitcher({
         aria-expanded={open}
         aria-label="Switch the repository this chat works in"
         onClick={() => setOpen((value) => !value)}
-        className="ml-[4px] inline-flex h-[18px] items-center rounded-[3px] border border-line-strong bg-surface px-[3px] font-mono text-[10px] text-muted hover:border-ink hover:text-ink"
+        className="inline-flex h-[24px] w-full min-w-0 items-center gap-[6px] rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[12px] text-ink hover:border-ink"
       >
-        {open ? "▴" : "▾"}
+        <span className="min-w-0 truncate">{scopeName}</span>
+        <span aria-hidden="true" className="shrink-0 text-[10px] text-muted">
+          {open ? "▴" : "▾"}
+        </span>
       </button>
+      {hintDue ? (
+        <p
+          className="mt-1 min-w-0 break-words text-[11px] leading-[1.5] text-faint"
+          data-testid="side-panel-works-in-switch-hint"
+        >
+          Switch to Whole project to let the agent read the project's other repos.
+        </p>
+      ) : null}
       <Menu
         open={open}
         onClose={() => setOpen(false)}
@@ -362,6 +407,7 @@ export function ConversationSidePanel({
     ) : null;
   const hasContent =
     Boolean(repoName) ||
+    Boolean(workflowChat) ||
     branch != null ||
     agentRows.length > 0 ||
     skillList.length > 0 ||
@@ -371,38 +417,56 @@ export function ConversationSidePanel({
 
   return (
     <div data-testid="conversation-side-panel" className="min-w-0 space-y-4 p-3">
-      {repoName ? (
+      {repoName || workflowChat ? (
         <section aria-labelledby="side-panel-works-in-heading" data-testid="side-panel-works-in">
           <SectionTitle htmlFor="side-panel-works-in-heading">Works in</SectionTitle>
-          <div className="mt-1 flex min-w-0 items-center">
-            <p className="min-w-0 break-words font-mono text-[12px] text-ink">
-              <Link
-                to={routes.repository(projectId, repoName)}
-                className="text-accent-text hover:text-ink"
-                data-testid="side-panel-repo-link"
-              >
-                {repoName}
-              </Link>
-              {/* The workspace state rides the same line: one section, one
-                  sentence, the same words the header's meta line prints. */}
+          {workflowChat ? (
+            <>
+              {/* One select-style trigger — scope name and caret in a single
+                  bordered button (round-8 review item 3). The repository
+                  page link leaves the line with the name: the scope menu is
+                  the rail's one door for this section, and the read-only
+                  state below keeps its own link. */}
+              <div className="mt-1 min-w-0">
+                <WorksInSwitcher
+                  projectId={projectId}
+                  conversationId={workflowChat.id}
+                  displayName={repoName ?? null}
+                />
+              </div>
+              {/* The workspace state stays the section's own second line:
+                  one section, one sentence, the same words the header's
+                  meta line prints. */}
               {worksInNote ? (
-                <span className="text-muted" data-testid="side-panel-works-in-state">
-                  {" · "}
+                <p
+                  className="mt-1 min-w-0 break-words text-[11.5px] text-muted"
+                  data-testid="side-panel-works-in-state"
+                >
                   {worksInNote}
-                </span>
+                </p>
               ) : null}
-            </p>
-            {/* The ADR-0067 amendment switcher, beside the name. It sits
-                outside the paragraph — the menu's box is a `div`, and a `p`
-                may not contain one (the browser's re-parenting would rip the
-                menu out of the React tree). Present only where the host
-                names this thread: with no chat id there is nothing to patch,
-                and the rail says so below rather than offering a control
-                that cannot act. */}
-            {workflowChat ? (
-              <WorksInSwitcher projectId={projectId} conversationId={workflowChat.id} />
-            ) : null}
-          </div>
+            </>
+          ) : repoName ? (
+            <div className="mt-1 flex min-w-0 items-center">
+              <p className="min-w-0 break-words font-mono text-[12px] text-ink">
+                <Link
+                  to={routes.repository(projectId, repoName)}
+                  className="text-accent-text hover:text-ink"
+                  data-testid="side-panel-repo-link"
+                >
+                  {repoName}
+                </Link>
+                {/* The workspace state rides the same line: one section, one
+                    sentence, the same words the header's meta line prints. */}
+                {worksInNote ? (
+                  <span className="text-muted" data-testid="side-panel-works-in-state">
+                    {" · "}
+                    {worksInNote}
+                  </span>
+                ) : null}
+              </p>
+            </div>
+          ) : null}
           <p
             className="mt-1 text-[11.5px] leading-[1.5] text-faint"
             data-testid="side-panel-works-in-note"

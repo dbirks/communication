@@ -13,7 +13,7 @@
  * repositories when the labels go away (handoff 2c/3c).
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
 import { meFixture, projectFixture, repositoryId, requestsTo, type RouteStub } from "../test/fakes";
 import { wirePipelineList, wireRun } from "../test/fixtures/m4/wire";
@@ -742,6 +742,10 @@ describe("the project row's ⋯ menu (settings and members left the tree)", () =
     });
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     expect(menu.getAttribute("role")).toBe("menu");
+    // Round-8 design review item 4: the menu flies out to the RIGHT of the
+    // narrow column, beside the row that opened it (design 3c) — the old
+    // bottom drop covered the rows below inside the 220px scroller.
+    expect(menu.getAttribute("data-side")).toBe("right");
     for (const label of ["Project settings", "Members", "Add repository", "Workflows in use"]) {
       expect(within(menu).getByRole("menuitem", { name: label })).toBeTruthy();
     }
@@ -758,6 +762,38 @@ describe("the project row's ⋯ menu (settings and members left the tree)", () =
     expect(
       await screen.findByTestId("project-members-page", undefined, { timeout: READ_MS }),
     ).toBeTruthy();
+  });
+
+  it("falls back to the bottom drop in the mobile drawer, where right has no room", async () => {
+    // The 390px phone frame: the Shell's drawer replaces the desktop column
+    // (Sidebar variant="drawer"), and the drawer's column is wider than the
+    // 190px menu — so the menu keeps the bottom drop there, where the ds
+    // Menu's viewport clamp keeps it on screen, instead of a right flyout
+    // that would leave the viewport (round-8 design review item 4).
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("max-width"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }));
+    try {
+      renderApp({ path: "/", routes: menuRoutes() });
+      fireEvent.click(await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS }));
+      const trigger = await screen.findByTestId(`sidebar-project-menu-${P}`, undefined, {
+        timeout: READ_MS,
+      });
+      fireEvent.click(trigger);
+      const menu = await screen.findByTestId("sidebar-project-menu", undefined, {
+        timeout: READ_MS,
+      });
+      expect(menu.getAttribute("data-side")).toBe("bottom");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("closes on Escape with the keyboard back on the ⋯", async () => {
