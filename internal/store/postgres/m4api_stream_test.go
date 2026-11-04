@@ -548,25 +548,28 @@ func TestM4APIStreamSchedulerStaleWorker(t *testing.T) {
 		}
 	})
 
-	loads := func(t *testing.T) ([]api.SchedulerWorkerLoadView, int, bool) {
+	loads := func(t *testing.T) ([]api.SchedulerWorkerLoadView, map[string]int, bool) {
 		view, err := store.SchedulerStatus(ctx)
 		if err != nil {
 			t.Fatalf("SchedulerStatus: %v", err)
 		}
-		total, present := 0, false
+		caps, present := map[string]int{}, false
 		for _, w := range view.Workers {
-			total += w.Capacity
+			caps[w.WorkerID] = w.Capacity
 			if w.WorkerID == workerID {
 				present = true
 			}
 		}
-		return view.Workers, total, present
+		return view.Workers, caps, present
 	}
 
 	// Fresh heartbeat: the worker is live and its capacity is the fleet's.
-	_, liveCap, present := loads(t)
+	_, liveCaps, present := loads(t)
 	if !present {
 		t.Fatal("freshly registered worker (heartbeat = now()) missing from the scheduler worker list")
+	}
+	if liveCaps[workerID] != 4 {
+		t.Errorf("live worker capacity = %d, want 4", liveCaps[workerID])
 	}
 
 	// Expire the heartbeat far past the default window
@@ -577,14 +580,20 @@ func TestM4APIStreamSchedulerStaleWorker(t *testing.T) {
 		workerID); err != nil {
 		t.Fatalf("expire heartbeat: %v", err)
 	}
-	stale, staleCap, present := loads(t)
+	stale, staleCaps, present := loads(t)
 	if present {
 		t.Errorf("worker with a 5-minute-stale heartbeat is still listed at capacity 4: %+v", stale)
 	}
-	// No other test runs between the two reads, so the only capacity that
-	// may have moved is this worker's: the dead row's 4 must drop out.
-	if staleCap != liveCap-4 {
-		t.Errorf("fleet capacity %d -> %d; want exactly the dead worker's 4 to drop out", liveCap, staleCap)
+	// The dead row's 4 drop out, and nothing is invented: every worker the
+	// stale read counts was counted live with the same capacity. Other
+	// workers may legitimately drop out between the reads — packages share
+	// this database and another test's worker can cross its own heartbeat
+	// window here (CI 6e9ecb6: fleet 29 -> 24) — so the check is per
+	// worker, never a fleet-total delta.
+	for id, c := range staleCaps {
+		if lc, ok := liveCaps[id]; !ok || lc != c {
+			t.Errorf("worker %s counted at capacity %d after the expiry but %d (present=%v) before", id, c, lc, ok)
+		}
 	}
 
 	// The window is the reader's configuration, exactly as /workers' is: a
