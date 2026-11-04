@@ -33,6 +33,7 @@ import { agentDisplayForLauncher, launcherNameSource } from "./agentNames";
 import { AgentSwitchDivider, agentSwitchFromEvent } from "./AgentSwitchDivider";
 import { MailCard, mailAskedFromEvent, mergeMailAnswered, type MailCardData } from "./MailCard";
 import { renderSplitAtTurnFailures } from "./TurnFailureNotice";
+import { useStickyTranscript } from "./useTranscriptScroll";
 import type { ConversationSession } from "./useConversationSession";
 
 /** `Codex · gpt-5`, or just `Codex` when the profile names no model. */
@@ -333,8 +334,18 @@ export function ConversationTranscript({ session }: ConversationTranscriptProps)
   // composer to keep the final line clear of it (the 390 review).
   const composerHeight = useComposerHeight();
 
+  // The thread's pin (rcn-review10): the newest row — an agent chunk, a
+  // reply, a switch divider, a scope-change line — stays at the bottom of the
+  // pane's scroller on first load and whenever the reader is at the bottom;
+  // the composer padding above makes the last row land fully clear of the
+  // pinned composer. A reader who has scrolled up to read keeps their place.
+  const transcriptRef = useStickyTranscript();
+
   return (
-    <div style={composerHeight > 0 ? { paddingBottom: composerHeight } : undefined}>
+    <div
+      ref={transcriptRef}
+      style={composerHeight > 0 ? { paddingBottom: composerHeight } : undefined}
+    >
       {parts.map((part, index) => {
         const label = part.divider
           ? agentLabel(

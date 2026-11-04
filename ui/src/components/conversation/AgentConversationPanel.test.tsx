@@ -11,7 +11,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { render as renderDom, cleanup } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { setCsrfToken } from "../../api/client";
 import {
@@ -40,11 +40,14 @@ import {
 } from "../../test/fakes";
 import type { Conversation } from "../../api/types";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 /** The panel is a component, not a page: wrap it in the app's providers only.
  * `requests` is the fetch-boundary log, for the mutation assertions. */
-function renderPanel(ui: ReactNode, routes: RouteStub[]) {
+function renderPanel(ui: ReactNode, routes: RouteStub[], container?: HTMLElement) {
   setCsrfToken(null);
   const { requests } = mockFetch(routes, {});
   const queryClient = new QueryClient({
@@ -55,6 +58,7 @@ function renderPanel(ui: ReactNode, routes: RouteStub[]) {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>{ui}</MemoryRouter>
       </QueryClientProvider>,
+      container ? { container } : {},
     ),
     requests,
     queryClient,
@@ -136,6 +140,56 @@ describe("AgentConversationPanel (dock)", () => {
     expect(items[0].textContent).toContain("Fix the flaky spec");
     // The dock badge says who is driving, in words.
     expect(screen.getByTestId("controller-badge").textContent).toContain("in control");
+  });
+
+  /**
+   * rcn-review10: the dock is a chat surface too — its transcript keeps the
+   * pane's scroller pinned to the newest row, the way the page's does.
+   * jsdom lays out nothing: the geometry is the test's own numbers, and the
+   * ResizeObserver stub fires the moment a row lands.
+   */
+  it("keeps the pane's scroller pinned to the newest row as rows land", async () => {
+    const roCallbacks = new Set<() => void>();
+    class ResizeObserverStub {
+      fire: () => void;
+      constructor(cb: (entries: unknown[], observer: unknown) => void) {
+        this.fire = () => cb([], this);
+        roCallbacks.add(this.fire);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {
+        roCallbacks.delete(this.fire);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+
+    const scroller = document.createElement("div");
+    scroller.style.overflowY = "auto";
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 0;
+    document.body.appendChild(scroller);
+
+    renderPanel(dock(), routes(conversationFixture), scroller);
+    // The fixture thread starts empty; the transcript block (the pin's
+    // content) is up either way.
+    await screen.findByTestId("transcript-empty");
+    // First load of the dock's thread: the view starts at the newest row.
+    expect(scroller.scrollTop).toBe(700);
+
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(conversationEvent("conversation.message.agent", { text: "On it.", final: true }));
+    });
+    await screen.findByTestId("transcript");
+    // The reply landed: the content grew, and the pinned view followed it.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1400 });
+    act(() => {
+      roCallbacks.forEach((cb) => cb());
+    });
+    expect(scroller.scrollTop).toBe(1100);
+    scroller.remove();
   });
 
   /**

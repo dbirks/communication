@@ -46,6 +46,7 @@ import Transcript from "../Transcript";
 import { TakeControlCard } from "../workbench/TakeControlCard";
 import { useConversationSession, type ConversationSession } from "./useConversationSession";
 import { renderSplitAtTurnFailures } from "./TurnFailureNotice";
+import { useStickyTranscript } from "./useTranscriptScroll";
 import type { ConversationControl, ConversationTurn } from "../../api/types";
 import type { TranscriptItem } from "../../api/transcript";
 import { automationViaWords, submitterCopy, turnStatusText } from "../../api/transcript";
@@ -919,6 +920,12 @@ function PanelInner({
 }: AgentConversationPanelProps & { session: ConversationSession }) {
   const merged: ConversationPanelIds = { ...PAGE_PANEL_IDS, ...ids };
   const { conversation, data } = session;
+  // The thread's pin (rcn-review10): like the page, this surface keeps the
+  // newest row at the bottom of whatever scroller owns it (a no-op where it
+  // has none). The ref wraps the transcript block in both variants below —
+  // the callback re-arms the pin when the transcript lands after the
+  // loading state.
+  const transcriptRef = useStickyTranscript();
 
   if (conversation.isPending) {
     return pending ?? <Spinner label="Loading conversation" />;
@@ -1029,7 +1036,7 @@ function PanelInner({
           confirmTakeover={confirmTakeover ?? variant === "dock"}
           stepName={stepName}
         />
-        {transcriptBlock}
+        <div ref={transcriptRef}>{transcriptBlock}</div>
         {composerBlock}
       </div>
     );
@@ -1039,7 +1046,7 @@ function PanelInner({
   // live in the context rail, rendered from the same session.
   return (
     <>
-      {transcriptBlock}
+      <div ref={transcriptRef}>{transcriptBlock}</div>
       {composerBlock}
     </>
   );

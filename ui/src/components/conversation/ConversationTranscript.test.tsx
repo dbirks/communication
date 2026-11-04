@@ -9,12 +9,16 @@
  * nothing.
  */
 import { cleanup, render, renderHook, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act } from "@testing-library/react";
 import { ConversationTranscript, useComposerHeight } from "./ConversationTranscript";
 import type { ConversationSession } from "./useConversationSession";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 /** The page's composer, stubbed with a measured height (jsdom lays out
  * nothing: offsetHeight is a mock, not a layout). */
@@ -74,5 +78,91 @@ describe("the transcript's composer padding (round 6, the 390 review)", () => {
     const { container } = renderTranscript();
     const wrapper = container.firstElementChild as HTMLElement;
     await waitFor(() => expect(wrapper.style.paddingBottom).toBe(""));
+  });
+});
+
+/**
+ * The pin (rcn-review10): the pane's scroller — the transcript's nearest
+ * scrollable ancestor, a page-level sibling — stays with the newest row.
+ * jsdom lays out nothing, so the geometry is the test's own numbers and the
+ * ResizeObserver is a stub the test fires when a row lands.
+ */
+describe("the transcript's pin to the newest row (rcn-review10)", () => {
+  const roCallbacks = new Set<() => void>();
+  class ResizeObserverStub {
+    cb: (entries: unknown[], observer: unknown) => void;
+    fire: () => void;
+    constructor(cb: (entries: unknown[], observer: unknown) => void) {
+      this.cb = cb;
+      this.fire = () => this.cb([], this);
+      roCallbacks.add(this.fire);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {
+      roCallbacks.delete(this.fire);
+    }
+  }
+
+  function fireRowLanded() {
+    act(() => {
+      roCallbacks.forEach((cb) => cb());
+    });
+  }
+
+  it("keeps the pane's scroller pinned to the newest row as rows land", () => {
+    roCallbacks.clear();
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    const scroller = document.createElement("div");
+    scroller.style.overflowY = "auto";
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 0;
+    document.body.appendChild(scroller);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ConversationTranscript session={emptySession} />
+      </QueryClientProvider>,
+      { container: scroller },
+    );
+    // First load: the view starts at the newest row.
+    expect(scroller.scrollTop).toBe(700);
+    // A reply lands: the content grows, and the pinned view follows it —
+    // the pin lands the scroller's bottom, so the composer padding the
+    // transcript reserved keeps the last row clear of the composer.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1400 });
+    fireRowLanded();
+    expect(scroller.scrollTop).toBe(1100);
+    // A switch divider and the next turn's header land: it follows again.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1700 });
+    fireRowLanded();
+    expect(scroller.scrollTop).toBe(1400);
+    scroller.remove();
+  });
+
+  it("leaves a reader alone who has scrolled up to read", () => {
+    roCallbacks.clear();
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    const scroller = document.createElement("div");
+    scroller.style.overflowY = "auto";
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1400 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 0;
+    document.body.appendChild(scroller);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ConversationTranscript session={emptySession} />
+      </QueryClientProvider>,
+      { container: scroller },
+    );
+    // The reader climbs up to an old line, well out of the 80px pin band.
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1800 });
+    fireRowLanded();
+    expect(scroller.scrollTop).toBe(200);
+    scroller.remove();
   });
 });
