@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { PanelRight } from "lucide-react";
 import { ApiError } from "../api/client";
@@ -195,20 +195,11 @@ export default function ConversationPage({
     // shell's own phone drawer keeps the same return (Shell.tsx closeDrawer).
     detailsToggleRef.current?.focus();
   }, []);
-  // An open sheet must never reappear from its own state on a later resize:
-  // the moment the viewport reaches `lg` — the same breakpoint the toggle's
-  // `lg:hidden` asks — the open state clears. Below `lg` the sheet is the
-  // phone's door into the panel, and a width change is never an opening.
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia("(min-width: 1024px)");
-    const onChange = () => {
-      if (query.matches) setDetailsOpen(false);
-    };
-    onChange();
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
+  // A resize never clears `detailsOpen`: the sheet's `open` is already
+  // gated on `narrow` (`open={narrow && detailsOpen}`), so at `lg+` it is
+  // simply not shown — and returning below `lg` shows it again, the normal
+  // responsive behaviour. (Round 9: the close-at-`lg` listener the page
+  // once carried made the emulator's 1280-then-390 capture lose the sheet.)
   // Design 2e's `Make a workflow… dismiss`: the standing note is the panel's
   // own (not a notes-store row), so its dismissal is page-held, per
   // conversation (see `useWorkflowNoteDismissed`).
@@ -383,7 +374,26 @@ export default function ConversationPage({
   // fallback arm for a thread beyond the list's first page or an older control
   // plane — never a guess.
   const summaryRow = (summaries.data?.items ?? []).find((row) => row.id === conversationId);
-  const repositoryName = summaryRow?.repository_name ?? workspaceRepos[0]?.name ?? null;
+  // rcn-2e works-in-moved (round 9): the chat's SCOPE label comes from the
+  // DECLARED binding only — the detail read's `repository_id` is
+  // `conversations.repository_id` as stored, and null says the whole project
+  // (the ADR-0067 amendment's move to "Whole project"). The page's old chain
+  // (list row, else the workspace's first repository) named a moved chat
+  // after an arbitrary repository: the thread's workspace still holds the
+  // project's checkouts, and `workspaceRepos[0]` is the alphabetically first
+  // of them, not the chat's scope. The workspace's repositories are a
+  // SEPARATE fact (what the agent actually checked out) and stay where the
+  // page lists workspace contents — never as the chat's scope. A control
+  // plane predating the field (undefined) cannot say whether the thread is
+  // bound, so it keeps the three-arm name the list row serves — that is all
+  // the read can claim.
+  const declaredRepositoryId = data.repository_id;
+  const wholeProject = declaredRepositoryId === null;
+  const repositoryName = wholeProject
+    ? null
+    : declaredRepositoryId !== undefined
+      ? (data.repository_name ?? summaryRow?.repository_name ?? null)
+      : (summaryRow?.repository_name ?? workspaceRepos[0]?.name ?? null);
   // The workspace is a SEPARATE fact from the binding (error-details-r6 / the
   // WORKS-IN contradiction): "no repository attached" beside a panel naming
   // `web` is two sources disagreeing on one screen. The repository is named
@@ -395,24 +405,26 @@ export default function ConversationPage({
       : repositoryName !== null && workspaceRepos.length === 0
         ? "workspace not prepared"
         : null;
-  const repoLabel = repositoryName
-    ? [
-        workspaceRepos.length > 1
-          ? `${repositoryName} +${workspaceRepos.length - 1}`
-          : repositoryName,
-        // A thread that HAS a repository and a live checkout says nothing
-        // extra; anything else is the honest state beside the name.
-        worksInNote,
-      ]
-        .filter((part): part is string => part !== null)
-        .join(" · ")
-    : workspaces.error
-      ? "workspace unavailable"
-      : !workspaces.data
-        ? "workspace…"
-        : !threadWorkspace
-          ? "no workspace yet"
-          : "no repository attached";
+  const repoLabel = wholeProject
+    ? "Whole project"
+    : repositoryName
+      ? [
+          workspaceRepos.length > 1
+            ? `${repositoryName} +${workspaceRepos.length - 1}`
+            : repositoryName,
+          // A thread that HAS a repository and a live checkout says nothing
+          // extra; anything else is the honest state beside the name.
+          worksInNote,
+        ]
+          .filter((part): part is string => part !== null)
+          .join(" · ")
+      : workspaces.error
+        ? "workspace unavailable"
+        : !workspaces.data
+          ? "workspace…"
+          : !threadWorkspace
+            ? "no workspace yet"
+            : "no repository attached";
   const threadBranchInfo = threadBranch(workspaceRepos, repositoryName);
   // The branch the header and BRANCH print (rcn-2e review defect 2). The
   // workspace row this thread OWNS is the source — never `repos[0]`, which is
@@ -459,9 +471,10 @@ export default function ConversationPage({
     />
   );
   const agentPicker = <ComposerAgentChip session={session} />;
-  // 2e's breadcrumb: project / repository. The repository segment links to
-  // the repo page only when a read names one; "chats" is the honest fallback
-  // for a thread no binding claims.
+  // 2e's breadcrumb: project / scope. The repository segment links to the
+  // repo page only when the DECLARED binding names one; "Whole project" is
+  // the moved (or born-unbound) thread's own scope, and "chats" stays the
+  // honest fallback for a thread no read can place.
   const breadcrumb = (
     <p
       className="min-w-0 break-words font-mono text-[11px] text-muted"
@@ -479,6 +492,8 @@ export default function ConversationPage({
         >
           {repositoryName}
         </Link>
+      ) : wholeProject ? (
+        <span data-testid="conversation-breadcrumb-scope">Whole project</span>
       ) : (
         <span data-testid="conversation-breadcrumb-unbound">chats</span>
       )}

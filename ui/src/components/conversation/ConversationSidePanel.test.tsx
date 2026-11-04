@@ -624,6 +624,59 @@ describe("WORKS IN switcher (ADR-0067 amendment)", () => {
     expect(screen.queryByTestId("side-panel-works-in-switch-hint")).toBeNull();
   });
 
+  it('a moved chat says "Whole project" in the trigger even when the host still resolves a repository (rcn-2e works-in-moved)', async () => {
+    // The host's resolved name is the workspace's repository — the thread
+    // moved to the whole project, its workspace still checked out one, and
+    // the old page handed that name down. The trigger's word is the
+    // DECLARED binding's word, so it says "Whole project", never the
+    // workspace's checkout.
+    scopePanel(
+      [
+        {
+          method: "GET",
+          path: `/api/v1/conversations/${conversationId}`,
+          body: { ...conversationFixture, repository_id: null },
+        },
+        {
+          method: "GET",
+          path: `/api/v1/projects/${projectFixture.id}/repos`,
+          body: { items: [repoStore, repoApi] },
+        },
+      ],
+      { repoName: "storefront" },
+    );
+    const trigger = await screen.findByTestId("side-panel-works-in-switch");
+    await vi.waitFor(() => expect(trigger.textContent).toContain("Whole project"));
+    expect(trigger.textContent).not.toContain("storefront");
+    // The tick agrees with the word: whole project is the current scope.
+    fireEvent.click(trigger);
+    await screen.findByRole("menu");
+    expect(screen.getByTestId("side-panel-scope-item-whole").textContent).toContain("✓");
+  });
+
+  it("a bound chat keeps the repository's name in the trigger while the binding is read", async () => {
+    // The declared binding names a repository: the trigger reads that
+    // repository's name (the host's resolved word), not the whole project.
+    scopePanel(
+      [
+        {
+          method: "GET",
+          path: `/api/v1/conversations/${conversationId}`,
+          body: { ...conversationFixture, repository_id: repoStore.id },
+        },
+        {
+          method: "GET",
+          path: `/api/v1/projects/${projectFixture.id}/repos`,
+          body: { items: [repoStore, repoApi] },
+        },
+      ],
+      { repoName: "storefront" },
+    );
+    const trigger = await screen.findByTestId("side-panel-works-in-switch");
+    await vi.waitFor(() => expect(trigger.textContent).toContain("storefront"));
+    expect(trigger.textContent).not.toContain("Whole project");
+  });
+
   it("owes the other-repos hint only to a bound chat in a multi-repo project", async () => {
     // Bound to one of TWO repositories: the hint is due, from the panel's
     // own repos read (no extra fetch — the count is that read's length).

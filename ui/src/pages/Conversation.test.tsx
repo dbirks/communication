@@ -15,6 +15,7 @@ import {
   conversationEvent,
   conversationFixture,
   conversationId,
+  conversationSummaryFixture,
   controlledByOther,
   meFixture,
   otherUserId,
@@ -25,6 +26,8 @@ import {
   turnId,
   turnSandboxFixture,
   workerId,
+  workspaceFixture,
+  repositoryId,
   type RouteStub,
 } from "../test/fakes";
 import type { Conversation, TurnSandbox } from "../api/types";
@@ -187,10 +190,12 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     expect(document.activeElement).toBe(toggle);
   });
 
-  it("reaching the `lg` breakpoint closes an open sheet — a resize never re-opens it", async () => {
-    // The page's listener registers on the toggle's own `lg:hidden` question,
-    // so the stub answers `(min-width: 1024px)` live and hands the test the
-    // `change` handler to fire the crossing.
+  it("widening past `lg` hides the open sheet; narrowing again restores it (state kept); Esc closes it", async () => {
+    // Round-9 contract: the sheet's `open` is gated on `narrow` alone — the
+    // page no longer clears the open state on the `lg` crossing, because the
+    // emulator's `emu.screen()` shoots 1280 BEFORE 390 and a close-on-cross
+    // listener made the 390 shot stand sheet-less. The stub answers both
+    // breakpoint questions live and hands the test the `change` handlers.
     let width = 390;
     const change: Record<string, Array<() => void>> = {};
     vi.stubGlobal("matchMedia", (query: string) => ({
@@ -207,22 +212,29 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     const toggle = await screen.findByTestId("chat-details-toggle");
     fireEvent.click(toggle);
     await screen.findByTestId("chat-details-sheet");
-    // The viewport crosses to `lg`: the page's own listener must clear the
-    // sheet's open state, or it stands open on the next sub-`lg` resize.
+    // The viewport crosses to `lg`: at the desktop width the sheet is not
+    // rendered — its `open` is gated on `narrow` — but the open state is
+    // NOT cleared (the toggle still reports it).
     act(() => {
       width = 1280;
       (change["(min-width: 1024px)"] ?? []).forEach((handler) => handler());
       (change["(max-width: 1023.98px)"] ?? []).forEach((handler) => handler());
     });
     expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    // Crossing back down must NOT re-open it: the state stayed cleared.
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // Crossing back below `lg` shows the sheet again WITHOUT touching the
+    // toggle: the state survived the crossing.
     act(() => {
       width = 390;
       (change["(min-width: 1024px)"] ?? []).forEach((handler) => handler());
       (change["(max-width: 1023.98px)"] ?? []).forEach((handler) => handler());
     });
+    expect(await screen.findByTestId("chat-details-sheet")).toBeTruthy();
+    // Esc at the phone width closes it for real — the state clears, not
+    // just the mount.
+    fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
 });
 
@@ -1534,5 +1546,163 @@ describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", 
     expect(ask.text).not.toContain(conversationId);
     expect(ask.entity).toEqual({ kind: "conversation", id: conversationId });
     expect(ask.expanded).toBe(true);
+  });
+});
+
+/**
+ * The chat's scope is its DECLARED binding (rcn-2e works-in-moved, round 9).
+ *
+ * After `PATCH /conversations/{id}` moved a chat to the whole project the
+ * WORKS IN trigger read "server ▾", the breadcrumb "…/ server" and the meta
+ * line "server +1": the page's scope name fell back through the list row
+ * and the workspace's first repository, and a moved chat's workspace still
+ * holds the project's checkouts. The label now comes from the detail read's
+ * `repository_id` only — null says "Whole project" even while the three-arm
+ * `repository_name` answers the workspace's repository.
+ */
+describe("the chat's scope is its declared binding (rcn-2e works-in-moved)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Answer the shell's narrow query as a `width` px viewport would (the
+   * phone-sheet suite's own stub, same contract). */
+  function stubViewport(width: number): void {
+    const narrow = width < 1024;
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: narrow && query.includes("max-width"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }));
+  }
+
+  /** This thread's workspace still holds every repository of the project —
+   * what the agent sees, not the chat's scope. */
+  const scopedWorkspace = {
+    ...workspaceFixture,
+    repos: [
+      {
+        repository_id: repositoryId,
+        name: "server",
+        run_ref: `${conversationId}/server`,
+        base_commit: "a91f2c0d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8090",
+        head_commit: null,
+        workspace_mode: "worktree",
+        modified_paths: [],
+        excluded_paths: [],
+      },
+      {
+        repository_id: "01987a79-bbbb-7000-8000-abcdef012345",
+        name: "web",
+        run_ref: `${conversationId}/web`,
+        base_commit: "a91f2c0d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8090",
+        head_commit: null,
+        workspace_mode: "worktree",
+        modified_paths: [],
+        excluded_paths: [],
+      },
+    ],
+  };
+
+  function scopeRoutes(detail: Conversation, summaryName: string): RouteStub[] {
+    return [
+      { path: "/api/v1/me", body: meFixture },
+      { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
+      { path: projectPath, method: "GET", body: projectFixture },
+      { path: "/api/v1/users", method: "GET", body: { items: [] } },
+      { path: conversationPath, method: "GET", body: detail },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/artifacts`,
+        method: "GET",
+        body: { artifacts: [] },
+      },
+      // The list row and the wire's three-arm `repository_name` still answer
+      // the workspace's repository — the adversarial read the label must
+      // ignore once the declared binding is null.
+      { path: "/api/v1/conversations", method: "GET", body: { items: [], next_cursor: null } },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/conversations`,
+        method: "GET",
+        body: {
+          items: [
+            {
+              ...conversationSummaryFixture,
+              repository_id: repositoryId,
+              repository_name: summaryName,
+            },
+          ],
+          next_cursor: null,
+        },
+      },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+        method: "GET",
+        body: { workspaces: [scopedWorkspace] },
+      },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/repos`,
+        method: "GET",
+        body: { items: [] },
+      },
+    ];
+  }
+
+  it('a moved (repository_id null) chat reads "Whole project" — never the workspace\'s repository', async () => {
+    stubViewport(1280);
+    // The declared binding is null; the wire's three-arm `repository_name`
+    // still answers the workspace's first repository, and so does the list
+    // row. Both are workspace facts, not the chat's scope.
+    const detail = {
+      ...conversationFixture,
+      repository_id: null,
+      repository_name: "server",
+    } as Conversation;
+    renderApp({ path: `/threads/${conversationId}`, routes: scopeRoutes(detail, "server") });
+    await screen.findByTestId("conversation-title");
+
+    // The header's meta line says the scope in words.
+    const meta = await screen.findByTestId("conversation-meta");
+    expect(meta.textContent).toContain("Whole project");
+    expect(meta.textContent).not.toContain("server");
+    // The breadcrumb's repo crumb is gone: project › Whole project.
+    expect(screen.getByTestId("conversation-breadcrumb-scope").textContent).toBe("Whole project");
+    expect(screen.queryByTestId("conversation-breadcrumb-repo")).toBeNull();
+    // The WORKS IN trigger wears the declared binding's word, with the
+    // whole project ticked.
+    const trigger = (await screen.findByTestId("side-panel-works-in-switch")) as HTMLButtonElement;
+    await vi.waitFor(() => expect(trigger.textContent).toContain("Whole project"));
+    expect(trigger.textContent).not.toContain("server");
+    // The workspace's repositories are still on screen where the page
+    // lists workspace contents — the workspace fact is not erased, only
+    // stopped from naming the chat.
+    expect(screen.getByTestId("workspace-widget")).toBeTruthy();
+  });
+
+  it("a bound chat names its own repository in the meta line, the breadcrumb and the switcher", async () => {
+    stubViewport(1280);
+    const detail = {
+      ...conversationFixture,
+      repository_id: "01987a79-bbbb-7000-8000-abcdef012345",
+      repository_name: "web",
+    } as Conversation;
+    renderApp({ path: `/threads/${conversationId}`, routes: scopeRoutes(detail, "web") });
+    await screen.findByTestId("conversation-title");
+
+    // `web +1`: the bound repository plus the workspace's other checkout.
+    const meta = await screen.findByTestId("conversation-meta");
+    expect(meta.textContent).toContain("web +1");
+    expect(meta.textContent).not.toContain("Whole project");
+    // The breadcrumb links the bound repository.
+    const crumb = screen.getByTestId("conversation-breadcrumb-repo");
+    expect(crumb.textContent).toBe("web");
+    // The switcher's trigger reads the binding's name, not the whole project.
+    const trigger = (await screen.findByTestId("side-panel-works-in-switch")) as HTMLButtonElement;
+    await vi.waitFor(() => expect(trigger.textContent).toContain("web"));
+    expect(trigger.textContent).not.toContain("Whole project");
   });
 });

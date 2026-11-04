@@ -5,10 +5,12 @@
  * Every section prints from server facts and nothing else; a section with no
  * data is absent, never an empty box or a placeholder row:
  *
- * - WORKS IN — the repository the thread works in (ADR-0067's resolution:
- *   the declared binding, else the workspace, else the linked run — the host
- *   resolves it and hands the name down). A switcher since the ADR-0067
- *   amendment: the host's chat id (the `workflowChat` prop) opens the ds
+ * - WORKS IN — the repository the thread works in (ADR-0067: the declared
+ *   binding, and the trigger's word is that binding's word — a moved
+ *   thread says "Whole project" even while its workspace still checked
+ *   out a repository, because the workspace is what the agent sees, not
+ *   the chat's scope; the host resolves the name for bound threads and
+ *   hands it down). A switcher since the ADR-0067 amendment: the host's chat id (the `workflowChat` prop) opens the ds
  *   Menu — the project's repositories plus "Whole project", the declared
  *   binding ticked — and its pick is `PATCH /api/v1/conversations/{id}`.
  *   The transcript renders the move as its own system line (the journal's
@@ -248,21 +250,28 @@ export function WorksInSwitcher({
   const change = useChangeConversationScope();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const currentId = conversation?.repository_id ?? null;
-  // The trigger's own word: the scope the host already resolved (the name
-  // the header prints — the declared binding, else the workspace's repo,
-  // else nothing), or "Whole project" when nothing is bound and no read
-  // names a repository. The DECLARED binding still owns the tick and the
-  // hint; the name is the three-arm derivation, so a thread whose WORKSPACE
-  // says `server` reads `server` here while the menu ticks `Whole project`
-  // until someone binds it — the same split the section always kept
-  // between the name and the switcher's state. A binding the panel's reads
-  // never name is a "…", not a guess.
+  // `undefined` while the read is in flight (or on a replica predating the
+  // field) — only an explicit null says the whole project.
+  const declaredId = conversation?.repository_id;
+  const currentId = declaredId ?? null;
+  // The trigger's own word: the DECLARED binding's word (rcn-2e
+  // works-in-moved, round 9). A chat whose binding is null says "Whole
+  // project" even while its workspace still checked out a repository — the
+  // workspace is what the agent sees, not the chat's scope — so the old
+  // habit of printing the host's resolved name there (the page's workspace
+  // fallback) is gone. A binding the panel's reads never name is a "…",
+  // not a guess; a replica that predates `repository_id` (undefined) keeps
+  // the host-resolved name, because no read says the thread is unbound.
   const boundName =
     currentId !== null
       ? (displayName ?? repositories?.items.find((repo) => repo.id === currentId)?.name)
       : undefined;
-  const scopeName = boundName ?? (currentId !== null ? "…" : (displayName ?? "Whole project"));
+  const scopeName =
+    declaredId === null
+      ? "Whole project"
+      : declaredId !== undefined
+        ? (boundName ?? "…")
+        : (displayName ?? "Whole project");
   // The other-repos hint: only a BOUND chat (the declared binding names a
   // repository) inside a multi-repo project.
   const otherRepos = (repositories?.items ?? []).length;
