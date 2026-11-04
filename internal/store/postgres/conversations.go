@@ -677,9 +677,12 @@ var cnvJSONLiteralsRE = regexp.MustCompile(`\b(?:true|false|null)\b`)
 // escape-aware, an unterminated final string included — and returns what is
 // left: the document's bare structure. String content may carry any
 // character, prose included, so it never counts toward the structure test.
-func cnvStripJSONStrings(text string) string {
+// startInString says whether the text opens INSIDE a string literal: a slice
+// cut mid-value does, and its first quote then CLOSES the value that began
+// in the previous chunk, so the leading run is string content, not structure.
+func cnvStripJSONStrings(text string, startInString bool) string {
 	var b strings.Builder
-	inString := false
+	inString := startInString
 	escaped := false
 	for _, r := range text {
 		if inString {
@@ -702,25 +705,13 @@ func cnvStripJSONStrings(text string) string {
 	return b.String()
 }
 
-// cnvJSONFragment reports whether a chunk is a piece of a JSON document the
-// structured arm does not read as one whole: the tail — or head — of a
-// structured output the worker's chunk cap split mid-blob (the row would
-// otherwise print the tail's punctuation, `"]}}`), a top-level array, or an
-// object the structured arm answers with no line. The test is exact: once
-// the string literals are gone, nothing but JSON structure may be left —
-// delimiters, commas, colons, numbers, the literals true/false/null, and
-// whitespace — and the text must carry at least one delimiter, so ordinary
-// prose, even prose that mentions a brace, is untouched. A cap cut inside a
-// string literal leaves its opening quote to the gate (which admits it) and
-// the strip (which discards the run to the end of the chunk) — a mid-string
-// tail is still recognized.
-func cnvJSONFragment(chunk string) bool {
-	text := strings.TrimSpace(chunk)
-	if text == "" || !strings.ContainsAny(text, "{}[]\"") {
-		return false
-	}
-	rest := cnvJSONLiteralsRE.ReplaceAllString(cnvStripJSONStrings(text), "")
-	for _, r := range rest {
+// cnvBareStructure reports whether text is nothing but JSON structure:
+// delimiters, commas, colons, numbers, and whitespace (the true/false/null
+// literals are removed by cnvJSONLiteralsRE before the call). The empty
+// string is bare structure — a slice wholly inside one string value leaves
+// no structure behind at all.
+func cnvBareStructure(text string) bool {
+	for _, r := range text {
 		switch {
 		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
 		case r == '{' || r == '}' || r == '[' || r == ']' || r == ',' || r == ':':
@@ -730,6 +721,75 @@ func cnvJSONFragment(chunk string) bool {
 		}
 	}
 	return true
+}
+
+// cnvQuoteHugsStructure reports whether some quote in text sits immediately
+// next to a structural character — one of { } [ ] : , — the mark that the
+// quote belongs to a JSON document. In a document a quote is only ever
+// adjacent to a delimiter, a comma, a colon, or another quote: `"}`, `{"`,
+// `":`, `",`. A quote hugging a letter or a digit is prose's own quoting —
+// `Port "5432" opened` — and never the document's.
+func cnvQuoteHugsStructure(text string) bool {
+	rs := []rune(text)
+	for i, r := range rs {
+		if r != '"' {
+			continue
+		}
+		if i > 0 && cnvStructuralChar(rs[i-1]) {
+			return true
+		}
+		if i+1 < len(rs) && cnvStructuralChar(rs[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// cnvStructuralChar is one JSON structural character — a container
+// delimiter, a comma, or a colon. (Numbers and the true/false/null literals
+// count toward cnvBareStructure but are not "structure" in the hug sense:
+// a quote beside a digit is a value's own content or prose, not the
+// document.)
+func cnvStructuralChar(r rune) bool {
+	switch r {
+	case '{', '}', '[', ']', ',', ':':
+		return true
+	}
+	return false
+}
+
+// cnvJSONFragment reports whether a chunk is a piece of a JSON document the
+// structured arm does not read as one whole: the tail, a mid-structure
+// slice, or the head of a structured output the worker's chunk cap split
+// mid-blob (the row would otherwise print the slice's punctuation —
+// round-11's `"]}}`, round-12's `unchanged."}, {"id": 2, …`), a top-level
+// array, or an object the structured arm answers with no line.
+//
+// The decision is structural, not a list of shapes: the chunk's string
+// literals are stripped away, and what is left must be bare JSON structure.
+// The catch is that the cap cut can land anywhere, so the chunk can open
+// OUTSIDE a string (a head, a tail whose cut fell between values) or INSIDE
+// one (a mid-slice whose cut fell mid-value: its first quote closes the
+// value that began in the previous chunk, and the leading run is string
+// content, not structure). The strip is therefore tried under both opening
+// states. The inside-open state must additionally show structure the
+// outside-open state could not fake — non-empty bare structure AND a quote
+// hugging a structural character — because a prose line that merely wraps
+// some words in quotes (`Port "5432, 5433" opened`) also strips to bare
+// structure under that state, and the quote-hugs-structure mark is what
+// separates a document from prose that quotes.
+func cnvJSONFragment(chunk string) bool {
+	text := strings.TrimSpace(chunk)
+	if text == "" || !strings.ContainsAny(text, "{}[]\"") {
+		return false
+	}
+	// Opens outside a string: the usual head and tail.
+	if cnvBareStructure(cnvJSONLiteralsRE.ReplaceAllString(cnvStripJSONStrings(text, false), "")) {
+		return true
+	}
+	// Opens inside a string: the cap cut mid-value.
+	rest := cnvJSONLiteralsRE.ReplaceAllString(cnvStripJSONStrings(text, true), "")
+	return strings.TrimSpace(rest) != "" && cnvBareStructure(rest) && cnvQuoteHugsStructure(text)
 }
 
 // cnvJSONEscapeRE is one well-formed JSON escape pair — or a \uXXXX a cut

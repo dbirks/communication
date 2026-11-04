@@ -318,3 +318,138 @@ func TestConversationListCutStringValueLastAgentLine(t *testing.T) {
 		}
 	}
 }
+
+// TestCnvLastAgentLineMidStructureSlice pins the round-12 defect against the
+// renderer alone (no database): the worker's chunk cap can split a run
+// node's structured output so that the NEWEST chunk opens INSIDE a string
+// value — a slice that starts in the middle of one string and runs on into
+// the next object — `unchanged."}, {"id": 2, …`. The preview must decide
+// that structurally (string literals stripped, what is left is bare JSON
+// structure), not by a list of shapes, and must never print the slice's
+// punctuation: the row says `structured output`.
+func TestCnvLastAgentLineMidStructureSlice(t *testing.T) {
+	cases := []struct {
+		name, chunk, want string
+	}{
+		// The exact slice the round-12 review saw under
+		// `run 01a1a81d /plan attempt 1`.
+		{"the exact mid-slice",
+			`'return a + b' unchanged."}, {"id": 2, "file": "app/...`,
+			"structured output"},
+		{"mid-slice running into the next object",
+			`'return a + b' unchanged."}, {"id": 2, "file": "app/checkout.ts", "why": "reuse"`,
+			"structured output"},
+		// The cap cut a pretty-printed value across lines: the value's closing
+		// quote sits on its own line before the container closes.
+		{"mid-slice of a pretty-printed value",
+			"   unchanged.\n  \"},\n  {\"id\": 2, \"file\": \"app/",
+			"structured output"},
+		// A slice of a top-level array of strings: no container of its own, the
+		// quotes hug the commas.
+		{"mid-slice of a string array",
+			`ayout", "app/b.ts", "app/c.ts"`,
+			"structured output"},
+		// The shapes the earlier rounds pinned, beside the slice, so the
+		// structural decision reads as one rule: the whole object is read as
+		// the agent's words, every partial slice says what it is.
+		{"whole object still reads its summary",
+			`{"summary": "Pushed branch feat/cards."}`, "Pushed branch feat/cards."},
+		{"tail still says structured output", `  "files": ["a.ts", "b.ts"]}}`, "structured output"},
+		{"head still says structured output", `{"plan": [{"id": 1,`, "structured output"},
+		// Plain prose that merely carries quotes and braces in ordinary
+		// sentences is untouched — the structural decision must not reach for
+		// it. A quote that hugs a letter or a digit is the sentence's own
+		// quoting, not the document's.
+		{"prose with quotes and braces stays",
+			`Keep "return a + b" as-is; the {core} stays.`,
+			`Keep "return a + b" as-is; the {core} stays.`},
+		{"prose quoting numbers stays",
+			`Port "5432, 5433" opened during the migration`,
+			`Port "5432, 5433" opened during the migration`},
+		{"prose about a plan stays",
+			`the plan {steps} were "a" then "b"`,
+			`the plan {steps} were "a" then "b"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cnvLastAgentLine(tc.chunk)
+			if got != tc.want {
+				t.Errorf("cnvLastAgentLine(%q) = %q, want %q", tc.chunk, got, tc.want)
+			}
+			if n := utf8.RuneCountInString(got); n > cnvLastAgentLineMax {
+				t.Errorf("preview is %d runes, over the cap of %d", n, cnvLastAgentLineMax)
+			}
+			// The defect itself: no JSON punctuation may ever reach the row.
+			for _, leaked := range []string{"\"}", "{\"", `}, `} {
+				if strings.Contains(got, leaked) {
+					t.Errorf("preview %q leaks JSON punctuation %q", got, leaked)
+				}
+			}
+		})
+	}
+}
+
+// TestConversationListMidSliceLastAgentLine pins the same rule on the real
+// reads: a plan node whose structured output the worker's chunk cap split
+// mid-value, so the newest agent chunk is the mid-slice — it starts inside
+// the first step's summary string and runs on into the next object (the
+// round-12 row printed `'return a + b' unchanged."}, {"id": 2, "file":` under
+// the run's title). The list says `structured output` in both the project
+// read and the /threads read; a prose thread beside it keeps its line.
+func TestConversationListMidSliceLastAgentLine(t *testing.T) {
+	f := cnvSetup(t)
+	ctx := f.ctx()
+
+	midSlice := f.cnvCreate(t, f.alice, "run 01a1a81d /plan attempt 1", "")
+	clAgentMessage(t, f, midSlice.ID,
+		`{`+"\n"+`  "plan": [`+"\n"+`    {"id": 1, "summary": "Keep the '`)
+	clAgentMessage(t, f, midSlice.ID,
+		`'return a + b' unchanged."}, {"id": 2, "file": "app/checkout.ts", "why": "reuse the saved card"}`+"\n"+`  ]`+"\n"+`}`)
+
+	prose := f.cnvCreate(t, f.alice, "Plain thread", "")
+	clAgentMessage(t, f, prose.ID, `Keep "return a + b" as-is; the {core} stays.`)
+
+	want := map[string]string{
+		midSlice.ID: "structured output",
+		prose.ID:    `Keep "return a + b" as-is; the {core} stays.`,
+	}
+
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	for _, cv := range items {
+		w, ok := want[cv.ID]
+		if !ok {
+			t.Fatalf("unexpected conversation %s in the list", cv.ID)
+		}
+		if cv.LastAgentLine != w {
+			t.Errorf("row %s: last_agent_line = %q, want %q", cv.ID, cv.LastAgentLine, w)
+		}
+		if n := utf8.RuneCountInString(cv.LastAgentLine); n > cnvLastAgentLineMax {
+			t.Errorf("row %s: preview is %d runes, over the cap of %d", cv.ID, n, cnvLastAgentLineMax)
+		}
+	}
+
+	// The /threads page read shares the renderer, so the same mid-slice
+	// answers the same muted line there.
+	xp := APICrossProjectStore{Pool: f.pool}
+	views, _, err := xp.ListVisibleConversations(ctx,
+		api.Caller{UserID: f.bob, OrganizationID: f.orgID}, 50, "")
+	if err != nil {
+		t.Fatalf("ListVisibleConversations: %v", err)
+	}
+	byView := map[string]api.ConversationSummaryView{}
+	for _, v := range views {
+		byView[v.ID] = v
+	}
+	for id, w := range want {
+		v, ok := byView[id]
+		if !ok {
+			t.Fatalf("cross-project list misses conversation %s", id)
+		}
+		if v.LastAgentLine == nil || *v.LastAgentLine != w {
+			t.Errorf("cross row %s: last_agent_line = %v, want %q", id, v.LastAgentLine, w)
+		}
+	}
+}
