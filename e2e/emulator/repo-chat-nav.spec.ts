@@ -162,16 +162,19 @@ function escapeForRegex(value: string): string {
  */
 async function visibleLastTranscriptRow(page: Page): Promise<number | null> {
   return page.evaluate(() => {
+    // checkVisibility() is the browser's own answer: unlike a walk over
+    // display/visibility it also excludes what a closed <details> keeps
+    // laid out but unrendered — 3f8d4b2's verification measured a
+    // "Turn completed" copy inside the closed "Thread details" disclosure
+    // (y≈786) while the visible one sat at y≈437.
     const visible = (el: HTMLElement): boolean => {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return false;
-      let node: HTMLElement | null = el;
-      while (node !== null && node !== document.documentElement) {
-        const style = getComputedStyle(node);
-        if (style.display === "none" || style.visibility === "hidden") return false;
-        node = node.parentElement;
-      }
-      return true;
+      return el.checkVisibility({
+        contentVisibilityAuto: true,
+        visibilityProperty: true,
+        opacityProperty: true,
+      });
     };
     const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
     if (main === null) return null;
@@ -191,12 +194,14 @@ async function visibleComposerTop(page: Page): Promise<number | null> {
     if (composer === null) return null;
     const rect = composer.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return null;
-    let node: HTMLElement | null = composer;
-    while (node !== null && node !== document.documentElement) {
-      const style = getComputedStyle(node);
-      if (style.display === "none" || style.visibility === "hidden") return null;
-      node = node.parentElement;
-    }
+    if (
+      !composer.checkVisibility({
+        contentVisibilityAuto: true,
+        visibilityProperty: true,
+        opacityProperty: true,
+      })
+    )
+      return null;
     return rect.top;
   });
 }
@@ -224,9 +229,15 @@ async function expectChatPinLive(page: Page, width: number): Promise<void> {
     // or a locator found nothing (b10ef47 failed every pass with the 1280
     // capture showing the newest row well above the composer).
     const probe = await page.evaluate(() => {
-      const mains = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='conversation-main']"));
+      const mains = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-testid='conversation-main']"),
+      );
       const main = mains[0] ?? null;
-      const rows = main ? Array.from(main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']")) : [];
+      const rows = main
+        ? Array.from(main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']")).filter(
+            (el) => el.checkVisibility({ contentVisibilityAuto: true }),
+          )
+        : [];
       const last = rows.length > 0 ? rows[rows.length - 1] : null;
       const composers = document.querySelectorAll("[data-testid='thread-composer-pin']").length;
       return {
@@ -267,16 +278,19 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
     // reader sees at this width.
     const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
     if (main === null) return;
+    // checkVisibility() is the browser's own answer: unlike a walk over
+    // display/visibility it also excludes what a closed <details> keeps
+    // laid out but unrendered — 3f8d4b2's verification measured a
+    // "Turn completed" copy inside the closed "Thread details" disclosure
+    // (y≈786) while the visible one sat at y≈437.
     const visible = (el: HTMLElement): boolean => {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return false;
-      let node: HTMLElement | null = el;
-      while (node !== null && node !== document.documentElement) {
-        const style = getComputedStyle(node);
-        if (style.display === "none" || style.visibility === "hidden") return false;
-        node = node.parentElement;
-      }
-      return true;
+      return el.checkVisibility({
+        contentVisibilityAuto: true,
+        visibilityProperty: true,
+        opacityProperty: true,
+      });
     };
     const rows = Array.from(
       main.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"),
@@ -297,7 +311,9 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
     const content = Array.from(main.children).find((el) => el.contains(lastRow));
     if (content === null) return;
     const contentBottom =
-      content.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      content.getBoundingClientRect().bottom -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
     scroller.scrollTop = Math.max(0, Math.round(contentBottom - scroller.clientHeight));
     window.dispatchEvent(new Event("resize"));
   });
@@ -1053,10 +1069,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toBeVisible();
       await toggle.click();
       const sheet = page.getByTestId("chat-details-sheet");
-      await expect(
-        sheet,
-        "Details opens the side panel as a right-side sheet",
-      ).toBeVisible();
+      await expect(sheet, "Details opens the side panel as a right-side sheet").toBeVisible();
       await expect(
         sheet.getByTestId("conversation-side-panel"),
         "the sheet carries the same panel content the aside and stack do",
@@ -1305,10 +1318,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toBeVisible();
       await toggle.click();
       const sheet = page.getByTestId("chat-details-sheet");
-      await expect(
-        sheet,
-        "Details opens the side panel as a right-side sheet",
-      ).toBeVisible();
+      await expect(sheet, "Details opens the side panel as a right-side sheet").toBeVisible();
       await expect(
         sheet.locator('[data-testid^="side-panel-agent-row-"]').first(),
         "the sheet lists the agents the turns ran on",
@@ -1341,7 +1351,6 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // The menu is closed now, so the both-widths re-check is safe to run.
       await expectChatPinBothWidths(page);
     });
-
   });
 
   test("chat — WORKS IN moves the chat's scope and back", async ({ page, emu }) => {
@@ -2148,11 +2157,10 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
       // one state, and expansion is state, not CSS: the editor stands open
       // at 390 exactly as it does at 1280.
       const toggle = page.getByTestId("input-row-issue");
-      await expect(toggle, "the issue row's toggle stands collapsed after the saves").toHaveAttribute(
-        "aria-expanded",
-        "false",
-        { timeout: 15_000 },
-      );
+      await expect(
+        toggle,
+        "the issue row's toggle stands collapsed after the saves",
+      ).toHaveAttribute("aria-expanded", "false", { timeout: 15_000 });
       await toggle.click({ timeout: 15_000 });
       const editor = page.getByTestId("input-editor-issue");
       await expect(editor, "design 1j: the issue row expands into its editor").toBeVisible({
