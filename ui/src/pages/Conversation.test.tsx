@@ -186,6 +186,44 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
     expect(document.activeElement).toBe(toggle);
   });
+
+  it("reaching the `lg` breakpoint closes an open sheet — a resize never re-opens it", async () => {
+    // The page's listener registers on the toggle's own `lg:hidden` question,
+    // so the stub answers `(min-width: 1024px)` live and hands the test the
+    // `change` handler to fire the crossing.
+    let width = 390;
+    const change: Record<string, Array<() => void>> = {};
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      get matches() {
+        return query.includes("min-width") ? width >= 1024 : width < 1024;
+      },
+      media: query,
+      addEventListener: (type: string, handler: () => void) => {
+        if (type === "change") (change[query] ??= []).push(handler);
+      },
+      removeEventListener: () => {},
+    }));
+    renderApp({ path: `/threads/${conversationId}`, routes: threadRoutes });
+    const toggle = await screen.findByTestId("chat-details-toggle");
+    fireEvent.click(toggle);
+    await screen.findByTestId("chat-details-sheet");
+    // The viewport crosses to `lg`: the page's own listener must clear the
+    // sheet's open state, or it stands open on the next sub-`lg` resize.
+    act(() => {
+      width = 1280;
+      (change["(min-width: 1024px)"] ?? []).forEach((handler) => handler());
+      (change["(max-width: 1023.98px)"] ?? []).forEach((handler) => handler());
+    });
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // Crossing back down must NOT re-open it: the state stayed cleared.
+    act(() => {
+      width = 390;
+      (change["(min-width: 1024px)"] ?? []).forEach((handler) => handler());
+      (change["(max-width: 1023.98px)"] ?? []).forEach((handler) => handler());
+    });
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+  });
 });
 
 describe("the standing note's dismiss (design 2e: `Make a workflow… dismiss`)", () => {

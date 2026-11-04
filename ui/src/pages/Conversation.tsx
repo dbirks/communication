@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { PanelRight } from "lucide-react";
 import { ApiError } from "../api/client";
@@ -194,6 +194,20 @@ export default function ConversationPage({
     // The keyboard goes back to the button that opened the sheet — the
     // shell's own phone drawer keeps the same return (Shell.tsx closeDrawer).
     detailsToggleRef.current?.focus();
+  }, []);
+  // An open sheet must never reappear from its own state on a later resize:
+  // the moment the viewport reaches `lg` — the same breakpoint the toggle's
+  // `lg:hidden` asks — the open state clears. Below `lg` the sheet is the
+  // phone's door into the panel, and a width change is never an opening.
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => {
+      if (query.matches) setDetailsOpen(false);
+    };
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
   }, []);
   // Design 2e's `Make a workflow… dismiss`: the standing note is the panel's
   // own (not a notes-store row), so its dismissal is page-held, per

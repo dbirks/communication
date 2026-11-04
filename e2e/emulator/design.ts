@@ -1626,6 +1626,26 @@ const RCN_INPUTS_YAML: Landmark = {
   desc: "the panel's YAML preview of the inputs block",
   any: [{ testid: "inputs-yaml-preview" }],
 };
+const RCN_INPUT_EDITOR: Landmark = {
+  id: "rcn-input-editor-open",
+  desc: "the issue row expanded into its accent-wash editor (design 1j)",
+  any: [{ testid: "input-editor-issue" }, { role: "button", name: /^save input$/i }],
+};
+const RCN_INPUT_EDITOR_FIELDS: Landmark = {
+  id: "rcn-input-editor-fields",
+  desc: "the editor's Label, Type, Help text and Required fields",
+  any: [
+    { testid: "input-label-issue" },
+    { testid: "input-type-issue" },
+    { testid: "input-help-issue" },
+    { testid: "input-required-issue" },
+  ],
+};
+const RCN_INPUT_EDITOR_USED: Landmark = {
+  id: "rcn-input-editor-reference",
+  desc: "the editor's 'used as … in …' reference line (or its 'not used yet' reading)",
+  any: [{ testid: "input-used-issue" }, { text: /used( as| by any step yet)/i }],
+};
 const RCN_DRAFT_CHIP: Landmark = {
   id: "rcn-draft-chip",
   desc: "the header's 'draft r<n> · unpublished' chip",
@@ -2249,6 +2269,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_INPUTS_HEADER,
     RCN_INPUT_ADD,
     RCN_INPUT_ROWS,
+    RCN_INPUT_EDITOR,
+    RCN_INPUT_EDITOR_FIELDS,
+    RCN_INPUT_EDITOR_USED,
     RCN_WHO_FILLS,
     RCN_WHO_FILLS_HAND,
     RCN_WHO_FILLS_TRIGGER,

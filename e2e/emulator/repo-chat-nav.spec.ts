@@ -870,10 +870,15 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "the sheet carries the same panel content the aside and stack do",
       ).toBeVisible();
       await emu.screen("rcn-2e", "chat-details");
-      // Close it for the journey's remaining steps: Esc on the phone frame
-      // (where the sheet is mounted) — then the desktop frame.
+      // Close it for the journey's remaining steps — at the PHONE frame.
+      // screen() restored the 1280 width, where the sheet is unmounted
+      // (its toggle is `lg:hidden`), so an Esc there would hide nothing and
+      // the hidden check would pass on the desktop width alone while the
+      // sheet's open state leaked into the next 390 capture. Back to 390
+      // first, where the sheet really mounts — then the desktop frame.
+      await page.setViewportSize({ width: 390, height: 844 });
       await page.keyboard.press("Escape");
-      await expect(sheet, "Esc closes the sheet").toBeHidden();
+      await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
@@ -1106,10 +1111,13 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "the sheet lists the agents the turns ran on",
       ).toBeVisible({ timeout: 30_000 });
       await emu.screen("rcn-2e", "chat-details-switched");
-      // Same reset: Esc on the phone frame, back to the desktop frame the
-      // picker step below acts in.
+      // Same reset as the first chat-details step: screen() restored the
+      // desktop frame, where the sheet is unmounted and a hidden check is
+      // trivially true — so the Esc fires AT 390, where the sheet really
+      // mounts, and the picker step below acts in the desktop frame.
+      await page.setViewportSize({ width: 390, height: 844 });
       await page.keyboard.press("Escape");
-      await expect(sheet, "Esc closes the sheet").toBeHidden();
+      await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
       await page.setViewportSize({ width: 1280, height: 900 });
     });
 
@@ -1804,6 +1812,51 @@ test.describe("repo-chat-nav (admin: authoring the inputs, rcn-1j)", () => {
         page.getByTestId("inputs-yaml-preview"),
         "design 1j: the YAML preview carries the inputs block",
       ).toContainText(/issue/i, { timeout: 15_000 });
+    });
+
+    await test.step("design 1j: the issue row expands into its editor for the capture", async () => {
+      // The design's Inputs tab shows the `issue` row EXPANDED into the
+      // accent-wash editor (Label, Type, Help text, Required and the
+      // reference line) — the saves above closed their editors, so the
+      // row's toggle opens it again. screen() shoots BOTH widths from this
+      // one state, and expansion is state, not CSS: the editor stands open
+      // at 390 exactly as it does at 1280.
+      const toggle = page.getByTestId("input-row-issue");
+      await expect(toggle, "the issue row's toggle stands collapsed after the saves").toHaveAttribute(
+        "aria-expanded",
+        "false",
+        { timeout: 15_000 },
+      );
+      await toggle.click({ timeout: 15_000 });
+      const editor = page.getByTestId("input-editor-issue");
+      await expect(editor, "design 1j: the issue row expands into its editor").toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(
+        editor.getByTestId("input-label-issue"),
+        "the editor's Label field",
+      ).toBeVisible();
+      await expect(editor.getByTestId("input-type-issue"), "the editor's Type field").toBeVisible();
+      await expect(
+        editor.getByTestId("input-type-issue"),
+        "the Type reads GitHub issue",
+      ).toHaveValue("github_issue");
+      await expect(
+        editor.getByTestId("input-help-issue"),
+        "the editor's Help text field",
+      ).toBeVisible();
+      await expect(
+        editor.getByTestId("input-required-issue"),
+        "the editor's Required toggle",
+      ).toBeVisible();
+      await expect(
+        editor.getByTestId("input-used-issue"),
+        "the reference line naming the steps that read the input",
+      ).toBeVisible();
+      await expect(
+        editor.getByTestId("input-used-issue"),
+        "design 1j: the reference line — the steps' reading, or the honest 'not used yet' when no step names it",
+      ).toHaveText(/used( as| by any step yet)/i);
       await emu.screen("rcn-1j", "inputs");
     });
   });
