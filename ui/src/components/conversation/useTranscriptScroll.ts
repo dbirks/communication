@@ -1,26 +1,43 @@
 /**
- * The chat transcript's pin (rcn-review10): the view stays with the newest row
- * the way every chat does —
+ * The chat transcript's pin (rcn-review10, rcn-review11): the view stays with
+ * the newest row the way every chat does —
  *
  * - opening a chat starts at the newest row;
- * - while the reader is at (or within ~80px of) the bottom, every new row — an
- *   agent chunk, a reply, a switch divider, a scope-change line, a mail card —
- *   keeps the view pinned to the bottom. The pin lands the scroller's own
- *   bottom, which includes the transcript's composer-height bottom padding
- *   (round 6), so the last row sits fully clear of the pinned composer;
+ * - while the reader is at (or within ~80px of) the newest row, every new row
+ *   — an agent chunk, a reply, a switch divider, a scope-change line, a mail
+ *   card — keeps the view pinned to the newest row;
  * - if the reader has scrolled up to read, new rows do NOT move the view —
- *   they keep their place until the reader returns to the bottom;
+ *   they keep their place until the reader returns to the newest row;
  * - a viewport resize (1280 ↔ 390) re-pins if the view was pinned.
+ *
+ * Where the pin lands is the NEWEST ROW, not the scroller's raw bottom
+ * (rcn-review11): the thread's scroller holds more than the transcript —
+ * below it sit the thread-details disclosure and, at phone width, the whole
+ * side-panel stack. Pinning the scroller's max left that trailing content in
+ * the visible bottom and the newest row ABOVE it, out of view. The hook
+ * instead lands the transcript's own bottom (the content element, including
+ * its reserved composer-height padding) exactly at the scroller's visible
+ * bottom, so the newest row ends fully clear of the composer at every width.
+ *
+ * The pin re-runs on every movement of the view's bottom edge: new rows grow
+ * the content (ResizeObserver on it), and a composer or header reflow
+ * resizes the scroller's box (ResizeObserver on it — the 1280 WORKS-IN move
+ * changed the meta line and the composer chip and moved the bottom edge with
+ * no content growth at all). A scroll event that leaves the reader inside the
+ * pin band re-sticks on the spot; one that climbs out of it keeps the
+ * reader's place.
  *
  * The hook returns a ref for the content container. A surface that renders
  * its transcript later than its first paint (the panel's loading state, then
  * the transcript) is handled: the ref callback re-arms the pin when the
- * content lands, and disarms it when the content unmounts.
+ * content lands, and disarms it when the content unmounts. No-op where the
+ * content has no scrollable ancestor.
  */
 import { useCallback, useEffect, useState } from "react";
 
-/** How far above the bottom still counts as "at the bottom" (the review's
- * ~80px: a reply that lands while the last line sits 80px up still pins). */
+/** How far from the newest row still counts as "at the newest row" (the
+ * review's ~80px: a reply that lands while the last line sits 80px up still
+ * pins). */
 export const NEAR_BOTTOM_PX = 80;
 
 /** The scroll facts the pin needs — the smallest slice of `HTMLElement`, so
@@ -38,6 +55,45 @@ export function isNearBottom(view: ScrollState): boolean {
 }
 
 /**
+ * Is the reader at the newest row: the transcript's own bottom (`content`'s
+ * bottom in the scroller's content coordinates) sits within `NEAR_BOTTOM_PX`
+ * of the visible bottom — on either side, so a reader who has scrolled just
+ * PAST the row into the trailing thread-details/side-panel content is still
+ * at the newest row, while one reading old history is not.
+ */
+export function isNearContentBottom(
+  contentBottom: number,
+  view: Pick<ScrollState, "scrollTop" | "clientHeight">,
+): boolean {
+  return Math.abs(contentBottom - view.scrollTop - view.clientHeight) <= NEAR_BOTTOM_PX;
+}
+
+/**
+ * The scroll position that lands `content`'s bottom — the transcript's end,
+ * including its reserved composer-height padding — exactly on the scroller's
+ * visible bottom edge. Content that trails the transcript (the thread-details
+ * disclosure, the phone's side-panel stack) stays below the pinned view.
+ */
+export function pinPosition(
+  contentBottom: number,
+  scroller: Pick<ScrollState, "clientHeight">,
+): number {
+  return Math.max(0, Math.round(contentBottom - scroller.clientHeight));
+}
+
+/**
+ * The bottom of `content` in the scroller's content coordinates. The
+ * getBoundingClientRect pair is scroll-invariant: scrolling the scroller
+ * moves both boxes by the same amount, so the difference (plus the current
+ * offset) is the content position the pin lands on.
+ */
+export function contentBottomInScroller(content: HTMLElement, scroller: HTMLElement): number {
+  const contentBox = content.getBoundingClientRect();
+  const scrollerBox = scroller.getBoundingClientRect();
+  return contentBox.bottom - scrollerBox.top + scroller.scrollTop;
+}
+
+/**
  * The nearest ancestor of `el` that scrolls vertically. `getComputedStyle`
  * includes the element's own inline styles, so the read is the one the
  * browser actually applies — and in a unit test, inline styles are the whole
@@ -52,12 +108,6 @@ export function findScrollableAncestor(el: Element | null): HTMLElement | null {
     node = node.parentElement;
   }
   return null;
-}
-
-/** Put the scroller at its bottom: the newest row (plus the reserved composer
- * padding) lands at the bottom edge, clear of the pinned composer. */
-export function pinToBottom(scroller: ScrollState & { scrollTop: number }): void {
-  scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
 }
 
 /**
@@ -83,14 +133,20 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
     // Pinned from first sight: opening a chat starts at the newest row.
     let pinned = true;
     const stick = () => {
-      if (pinned) pinToBottom(scroller);
+      if (pinned) {
+        scroller.scrollTop = pinPosition(contentBottomInScroller(content, scroller), scroller);
+      }
     };
     stick();
 
     const onScroll = () => {
-      // The reader scrolled up to read: remember it, and stop following.
-      // Scrolling back within NEAR_BOTTOM_PX re-pins the same way.
-      pinned = isNearBottom(scroller);
+      // The reader moved: at (or just past) the newest row the view re-pins
+      // on the spot; anywhere else it keeps their place until they return
+      // within NEAR_BOTTOM_PX. A stick() of our own lands exactly at the row,
+      // so its scroll event re-computes pinned as true and re-sticks to the
+      // same position — the loop is fixed-point, not spin.
+      pinned = isNearContentBottom(contentBottomInScroller(content, scroller), scroller);
+      if (pinned) stick();
     };
     scroller.addEventListener("scroll", onScroll);
 
@@ -98,15 +154,18 @@ export function useStickyTranscript(): (el: HTMLElement | null) => void {
     const onResize = () => stick();
     window.addEventListener("resize", onResize);
 
-    // Every new row — an agent chunk, a reply, a switch divider, a
-    // scope-change line, a mail card — grows the content, and while the view
-    // is pinned that is exactly the moment to follow it. (jsdom has no
-    // ResizeObserver; the guard also covers an embedded reuse whose host
+    // Two bottoms to watch (rcn-review11): every new row — an agent chunk, a
+    // reply, a switch divider, a scope-change line, a mail card — grows the
+    // content; and a composer or header reflow (the agent chip's text, a
+    // wrapped meta line) resizes the scroller's box and moves the visible
+    // bottom with no content growth at all. Both re-run the pin. (jsdom has
+    // no ResizeObserver; the guard also covers an embedded reuse whose host
     // stripped the global.)
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(() => stick());
       ro.observe(content);
+      ro.observe(scroller);
     }
 
     return () => {

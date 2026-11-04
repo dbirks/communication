@@ -143,10 +143,11 @@ describe("AgentConversationPanel (dock)", () => {
   });
 
   /**
-   * rcn-review10: the dock is a chat surface too — its transcript keeps the
-   * pane's scroller pinned to the newest row, the way the page's does.
-   * jsdom lays out nothing: the geometry is the test's own numbers, and the
-   * ResizeObserver stub fires the moment a row lands.
+   * rcn-review10, rcn-review11: the dock is a chat surface too — its
+   * transcript keeps the pane's scroller pinned to the newest row, the way
+   * the page's does. jsdom lays out nothing: the geometry is the test's own
+   * numbers (the scroller's scroll facts and the transcript's rect), and
+   * the ResizeObserver stub fires the moment a row lands.
    */
   it("keeps the pane's scroller pinned to the newest row as rows land", async () => {
     const roCallbacks = new Set<() => void>();
@@ -174,8 +175,28 @@ describe("AgentConversationPanel (dock)", () => {
     renderPanel(dock(), routes(conversationFixture), scroller);
     // The fixture thread starts empty; the transcript block (the pin's
     // content) is up either way.
-    await screen.findByTestId("transcript-empty");
-    // First load of the dock's thread: the view starts at the newest row.
+    const content = (await screen.findByTestId("transcript-empty")).parentElement;
+    if (!content) throw new Error("the pin's content did not land in the scroller");
+    // The transcript's own bottom, mocked the way a laid-out browser would
+    // report it: the content is the whole scroller content here, so its
+    // bottom is the scroller's scroll height minus the current offset.
+    content.getBoundingClientRect = () =>
+      ({
+        top: 0,
+        bottom: scroller.scrollHeight - scroller.scrollTop,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: scroller.scrollHeight,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    // The browser's first observer callback reports the laid-out size; the
+    // test plays that moment — first load starts at the newest row.
+    act(() => {
+      roCallbacks.forEach((cb) => cb());
+    });
     expect(scroller.scrollTop).toBe(700);
 
     const source = FakeEventSource.last();

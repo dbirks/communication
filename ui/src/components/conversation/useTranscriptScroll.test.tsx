@@ -1,21 +1,27 @@
 /**
- * The transcript pin's decision logic (rcn-review10), pinned on plain data:
- * the near-bottom threshold, the scroller search, the pin itself, and the
- * hook's behaviour — first load starts at the newest row; while pinned,
- * every new row follows; a reader who scrolled up keeps their place; a
- * viewport resize re-pins if pinned, and leaves a reading place alone.
+ * The transcript pin's decision logic (rcn-review10, rcn-review11), pinned on
+ * plain data: the pin band, the scroller search, the pin position (the
+ * transcript's own bottom on the visible bottom — NOT the scroller's raw
+ * max, which at phone width lands the trailing thread-details/side-panel
+ * content in view and hides the newest row), and the hook's behaviour —
+ * first load starts at the newest row; while pinned, every new row follows;
+ * a reader who scrolled up keeps their place; a composer/header reflow (the
+ * scroller's box resizing) re-pins; a viewport resize re-pins if pinned, and
+ * leaves a reading place alone.
  *
- * jsdom lays out nothing, so the scroll geometry is the test's own numbers
- * (mocked on the element) and the `ResizeObserver` is a stub the test fires —
- * what the tests pin is the hook's decisions, not a browser layout.
+ * jsdom lays out nothing, so the geometry is the test's own little model
+ * (mocked rects + scroll facts) and the `ResizeObserver` is a stub the test
+ * fires — what the tests pin is the hook's decisions, not a browser layout.
  */
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NEAR_BOTTOM_PX,
+  contentBottomInScroller,
   findScrollableAncestor,
   isNearBottom,
-  pinToBottom,
+  isNearContentBottom,
+  pinPosition,
   useStickyTranscript,
 } from "./useTranscriptScroll";
 
@@ -24,8 +30,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The ResizeObserver the content is observed with, so the test can fire a
- * content-grows event the way the browser would. */
+/** The ResizeObserver the content AND the scroller are observed with, so the
+ * test fires a content-grows or a scroller-resizes event the way the browser
+ * would. */
 class ResizeObserverStub {
   static instances: ResizeObserverStub[] = [];
   readonly cb: (entries: unknown[], observer: unknown) => void;
@@ -48,62 +55,103 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
 });
 
-/** Fire the observers the content is watched by — the moment a new row
- * lands in the transcript. */
-function fireContentGrow() {
+/** Fire the observers watching `el` — the moment its box changes size: the
+ * content growing (a new row) or the scroller reflowing (a composer/header
+ * resize). */
+function fireResize(el: Element) {
   act(() => {
-    ResizeObserverStub.instances.forEach((observer) =>
-      observer.observed.forEach(() => observer.cb([], observer)),
-    );
+    ResizeObserverStub.instances.forEach((observer) => {
+      if (observer.observed.includes(el)) observer.cb([], observer);
+    });
   });
 }
 
-interface Geometry {
-  scrollHeight: number;
+/**
+ * The pane's geometry as a little model the mocks read from, honoring the
+ * browser's own invariants: the scroller's box stays put in the viewport,
+ * and scrolling it moves the content's viewport position by the same amount.
+ */
+interface PaneModel {
+  /** The scroller's top edge in viewport coordinates (stable). */
+  scrollerTop: number;
   clientHeight: number;
-  scrollTop?: number;
+  /** The transcript content's bottom, in the scroller's content coordinates
+   * (its reserved composer-height padding included). */
+  contentBottom: number;
+  /** The trailing content below the transcript (details, the phone's side
+   * panel) — what the scroller's raw max would leave in view. */
+  below: number;
+  scrollTop: number;
 }
 
-/** A scrollable pane with the test's own geometry (jsdom reads all zeros). */
-function mountScroller(geometry: Geometry): HTMLDivElement {
+function makeRect(top: number, bottom: number) {
+  return {
+    top,
+    bottom,
+    left: 0,
+    right: 0,
+    width: 0,
+    height: bottom - top,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/**
+ * A scrollable pane wired to the model: the scroller's scroll facts and its
+ * own rect read from it, honoring the browser's invariants — the scroller's
+ * box stays put in the viewport, and scrolling it moves the content's
+ * viewport position by the same amount. `below` is a real trailing element
+ * inside the scroller, so a pin at the scroller's raw max would leave it in
+ * view.
+ */
+function mountPane(model: PaneModel): HTMLDivElement {
   const scroller = document.createElement("div");
   scroller.style.overflowY = "auto";
+  scroller.appendChild(document.createElement("div")); // the trailing details/panel content
   document.body.appendChild(scroller);
-  setGeometry(scroller, geometry);
-  return scroller;
-}
 
-function setGeometry(scroller: HTMLElement, geometry: Geometry) {
+  const scrollMax = () => Math.max(0, model.contentBottom + model.below - model.clientHeight);
+  Object.defineProperty(scroller, "scrollTop", {
+    configurable: true,
+    get: () => model.scrollTop,
+    set: (value: number) => {
+      model.scrollTop = Math.min(Math.max(0, value), scrollMax());
+    },
+  });
   Object.defineProperty(scroller, "scrollHeight", {
     configurable: true,
-    value: geometry.scrollHeight,
+    get: () => model.contentBottom + model.below,
   });
   Object.defineProperty(scroller, "clientHeight", {
     configurable: true,
-    value: geometry.clientHeight,
+    get: () => model.clientHeight,
   });
-  // The reader's place is the browser's own state: a content grow never
-  // moves scrollTop, so the mock only rewrites it when the test says so.
-  if (geometry.scrollTop !== undefined) {
-    Object.defineProperty(scroller, "scrollTop", {
-      configurable: true,
-      writable: true,
-      value: geometry.scrollTop,
-    });
-  }
+  scroller.getBoundingClientRect = () =>
+    makeRect(model.scrollerTop, model.scrollerTop + model.clientHeight);
+  return scroller;
 }
 
-/** The hook wired to a content div inside a test-controlled scroller. */
-function renderStickyContent(scroller: HTMLElement) {
+/** The hook wired to the transcript content inside the model's scroller.
+ * The ref lands on React's own node; its rect is mocked from the model so it
+ * moves with the scroll the way a real browser's would. */
+function renderStickyContent(scroller: HTMLElement, model: PaneModel): HTMLDivElement {
   function Harness() {
     const contentRef = useStickyTranscript();
     return <div ref={contentRef} data-testid="sticky-content" />;
   }
-  const content = document.createElement("div");
-  scroller.appendChild(content);
-  // Rendering into the scroller's subtree puts the hook's content ref under
-  // the scroller in the tree it walks.
-  return render(<Harness />, { container: content });
+  // Rendering into the scroller puts the hook's content node under the
+  // scroller in the tree it walks.
+  render(<Harness />, { container: scroller });
+  const content = scroller.querySelector<HTMLDivElement>("[data-testid='sticky-content']");
+  if (!content) throw new Error("the harness content did not land in the scroller");
+  content.getBoundingClientRect = () =>
+    makeRect(
+      model.scrollerTop + model.contentBottom - model.scrollTop - 100,
+      model.scrollerTop + model.contentBottom - model.scrollTop,
+    );
+  return content;
 }
 
 describe("isNearBottom", () => {
@@ -126,6 +174,58 @@ describe("isNearBottom", () => {
 
   it("is pinned when the content is shorter than the view", () => {
     expect(isNearBottom({ scrollTop: 0, scrollHeight: 200, clientHeight: 300 })).toBe(true);
+  });
+});
+
+describe("isNearContentBottom", () => {
+  it("is at the newest row at the row's own bottom and within the band on either side", () => {
+    for (const delta of [0, 40, NEAR_BOTTOM_PX, -40, -NEAR_BOTTOM_PX]) {
+      expect(
+        isNearContentBottom(1000, { scrollTop: 700 + delta, clientHeight: 300 }),
+        `delta ${delta}`,
+      ).toBe(true);
+    }
+  });
+
+  it("is not at the newest row beyond the band — reading old history, or deep in the trailing panel", () => {
+    expect(
+      isNearContentBottom(1000, { scrollTop: 700 - (NEAR_BOTTOM_PX + 1), clientHeight: 300 }),
+    ).toBe(false);
+    expect(
+      isNearContentBottom(1000, { scrollTop: 700 + (NEAR_BOTTOM_PX + 1), clientHeight: 300 }),
+    ).toBe(false);
+  });
+});
+
+describe("pinPosition", () => {
+  it("lands the content's bottom exactly on the visible bottom", () => {
+    expect(pinPosition(900, { clientHeight: 300 })).toBe(600);
+  });
+
+  it("clamps at zero where the content is shorter than the view", () => {
+    expect(pinPosition(100, { clientHeight: 300 })).toBe(0);
+  });
+
+  it("rounds to a whole pixel", () => {
+    expect(pinPosition(850.4, { clientHeight: 300 })).toBe(550);
+  });
+});
+
+describe("contentBottomInScroller", () => {
+  it("is scroll-invariant: the same content position no matter the scroll", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    expect(contentBottomInScroller(content, scroller)).toBe(800);
+    model.scrollTop = 300;
+    expect(contentBottomInScroller(content, scroller)).toBe(800);
+    scroller.remove();
   });
 });
 
@@ -167,85 +267,164 @@ describe("findScrollableAncestor", () => {
   });
 });
 
-describe("pinToBottom", () => {
-  it("lands the scroller at its bottom", () => {
-    const scroller = { scrollTop: 0, scrollHeight: 1234, clientHeight: 300 };
-    pinToBottom(scroller);
-    expect(scroller.scrollTop).toBe(934);
-  });
-
-  it("never scrolls above zero", () => {
-    const scroller = { scrollTop: 0, scrollHeight: 100, clientHeight: 300 };
-    pinToBottom(scroller);
-    expect(scroller.scrollTop).toBe(0);
-  });
-});
-
 describe("useStickyTranscript", () => {
-  it("starts at the newest row on first load", () => {
-    const scroller = mountScroller({ scrollHeight: 1000, clientHeight: 300 });
-    renderStickyContent(scroller);
+  it("starts at the newest row on first load — the transcript's bottom on the visible bottom, not the scroller's raw max", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
     // The browser's first observer callback reports the laid-out size; the
     // test plays that moment with the pane's real geometry in place.
-    setGeometry(scroller, { scrollHeight: 1400, clientHeight: 300 });
-    fireContentGrow();
-    expect(scroller.scrollTop).toBe(1100);
+    fireResize(content);
+    // The raw max would be 1100 (1400 - 300) — the pin lands at 800 - 300,
+    // so the trailing 600px of details/side panel stays below the view.
+    expect(scroller.scrollTop).toBe(500);
+    scroller.remove();
   });
 
-  it("keeps the view pinned through every new row while the reader is at the bottom", () => {
-    const scroller = mountScroller({ scrollHeight: 1000, clientHeight: 300 });
-    renderStickyContent(scroller);
-    setGeometry(scroller, { scrollHeight: 1200, clientHeight: 300 });
-    fireContentGrow();
-    expect(scroller.scrollTop).toBe(900);
+  it("keeps the newest row on the visible bottom through every new row while the reader is there", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500);
     // Another chunk, another reply, another divider: each growth follows.
-    setGeometry(scroller, { scrollHeight: 1600, clientHeight: 300 });
-    fireContentGrow();
-    expect(scroller.scrollTop).toBe(1300);
+    model.contentBottom = 1100;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(800);
+    model.contentBottom = 1400;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(1100);
+    scroller.remove();
+  });
+
+  it("re-pins when the scroller's box resizes — the composer or header reflow moved the visible bottom", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500);
+    // The composer's chip changed text and the box grew: no content growth,
+    // but the visible bottom moved and the pinned view follows it.
+    model.clientHeight = 500;
+    fireResize(scroller);
+    expect(scroller.scrollTop).toBe(300);
+    scroller.remove();
   });
 
   it("does not move a reader who has scrolled up to read", () => {
-    const scroller = mountScroller({ scrollHeight: 1200, clientHeight: 300 });
-    renderStickyContent(scroller);
-    setGeometry(scroller, { scrollHeight: 1200, clientHeight: 300 });
-    fireContentGrow();
-    // The reader climbs to an old reply: 200px above the bottom, far out of
-    // the pin band.
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(500);
+    // The reader climbs to an old reply: 300px above the newest row, far out
+    // of the pin band.
     act(() => {
-      scroller.scrollTop = 100;
+      model.scrollTop = 100;
       scroller.dispatchEvent(new Event("scroll"));
     });
-    setGeometry(scroller, { scrollHeight: 1600, clientHeight: 300 });
-    fireContentGrow();
+    model.contentBottom = 1400;
+    fireResize(content);
     expect(scroller.scrollTop).toBe(100);
     // …and so does a viewport resize.
     act(() => window.dispatchEvent(new Event("resize")));
     expect(scroller.scrollTop).toBe(100);
+    scroller.remove();
   });
 
-  it("re-pins when the reader returns within the pin band of the bottom", () => {
-    const scroller = mountScroller({ scrollHeight: 1200, clientHeight: 300 });
-    renderStickyContent(scroller);
-    setGeometry(scroller, { scrollHeight: 1200, clientHeight: 300 });
-    fireContentGrow();
+  it("re-pins when the reader returns within the pin band of the newest row", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
     act(() => {
-      scroller.scrollTop = 1200 - 300 - 40;
+      model.scrollTop = 100;
       scroller.dispatchEvent(new Event("scroll"));
     });
-    setGeometry(scroller, { scrollHeight: 1500, clientHeight: 300 });
-    fireContentGrow();
-    expect(scroller.scrollTop).toBe(1200);
+    // 40px above the newest row: inside the band, the view re-sticks on the
+    // spot.
+    act(() => {
+      model.scrollTop = 460; // 800 - 300 - 40
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(scroller.scrollTop).toBe(500);
+    // …and the next row follows.
+    model.contentBottom = 1100;
+    fireResize(content);
+    expect(scroller.scrollTop).toBe(800);
+    scroller.remove();
+  });
+
+  it("re-sticks when the reader is just past the newest row, in the trailing panel", () => {
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    // The reader has scrolled 50px PAST the newest row into the thread-details
+    // block: still at the newest row, the view re-sticks to the row itself.
+    act(() => {
+      model.scrollTop = 550; // 800 - 300 + 50
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(scroller.scrollTop).toBe(500);
+    scroller.remove();
   });
 
   it("re-pins after a viewport resize (1280 ↔ 390) when the view was pinned", () => {
-    const scroller = mountScroller({ scrollHeight: 1200, clientHeight: 300 });
-    renderStickyContent(scroller);
-    setGeometry(scroller, { scrollHeight: 1200, clientHeight: 300 });
-    fireContentGrow();
-    // The narrow view: the pane grows taller, the pinned view follows.
-    setGeometry(scroller, { scrollHeight: 1200, clientHeight: 500 });
+    const model: PaneModel = {
+      scrollerTop: 100,
+      clientHeight: 300,
+      contentBottom: 800,
+      below: 600,
+      scrollTop: 0,
+    };
+    const scroller = mountPane(model);
+    const content = renderStickyContent(scroller, model);
+    fireResize(content);
+    // The narrow view reflows everything — the pane grows taller, the pinned
+    // view follows. The scroll offset is set without an event (the browser's
+    // clamp mid-reflow), so the window resize is what re-runs the pin.
+    model.clientHeight = 500;
+    model.scrollTop = 400;
     act(() => window.dispatchEvent(new Event("resize")));
-    expect(scroller.scrollTop).toBe(700);
+    expect(scroller.scrollTop).toBe(300);
+    scroller.remove();
   });
 
   it("is a no-op where the content has no scrollable ancestor", () => {

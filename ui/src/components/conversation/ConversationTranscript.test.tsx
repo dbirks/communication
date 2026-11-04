@@ -82,10 +82,11 @@ describe("the transcript's composer padding (round 6, the 390 review)", () => {
 });
 
 /**
- * The pin (rcn-review10): the pane's scroller — the transcript's nearest
- * scrollable ancestor, a page-level sibling — stays with the newest row.
- * jsdom lays out nothing, so the geometry is the test's own numbers and the
- * ResizeObserver is a stub the test fires when a row lands.
+ * The pin (rcn-review10, rcn-review11): the pane's scroller — the
+ * transcript's nearest scrollable ancestor, a page-level sibling — stays
+ * with the newest row. jsdom lays out nothing, so the geometry is the
+ * test's own numbers (the scroller's scroll facts and the transcript's
+ * rect) and the ResizeObserver is a stub the test fires when a row lands.
  */
 describe("the transcript's pin to the newest row (rcn-review10)", () => {
   const roCallbacks = new Set<() => void>();
@@ -110,6 +111,27 @@ describe("the transcript's pin to the newest row (rcn-review10)", () => {
     });
   }
 
+  /** The transcript's own bottom (its reserved composer padding included),
+   * mocked the way a laid-out browser would report it: the content is the
+   * whole scroller content here, so its bottom is the scroller's scroll
+   * height minus the current offset. */
+  function mockContentRect(scroller: HTMLElement) {
+    const content = scroller.firstElementChild;
+    if (!content) throw new Error("the transcript did not land in the scroller");
+    content.getBoundingClientRect = () =>
+      ({
+        top: 0,
+        bottom: scroller.scrollHeight - scroller.scrollTop,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: scroller.scrollHeight,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+  }
+
   it("keeps the pane's scroller pinned to the newest row as rows land", () => {
     roCallbacks.clear();
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
@@ -125,10 +147,13 @@ describe("the transcript's pin to the newest row (rcn-review10)", () => {
       </QueryClientProvider>,
       { container: scroller },
     );
-    // First load: the view starts at the newest row.
+    // The browser's first observer callback reports the laid-out size; the
+    // test plays that moment and first load starts at the newest row.
+    mockContentRect(scroller);
+    fireRowLanded();
     expect(scroller.scrollTop).toBe(700);
     // A reply lands: the content grows, and the pinned view follows it —
-    // the pin lands the scroller's bottom, so the composer padding the
+    // the pin lands the transcript's own bottom, so the composer padding the
     // transcript reserved keeps the last row clear of the composer.
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1400 });
     fireRowLanded();
@@ -155,6 +180,9 @@ describe("the transcript's pin to the newest row (rcn-review10)", () => {
       </QueryClientProvider>,
       { container: scroller },
     );
+    mockContentRect(scroller);
+    fireRowLanded();
+    expect(scroller.scrollTop).toBe(1100);
     // The reader climbs up to an old line, well out of the 80px pin band.
     act(() => {
       scroller.scrollTop = 200;

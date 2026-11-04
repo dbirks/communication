@@ -124,6 +124,92 @@ function escapeForRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * The thread's pin (rcn-review11): the newest transcript row must end fully
+ * above the composer at both emu widths — on first load, on new rows, and
+ * after a resize. The round-11 DEFECTs were exactly this failing in a real
+ * browser while the jsdom pin tests passed: at 390 the thread-details and
+ * the side-panel stack trail the transcript inside the scroller, so a pin at
+ * the scroller's raw max hid the newest row above the visible area; at 1280
+ * a composer/header reflow moved the visible bottom with no content growth
+ * and nothing re-pinned.
+ *
+ * `chatPinGap` is the width-local geometry read: the newest row (the last
+ * `transcript-item` in document order — the fold renders segments in order)
+ * minus the composer's own top (`thread-composer-pin`), in pixels. ≤ 0 is
+ * the invariant.
+ */
+async function chatPinGap(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"));
+    const row = rows.length > 0 ? rows[rows.length - 1].getBoundingClientRect() : null;
+    const composer =
+      document.querySelector<HTMLElement>("[data-testid='thread-composer-pin']")?.getBoundingClientRect() ?? null;
+    if (row === null || composer === null) return null;
+    return row.bottom - composer.top;
+  });
+}
+
+/** Bounded assertion of the pin's geometry at the page's current width —
+ * the LIVE state the capture is about to shoot. */
+async function expectChatPinLive(page: Page, width: number): Promise<void> {
+  await expect
+    .poll(() => chatPinGap(page), {
+      timeout: 10_000,
+      message: `the newest transcript row must end fully above the composer at ${width} (the thread's pin)`,
+    })
+    .toBeLessThanOrEqual(1);
+}
+
+/**
+ * The width-local check after a chat capture, at one emu width. The emu's
+ * `screen()` resets every scroll container to the top before each shot, so
+ * the reader's bottom position the pin owns is re-established first: the
+ * transcript's scroller is put at the pin's own landing (the transcript's
+ * bottom on the visible bottom — NOT the scroller's raw max, which at 390
+ * leaves the trailing thread-details/side-panel content in view), and the
+ * hook's window-resize input re-runs the pin — the same input the capture's
+ * 1280→390→1280 round-trip gives it. A regression that hides the newest row
+ * under the composer then fails the poll, not just a reviewer's eye.
+ */
+async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void> {
+  await page.setViewportSize({ width, height: width === 1280 ? 900 : 844 });
+  // The reflow — and the hook's re-pin on it — lands a beat after the resize.
+  await page.waitForTimeout(400);
+  await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-testid='transcript-item']"));
+    const lastRow = rows[rows.length - 1];
+    if (lastRow === undefined) return;
+    let node: HTMLElement | null = lastRow.parentElement;
+    let scroller: HTMLElement | null = null;
+    while (node !== null && node !== document.body) {
+      const style = getComputedStyle(node);
+      if (style.overflowY === "auto" || style.overflowY === "scroll") {
+        scroller = node;
+        break;
+      }
+      node = node.parentElement;
+    }
+    if (scroller === null) return;
+    const main = document.querySelector<HTMLElement>("[data-testid='conversation-main']");
+    const content = main === null ? null : Array.from(main.children).find((el) => el.contains(lastRow));
+    if (content === null) return;
+    const contentBottom =
+      content.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    scroller.scrollTop = Math.max(0, Math.round(contentBottom - scroller.clientHeight));
+    window.dispatchEvent(new Event("resize"));
+  });
+  await expectChatPinLive(page, width);
+}
+
+/** The capture's own round-trip, asserted: both emu widths, back on the
+ * desktop frame when done (the journeys act at 1280). */
+async function expectChatPinBothWidths(page: Page): Promise<void> {
+  await expectChatPinAtWidth(page, 1280);
+  await expectChatPinAtWidth(page, 390);
+  await page.setViewportSize({ width: 1280, height: 900 });
+}
+
 /** One row of GET /api/v1/agent-profiles (the members these journeys read). */
 interface ProfileRow {
   id: string;
@@ -873,7 +959,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         sheet.getByTestId("conversation-side-panel"),
         "the sheet carries the same panel content the aside and stack do",
       ).toBeVisible();
+      // The pin's width-local check at the capture's live state (rcn-review11).
+      await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "chat-details");
+      await expectChatPinBothWidths(page);
       // Close it for the journey's remaining steps — at the PHONE frame.
       // screen() restored the 1280 width, where the sheet is unmounted
       // (its toggle is `lg:hidden`), so an Esc there would hide nothing and
@@ -982,7 +1071,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(chip, "design 2e: the composer carries the next-turn agent chip").toBeVisible({
         timeout: 30_000,
       });
+      // The pin's width-local check at the capture's live state (rcn-review11).
+      await expectChatPinLive(page, 1280);
       await emu.screen("rcn-2e", "chat");
+      await expectChatPinBothWidths(page);
     });
 
     await test.step("the first prompt's turn settles (the turn legs are real)", async () => {
@@ -1092,7 +1184,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "the side panel shows BOTH agents with their turn ranges",
       ).toBeVisible({ timeout: 10 * 60_000 });
       await expect(chip, "the second turn settled").toBeEnabled({ timeout: 10 * 60_000 });
+      // The pin's width-local check at the capture's live state (rcn-review11):
+      // this is the exact screen whose newest row the review found under the
+      // composer. Both emu widths, through the capture's own round-trip.
+      await expectChatPinLive(page, 1280);
       await emu.screen("rcn-2e", "switched");
+      await expectChatPinBothWidths(page);
     });
 
     await test.step("chat details — the sheet with the switched agents (rcn-2e)", async () => {
@@ -1114,7 +1211,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         sheet.locator('[data-testid^="side-panel-agent-row-"]').first(),
         "the sheet lists the agents the turns ran on",
       ).toBeVisible({ timeout: 30_000 });
+      // The pin's width-local check at the capture's live state (rcn-review11).
+      await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "chat-details-switched");
+      await expectChatPinBothWidths(page);
       // Same reset as the first chat-details step: screen() restored the
       // desktop frame, where the sheet is unmounted and a hidden check is
       // trivially true — so the Esc fires AT 390, where the sheet really
@@ -1131,9 +1231,13 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(menu, "design 1h: the picker opens over the composer").toBeVisible({
         timeout: 10_000,
       });
+      // The pin's width-local check at the capture's live state (rcn-review11).
+      await expectChatPinLive(page, 1280);
       await emu.screen("rcn-1h", "next-turn-menu");
       await page.keyboard.press("Escape");
       await expect(menu, "Esc closes the picker").toBeHidden({ timeout: 10_000 });
+      // The menu is closed now, so the both-widths re-check is safe to run.
+      await expectChatPinBothWidths(page);
     });
 
   });
@@ -1222,7 +1326,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // landmark list for these two screens is what both widths show.
       await page.keyboard.press("Escape");
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
+      // The pin's width-local check at the capture's live state (rcn-review11).
+      await expectChatPinLive(page, 1280);
       await emu.screen("rcn-2e", "works-in-menu");
+      await expectChatPinBothWidths(page);
 
       // After each capture the switcher proves itself back at 1280 before
       // the next click: screen() resizes through 390 on its way back to
@@ -1279,7 +1386,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).not.toContainText("✓", { timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
+      // The pin's width-local check at the capture's live state (rcn-review11):
+      // the scope move printed a system line — a NEW transcript row — and
+      // this is the screen whose last row the review found cut at 1280.
+      await expectChatPinLive(page, 1280);
       await emu.screen("rcn-2e", "works-in-moved");
+      await expectChatPinBothWidths(page);
 
       // Same re-probe after the second capture (see above): the switcher
       // must be back at 1280 and pressable before the move-back click.
@@ -1690,7 +1802,11 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("side-panel-link-state-0")).toContainText(/answered/i, {
         timeout: 30_000,
       });
+      // The pin's width-local check at the capture's live state (rcn-review11):
+      // the mail card plus its answer line are NEW transcript rows.
+      await expectChatPinLive(page, 1280);
       await emu.screen("rcn-3d", "mail-card");
+      await expectChatPinBothWidths(page);
     });
 
     await test.step("B's workspace shows no writes (API)", async () => {
