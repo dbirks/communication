@@ -385,9 +385,34 @@ const m4WorkspaceLostGrace = 5 * time.Second
 // ReconcileLeases is § 5.4 pass 1; ReconcileDeadlines is pass 3. Both
 // re-derive from the rows they just hydrated, so a pass from any replica is
 // the same function on the same data.
+//
+// Pass 1 also closes the orphaned paired conversation turn of every attempt
+// it re-claims (ADR-0074), in the SAME transaction as the attempt's terminal
+// row: the re-claim is the takeover, the old owner is already fenced out of
+// every write, and the retry claim's stamp — the next turn on the same
+// conversation — must find the slot open the moment this commit lands. The
+// M3 turn-lease reconciler stays the backstop for turns the pass cannot see
+// (a human's own turn, an attempt already terminal when the pass ran).
 func (s *RuntimeStore) ReconcileLeases(ctx context.Context, runID string) error {
-	return s.settle(ctx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
-		return ms.ReconcileLeases(runID)
+	return s.settle(ctx, runID, func(ctx context.Context, tx pgx.Tx, ms *runtime.MemStore, st *runtime.State) error {
+		// The pass interrupts exactly the attempts that are live at
+		// hydration time AND whose lease the clock has passed, so the
+		// hydrated live set is the whole possible re-claim; the diff after
+		// the pass names which of them actually went terminal.
+		live := make(map[string]bool, len(st.Attempts))
+		for _, a := range st.LiveAttempts() {
+			live[a.ID] = true
+		}
+		if err := ms.ReconcileLeases(runID); err != nil {
+			return err
+		}
+		var reclaimed []string
+		for _, a := range st.Attempts {
+			if live[a.ID] && a.Status == runtime.AttemptInterrupted {
+				reclaimed = append(reclaimed, a.ID)
+			}
+		}
+		return closeReclaimedAttemptTurnsTx(ctx, tx, runID, reclaimed)
 	}, nil)
 }
 
