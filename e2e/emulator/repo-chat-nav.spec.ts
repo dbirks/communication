@@ -1224,6 +1224,20 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // the next click: screen() resizes through 390 on its way back to
       // 1280, and a capture that left the panel re-mounted is exactly where
       // a click can hang with no bound of its own.
+      // The 390 capture moved the panel into the transcript stack; back at
+      // 1280 the page moves it to the aside on the matchMedia change, which
+      // lands a beat AFTER setViewportSize. A click in that beat opens the
+      // menu on the stack's switcher, which then unmounts with its menu —
+      // so wait for the swap itself before acting (faac464, run 41754108482:
+      // the reopened menu's items were never found).
+      await expect(
+        page.getByTestId("thread-side-panel-stack"),
+        "the 390 stack copy of the panel is gone at 1280",
+      ).toHaveCount(0, { timeout: 15_000 });
+      await expect(
+        page.getByTestId("thread-side-panel-aside").getByTestId("side-panel-works-in-switch"),
+        "the switcher is back in the 1280 aside",
+      ).toBeVisible({ timeout: 15_000 });
       await expect(switcher, "the switcher is back at 1280 after the capture").toBeVisible({
         timeout: 15_000,
       });
@@ -1265,6 +1279,20 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
 
       // Same re-probe after the second capture (see above): the switcher
       // must be back at 1280 and pressable before the move-back click.
+      // The 390 capture moved the panel into the transcript stack; back at
+      // 1280 the page moves it to the aside on the matchMedia change, which
+      // lands a beat AFTER setViewportSize. A click in that beat opens the
+      // menu on the stack's switcher, which then unmounts with its menu —
+      // so wait for the swap itself before acting (faac464, run 41754108482:
+      // the reopened menu's items were never found).
+      await expect(
+        page.getByTestId("thread-side-panel-stack"),
+        "the 390 stack copy of the panel is gone at 1280",
+      ).toHaveCount(0, { timeout: 15_000 });
+      await expect(
+        page.getByTestId("thread-side-panel-aside").getByTestId("side-panel-works-in-switch"),
+        "the switcher is back in the 1280 aside",
+      ).toBeVisible({ timeout: 15_000 });
       await expect(switcher, "the switcher is back at 1280 after the capture").toBeVisible({
         timeout: 15_000,
       });
