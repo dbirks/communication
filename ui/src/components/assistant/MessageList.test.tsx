@@ -644,11 +644,16 @@ describe("MessageList draft-backed step list (design 2f round 12)", () => {
       "later",
       "later",
     ]);
-    // the model's own step lines are gone; its prose survives
+    // the model's own step lines are gone; its prose survives — minus the
+    // sentence that restates the open question card word for word, which
+    // appears once, on the card (rcn-review13-2f)
     expect(screen.queryByText(/Reply OK/)).toBeNull();
     const answer = screen.getByTestId("assistant-answer");
     expect(answer.textContent).toContain("EMU-RCN reply OK in the library — saved.");
-    expect(answer.textContent).toContain("The draft currently uses one step");
+    expect(answer.textContent).not.toContain("The draft currently uses one step");
+    expect(
+      screen.getByText("The draft currently uses one step; the fork is which profile runs it?"),
+    ).toBeTruthy();
   });
 
   it("marks every draft step ✓ when the answer saved the draft and no question is open", () => {
@@ -728,6 +733,184 @@ describe("MessageList draft-backed step list (design 2f round 12)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+/**
+ * rcn-review13-2f: the saved draft is recognised by the link's TARGET —
+ * a route pointing at a library draft page — not by the label's wording.
+ * The round-13 lab turn shipped the link labelled with a raw path, and the
+ * whole 2f state (step list, `Open draft` beside the composer) disappeared
+ * because the app keyed on the label. Chips never print a raw path either,
+ * and the answer's prose no longer restates the open question card's
+ * question.
+ */
+describe("MessageList round 13: target-based draft recognition, readable chips", () => {
+  const DRAFTED_DOC =
+    "apiVersion: communication.dev/v1alpha1\n" +
+    "kind: PipelineDefinition\n" +
+    "metadata:\n" +
+    "  name: adapter-swap-to-pr\n" +
+    "spec:\n" +
+    "  nodes:\n" +
+    "    - id: plan\n" +
+    "      kind: agent.acp\n" +
+    "      config:\n" +
+    "        profile: m4-planner\n" +
+    "    - id: review\n" +
+    "      kind: agent.acp\n" +
+    "      dependsOn: [plan]\n" +
+    "      config:\n" +
+    "        profile: codex-review\n";
+
+  const answerWithLinks = (links: { label: string; route: string }[]): AssistantMessage => ({
+    id: "m-r13",
+    kind: "assistant",
+    payload: {
+      kind: "assistant",
+      answer_markdown: "Drafted it from the chat and saved it in the library.",
+      links,
+      tool_calls: [],
+    },
+    created_at: "2026-10-20T11:00:00Z",
+  });
+
+  it("a draft link labelled with a raw path still yields the step list — and the chip reads `Open draft · <name>`, never the path", () => {
+    renderWithDraftCache(
+      <MessageList
+        messages={[
+          answerWithLinks([
+            { label: "/workflows/pl-9/drafts/d-13", route: "/workflows/pl-9/drafts/d-13" },
+          ]),
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+      { id: "d-13", documentYaml: DRAFTED_DOC },
+    );
+    // recognition survived the label: the list is the DRAFT's steps
+    const rows = screen.getAllByTestId("assistant-step-row");
+    expect(rows.map((row) => within(row).getByTestId("assistant-step-name").textContent)).toEqual([
+      "plan",
+      "review",
+    ]);
+    // the chip carries the readable wording with the draft's own name
+    const chip = screen.getByTestId("assistant-link");
+    expect(chip.textContent).toContain("Open draft · adapter-swap-to-pr");
+    expect(chip.textContent).not.toContain("/");
+  });
+
+  it("a differently-worded draft label still recognises the draft by its target", () => {
+    renderWithDraftCache(
+      <MessageList
+        messages={[
+          answerWithLinks([{ label: "See the draft", route: "/workflows/pl-9/drafts/d-13" }]),
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+      { id: "d-13", documentYaml: DRAFTED_DOC },
+    );
+    expect(screen.getAllByTestId("assistant-step-row")).toHaveLength(2);
+    // the chip says `Open draft` (the name is still loading → no fetch in
+    // this stub, so the base label stands) and never the model's words
+    expect(screen.getByTestId("assistant-link").textContent).toContain("Open draft");
+  });
+
+  it("raw-path chips get a readable label — never a truncated /workflo…", () => {
+    render(
+      <MessageList
+        messages={[
+          answerWithLinks([
+            { label: "/workflows/pl-9", route: "/workflows/pl-9" },
+            { label: "/inbox", route: "/inbox" },
+            { label: "", route: "/runs/r-1" },
+          ]),
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const chips = screen.getAllByTestId("assistant-link").map((chip) => chip.textContent);
+    expect(chips[0]).toContain("Workflow pl-9");
+    expect(chips[1]).toContain("Inbox");
+    expect(chips[2]).toContain("Run r-1");
+    for (const chip of chips) {
+      expect(chip).not.toMatch(/\//);
+    }
+  });
+
+  it("drops the prose sentence that repeats the open question card — whitespace and punctuation blind", () => {
+    const answer: AssistantMessage = {
+      id: "m-q",
+      kind: "assistant",
+      payload: {
+        kind: "assistant",
+        answer_markdown:
+          "Saved the draft from the chat.  Should review repeat until clean. The steps are ready.",
+        links: [],
+        tool_calls: [],
+      },
+      created_at: "2026-10-20T11:01:00Z",
+    };
+    const question: AssistantMessage = {
+      id: "m-qcard",
+      kind: "question",
+      payload: {
+        kind: "question",
+        prompt: "Should   review repeat until clean?",
+        options: [
+          { label: "Repeat, max 3", value: "repeat" },
+          { label: "Run once", value: "once" },
+        ],
+        answered_by: null,
+      },
+      created_at: "2026-10-20T11:01:05Z",
+    };
+    render(
+      <MessageList
+        messages={[answer, question]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const answerProse = screen.getByTestId("assistant-answer");
+    expect(answerProse.textContent).toContain("Saved the draft from the chat.");
+    expect(answerProse.textContent).toContain("The steps are ready.");
+    // the repeated sentence stands once — on the card, not in the prose
+    expect(answerProse.textContent).not.toContain("Should review repeat");
+    expect(screen.getByText(/Should\s+review repeat until clean\?/)).toBeTruthy();
+  });
+
+  it("leaves prose alone when no question card is open for the answer", () => {
+    render(
+      <MessageList
+        messages={[
+          answerWithLinks([]),
+          {
+            id: "m-user-2",
+            kind: "user",
+            payload: { kind: "user", text: "nice" },
+            created_at: "2026-10-20T11:02:00Z",
+          },
+        ]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("assistant-answer").textContent).toContain(
+      "Drafted it from the chat and saved it in the library.",
+    );
   });
 });
 

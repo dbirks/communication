@@ -4,7 +4,14 @@ import { MarkdownBody } from "../../lib/markdown";
 import { useDraft } from "../../api/pipelines";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
-import { draftStepRows, openDraftIdOf } from "./draftSteps";
+import {
+  draftStepRows,
+  openDraftIdOf,
+  draftNameOf,
+  draftRouteOf,
+  isDraftLink,
+  readableLinkLabel,
+} from "./draftSteps";
 import type { AssistantAnswerPayload, AssistantMessage, AssistantQuestionPayload } from "./types";
 
 /**
@@ -157,7 +164,7 @@ export function MessageList({
                             whiteSpace: "nowrap",
                           }}
                         >
-                          ● {link.label}
+                          ● {chipLabelFor(link)}
                         </span>
                         <span aria-hidden="true" className="flex-shrink-0 font-mono text-[11px]">
                           Go ›
@@ -343,6 +350,47 @@ function settleStepChunks(chunks: AnswerChunk[]): AnswerChunk[] {
   return out;
 }
 
+// rcn-review13-2f: the answer's prose repeating the OPEN QUESTION CARD's
+// question word for word is the same sentence twice — the card carries the
+// question, so the prose drop keeps it once. Matching is
+// whitespace/punctuation-insensitive on both sides.
+const normalizeSentence = (text: string): string =>
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const sentencesOf = (text: string): string[] => text.match(/[^.!?]+[.!?]*/g) ?? [];
+
+function dropQuestionDuplicates(
+  chunks: AnswerChunk[],
+  openQuestion: AssistantQuestionPayload | null,
+): AnswerChunk[] {
+  if (openQuestion === null) return chunks;
+  const promptSentences = new Set(
+    sentencesOf(openQuestion.prompt)
+      .map((sentence) => normalizeSentence(sentence))
+      .filter((sentence) => sentence.length > 0),
+  );
+  if (promptSentences.size === 0) return chunks;
+  const out: AnswerChunk[] = [];
+  for (const chunk of chunks) {
+    if (chunk.type !== "prose") {
+      out.push(chunk);
+      continue;
+    }
+    let text = chunk.text;
+    for (const sentence of sentencesOf(chunk.text)) {
+      if (!promptSentences.has(normalizeSentence(sentence))) continue;
+      text = text.replace(sentence, " ");
+    }
+    text = text.replace(/ {2,}/g, " ").trim();
+    if (text.length === 0) continue;
+    out.push({ type: "prose", text });
+  }
+  return out;
+}
+
 /**
  * The draft step list (design 2f "posts a DRAFT STEP LIST … marked with
  * progress ✓ / ● / ·"): one line per step, the glyph paired with its
@@ -356,6 +404,26 @@ function StepList({ lines }: { lines: StepLine[] }) {
       ))}
     </div>
   );
+}
+
+/**
+ * What one link chip says, never a raw path (rcn-review13-2f): the saved
+ * draft's link reads `Open draft · <workflow name>` — the name rides the
+ * document the step list already fetches, so nothing extra loads — and any
+ * other chip with a missing or path-shaped label gets a humanised form of
+ * the route (`Workflow 01PL9…`), not the truncated `/workflo…`.
+ */
+function DraftChipName({ draftId }: { draftId: string }) {
+  const { data } = useDraft(draftId);
+  const name = data !== undefined ? draftNameOf(data.document_yaml) : null;
+  return <>{name !== null ? `Open draft · ${name}` : "Open draft"}</>;
+}
+
+function chipLabelFor(link: { label: string; route: string }): ReactElement | string {
+  const draftId = draftRouteOf(link.route);
+  if (draftId !== null) return <DraftChipName draftId={draftId} />;
+  if (isDraftLink(link)) return "Open draft";
+  return readableLinkLabel(link);
 }
 
 /**
@@ -442,7 +510,13 @@ function AnswerProse({
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph.length > 0);
-  const chunks = settleStepChunks(paragraphs.flatMap((paragraph) => chunkParagraph(paragraph)));
+  // One sentence twice is twice nothing: the open question card already
+  // carries its question, so a verbatim repeat in the prose is dropped
+  // (rcn-review13-2f) before the step runs settle.
+  const chunks = dropQuestionDuplicates(
+    settleStepChunks(paragraphs.flatMap((paragraph) => chunkParagraph(paragraph))),
+    openQuestion,
+  );
   const lines = chunks.flatMap((chunk) => (chunk.type === "steps" ? chunk.lines : []));
   const modelLines =
     openQuestion === null

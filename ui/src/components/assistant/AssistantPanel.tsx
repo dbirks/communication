@@ -5,6 +5,7 @@ import { formatAge } from "../../lib/format";
 import { useIsNarrow } from "../Shell";
 import { useSpeechToText } from "../../lib/speech";
 import { ChangeChip } from "./ChangeChip";
+import { draftLinkOf } from "./draftSteps";
 import ListeningBar from "./ListeningBar";
 import MessageList from "./MessageList";
 import MicButton from "./MicButton";
@@ -529,18 +530,20 @@ export function AssistantPanel({
 
   /**
    * Design 2f (rcn-2f round 7): the `Open draft` action beside the composer.
-   * The server tags the saved draft's link `Open draft` on the answer that
-   * created it (workflow.create_draft → links[]); the newest such link is
-   * the draft the person is drafting — a later save supersedes the earlier
-   * door. `null` while no turn has saved one: the button stays hidden, not
-   * disabled, until the draft exists.
+   * The saved draft's link rides the creating answer's `links[]` (the server
+   * tags it `Open draft` → workflow.create_draft), and it is recognised by
+   * its TARGET — a route pointing at the library draft page — not by the
+   * label's wording (rcn-review13-2f: a differently-phrased label lost the
+   * whole door). The newest such link is the draft the person is drafting —
+   * a later save supersedes the earlier door. `null` while no turn has
+   * saved one: the button stays hidden, not disabled, until the draft exists.
    */
   const draftLink = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const message = messages[i];
       if (message.payload.kind !== "assistant") continue;
-      const link = message.payload.links.find((candidate) => candidate.label === "Open draft");
-      if (link) return link;
+      const link = draftLinkOf(message.payload.links);
+      if (link !== null) return link;
     }
     return null;
   }, [messages]);

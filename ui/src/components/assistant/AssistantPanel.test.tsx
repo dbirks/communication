@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AssistantPanel, {
   type AssistantPanelProps,
   type RecentConversation,
@@ -330,6 +331,65 @@ describe("AssistantPanel (expanded)", () => {
     );
     fireEvent.click(screen.getByTestId("assistant-open-draft"));
     expect(onGo).toHaveBeenCalledWith("/workflows/01NEW");
+  });
+
+  it("Open draft: a draft link with a non-`Open draft` label is still the draft door — the target decides (rcn-review13-2f)", () => {
+    const onGo = vi.fn();
+    const rawLabelled: AssistantMessage = {
+      id: "m-raw",
+      kind: "assistant",
+      payload: {
+        kind: "assistant",
+        answer_markdown: "Saved it to the library.",
+        // the round-13 shape: the server's own target, a label that is the
+        // raw path itself
+        links: [{ label: "/workflows/pl-9/drafts/d-13", route: "/workflows/pl-9/drafts/d-13" }],
+        tool_calls: [],
+      },
+      created_at: "2026-10-20T10:02:00Z",
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AssistantPanel
+          variant="docked"
+          {...panelProps}
+          onGo={onGo}
+          onShrink={() => {}}
+          messages={[rawLabelled]}
+        />
+      </QueryClientProvider>,
+    );
+    const button = screen.getByTestId("assistant-open-draft");
+    expect(button.textContent).toBe("Open draft");
+    fireEvent.click(button);
+    expect(onGo).toHaveBeenCalledWith("/workflows/pl-9/drafts/d-13");
+  });
+
+  it("Open draft: a non-draft link with an `Open draft`-ish label is not the door", () => {
+    const onGo = vi.fn();
+    render(
+      <AssistantPanel
+        variant="docked"
+        {...panelProps}
+        onGo={onGo}
+        onShrink={() => {}}
+        messages={[
+          {
+            id: "m-run",
+            kind: "assistant",
+            payload: {
+              kind: "assistant",
+              answer_markdown: "Started the run.",
+              links: [{ label: "Open draft PR", route: "/runs/r-1" }],
+              tool_calls: [],
+            },
+            created_at: "2026-10-20T10:02:00Z",
+          },
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
+    expect(onGo).not.toHaveBeenCalled();
   });
 
   it("Open draft: the 400px popover's row stays dense — the draft door rides the transcript link there", () => {
