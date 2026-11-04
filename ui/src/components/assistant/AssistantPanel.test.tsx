@@ -147,6 +147,46 @@ describe("AssistantPanel (popover)", () => {
   });
 });
 
+describe("the composer placeholder fits the width (rcn-2f review item 2)", () => {
+  // Answer the shell's narrow query as a `width` px viewport would — the
+  // composer row at phone width (390) also holds the mic and Send, so the
+  // long wording clipped mid-word; below the app's phone cut the row
+  // answers with the shorter one.
+  const viewport = (width: number) =>
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: width < 1024 && query.includes("max-width"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }));
+
+  it("keeps the full wording at a wide panel", () => {
+    viewport(1280);
+    try {
+      renderPanel();
+      const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
+      expect(input.placeholder).toBe("Ask, or tell it what to change…");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shortens at phone width so the row fits", () => {
+    viewport(390);
+    try {
+      renderPanel();
+      const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
+      expect(input.placeholder).toBe("Tell it what to change…");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("AssistantPanel (expanded)", () => {
   it("renders the 680px centred column with the opened-from chip and Shrink", () => {
     const onShrink = vi.fn();

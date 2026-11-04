@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Minimize2, Plus } from "lucide-react";
 import { Button } from "../ds/Button";
 import { formatAge } from "../../lib/format";
+import { useIsNarrow } from "../Shell";
 import { useSpeechToText } from "../../lib/speech";
 import { ChangeChip } from "./ChangeChip";
 import ListeningBar from "./ListeningBar";
@@ -425,6 +426,7 @@ export function AssistantPanel({
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const speech = useSpeechToText();
+  const narrow = useIsNarrow();
 
   // esc closes the panel. The trust pill's menu handles its own esc and
   // stops propagation, so it closes the menu without closing the panel.
@@ -778,7 +780,14 @@ export function AssistantPanel({
           type="text"
           data-testid="assistant-composer-input"
           value={draft}
-          placeholder="Ask, or tell it what to change…"
+          placeholder={
+            // The dock fills the width it is handed — at phone width the row
+            // also holds the mic and Send, and `Ask, or tell it what to
+            // change…` clipped mid-word (rcn-2f review item 2, 390px). The
+            // app's own narrow cut (useIsNarrow, the phone frame) answers
+            // with the shorter wording; the wide panels keep the full one.
+            narrow ? "Tell it what to change…" : "Ask, or tell it what to change…"
+          }
           aria-label="Ask the assistant"
           disabled={busy}
           onChange={(event) => setDraft(event.target.value)}

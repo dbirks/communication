@@ -48,6 +48,18 @@ const runRow: ConversationSummary = {
   last_agent_line: "structured output",
 };
 
+// A run row whose served preview still carries a real newline (the server
+// collapses its previews, but the wire contract is one line — the row must
+// render it as such, never wrap, never add escaping of its own).
+const newlineRow: ConversationSummary = {
+  ...conversationSummaryFixture,
+  id: "01987a63-4444-7000-8000-abcdef000004",
+  title: "run 01a1a58e /plan attempt 1",
+  status: "idle",
+  origin: "run",
+  last_agent_line: "Fix hello.py so it is documented.\n- Keep the API stable",
+};
+
 function routes(): RouteStub[] {
   return [
     { path: "/api/v1/me", body: meFixture },
@@ -55,7 +67,7 @@ function routes(): RouteStub[] {
     { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
     {
       path: "/api/v1/conversations",
-      body: { items: [wholeProjectRow, boundRow, runRow], next_cursor: null },
+      body: { items: [wholeProjectRow, boundRow, runRow, newlineRow], next_cursor: null },
     },
   ];
 }
@@ -101,6 +113,27 @@ describe("thread list previews stay readable for structured output", () => {
       const earlier = screen.getByTestId("threads-group-earlier");
       expect(earlier.textContent).toContain(runRow.title);
       expect(screen.getByTestId("threads-group-live").textContent).not.toContain(runRow.title);
+    },
+  );
+
+  it(
+    "a preview the wire serves with a newline renders as ONE line, verbatim — no added escaping",
+    { timeout: 15_000 },
+    async () => {
+      renderApp({ path: "/threads", routes: routes() });
+      const row = await screen.findByTestId(`thread-row-${newlineRow.id}`);
+      const lastLine = screen.getByTestId(`thread-last-line-${newlineRow.id}`);
+      // The served line prints verbatim — the row adds no escaping of its
+      // own (the literal `\\n` the round-12 review saw was the server's
+      // bug; the UI never re-escapes either way).
+      expect(lastLine.textContent).toBe("Fix hello.py so it is documented.\n- Keep the API stable");
+      expect(lastLine.textContent).not.toContain("\\n");
+      expect(lastLine.textContent).not.toContain("\\\\n");
+      // One line no matter what the wire carries: the preview is a block
+      // whose `truncate` keeps it a single (clipped) line, not a wrap.
+      expect(lastLine.className).toContain("truncate");
+      expect(lastLine.className).toContain("block");
+      expect(row.textContent).toContain(newlineRow.title);
     },
   );
 });

@@ -732,6 +732,139 @@ func cnvJSONFragment(chunk string) bool {
 	return true
 }
 
+// cnvJSONEscapeRE is one well-formed JSON escape pair — or a \uXXXX a cut
+// left short. It is the mark that separates a bare run of text that is a
+// JSON string's own content from ordinary prose: prose does not spell its
+// newlines and tabs.
+var cnvJSONEscapeRE = regexp.MustCompile(`\\(["\\/bfnrt]|u[0-9A-Fa-f]{0,4})`)
+
+// cnvDecodeJSONString resolves a JSON string's content the way json.Unmarshal
+// would — \n, \t, \r, \b, \f, \", \/, \\ and \uXXXX — and stops where a
+// cut left the escapes broken: a trailing backslash with no escape after it,
+// or a \uXXXX that never reaches its fourth hex digit, drops the broken tail
+// (nothing is rendered from an escape half-read). An unknown escape pair —
+// not one JSON admits — is kept verbatim, so a decoded preview never eats
+// the bytes it does not understand.
+func cnvDecodeJSONString(body string) string {
+	var b strings.Builder
+	rs := []rune(body)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] != '\\' {
+			b.WriteRune(rs[i])
+			continue
+		}
+		if i+1 >= len(rs) {
+			return b.String() // cut mid-escape: a lone trailing backslash
+		}
+		i++
+		switch e := rs[i]; e {
+		case '\\', '"', '/':
+			b.WriteRune(e)
+		case 'n':
+			b.WriteRune('\n')
+		case 't':
+			b.WriteRune('\t')
+		case 'r':
+			b.WriteRune('\r')
+		case 'b':
+			b.WriteRune('\b')
+		case 'f':
+			b.WriteRune('\f')
+		case 'u':
+			if i+4 >= len(rs) {
+				return b.String() // cut mid \uXXXX: drop the broken tail
+			}
+			cp := 0
+			ok := true
+			for _, h := range rs[i+1 : i+5] {
+				switch {
+				case h >= '0' && h <= '9':
+					cp = cp*16 + int(h-'0')
+				case h >= 'a' && h <= 'f':
+					cp = cp*16 + int(h-'a'+10)
+				case h >= 'A' && h <= 'F':
+					cp = cp*16 + int(h-'A'+10)
+				default:
+					ok = false
+				}
+			}
+			if ok {
+				b.WriteRune(rune(cp))
+				i += 4
+			} else {
+				b.WriteString(`\u`)
+			}
+		default:
+			// Not an escape JSON admits: keep both characters.
+			b.WriteRune('\\')
+			b.WriteRune(e)
+		}
+	}
+	return b.String()
+}
+
+// cnvCutJSONStringLine answers one word the row says when the newest chunk is
+// a JSON string value's OWN BODY: a cut — the model's output ending
+// mid-string, or the worker's chunk cap splitting the blob — left the value
+// standing alone, its \n, \t, \", \\ and \uXXXX escapes unrendered (round-12
+// review: a plan node's tail printed a literal `documented.\n- Keep …` under
+// the run's title). The row shows the value as the string holds it: the
+// escapes resolved, every run of whitespace collapsed to one space, one line.
+//
+// It answers only where the chunk is string content ALONE: no brace or
+// bracket anywhere, at most one unescaped quote — and only one opening the
+// value — and at least one JSON escape. So ordinary prose, even prose that
+// mentions a backslash or a colon, is untouched, and a tail that still
+// carries the document's structure (`"files": ["a.ts"]}}`) still answers
+// cnvStructuredOutputLine, as round-11 pinned it.
+func cnvCutJSONStringLine(chunk string) (string, bool) {
+	text := strings.TrimSpace(chunk)
+	if text == "" || strings.ContainsAny(text, "{}[]") {
+		return "", false
+	}
+	body := text
+	quotes := 0
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case text[i] == '\\':
+			escaped = true
+		case text[i] == '"':
+			quotes++
+		}
+	}
+	if quotes == 1 {
+		// The value's own opening quote, when the cut landed on it: the
+		// quote is structure, the content follows.
+		if body[0] != '"' {
+			return "", false
+		}
+		body = body[1:]
+	} else if quotes > 1 {
+		return "", false // another unescaped quote is structure this does not read
+	}
+	if !cnvJSONEscapeRE.MatchString(body) && !strings.HasSuffix(body, "\\") {
+		// no escapes — and not cut right after a backslash: prose, not a
+		// string value's body
+		return "", false
+	}
+	line := strings.Join(strings.Fields(cnvDecodeJSONString(body)), " ")
+	return line, line != ""
+}
+
+// cnvCutPreviewLine caps one preview line to cnvLastAgentLineMax runes,
+// rune-safe, with a trailing ellipsis when longer — the ellipsis counts
+// toward the cap, so a truncated preview is exactly cnvLastAgentLineMax
+// runes.
+func cnvCutPreviewLine(line string) string {
+	if utf8.RuneCountInString(line) > cnvLastAgentLineMax {
+		return string([]rune(line)[:cnvLastAgentLineMax-1]) + "…"
+	}
+	return line
+}
+
 // cnvLastAgentLine renders one agent transcript chunk as the list row's
 // preview: the first non-empty line, trimmed, cut to cnvLastAgentLineMax runes
 // with a trailing ellipsis when longer. A chunk that is one JSON object, or one
@@ -744,25 +877,33 @@ func cnvJSONFragment(chunk string) bool {
 // mid-blob, so only its tail or head is the newest chunk, a top-level array,
 // an object with no readable line — answers cnvStructuredOutputLine instead:
 // the row says what the message is and never prints `"]}}`. "" (rendered as
-// JSON null by apiNullString) means no line: no chunk at all, or only
-// whitespace.
+// JSON string value's OWN body a cut left standing — no structure in it,
+// only the value's escaped content — is read through cnvCutJSONStringLine:
+// the escapes resolved, whitespace collapsed, one line, never a literal
+// `\n` (round-12 review). "" (rendered as JSON null by apiNullString) means
+// no line: no chunk at all, or only whitespace.
 func cnvLastAgentLine(chunk string) string {
 	if structured := cnvStructuredAgentText(chunk); structured != "" {
 		chunk = structured
 	} else if cnvJSONFragment(chunk) {
+		if cut, ok := cnvCutJSONStringLine(chunk); ok {
+			// The cut landed inside one string value and left nothing but
+			// its body: the row shows the value decoded, one line.
+			return cnvCutPreviewLine(cut)
+		}
 		return cnvStructuredOutputLine
+	} else if cut, ok := cnvCutJSONStringLine(chunk); ok {
+		// No delimiter at all: the cap cut inside one string value and the
+		// body alone is the newest chunk — the escapes make it recognizable
+		// as such, where plain prose never carries them.
+		return cnvCutPreviewLine(cut)
 	}
 	for _, raw := range strings.Split(chunk, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		// Rune-safe cut; the ellipsis counts toward the cap, so a truncated
-		// preview is exactly cnvLastAgentLineMax runes.
-		if utf8.RuneCountInString(line) > cnvLastAgentLineMax {
-			return string([]rune(line)[:cnvLastAgentLineMax-1]) + "…"
-		}
-		return line
+		return cnvCutPreviewLine(line)
 	}
 	return ""
 }

@@ -189,3 +189,132 @@ func TestConversationListJSONTailLastAgentLine(t *testing.T) {
 		}
 	}
 }
+
+// TestCnvLastAgentLineCutStringValue pins the round-12 defect against the
+// renderer alone (no database): a cut that leaves a JSON string value's OWN
+// body as the newest chunk — the model's output ending mid-string, or the
+// worker's chunk cap splitting the blob — must show the value the way the
+// string holds it: the \n, \t, \", \\ and \uXXXX escapes RESOLVED, every run
+// of whitespace collapsed to one space, one line — never the raw
+// `documented.\n- Keep …` the list printed.
+func TestCnvLastAgentLineCutStringValue(t *testing.T) {
+	cases := []struct {
+		name, chunk, want string
+	}{
+		{"newline escape decodes and collapses",
+			`Fix hello.py so it is documented.\n- Keep the existing API`,
+			"Fix hello.py so it is documented. - Keep the existing API"},
+		{"tab escape decodes to one space", `step one\tstep two`, "step one step two"},
+		{"escaped quotes decode",
+			`Keep the \"usage\" section short`,
+			`Keep the "usage" section short`},
+		{"escaped backslash decodes",
+			`Keep C:\\temp out of the diff`,
+			`Keep C:\temp out of the diff`},
+		{"unicode escape decodes",
+			`Fix caf\u00e9 handling in the reader`,
+			"Fix café handling in the reader"},
+		{"mixed whitespace collapses to single spaces",
+			"  padded\\tline\\nand   more  ",
+			"padded line and more"},
+		{"cut mid-escape: a lone trailing backslash drops out",
+			"Keep the docstring\\",
+			"Keep the docstring"},
+		{"cut mid \\u escape drops the broken tail",
+			`Keep the caf\u00`,
+			"Keep the caf"},
+		{"value opens the chunk when the cut landed on its quote",
+			`"Fix hello.py so it is documented.\n- Keep the API`,
+			"Fix hello.py so it is documented. - Keep the API"},
+		{"decoded value is still capped at the rune cap",
+			"start " + strings.Repeat("x", 300) + `\nend`,
+			"start " + strings.Repeat("x", 153) + "…"},
+		// Ordinary prose never carried a JSON escape, so it stays untouched —
+		// the escape is the mark that says "this is a string's body".
+		{"plain prose last line unchanged", "just a plain prose line", "just a plain prose line"},
+		{"prose with a colon stays prose", "note: keep the API", "note: keep the API"},
+		// A tail that still carries the document's structure keeps the
+		// round-11 word — the decode answers only string content ALONE.
+		{"structure tail still says structured output",
+			`  "files": ["a.ts"]}}`,
+			"structured output"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cnvLastAgentLine(tc.chunk)
+			if got != tc.want {
+				t.Errorf("cnvLastAgentLine(%q) = %q, want %q", tc.chunk, got, tc.want)
+			}
+			if n := utf8.RuneCountInString(got); n > cnvLastAgentLineMax {
+				t.Errorf("preview is %d runes, over the cap of %d", n, cnvLastAgentLineMax)
+			}
+		})
+	}
+}
+
+// TestConversationListCutStringValueLastAgentLine pins the same rule on the
+// real reads: a plan node whose output ended INSIDE its `goal` string leaves
+// the newest chunk as the value's own body — the run's row shows the plan
+// decoded (one line, single spaces), not the literal `\n` the round-12
+// review saw under `run 01a1a58e /plan attempt 1`. A prose thread beside it
+// keeps its plain line.
+func TestConversationListCutStringValueLastAgentLine(t *testing.T) {
+	f := cnvSetup(t)
+	ctx := f.ctx()
+
+	planCut := f.cnvCreate(t, f.alice, "run 01a1a58e /plan attempt 1", "")
+	clAgentMessage(t, f, planCut.ID,
+		`{"plan": {"goal": "Rewrite hello.py so it is doc`)
+	clAgentMessage(t, f, planCut.ID,
+		`umented.\n- Keep the existing API\n- Add unit tests for the ne`)
+
+	prose := f.cnvCreate(t, f.alice, "Plain thread", "")
+	clAgentMessage(t, f, prose.ID, "just a plain prose line")
+
+	want := map[string]string{
+		planCut.ID: "umented. - Keep the existing API - Add unit tests for the ne",
+		prose.ID:   "just a plain prose line",
+	}
+
+	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	for _, cv := range items {
+		wantLine, ok := want[cv.ID]
+		if !ok {
+			t.Fatalf("unexpected conversation %s in the list", cv.ID)
+		}
+		if cv.LastAgentLine != wantLine {
+			t.Errorf("row %s: last_agent_line = %q, want %q", cv.ID, cv.LastAgentLine, wantLine)
+		}
+		if strings.ContainsRune(cv.LastAgentLine, '\n') {
+			t.Errorf("row %s: preview %q carries a newline", cv.ID, cv.LastAgentLine)
+		}
+		if n := utf8.RuneCountInString(cv.LastAgentLine); n > cnvLastAgentLineMax {
+			t.Errorf("row %s: preview is %d runes, over the cap of %d", cv.ID, n, cnvLastAgentLineMax)
+		}
+	}
+
+	// The /threads page read shares the renderer, so the cut value answers
+	// the same decoded line there.
+	xp := APICrossProjectStore{Pool: f.pool}
+	views, _, err := xp.ListVisibleConversations(ctx,
+		api.Caller{UserID: f.bob, OrganizationID: f.orgID}, 50, "")
+	if err != nil {
+		t.Fatalf("ListVisibleConversations: %v", err)
+	}
+	byView := map[string]api.ConversationSummaryView{}
+	for _, v := range views {
+		byView[v.ID] = v
+	}
+	for id, wantLine := range want {
+		v, ok := byView[id]
+		if !ok {
+			t.Fatalf("cross-project list misses conversation %s", id)
+		}
+		if v.LastAgentLine == nil || *v.LastAgentLine != wantLine {
+			t.Errorf("cross row %s: last_agent_line = %v, want %q", id, v.LastAgentLine, wantLine)
+		}
+	}
+}
