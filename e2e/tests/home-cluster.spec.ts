@@ -1040,7 +1040,21 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       // single assignment the dialog opens straight on it — its heading
       // carries the pipeline's slug, which is the pin named as data.
       const assignmentSelect = page.getByTestId("new-run-assignment");
-      if (await assignmentSelect.isVisible().catch(() => false)) {
+      // The form settles only once the pinned revision has loaded. While it
+      // is still in flight the free-form shape is on screen WITH its select
+      // but WITHOUT its declared fields — a transient shape that the typed
+      // run-by-hand dialog replaces the moment `input_specs` arrive (the
+      // plan sample declares goal + repository, so this project settles
+      // typed, and its single-assignment dialog carries no select). Branching
+      // on the select's presence inside that window is what failed run
+      // 41754108482: the option was read from a select the form was about to
+      // unmount, so it never attached. The goal field exists in BOTH settled
+      // shapes (free-form and typed, `new-run-input-${name}`), so wait for it
+      // before deciding which shape is final.
+      await expect(page.getByTestId("new-run-input-goal")).toBeVisible({
+        timeout: UI_TIMEOUT_MS,
+      });
+      if (await assignmentSelect.isVisible()) {
         await selectByOptionText(page, "new-run-assignment", PLAN_SLUG);
       } else {
         await expect(page.getByRole("heading", { name: new RegExp(PLAN_SLUG) })).toBeVisible({

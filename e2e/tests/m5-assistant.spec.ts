@@ -63,14 +63,49 @@ const NOT_FOUND_TEXT = "That page does not exist.";
  */
 const PROBE_QUESTION = 'Is the assistant configured? token="sk-abcdefghijklmnop0123456789"';
 
-/** The closed registry (ADR-0050, internal/assistant/tools.go): every rendered row names one. */
+/**
+ * The closed tool registry: every rendered row names one of these.
+ *
+ * No API endpoint lists the assistant's tools (the assistant surface is
+ * /ask, /draft-proposals and the conversation routes only), so this list
+ * mirrors the server's single source: the closed `toolClasses` table in
+ * internal/assistant/trust.go (ADR-0050 decision 4) — the names the
+ * conversation runner registers there are refused outside that table
+ * before any class question is asked, and the served `tool_calls` rows
+ * carry exactly these registry names. The six v1 read names are
+ * registered in internal/assistant/tools.go; the draft, navigation and
+ * risky names in internal/assistant/runner.go (`registerTools`).
+ *
+ * THE DRIFT RULE: when a tool is added to internal/assistant/trust.go,
+ * add its name HERE in the same change — the list failing on a newly
+ * registered tool (run 41754108482 failed on `ui.navigate`, registered in
+ * internal/assistant/runner.go) is this mirror having gone stale, not the
+ * broker rendering an unregistered name.
+ */
 const TOOL_NAMES = [
+  // ClassRead (internal/assistant/trust.go; registered in tools.go)
   "project.list",
   "run.list",
   "run.nodes",
   "approval.pending",
   "pipeline.revisions",
   "palette.search",
+  "draft.get",
+  "workflow.draft",
+  "chat.transcript",
+  // ClassNavigate (internal/assistant/runner.go)
+  "ui.navigate",
+  "ui.question",
+  // ClassDraftEdit (internal/assistant/runner.go)
+  "draft.apply",
+  "workflow.create_draft",
+  // ClassRisky (internal/assistant/runner.go)
+  "run.retry",
+  "run.start",
+  "approval.decide",
+  "permission.allow",
+  "pipeline.publish",
+  "pipeline.publish",
 ];
 
 interface AssistantLinkServed {
