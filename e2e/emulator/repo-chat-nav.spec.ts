@@ -17,7 +17,14 @@
 //            `Issue hand-offs need a GitHub repository` state, never a fake
 //            issue row to Hand off (mockdata rule). Plus the feed's empty
 //            state and its runs-read server error, the way empty-error.spec.ts
-//            and server-error.spec.ts do theirs.
+//            and server-error.spec.ts do theirs. And ASSISTANT NOTICED with a
+//            note the MODEL wrote (`rcn-3a repo-notes`): the notes journey
+//            never writes a row — the only thing it does is the repo page's own
+//            `GET …/repos/{r}/notes`, which IS the generator's trigger
+//            (ADR-0071 § Decision 6) — waits (bounded) for the assistant to
+//            answer about `server`, whose DATA block is the pass's runs on that
+//            repository and its real open GitHub issues, then draws the note
+//            with its one allowlisted action and dismisses it for good.
 //   rcn-3b — Lanes: the switch, the four lanes with the WORKFLOWS chip row,
 //            the honest empty issues lane on the file:// repo (which cannot
 //            have GitHub issues at all), and the choice persisting per repo
@@ -500,6 +507,23 @@ const ids = {
   dragAssignmentId: "",
   dragRunId: "",
 };
+
+/** One assistant note as the store serves it (ADR-0071, `AssistantNote`). */
+interface ServedNote {
+  id: string;
+  project_id: string;
+  scope_kind: string;
+  scope_id: string;
+  text: string;
+  action?: { kind: string } | null;
+  created_at: string;
+  expires_at?: string | null;
+}
+
+/** The kinds the union owns (internal/api's AssistantNoteAction*, mirrored in
+ * ui/src/api/notes.ts). The note the journey proves is the model's, so it
+ * asserts its action is one of THESE — never free text the model invented. */
+const NOTE_ACTION_KINDS = ["start_chat", "hand_off", "make_workflow", "open_run"];
 
 /** `ui/src/lib/format.ts testidOf` — the tail the app puts on a data-testid. */
 function testidKey(id: string): string {
@@ -1219,6 +1243,183 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
   });
 
+  test("assistant notes — the model writes one about `server`; dismiss keeps it gone (rcn-3a)", async ({
+    page,
+    emu,
+  }) => {
+    // The goal item this proves is the panel's own claim: the repo page shows
+    // notes the MODEL wrote, dismissible, with nothing hard-coded behind them.
+    // So nothing here writes a row. There is no note-creating route (ADR-0071
+    // § Decision 5 — `there is no POST here`), no database touch, no test-only
+    // seam: the only thing the journey does is make the same
+    // `GET …/repos/{r}/notes` the repo page makes, which is the generator's own
+    // trigger (ADR-0071 § Decision 6), and then read what it is served. What
+    // appears is model output or the panel stays honestly empty — and an empty
+    // panel fails this journey rather than being padded out.
+    //
+    // Why the wait is 5 minutes: a note-less GET asks the model ONCE and the
+    // scope's cooldown is 30 minutes, but an attempt that stored nothing re-arms
+    // on a short ladder (30s, then 1min, then 2min), so five minutes of the
+    // page's own read covers four completions. `server` is the right scope: its
+    // DATA block is the pass's real runs on the repository plus its real open
+    // GitHub issues — the same reads the page itself makes.
+    test.setTimeout(9 * 60_000);
+    emu.expectFailure(issuesReadOf(ids.projectId));
+    const notesUrl = `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos/${ids.ghRepoId}/notes`;
+    const readNotes = async (): Promise<ServedNote[]> => {
+      const res = await page.request.get(notesUrl);
+      expect(
+        res.status(),
+        `the notes read answers 200 (got ${res.status()}: ${(await res.text()).slice(0, 200)})`,
+      ).toBe(200);
+      return ((await res.json()) as { notes?: ServedNote[] }).notes ?? [];
+    };
+
+    let note: ServedNote | null = null;
+    await test.step("the assistant writes a note for this reader", async () => {
+      const deadline = Date.now() + 5 * 60_000;
+      let polls = 0;
+      while (note === null) {
+        polls += 1;
+        // The first read of the scope is what asks the model; every later one
+        // re-reads the panel and, past each ladder gap, asks again.
+        const served = await readNotes();
+        if (served.length > 0) note = served[0];
+        else if (Date.now() >= deadline) {
+          throw new Error(
+            `the assistant wrote nothing for this reader about \`${GH_REPO}\` in ${polls} reads ` +
+              `over 5 minutes. The read IS the trigger and the model is configured in this stack ` +
+              `(compose.real.yml's COMMUNICATION_ASSISTANT_* triple); the api replicas log every ` +
+              'attempt as "assistant notes: …", so the compose logs name the reason (a refused ' +
+              "answer, a failed completion, or a DATA block with no runs and no open issues to be honest " +
+              "about). The panel is never padded out to make this pass.",
+          );
+        } else {
+          await page.waitForTimeout(2_000);
+        }
+      }
+      // It is the model's sentence, and the store's own contract says every
+      // note carries one allowlisted action (ADR-0071 § Decision 4).
+      expect(note.text.trim().length, "the note says something").toBeGreaterThan(0);
+      expect(
+        NOTE_ACTION_KINDS,
+        `the note's action kind (${note.action?.kind}) is one the client owns`,
+      ).toContain(note.action?.kind ?? "");
+    });
+
+    // `note` is non-null past the step above (the step throws otherwise); this
+    // is the narrowing TypeScript cannot do through a closure for us.
+    const shown = note as ServedNote;
+
+    await test.step("3a notes — the note renders in ASSISTANT NOTICED with its action", async () => {
+      await page.goto(`/p/${ids.projectId}/${GH_REPO}`);
+      await expect(page.getByTestId("repo-page"), "the repo page renders").toBeVisible({
+        timeout: 30_000,
+      });
+      const panel = page.getByTestId("repo-assistant-notes");
+      await expect(panel, "design 3a: ASSISTANT NOTICED").toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByTestId("repo-assistant-notes-empty"),
+        "the panel is not standing in its empty state — the note the model wrote is here",
+      ).toHaveCount(0);
+      const row = page.getByTestId(`repo-assistant-note-${shown.id}`);
+      await expect(
+        row,
+        "design 3a: the note is drawn as one sentence of the model's own words",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(row).toContainText(shown.text);
+      await expect(
+        row.getByTestId(`repo-assistant-note-${shown.id}-action`),
+        "design 3a: the note's one action is a button the page itself owns",
+      ).toBeVisible();
+      await expect(
+        page.getByTestId("repo-assistant-notes-count"),
+        "the count is what the store served, at most the panel's three",
+      ).toHaveText(/^[1-3]$/);
+      await emu.screen("rcn-3a", "repo-notes");
+    });
+
+    await test.step("3a notes — dismiss: the write answers, the row goes, the reload keeps it gone", async () => {
+      const dismissed = page.getByTestId(`repo-assistant-note-${shown.id}-dismiss`);
+      await expect(dismissed, "design 3a: every note carries its own dismiss").toBeVisible();
+      const written = page.waitForResponse(
+        (res) =>
+          res.request().method() === "POST" &&
+          res.url().includes(`/api/v1/notes/${shown.id}/dismiss`),
+        { timeout: 30_000 },
+      );
+      await dismissed.click();
+      const receipt = await written;
+      expect(
+        receipt.status(),
+        `the dismissal answers 2xx for its owner (got ${receipt.status()})`,
+      ).toBeGreaterThanOrEqual(200);
+      expect(
+        receipt.status(),
+        "a dismissal that did not land is not a dismissal",
+      ).toBeLessThan(300);
+      // The row leaves on the click, not on the next read (notes.ts dismisses
+      // the cache entry optimistically and re-reads after the 204).
+      await expect(
+        page.getByTestId(`repo-assistant-note-${shown.id}`),
+        "the dismissed note is off the panel",
+      ).toHaveCount(0);
+      await page.reload();
+      await expect(page.getByTestId("repo-page"), "the page reloads").toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(
+        page.getByTestId(`repo-assistant-note-${shown.id}`),
+        "a dismissed note stays dismissed across the reload — it was a row, not a render",
+      ).toHaveCount(0);
+      const after = await readNotes();
+      expect(
+        after.map((row2) => row2.id),
+        "the store no longer serves this reader's dismissed note",
+      ).not.toContain(shown.id);
+    });
+
+    await test.step("3a notes — every note the assistant wrote for this pass stays dismissed", async () => {
+      // The generator may have written up to three notes for this reader about
+      // `server`. The claim above is the one the goal item names; this step is
+      // the same act repeated over whatever else the model wrote, so no later
+      // screen of this repository (`rcn-3a repo`, `rcn-3a repo-feed-empty`,
+      // `rcn-1k` all capture this page) inherits model text that only this
+      // journey was written to prove — and so the dismissal is proven for every
+      // row rather than for one lucky one. Each is dismissed the reader's own
+      // way: the panel's `dismiss`, answered by POST /notes/{id}/dismiss.
+      const dismissed: string[] = [shown.id];
+      for (let i = 0; i < 4; i++) {
+        const row = page.locator('li[data-testid^="repo-assistant-note-"]').first();
+        if (!(await row.isVisible().catch(() => false))) break;
+        const testid = await row.getAttribute("data-testid");
+        expect(testid, "a note row is drawn under its own id").toBeTruthy();
+        const id = (testid ?? "").replace("repo-assistant-note-", "");
+        const wrote = page.waitForResponse(
+          (res) =>
+            res.request().method() === "POST" && res.url().includes(`/api/v1/notes/${id}/dismiss`),
+          { timeout: 30_000 },
+        );
+        await row.getByTestId(`repo-assistant-note-${id}-dismiss`).click();
+        const receipt = await wrote;
+        expect(
+          receipt.status(),
+          `dismissing the assistant's other note answers 2xx (got ${receipt.status()})`,
+        ).toBeLessThan(300);
+        dismissed.push(id);
+      }
+      // Dismissal is per user and it holds: none of these rows comes back to the
+      // reader who dismissed it, whatever else the assistant has to say later.
+      const left = await readNotes();
+      for (const id of dismissed) {
+        expect(
+          left.map((row) => row.id),
+          `note ${id} was dismissed by its owner and is served no more`,
+        ).not.toContain(id);
+      }
+    });
+  });
+
   test("shell — one sidebar, the rail, the flyout, the ⋯ menu, persisted collapse", async ({
     page,
     emu,
@@ -1274,6 +1475,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
           `design 2c: the ⋯ menu carries its ${testid.replace("project-menu-", "")} entry`,
         ).toBeVisible();
       }
+      // Goal item 2 — every anchored surface has a pointer arrow. The ⋯ menu
+      // is a ds Menu: its arrow is the shared element INSIDE the box, so the
+      // assertion is scoped to the surface (one open menu's arrow can never
+      // answer for another's).
+      await expect(
+        menu.getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
+      ).toBeVisible();
       // Review round 2: design 3c's LEFT panel is this exact state — the ⋯
       // menu OPEN, its pointer arrow aimed at the project row — captured at
       // both widths (the phone's documented reflow replaces the column with
@@ -1312,6 +1521,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         flyout,
         `design 3c: the flyout lists the project's repositories (${FILE_REPO})`,
       ).toContainText(FILE_REPO, { timeout: 15_000 });
+      // Goal item 2: the flyout is a ds Popover — the same shared arrow, in
+      // the same box, claimed the same way.
+      await expect(
+        flyout.getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
+      ).toBeVisible();
       // Review round 2: design 3c's RIGHT panel is this exact state — a tile
       // hovered, the flyout OPEN with its pointer arrow crossing the 4px
       // gap — captured at both widths (the phone documents the rail away;
@@ -1424,6 +1639,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(profileMenu, "the chat box's profile chip opens the picker").toBeVisible({
         timeout: 10_000,
       });
+      await expect(
+        profileMenu.getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
+      ).toBeVisible();
       await profileMenu.getByTestId(chatBoxProfileTestid(lab[0].id)).click();
       await expect(
         page.getByTestId("repo-chat-profile"),
@@ -1687,8 +1906,8 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       });
       await expect(menu).toContainText(new RegExp(`Start #${issueNumber} with`, "i"));
       await expect(
-        page.getByTestId("menu-arrow"),
-        "design 3b: the menu is anchored with its pointer arrow",
+        menu.getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
       ).toBeVisible();
       await expect(
         page.getByTestId("repo-lane-drop-card"),
@@ -1938,6 +2157,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         menu.getByText(/NEXT TURN RUNS ON/i),
         "design 1h: the menu captions itself",
       ).toBeVisible();
+      await expect(
+        menu.getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
+      ).toBeVisible();
       await menu.getByTestId(`composer-agent-profile-${next!.id}`).click();
       await expect(chip, `the chip moves to ${next!.name}`).toContainText(next!.name, {
         timeout: 30_000,
@@ -2026,6 +2249,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(menu, "design 1h: the picker opens over the composer").toBeVisible({
         timeout: 10_000,
       });
+      // Goal item 2, claimed at the capture's own live state: this is the
+      // screen whose landmark list now carries `rcn-menu-arrow`.
+      await expect(
+        menu.getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
+      ).toBeVisible();
       // The pin's width-local check at the capture's live state (rcn-review11).
       await expectChatPinLive(page, 1280);
       await emu.screen("rcn-1h", "next-turn-menu");
@@ -2088,7 +2317,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(scopeMenu, "the scope surface is the ds Menu").toHaveRole("menu");
       await expect(
         scopeMenu.getByTestId("menu-arrow"),
-        "the ds Menu carries its pointer arrow",
+        "design: every anchored surface has a pointer arrow",
       ).toBeVisible();
       await expect(scopeMenu.getByRole("menuitem"), "the menu's rows").toHaveCount(3);
       await expect(
@@ -2663,6 +2892,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(askItem, "the @-menu lists the other repo's agent as askable").toBeVisible({
         timeout: 15_000,
       });
+      // Goal item 2 — the @-menu is a ds Menu anchored on the composer, so it
+      // carries the shared arrow like every other anchored surface.
+      await expect(
+        page.getByTestId("composer-mail-menu").getByTestId("menu-arrow"),
+        "design: every anchored surface has a pointer arrow",
+      ).toBeVisible();
       await expect(page.getByTestId("composer-mail-repo-web")).toHaveCount(0);
       await askItem.click();
       await expect(composer, "picking the repo completes the @ token").toHaveValue(`@${GH_REPO} `);

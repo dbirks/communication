@@ -1270,6 +1270,27 @@ const RCN_RAIL_FLYOUT: Landmark = {
   host: "page",
   any: [{ testid: "sidebar-rail-flyout-*" }, { testid: "sidebar-open" }],
 };
+/* Every anchored surface carries the shared pointer arrow (handoff 3c:
+ * "all popovers/menus get a pointer arrow"), so each open-surface capture
+ * claims it at its own width too. `menu-arrow` is the ds primitive's one
+ * arrow testid (Menu AND Popover mount the same component); `host: "page"`
+ * because the column these open from lives OUTSIDE `<main>`, and
+ * `sidebar-open` is the 390 alternate — below `lg` the documented reflow
+ * unmounts the column (and the menu or flyout open inside it) for the phone
+ * strip, exactly as for the two landmarks above. The arrow is therefore a
+ * hard claim at 1280 and the one tap is its claim at 390. */
+const RCN_PROJECT_MENU_ARROW: Landmark = {
+  id: "rcn-project-menu-arrow",
+  desc: "the ⋯ menu's pointer arrow (the handoff's rule: every anchored surface gets one; at 390, the phone strip's one tap)",
+  host: "page",
+  any: [{ testid: "menu-arrow" }, { testid: "sidebar-open" }],
+};
+const RCN_RAIL_FLYOUT_ARROW: Landmark = {
+  id: "rcn-rail-flyout-arrow",
+  desc: "the rail flyout's pointer arrow (the handoff's rule: every anchored surface gets one; at 390, the phone strip's one tap)",
+  host: "page",
+  any: [{ testid: "menu-arrow" }, { testid: "sidebar-open" }],
+};
 
 /* The repo page's List view (rcn-3a). */
 const RCN_REPO_PAGE: Landmark = {
@@ -1382,6 +1403,42 @@ const RCN_ISSUES_PANEL: Landmark = {
     { testid: "repo-issues-not-github" },
     { role: "heading", name: /open issues/i },
   ],
+};
+
+/* ASSISTANT NOTICED (design 3a, ADR-0071). The panel is the reader's contract:
+   it stands with no notes and with notes, so the section landmark is satisfied
+   by either of its two states. What a NOTE requires is the other three: the row
+   the server wrote for this one person, the one allowlisted action it carries,
+   and the dismiss that is hers alone. The ids carry the note's own id, which is
+   data — hence the prefix form, never an exact id. */
+const RCN_REPO_NOTES_PANEL: Landmark = {
+  id: "rcn-assistant-notes",
+  desc: "the ASSISTANT NOTICED panel (with notes, or in its honest empty state)",
+  any: [
+    { testid: "repo-assistant-notes" },
+    { testid: "repo-assistant-notes-empty" },
+    { role: "heading", name: /assistant noticed/i },
+  ],
+};
+const RCN_REPO_NOTE_ROW: Landmark = {
+  id: "rcn-assistant-note",
+  desc: "one note the assistant wrote, drawn as text with its dismiss",
+  any: [{ testid: "repo-assistant-note-*" }],
+};
+const RCN_REPO_NOTE_ACTION: Landmark = {
+  // The button's words are the design's (ui/src/api/notes.ts noteActionLabel),
+  // never the note's, so they are a landmark this file may claim; the testid's
+  // tail is the note's own id, which the prefix form cannot cut in half.
+  id: "rcn-assistant-note-action",
+  desc: "the one allowlisted action the note offers",
+  any: [
+    { role: "button", name: /^(ask in a new chat|hand it off|make a workflow…|open the run)$/i },
+  ],
+};
+const RCN_REPO_NOTE_DISMISS: Landmark = {
+  id: "rcn-assistant-note-dismiss",
+  desc: "the note's dismiss, which hides it for this reader alone",
+  any: [{ role: "button", name: /^dismiss$/i }],
 };
 
 /* The repo page's Lanes view (rcn-3b). */
@@ -2203,8 +2260,20 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   // project row (its pointer arrow), and a tile hovered with the flyout open
   // (its pointer arrow). Same badge, new screen names, so the report pairs
   // each with the 3c render.
-  "rcn-3c menu": [RCN_COLUMN, RCN_PROJECTS_SECTION, RCN_PROJECT_MENU, RCN_PROJECT_MENU_ITEMS],
-  "rcn-3c flyout": [RCN_COLUMN, RCN_RAIL_TILES, RCN_RAIL_FLYOUT, RCN_RAIL_EXPAND],
+  "rcn-3c menu": [
+    RCN_COLUMN,
+    RCN_PROJECTS_SECTION,
+    RCN_PROJECT_MENU,
+    RCN_PROJECT_MENU_ITEMS,
+    RCN_PROJECT_MENU_ARROW,
+  ],
+  "rcn-3c flyout": [
+    RCN_COLUMN,
+    RCN_RAIL_TILES,
+    RCN_RAIL_FLYOUT,
+    RCN_RAIL_EXPAND,
+    RCN_RAIL_FLYOUT_ARROW,
+  ],
 
   // The repo page's List view (3a): chat box on top, the one mixed activity
   // feed with its filter chips, and the WORKFLOWS / OPEN ISSUES side panels.
@@ -2225,6 +2294,29 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_WORKFLOW_RESULT,
     RCN_WORKFLOW_RUN,
     RCN_ISSUES_PANEL,
+    RCN_REPO_NOTES_PANEL,
+  ],
+  // The same page once the assistant HAS written something for this reader:
+  // the note row with its one action and its dismiss (ADR-0071). The row is
+  // model output, so nothing here claims its words — the landmarks claim the
+  // structure a note is drawn in, and the journey proves a real note reached
+  // it through the read the page itself makes.
+  "rcn-3a repo-notes": [
+    RCN_REPO_PAGE,
+    RCN_REPO_BREADCRUMB,
+    RCN_REPO_TITLE,
+    RCN_VIEW_TOGGLE,
+    RCN_CHAT_BOX,
+    RCN_CHAT_INPUT,
+    RCN_CHAT_START,
+    RCN_FILTER_CHIPS,
+    RCN_ACTIVITY,
+    RCN_WORKFLOWS_PANEL,
+    RCN_ISSUES_PANEL,
+    RCN_REPO_NOTES_PANEL,
+    RCN_REPO_NOTE_ROW,
+    RCN_REPO_NOTE_ACTION,
+    RCN_REPO_NOTE_DISMISS,
   ],
   // The same page with nothing said yet: the honest empty feed stands in for
   // the rows (the empty-error rule — a repo the pass created shows absences,
@@ -2241,6 +2333,12 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_ACTIVITY_EMPTY,
     RCN_WORKFLOWS_PANEL,
     RCN_ISSUES_PANEL,
+    // The panel itself, in whichever state it is in: this screen is captured
+    // before the generator has had time to answer, and a landmark that claimed
+    // the empty LINE would be a race with the model. RCN_REPO_NOTES_PANEL is
+    // satisfied by the notes or by the honest empty state, so it claims the
+    // section — which is what the design owns here — and nothing about timing.
+    RCN_REPO_NOTES_PANEL,
   ],
   // The same page with the runs read failed (server-error.spec.ts's rule):
   // the page keeps its heading and owns the failure — a ProblemBanner with a
@@ -2350,10 +2448,24 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   // BOTH widths. An open menu (present at 1280, absent at 390) would file a
   // false "390 lost" reflow defect, so the menu itself is closed for the
   // capture; its own structure (the ds Menu, its pointer arrow, the repo
-  // rows, the tick) is asserted in the journey at the 1280 frame.
+  // rows, the tick) is asserted in the journey at the 1280 frame under the
+  // every-anchored-surface-has-an-arrow message. It cannot be a landmark on
+  // THIS screen: the capture has the menu closed, so a bare `menu-arrow`
+  // claim would file a defect on a screen that draws no menu at all.
   "rcn-2e works-in-menu": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-2e works-in-moved": [RCN_SIDE_PANEL, RCN_WORKS_IN],
-  "rcn-1h next-turn-menu": [RCN_CONV_TITLE, RCN_AGENT_CHIP, RCN_AGENT_MENU, RCN_AGENT_MENU_CAPTION, RCN_AGENT_MENU_PROFILES],
+  // The composer's picker open is a captured anchored surface too, so it
+  // carries the same arrow claim (the ds Menu mounts its arrow INSIDE the
+  // box, inside `<main>` — no `host` widening here, and the menu survives
+  // both widths, so the arrow is asserted at 1280 AND 390).
+  "rcn-1h next-turn-menu": [
+    RCN_CONV_TITLE,
+    RCN_AGENT_CHIP,
+    RCN_AGENT_MENU,
+    RCN_AGENT_MENU_CAPTION,
+    RCN_AGENT_MENU_PROFILES,
+    RCN_MENU_ARROW,
+  ],
 
   // Thread → workflow (2f): the note's `Make a workflow…` opens the assistant
   // panel with the chat as context — the ask is the app's own canned line;
