@@ -252,6 +252,52 @@ describe("ds Menu placement and the pointer arrow", () => {
     // ceiling, not a target.
   });
 
+  it("re-clamps from the settled geometry after a viewport resize, not the stale one", async () => {
+    // Round-15 regression: the NEXT TURN RUNS ON menu (260px, opens above
+    // the composer's chip) was opened at 1280, then the viewport resized to
+    // 390. The resize event fires BEFORE the app's breakpoint re-render has
+    // settled the layout — the trigger still reports its old position (254)
+    // at event time and only moves to 16 on the following frame. A
+    // synchronous clamp against the stale geometry left the panel off the
+    // left of the screen (style.left -114px, arrow still on the chip). The
+    // re-position must land on the settled geometry: clamped to 16, arrow
+    // still centered on the trigger.
+    render(<Harness items={ITEMS} width={260} side="top" />);
+    const trigger = screen.getByTestId("trigger");
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 1280,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      writable: true,
+      value: 800,
+    });
+    trigger.getBoundingClientRect = () => rect(254, 310, 100, 26);
+    fireEvent.click(trigger);
+    expect(screen.getByTestId("panel").style.left).toBe("254px"); // anchored, unclamped at 1280
+    // The viewport shrinks; at the moment of the resize event the trigger
+    // still reports its 1280 position.
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      writable: true,
+      value: 844,
+    });
+    fireEvent(window, new Event("resize"));
+    // The layout settles one frame later: the trigger is now at 16.
+    trigger.getBoundingClientRect = () => rect(16, 422, 100, 26);
+    await new Promise((resolve) => setTimeout(resolve, 120)); // let the verify frames run
+    const panel = screen.getByTestId("panel");
+    // The stale-geometry clamp would have been 390 - 8 - 260 = 122 (or worse,
+    // applied against the old holder base). The settled clamp is 16.
+    expect(panel.style.left).toBe("16px");
+    expect(+panel.style.left.replace("px", "")).toBeGreaterThanOrEqual(0);
+    // The arrow still rides the trigger's center (16 + 50) in box coordinates.
+    expect(screen.getByTestId("menu-arrow").style.left).toBe("50px");
+  });
+
   it("flips above the trigger when the bottom edge has no room", () => {
     render(<Harness items={ITEMS} height={100} />);
     const trigger = screen.getByTestId("trigger");

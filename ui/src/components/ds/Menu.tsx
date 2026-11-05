@@ -159,7 +159,7 @@ function useAnchoredSurface(options: AnchorOptions) {
       const panel = panelRef.current;
       const arrow = arrowRef.current;
       const trigger = latest.current.triggerRef.current;
-      if (!panel || !arrow || !trigger) return;
+      if (!panel || !arrow || !trigger) return false;
       const o = latest.current;
       const margin = VIEWPORT_MARGIN_PX;
       const vw = window.innerWidth;
@@ -218,11 +218,45 @@ function useAnchoredSurface(options: AnchorOptions) {
         arrow.style.left = "";
         arrow.style.right = "";
       }
+      // The reposition verification (below) stops when the geometry has
+      // settled: report whether this pass applied anything new.
+      const settled =
+        side === last.side && panel.style.left === last.left && panel.style.top === last.top;
+      last.left = panel.style.left;
+      last.top = panel.style.top;
+      last.side = side;
       setLandedSide(side);
+      return !settled;
     };
+    const last = { left: "", top: "", side: null as MenuSide | null };
     position();
-    window.addEventListener("resize", position);
-    return () => window.removeEventListener("resize", position);
+    // A viewport resize fires BEFORE the app's layout has settled: the
+    // breakpoint re-render (the Details sheet appearing below `lg`, the
+    // composer row re-flowing) moves the trigger a frame or two later, so a
+    // synchronous re-position clamps against the OLD geometry and leaves the
+    // panel off-screen (round-15: the NEXT TURN RUNS ON menu at 390, its
+    // body left of the viewport while its arrow still touched the chip).
+    // Re-measure on the following frames instead, verifying a short, bounded
+    // burst until the geometry stops changing; `position()` is idempotent.
+    const MAX_VERIFY_FRAMES = 10;
+    let verifyFrames = 0;
+    let raf = 0;
+    const verify = () => {
+      raf = 0;
+      if (++verifyFrames >= MAX_VERIFY_FRAMES) return;
+      // `false` = geometry settled, stop verifying.
+      if (!position()) return;
+      raf = requestAnimationFrame(verify);
+    };
+    const onResize = () => {
+      verifyFrames = 0;
+      if (!raf) raf = requestAnimationFrame(verify);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [options.open]);
 
   useLayoutEffect(() => {
