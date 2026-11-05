@@ -2596,6 +2596,19 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("side-panel-link-state-0")).toContainText(/answered/i, {
         timeout: 30_000,
       });
+      // round-19 defect on 3d: the AGENTS IN THIS CHAT list carried only the
+      // profile that RAN turns — the asked agent is a participant too, and
+      // the design (3d: "Codex · gpt-5 api, asked once") gives it its own
+      // row, derived from the very link LINKED CHATS reads. Assert the row
+      // at the desktop rail: the asked repo and the ask count, and no
+      // invented model name anywhere on it.
+      const askedRow = page.getByTestId("side-panel-asked-row-0");
+      await expect(
+        askedRow,
+        "design 3d: AGENTS IN THIS CHAT lists the asked agent as its own row",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId("side-panel-asked-repo-0")).toHaveText(GH_REPO);
+      await expect(askedRow).toContainText(/asked once/i);
       // The pin's width-local check at the capture's live state (rcn-review11):
       // the mail card plus its answer line are NEW transcript rows.
       await expectChatPinLive(page, 1280);
@@ -2603,6 +2616,26 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // the panel's landmarks accept the toggle as the one tap.
       await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
+      // …and at 390 the panel's one home is the Details sheet — the asked
+      // agent's row must ride it (round-19, same defect, phone width).
+      await page.getByTestId("chat-details-toggle").click();
+      const detailsSheet = page.getByTestId("chat-details-sheet");
+      await expect(
+        detailsSheet,
+        "rcn-chat-rail-390: the Details sheet opens at 390",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        detailsSheet.getByTestId("side-panel-asked-row-0"),
+        "design 3d at 390: the asked agent's row rides the Details sheet",
+      ).toContainText(GH_REPO);
+      await expect(detailsSheet.getByTestId("side-panel-asked-row-0")).toContainText(
+        /asked once/i,
+      );
+      // Close it for the capture — the sheet mounted and visible HERE is by
+      // construction an Esc-listening one (b26f218's flake lesson).
+      await expect(detailsSheet).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(detailsSheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
       await emu.screen("rcn-3d", "mail-card");
       await expectChatPinBothWidths(page);
     });

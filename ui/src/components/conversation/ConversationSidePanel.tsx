@@ -28,6 +28,13 @@
  *   back appears twice, because the ranges describe the transcript. A run whose
  *   turns the journal records as failed wears the failed state too ("Codex
  *   turn 2 · failed") — see `agentRunStateCopy`.
+ *   Design 3d (round-19): an agent this chat ASKED through agent mail is a
+ *   participant too, and gets its own row — its label, its repo, and how often
+ *   it was asked ("Codex · gpt-5 api, asked once"). The rows come from the
+ *   SAME `links` read LINKED CHATS uses (the outgoing direction), grouped by
+ *   repo + launcher (ADR-0072 § 10: a mailed chat runs on one named launcher);
+ *   the label is resolved through the app's one launcher-naming resolver and
+ *   falls back to the launcher id the wire carries — never an invented model.
  * - Skills used — the wire carries no per-conversation skill list today; the
  *   section renders only what a host hands it.
  * - LINKED CHATS — ADR-0072's agent-mail links (`links`, either direction),
@@ -72,9 +79,10 @@ import {
 } from "./AssistantNote";
 import { openAssistantWorkflowDraft } from "../assistant/AssistantPopover";
 import { useChangeConversationScope } from "../../api/conversations";
-import { useConversation, useMe, useRepositories } from "../../api/queries";
+import { useAgentProfiles, useConversation, useMe, useRepositories } from "../../api/queries";
 import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../../lib/pipeline/authoring";
 import { agentLabel } from "./ConversationTranscript";
+import { agentDisplayForLauncher, type LauncherNameSource } from "./agentNames";
 import { NO_BRANCH_YET } from "./threadBranch";
 import type { TurnRecord } from "../../api/transcript";
 import type { components } from "../../api/schema";
@@ -101,6 +109,67 @@ export function mailLinkState(state: string): { name: StateName; word: string } 
 /** `turns 1–2`, or `turn 3` for a single-turn run. */
 export function turnRangeCopy(first: number, last: number): string {
   return first === last ? `turn ${first}` : `turns ${first}\u2013${last}`;
+}
+
+/**
+ * One AGENTS row for an agent this chat ASKED through agent mail (design 3d,
+ * round-19): the asked agent is a participant of the conversation even though
+ * no turn of THIS chat's transcript ran on its profile — its answer arrived
+ * from its own chat. The row is derived from the conversation's own
+ * `linked_chats` (ADR-0072), outgoing direction only ("this chat asked"),
+ * grouped by repo + launcher so repeated asks of the same repo's agent count
+ * into one row ("asked 3 times") instead of stacking look-alike rows.
+ */
+export interface AskedAgentRow {
+  key: string;
+  repo: string;
+  launcherId: string;
+  asks: number;
+}
+
+/** The outgoing mail links folded into one row per asked agent, in first-ask
+ * order. An absent/blank launcher names nothing — the row still prints the
+ * repo, which the wire always carries. */
+export function askedAgentRows(links: readonly ConversationLink[]): AskedAgentRow[] {
+  const rows: AskedAgentRow[] = [];
+  const byKey = new Map<string, AskedAgentRow>();
+  for (const link of links) {
+    if (link.direction !== "outgoing") continue;
+    const launcherId = link.launcher_id ?? "";
+    const key = `${link.repo_name}\u0000${launcherId}`;
+    const seen = byKey.get(key);
+    if (seen) {
+      seen.asks += 1;
+      continue;
+    }
+    const row: AskedAgentRow = { key, repo: link.repo_name, launcherId, asks: 1 };
+    byKey.set(key, row);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** `asked once`, or `asked N times`. One ask is the design's word; a count is
+ * a count — no "several" softening. */
+export function askedCountCopy(asks: number): string {
+  return asks === 1 ? "asked once" : `asked ${asks} times`;
+}
+
+/**
+ * The asked agent's label, in the words the reads actually carry: the
+ * profile display name (and its pinned model, when the profile names one)
+ * through the app's one launcher resolver — the same rule the mail cards
+ * keep (ADR-0072 § 10: a mailed chat inherits the asking chat's current
+ * profile, so the conversation read answers for it; otherwise exactly one
+ * profile row must name the launcher). Nothing names a model on the mail
+ * link itself, so with no read naming the launcher the row prints the
+ * launcher id verbatim — the machine's word, honestly labelled — and never
+ * a guessed product or model name.
+ */
+export function askedAgentLabel(row: AskedAgentRow, source: LauncherNameSource): string {
+  const display = agentDisplayForLauncher(row.launcherId, source);
+  if (display) return agentLabel(display.name, display.model);
+  return row.launcherId;
 }
 
 /**
@@ -371,6 +440,24 @@ export function ConversationSidePanel({
   const turnRows = turns ?? [];
   const skillList = (skills ?? []).filter((skill) => skill.trim() !== "");
   const linkRows = links ?? [];
+  // Design 3d (round-19): the agents this chat ASKED through agent mail are
+  // participants too. The rows fold the SAME `linked_chats` the LINKED CHATS
+  // section prints; the names come off the reads the page already shares —
+  // the thread's own detail (ADR-0072 § 10: a mailed chat inherits this
+  // chat's current profile) and the org profile list — never off a guess.
+  const askedRows = askedAgentRows(linkRows);
+  const { data: askedProfiles } = useAgentProfiles();
+  const { data: askedConversation } = useConversation(workflowChat?.id ?? "");
+  const askedNameSource: LauncherNameSource = {
+    currentLauncherId: askedConversation?.launcher_id ?? null,
+    currentProfileName: askedConversation?.agent_profile_name ?? null,
+    currentProfileModel: askedConversation?.agent_profile_model ?? null,
+    profiles: (askedProfiles?.items ?? []).map((profile) => ({
+      launcherId: profile.launcher_id,
+      name: profile.name,
+      model: profile.model ?? null,
+    })),
+  };
   // The standing 2f note, and the dismiss the design prints beside its
   // `Make a workflow…` (rcn-chat-rail-390): the note is the panel's own
   // suggestion — not a notes-store row — so dismissal is the host's to hold
@@ -441,6 +528,7 @@ export function ConversationSidePanel({
     Boolean(workflowChat) ||
     branch != null ||
     agentRows.length > 0 ||
+    askedRows.length > 0 ||
     skillList.length > 0 ||
     linkRows.length > 0 ||
     Boolean(slot);
@@ -550,7 +638,7 @@ export function ConversationSidePanel({
           ) : null}
         </section>
       ) : null}
-      {agentRows.length > 0 ? (
+      {agentRows.length > 0 || askedRows.length > 0 ? (
         <section aria-labelledby="side-panel-agents-heading" data-testid="side-panel-agents">
           <SectionTitle htmlFor="side-panel-agents-heading">Agents in this chat</SectionTitle>
           <ul className="mt-1 space-y-1">
@@ -580,6 +668,33 @@ export function ConversationSidePanel({
                       {state}
                     </span>
                   ) : null}
+                </li>
+              );
+            })}
+            {askedRows.map((row, index) => {
+              // The asked agent's own row (design 3d): "Codex · gpt-5 api,
+              // asked once" — label, repo, count. No turn range: no turn of
+              // THIS transcript ran on its profile; the count of asks is the
+              // fact the links actually carry. State lives on the LINKED
+              // CHATS row, not duplicated here.
+              const label = askedAgentLabel(row, askedNameSource);
+              return (
+                <li
+                  key={row.key}
+                  className="flex min-w-0 flex-wrap items-baseline gap-x-[6px] font-mono text-[11.5px]"
+                  data-testid={`side-panel-asked-row-${index}`}
+                >
+                  {label ? <span className="min-w-0 break-words text-ink">{label}</span> : null}
+                  <span
+                    className="min-w-0 break-words text-muted"
+                    data-testid={`side-panel-asked-repo-${index}`}
+                  >
+                    {row.repo}
+                  </span>
+                  <span className="text-faint" data-testid={`side-panel-asked-count-${index}`}>
+                    {", "}
+                    {askedCountCopy(row.asks)}
+                  </span>
                 </li>
               );
             })}

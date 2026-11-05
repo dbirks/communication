@@ -824,10 +824,23 @@ export default function ConversationPage({
           />
         </div>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="shrink-0 border-b border-line-strong bg-surface px-5 pt-[10px] pb-[12px] lg:px-6">
+          {/* round-19 (rcn-3d): the header is the pane's FIXED band — a
+              `shrink-0` flex sibling ABOVE the transcript's own scroller, never
+              `sticky`/`fixed`/`absolute` over it — so transcript content can
+              never slide under it. What it did at 390 was leave ~280px of the
+              844px viewport to itself (controls + a meta block wrapped to four
+              lines), squeezing the asked card to a clipped sliver. The phone
+              frame now wears a compact header: tighter padding and leading at
+              `max-md` (the 44px touch targets and every fact stay — names and
+              state lines never truncate, per the rcn-2e/repo-chain-r4 rule
+              this keeps). */}
+          <header
+            className="shrink-0 border-b border-line-strong bg-surface px-5 pt-[10px] pb-[12px] max-md:pt-[4px] max-md:pb-[6px] lg:px-6"
+            data-testid="conversation-header"
+          >
             <Link
               to={routes.threads()}
-              className="mb-2 inline-block font-mono text-[11px] text-accent-text hover:text-ink lg:hidden"
+              className="mb-2 inline-block font-mono text-[11px] text-accent-text hover:text-ink max-md:mb-[3px] lg:hidden"
               data-testid="threads-back"
             >
               ← Threads
@@ -863,10 +876,10 @@ export default function ConversationPage({
                 so the H1 WRAPS (`wrap-anywhere` = overflow-wrap:anywhere, so
                 a long unbroken slug stays inside the box at a phone's 390 as
                 well) and no `truncate`/`whitespace-nowrap` rides it. */}
-            <div className="mt-[2px] flex flex-col gap-x-4 lg:flex-row lg:flex-wrap lg:items-center">
+            <div className="mt-[2px] flex flex-col gap-x-4 max-md:mt-0 lg:flex-row lg:flex-wrap lg:items-center">
               <h1
                 data-testid="conversation-title"
-                className="min-w-0 wrap-anywhere text-title-m font-semibold lg:min-w-0 lg:basis-[16rem] lg:grow"
+                className="min-w-0 wrap-anywhere text-title-m font-semibold max-md:leading-[1.25] lg:min-w-0 lg:basis-[16rem] lg:grow"
               >
                 {data.title}
               </h1>
@@ -875,7 +888,7 @@ export default function ConversationPage({
                   title row — the pill is the design's own `you're in control`,
                   and Stop (danger) appears only while a turn runs. */}
               <div
-                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-start gap-[6px] lg:mt-0 lg:shrink-0 lg:justify-end`}
+                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-start gap-[6px] max-md:mt-[3px] lg:mt-0 lg:shrink-0 lg:justify-end`}
               >
                 <AgentConversationControls
                   session={session}
@@ -902,9 +915,9 @@ export default function ConversationPage({
                 readout keeps its place at the line's right (`lg:flex-wrap`
                 already on the pair), so the narrowest pane drops it to its own
                 row rather than clipping either half. */}
-            <div className="mt-[2px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
+            <div className="mt-[2px] max-md:mt-[1px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
               <p
-                className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1 lg:order-1"
+                className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] max-md:leading-[1.35] text-muted lg:min-w-0 lg:flex-1 lg:order-1"
                 data-testid="conversation-meta"
               >
                 <span>{repoLabel}</span>
@@ -939,7 +952,7 @@ export default function ConversationPage({
                   context — a second short line, never a fifth wrap. */}
               {turnOrigin || data.agent_session ? (
                 <p
-                  className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] text-muted lg:order-3 lg:basis-full"
+                  className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] max-md:leading-[1.35] text-muted lg:order-3 lg:basis-full"
                   data-testid="conversation-context"
                 >
                   {turnOrigin ? <span data-testid="turn-origin">{turnOrigin}</span> : null}
@@ -970,7 +983,7 @@ export default function ConversationPage({
                   stream has no word to print after a separator, and "word · •"
                   was exactly the stray tail the review named — its `role=
                   "status"` element stays for announcements, read-only. */}
-              <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] lg:order-2 lg:mt-0 lg:shrink-0">
+              <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] max-md:mt-[1px] lg:order-2 lg:mt-0 lg:shrink-0">
                 {turnHasGlyph ? (
                   <span aria-hidden="true" className={turnSpec.tagFg}>
                     {turnSpec.glyph}

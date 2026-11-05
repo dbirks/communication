@@ -942,3 +942,65 @@ describe("the transcript's protocol lines", () => {
     expect(line.getAttribute("title")).toBe("reason agent_switched");
   });
 });
+
+/**
+ * round-19 (rcn-3d defect 2): at 390 the tall header squeezed the asked
+ * mail card to a clipped sliver. The structural contract: the header is the
+ * pane's OWN band — a `shrink-0` flex sibling ABOVE the transcript scroller,
+ * never `sticky`/`fixed`/`absolute` over it, so transcript content never
+ * slides under it — and the phone frame (`max-md`, where 390 lives) wears the
+ * compact paddings/leading. jsdom applies no CSS, so the classes and the DOM
+ * shape ARE the contract, exactly as the `lg:hidden` toggle test asserts it.
+ */
+describe("the 390 chat header sits above the transcript, compact (round-19)", () => {
+  function paneRoutes(): RouteStub[] {
+    return [
+      ...routes(conversationFixture),
+      { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
+      { path: projectConversationsPath, body: { items: [], next_cursor: null } },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+        body: { workspaces: [] },
+      },
+    ];
+  }
+
+  it("the header is a plain sibling band: shrink-0, never sticky/fixed/absolute", async () => {
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    const header = await screen.findByTestId("conversation-header");
+    const classes = header.className.split(/\s+/);
+    // No class positions it over scrolling content at ANY breakpoint.
+    for (const offender of ["sticky", "fixed", "absolute"]) {
+      expect(classes.some((cls) => cls === offender || cls.endsWith(`:${offender}`))).toBe(false);
+    }
+    expect(classes.some((cls) => /(^|:)(top|z|inset)-/.test(cls))).toBe(false);
+    // It owns a fixed band: `shrink-0` in a column that clips.
+    expect(classes).toContain("shrink-0");
+    expect(header.parentElement?.className).toContain("flex-col");
+    // The transcript scroller is the header's SIBLING below it — the header
+    // contains no scroller and no scroller contains the header.
+    const main = screen.getByTestId("conversation-main");
+    let scroller: HTMLElement | null = main.parentElement;
+    while (scroller !== null && !scroller.className.includes("overflow-y-auto")) {
+      scroller = scroller.parentElement;
+    }
+    expect(scroller, "the transcript has its own scroller").not.toBeNull();
+    expect(scroller?.contains(header)).toBe(false);
+    expect(scroller?.parentElement).toBe(header.parentElement);
+  });
+
+  it("the phone frame compacts the header band", async () => {
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    const header = await screen.findByTestId("conversation-header");
+    // The 4-line meta block and the band's own padding tighten at `max-md`
+    // (390's breakpoint class) — fewer stacked pixels, nothing truncated.
+    expect(header.className).toContain("max-md:pt-[4px]");
+    expect(header.className).toContain("max-md:pb-[6px]");
+    const meta = screen.getByTestId("conversation-meta");
+    expect(meta.className).toContain("max-md:leading-[1.35]");
+    // The facts stay in the band untruncated (the rcn-2e rule): the compact
+    // header carries no truncate/nowrap on the name or the meta line.
+    expect(header.className + meta.className).not.toMatch(/truncate|whitespace-nowrap/);
+    expect(screen.getByTestId("conversation-title").className).toContain("wrap-anywhere");
+  });
+});

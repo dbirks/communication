@@ -6,6 +6,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { agentRunStateCopy, ConversationSidePanel, turnRangeCopy } from "./ConversationSidePanel";
+import {
+  askedAgentLabel,
+  askedAgentRows,
+  askedCountCopy,
+  type ConversationLink,
+} from "./ConversationSidePanel";
+import type { LauncherNameSource } from "./agentNames";
 import { AssistantNote, MAKE_WORKFLOW_ACTION_ID } from "./AssistantNote";
 import { ASSISTANT_OPEN_EVENT, type AssistantOpenRequest } from "../assistant/AssistantPopover";
 import { claudeProfile, codexProfile, projectFixture } from "../../test/fakes";
@@ -816,5 +823,173 @@ describe("WORKS IN switcher (ADR-0067 amendment)", () => {
       expect(view.requests.filter((r) => r.method === "PATCH")).toHaveLength(2);
       expect(seen).toEqual(["null", repoStore.id]);
     });
+  });
+});
+
+// --- asked agents as participants (design 3d, round-19) --------------------
+
+/**
+ * Round-19 defect on 3d: an agent ASKED through agent mail from this chat is
+ * a participant of it — the design lists it as its own AGENTS row with its
+ * repo and ask count ("Codex · gpt-5 api, asked once"), derived from the same
+ * `linked_chats` read LINKED CHATS uses. Nothing may be invented: the label
+ * resolves through the app's one launcher-name resolver and falls back to the
+ * launcher id the wire carries.
+ */
+
+function mailLink(over: Partial<ConversationLink> = {}): ConversationLink {
+  return {
+    id: "01987a80-0000-7000-8000-abcdef000001",
+    direction: "outgoing",
+    repo_name: "api",
+    state: "answered",
+    question: "Does GET /search accept a cursor?",
+    answer: "Cursor-based.",
+    reason: null,
+    other_conversation: {
+      id: "01987a80-0000-7000-8000-abcdef000002",
+      title: "Search pagination",
+      status: "active",
+    },
+    launcher_id: "codex",
+    created_at: "2026-11-01T12:00:00Z",
+    answered_at: "2026-11-01T12:01:00Z",
+    ...over,
+  };
+}
+
+describe("askedAgentRows / askedCountCopy / askedAgentLabel (design 3d)", () => {
+  it("folds the outgoing asks into one row per asked agent, counting them", () => {
+    const rows = askedAgentRows([
+      mailLink({ id: "l-1" }),
+      mailLink({ id: "l-2" }),
+      mailLink({ id: "l-3", repo_name: "server" }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      key: "api\u0000codex",
+      repo: "api",
+      launcherId: "codex",
+      asks: 2,
+    });
+    expect(rows[1].repo).toBe("server");
+    expect(rows[1].asks).toBe(1);
+  });
+
+  it("an incoming ask is not this chat asking — no row from it", () => {
+    expect(askedAgentRows([mailLink({ direction: "incoming" })])).toEqual([]);
+    expect(askedAgentRows([])).toEqual([]);
+  });
+
+  it("counts asks in words: once, then the number", () => {
+    expect(askedCountCopy(1)).toBe("asked once");
+    expect(askedCountCopy(3)).toBe("asked 3 times");
+  });
+
+  it("names the launcher only from a read that names it — never an invented model", () => {
+    const source: LauncherNameSource = {
+      currentLauncherId: "claude",
+      currentProfileName: "Claude Code",
+      currentProfileModel: "opus",
+      profiles: [{ launcherId: "codex", name: "Codex", model: "gpt-5" }],
+    };
+    // ADR-0072 § 10: the mailed chat inherits the asking chat's current
+    // profile, so the conversation read answers for that launcher.
+    expect(askedAgentLabel({ key: "k", repo: "api", launcherId: "claude", asks: 1 }, source)).toBe(
+      "Claude Code · opus",
+    );
+    // The org profile list answers for a launcher it names alone.
+    expect(askedAgentLabel({ key: "k", repo: "api", launcherId: "codex", asks: 1 }, source)).toBe(
+      "Codex · gpt-5",
+    );
+    // No read names it: the launcher id verbatim — the machine's word, not a
+    // guessed product or model name.
+    expect(
+      askedAgentLabel({ key: "k", repo: "api", launcherId: "mystery-launcher", asks: 1 }, source),
+    ).toBe("mystery-launcher");
+    // No launcher at all names nothing (the row still prints the repo).
+    expect(askedAgentLabel({ key: "k", repo: "api", launcherId: "", asks: 1 }, source)).toBe("");
+  });
+});
+
+describe("the AGENTS section's asked rows (design 3d)", () => {
+  it("prints one asked-agent row per asked agent, beside the turn-run rows", async () => {
+    scopePanel(
+      [
+        {
+          method: "GET",
+          path: `/api/v1/conversations/${conversationId}`,
+          body: { ...conversationFixture, repository_id: null },
+        },
+        {
+          method: "GET",
+          path: "/api/v1/agent-profiles",
+          body: { items: [claudeProfile, codexProfile] },
+        },
+        {
+          method: "GET",
+          path: `/api/v1/projects/${projectFixture.id}/repos`,
+          body: { items: [] },
+        },
+      ],
+      {
+        agents,
+        links: [
+          mailLink({ id: "l-1" }),
+          mailLink({ id: "l-2" }),
+          mailLink({ id: "l-3", direction: "incoming", repo_name: "storefront" }),
+        ],
+      },
+    );
+    const section = screen.getByTestId("side-panel-agents");
+    // The turn-run rows stay exactly as they were…
+    expect(screen.getAllByTestId(/^side-panel-agent-row-/)).toHaveLength(2);
+    // …and the asked agent joins as its own participant row: label, repo,
+    // ask count — from the mail links, not a guess.
+    const asked = await screen.findByTestId("side-panel-asked-row-0");
+    // The label rides the profiles read: until it lands the row wears the
+    // launcher id, and only after does a naming read upgrade it.
+    await vi.waitFor(() => expect(asked.textContent).toContain("Codex"));
+    expect(asked.textContent).toContain("api, asked 2 times");
+    expect(section.textContent).toContain("api, asked 2 times");
+    // The incoming direction (this chat was asked) earns no row of its own.
+    expect(screen.queryByTestId("side-panel-asked-row-1")).toBeNull();
+  });
+
+  it("without mail, the AGENTS section is exactly the turn-run list", () => {
+    panel({ projectId: projectFixture.id, agents });
+    expect(screen.getAllByTestId(/^side-panel-agent-row-/)).toHaveLength(2);
+    expect(screen.queryAllByTestId(/^side-panel-asked-row-/)).toHaveLength(0);
+    // No LINKED CHATS, no asked rows — the section holds only `agents`.
+    expect(screen.queryByTestId("side-panel-links")).toBeNull();
+  });
+
+  it("an asked agent survives without a profiles read: the launcher id rides, nothing is invented", async () => {
+    scopePanel(
+      [
+        {
+          method: "GET",
+          path: `/api/v1/conversations/${conversationId}`,
+          body: { ...conversationFixture, repository_id: null },
+        },
+      ],
+      { links: [mailLink({ launcher_id: "m4-implementer" })] },
+    );
+    // No `agents` list at all: the asked agent alone is enough for the
+    // section — it IS a participant.
+    const section = screen.getByTestId("side-panel-agents");
+    expect(screen.queryAllByTestId(/^side-panel-agent-row-/)).toHaveLength(0);
+    const asked = screen.getByTestId("side-panel-asked-row-0");
+    expect(asked).toBeTruthy();
+    expect(asked.textContent).toContain("m4-implementer");
+    expect(asked.textContent).toContain("api, asked once");
+    expect(section.textContent).not.toMatch(/gpt-|opus|claude/i);
+  });
+
+  it("links alone with only the INCOMING direction add no AGENTS section", () => {
+    panel({ projectId: projectFixture.id, links: [mailLink({ direction: "incoming" })] });
+    expect(screen.queryByTestId("side-panel-agents")).toBeNull();
+    // The LINKED CHATS section still lists the link itself.
+    expect(screen.getByTestId("side-panel-links")).toBeTruthy();
   });
 });
