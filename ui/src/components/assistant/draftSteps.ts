@@ -134,16 +134,99 @@ export function humanRouteLabel(route: string): string {
   return humanizeSegment(head) || "Link";
 }
 
+/** A truncated id's tail: the ellipsis character or two/three dots. */
+const TRAILING_TRUNCATION = /(?:\u2026|\.{2,3})$/;
+
 /**
- * The chip's label, never a raw path: the server's words when it supplied
- * them; when the label is empty or IS a path (round 13: the chip read
- * `/workflo…`), a humanised form of the route — and the saved draft's
- * target always reads as `Open draft`.
+ * An id token standing in prose: a uuid or the leading groups of one, a
+ * 26-char ULID, or a run of 8+ hex characters — each able to carry the
+ * ellipsis a truncated label ends on. Bounded on both sides, so a hyphenated
+ * step name (`chat-reply-exact-ok`) never reads as an id.
+ */
+const ID_TOKEN =
+  /\b(?:[0-9a-f]{8,}(?:-[0-9a-f]{1,12}){0,4}|[0-9a-hjkmnp-tv-z]{26})(?:-?(?:\u2026|\.{2,3}))?(?![0-9a-z])/gi;
+
+/**
+ * Round-17 (rcn-review17-2f): the person reads a link, not a database key. The
+ * model bolts the id it handled onto its label — `Open M4 Exit (01a1aa60…)` —
+ * and a raw truncated id says nothing to them. So an id-shaped parenthetical
+ * or bare id token comes OUT of the label and what is left is tidied; when
+ * nothing readable survives, the caller falls back to the route's own words.
+ *
+ * An id is: a bracket group whose whole content is an id (or just an
+ * ellipsis), a uuid (or the leading uuid groups of one, truncated), a 26-char
+ * ULID, or a run of 8+ hex characters — with or without the ellipsis. A bare
+ * token must also carry a digit, so a word made only of hex letters survives.
+ * Prose is never an id: `cafe`, `fix-bug`, `beef` and `chat-reply-exact-ok`
+ * keep their words.
+ */
+function isIdFragment(text: string): boolean {
+  const body = text.replace(/\s+/g, "");
+  if (body.length === 0) return true;
+  const truncated = TRAILING_TRUNCATION.test(body);
+  const core = body.replace(TRAILING_TRUNCATION, "");
+  if (core.length === 0) return true;
+  if (core.includes("-")) {
+    // A dashed run of hex only — a uuid, or the leading groups of one cut
+    // short: `01a1aa60-f079-…` is the same id as the uuid, and `chat-reply`
+    // or `feed-back` is two words no id.
+    if (!/^[0-9a-f]{4,12}(?:-[0-9a-f]{0,12})+$/i.test(core)) return false;
+    const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{1,4}){3}(?:-[0-9a-f]{1,12})?$/i.test(core);
+    return uuid || core.split("-").length >= 3 || truncated;
+  }
+  if (/^[0-9a-f]{8,}$/i.test(core) || /^[0-9a-hjkmnp-tv-z]{26,}$/i.test(core)) {
+    return /\d/.test(core);
+  }
+  // A short hex run is only an id when the label truncated it: `(f079…)`.
+  return truncated && /\d/.test(core) && /^[0-9a-f]{4,}$/i.test(core);
+}
+
+/** The label's words with every id token and its bracketed husk removed. */
+export function stripIdsFromLabel(label: string): string {
+  const withoutBrackets = label.replace(
+    /[([{]([^)\]}]{0,120})[\])}]/g,
+    (group: string, inner: string) => (isIdFragment(inner) ? "" : group),
+  );
+  const withoutBareIds = withoutBrackets.replace(ID_TOKEN, (token: string) =>
+    isIdFragment(token) ? "" : token,
+  );
+  return withoutBareIds
+    .replace(/[([{]\s*[)\]}]/g, "")
+    .replace(/(?:\s*,\s*){2,}/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:!?)\]])/g, "$1")
+    .replace(/^[\s,;:·\u2014\u2013-]+/, "")
+    .replace(/[\s,;:·\u2014\u2013-]+$/, "")
+    .trim();
+}
+
+/**
+ * The chip's label: never a raw path (rcn-review13-2f), never a raw id
+ * (rcn-review17-2f). The server's words when it supplied them, with a pasted
+ * id stripped; when the label is empty, IS a path (round 13: the chip read
+ * `/workflo…`), or is nothing but an id, a humanised form of the route — and
+ * the saved draft's target always reads as `Open draft`.
  */
 export function readableLinkLabel(link: { label: string; route: string }): string {
   const label = link.label.trim();
-  if (label.length > 0 && !label.startsWith("/")) return label;
+  if (label.length > 0 && !label.startsWith("/")) {
+    const words = stripIdsFromLabel(label);
+    if (words.length > 0) return words;
+  }
   return humanRouteLabel(link.route);
+}
+
+/**
+ * Do two routes name the SAME library draft? The transcript's own draft link
+ * row and the panel footer's `Open draft` button are one door when they do —
+ * round 17 drops the row while the button stands, and keeps the row whenever
+ * the footer does not offer it.
+ */
+export function sameDraftTarget(route: string, otherRoute: string): boolean {
+  if (route === otherRoute) return true;
+  const draftId = draftRouteOf(route);
+  const otherId = draftRouteOf(otherRoute);
+  return draftId !== null && otherId !== null && draftId === otherId;
 }
 
 /**

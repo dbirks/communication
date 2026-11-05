@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 import AssistantPanel, {
   type AssistantPanelProps,
   type RecentConversation,
@@ -395,6 +396,52 @@ describe("AssistantPanel (expanded)", () => {
   it("Open draft: the 400px popover's row stays dense — the draft door rides the transcript link there", () => {
     renderPanel({ messages: [savedDraftMessage("/workflows/01PIPE")] });
     expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
+  });
+
+  /**
+   * rcn-review17-2f: the wide panel showed the saved draft TWICE — the
+   * footer's `Open draft` button and, straight under the step list, a link row
+   * in the same style as the steps. One door, one control; the popover, which
+   * has no room for the button, keeps the row as the draft's only way in.
+   */
+  it("Open draft: the wide panel's button is the draft's only door; the popover keeps the transcript row", () => {
+    const draftAndOther: AssistantMessage = {
+      id: "m-r17",
+      kind: "assistant",
+      payload: {
+        kind: "assistant",
+        answer_markdown: "Drafted it in the library.",
+        links: [
+          { label: "Open draft", route: "/workflows/pl-9/drafts/d-9" },
+          { label: "Agent profiles", route: "/profiles" },
+        ],
+        tool_calls: [],
+      },
+      created_at: "2026-10-20T10:02:00Z",
+    };
+    const withQuery = (panel: ReactElement) => (
+      <QueryClientProvider client={new QueryClient()}>{panel}</QueryClientProvider>
+    );
+    const { unmount } = render(
+      withQuery(
+        <AssistantPanel
+          variant="docked"
+          {...panelProps}
+          onShrink={() => {}}
+          messages={[draftAndOther]}
+        />,
+      ),
+    );
+    expect(screen.getByTestId("assistant-open-draft").textContent).toBe("Open draft");
+    const rows = screen.getAllByTestId("assistant-link");
+    expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining("Agent profiles")]);
+    unmount();
+
+    render(
+      withQuery(<AssistantPanel variant="popover" {...panelProps} messages={[draftAndOther]} />),
+    );
+    expect(screen.queryByTestId("assistant-open-draft")).toBeNull();
+    expect(screen.getAllByTestId("assistant-link")).toHaveLength(2);
   });
 });
 

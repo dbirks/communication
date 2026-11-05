@@ -173,6 +173,32 @@ async function visibleProse(locator: import("@playwright/test").Locator): Promis
   return (await locator.innerText()).replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The wording a link row shows for a served label (rcn-review17-2f): the
+ * person reads the model's words WITHOUT the raw id it bolted onto them —
+ * `Open M4 Exit (01a1aa60…)` reaches the screen as `Open M4 Exit`
+ * (`ui/src/components/assistant/draftSteps.ts` `readableLinkLabel`, which
+ * drops an id-shaped parenthetical, a uuid, a 26-char ULID or an 8+ hex run,
+ * with or without the ellipsis). `""` when the label was nothing but an id:
+ * the row then carries the route's own words, which this leg does not
+ * re-derive — the destination is proven link by link below.
+ */
+function servedLabelWithoutIds(label: string): string {
+  const idShaped = /[0-9a-f]{4,}|[0-9a-hjkmnp-tv-z]{26}|[\u2026.]\.?/i;
+  const text = label
+    .replace(/[([{]\s*([^)\]}]{0,120}?)\s*[)\]}]/g, (group: string, inner: string) =>
+      /^[0-9a-f\u2026.\s-]+$/i.test(inner) && idShaped.test(inner) ? " " : group,
+    )
+    .replace(
+      /\b(?:[0-9a-f]{8,}(?:-[0-9a-f]{1,12}){0,4}|[0-9a-hjkmnp-tv-z]{26})(?:-?(?:\u2026|\.{2,3}))?(?![0-9a-z])/gi,
+      " ",
+    )
+    .replace(/(?:\s*,\s*){2,}/g, ", ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text;
+}
+
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
 test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
@@ -375,14 +401,24 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
         await expect(tools).toHaveCount(0);
       }
     });
-    await test.step("the answer's links render as buttons with the served labels", async () => {
+    await test.step("the answer's links render as buttons with the served wording, ids aside", async () => {
       const buttons = alice
         .locator("[data-testid='assistant-msg-assistant']")
         .last()
         .getByTestId("assistant-link");
       await expect(buttons).toHaveCount(answerLinks.length);
       for (let i = 0; i < answerLinks.length; i++) {
-        await expect(buttons.nth(i)).toContainText(answerLinks[i].label);
+        // Round-17: the row shows the served label minus any raw id the model
+        // pasted onto it, and it is never a step row — the step list's `●` (or
+        // ✓ / ·) does not lead it.
+        const expected = servedLabelWithoutIds(answerLinks[i].label);
+        const row = buttons.nth(i);
+        if (expected === "") {
+          await expect(row).not.toContainText(answerLinks[i].label.trim());
+        } else {
+          await expect(row).toContainText(expected);
+        }
+        await expect(row).not.toContainText(/^\s*[\u2713\u25cf\u00b7]\s/);
       }
       await shot(alice, "m5-assistant-01-answer");
     });

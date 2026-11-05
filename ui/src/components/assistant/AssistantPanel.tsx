@@ -565,6 +565,16 @@ export function AssistantPanel({
   const docked = variant === "docked";
   const narrowHeader = popover || docked;
 
+  /**
+   * Round-17 (rcn-review17-2f): the draft route the FOOTER offers as
+   * `Open draft` — the wide variants only, and only once a turn has saved a
+   * draft. The transcript's row for that same draft was a second door to one
+   * page sitting straight under its step list, so the transcript hides it;
+   * every other draft row stays, because the popover shows no footer button
+   * and an earlier answer's superseded draft is not where the button points.
+   */
+  const openDraftHref = !popover && draftLink !== null ? draftLink.route : null;
+
   // ui-newconv: the header's New conversation / Recent controls. The
   // popover's 400px header is tight (ASSISTANT + trust pill + expand +
   // esc hint), so the popover shortens the labels; the expanded header
@@ -737,6 +747,7 @@ export function AssistantPanel({
           onConfirmApproval={onConfirmApproval}
           onDismissApproval={onDismissApproval}
           onGo={onGo}
+          openDraftHref={openDraftHref}
           onRetrySend={retrySend}
         />
       )}

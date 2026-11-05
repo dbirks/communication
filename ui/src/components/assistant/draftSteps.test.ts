@@ -8,6 +8,8 @@ import {
   isDraftLink,
   openDraftIdOf,
   readableLinkLabel,
+  sameDraftTarget,
+  stripIdsFromLabel,
   OPEN_DRAFT_LINK_LABEL,
 } from "./draftSteps";
 
@@ -135,6 +137,92 @@ describe("readableLinkLabel / humanRouteLabel (rcn-review13-2f: no raw-path chip
     // an unknown shape still reads as a word, never as a path
     expect(humanRouteLabel("/some-page")).toBe("Some page");
     expect(humanRouteLabel("/unknown/x/y")).toBe("Unknown");
+  });
+});
+
+/**
+ * rcn-review17-2f: a link row is not a step row and never carries the raw id
+ * the model happened to handle — `Open M4 Exit (01a1aa60…)` reads to the
+ * person as `Open M4 Exit`.
+ */
+describe("readableLinkLabel — no raw id in a link label (rcn-review17-2f)", () => {
+  it("drops the id parenthetical the model bolts onto its own words", () => {
+    expect(readableLinkLabel({ label: "Open M4 Exit (01a1aa60…)", route: "/workflows/pl-9" })).toBe(
+      "Open M4 Exit",
+    );
+    expect(
+      readableLinkLabel({
+        label: "Open M4 Exit (01a1aa60-f079-…)",
+        route: "/workflows/pl-9",
+      }),
+    ).toBe("Open M4 Exit");
+    expect(
+      readableLinkLabel({
+        label: "Open M4 Exit [01a1aa60-f079-4a2e-9b31-1f2e3d4c5a6b]",
+        route: "/workflows/pl-9",
+      }),
+    ).toBe("Open M4 Exit");
+  });
+
+  it("drops a bare uuid, ULID or long hex token, with or without the ellipsis", () => {
+    expect(
+      readableLinkLabel({
+        label: "Run 01a1aa60-f079-4a2e-9b31-1f2e3d4c5a6b is waiting",
+        route: "/runs/r-1",
+      }),
+    ).toBe("Run is waiting");
+    expect(
+      readableLinkLabel({ label: "Exit 01HZXK3Q9JZ4F7G4KN8V2M6PWT", route: "/workflows/pl-9" }),
+    ).toBe("Exit");
+    expect(readableLinkLabel({ label: "Gate abcdef0123456789… closed", route: "/steps/s-1" })).toBe(
+      "Gate closed",
+    );
+    // a word made only of hex letters is a word, not an id: no digit, kept
+    expect(readableLinkLabel({ label: "Decaffeinated cafe", route: "/inbox" })).toBe(
+      "Decaffeinated cafe",
+    );
+  });
+
+  it("leaves a label with no id exactly as the model wrote it", () => {
+    expect(readableLinkLabel({ label: "Agent profiles", route: "/profiles" })).toBe(
+      "Agent profiles",
+    );
+    expect(
+      readableLinkLabel({
+        label: "Open draft · chat-reply-exact-ok",
+        route: "/workflows/pl-9/drafts/d-9",
+      }),
+    ).toBe("Open draft · chat-reply-exact-ok");
+    expect(
+      readableLinkLabel({ label: "Feature Delivery · run 4f2a", route: "/p/01J/runs/4f2a" }),
+    ).toBe("Feature Delivery · run 4f2a");
+  });
+
+  it("tidies the whitespace and punctuation an id took with it", () => {
+    expect(stripIdsFromLabel("Plan  (01a1aa60…)  now")).toBe("Plan now");
+    expect(stripIdsFromLabel("Review , 01a1aa60-f079-… , the gate")).toBe("Review, the gate");
+    expect(stripIdsFromLabel("Ship (01a1aa60…)")).toBe("Ship");
+  });
+
+  it("falls back to the route's words when the label was nothing but an id", () => {
+    expect(
+      readableLinkLabel({
+        label: "01a1aa60-f079-4a2e-9b31-1f2e3d4c5a6b",
+        route: "/workflows/pl-9",
+      }),
+    ).toBe("Workflow pl-9");
+    expect(readableLinkLabel({ label: "(01a1aa60…)", route: "/inbox" })).toBe("Inbox");
+  });
+});
+
+describe("sameDraftTarget", () => {
+  it("names one draft page however it is spelled, and no other page", () => {
+    expect(sameDraftTarget("/workflows/pl-9/drafts/d-9", "/library/pl-9/drafts/d-9")).toBe(true);
+    expect(sameDraftTarget("/workflows/pl-9/drafts/d-9", "/workflows/pl-9/drafts/d-9")).toBe(true);
+    expect(sameDraftTarget("/workflows/pl-9/drafts/d-9", "/workflows/pl-9/drafts/d-8")).toBe(false);
+    expect(sameDraftTarget("/runs/r-1", "/workflows/pl-9/drafts/d-9")).toBe(false);
+    expect(sameDraftTarget("/workflows/pl-9", "/workflows/pl-9")).toBe(true);
+    expect(sameDraftTarget("/workflows/pl-9", "/runs/r-1")).toBe(false);
   });
 });
 

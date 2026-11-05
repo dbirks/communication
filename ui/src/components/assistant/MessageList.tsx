@@ -4,14 +4,8 @@ import { MarkdownBody } from "../../lib/markdown";
 import { useDraft } from "../../api/pipelines";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
-import {
-  draftStepRows,
-  openDraftIdOf,
-  draftNameOf,
-  draftRouteOf,
-  isDraftLink,
-  readableLinkLabel,
-} from "./draftSteps";
+import { draftStepRows, openDraftIdOf } from "./draftSteps";
+import { AnswerLinks } from "./links";
 import type { AssistantAnswerPayload, AssistantMessage, AssistantQuestionPayload } from "./types";
 
 /**
@@ -31,6 +25,15 @@ export interface MessageListProps {
   /** Perform the same-origin navigation a `Go ›` row points at. */
   onGo: (route: string) => void;
   /**
+   * Round-17 (rcn-review17-2f): the draft route the assistant panel's own
+   * footer already offers as `Open draft` — `null` when the footer shows no
+   * such button (the 400px popover, or no saved draft yet). The transcript's
+   * row for THAT draft is a second door to the same page under the step list,
+   * so it stays hidden while the button stands; every other draft row keeps
+   * standing, because there the row is the only way in.
+   */
+  openDraftHref?: string | null;
+  /**
    * Issue #63: `Retry` under a failed send's own bubble — re-sends that
    * message's text. Only optimistic local rows can fail, so only they
    * render the line and the button.
@@ -46,6 +49,7 @@ export function MessageList({
   onDismissApproval,
   onGo,
   onRetrySend,
+  openDraftHref = null,
 }: MessageListProps) {
   // Design 2f numbers the question cards the transcript really holds:
   // the ordinal is the row's position among the conversation's question
@@ -145,34 +149,11 @@ export function MessageList({
                   draftId={openDraftIdOf(message.payload.links)}
                   openQuestion={openQuestionFor(message.id)}
                 />
-                {message.payload.links.length > 0 ? (
-                  <div data-testid="assistant-links" className="flex flex-col gap-[4px] pt-[2px]">
-                    {message.payload.links.map((link, index) => (
-                      <button
-                        key={`${link.route}-${index}`}
-                        type="button"
-                        data-testid="assistant-link"
-                        onClick={() => onGo(link.route)}
-                        className="flex cursor-pointer items-center justify-between gap-[8px] border-none bg-transparent p-0 text-left text-[12.5px] text-accent-text"
-                      >
-                        <span
-                          style={{
-                            flex: "1 1 auto",
-                            minWidth: 0,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          ● {chipLabelFor(link)}
-                        </span>
-                        <span aria-hidden="true" className="flex-shrink-0 font-mono text-[11px]">
-                          Go ›
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+                <AnswerLinks
+                  links={message.payload.links}
+                  openDraftHref={openDraftHref}
+                  onGo={onGo}
+                />
                 <ToolDisclosure calls={message.payload.tool_calls} />
               </div>
             );
@@ -404,26 +385,6 @@ function StepList({ lines }: { lines: StepLine[] }) {
       ))}
     </div>
   );
-}
-
-/**
- * What one link chip says, never a raw path (rcn-review13-2f): the saved
- * draft's link reads `Open draft · <workflow name>` — the name rides the
- * document the step list already fetches, so nothing extra loads — and any
- * other chip with a missing or path-shaped label gets a humanised form of
- * the route (`Workflow 01PL9…`), not the truncated `/workflo…`.
- */
-function DraftChipName({ draftId }: { draftId: string }) {
-  const { data } = useDraft(draftId);
-  const name = data !== undefined ? draftNameOf(data.document_yaml) : null;
-  return <>{name !== null ? `Open draft · ${name}` : "Open draft"}</>;
-}
-
-function chipLabelFor(link: { label: string; route: string }): ReactElement | string {
-  const draftId = draftRouteOf(link.route);
-  if (draftId !== null) return <DraftChipName draftId={draftId} />;
-  if (isDraftLink(link)) return "Open draft";
-  return readableLinkLabel(link);
 }
 
 /**

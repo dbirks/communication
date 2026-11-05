@@ -990,3 +990,97 @@ describe("MessageList optimistic rows (issue #63)", () => {
     expect(screen.queryByTestId("assistant-error")).toBeNull();
   });
 });
+
+/**
+ * rcn-review17-2f: the answer's links are a group of their own. They used to
+ * carry the step list's `●` and print the raw id the model had handled, so
+ * they read as more steps of the draft — and one of them (the saved draft) is
+ * the same door the panel footer already offers.
+ */
+describe("MessageList link rows (rcn-review17-2f)", () => {
+  const answerWith = (links: { label: string; route: string }[]): AssistantMessage => ({
+    id: "m-r17",
+    kind: "assistant",
+    payload: {
+      kind: "assistant",
+      answer_markdown:
+        "Drafting Chat reply in the library:\n✓ reply — m4-planner\n· confirm — gate",
+      links,
+      tool_calls: [],
+    },
+    created_at: "2026-10-20T11:00:00Z",
+  });
+
+  const renderLinks = (
+    links: { label: string; route: string }[],
+    props: { openDraftHref?: string | null } = {},
+  ) =>
+    renderWithDraftCache(
+      <MessageList
+        messages={[answerWith(links)]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+        {...props}
+      />,
+      { id: "d-9", documentYaml: DRAFT_DOCUMENT_YAML },
+    );
+
+  it("draws the links under a hairline, with no step glyph on any row", () => {
+    renderLinks([
+      { label: "Open M4 Exit", route: "/workflows/pl-9" },
+      { label: "Agent profiles", route: "/profiles" },
+    ]);
+    const group = screen.getByTestId("assistant-links");
+    const rows = screen.getAllByTestId("assistant-link");
+    expect(rows).toHaveLength(2);
+    // the step list is still the only place the glyphs are drawn
+    expect(screen.getAllByTestId("assistant-step-row").length).toBeGreaterThan(0);
+    expect(group.textContent).not.toContain("●");
+    expect(group.textContent).not.toContain("✓");
+    for (const row of rows) {
+      expect(within(row).queryAllByTestId("assistant-step-row")).toHaveLength(0);
+      expect(row.textContent).toContain("Go ›");
+    }
+    // a rule of its own, so the group does not read as more of the list above
+    expect(group.style.borderTop).not.toBe("");
+    // and the group is not a step row: no state marker, no profile column
+    expect(rows[0].getAttribute("data-state")).toBeNull();
+  });
+
+  it("never prints a raw id in a link row", () => {
+    renderLinks([{ label: "Open M4 Exit (01a1aa60…)", route: "/workflows/pl-9" }]);
+    const row = screen.getByTestId("assistant-link");
+    expect(row.textContent).toContain("Open M4 Exit");
+    expect(row.textContent).not.toContain("01a1aa60");
+  });
+
+  it("hides the saved draft's row while the panel footer offers Open draft for that draft", () => {
+    renderLinks(
+      [
+        { label: "Open M4 Exit", route: "/workflows/pl-9" },
+        { label: "Open draft", route: "/workflows/pl-9/drafts/d-9" },
+      ],
+      { openDraftHref: "/workflows/pl-9/drafts/d-9" },
+    );
+    const rows = screen.getAllByTestId("assistant-link");
+    expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining("Open M4 Exit")]);
+    // the draft is still the draft: its step list stands in the prose
+    expect(screen.getByTestId("assistant-step-list")).toBeTruthy();
+  });
+
+  it("keeps the draft row when the footer points at another draft, or shows no button", () => {
+    const links = [
+      { label: "Open draft", route: "/workflows/pl-9/drafts/d-9" },
+      { label: "Agent profiles", route: "/profiles" },
+    ];
+    renderLinks(links, { openDraftHref: "/workflows/pl-9/drafts/d-other" });
+    expect(screen.getAllByTestId("assistant-link")).toHaveLength(2);
+    cleanup();
+    renderLinks(links, { openDraftHref: null });
+    const rows = screen.getAllByTestId("assistant-link");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain("Open draft");
+  });
+});
