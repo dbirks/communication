@@ -11,6 +11,7 @@ import type { PermissionOption } from "../api/types";
 import { formatClock } from "../lib/format";
 
 import { PlanView } from "./m4/PlanView";
+import { MarkdownBody } from "../lib/markdown";
 
 import { Alert } from "./ds/Alert";
 import { Button } from "./ds/Button";
@@ -81,7 +82,24 @@ function AgentMessageBody({ text }: { text: string }) {
 
   if (!plan) {
     // 1g: the agent's prose reads at 13.5/21 — a person talking, not a table.
-    return <p className="mt-1 whitespace-pre-wrap text-[13.5px] leading-[21px] text-ink">{text}</p>;
+    // rcn-3d round 14: the reply is the agent's own MARKDOWN (back-ticked
+    // repo names, `**bold**` answers, `- ` findings), and printed raw it
+    // arrived with its markers as characters (`the `server` repository agent`,
+    // `- The `server` repo …`) while the mail card just above rendered the
+    // same `README` as a code chip. The reader is `MarkdownBody` — the app's
+    // own renderer (React text nodes, never HTML, ADR-0020), the one the mail
+    // card, the plan view and the artifacts already read with — applied to
+    // EVERY agent row, including a reply streamed in chunks: the fold has
+    // already joined the chunks into this one text, so one block reads it
+    // whole. Prose with no markers reads exactly as it did.
+    return (
+      <div
+        className="mt-1 break-words text-[13.5px] leading-[21px] text-ink"
+        data-testid="agent-message-body"
+      >
+        <MarkdownBody text={text} paragraphClassName="m-0" />
+      </div>
+    );
   }
   return (
     <div className="mt-1" data-testid="agent-plan">

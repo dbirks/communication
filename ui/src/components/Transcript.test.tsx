@@ -12,7 +12,7 @@
  * `ConversationTurn` rows rather than hand-written, so a fixture cannot claim a
  * field the API does not send.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import Transcript from "./Transcript";
 import { projectTranscript } from "../api/transcript";
@@ -116,5 +116,100 @@ describe("Transcript turn submitter (ADR-0062)", () => {
     expect(screen.getByText("Tidy the flaky spec").closest("li")?.textContent).toContain(
       "Ada Lovelace:",
     );
+  });
+});
+
+describe("agent replies read as markdown (rcn-3d round 14)", () => {
+  /** The reply the reviewed chat printed raw: markers as characters. */
+  const reply =
+    'I updated the `server` repository agent.\n\n- The `server` repo owns the `README` file\n\n**"Hello World!"**';
+
+  function renderAgentReply(frames: EventEnvelope[]) {
+    const items = projectTranscript(frames, nameOf).items;
+    render(
+      <Transcript
+        items={items}
+        agentName="m4-implementer"
+        canDecide={false}
+        controllerName={null}
+        nameOf={nameOf}
+        onDecide={() => {}}
+        decidingRequestId={null}
+        decisionError={null}
+        decisionErrorRequestId={null}
+      />,
+    );
+    return items;
+  }
+
+  it("renders code spans, a bullet list and strong in an agent reply, markers read not printed", () => {
+    renderAgentReply([
+      conversationEvent("conversation.message.agent", {
+        turn_id: turnId,
+        text: reply,
+        final: true,
+      }),
+    ]);
+    const row = screen.getByTestId("transcript-item") as HTMLElement;
+    const codes = Array.from(row.querySelectorAll("code")).map((el) => el.textContent);
+    expect(codes).toContain("server");
+    expect(codes).toContain("README");
+    const list = within(row).getByTestId("markdown-list");
+    expect(list.tagName).toBe("UL");
+    const listItems = within(row).getAllByTestId("markdown-list-item");
+    expect(listItems).toHaveLength(1);
+    expect(listItems[0].textContent).toContain("The");
+    const strong = within(row).getByRole("strong");
+    expect(strong.textContent).toBe('"Hello World!"');
+    // The markers are read, never printed:
+    expect(row.textContent).not.toContain("**");
+    expect(row.textContent).not.toContain("- The");
+    expect(row.textContent).not.toContain("`server`");
+    expect(list).toBeTruthy();
+  });
+
+  it("keeps a user prompt literal with the same markup: no code, list or strong", () => {
+    renderAgentReply([
+      conversationEvent("conversation.message.user", {
+        turn_id: turnId,
+        submitted_by: authorId,
+        text: reply,
+      }),
+    ]);
+    const bubble = screen.getByTestId("transcript-item") as HTMLElement;
+    expect(bubble.textContent).toContain(reply);
+    expect(bubble.textContent).toContain("`server`");
+    expect(bubble.textContent).toContain('**"Hello World!"**');
+    expect(bubble.querySelector("code")).toBeNull();
+    expect(bubble.querySelector("ul, ol")).toBeNull();
+    expect(bubble.querySelector("strong, em")).toBeNull();
+  });
+
+  it("reads a reply streamed in two chunks as one markdown block over the joined text", () => {
+    const first = "Fixes for `server`:\n";
+    const second = "- first fix\n- second fix";
+    const items = renderAgentReply([
+      conversationEvent("conversation.message.agent", {
+        turn_id: turnId,
+        text: first,
+        final: false,
+      }),
+      conversationEvent("conversation.message.agent", {
+        turn_id: turnId,
+        text: second,
+        final: true,
+      }),
+    ]);
+    // The fold joins the chunks: one agent row, one block, markers already spent.
+    expect(items).toHaveLength(1);
+    const row = screen.getByTestId("transcript-item");
+    expect(within(row).getAllByTestId("markdown-body")).toHaveLength(1);
+    const list = within(row).getByTestId("markdown-list");
+    expect(list.tagName).toBe("UL");
+    expect(within(list).getAllByTestId("markdown-list-item")).toHaveLength(2);
+    expect(within(row).getAllByTestId("markdown-list-item")[1].textContent).toContain("second fix");
+    const codes = Array.from(row.querySelectorAll("code")).map((el) => el.textContent);
+    expect(codes).toContain("server");
+    expect(row.textContent).not.toContain("first fix\\n");
   });
 });
