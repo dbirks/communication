@@ -483,6 +483,17 @@ const LANE_CLASS = "min-w-0 space-y-2 rounded-[3px] bg-fill p-[10px]";
 const LANE_HEADER_CLASS =
   "flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-[0.05em] text-ink-2";
 const CARD_CLASS = "min-w-0 rounded-[3px] border border-line-strong bg-surface p-[8px]";
+/**
+ * A lane card's title column (3b: `#num` mono 10 + title, button/meta beside
+ * it). `wrap-anywhere` is `overflow-wrap: anywhere`: a title carrying an
+ * unbreakable token (`Test issue for assign_copilot_to_issue`) has to break
+ * INSIDE its own column. Without it the word is wider than the shrunk flex
+ * item, overflows the (visible) box and paints under the `Start…` button — the
+ * rcn-3b overlap defect the verification pass caught at 1280x900. `anywhere`
+ * rather than `break-words` because it also shrinks the item's min-content
+ * width, so the flex row divides the card honestly.
+ */
+const CARD_TITLE_CLASS = "min-w-0 wrap-anywhere";
 
 function laneHeader(glyph: string, glyphClass: string, label: string) {
   return (
@@ -629,17 +640,24 @@ export function RepoLanes({
                 }`}
               >
                 <div className="flex items-start gap-2">
-                  <span className="font-mono text-[10px] text-faint">#{issue.number}</span>
-                  <span className="min-w-0 flex-1 text-[12.5px] font-semibold text-ink">
+                  <span className="flex-none font-mono text-[10px] text-faint">
+                    #{issue.number}
+                  </span>
+                  <span
+                    className={`${CARD_TITLE_CLASS} flex-1 text-[12.5px] font-semibold text-ink`}
+                    data-testid={`repo-lane-issue-title-${issue.number}`}
+                  >
                     {issue.title}
                   </span>
-                  {/* The keyboard route to the drop menu (required). */}
+                  {/* The keyboard route to the drop menu (required). `flex-none`
+                      (flex: none) — the button never shrinks and never shares
+                      its box with the title's overflow. */}
                   <button
                     type="button"
                     aria-haspopup="menu"
                     aria-label={`Start #${issue.number} with a workflow`}
                     onClick={(event) => openFromKeyboard(issue, event.currentTarget)}
-                    className="shrink-0 rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10px] text-accent-text hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    className="flex-none whitespace-nowrap rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10px] text-accent-text hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                     data-testid={`repo-lane-issue-start-${issue.number}`}
                   >
                     Start…
@@ -738,7 +756,9 @@ export function RepoLanes({
                 data-testid="repo-lane-drop-preview"
               >
                 #{dragIssue.number} · dragging
-                <span className="block font-sans text-[12.5px] font-semibold text-ink">
+                <span
+                  className={`block font-sans text-[12.5px] font-semibold text-ink ${CARD_TITLE_CLASS}`}
+                >
                   {dragIssue.title}
                 </span>
               </li>
@@ -751,7 +771,7 @@ export function RepoLanes({
                 data-testid="repo-lane-drop-card"
               >
                 <span className="font-mono text-[10px] text-faint">#{start.issue.number}</span>
-                <span className="block text-[12.5px] font-semibold text-ink">
+                <span className={`block text-[12.5px] font-semibold text-ink ${CARD_TITLE_CLASS}`}>
                   {start.issue.title}
                 </span>
               </li>
@@ -845,7 +865,9 @@ function RunLaneCard({
           lane card that showed only the dot made two cards read the same.
           rcn-3b review item 1. */}
       <div
-        className={`font-mono text-[10px] ${waiting || failedState ? spec.tagFg : "text-muted"}`}
+        className={`font-mono text-[10px] ${CARD_TITLE_CLASS} ${
+          waiting || failedState ? spec.tagFg : "text-muted"
+        }`}
       >
         <span aria-hidden="true" className="mr-1">
           {spec.glyph}
@@ -856,7 +878,7 @@ function RunLaneCard({
       <Link
         to={routes.run(run.id)}
         data-testid={`repo-lane-run-open-${testidOf(run.id)}`}
-        className="mt-1 block text-[12.5px] font-semibold text-ink hover:underline"
+        className={`mt-1 block text-[12.5px] font-semibold text-ink hover:underline ${CARD_TITLE_CLASS}`}
       >
         {run.title ?? `Run #${shortId(run.id)}`}
       </Link>
@@ -916,7 +938,7 @@ function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
       data-testid={`repo-lane-chat-${testidOf(conversation.id)}`}
       title={conversation.id}
     >
-      <div className="font-mono text-[10px] font-semibold text-accent-text">
+      <div className={`font-mono text-[10px] font-semibold text-accent-text ${CARD_TITLE_CLASS}`}>
         <span aria-hidden="true" className={spec.tagFg}>
           {spec.glyph}
         </span>{" "}
@@ -930,11 +952,12 @@ function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
       <div className="mt-1 flex items-start gap-2">
         <Link
           to={routes.thread(conversation.id)}
-          className="min-w-0 flex-1 text-[12.5px] font-semibold text-ink hover:underline"
+          data-testid={`repo-lane-chat-title-${testidOf(conversation.id)}`}
+          className={`${CARD_TITLE_CLASS} flex-1 text-[12.5px] font-semibold text-ink hover:underline`}
         >
           {shownTitle}
         </Link>
-        <span className="shrink-0 font-mono text-[10.5px] text-faint">
+        <span className="flex-none font-mono text-[10.5px] text-faint">
           {formatAge(conversation.updated_at)}
         </span>
       </div>

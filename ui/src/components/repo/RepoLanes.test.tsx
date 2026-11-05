@@ -16,7 +16,12 @@
  *   answers with it the card sits in RUNNING as a live run card;
  * - the keyboard path (`Start…`) opens the same menu and starts the same run;
  * - the refusal: a failed start says so in the menu with the server's own
- *   words, the issue card stays where it is, and nothing navigates.
+ *   words, the issue card stays where it is, and nothing navigates;
+ * - the card's geometry: a long unbreakable issue title (`assign_copilot_to_
+ *   issue`) breaks inside its own column and the `Start…` button never
+ *   shrinks — the rcn-3b verification pass caught the title painting under
+ *   the button at 1280x900, and jsdom has no layout, so this asserts the
+ *   structure and the wrapping classes that make the overlap impossible.
  */
 import {
   cleanup,
@@ -31,8 +36,15 @@ import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RepoLanes } from "./RepoLanes";
 import type { GitHubIssue, GitHubIssueList, useRepoIssues } from "../../api/issues";
-import type { Assignment, PipelineRevision, Repository, RunSummary } from "../../api/types";
+import type {
+  Assignment,
+  ConversationSummary,
+  PipelineRevision,
+  Repository,
+  RunSummary,
+} from "../../api/types";
 import {
+  conversationSummaryFixture,
   mockFetch,
   projectFixture,
   requestsTo,
@@ -162,7 +174,11 @@ interface Mounted {
   onOpenRunForm: ReturnType<typeof vi.fn>;
 }
 
-function mount(overrides: RouteStub[] = []): Mounted {
+function mount(
+  overrides: RouteStub[] = [],
+  issues: GitHubIssue[] = issueList.items,
+  conversations: ConversationSummary[] = [],
+): Mounted {
   const base: RouteStub[] = [
     { path: `/api/v1/revisions/${issuePin.pinned_revision_id}`, body: issueAcceptingRevision },
     {
@@ -181,8 +197,8 @@ function mount(overrides: RouteStub[] = []): Mounted {
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
   // The panel's fake query result: the issues read itself belongs to the page.
-  const issues = {
-    data: issueList,
+  const issuesResult = {
+    data: { ...issueList, items: issues },
     error: null,
     isError: false,
     isPending: false,
@@ -195,10 +211,10 @@ function mount(overrides: RouteStub[] = []): Mounted {
         <RepoLanes
           projectId={projectFixture.id}
           repositoryName={repository.name}
-          issues={issues}
+          issues={issuesResult}
           githubHosted
           runs={runs}
-          conversations={[]}
+          conversations={conversations}
           runsPending={false}
           runsError={null}
           onRetryRuns={vi.fn()}
@@ -508,5 +524,87 @@ describe("RepoLanes — dragging an issue into Running (3b)", () => {
     expect(requestsTo(requests, `/api/v1/revisions/${plainPin.pinned_revision_id}`)).toHaveLength(
       1,
     );
+  });
+});
+
+/**
+ * The DEFECT the rcn-3b verification pass caught on every run at 1280x900:
+ * `span.min-w-0 "Test issue for assign_copilo…"` overlapping
+ * `repo-lane-issue-start-11666`. An issue title whose longest word has no
+ * break opportunity (`assign_copilot_to_issue`) is wider than the ~235px the
+ * lane leaves it, so with the default `overflow-wrap: normal` it overflowed
+ * the (visible) title box and drew under the `Start…` button.
+ *
+ * jsdom runs no layout, so this cannot measure boxes; it asserts the
+ * structure the layout rests on — the title may shrink AND breaks anywhere,
+ * the button cannot shrink at all, and the two are siblings rather than one
+ * wrapped in the other (a box cannot overflow onto a sibling it contains).
+ */
+describe("RepoLanes — a long unbreakable title stays in its own column (rcn-3b overlap)", () => {
+  /** The real titles from the failing screen, snake_case and unbreakable. */
+  const LONG_TITLES = [
+    "Test issue for assign_copilot_to_issue",
+    "Test issue for add_issue_comment",
+  ];
+
+  it("breaks the title inside its column and keeps the Start button whole", async () => {
+    const long: GitHubIssue[] = LONG_TITLES.map((title, i) => ({
+      ...issue,
+      number: 11661 + i * 5,
+      title,
+    }));
+    mount([], long);
+
+    for (const one of long) {
+      const card = await screen.findByTestId(`repo-lane-issue-${one.number}`);
+      const title = screen.getByTestId(`repo-lane-issue-title-${one.number}`);
+      const button = screen.getByTestId(`repo-lane-issue-start-${one.number}`);
+
+      expect(title.textContent).toBe(one.title);
+      // `wrap-anywhere` is Tailwind v4's `overflow-wrap: anywhere`: the word
+      // breaks inside the column, and it shrinks the column's min-content so
+      // the row divides the card instead of the title running over the button.
+      expect(title.className, "the title breaks an unbreakable word").toContain("wrap-anywhere");
+      // min-width:0 is what lets a flex item get narrower than its content.
+      expect(title.className, "the title column may shrink").toContain("min-w-0");
+      expect(title.className).toContain("flex-1");
+      // `flex: none` — the button never shrinks into the title, and its label
+      // stays one line (the pass also saw `Start…` clipped in a narrow card).
+      expect(button.className, "the Start button never shrinks").toContain("flex-none");
+      expect(button.className).toContain("whitespace-nowrap");
+      // Siblings in one flex row: the title's overflow cannot land on a box it
+      // contains, and neither of them is the card's whole width by accident.
+      const row = title.parentElement;
+      expect(row, "the title sits in a flex row").not.toBeNull();
+      expect(row?.className).toContain("flex");
+      expect(row?.contains(button), "the button is a sibling, not a parent").toBe(true);
+      expect(title.contains(button)).toBe(false);
+      expect(button.contains(title)).toBe(false);
+      // The row is inside the card, not the card itself.
+      expect(card.contains(row as HTMLElement)).toBe(true);
+      // The `#num` chip is not a shrinking item either — three items, one of
+      // them (the title) carries all the flexibility.
+      const number = row?.firstElementChild as HTMLElement | null;
+      expect(number?.textContent).toBe(`#${one.number}`);
+      expect(number?.className).toContain("flex-none");
+    }
+  });
+
+  it("says the same about a chat card's title beside its age", async () => {
+    // A chat title is the same hazard: `Plan · implement_the_thing` in a
+    // 235px lane, with the mono age pinned beside it.
+    const chat: ConversationSummary = {
+      ...conversationSummaryFixture,
+      title: "Discuss assign_copilot_to_issue",
+      status: "active",
+      updated_at: new Date(NOW - 60_000).toISOString(),
+    };
+    mount([], [], [chat]);
+    const title = await screen.findByTestId(`repo-lane-chat-title-${testidOf(chat.id)}`);
+    const age = title.nextElementSibling as HTMLElement | null;
+    expect(title.textContent).toBe(chat.title);
+    expect(title.className).toContain("wrap-anywhere");
+    expect(title.className).toContain("min-w-0");
+    expect(age?.className, "the age stamp never shrinks").toContain("flex-none");
   });
 });

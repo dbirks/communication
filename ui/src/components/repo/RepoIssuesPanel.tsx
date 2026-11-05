@@ -242,7 +242,7 @@ function IssueRow({
           target="_blank"
           rel="noreferrer"
           data-testid={`repo-issue-title-${issue.number}`}
-          className="block text-[13px] font-semibold text-ink hover:underline"
+          className="block wrap-anywhere text-[13px] font-semibold text-ink hover:underline"
         >
           #{issue.number} {issue.title}
         </a>
@@ -251,7 +251,7 @@ function IssueRow({
       {activeRun && state ? (
         <Link
           to={routes.run(activeRun.id)}
-          className={`shrink-0 font-mono text-[10.5px] ${STATES[state].tagFg} hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+          className={`flex-none whitespace-nowrap font-mono text-[10.5px] ${STATES[state].tagFg} hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
           data-testid={`repo-issue-active-run-${issue.number}`}
         >
           <span aria-hidden="true">{STATES[state].glyph} </span>
@@ -261,6 +261,7 @@ function IssueRow({
         <Button
           variant="secondary"
           compact
+          className="flex-none"
           data-testid={`repo-issue-run-${issue.number}`}
           onClick={onExpand}
         >
