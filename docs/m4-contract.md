@@ -983,7 +983,23 @@ C1j  psql -tAc "SELECT type || '|' || COALESCE((payload->>'permission_request_id
                 FROM domain_events WHERE run_id='$RUN'
                   AND type IN ('conversation.permission.requested','conversation.permission.decided')
                 ORDER BY global_seq"   # every payload->> parenthesised: || binds tighter than ->> (pass 28 crashed)
-     # agent leg: >=1 requested; every request exactly one decided, status=decided, decided_by=node_policy:preapproved_within_sandbox; no decided row without a request (ADR-0036 (a))
+     # agent leg is launcher-conditional (ADR-0075 addendum 2026-11-05):
+     # - prompting launcher (claude/codex, and any launcher not explicitly never-asks):
+     #   >=1 requested; every request exactly one decided, status=decided,
+     #   decided_by=node_policy:preapproved_within_sandbox; no decided row without a
+     #   request (ADR-0036 (a)) — UNCHANGED, the arm the claude passes measured (live29: 8/8).
+     # - launcher pi: pi-acp@0.0.34 (npm latest) has NO prompting mode — its only
+     #   session/request_permission call site is the extension-UI dialog handler, tool
+     #   execution is never gated (docs/compatibility/ACP.md pi row) — so the seed runs it
+     #   under ADR-0069's autonomous_within_sandbox, a mode that claims NO review. `>=1
+     #   requested` can never hold there and is REPLACED, never excused, by three positive
+     #   measurements: every agent attempt's profile row reads pi/autonomous_within_sandbox/
+     #   required (empty reading = FAIL); sandbox.verified rows >= succeeded agent attempts,
+     #   with >=1 succeeded agent attempt (ADR-0019 D6); and the run's deterministic
+     #   prompting source — the /approve gate — closed every approval.requested with exactly
+     #   one approval.decided(decision=approved, named decided_by). The three pair invariants
+     #   are graded on ANY permission rows under every launcher; this is never a PASS-by-
+     #   absence.
 ```
 
 **C2 — the unit of work is the attempt, not the turn (invariant 5 + ADR-0018's `node_attempt`).**

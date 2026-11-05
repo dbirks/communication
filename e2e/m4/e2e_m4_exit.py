@@ -1045,6 +1045,20 @@ def journal_shape(rows):
 # audit line is the evidence that isolation — not a phantom human — carried the
 # call (internal/worker/agentturn.go permissionBridge, internal/store/postgres
 # agentturn_seams.go PermissionPolicyFor).
+#
+# ADR-0075 addendum 2026-11-05 made the leg launcher-conditional, because
+# "the prompting-mode agent asked" is a premise about the LAUNCHER, not about
+# the engine. The lab launcher is chosen by COMMUNICATION_LAB_LAUNCHER (the
+# acceptance runners set `pi`, no Claude token); pi-acp@0.0.34 (npm latest) has
+# NO prompting mode — its only session/request_permission call site is the
+# extension-UI dialog handler (docs/compatibility/ACP.md pi row; the pinned
+# bundle was re-read line-by-line for the addendum) — so the seed puts pi in
+# ADR-0069's autonomous_within_sandbox, a mode that claims NO review. On that
+# launcher the first arm cannot be `>=1 requested` without becoming a
+# PASS-by-absence; it is replaced by the three positive measurements the
+# autonomous claim actually rests on (below). The three pair invariants are
+# graded over whatever permission rows exist under EVERY launcher, unchanged —
+# a pi that ever starts asking is caught by them, not waved through.
 PERMISSION_TYPE_REQUESTED = "conversation.permission.requested"
 PERMISSION_TYPE_DECIDED = "conversation.permission.decided"
 PERMISSION_DECIDED_BY_POLICY = "node_policy:preapproved_within_sandbox"
@@ -1068,9 +1082,34 @@ def c1_permission_events_sql(run_id):
 
 
 def permission_verdicts_ok(rows):
-    """C1j over one run's permission rows — dicts {type, permission_request_id,
+    """C1j over one run's permission rows on a PROMPTING launcher (claude, codex:
+    every recorded permission mode there puts the harness in a mode that really
+    sends session/request_permission) — dicts {type, permission_request_id,
     status, decided_by}. Returns [(label, ok, detail)] for the gate's CHECK
-    lines; pure — e2e/m4/test_c1_logic.py pins it."""
+    lines; pure — e2e/m4/test_c1_logic.py pins it. Byte-for-byte the pre-amendment
+    four arms; c1_permission_leg_verdicts is what the driver calls, because the
+    leg's launcher decides whether the first arm applies at all."""
+    return [(
+        "at least one conversation.permission.requested (the prompting-mode "
+        "agent asked before it touched the workspace)",
+        any(isinstance(r, dict) and r.get("type") == PERMISSION_TYPE_REQUESTED
+            for r in rows or []),
+        _permission_counts_detail(rows))] + permission_pair_invariants(rows)
+
+
+def _permission_counts_detail(rows):
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    requested = sum(1 for r in rows if r.get("type") == PERMISSION_TYPE_REQUESTED)
+    decided = sum(1 for r in rows if r.get("type") == PERMISSION_TYPE_DECIDED)
+    return f"{requested} request(s), {decided} decision(s)"
+
+
+def permission_pair_invariants(rows):
+    """C1j's three pair invariants — ADR-0036 (a) over the rows that EXIST:
+    every request exactly one decided, status=decided + the policy decider
+    named, no verdict nobody asked for. Graded under every launcher, prompting
+    or never-asks (ADR-0075 addendum: the amendment replaced only the `>=1
+    requested` premise, never these). Pure."""
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     requested = [str(r.get("permission_request_id") or "").strip()
                  for r in rows if r.get("type") == PERMISSION_TYPE_REQUESTED]
@@ -1083,11 +1122,7 @@ def permission_verdicts_ok(rows):
     for rid, _, _ in decided:
         counts[rid] = counts.get(rid, 0) + 1
     seen = sorted({f"{st}/{by}" for _, st, by in decided})
-    out = [
-        ("at least one conversation.permission.requested (the prompting-mode "
-         "agent asked before it touched the workspace)",
-         bool(requested),
-         f"{len(requested)} request(s), {len(decided)} decision(s)")]
+    out = []
     unanswered = [rid for rid in distinct if counts.get(rid, 0) == 0]
     doubled = [rid for rid in distinct if counts.get(rid, 0) > 1]
     out.append(("every requested id has exactly one decided row (no prompt left "
@@ -1105,6 +1140,152 @@ def permission_verdicts_ok(rows):
     out.append(("no decided row without a matching request (a verdict nobody asked "
                 "for is a fabricated decision)",
                 not orphans, f"orphans={orphans[:3]}"))
+    return out
+
+
+# --- C1j on a never-asks launcher (ADR-0075 addendum 2026-11-05) ---------------
+# The launchers whose every recorded permission mode has a verified prompting
+# mode need no special arm and are NOT listed: anything unknown takes the
+# prompting path too, so a launcher that gains pi's shape must be added here
+# deliberately, never by omission. On these launchers the seeded profiles run
+# ADR-0069's autonomous_within_sandbox — "runs without asking; the sandbox is
+# the boundary" — and the leg grades exactly that sentence, in three positive
+# arms, instead of the `>=1 requested` premise that cannot be true of them.
+C1J_AUTONOMOUS_LAUNCHERS = frozenset({"pi"})
+C1J_AUTONOMOUS_PROFILE_ROW = "pi/autonomous_within_sandbox/required"
+
+
+def c1_permission_profile_sql(run_id):
+    """Every launcher/mode/enforcement triple the run's agent attempts really
+    ran under, read through the rows that bind them (attempts.conversation_id →
+    conversations.agent_profile_id → agent_profiles; 00005's
+    attempts_agent_turn_pair makes a conversation-bound attempt an agent
+    attempt, so the twin's attempts simply do not appear). The profile ROW is
+    the fact (seed.sh's own words): the API journals every create as `ask`, so
+    only the ledger can say what mode this launch ran."""
+    return ("SELECT DISTINCT p.launcher_id || '/' || p.permission_mode || '/' || "
+            "p.sandbox_enforcement "
+            "FROM attempts a JOIN node_executions ne ON ne.id = a.node_execution_id "
+            "JOIN conversations c ON c.id = a.conversation_id "
+            "JOIN agent_profiles p ON p.id = c.agent_profile_id "
+            f"WHERE a.run_id = '{run_id}'")
+
+
+def c1_permission_boundary_sql(run_id):
+    """`sandbox.verified count | succeeded agent attempt count` — the boundary
+    half of the autonomous claim. ADR-0019 D6 fail-closed: a worker launches no
+    agent it has not verified inside the sandbox, so every succeeded agent
+    attempt MUST have earned a sandbox.verified row; fewer verified rows than
+    succeeded attempts means calls ran outside the only boundary the mode
+    claims, which is a FAIL with both counts printed."""
+    return ("SELECT (SELECT count(*) FROM domain_events WHERE run_id = "
+            f"'{run_id}' AND type = 'sandbox.verified') || '|' || "
+            "(SELECT count(*) FROM attempts a JOIN node_executions ne "
+            "ON ne.id = a.node_execution_id "
+            f"WHERE a.run_id = '{run_id}' AND ne.kind = 'agent.acp' "
+            "AND a.status = 'succeeded')")
+
+
+def c1_permission_gate_sql(run_id):
+    """The run's approval-gate ask/verdict pairs — C1j's deterministic
+    prompting source. The /approve gate asks before the agent work proceeds and
+    a NAMED human decider answers, every run, with no launcher and no model in
+    the loop; that pair is the positive proof that this journal closes the asks
+    it actually receives (C1h only asks whether the pair is present and in
+    order; this arm grades its algebra)."""
+    return ("SELECT COALESCE((payload->>'approval_id'),'-') || '|' || type || '|' || "
+            "COALESCE((payload->>'decision'),'-') || '|' || "
+            "COALESCE((payload->>'decided_by'),'-') FROM domain_events "
+            f"WHERE run_id = '{run_id}' AND type IN "
+            "('approval.requested','approval.decided') ORDER BY global_seq")
+
+
+def approval_pair_verdicts(gate_rows):
+    """The deterministic prompting source's own pair algebra: >=1
+    approval.requested, each with EXACTLY ONE approval.decided carrying
+    decision=approved and a non-empty decided_by (the named human — the mode
+    that never asks may claim no review precisely because review like this
+    exists elsewhere and is journaled). [(label, ok, detail)] — pure."""
+    rows = [r for r in (gate_rows or []) if isinstance(r, dict)]
+    requested = [str(r.get("approval_id") or "").strip()
+                 for r in rows if r.get("type") == "approval.requested"]
+
+    def _val(r, key):
+        # the driver's single-column reads COALESCE absent fields to "-"; an
+        # absent decision/decided_by must read as MISSING, not as a verdict.
+        v = str(r.get(key) or "").strip()
+        return "" if v == "-" else v
+
+    decided = {}
+    for r in rows:
+        if r.get("type") == "approval.decided":
+            decided.setdefault(_val(r, "approval_id"), []).append(r)
+    distinct = list(dict.fromkeys(requested))
+    offenders = []
+    for rid in distinct:
+        ds = decided.get(rid, [])
+        if (len(ds) != 1 or _val(ds[0], "decision") != "approved"
+                or not _val(ds[0], "decided_by")):
+            offenders.append(rid)
+    return [(
+        "the run's deterministic prompting source asked and a named decider "
+        "answered: every approval.requested has exactly one "
+        "approval.decided(decision=approved, decided_by set) — the journal "
+        "closes the asks it really receives (ADR-0075 addendum)",
+        bool(distinct) and not offenders,
+        f"{len(distinct)} gate ask(s), offenders={offenders[:3]}")]
+
+
+def c1_permission_leg_verdicts(rows, launcher, profile_rows=None, sandbox_verified=0,
+                               agent_attempts_succeeded=0, gate_rows=None):
+    """C1j's agent leg, launcher-conditional (ADR-0075 addendum).
+
+    Prompting launcher (claude, codex — and ANY launcher not named as
+    never-asks, fail-closed): exactly the pre-amendment four arms — `>=1
+    requested` plus the three pair invariants. Nothing is weakened there.
+
+    Never-asks launcher (pi): the `>=1 requested` premise is the launcher's own
+    recorded impossibility (pi-acp@0.0.34 gates no tool call; the seed runs
+    autonomous_within_sandbox, ADR-0069), so it is REPLACED — never merely
+    excused — by three positive measurements of what that mode claims:
+    (1) every agent attempt's profile row reads pi/autonomous_within_sandbox/
+    required — an empty reading FAILs, absence is never a pass; (2) the
+    sandbox.verified rows cover every succeeded agent attempt, and there IS a
+    succeeded agent attempt; (3) the run's deterministic prompting source (the
+    /approve gate) closed every ask it raised with a named human verdict. The
+    three pair invariants then grade ANY permission rows the journal holds — so
+    a future pi that starts prompting is measured against ADR-0036 (a) as-is,
+    not waved through (and a row decided by anything but the node policy then
+    FAILs the decider arm, forcing the ADR-0069 mode to be revisited in the
+    open). Pure — e2e/m4/test_c1_logic.py pins the branching; the live § 7 run
+    on the acceptance runner measures it.
+    """
+    if str(launcher or "").strip().lower() not in C1J_AUTONOMOUS_LAUNCHERS:
+        return permission_verdicts_ok(rows)
+    pr = [str(x).strip() for x in (profile_rows or []) if str(x).strip()]
+    try:
+        sv = int(sandbox_verified)
+        aa = int(agent_attempts_succeeded)
+    except (TypeError, ValueError):
+        sv = aa = -1
+    out = [
+        ("the agent leg really runs the never-asks arm it was seeded for: every "
+         "agent attempt's profile row reads "
+         f"{C1J_AUTONOMOUS_PROFILE_ROW} (ADR-0069: pi-acp@0.0.34 has NO "
+         "prompting mode, docs/compatibility/ACP.md — a row in any prompting "
+         "mode here means the fail-closed gate was bypassed)",
+         bool(pr) and all(r == C1J_AUTONOMOUS_PROFILE_ROW for r in pr),
+         f"profile rows={sorted(set(pr))[:3] or '(none)'} "
+         f"expected=[{C1J_AUTONOMOUS_PROFILE_ROW}]"),
+        ("every succeeded agent attempt launched verified inside the sandbox: "
+         "sandbox.verified rows >= succeeded agent attempts, and at least one "
+         "agent attempt succeeded (the autonomous mode's ONLY claim is the "
+         "boundary; ADR-0019 D6 fail-closed makes fewer rows a contradiction)",
+         aa > 0 and sv >= aa,
+         f"sandbox.verified={sv} succeeded agent attempts={aa}"),
+    ]
+    out.extend(approval_pair_verdicts(gate_rows))
+    out.extend(permission_pair_invariants(rows))
     return out
 
 
@@ -2329,16 +2510,33 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
                     sum(1 for r in jrows if r["type"] == "run.checkpoint_saved") >= sw,
                     f"events>={sum(1 for r in jrows if r['type'] == 'run.checkpoint_saved')} vs {sw}")
 
-    # C1j — ADR-0036 (a): every prompt the agent raised closed with a journaled
-    # verdict naming the node policy. Agent leg only: the twin has no agent, so
-    # it raises no session/request_permission and has nothing to verdict.
+    # C1j — ADR-0036 (a): every prompt raised closed with a journaled verdict
+    # naming its decider. Agent leg only: the twin has no agent, so it raises no
+    # session/request_permission and has nothing to verdict. The leg is
+    # launcher-conditional per ADR-0075's addendum: on a prompting launcher
+    # (claude/codex) it is the original four arms unchanged; on launcher pi (no
+    # prompting mode exists to verify — the seed runs it autonomous_within_sandbox
+    # under ADR-0069) the "agent asked" premise is replaced by three positive
+    # measurements of what that mode claims, and the pair invariants still grade
+    # any permission row the journal holds. Never a PASS-by-absence on either arm.
     if variant != "twin":
         prows = [dict(zip(("type", "permission_request_id", "status", "decided_by"), r))
                  for r in psql_rows(psql(c1_permission_events_sql(run_id)), 4)]
         show(f"C1j {label}: permission request/verdict rows",
              "\n".join(f"{r['type']} {r['permission_request_id']} {r['status']} "
                        f"{r['decided_by']}" for r in prows) or "(none)")
-        for lbl, ok, detail in permission_verdicts_ok(prows):
+        prof_rows = [r[0] for r in psql_rows(psql(c1_permission_profile_sql(run_id)), 1)]
+        bnd = psql_rows(psql(c1_permission_boundary_sql(run_id)), 2)
+        sv, aa = (int(bnd[0][0]), int(bnd[0][1])) if bnd else (0, 0)
+        gate_rows = [dict(zip(("approval_id", "type", "decision", "decided_by"), r))
+                     for r in psql_rows(psql(c1_permission_gate_sql(run_id)), 4)]
+        show(f"C1j {label}: leg inputs [launcher {LAB_LAUNCHER}]",
+             f"profile rows={sorted(set(prof_rows)) or ['(none)']} "
+             f"sandbox.verified={sv} succeeded agent attempts={aa} "
+             f"gate rows={len(gate_rows)}")
+        for lbl, ok, detail in c1_permission_leg_verdicts(
+                prows, LAB_LAUNCHER, profile_rows=prof_rows,
+                sandbox_verified=sv, agent_attempts_succeeded=aa, gate_rows=gate_rows):
             ok_all &= check(f"C1j {label}: {lbl}", ok, detail)
 
     # The SSE observer watched the same story as it happened.

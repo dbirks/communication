@@ -89,3 +89,96 @@ No security boundary moves. C4c's amendment removes a demand that would have req
 ## Migration/rollback
 
 Docs + lab only — no migration, no API, no protocol change, nothing to roll back in a deployment. To revert, restore the two § 7 rows' previous text and the C4c/W9 legs' verdict calls in `e2e/m4/e2e_m4_exit.py`; the pre-amendment behaviour is exactly the GAP lines quoted in Context, which is what this ADR removes. Forward-only by construction: the C4c amendment can never re-open the persistence invariant, because the invariant lives in the CHECK the amendment defers to.
+
+---
+
+## Addendum 2026-11-05 (pass 42066375840) — § 7.1 C1j's agent leg on launcher pi: the "agent asked" premise is a launcher property, and pi never asks
+
+**Measured FAIL** (Actions run 42066375840, commit 2bb9fed, `m4-core-a-1/m4.out:152`):
+`FAIL C1j agent: at least one conversation.permission.requested — 0 request(s), 0 decision(s)`, while
+C1c/C1d/C1g/C1h/C1i all PASS and the other three C1j invariants PASS. The agent arm completed — for
+the first time — on launcher **pi** (`pi-acp` on `david-birks/qwen3-8-flash-next` via
+`compose.m4-llm.yml`), after ADR-0069 finally gave the never-asks launcher a mode it may run under.
+
+**Root cause — observed, not guessed, in four links:**
+
+1. **The seeded mode is not a prompting mode.** `.github/workflows/acceptance.yml` sets
+   `COMMUNICATION_LAB_LAUNCHER=pi` (no Claude token on runners); `seed.sh` maps that launcher to
+   `LAB_MODE=autonomous_within_sandbox` (its own comment: the three prompting modes "stay
+   fail-closed on it and the only mode it may run under is autonomous_within_sandbox — which
+   claims no review"). The run's m4-implementer conversation row confirms launcher pi (m4.out:854).
+2. **The worker wiring is correct.** `internal/worker/agentturn.go` + `turnloop.go` put
+   ask/deny/preapproved into the launcher's verified prompting mode and **fail closed** on pi
+   (observed live: attempt `1389e01a-7e44-51ba-ae62-4ca9eb5644ae`, "no verified prompting mode …
+   would be a lie about review", docs/compatibility/ACP.md pi row); the autonomous arm keeps
+   `modeID=""` *deliberately* — "the adapter's never-asks default IS what this mode says it runs".
+   The launcher card records the fact: `AskModeID: ""` for pi (`internal/agent/acp/launchers.go`).
+3. **pi has no prompting path for tool execution.** The pinned npm artifact was re-read for this
+   addendum: registry `pi-acp` `dist-tags.latest = 0.0.34` (same version the worker image pins,
+   `worker/Dockerfile` `PI_ACP_VERSION`), and in `package/dist/index.js` of `pi-acp-0.0.34.tgz` the
+   **only** `conn.requestPermission` (i.e. `session/request_permission`) call site is
+   `requestExtensionPermission` (:1365), reached solely from the `extension_ui_request` handler
+   (:1231 → `handleExtensionInput`/`handleExtensionConfirm`) — pi *extension* UI dialogs. The
+   `tool_execution_start|update|end` cases (:1097/:1163/:1181) only **report** tool calls as
+   `session/update` notifications; none gates them. pi's advertised `modes` are its thinking
+   levels, not permission modes. There is no setting the launcher could write that changes this;
+   this matches the 2026-10-24 lab inspection recorded in docs/compatibility/ACP.md and
+   SANDBOX.md row P4, and `internal/agent/acp/acp-observed.json` holds **no** `permission_prompts`
+   row for pi (a cell with no row is not_tested by definition, ADR-0051).
+4. **The row did PASS — on a launcher that asks.** ADR-0036's addendum records pass 29 (claude):
+   `live29/C1.out:97-:100`, 8 requested / 8 decided, every one
+   `decided_by=node_policy:preapproved_within_sandbox`. "The agent asked" was always a claim about
+   the launcher's prompting mode, and the m4 lab's launcher choice changed underneath it.
+
+**Options considered:**
+
+| Option | Why rejected / chosen |
+|---|---|
+| (a) Worker misconfiguration — write a flag so pi prompts | rejected: nothing is mis-set. The fail-closed refusal on pi is the product *working* (ADR-0019 D6); pi's adapter has no code path that prompts for tool calls, so no flag exists to write. |
+| (b) Seed pi into a prompting mode | rejected: there is no such mode to seed. The only prompting round-trip is the extension-UI handler; shipping a lab-only pi extension that opens a confirm dialog would manufacture a "permission request" the *agent* never raised — a PASS-by-construction dressed as "the prompting-mode agent asked before it touched the workspace", exactly what ADR-0036's honest-verdict rule forbids. |
+| (c) Amend the row to grade the claim the launcher can actually make (chosen) | the autonomous mode's own sentence — "runs without asking; the sandbox is the boundary" — is fully observable in the journal, and the "every ask closes with a named verdict" half stays proven on a deterministic prompting source. |
+| Permanent GAP | rejected for the reason this ADR was written for: a GAP exits green while claiming nothing. |
+
+**Decision.** § 7.1 C1j's agent leg becomes launcher-conditional (`docs/m4-contract.md` C1j;
+`e2e/m4/e2e_m4_exit.py` `c1_permission_leg_verdicts`):
+
+* Prompting launchers (`claude`, `codex`) and **any unknown launcher** (fail-closed default) run
+  the original four arms unchanged — `permission_verdicts_ok` is byte-identical to the
+  pre-amendment leg, and `test_c1_logic.py::C1PermissionLegLauncherTest` pins label-for-label
+  equality so the other three checks cannot be weakened silently.
+* Launcher `pi` (the only member of `C1J_AUTONOMOUS_LAUNCHERS`; a launcher joins it
+  deliberately, never by omission) replaces the impossible `>=1 requested` premise with three
+  **positive** measurements — no absence reads as a pass anywhere:
+  (a) every agent attempt's profile row, read through `attempts.conversation_id →
+  conversations.agent_profile_id → agent_profiles`, is exactly
+  `pi/autonomous_within_sandbox/required` — an empty reading or any other mode/launcher/enforcement
+  row FAILs (a `preapproved` row launching on pi would mean the fail-closed gate was bypassed);
+  (b) `sandbox.verified` rows ≥ succeeded `agent.acp` attempts, with ≥1 succeeded agent attempt —
+  the boundary the mode's sentence points at, ADR-0019 D6 fail-closed makes a shortfall a
+  contradiction; (c) the run's deterministic prompting source — the `/approve` gate, which asks
+  and receives a NAMED human verdict every run with no launcher and no model in the loop — shows
+  each `approval.requested` with exactly one `approval.decided(decision=approved, decided_by set)`:
+  the journal demonstrably closes the asks that really happen, so zero permission rows on pi is
+  the launcher's silence, not a swallowed bridge.
+* The three pair invariants (exactly-one-decided, status=decided +
+  `decided_by=node_policy:preapproved_within_sandbox`, no orphan verdicts) are graded on **any**
+  permission rows the journal holds, under every launcher. If pi ever gains prompting, rows are
+  measured against ADR-0036 (a) — and a row decided by anything but the node policy then FAILs,
+  forcing the ADR-0069 mode to be revisited in the open rather than silently satisfied.
+
+**Consequences.** C1j is falsifiable on both launchers: on pi it now FAILs on a lying profile row,
+an unverified launch, or an unclosed gate ask — all measured, none assumed; on claude nothing
+moved. The amendment adds no event type, no payload field, no schema change and no seed change
+(`seed.sh` already seeds the honest mode). Limitation stated plainly: **no live `agent.acp`
+launcher on the acceptance runners currently produces `conversation.permission.*` rows**; the
+positive evidence that a policy prompt journals `requested`+`decided` with the node-policy decider
+remains the claude pass-29 rows (ADR-0036 addendum), and re-acquiring it on a prompting launcher
+is a lab-credential decision, not something this row may fake.
+
+**Verification.** Offline (`m4-gate-logic` job): `e2e/m4/test_c1_logic.py` — the prompting arm's
+label-for-label equality (zero-request still FAILs on claude/codex/unknown), the six-arm pi leg
+(empty/lying/mixed profile readings FAIL, sv<attempts FAILs, 0/0 FAILs, missing/unsigned/doubled
+gate pair FAILs, orphan/cancelled/human-decided permission rows still FAIL under pi, garbage
+inputs do not crash), and the parenthesisation discipline for the three new reads. Live: the
+`core-a` shard's C1j pi arms on the next Actions m4 pass — **pending there, and not claimed until
+the shard quotes them** (a mocked green never substitutes, `12`-test-strategy).

@@ -921,6 +921,182 @@ class C1PermissionEventsSqlTest(unittest.TestCase):
                          m.PERMISSION_DECIDED_BY_POLICY)
 
 
+class C1PermissionLegLauncherTest(unittest.TestCase):
+    """ADR-0075 addendum 2026-11-05: C1j's agent leg is launcher-conditional.
+    On a prompting launcher (claude/codex, and ANY unknown launcher —
+    fail-closed) the leg is the original four arms byte-for-byte. On launcher
+    pi — which has no prompting mode to verify (pi-acp@0.0.34 gates no tool
+    call; docs/compatibility/ACP.md) and whose seeded mode is
+    autonomous_within_sandbox (ADR-0069) — the `>=1 requested` premise is
+    REPLACED by three positive measurements, never excused: the profile rows,
+    the sandbox.verified coverage, and the /approve gate's ask→named-verdict
+    pair. The three pair invariants grade any permission rows under EVERY
+    launcher: a future pi that prompts is measured, not waved through."""
+
+    POLICY = m.PERMISSION_DECIDED_BY_POLICY
+    REQ = m.PERMISSION_TYPE_REQUESTED
+    DEC = m.PERMISSION_TYPE_DECIDED
+
+    @classmethod
+    def gate_pair(cls):
+        return [{"approval_id": "ap-1", "type": "approval.requested",
+                 "decision": "-", "decided_by": "-"},
+                {"approval_id": "ap-1", "type": "approval.decided",
+                 "decision": "approved", "decided_by": "u-alice"}]
+
+    def kw(self, **over):
+        kw = {"profile_rows": [m.C1J_AUTONOMOUS_PROFILE_ROW],
+              "sandbox_verified": 4, "agent_attempts_succeeded": 4,
+              "gate_rows": self.gate_pair()}
+        kw.update(over)
+        return kw
+
+    # --- the prompting arm is UNCHANGED --------------------------------------
+    def test_prompting_launchers_keep_the_original_four_arms(self):
+        for launcher in ("claude", "codex", "CLAUDE ", "", None):
+            v = m.c1_permission_leg_verdicts([], launcher)
+            self.assertEqual([lbl for lbl, _, _ in v],
+                             [lbl for lbl, _, _ in m.permission_verdicts_ok([])],
+                             f"launcher {launcher!r} drifted from the pre-amendment leg")
+            self.assertFalse(ok_of(v, "at least one"),
+                             f"launcher {launcher!r} with zero prompts must FAIL")
+
+    def test_unknown_launcher_takes_the_prompting_arm_fail_closed(self):
+        """A launcher not named never-asks must still prove it asked; a
+        never-asks launcher joins C1J_AUTONOMOUS_LAUNCHERS deliberately."""
+        self.assertNotIn("mystery", m.C1J_AUTONOMOUS_LAUNCHERS)
+        v = m.c1_permission_leg_verdicts([], "mystery")
+        self.assertFalse(ok_of(v, "at least one"), v)
+
+    def test_pi_leg_name_matching_is_case_and_space_tolerant(self):
+        v = m.c1_permission_leg_verdicts([], " Pi ", **self.kw())
+        self.assertTrue(all(ok for _, ok, _ in v), v)
+
+    # --- the autonomous arm: positive measurements, no absence-as-pass -------
+    def test_pi_leg_happy_path_zero_permission_rows_still_grades_six_arms(self):
+        v = m.c1_permission_leg_verdicts([], "pi", **self.kw())
+        self.assertEqual(len(v), 6, v)  # 3 positive arms + 3 pair invariants
+        self.assertTrue(all(ok for _, ok, _ in v), v)
+        self.assertNotIn("at least one conversation.permission.requested",
+                         " ".join(lbl for lbl, _, _ in v),
+                         "the impossible premise must be replaced, not kept")
+
+    def test_pi_leg_empty_profile_reading_fails(self):
+        """Absence is never a pass: an agent leg that joined no profile row at
+        all cannot claim which mode it ran."""
+        v = m.c1_permission_leg_verdicts([], "pi", **self.kw(profile_rows=[]))
+        self.assertFalse(ok_of(v, "never-asks arm"), v)
+        self.assertIn("(none)", detail_of(v, "never-asks arm"))
+
+    def test_pi_leg_lying_profile_row_fails(self):
+        for row in ("pi/preapproved_within_sandbox/required",  # fail-closed gate bypassed
+                    "pi/autonomous_within_sandbox/auto",      # boundary not required
+                    "claude/autonomous_within_sandbox/required"):  # not the seeded launcher
+            v = m.c1_permission_leg_verdicts([], "pi", **self.kw(profile_rows=[row]))
+            self.assertFalse(ok_of(v, "never-asks arm"), row)
+        v = m.c1_permission_leg_verdicts(
+            [], "pi", **self.kw(profile_rows=[m.C1J_AUTONOMOUS_PROFILE_ROW,
+                                              "pi/ask/required"]))
+        self.assertFalse(ok_of(v, "never-asks arm"), "mixed modes must not average out")
+
+    def test_pi_leg_zero_succeeded_agent_attempt_fails(self):
+        v = m.c1_permission_leg_verdicts([], "pi",
+                                         **self.kw(sandbox_verified=0,
+                                                   agent_attempts_succeeded=0))
+        self.assertFalse(ok_of(v, "sandbox.verified rows"), v)
+
+    def test_pi_leg_unverified_launch_fails(self):
+        v = m.c1_permission_leg_verdicts([], "pi",
+                                         **self.kw(sandbox_verified=3,
+                                                   agent_attempts_succeeded=4))
+        self.assertFalse(ok_of(v, "sandbox.verified rows"), v)
+        self.assertIn("sandbox.verified=3 succeeded agent attempts=4",
+                      detail_of(v, "sandbox.verified rows"))
+
+    # --- the deterministic prompting source -----------------------------------
+    def test_pi_leg_missing_gate_pair_fails(self):
+        v = m.c1_permission_leg_verdicts([], "pi", **self.kw(gate_rows=[]))
+        self.assertFalse(ok_of(v, "deterministic prompting source"), v)
+
+    def test_gate_pair_arms(self):
+        opens = [{"approval_id": "ap-1", "type": "approval.requested",
+                  "decision": "-", "decided_by": "-"}]
+        self.assertFalse(ok_of(m.approval_pair_verdicts(opens), "deterministic"),
+                         "a gate ask nobody answered")
+        cancelled = self.gate_pair()
+        cancelled[1]["decision"] = "cancelled"
+        self.assertFalse(ok_of(m.approval_pair_verdicts(cancelled), "deterministic"))
+        anon = self.gate_pair()
+        anon[1]["decided_by"] = "-"  # the driver's COALESCE sentinel = absent
+        self.assertFalse(ok_of(m.approval_pair_verdicts(anon), "deterministic"),
+                         "a verdict nobody signed")
+        doubled = self.gate_pair() + [{"approval_id": "ap-1",
+                                       "type": "approval.decided",
+                                       "decision": "approved", "decided_by": "u-bob"}]
+        self.assertFalse(ok_of(m.approval_pair_verdicts(doubled), "deterministic"))
+        self.assertTrue(ok_of(m.approval_pair_verdicts(self.gate_pair()),
+                              "deterministic"))
+
+    # --- the three invariants hold under EVERY launcher ----------------------
+    def test_pi_leg_still_grades_any_permission_rows_it_shows(self):
+        """If pi ever starts asking, C1j measures it against ADR-0036 (a);
+        the autonomous arm never exempts a row from the pair invariants."""
+        orphan = {"type": self.DEC, "permission_request_id": "perm-9",
+                  "status": "decided", "decided_by": self.POLICY}
+        v = m.c1_permission_leg_verdicts([orphan], "pi", **self.kw())
+        self.assertFalse(ok_of(v, "without a matching request"), "fabricated verdict")
+        req = {"type": self.REQ, "permission_request_id": "perm-1",
+               "status": "-", "decided_by": "-"}
+        cancelled = {"type": self.DEC, "permission_request_id": "perm-1",
+                     "status": "cancelled", "decided_by": self.POLICY}
+        v = m.c1_permission_leg_verdicts([req, cancelled], "pi", **self.kw())
+        self.assertFalse(ok_of(v, "status=decided"), v)
+        human = {"type": self.DEC, "permission_request_id": "perm-1",
+                 "status": "decided", "decided_by": "user:interactive"}
+        v = m.c1_permission_leg_verdicts([req, human], "pi", **self.kw())
+        self.assertFalse(ok_of(v, "status=decided"),
+                         "a pi prompt decided by a phantom human is the SAME fail")
+
+    def test_pi_leg_garbage_inputs_do_not_crash(self):
+        v = m.c1_permission_leg_verdicts(None, "pi", profile_rows=None,
+                                         sandbox_verified="x",
+                                         agent_attempts_succeeded=None,
+                                         gate_rows=[None, "x"])
+        self.assertFalse(ok_of(v, "sandbox.verified rows"), v)
+        self.assertFalse(ok_of(v, "deterministic"), v)
+
+    # --- the reads behind the autonomous arm ----------------------------------
+    def test_profile_sql_binds_attempts_to_the_profile_row(self):
+        sql = m.c1_permission_profile_sql("run-9")
+        self.assertIn("'run-9'", sql)
+        for frag in ("attempts a", "JOIN node_executions ne", "JOIN conversations c",
+                     "JOIN agent_profiles p", "p.launcher_id", "p.permission_mode",
+                     "p.sandbox_enforcement"):
+            self.assertIn(frag, sql, frag)
+        self.assertNotIn("{", sql)
+
+    def test_boundary_sql_counts_verified_rows_and_agent_attempts(self):
+        sql = m.c1_permission_boundary_sql("run-9")
+        self.assertIn("'sandbox.verified'", sql)
+        self.assertIn("'agent.acp'", sql)
+        self.assertIn("'succeeded'", sql)
+        self.assertIn("'run-9'", sql)
+        self.assertNotIn("{", sql)
+
+    def test_gate_sql_reads_both_approval_types_parenthesised(self):
+        sql = m.c1_permission_gate_sql("run-9")
+        self.assertIn("'approval.requested'", sql)
+        self.assertIn("'approval.decided'", sql)
+        self.assertIn("ORDER BY global_seq", sql)
+        self.assertNotIn("{", sql)
+        for i in range(len(sql)):
+            if sql.startswith("payload->>", i):
+                self.assertEqual("(", sql[i - 1],
+                                 f"unparenthesised payload->> at {i} "
+                                 f"(pass 28's crash: || binds tighter than ->>)")
+        self.assertEqual(sql.count("payload->>"), 3)
+
+
 class C1ExtractionEvidenceDump(unittest.TestCase):
     """The widened agent-message dump (run 42045469577): C1c died
     invalid_output with only the first 600 journal chars printed, and the shape
