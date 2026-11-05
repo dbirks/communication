@@ -808,6 +808,14 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// rows are the only place a later reader will look. Redacted like every
 	// other host fact, bounded like every journal payload.
 	agentStderr := bounded(a.redact(acp.StderrTail(sess, maxAttemptStderrTailBytes)), maxAttemptStderrTailBytes)
+	// The same question one notch wider: is the harness still there AT ALL?
+	// Asked before the retire, because Close is ours and after it every answer
+	// would be "gone". pi-acp exits after every normal turn too (peerstate.go),
+	// so this alone proves nothing — it proves the silence was left by a dead
+	// harness when the coalesced reply carries no agent words (run
+	// 42079149686: banner + 3 provider retries + an exited process, judged
+	// invalid_output).
+	peerGone := acp.PeerGone(sess)
 
 	_ = sess.Close()
 	select {
@@ -832,8 +840,9 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 			// not let that silence be reported as invalid_output — the class is
 			// reserved for a reply that fails its schema. A completed turn with
 			// a bad reply still says invalid_output (the case below).
-			if midTurnDisc {
-				res = failedResult(ErrorClassInfra, disconnectDetail(discInfo))
+			if transient, detail := turnUnavailableClass(final.text(), midTurnDisc, discInfo,
+				peerGone, final.retryNotices()); transient {
+				res = failedResult(ErrorClassInfra, detail)
 			} else {
 				res = *fail
 			}
@@ -1539,9 +1548,15 @@ func failureDiagnostics(detail, stderr string) string {
 		return detail
 	}
 	// Make room for the evidence: the closing sentence of a disconnect detail
-	// is spec prose that repeats in every row; the stderr never does.
-	if i := strings.Index(detail, " — the ACP turn never completed"); i >= 0 {
-		detail = detail[:i]
+	// is spec prose that repeats in every row; the stderr never does. Both
+	// transport arms (the mid-turn death and the silent turn whose harness is
+	// gone) state that prose after their own marker, so both are trimmed the
+	// same way.
+	for _, cut := range []string{" — the ACP turn never completed", " — the agent never answered"} {
+		if i := strings.Index(detail, cut); i >= 0 {
+			detail = detail[:i]
+			break
+		}
 	}
 	if detail == "" {
 		detail = "agent turn failed"
@@ -1767,9 +1782,21 @@ func (a *AgentTurn) journal(ctx context.Context, sink AttemptSink, c AttemptClai
 // /implement, where invalid_output is not retriable and the node died, and
 // once witnessed healing on /review, where it is retriable).
 type agentText struct {
-	mu   sync.Mutex
-	buf  strings.Builder
-	open map[string]bool // tool-call ids the stream has seen announced
+	mu      sync.Mutex
+	buf     strings.Builder
+	open    map[string]bool // tool-call ids the stream has seen announced
+	retries int             // launcher transport-retry status chunks seen this turn
+}
+
+// retryNotices is how many of this turn's streamed chunks were the harness's
+// own provider-retry status (pi-acp's "Retrying (attempt n/m, waiting xs)…"
+// series). It is the turn's own observation of a failing model gateway, and it
+// is what makes a silent turn a transport story rather than an agent verdict
+// (agentturn_silence.go).
+func (t *agentText) retryNotices() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.retries
 }
 
 func (t *agentText) add(ev domain.ConversationEvent) {
@@ -1777,6 +1804,17 @@ func (t *agentText) add(ev domain.ConversationEvent) {
 	defer t.mu.Unlock()
 	switch ev.Kind {
 	case "message_chunk":
+		if retryStatusLine(ev.Text) != "" {
+			// The harness reporting its own transport retries. This is the
+			// launcher speaking about itself, not the agent's answer — the same
+			// rule the transcript sink applies when it routes the line to a
+			// conversation.notice (pi_retry.go, ADR-0072 § 7), so the answer
+			// buffer and the conversation agree on what the agent said. It is
+			// counted instead: a turn that ends with nothing but this never got
+			// an answer (agentturn_silence.go).
+			t.retries++
+			return
+		}
 		t.buf.WriteString(ev.Text)
 	case "tool_call":
 		t.buf.Reset()

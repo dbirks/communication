@@ -66,6 +66,19 @@ type agentSessionStub struct {
 	// stderr, when set, makes the stub answer the stderr question a live
 	// acp handle answers (acp.StderrObserver).
 	stderr string
+
+	// peerGone, when set, makes the stub answer the peer-state question a live
+	// acp handle answers (acp.PeerStateReporter): the transport is gone. pi-acp
+	// exits after every answer, so this is true of a healthy turn too — what it
+	// proves is only that a SILENCE was left by a harness that is not there.
+	peerGone bool
+}
+
+// PeerGone implements acp.PeerStateReporter for the stub.
+func (s *agentSessionStub) PeerGone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peerGone
 }
 
 // Stderr implements acp.StderrObserver for the stub.
@@ -140,6 +153,14 @@ func (s *agentSessionStub) Close() error {
 
 func (s *agentSessionStub) sendChunk(text string) {
 	s.eventsCh <- domain.ConversationEvent{Kind: "message_chunk", Text: text}
+}
+
+// sendRetryLine streams one of launcher pi's transport-retry status lines: the
+// harness speaking about its failing provider, journalled as a
+// conversation.notice (kind agent_retry) by the transcript sink and counted by
+// agentText (pi_retry.go).
+func (s *agentSessionStub) sendRetryLine(text string) {
+	s.sendChunk(text)
 }
 
 func (s *agentSessionStub) sendToolCall() {
@@ -421,27 +442,39 @@ func TestAgentTurnOutcomeMapping(t *testing.T) {
 		toolBefore string // emit a tool call, then this text, proving the reset rule
 		stop       domain.StopReason
 		promptErr  error
+		peerGone   bool // the harness's transport is gone as the turn closes
 		wantStatus string
 		wantClass  string
 		wantMarker string // substring of Detail or of an output_errors entry
 	}{
-		{"end_turn json object is outputs", []string{`{"summary":"done"}`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
-		{"fenced json block extracts", []string{"Answer:\n```json\n{\"approved\": true}\n```"}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
-		{"json inside prose extracts", []string{`Done. Result: {"ok": 1}`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
-		{"object + narrated tail with braces extracts (run 42045469577 C1c)", []string{`{"summary": "done"} Verified: watch the {status} line { in full }.`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
-		{"a doubled object still extracts its first (run 42045469577 C1c)", []string{`{"summary": "done"} {"summary": "again"}`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
-		{"text before a tool call is not final", []string{`{"stale": true}`}, `{"fresh": true}`, domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""}, {"no json is invalid_output", []string{"I could not do it"}, "", domain.StopEndTurn, nil, AttemptStatusFailed, ErrorClassInvalidOutput, "invalid_json"},
-		{"empty reply is invalid_output", nil, "", domain.StopEndTurn, nil, AttemptStatusFailed, ErrorClassInvalidOutput, "no text"},
-		{"a json array is not outputs", []string{`[1,2]`}, "", domain.StopEndTurn, nil, AttemptStatusFailed, ErrorClassInvalidOutput, "not an object"},
-		{"refusal is agent_error", nil, "", domain.StopRefusal, nil, AttemptStatusFailed, ErrorClassAgentError, "refused"},
-		{"max_tokens is agent_error", nil, "", domain.StopMaxTokens, nil, AttemptStatusFailed, ErrorClassAgentError, "token limit"},
-		{"unprompted cancel is agent_error", nil, "", domain.StopCancelled, nil, AttemptStatusFailed, ErrorClassAgentError, "no stop request"},
-		{"other is agent_error", nil, "", domain.StopOther, nil, AttemptStatusFailed, ErrorClassAgentError, "other"},
+		{"end_turn json object is outputs", []string{`{"summary":"done"}`}, "", domain.StopEndTurn, nil, false, AttemptStatusSucceeded, "", ""},
+		{"fenced json block extracts", []string{"Answer:\n```json\n{\"approved\": true}\n```"}, "", domain.StopEndTurn, nil, false, AttemptStatusSucceeded, "", ""},
+		{"json inside prose extracts", []string{`Done. Result: {"ok": 1}`}, "", domain.StopEndTurn, nil, false, AttemptStatusSucceeded, "", ""},
+		{"object + narrated tail with braces extracts (run 42045469577 C1c)", []string{`{"summary": "done"} Verified: watch the {status} line { in full }.`}, "", domain.StopEndTurn, nil, false, AttemptStatusSucceeded, "", ""},
+		{"a doubled object still extracts its first (run 42045469577 C1c)", []string{`{"summary": "done"} {"summary": "again"}`}, "", domain.StopEndTurn, nil, false, AttemptStatusSucceeded, "", ""},
+		{"text before a tool call is not final", []string{`{"stale": true}`}, `{"fresh": true}`, domain.StopEndTurn, nil, false, AttemptStatusSucceeded, "", ""},
+		{"no json is invalid_output", []string{"I could not do it"}, "", domain.StopEndTurn, nil, false, AttemptStatusFailed, ErrorClassInvalidOutput, "invalid_json"},
+		{"empty reply is invalid_output", nil, "", domain.StopEndTurn, nil, false, AttemptStatusFailed, ErrorClassInvalidOutput, "no text"},
+		// The run-42079149686 arms (Actions, issue #344): a turn whose only
+		// "reply" is launcher chatter was never answered, and ADR-0023 § 7
+		// keeps that silence out of invalid_output — which the seed /implement
+		// does not list as retriable, so one flaky model gateway killed the
+		// whole run. `infra` is the class the seed nodes DO retry.
+		{"banner-only reply over an exited harness is infra", []string{"pi v1.4.0\n---\n"}, "", domain.StopEndTurn, nil, true, AttemptStatusFailed, ErrorClassInfra, "no substantive reply"},
+		{"banner-only + agent_retry notices is infra", []string{"pi v1.4.0\n---\n", "Retrying (attempt 1/3, waiting 2s)…", "Retrying (attempt 2/3, waiting 4s)…", "Retrying (attempt 3/3, waiting 8s)...", "Retry finished, resuming."}, "", domain.StopEndTurn, nil, false, AttemptStatusFailed, ErrorClassInfra, "provider-retry status"},
+		{"banner-only with the harness alive and no retries reported is invalid_output", []string{"pi v1.4.0\n---\n"}, "", domain.StopEndTurn, nil, false, AttemptStatusFailed, ErrorClassInvalidOutput, "invalid_json"},
+		{"a real prose reply over an exited harness is still invalid_output", []string{"I could not do it"}, "", domain.StopEndTurn, nil, true, AttemptStatusFailed, ErrorClassInvalidOutput, "invalid_json"},
+		{"a json array is not outputs", []string{`[1,2]`}, "", domain.StopEndTurn, nil, false, AttemptStatusFailed, ErrorClassInvalidOutput, "not an object"},
+		{"refusal is agent_error", nil, "", domain.StopRefusal, nil, false, AttemptStatusFailed, ErrorClassAgentError, "refused"},
+		{"max_tokens is agent_error", nil, "", domain.StopMaxTokens, nil, false, AttemptStatusFailed, ErrorClassAgentError, "token limit"},
+		{"unprompted cancel is agent_error", nil, "", domain.StopCancelled, nil, false, AttemptStatusFailed, ErrorClassAgentError, "no stop request"},
+		{"other is agent_error", nil, "", domain.StopOther, nil, false, AttemptStatusFailed, ErrorClassAgentError, "other"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newAgentTurnFixture(t, domain.EnforceDisabled)
 			sess := newAgentSessionStub(domain.SessionInfo{})
+			sess.peerGone = tc.peerGone
 			sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
 				if tc.toolBefore != "" {
 					s.sendChunk(tc.text[0])
