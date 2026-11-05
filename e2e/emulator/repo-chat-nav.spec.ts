@@ -19,9 +19,14 @@
 //            state and its runs-read server error, the way empty-error.spec.ts
 //            and server-error.spec.ts do theirs.
 //   rcn-3b — Lanes: the switch, the four lanes with the WORKFLOWS chip row,
-//            the honest empty issues lane (drag-to-start needs real issues,
-//            which a file:// repo cannot have), and the choice persisting per
-//            repo across a reload. Ends back on List.
+//            the honest empty issues lane on the file:// repo (which cannot
+//            have GitHub issues at all), and the choice persisting per repo
+//            across a reload. Ends back on List. The DRAG half of 3b plays on
+//            `server`, whose ISSUES lane reads a real tracker: a real HTML5
+//            drag drops an issue on RUNNING, the `START #<n> WITH` menu offers
+//            the pass's `Emu lanes` pin (the one pin whose pinned revision
+//            declares the ADR-0066 `github_issue` input), and the run the drop
+//            posts is read back through the API — then cancelled.
 //   rcn-2e + rcn-1h — the chat: control handoff, the composer's agent chip
 //            ("NEXT TURN RUNS ON"), a real turn on one profile, a switch to
 //            another (the transcript divider), a second real turn, and the
@@ -54,7 +59,11 @@
 //
 // Seeding (per pass, over the API the way setup/empty-error do it): admin
 // publishes "Emu rcn <pass>" (the plan-with-approval template with the
-// ADR-0066 annotations the forms read); alice creates a project with TWO
+// ADR-0066 annotations the forms read) and "Emu lanes <pass>" (one
+// deterministic hold node, whose only required input is the ADR-0066
+// `github_issue` the lane drag posts — the rcn workflow cannot carry that
+// input in its published r1 without taking rcn-1j away from the authoring flow
+// it exists to prove); alice creates a project with TWO
 // repositories — `web` (the lab's file:// fixture remote) and `server` (a
 // real, tiny public github.com repo — the issue trigger's honest home,
 // because the server refuses an issue trigger on a non-GitHub repo, and the
@@ -86,6 +95,15 @@ import { LAB_LAUNCHER } from "../tests/lab-launcher.js";
 
 const WF_NAME = `Emu rcn ${EMU_PASS_ID}`;
 const WF_SLUG = `emu-rcn-${EMU_PASS_ID}`.toLowerCase();
+// The workflow the LANES DRAG starts (rcn-3b): a pin whose pinned revision
+// really declares a `github_issue` input — the one thing the `START #<n> WITH`
+// menu reads to decide what it may offer — and whose repo-scoped assignment an
+// ADR-0064 issue start is legal on (the server refuses `issue` on a project-wide
+// pin). The rcn workflow above cannot be that pin: adding the issue input to
+// its published r1 would take rcn-1j away from the flow it exists to prove
+// (authoring that input into a draft).
+const DRAG_WF_NAME = `Emu lanes ${EMU_PASS_ID}`;
+const DRAG_WF_SLUG = `emu-lanes-${EMU_PASS_ID}`.toLowerCase();
 const PROJECT_NAME = `Emu rcn ${EMU_PASS_ID}`;
 const PROJECT_SLUG = `emu-rcn-${EMU_PASS_ID}`.toLowerCase();
 const FILE_REPO = "web";
@@ -460,7 +478,17 @@ const ids = {
   chatId: "",
   mailChatId: "",
   mailLinkedChatId: "",
+  // The lanes-drag journey's own rows (see DRAG_WF_NAME) and the run it starts.
+  dragPipelineId: "",
+  dragRevisionId: "",
+  dragAssignmentId: "",
+  dragRunId: "",
 };
+
+/** `ui/src/lib/format.ts testidOf` — the tail the app puts on a data-testid. */
+function testidKey(id: string): string {
+  return id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
+}
 
 /* ------------------------------------------------------------------ seed */
 
@@ -503,6 +531,56 @@ function seedYaml(slug: string): string {
   return revisionEdit;
 }
 
+/**
+ * The lanes-drag workflow's document: the ADR-0066 `github_issue` input as its
+ * ONE required input (so a drop posts the run instead of handing over to the
+ * run-by-hand form, whose rule is "every OTHER required input has a default"),
+ * and one deterministic `process.exec` node that holds for two minutes. No
+ * `model.chat`, no `agent.acp`: nothing this journey starts can spend the lab's
+ * model budget, and the hold is what keeps the run a live Running-lane card
+ * while the journey reads it back and asks for its cancel.
+ */
+function dragSeedYaml(slug: string): string {
+  return `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: ${slug}
+  description: >-
+    Emulator lanes journey: the workflow a dragged issue starts. Its only
+    required input is the ADR-0066 GitHub issue; the one node is a
+    deterministic hold, so no model call is ever asked of the lab.
+spec:
+  inputs:
+    type: object
+    required:
+      - issue
+    properties:
+      issue:
+        type: object
+        x-communication-input: {type: github_issue, label: Issue, help: The issue this run was dragged from}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 900
+    maxNodeExecutions: 5
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+    - id: hold
+      kind: process.exec
+      timeoutSeconds: 600
+      retry:
+        maxAttempts: 1
+      config:
+        executable: sh
+        args:
+          - -c
+          - sleep 120
+        outputExtraction:
+          mode: none
+`;
+}
+
 /** The `server` repo's fake github.com remote has no tracker: the lab answers
  * its issues reads (GET …/repos/<id>/issues?state=open) with a GitHub failure
  * (502 — observed). That noise is scratch-caused and scoped to THIS journey's
@@ -512,6 +590,38 @@ function seedYaml(slug: string): string {
  * answer both. */
 function issuesReadOf(projectId: string): RegExp {
   return new RegExp(`/api/v1/projects/${projectId}/repos/[^/]+/issues([?]|$)`);
+}
+
+/**
+ * One leg of a REAL HTML5 drag on the lanes. Playwright's mouse cannot carry a
+ * DataTransfer, so the DragEvents are dispatched inside the page — the
+ * technique proven in e2e/tests/issue2-studio.spec.ts — with ONE DataTransfer
+ * stashed on the window for the whole drag, the way a browser hands the same
+ * object to dragstart, dragover and drop.
+ */
+async function laneDrag(
+  page: Page,
+  testid: string,
+  type: "dragstart" | "dragover" | "drop" | "dragend",
+): Promise<void> {
+  const landed = await page.evaluate(
+    ([id, eventType, dtType]) => {
+      const el = document.querySelector(`[data-testid="${id}"]`);
+      if (el === null) return false;
+      const holder = window as unknown as { __emuLaneDrag?: DataTransfer };
+      if (eventType === "dragstart") holder.__emuLaneDrag = new DataTransfer();
+      const dataTransfer = holder.__emuLaneDrag ?? new DataTransfer();
+      dataTransfer.setData(dtType, id);
+      el.dispatchEvent(new DragEvent(eventType, { bubbles: true, cancelable: true, dataTransfer }));
+      if (eventType === "dragend") delete holder.__emuLaneDrag;
+      return true;
+    },
+    [testid, type, "application/x-communication-issue"] as [string, string, string],
+  );
+  expect(
+    landed,
+    `the ${type} landed on [data-testid="${testid}"] — that element is on the page`,
+  ).toBe(true);
 }
 
 /* ------------------------------------------------- resolve-or-create seed
@@ -591,6 +701,184 @@ async function ensureWorkflow(page: Page): Promise<void> {
   ).toBeLessThan(300);
   ids.revisionId = (JSON.parse(publishedBody) as { id: string }).id;
   expect(ids.revisionId, "the publish answers with the revision").toMatch(/^[0-9a-f-]{36}$/);
+}
+
+/** admin (library role): the workflow the lane drag starts, at r1. */
+async function ensureDragWorkflow(page: Page): Promise<void> {
+  if (ids.dragPipelineId !== "" && ids.dragRevisionId !== "") return;
+  const list = await page.request.get(`${EMU_BASE_URL}/api/v1/pipelines`);
+  expect(list.status(), "the library list answers").toBe(200);
+  const pipelines = (await list.json()) as { pipelines?: { id: string; slug: string }[] };
+  const found = (pipelines.pipelines ?? []).find((entry) => entry.slug === DRAG_WF_SLUG) ?? null;
+  if (found !== null) {
+    ids.dragPipelineId = found.id;
+    const revisions = await page.request.get(
+      `${EMU_BASE_URL}/api/v1/pipelines/${found.id}/revisions`,
+    );
+    expect(revisions.status(), "the revision list answers").toBe(200);
+    const rows = (await revisions.json()) as { revisions?: { id: string }[] };
+    expect(
+      (rows.revisions ?? []).length,
+      "the lanes-drag workflow carries its published revision",
+    ).toBeGreaterThan(0);
+    ids.dragRevisionId = (rows.revisions ?? [])[0].id;
+    return;
+  }
+  // The library needs the library role: only the admin seed creates the row,
+  // which is why alice's seed asserts it rather than authoring it.
+  const pipeline = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/pipelines`, {
+    slug: DRAG_WF_SLUG,
+    display_name: DRAG_WF_NAME,
+    description: "emulator repo-chat-nav lanes-drag journey workflow",
+  });
+  const pipelineBody = await pipeline.text();
+  expect(
+    pipeline.status(),
+    `creating the lanes-drag workflow answers 201 (got ${pipeline.status()}: ${pipelineBody.slice(0, 240)})`,
+  ).toBe(201);
+  ids.dragPipelineId = (JSON.parse(pipelineBody) as { id: string }).id;
+
+  const draft = await apiMutate(
+    page,
+    "POST",
+    `${EMU_BASE_URL}/api/v1/pipelines/${ids.dragPipelineId}/drafts`,
+    { document_yaml: dragSeedYaml(DRAG_WF_SLUG) },
+  );
+  const draftBody = await draft.text();
+  expect(
+    draft.status(),
+    `seeding the lanes-drag draft answers 201 (got ${draft.status()}: ${draftBody.slice(0, 300)})`,
+  ).toBe(201);
+  const draftJson = JSON.parse(draftBody) as { id: string; version: number };
+  const validated = await apiMutate(
+    page,
+    "POST",
+    `${EMU_BASE_URL}/api/v1/drafts/${draftJson.id}/validate`,
+  );
+  const validBody = await validated.text();
+  expect(
+    (JSON.parse(validBody) as { valid?: boolean }).valid,
+    `the lanes-drag draft validates (${validBody.slice(0, 400)})`,
+  ).toBe(true);
+  const published = await apiMutate(
+    page,
+    "POST",
+    `${EMU_BASE_URL}/api/v1/drafts/${draftJson.id}/publish`,
+    { version: draftJson.version },
+  );
+  const publishedBody = await published.text();
+  expect(
+    published.status(),
+    `publishing the lanes-drag workflow answers 2xx (got ${published.status()}: ${publishedBody.slice(0, 300)})`,
+  ).toBeLessThan(300);
+  ids.dragRevisionId = (JSON.parse(publishedBody) as { id: string }).id;
+  expect(ids.dragRevisionId, "the lanes-drag publish answers with the revision").toMatch(
+    /^[0-9a-f-]{36}$/,
+  );
+}
+
+/** alice: the pin the drop starts — pinned to `server`, because ADR-0064
+ * refuses an `issue` start on a project-wide assignment (`issue_requires_repo_
+ * assignment`) and the repository must be a GitHub remote for the issue to
+ * exist at all. Resolve-or-create like every other seed row. */
+async function ensureDragPin(page: Page): Promise<void> {
+  if (ids.dragAssignmentId !== "") return;
+  await ensureProject(page);
+  await ensureRepos(page);
+  if (ids.dragPipelineId === "" || ids.dragRevisionId === "") {
+    // Read the published row rather than author it (see ensureDragWorkflow).
+    await ensureDragWorkflow(page);
+  }
+  expect(ids.dragPipelineId, "the admin seed published the lanes-drag workflow").toMatch(
+    /^[0-9a-f-]{36}$/,
+  );
+  const list = await page.request.get(
+    `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/assignments`,
+  );
+  expect(list.status(), "the assignment list answers").toBe(200);
+  const assignments = (await list.json()) as {
+    assignments?: { id: string; pipeline_id: string; repository_id?: string | null }[];
+  };
+  const found =
+    (assignments.assignments ?? []).find(
+      (entry) => entry.pipeline_id === ids.dragPipelineId && entry.repository_id === ids.ghRepoId,
+    ) ?? null;
+  if (found !== null) {
+    ids.dragAssignmentId = found.id;
+    return;
+  }
+  const assignment = await apiMutate(
+    page,
+    "POST",
+    `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/assignments`,
+    {
+      pipeline_id: ids.dragPipelineId,
+      pinned_revision_id: ids.dragRevisionId,
+      repository_id: ids.ghRepoId,
+    },
+  );
+  const body = await assignment.text();
+  expect(
+    assignment.status(),
+    `pinning the lanes-drag workflow to \`${GH_REPO}\` answers 201 (got ${assignment.status()}: ${body.slice(0, 300)})`,
+  ).toBe(201);
+  ids.dragAssignmentId = (JSON.parse(body) as { id: string }).id;
+}
+
+/** This project's run rows, newest first, as the project's own run list
+ * serves them (the assertion target for "the drop started a run"). */
+async function projectRuns(page: Page): Promise<{
+  runs: {
+    id: string;
+    status: string;
+    title?: string | null;
+    repository_id?: string | null;
+    assignment_id?: string | null;
+    trigger?: { kind: string; ref?: string | null } | null;
+  }[];
+}> {
+  const res = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/runs`);
+  expect(res.status(), `the project run list answers (got ${res.status()})`).toBe(200);
+  return (await res.json()) as {
+    runs: {
+      id: string;
+      status: string;
+      title?: string | null;
+      repository_id?: string | null;
+      assignment_id?: string | null;
+      trigger?: { kind: string; ref?: string | null } | null;
+    }[];
+  };
+}
+
+/** Read-only resolve for the leave-the-lab-quiet step: this pass's project and
+ * its lanes-drag pin, or null when the pass never created them. It creates
+ * nothing — the quiet step may not author rows the seed did not. */
+async function resolveDragPin(
+  page: Page,
+): Promise<{ projectId: string; assignmentId: string } | null> {
+  const projects = await page.request.get(`${EMU_BASE_URL}/api/v1/projects`);
+  const projectId =
+    (
+      (await projects.json().catch(() => ({}))) as { items?: { slug: string; id: string }[] }
+    ).items?.find((entry) => entry.slug === PROJECT_SLUG)?.id ?? "";
+  if (projectId === "") return null;
+  const pipelines = await page.request.get(`${EMU_BASE_URL}/api/v1/pipelines`);
+  const pipelineId =
+    (
+      (await pipelines.json().catch(() => ({}))) as { pipelines?: { slug: string; id: string }[] }
+    ).pipelines?.find((entry) => entry.slug === DRAG_WF_SLUG)?.id ?? "";
+  if (pipelineId === "") return null;
+  const assignments = await page.request.get(
+    `${EMU_BASE_URL}/api/v1/projects/${projectId}/assignments`,
+  );
+  const assignmentId =
+    (
+      (await assignments.json().catch(() => ({}))) as {
+        assignments?: { pipeline_id: string; id: string }[];
+      }
+    ).assignments?.find((entry) => entry.pipeline_id === pipelineId)?.id ?? "";
+  return assignmentId === "" ? null : { projectId, assignmentId };
 }
 
 /** alice: the project that owns the two repos, the pin and the chat. */
@@ -826,6 +1114,16 @@ test.describe("repo-chat-nav (admin: publish the workflow the forms read)", () =
     expect(ids.pipelineId, "the journey workflow exists").toMatch(/^[0-9a-f-]{36}$/);
     expect(ids.revisionId, "the journey workflow is published").toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  test("seed — publish the workflow the lane drag starts (Emu lanes <pass>)", async ({ page }) => {
+    // The 3b drag needs a pin whose PINNED REVISION declares the ADR-0066
+    // `github_issue` input — that declaration, not a guess, is what puts a
+    // workflow in the `START #<n> WITH` menu. Authoring it is the library
+    // role's work, so it happens here, on the admin session.
+    await ensureDragWorkflow(page);
+    expect(ids.dragPipelineId, "the lanes-drag workflow exists").toMatch(/^[0-9a-f-]{36}$/);
+    expect(ids.dragRevisionId, "the lanes-drag workflow is published").toMatch(/^[0-9a-f-]{36}$/);
+  });
 });
 
 /* ------------------------------------------------------------------ alice */
@@ -857,6 +1155,13 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       expect(ids.assignmentId, "the workflow is pinned to the project").toMatch(/^[0-9a-f-]{36}$/);
       await ensureTrigger(page);
       expect(ids.triggerId, "the labeled issue trigger exists").toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    await test.step("the repo pin the lane drag starts", async () => {
+      await ensureDragPin(page);
+      expect(ids.dragAssignmentId, "the issue-accepting workflow is pinned to `server`").toMatch(
+        /^[0-9a-f-]{36}$/,
+      );
     });
 
     await test.step("the repo-scoped chat (ADR-0067: born bound to `web`)", async () => {
@@ -1196,6 +1501,269 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "design 3b: the List/Lanes choice is saved per repo — it survives the reload",
       ).toBeVisible({ timeout: 30_000 });
       await emu.screen("rcn-3b", "lanes");
+    });
+
+    await test.step("back to List (the default the next journey of any pass expects)", async () => {
+      await page.getByTestId("repo-view-list").click();
+      await expect(page.getByTestId("repo-runs"), "the List view is back").toBeVisible({
+        timeout: 15_000,
+      });
+    });
+  });
+
+  test("repo lanes drag — an issue dropped on RUNNING starts the workflow (rcn-3b)", async ({
+    page,
+    emu,
+  }) => {
+    // The goal item the rest of this file never proved: nothing dragged an
+    // issue into RUNNING anywhere, because the lanes journey plays on `web`, a
+    // file:// repo with no issues it can have. Here the board plays on
+    // `server`, whose ISSUES lane reads the live api.github.com tracker, and
+    // the drop is a real HTML5 drag (a DataTransfer carried through
+    // dragstart/dragover/drop — the technique e2e/tests/issue2-studio.spec.ts
+    // proves). Nothing is mocked or invented: the card is a served GitHub row,
+    // the run is read back through the API, and the run the drop starts is
+    // cancelled at the end so the pass leaves no work behind. The workflow it
+    // starts is the pass's own `Emu lanes` pin — the only pin whose pinned
+    // revision declares the ADR-0066 `github_issue` input the menu reads.
+    test.setTimeout(8 * 60_000);
+    let cardTestid = "";
+    let issueNumber = 0;
+    let draggedTitle = "";
+    let draggedUrl = "";
+    let tracker = "";
+
+    await test.step("the pass's issue-accepting pin on `server`", async () => {
+      await ensureDragPin(page);
+      expect(ids.dragAssignmentId, "the pin the menu offers exists").toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    await test.step("Lanes on `server`: the ISSUES lane lists a real issue", async () => {
+      await page.goto(`/p/${ids.projectId}/${GH_REPO}`);
+      await expect(page.getByTestId("repo-page"), "design 3a: the repo page renders").toBeVisible({
+        timeout: 30_000,
+      });
+      const savedPatch = page
+        .waitForResponse((res) => /\/api\/v1\/me\/preferences$/.test(res.url()), {
+          timeout: 20_000,
+        })
+        .catch(() => null);
+      await page.getByTestId("repo-view-lanes").click();
+      await expect(page.getByTestId("repo-lanes"), "design 3b: the Lanes view").toBeVisible({
+        timeout: 15_000,
+      });
+      // The cards come from GitHub. If the anonymous budget (60 requests/hour
+      // per egress IP) is spent, the lane says so with the upstream's own
+      // words and this journey FAILS naming that cause — it does not drag an
+      // invented card (the mockdata rule) and it does not skip.
+      await expect
+        .poll(
+          async () => {
+            cardTestid = await page.evaluate(() => {
+              const ids = Array.from(document.querySelectorAll('[data-testid^="repo-lane-issue-"]'))
+                .map((el) => el.getAttribute("data-testid") ?? "")
+                .filter((id) => /^repo-lane-issue-\d+$/.test(id));
+              return ids[0] ?? "";
+            });
+            return cardTestid;
+          },
+          {
+            timeout: 45_000,
+            message:
+              "the ISSUES lane listed no open issue to drag — `server` reads api.github.com anonymously, so a spent budget (or a closed tracker) is a real refusal the lane names in its own error line",
+          },
+        )
+        .not.toBe("");
+      await savedPatch;
+      issueNumber = Number(cardTestid.replace("repo-lane-issue-", ""));
+      // The card is a row the tracker read answers — the lane did not make it up.
+      const issues = await page.request.get(
+        `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos/${ids.ghRepoId}/issues?state=open`,
+      );
+      const issuesBody = await issues.text();
+      expect(
+        issues.status(),
+        `the tracker read the lane stands on answered (got ${issues.status()}: ${issuesBody.slice(0, 240)})`,
+      ).toBe(200);
+      const listed = JSON.parse(issuesBody) as {
+        repository?: string;
+        items?: { number: number; title: string; html_url: string }[];
+      };
+      const row = (listed.items ?? []).find((item) => item.number === issueNumber) ?? null;
+      expect(
+        row,
+        `the lane's card #${issueNumber} is a row the issues route answers for`,
+      ).toBeTruthy();
+      draggedTitle = row!.title;
+      draggedUrl = row!.html_url;
+      tracker = listed.repository ?? "";
+      expect(tracker, "the issues read echoes the owner/repo it called").toMatch(/^[^/]+\/[^/]+$/);
+    });
+
+    await test.step("drag the issue over RUNNING: the lane lights and catches it", async () => {
+      const card = page.getByTestId(cardTestid);
+      await expect(card, "design 3b: the issue is a draggable card").toContainText(
+        `#${issueNumber}`,
+      );
+      await laneDrag(page, cardTestid, "dragstart");
+      await laneDrag(page, "repo-lane-running", "dragover");
+      await expect(
+        page.getByTestId("repo-lane-running"),
+        "design 3b: the RUNNING lane answers a dragged issue with the dashed accent lighting",
+      ).toHaveClass(/outline-dashed/);
+      await expect(
+        page.getByTestId("repo-lane-drop-preview"),
+        "design 3b: the lane previews the issue it is about to catch",
+      ).toContainText(`#${issueNumber} · dragging`);
+    });
+
+    await test.step("the drop opens START #<n> WITH with its pointer arrow", async () => {
+      await laneDrag(page, "repo-lane-running", "drop");
+      const menu = page.getByTestId("repo-start-issue-menu");
+      await expect(menu, "design 3b: the caught issue opens the START #<n> WITH menu").toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(menu).toContainText(new RegExp(`Start #${issueNumber} with`, "i"));
+      await expect(
+        page.getByTestId("menu-arrow"),
+        "design 3b: the menu is anchored with its pointer arrow",
+      ).toBeVisible();
+      await expect(
+        page.getByTestId("repo-lane-drop-card"),
+        "design 3b: the caught card is the menu's anchor",
+      ).toContainText(`#${issueNumber}`);
+      await expect(
+        page.getByTestId(`repo-start-issue-workflow-${testidKey(ids.dragAssignmentId)}`),
+        "design 3b: the menu offers the pinned workflow whose pinned revision declares the github_issue input",
+      ).toHaveText(DRAG_WF_NAME);
+      // The pass's project-wide `Emu rcn` pin declares no issue input, so the
+      // menu must not pretend it could take the issue.
+      await expect(menu).not.toContainText(WF_NAME);
+      await emu.screen("rcn-3b", "lanes-drag");
+    });
+
+    await test.step("choosing it starts the run — and the page lands on it", async () => {
+      await page
+        .getByTestId(`repo-start-issue-workflow-${testidKey(ids.dragAssignmentId)}`)
+        .click();
+      await page.waitForURL(/\/runs\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+      ids.dragRunId = new URL(page.url()).pathname.split("/").pop() ?? "";
+      expect(ids.dragRunId, "the drop started a run and opened it").toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    await test.step("the API holds a run for that issue, with the issue in its inputs", async () => {
+      let row: {
+        id: string;
+        status: string;
+        title?: string | null;
+        repository_id?: string | null;
+        assignment_id?: string | null;
+        trigger?: { kind: string; ref?: string | null } | null;
+      } | null = null;
+      await expect
+        .poll(
+          async () => {
+            row = (await projectRuns(page)).runs.find((run) => run.id === ids.dragRunId) ?? null;
+            return row;
+          },
+          {
+            timeout: 30_000,
+            message: "the dropped issue never produced a row in the project's own run list",
+          },
+        )
+        .not.toBeNull();
+      expect(row!.assignment_id, "the run rides the pin the menu named").toBe(ids.dragAssignmentId);
+      expect(
+        row!.repository_id,
+        "ADR-0060: the run is attributed to the repository the pin names",
+      ).toBe(ids.ghRepoId);
+      // ADR-0064: the run records the issue trigger fact a fire would have.
+      expect(row!.trigger?.kind, "the run records an issue start").toBe("issue");
+      expect(
+        row!.trigger?.ref,
+        "the trigger ref names the tracker and the number the card carried",
+      ).toBe(`${tracker}#${issueNumber}`);
+      expect(
+        row!.title,
+        "the run's banner is the issue's own title (the UI's 200-character bound)",
+      ).toBe(draggedTitle.slice(0, 200));
+
+      // ADR-0066: the issue rides the input the pinned revision declares, in
+      // the runtime shape the plan's bindings read.
+      let value: Record<string, unknown> = {};
+      await expect
+        .poll(
+          async () => {
+            const detail = await page.request.get(`${EMU_BASE_URL}/api/v1/runs/${ids.dragRunId}`);
+            expect(
+              detail.status(),
+              `GET /api/v1/runs/${ids.dragRunId} answers (got ${detail.status()})`,
+            ).toBe(200);
+            const inputs =
+              (
+                (await detail.json()) as {
+                  inputs?: { name: string; value: unknown; origin: string }[];
+                }
+              ).inputs ?? [];
+            const input = inputs.find((entry) => entry.name === "issue") ?? null;
+            value = (input?.value ?? {}) as Record<string, unknown>;
+            return input === null ? "" : input.origin;
+          },
+          {
+            timeout: 30_000,
+            message:
+              "the run never recorded its github_issue input (run_inputs are written in the creating transaction)",
+          },
+        )
+        .toBe("submitted");
+      expect(value.number, "issue.number is the number the card carried").toBe(issueNumber);
+      expect(value.title, "issue.title is the tracker's own title").toBe(draggedTitle);
+      expect(value.url, "issue.url is the tracker's own link").toBe(draggedUrl);
+      expect(value.repo, "issue.repo is the owner/repo the issues read echoed").toBe(tracker);
+    });
+
+    await test.step("the Running lane wears the started run", async () => {
+      await page.goto(`/p/${ids.projectId}/${GH_REPO}`);
+      await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId("repo-view-lanes").click();
+      const card = page.getByTestId(`repo-lane-run-${testidKey(ids.dragRunId)}`);
+      await expect(
+        card,
+        "design 3b: the issue dropped into RUNNING is now a running card",
+      ).toBeVisible({ timeout: 45_000 });
+      await expect(card).toContainText(DRAG_WF_NAME);
+      // states.ts' words: a run the scheduler has not started yet reads
+      // `pending`, a live one `running` — both are the RUNNING lane's story.
+      await expect(card).toContainText(/running|pending/i);
+      await emu.screen("rcn-3b", "lanes-running");
+    });
+
+    await test.step("cancel — this journey leaves no run for the lab to work through", async () => {
+      const cancelled = await apiMutate(
+        page,
+        "POST",
+        `${EMU_BASE_URL}/api/v1/runs/${ids.dragRunId}/cancel`,
+      );
+      const body = await cancelled.text();
+      expect(
+        cancelled.status(),
+        `the cancel request answers 2xx (got ${cancelled.status()}: ${body.slice(0, 240)})`,
+      ).toBeLessThan(300);
+      // A cancel is a request; the stop is what the lanes must eventually show.
+      // The workflow's only node is a two-minute `sleep` — no model call exists
+      // in it, so nothing here can spend the lab's model budget either way.
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(`${EMU_BASE_URL}/api/v1/runs/${ids.dragRunId}`);
+            return ((await res.json()) as { status?: string }).status ?? "";
+          },
+          {
+            timeout: 5 * 60_000,
+            message: `run ${ids.dragRunId} never reached a terminal status after the cancel`,
+          },
+        )
+        .toMatch(/cancelled|completed|failed|interrupted/);
     });
 
     await test.step("back to List (the default the next journey of any pass expects)", async () => {
@@ -2281,5 +2849,54 @@ test.describe("repo-chat-nav (alice: leave the lab quiet)", () => {
       res.status(),
       `pausing the trigger answers 2xx (got ${res.status()}: ${body.slice(0, 240)})`,
     ).toBeLessThan(300);
+  });
+
+  test("cancel any run the lanes drag left holding its pin", async ({ page }) => {
+    // The lanes journey cancels its own run; this is the net for a pass that
+    // died between the drop and that step — a live run would hold the pin's
+    // single slot and keep a worker busy for nothing. Read-only resolve: a
+    // pass whose seed never reached the pin has nothing of its own to quiet.
+    const rows = await resolveDragPin(page);
+    test.skip(rows === null, "this pass created no lanes-drag pin, so nothing of it is running");
+    const list = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${rows!.projectId}/runs`);
+    expect(list.status(), "the project run list answers").toBe(200);
+    const runs = (await list.json()) as {
+      runs?: { id: string; status: string; assignment_id?: string | null }[];
+    };
+    const live = (runs.runs ?? []).filter(
+      (run) =>
+        run.assignment_id === rows!.assignmentId &&
+        ["queued", "preparing", "running", "waiting_human", "paused"].includes(run.status),
+    );
+    for (const run of live) {
+      const res = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/runs/${run.id}/cancel`);
+      const body = await res.text();
+      expect(
+        res.status(),
+        `cancelling the leftover run ${run.id} answers 2xx (got ${res.status()}: ${body.slice(0, 240)})`,
+      ).toBeLessThan(300);
+    }
+    if (live.length === 0) return;
+    await expect
+      .poll(
+        async () => {
+          const after = await page.request.get(
+            `${EMU_BASE_URL}/api/v1/projects/${rows!.projectId}/runs`,
+          );
+          const rowsOut = (await after.json()) as {
+            runs?: { id: string; status: string; assignment_id?: string | null }[];
+          };
+          return (rowsOut.runs ?? []).filter(
+            (run) =>
+              run.assignment_id === rows!.assignmentId &&
+              !["completed", "failed", "cancelled", "interrupted"].includes(run.status),
+          ).length;
+        },
+        {
+          timeout: 4 * 60_000,
+          message: "the pass's lanes-drag run is still live after its cancel request",
+        },
+      )
+      .toBe(0);
   });
 });

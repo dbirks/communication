@@ -1415,6 +1415,44 @@ const RCN_LANE_FINISHED: Landmark = {
   desc: "the FINISHED · 7 DAYS lane",
   any: [{ testid: "repo-lane-finished" }, { testid: "repo-lane-finished-empty" }],
 };
+/* The 3b DRAG (an issue dropped on RUNNING) and the run it starts. These are
+ * structure, never data: the issue's number and title are the tracker's, so
+ * the caption claim is the sentence with any number in it. */
+const RCN_LANE_ISSUE_CARD: Landmark = {
+  id: "rcn-lane-issue-card",
+  desc: "a draggable issue card in the ISSUES lane (the drag's source)",
+  any: [{ testid: "repo-lane-issue-*" }],
+};
+const RCN_LANE_DROP_CARD: Landmark = {
+  id: "rcn-lane-drop-card",
+  desc: "the caught issue card the start menu is anchored on",
+  any: [{ testid: "repo-lane-drop-card" }],
+};
+const RCN_START_MENU: Landmark = {
+  id: "rcn-start-issue-menu",
+  desc: "the START #<n> WITH menu the drop opens",
+  any: [{ testid: "repo-start-issue-menu" }, { role: "menu" }],
+};
+const RCN_START_MENU_CAPTION: Landmark = {
+  id: "rcn-start-issue-caption",
+  desc: "the menu's START #<n> WITH caption (the number is the issue's, the sentence is the design's)",
+  any: [{ text: /start #\d+ with/i }],
+};
+const RCN_START_MENU_WORKFLOW: Landmark = {
+  id: "rcn-start-issue-workflow",
+  desc: "the menu's workflow row (only pins whose revision declares the issue input)",
+  any: [{ testid: "repo-start-issue-workflow-*" }],
+};
+const RCN_MENU_ARROW: Landmark = {
+  id: "rcn-menu-arrow",
+  desc: "the menu's pointer arrow (the handoff's rule: every anchored surface gets one)",
+  any: [{ testid: "menu-arrow" }],
+};
+const RCN_LANE_RUN_CARD: Landmark = {
+  id: "rcn-lane-run-card",
+  desc: "a run card in the RUNNING lane (the drag's result — the run, not the issue)",
+  any: [{ testid: "repo-lane-run-*" }],
+};
 
 /* The chat (rcn-2e) and its agent picker (rcn-1h). */
 const RCN_CONV_BREADCRUMB: Landmark = {
@@ -2211,6 +2249,41 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_LANE_ISSUES,
     RCN_LANE_NEEDS_YOU,
     RCN_LANE_RUNNING,
+    RCN_LANE_FINISHED,
+  ],
+  // The drag, played on the repo that really has issues: the caught card and
+  // the START #<n> WITH menu open over it (its arrow, its caption, its one
+  // workflow row). The in-flight preview is deliberately NOT a landmark: the
+  // capture catches the state AFTER the drop, where the preview is gone.
+  "rcn-3b lanes-drag": [
+    RCN_REPO_PAGE,
+    RCN_REPO_BREADCRUMB,
+    RCN_REPO_TITLE,
+    RCN_VIEW_TOGGLE,
+    RCN_LANES,
+    RCN_LANE_WORKFLOWS,
+    RCN_LANE_ISSUES,
+    RCN_LANE_ISSUE_CARD,
+    RCN_LANE_RUNNING,
+    RCN_LANE_DROP_CARD,
+    RCN_START_MENU,
+    RCN_START_MENU_CAPTION,
+    RCN_START_MENU_WORKFLOW,
+    RCN_MENU_ARROW,
+  ],
+  // The same board once the drop has started its run: the run wears a RUNNING
+  // card. No name here insists on which run — the pass's own is the data.
+  "rcn-3b lanes-running": [
+    RCN_REPO_PAGE,
+    RCN_REPO_BREADCRUMB,
+    RCN_REPO_TITLE,
+    RCN_VIEW_TOGGLE,
+    RCN_LANES,
+    RCN_LANE_WORKFLOWS,
+    RCN_LANE_ISSUES,
+    RCN_LANE_NEEDS_YOU,
+    RCN_LANE_RUNNING,
+    RCN_LANE_RUN_CARD,
     RCN_LANE_FINISHED,
   ],
 

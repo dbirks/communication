@@ -1,7 +1,7 @@
 # ADR-0066 — Typed workflow inputs: one JSON Schema with an `x-communication-input` annotation, trigger mapping stored on the trigger
 
 - **Date:** 2026-11-02
-- **Status:** Proposed (encoding + compiler parse/validate implemented and unit-verified; the run form, trigger mapping and publish warning are specified here and built in later steps — see Migration)
+- **Status:** Accepted (2026-11-05 — the encoding, the compiler read, the run-by-hand form, the trigger mapping and the publish WARNING are shipped and verified; see Verification. The § Decision wording "specified here; built in a later step" is the sentence as written at proposal time — those steps are now built, and the text is left as history)
 - **Owners:** pipeline engine + control-plane API maintainers
 - **Related decisions / contracts:** ADR-0021 (the loader→schema→compiler diagnostic contract, § 4/§ 7), ADR-0022 (bindings and `${{ … }}` roots), ADR-0023 § 2 (the compiled plan a run pins), ADR-0056/ADR-0058 (run triggers, agent profiles), `internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json` (`jsonSchemaObject`), `docs/design/handoff-repo-chat-nav/README.md` § "Workflow inputs, authoring (1j)" + § "Run by hand (1k)", `docs/design/handoff-repo-chat-nav/DECISIONS.md` ("Workflow inputs schema"), `communication-spec/03` (pipeline definitions), `communication-spec/09` (`pipeline_revisions.compiled_plan`)
 
@@ -148,9 +148,23 @@ an annotated input yields `input_default_invalid` (a number for `branch`, a scal
 `fanout: {type: boolean, default: false}` of the committed m4 seed yield none; `Required`
 comes from the `required` array; `InputSpecs()` survives a plan JSON round trip with no
 `input_specs` field in the plan bytes. `body_scope_test.go` and `policy_test.go` compile the
-real seed document and guard that rule. Pending before Accepted: the run form/API, the
-trigger-mapping migration, the publish WARNING, and an E2E firing an issue trigger that reads
-`inputs.issue.title` in a node.
+real seed document and guard that rule.
+
+**Shipped since the proposal, each with its own proof (2026-11-05).**
+
+| the piece | what proves it |
+|---|---|
+| `input_specs` on the revision and draft reads | `internal/api/adr0066_inputs_test.go`, `internal/store/postgres/adr0066_trigger_inputs_test.go` (`TestADR0066RevisionAndDraftReadsExposeInputSpecs`); `ui/src/components/workflows/inputs/InputsTab.test.tsx` and the lab journey `e2e/emulator/repo-chat-nav.spec.ts` › "the Inputs tab — add the issue input, save the draft, read WHO FILLS" (rcn-1j) |
+| the run-by-hand form built from the annotation (issue picker, mono branch field, textarea, profile select) | `ui/src/components/m4/NewRunForm.test.tsx`; `e2e/tests/m5-issue-run.spec.ts` (a live issue picked from the tracker lands in `run_inputs` as `{number,title,body,url,repo}` with `origin: submitted`, alongside the repository it carries); the rcn-1k journey "run by hand — the form is built from the pinned revision's inputs" |
+| the trigger→input mapping stored ON THE TRIGGER, and the issue object a fire writes under the mapped name | `internal/store/postgres/adr0066_trigger_inputs_test.go` (the fired run carries the issue; an ambiguous two-`github_issue` mapping is refused at the write; `missing_input` is a named error at schedule create and schedule fire), with the HTTP shapes in `internal/api/adr0066_inputs_test.go` |
+| the publish/validate WARNING, one per (assigned trigger × required input with no default) | `internal/api/adr0066_inputs_test.go` (`TestADR0066ValidateWarnsPerRequiredInputPerTriggerIncludingIssueTriggers`), read as the WHO FILLS `!` rows in the rcn-1j journey |
+| the same typed start reached by dragging an issue into RUNNING (the menu lists only pins whose PINNED revision declares a `github_issue` input) | `ui/src/components/repo/RepoLanes.test.tsx` (the posted body binds the issue to the DECLARED input name, with the ADR-0064 `issue:{number}` fact and one idempotency key); the lab journey `e2e/emulator/repo-chat-nav.spec.ts` › "repo lanes drag — an issue dropped on RUNNING starts the workflow" (rcn-3b: the run's `trigger.ref` is `owner/repo#<n>`, its `issue` input is the served GitHub row, and the Running lane wears the card) |
+
+Still not walked end to end on a lab worker: an ISSUE TRIGGER fire whose node then
+reads `${{ inputs.issue.title }}` while the run executes. The two halves are proven
+separately — the binding type-checks against the schema the annotation never touches
+(`inputs_test.go`) and the fire fills the value (the store test above) — so this is a
+missing integration row, not an open question of the decision.
 
 ## Migration/rollback
 
