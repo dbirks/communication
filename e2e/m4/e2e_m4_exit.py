@@ -16,7 +16,8 @@ own port block — 18091 (lb/app), 18092/18093 (api-a/api-b), 18094 (preview),
 host ports 18080–18090 or 8080/8081/8090, and `down -v` removes only what
 this project created (no docker system/volume/image prune, no pattern pkill).
 
-Stack (compose.yml + compose.harness.yml + compose.m4.yml):
+Stack (compose.yml + compose.harness.yml + compose.m4.yml, plus compose.m4-llm.yml
+whenever the host names a readable gateway key file — see compose_stack() below):
   lb         http://localhost:18091          app origin (API ×2 behind caddy)
   api-a/b    18092 / 18093                   `communication serve` replicas
   preview    http://preview.localhost:18094  sandboxed artifact origin
@@ -99,9 +100,117 @@ WORKER_A = "worker-a"
 WORKER_B = "worker-b"
 NETWORK = "communication-m4_default"
 MASTERKEYS_VOL = "communication-m4_masterkeys"
-COMPOSE = ["docker", "compose", "-p", COMPOSE_PROJECT,
-           "-f", "compose.yml", "-f", "compose.harness.yml", "-f", "compose.m4.yml"]
-COMPOSE_ENV = dict(os.environ, HOST_UID=str(os.getuid()), HOST_GID=str(os.getgid()))
+
+# --- the agent-model layer: WHICH -f files this driver composes ---------------
+#
+# The stack has always been compose.yml + compose.harness.yml + compose.m4.yml,
+# and compose.m4-llm.yml — the layer that gives worker-a/worker-b the pi gateway
+# config (COMMUNICATION_PI_API_KEY_FILE on a read-only bind of the host key FILE)
+# and the model.chat endpoint the § 7.1 C10c arm needs — was NEVER among them.
+# That single omission is why every real-agent leg landed GAP on the runners
+# ("pi-acp session/new -32000 'Authentication required'" — see
+# c1_launcher_pi_refusal_gap below and docs/testing/acceptance-ci.md): the
+# deterministic twin measured the engine, but no leg that spends an ACP turn
+# could measure anything at all.
+#
+# So the layer is composed WHENEVER the host names a readable gateway-key file
+# (COMMUNICATION_LLM_API_KEY_HOST_FILE — the form the acceptance workflow's m4
+# job already writes from its secret, and the form compose.m4-llm.yml mounts).
+# Without it the stack is EXACTLY today's three files and the pi-refusal GAP
+# path stays local-only. The key VALUE never enters this file, argv or a log: it
+# is read from the host file into the compose process environment as
+# LLMC_API_KEY (worker.go reads that env name and has no _FILE form — verified
+# in cmd/communication/worker.go's parseModelChatOptions) only when the caller
+# did not already export it, precisely the fallback scripts/lab-up.sh documents
+# for compose.real.yml.
+COMPOSE_FILES_BASE = ["compose.yml", "compose.harness.yml", "compose.m4.yml"]
+M4_LLM_LAYER = "compose.m4-llm.yml"
+LLM_KEY_FILE_ENV = "COMMUNICATION_LLM_API_KEY_HOST_FILE"
+LLM_KEY_VALUE_ENV = "LLMC_API_KEY"
+LLM_KEY_MAX_BYTES = 65536          # a gateway key is a line, not a file dump
+
+
+def llm_key_file(env=None, readable=os.access, is_file=os.path.isfile):
+    """The readable host key file this run may mount into the workers, or "".
+    Pure over (env, readable, is_file) so e2e/m4/test_m4_llm_layer_logic.py can
+    drive every branch: unset, empty, whitespace, a missing path, a directory,
+    a file the operator cannot read. NEVER returns the key — only the PATH."""
+    env = os.environ if env is None else env
+    path = str(env.get(LLM_KEY_FILE_ENV) or "").strip()
+    if not path or not is_file(path) or not readable(path, os.R_OK):
+        return ""
+    return path
+
+
+def llm_compose_env(env=None, key_file="", read_value=None):
+    """The process env compose renders compose.m4-llm.yml with: the caller's env
+    plus HOST_UID/HOST_GID, plus LLMC_API_KEY when the caller did not already
+    export one (a variable assignment from the key FILE — never argv, never
+    printed). With no key file the env is exactly today's. Pure over its
+    arguments; `read_value` is the file reader (injectable for the offline test).
+    """
+    env = os.environ if env is None else env
+    out = dict(env, HOST_UID=str(os.getuid()), HOST_GID=str(os.getgid()))
+    if not key_file or str(env.get(LLM_KEY_VALUE_ENV) or "").strip():
+        return out
+    read_value = read_value or _read_llm_key_file
+    try:
+        value = str(read_value(key_file) or "").strip()
+    except OSError:
+        return out                      # unreadable now: compose refuses, loudly
+    if value:
+        out[LLM_KEY_VALUE_ENV] = value
+    return out
+
+
+def _read_llm_key_file(path):
+    """Read the host key file (bounded) for llm_compose_env. The value is returned
+    to be placed in the compose process environment and NOTHING here prints it."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return fh.read(LLM_KEY_MAX_BYTES)
+
+
+def compose_stack(env=None, key_file=None):
+    """(files, compose_argv, compose_env) — the ONE decision every compose call
+    in this driver rides. Pure over (env, key_file); the offline test pins both
+    branches, so "did this lab even have an agent credential?" is never a
+    guess after the fact either (c10c_endpoint_cause reads it off the RUNNING
+    container's config_files label, which is this same list)."""
+    env = os.environ if env is None else env
+    key_file = llm_key_file(env) if key_file is None else key_file
+    files = list(COMPOSE_FILES_BASE) + ([M4_LLM_LAYER] if key_file else [])
+    argv = ["docker", "compose", "-p", COMPOSE_PROJECT]
+    for f in files:
+        argv += ["-f", f]
+    return files, argv, llm_compose_env(env, key_file)
+
+
+M4_COMPOSE_FILES, COMPOSE, COMPOSE_ENV = compose_stack()
+M4_LLM_LAYERED = M4_LLM_LAYER in M4_COMPOSE_FILES
+
+
+def announce_stack_layers():
+    """One line naming the composed layers — the layer NAME only, never the key,
+    never the file's contents, never even its path (the path can carry the
+    runner's temp dir; the name is what a reader of m4.out needs)."""
+    line = ("  compose stack: " + " + ".join(M4_COMPOSE_FILES)
+            + f" [launcher {LAB_LAUNCHER}]")
+    if M4_LLM_LAYERED:
+        line += ("" if LLM_KEY_VALUE_ENV in COMPOSE_ENV else
+                 "  [" + LLM_KEY_VALUE_ENV + " NOT resolved — model.chat nodes "
+                 "will refuse; the agent legs still carry the mounted key file]")
+    else:
+        line += ("  (no " + M4_LLM_LAYER + ": " + LLM_KEY_FILE_ENV
+                 + " unset/unreadable — the agent legs keep the launcher-pi "
+                   "refusal GAP path)")
+    print(line, flush=True)
+
+
+# The § 7.0 seed's launcher knob (docs/compatibility/probes/m4/seed.sh reads the
+# same variable): the legs that spend a real turn must say WHICH launcher they
+# waited on, and the CI stack runs pi (no Claude token on runners by operator
+# decision) while the laptop default stays claude.
+LAB_LAUNCHER = (os.environ.get("COMMUNICATION_LAB_LAUNCHER") or "claude").strip() or "claude"
 
 FAILURES, GAPS, SKIPPED, EVIDENCE = [], [], [], {}
 CTX = {}   # gates will accumulate run ids / digests / attempt ids here
@@ -1672,28 +1781,39 @@ def c1_unattended_permission_gap(status, cause, perm_rows, plan_key="/plan"):
             "engine in the meantime")
 
 
-# docs/testing/acceptance-ci.md names the second known agent-arm shape. On CI
-# the lab's profiles run on launcher `pi` (COMMUNICATION_LAB_LAUNCHER=pi, no
-# Claude token on runners by operator decision). Since ADR-0069 pi is gated as
-# `autonomous_within_sandbox` — it no longer fail-closes on the prompting-mode
-# check, so the attempt reaches `pi-acp`, which then answers `session/new`
-# with -32000 "Authentication required" when the stack carries no pi gateway
-# config. The m4 exit driver's own stack is [compose.yml, compose.harness.yml,
-# compose.m4.yml]: compose.real.yml is the ONLY layer that mounts
-# COMMUNICATION_PI_API_KEY_FILE into the workers, and it is deliberately not
-# among them (the workflow header says so). The leg therefore cannot complete
-# on a runner — and the doc's verdict for it is FAIL/GAP NAMING launcher pi,
-# NEVER a pass. These two helpers tell that refusal apart from a real engine
-# failure; the twin leg keeps measuring the engine.
+# docs/testing/acceptance-ci.md named the second known agent-arm shape, and this
+# is the shape it described. On CI the lab's profiles run on launcher `pi`
+# (COMMUNICATION_LAB_LAUNCHER=pi, no Claude token on runners by operator
+# decision). Since ADR-0069 pi is gated `autonomous_within_sandbox` — it no
+# longer fail-closes on the prompting-mode check — the attempt reaches `pi-acp`,
+# which answered `session/new` with -32000 "Authentication required" whenever the
+# stack carried no pi gateway config. That was ALWAYS the state of a stack this
+# driver composed itself: its three files never included a layer mounting
+# COMMUNICATION_PI_API_KEY_FILE, so every real-agent leg (C1c, the C1 key set,
+# C2a, C9g, C4e, W2, W3, C7d, C10c, the C11 agent arm) landed GAP.
+#
+# compose.m4-llm.yml ends that on CI: the driver composes it whenever
+# COMMUNICATION_LLM_API_KEY_HOST_FILE names a readable file (M4_LLM_LAYERED
+# below), and the agent legs then MEASURE — the refusal is no longer an
+# environment excuse, it is a fault worth a FAIL. These helpers therefore take
+# the credential state as an input: GAP only while the stack genuinely has no
+# pi key (a local run without the layer), never when it does.
 C1_PI_REFUSAL_DOC = "docs/testing/acceptance-ci.md"
 
 
-def c1_launcher_pi_refusal_gap(status, cause, fail_rows, plan_key="/plan"):
+def c1_launcher_pi_refusal_gap(status, cause, fail_rows, plan_key="/plan",
+                              pi_credential=None):
     """GAP reason when the agent arm failed because launcher `pi` had no
     gateway credential — every {plan_key} attempt died at acp `session/new`
     with the launcher's own "Authentication required" (infra) — else None (the
     caller prints the honest FAIL). `fail_rows` are [node_key, error_class,
     detail] lines for the run's node.attempt.failed events. Pure.
+
+    `pi_credential` is this stack's credential state (default: M4_LLM_LAYERED,
+    i.e. whether compose.m4-llm.yml was composed). When it is True the refusal
+    is NOT the known environment gap — the key file was mounted and pi still
+    said "Authentication required", which is a fault the report must FAIL on,
+    not GAP away. Only with the credential absent does the honest GAP stand.
 
     Keys on the PI launcher's fingerprint inside the refusal (pi-acp /
     Launch pi / --terminal-login): a claude leg that died on a stale login
@@ -1720,16 +1840,23 @@ def c1_launcher_pi_refusal_gap(status, cause, fail_rows, plan_key="/plan"):
 
     if not all(is_pi_refusal(r) for r in plan_rows):
         return None
+    if pi_credential is None:
+        pi_credential = M4_LLM_LAYERED
+    if pi_credential:
+        # The credential IS on this stack, so the refusal has no environment
+        # explanation left to hide behind — the caller's FAIL prints the rows.
+        return None
     return (f"known environment refusal, not a new engine failure: the agent arm's "
             f"{plan_key} attempt(s) reached launcher pi and {len(plan_rows)} "
             "node.attempt.failed row(s) all carry the launcher's own refusal — acp "
             "session/new -32000 'Authentication required: Configure an API key or "
             "log in with an OAuth provider' (error_class=infra, pi-acp terminal "
-            "login). This stack composes [compose.yml, compose.harness.yml, "
-            "compose.m4.yml]; compose.real.yml is the only layer that mounts the "
-            "pi gateway key (COMMUNICATION_PI_API_KEY_FILE, ADR-0069) and CI runs "
-            f"without a Claude token by operator decision ({C1_PI_REFUSAL_DOC}): "
-            "launcher pi legs land FAIL/GAP naming launcher pi, never a pass. The "
+            f"login). This stack composed [{', '.join(M4_COMPOSE_FILES)}] — "
+            f"{M4_LLM_LAYER} (the layer mounting the pi gateway key at "
+            "COMMUNICATION_PI_API_KEY_FILE, ADR-0069) is NOT among them, because "
+            f"{LLM_KEY_FILE_ENV} names no readable host file: this refusal GAP is "
+            f"the LOCAL path only ({C1_PI_REFUSAL_DOC}); on the acceptance runners "
+            "the layer is composed and the same refusal is a FAIL. The "
             "deterministic twin leg measures the engine in the meantime")
 
 
@@ -2339,7 +2466,15 @@ C2_PS_RE = re.compile(r"^PS\|(\d+)\|(\d+)$")
 # C2a greps /proc/$AGENT_PID/environ of the adapter); a second INDEPENDENT tree, or
 # the daemon itself, is the leak the gate must fail on.
 C2_WORKER_DAEMON_RE = re.compile(r"/usr/local/bin/communication\b|\bcommunication\s+worker\b")
-C2_AGENT_LAUNCH_RE = re.compile(r"claude-agent-acp|@agentclientprotocol")
+# BOTH ACP adapter families, never a Claude-only assumption: the lab's launcher is
+# COMMUNICATION_LAB_LAUNCHER (seed.sh's knob; the acceptance workflow sets `pi`),
+# and pi's launch root is the pi-acp adapter (worker/Dockerfile symlinks
+# /usr/local/bin/pi-acp → its dist/index.js, argv0 'node …/pi-acp') which spawns
+# `pi --mode rpc` as its child — the same adapter-plus-child tree ADR-0018 D5
+# counts as ONE place. A claude-only pattern made C2a's holder arm FAIL on the pi
+# lab for a reason that was the regex, not the delivery.
+C2_AGENT_LAUNCH_RE = re.compile(
+    r"claude-agent-acp|@agentclientprotocol|pi-acp|pi --mode rpc")
 
 # --- C2's hold: the time window § 7.1 C2a/C2b are written IN -----------------
 #
@@ -2961,7 +3096,7 @@ def c2():
                   "m4-implementer — the § 7.0 allowlist's own name, and the only attempt "
                   "materialization authorization can ever reach: a twin process.exec holds "
                   "no profile and is denied every mount by ADR-0018 D3; it needs a working "
-                  "claude ACP launcher in the image)")
+                  f"{LAB_LAUNCHER} ACP launcher in the image)")
         return
     # Precondition: the section 7.0 mount really is env/DATABASE_URL/node_attempt.
     try:
@@ -3214,7 +3349,7 @@ def c2():
     if not turns:
         gap("C2d the agent leg ('print your environment' produces no sentinel in any tool "
             "output)", "this run joined no attempt to a conversation_turns row - the agent "
-                       "variant's agent.acp attempts need the claude ACP launcher plus a "
+                       f"variant's agent.acp attempts need the {LAB_LAUNCHER} ACP launcher plus a "
                        "model in the worker image, and a run that never leased one leaves "
                        "nothing to print its environment; the "
                        "journal/transcript half of the claim (zero sentinel in every "
@@ -3276,17 +3411,25 @@ def ledger_gate(gate):
     return out
 
 
-def rollup(gate):
-    """What THIS process has measured for GATE so far: PASS / FAIL / GAP, or ""
-    when the gate printed no verdict line at all (never ran here)."""
-    entries = ledger_gate(gate)
+def rollup_entries(entries):
+    """The rollup algebra over a list of recorded verdict lines: PASS / FAIL / GAP,
+    or "" when the list is empty (the gate printed nothing). PENDING lines are
+    unmeasured, never a PASS — the row is graded by the m4 (regrade) job, not here.
+    Split out of rollup() so the cross-shard regrade can roll up the verdict lines
+    ANOTHER shard's witness file carried."""
     if not entries:
         return ""
     if any(e["verdict"] == "FAIL" for e in entries):
         return "FAIL"
-    if all(e["verdict"] in ("GAP", "SKIP") for e in entries):
+    if all(e["verdict"] in ("GAP", "SKIP", "PENDING") for e in entries):
         return "GAP"
     return "PASS"
+
+
+def rollup(gate):
+    """What THIS process has measured for GATE so far: PASS / FAIL / GAP, or ""
+    when the gate printed no verdict line at all (never ran here)."""
+    return rollup_entries(ledger_gate(gate))
 
 
 def _record(verdict, label, detail=""):
@@ -3303,6 +3446,13 @@ def check(label, ok, detail=""):
 
 
 def gap(label, why):
+    """An honest GAP — unless the row is a § 7.1 cross-gate claim whose witness gates
+    run in ANOTHER shard of this run and a regrade is contracted: then the word is
+    PENDING (the merged regrade owes it a verdict), never a GAP the shard job passes
+    while the proof exists two jobs away."""
+    missing = [g for g in cross_gate_witness_gates(label) if not gate_in_this_pass(g)]
+    if missing and REGRADE_CONTRACT[0]:
+        return pending(label, f"{why} — {cross_shard_note(*missing)}")
     _record("GAP", label, why)
     return _gap0(label, why)
 
@@ -3336,15 +3486,16 @@ def _atexit_register():
 
 
 def supersede_gap(label):
-    """Drop the in-place GAP line for LABEL from the summary pool: a deferred
-    regrade has just printed this row's replacement verdict, so the stale GAP
-    must not survive into the final summary or inflate the GAP tally.
-    (gap() files each line as '<label>: <why>' — the exact in-place label plus
-    its colon is the row's identity.)"""
+    """Drop the in-place GAP (or PENDING) line for LABEL from the summary pool: a
+    regrade has just printed this row's replacement verdict, so the stale line must
+    not survive into the final summary or inflate the GAP/PENDING tally.
+    (gap()/pending() file each line as '<label>: <why>' — the exact in-place label
+    plus its colon is the row's identity.)"""
     prefix = f"{label}: "
-    before = len(GAPS)
+    before = len(GAPS) + len(PENDING_ROWS)
     GAPS[:] = [g for g in GAPS if not g.startswith(prefix)]
-    return before - len(GAPS)
+    PENDING_ROWS[:] = [g for g in PENDING_ROWS if not g.startswith(prefix)]
+    return before - len(GAPS) - len(PENDING_ROWS)
 
 
 def run_deferred_regrades():
@@ -3359,6 +3510,386 @@ def run_deferred_regrades():
             _check0(f"{title} regrade crashed: {type(e).__name__}: {str(e)[:120]}", False,
                     "the in-place verdict for this row stands unregraded")
     DEFERRED.clear()
+
+
+# --- the CROSS-SHARD witness and its regrade (acceptance.yml's m4 matrix) ------
+# The exit driver's own ledger can only regrade what THIS process printed, and
+# .github/workflows/acceptance.yml runs the § 7 gates as SIX separate driver
+# processes on SIX fresh stacks (fence / restore / watch / fanout / core-a /
+# core-b). So a row whose proof lives in another gate's witness — C11c's arms over
+# C8b/C14a/C10a/C10b/C7c/C1f/C2c/C13c/C2d/C12a/C12b/C13b, C5g's and C6c's "the same
+# node_instance_key set as C1", C3d's citation of C4 — reads "NOT PRINTED" here and
+# files a GAP that still lets the SHARD job pass. That is the bug this section
+# closes: every shard writes a machine-readable witness file (its verdict lines plus
+# the CTX half-shapes later gates compare against), and the `m4 (regrade)` job
+# merges them and re-grades every cross-gate row over the union — with no stack, so
+# the verdict comes from the recorded measurements and nothing else.
+#
+# A shard may only print PENDING when the regrade job is contracted to run
+# (--expect-regrade, which acceptance.yml passes only when EVERY shard ran): a row
+# nobody will regrade is a GAP and must be counted as one. Key-set rows compared
+# across shards compare STRUCTURE — the node_instance_key sets the same § 7.0 seed
+# pipeline produces on two fresh stacks — which is what the contract row claims.
+WITNESS_VERSION = 1
+WITNESS_PATH = [""]        # --witness: where to write this shard's witness file
+SHARD_NAME = [""]           # --shard / M4_SHARD: the shard label inside it
+REGRADE_CONTRACT = [False]  # --expect-regrade: the m4 (regrade) job will run
+PENDING_ROWS = []           # rows left for the regrade job (printed + filed)
+SHARD_WITNESS = {}          # this shard's CTX half-shapes (JSON-safe)
+
+# The two key-set claims, named ONCE so the gate, the shard's PENDING line and the
+# merged regrade all print the same row (§ 7.1 C5g/C6c verbatim wording).
+C5G_KEYSET_CLAIM = ("C5g the retried run's node_instance_key set is C1's twin set "
+                    "(01: repeated attempts append, not overwrite)")
+C6C_KEYSET_CLAIM = ("C6c the key set equals C1's (a restore-retry appends, it never "
+                    "rewrites history)")
+
+# CTX half-shapes a cross-gate row compares against, pulled into the witness file by
+# the writer so no gate has to know the regrade exists.
+WITNESS_CTX_PATHS = (("c1_twin_keys", ("c1", "twin", "keys")),
+                     ("c1_agent_keys", ("c1", "agent", "keys")))
+
+
+def cross_gate_witness_gates(label):
+    """The GATE ids whose measurement a § 7.1 cross-gate row cites — () when the
+    label is not one of those rows. These are the rows whose proof can live in
+    another shard's stack, so their GAP is the regrade job's work, not a verdict.
+    Matched on the row's own label prefix: the regraded variants append a suffix
+    ("… [regraded …]", "… — iteration-normalized (…)"), which the prefix still hits."""
+    lab = (label or "").strip()
+    if lab.startswith(C5G_KEYSET_CLAIM) or lab.startswith("C5g the retried run's"):
+        return ("C1",)
+    if lab.startswith(C6C_KEYSET_CLAIM) or lab.startswith("C6c key-set equality"):
+        return ("C1",)
+    if lab.startswith(f"{C3D_ID} the proof it points at is measured"):
+        return ("C4",)
+    if lab.startswith("C11c "):
+        for claim, legs, _why in C11C_CLAIMS:
+            if lab.startswith(f"C11c {claim}"):
+                return tuple(sorted({c11c_gate_of(leg) for leg in legs}))
+    return ()
+
+
+def witness_shard(name, value):
+    """Record a JSON-safe witness (a key set, a digest …) for the cross-shard
+    regrade. Sets are stored sorted: the witness file is compared, not browsed."""
+    if isinstance(value, (set, frozenset)):
+        value = sorted(value)
+    SHARD_WITNESS[name] = value
+    return value
+
+
+def ctx_witness(name, path):
+    """Follow CTX['c1']['twin']['keys']-shaped paths; None when the leg did not get
+    that far (an absent witness is a FAIL in the regrade, never an empty one)."""
+    node = CTX
+    for part in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
+
+
+def witness_document():
+    """This shard's whole measured record, in the form `--regrade` reads: every
+    verdict line the ledger holds (leg id + status, so a later shard's row can cite
+    it) and the CTX half-shapes cross-gate rows compare against."""
+    for name, path in WITNESS_CTX_PATHS:
+        val = ctx_witness(name, path)
+        if val:
+            witness_shard(name, val)
+    return {"version": WITNESS_VERSION,
+            "shard": SHARD_NAME[0] or os.environ.get("M4_SHARD") or "",
+            "gates": sorted(CTX.get("gate_selection") or [gid for gid, _ in GATES]),
+            "verdicts": [{"leg": v["leg"], "verdict": v["verdict"], "label": v["label"],
+                          "detail": (v["detail"] or "")[:400]} for v in VERDICTS],
+            "witnesses": dict(SHARD_WITNESS)}
+
+
+def write_witness(path=None):
+    """Write the shard's witness file (acceptance.yml uploads it with the evidence).
+    A witness that cannot be written must not be silently missing: the regrade job
+    fails naming the shard, so a write error prints a FAIL line HERE as well."""
+    path = path or WITNESS_PATH[0]
+    if not path:
+        return True
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(witness_document(), fh, indent=1, sort_keys=True)
+            fh.write("\n")
+        print(f"  WITNESS  {path} — {len(VERDICTS)} verdict line(s), "
+              f"{len(SHARD_WITNESS)} witness shape(s), {len(PENDING_ROWS)} row(s) left "
+              "for the m4 (regrade) job", flush=True)
+        return True
+    except OSError as e:
+        _check0("m4 witness file written", False,
+                f"{path}: {type(e).__name__}: {e} — the m4 (regrade) job cannot grade "
+                "the cross-gate rows that cite this shard's witnesses")
+        return False
+
+
+def load_witness(path):
+    """Read one shard's witness file; (doc, None) or (None, why) — a corrupt or
+    foreign file is named, never guessed at."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as e:
+        return None, f"{path}: {type(e).__name__}: {e}"
+    if not isinstance(doc, dict) or doc.get("version") != WITNESS_VERSION:
+        got = doc.get("version") if isinstance(doc, dict) else "not an object"
+        return None, (f"{path}: not an m4 witness file (version {got}, "
+                      f"want {WITNESS_VERSION})")
+    return doc, None
+
+
+def gate_in_this_pass(gate):
+    """True when GATE runs in THIS driver process (no --only, or named by it). """
+    sel = CTX.get("gate_selection")
+    return True if not sel else str(gate).upper() in {str(g).upper() for g in sel}
+
+
+def cross_shard_note(*gates):
+    """The wording a cross-gate row carries when its witness ran in another shard:
+    which shard owns it, and what a cross-stack comparison may claim."""
+    owners = sorted({g.upper() for g in gates if not gate_in_this_pass(g)})
+    return (f"witness gate(s) {', '.join(owners)} run in ANOTHER shard's stack of this "
+            "same run (each shard brings up its own fresh § 7.0 stack) — the "
+            "`m4 (regrade)` job merges every shard's witness file and grades this row "
+            "there; across shards the comparison is of STRUCTURE (the node_instance_key "
+            "SETs the same seed pipeline produces), which is what § 7.1's row claims")
+
+
+def pending(label, why):
+    """Print the one word a cross-gate row may read when its witness ran elsewhere:
+    NOT a PASS (nothing here measured it), NOT a GAP (something else did). The
+    regrade job owes this row a verdict and fails the run if it cannot give one."""
+    print(f"  PENDING {label} (regraded by m4 (regrade)) — {why}", flush=True)
+    PENDING_ROWS.append(f"{label}: {why}")
+    _record("PENDING", label, why)
+
+
+# --- the merged regrade: `--regrade <witness files…>` (no stack) ---------------
+
+
+def merged_ledger(docs):
+    """Every shard's recorded verdict lines in one list, so the SAME rollup algebra
+    the in-process ledger uses grades them. Lines are tagged with their shard; the
+    witness file only carries leg id + status + label, which is all a cross-gate
+    row reads (a detail is this shard's prose, not evidence to re-grade)."""
+    ledger = []
+    for doc in docs:
+        for v in doc.get("verdicts") or []:
+            if isinstance(v, dict) and v.get("label"):
+                ledger.append({"leg": str(v.get("leg") or _leg_of(v["label"])),
+                               "verdict": str(v.get("verdict") or ""),
+                               "label": v["label"], "detail": v.get("detail") or "",
+                               "shard": doc.get("shard") or ""})
+    return ledger
+
+
+def ledger_gate_in(ledger, gate):
+    """ledger_gate() over an explicit list of verdict lines (merged shards)."""
+    g = (gate or "").upper()
+    out = []
+    for v in ledger:
+        leg = v["leg"]
+        if leg == g or (leg.startswith(g) and leg[len(g):].isalpha()):
+            out.append(v)
+    return out
+
+
+def shard_owning(docs, gate):
+    """Which shard's run owns GATE (from the witnesses' own gate lists), or ""."""
+    for doc in docs:
+        if gate in (doc.get("gates") or []):
+            return doc.get("shard") or "?"
+    return ""
+
+
+def witness_sets_of(ledger_docs, name):
+    """A named witness (a node_instance_key set) as the shards recorded it: the
+    non-empty value(s), tagged. Two shards may both carry it (core-a's own CTX and a
+    fence pass that read C1 from a prior run); the regrade compares structure."""
+    out = []
+    for doc in ledger_docs:
+        val = (doc.get("witnesses") or {}).get(name)
+        if val:
+            out.append((doc.get("shard") or "?", list(val)))
+    return out
+
+def pick_key_set(docs, name, owner_gate):
+    """(shard, keys) for a witness set, taken from the shard that OWNS the gate which
+    measured it. A key set is one run's ledger read, so only the stack that ran that
+    gate can supply it — and its set legitimately differs from another stack's by the
+    until-loop's iteration count, which is why the row normalizes before comparing.
+    A non-owner copy that disagrees is reported, never chosen."""
+    carriers = witness_sets_of(docs, name)
+    if not carriers:
+        return "", []
+    owner = shard_owning(docs, owner_gate)
+    chosen = next(((s, v) for s, v in carriers if s == owner), carriers[0])
+    for shard, keys in carriers:
+        if shard != chosen[0] and sorted(keys) != sorted(chosen[1]):
+            print(f"  NOTE  witness {name}: {shard} recorded a different set "
+                  f"({len(keys)} key(s)) than {chosen[0]} ({len(chosen[1])} key(s)) — "
+                  f"{chosen[0]} owns {owner_gate}, so its set is the one graded\n",
+                  end="", flush=True)
+    return chosen
+
+
+def regrade_rows(ledger, docs):
+    """(label, ok, detail) for EVERY cross-gate row, graded over the merged record.
+
+    These are the rows a shard can only print PENDING for (their witnesses ran in
+    another stack): C11c's structural arms, C5g's/C6c's key-set identity and C3d's
+    citation of C4's fence. A witness no shard produced is a FAIL that NAMES it — the
+    row's promise was measured nowhere in the run, and a GAP that lets a job pass is
+    exactly what this job exists to stop. Cross-shard key-set rows compare the
+    node_instance_key SETS (structure): the shards are fresh stacks of one § 7.0
+    seed, which is exactly what the contract rows claim about C1's graph."""
+    out = []
+    measured = [v for v in ledger if v["verdict"] != "PENDING"]
+
+    def read(leg):
+        rows = ledger_gate_in(measured, leg)
+        return rollup_entries(rows), len(rows)
+    # C11c — the same algebra the gate runs in place, over every shard's lines.
+    for label, ok, detail in c11c_structural_verdicts(
+            witness=read, where="the merged witnesses of every shard", deferred=False):
+        if ok is None:
+            reasons = []
+            for leg in sorted({l.upper() for l in _claim_legs(label)}):
+                roll, lines = read(leg)
+                owner = shard_owning(docs, c11c_gate_of(leg)) or "no shard"
+                if not lines:
+                    reasons.append(f"{leg} printed no verdict line anywhere (its gate "
+                                   f"{c11c_gate_of(leg)} runs in {owner})")
+                elif roll == "GAP":
+                    reasons.append(f"{leg} printed {lines} verdict line(s) in {owner} "
+                                   "and every one of them GAPped")
+            out.append((f"{label} [regraded over the merged witnesses]", False,
+                        "the row's witness was never measured in this run: "
+                        + "; ".join(reasons) + f"; {detail}"))
+        else:
+            out.append((f"{label} [regraded over the merged witnesses]", bool(ok), detail))
+    # C5g / C6c — the key-set identity rows, over the two shards' recorded sets.
+    for claim, run_name, run_gate in ((C5G_KEYSET_CLAIM, "c5_run_keys", "C5"),
+                                      (C6C_KEYSET_CLAIM, "c6_run_keys", "C6")):
+        c1_sets = witness_sets_of(docs, "c1_twin_keys")
+        run_sets = witness_sets_of(docs, run_name)
+        if not c1_sets or not run_sets:
+            missing = [] if c1_sets else ["C1's twin node_instance_key set (shard "
+                                          f"{shard_owning(docs, 'C1') or '-'})"]
+            missing += ([] if run_sets else
+                        [f"{run_name} — the retried run's own key set (shard "
+                         f"{shard_owning(docs, run_gate) or '-'})"])
+            out.append((f"{claim} [regraded over the merged witnesses]", False,
+                        "no shard's witness carried " + " and ".join(missing) +
+                        " — the equality needs TWO measured sets"))
+            continue
+        c1_owner, c1_keys = pick_key_set(docs, "c1_twin_keys", "C1")
+        run_owner, run_keys = pick_key_set(docs, run_name, run_gate)
+        for label, ok, detail in key_set_identity_verdicts(claim, c1_keys, run_keys,
+                                                           "nothing measured this"):
+            out.append((f"{label} [regraded across stacks: {run_owner} vs {c1_owner}]",
+                        bool(ok) if ok is not None else False,
+                        detail + " — the two sets came from FRESH STACKS of the same "
+                        f"§ 7.0 seed pipeline ({c1_owner} ran C1, {run_owner} the "
+                        "retry): the row claims the graph identity, and a "
+                        "node_instance_key SET is exactly that structure"))
+    # C3d — the arm that cites C4's fence, over every shard's C4 lines.
+    c4 = ledger_gate_in(ledger, "C4")
+    c4_roll = rollup_entries(c4)
+    c3d_present = bool(ledger_gate_in(ledger, "C3d"))
+    label = (f"{C3D_ID} the proof it points at is measured in this process "
+             f"(C4's fence)")
+    if not c3d_present and not c4:
+        return out                      # neither leg ran: nothing was promised here
+    if c4_roll in ("PASS", "FAIL"):
+        out.append((f"{label} [regraded over the merged witnesses]", c4_roll == "PASS",
+                    f"C4's {len(c4)} verdict lines across the shards roll up to "
+                    + ("PASS — the stale write was refused by the fence, as the "
+                       "sentence says" if c4_roll == "PASS" else
+                       "FAIL — the fence did not refuse the stale write")))
+    else:
+        out.append((f"{label} [regraded over the merged witnesses]", False,
+                    f"C4 printed {len(c4)} verdict line(s) across every shard's "
+                    "witness and none of them measured the fence — the sentence "
+                    "names C4 as its proof and that proof never ran"))
+    return out
+
+
+def _claim_legs(label):
+    """The witness legs the C11c row LABEL cites (from C11C_CLAIMS)."""
+    for claim, legs, _why in C11C_CLAIMS:
+        if label.startswith(f"C11c {claim}"):
+            return list(legs)
+    return []
+
+
+def row_family(label):
+    """Which ROW a verdict line grades: its leg id, and for C11c the specific claim
+    (six rows share the C11c leg). A shard's PENDING line and the regrade's verdict
+    for the same row must land in the same family, or a promised row went ungraded."""
+    lab = (label or "").strip()
+    leg = _leg_of(lab)
+    if leg == "C11C":
+        for claim, _legs, _why in C11C_CLAIMS:
+            if lab.startswith(f"C11c {claim}"):
+                return f"C11C:{claim}"
+    if leg == "C6C" and lab.startswith("C6c key-set equality"):
+        return "C6C"                     # the twin of C6c's key-set identity row
+    return leg
+
+
+def run_regrade(paths, expect_shards=()):
+    """`--regrade <files…>`: no stack, no gates. Merge every shard's witness file and
+    re-evaluate every cross-gate row over the union, printing the same verdict lines.
+    Any FAIL — including a witness no shard ever measured, and any shard whose
+    witness never arrived — fails the job; the shards passed those rows on PENDING
+    precisely because this job said it would grade them."""
+    step("m4 (regrade): cross-gate rows over every shard's witness file")
+    docs, broken = [], []
+    for path in paths:
+        doc, why = load_witness(path)
+        if doc is None:
+            broken.append(why)
+        else:
+            docs.append(doc)
+    for why in broken:
+        check(f"m4 witness file readable [{os.path.basename(str(why).split(':')[0])}]",
+              False, str(why))
+    shards = [d.get("shard") or "?" for d in docs]
+    show("witness files merged", "\n".join(
+        f"{d.get('shard') or '?'}: {len(d.get('verdicts') or [])} verdict line(s), "
+        f"gates {','.join(d.get('gates') or [])}" for d in docs) or "(none)")
+    for want in expect_shards:
+        if want and want not in shards:
+            check(f"m4 (regrade) every shard left a witness [{want}]", False,
+                  "no witness file from shard {} (merged: {}) — the rows that printed "
+                  "PENDING there have no evidence to grade".format(
+                      want, ", ".join(shards) or "-"))
+    if not docs:
+        check("m4 (regrade) has witnesses to grade", False,
+              "no readable witness file in the arguments — nothing was merged, so no "
+              "cross-gate row can be graded (a GAP that would pass the run)")
+        return finish_regrade()
+    ledger = merged_ledger(docs)
+    rows = regrade_rows(ledger, docs)
+    step(f"regraded cross-gate rows ({len(rows)} rows over {len(shards)} shards)")
+    for label, ok, detail in rows:
+        check(label, ok, detail)
+    # Every row a shard left PENDING owes a verdict HERE: a PENDING nobody grades is
+    # the silent pass this job exists to forbid.
+    graded = {row_family(l) for l, _o, _d in rows}
+    promised = {(v["shard"], v["label"]) for v in ledger if v["verdict"] == "PENDING"}
+    for shard, label in sorted(promised):
+        if row_family(label) not in graded:
+            check(f"m4 (regrade) graded the row {shard} left pending", False,
+                  f"'{label}' printed PENDING in shard {shard}, and the merged regrade "
+                  "printed no verdict for it — the row is unproven in this run")
+    return finish_regrade()
 
 
 class _StdoutTee:
@@ -4235,12 +4766,51 @@ def c4_fence_log(text):
     return len(lines), lines[:FENCE_LOG_SAMPLE]
 
 
+def c4_terminal_row_verdicts(row):
+    """C4c's terminal-timestamp arm, stated the way ADR-0075 AMENDS § 7.1 to state it:
+    the fenced attempt is terminal (interrupted) and its row CARRIES finished_at.
+    The pre-amendment literal asked for `finished_at IS NULL`, which 00005's
+    attempts_terminal_timestamped CHECK
+    ((status IN ('succeeded','failed','cancelled','interrupted')) =
+     (finished_at IS NOT NULL)) — one of ADR-0016 § 3's three lease lies made
+    structural — cannot represent: no row Postgres will accept answers it, so a NULL
+    here is a store bug and a FAIL, never a PASS and never a GAP. The second arm
+    compares the timestamp against Postgres's own now() (the comparison is computed IN
+    the same statement — § 8's rule, never the driver's clock): the fence's close
+    cannot be dated in the future of the clock that wrote it. Pure; row keys: status,
+    finished_at ('NULL' when the column is NULL), now_ts, ts_le_now (the statement's
+    own `finished_at <= now()`)."""
+    st = str(row.get("status") or "").strip()
+    fa = str(row.get("finished_at") or "").strip()
+    now_ts = str(row.get("now_ts") or "").strip()
+    if not st:
+        return [("C4c the fenced attempt's terminal row reads (§ 7.1 as amended by ADR-0075)",
+                 None, "no attempt row came back — neither the terminal status nor its "
+                       "timestamp is measurable")]
+    timed = st == "interrupted" and bool(fa) and fa.upper() != "NULL"
+    out = [("C4c the fenced attempt is TERMINAL WITH finished_at (§ 7.1 as amended by "
+            "ADR-0075: 00005's attempts_terminal_timestamped CHECK makes the old "
+            "`finished_at IS NULL` literal unrepresentable for a terminal row, so the "
+            "claim the store can answer is 'interrupted, and timestamped')",
+            timed, f"status={st!r} finished_at={fa!r}")]
+    le = str(row.get("ts_le_now") or "").strip()
+    if not timed or fa.upper() in ("", "NULL") or le.upper() in ("", "NULL", "-"):
+        out.append(("C4c the fence's terminal timestamp is dated in Postgres's own clock, "
+                    "not after it (the reconciler wrote the close; ADR-0023 § 5.4, ADR-0074)",
+                    None, f"finished_at={fa!r} now()={now_ts!r} finished_at<=now()={le!r} "
+                          "— the comparison did not read"))
+    else:
+        out.append(("C4c the fence's terminal timestamp is dated in Postgres's own clock, "
+                    "not after it (the reconciler wrote the close; ADR-0023 § 5.4, ADR-0074)",
+                    truthy(le), f"finished_at={fa!r} <= now()={now_ts!r} -> {le!r}"))
+    return out
+
+
 def c4_dead_attempt_verdicts(a):
-    """C4c's 'a dead attempt publishes nothing' arm. keys: status,
-    outputs_null, artifacts_ready, checkpoints, completed_events. Pure.
-    NOTE: § 7.1 C4c also expects finished_at NULL, which 00005's
-    attempts_terminal_timestamped CHECK makes unrepresentable for any terminal
-    status — c4() records that conflict as a GAP instead of asserting a lie."""
+    """C4c's 'a dead attempt publishes nothing' arm — the half of the row that
+    survives the ADR-0075 amendment unchanged, and the half C4's name is about. keys:
+    status, outputs_null, artifacts_ready, checkpoints, completed_events. Pure.
+    The finished_at half is c4_terminal_row_verdicts (§ 7.1 as amended)."""
     st = str(a.get("status"))
     arts, cps, done = (count_or_none(a.get("artifacts_ready")),
                        count_or_none(a.get("checkpoints")),
@@ -4735,9 +5305,12 @@ def c4():
     """C4 — worker loses its lease but keeps running; the stale write is rejected (12 case 3).
     Acceptance: `compose pause worker-a` for 45s freezes renewals; reconciler writes
     interrupted{lease_expired}; the woken worker's own log shows the fence refusal;
-    the dead attempt has no outputs/finished_at/artifact/checkpoint/completed event;
-    the replacement attempt's fencing_token is strictly greater; attempt N+1 succeeds
-    and the run completes; the fenced turn adds no transcript after unpause."""
+    the dead attempt published NOTHING (no outputs, no artifact, no checkpoint, no
+    completed event) and its terminal row carries finished_at (§ 7.1 as amended by
+    ADR-0075 — 00005's attempts_terminal_timestamped CHECK makes a terminal row without
+    it unrepresentable); the replacement attempt's fencing_token is strictly greater;
+    attempt N+1 succeeds and the run completes; the fenced turn adds no transcript
+    after unpause."""
     if not CTX.get("stack_up"):
         skip("C4", "stale-owner writes are refused by the fence, provable by token order")
         return
@@ -4889,15 +5462,20 @@ def c4():
                     "completed_events"), arow[0])) if arow else {}
     for label, ok, detail in c4_dead_attempt_verdicts(dead):
         check(label, ok, detail)
-    fa = psql(f"SELECT coalesce(finished_at::text, 'NULL') FROM attempts WHERE id = '{att}'")
-    if fa.strip().upper() == "NULL":
-        check("C4c finished_at IS NULL (§ 7.1 literal)", True, fa)
-    else:
-        gap("C4c finished_at IS NULL (§ 7.1's literal expectation)",
-            f"observed finished_at={fa!r}: 00005's attempts_terminal_timestamped CHECK makes a "
-            "terminal row WITHOUT finished_at unrepresentable, so the schema forbids the NULL "
-            "the contract line expects. The half that matters — the dead attempt published "
-            "nothing — is CHECKed above from outputs/artifacts/checkpoints/completed-events.")
+    # § 7.1 C4c asked for `interrupted | t | NULL`; ADR-0075 amends the row to what the
+    # accepted schema can represent, because 00005's attempts_terminal_timestamped CHECK
+    # ties a terminal status to a non-NULL finished_at in BOTH directions (and the
+    # re-claim that produces this row writes them together: attempt_lease_reclaim_turn.go,
+    # ADR-0074). One read, Postgres's own clock in the same statement (§ 8).
+    trow = psql_rows(psql(
+        f"SELECT a.status || '|' || coalesce(a.finished_at::text, 'NULL') || '|' || "
+        f"now()::text || '|' || coalesce((a.finished_at <= now())::text, 'NULL') "
+        f"FROM attempts a WHERE a.id = '{att}'"), 4)
+    term = dict(zip(("status", "finished_at", "now_ts", "ts_le_now"), trow[0])) if trow else {}
+    show(f"C4c the fenced attempt's terminal timestamp (§ 7.1 as amended by ADR-0075, {att})",
+         " | ".join(trow[0]) if trow else "(no row)")
+    for label, ok, detail in c4_terminal_row_verdicts(term):
+        check(label, ok, detail)
 
     rc, log, how = container_logs(svc)
     if not how:
@@ -6120,9 +6698,9 @@ def c5_final_verdicts(status, c1_keys, c5_keys):
     still FAILs."""
     out = [("C5g the killed run reached 'completed' after the checkpointed retry",
             str(status) == "completed", f"observed {status!r}")]
+    witness_shard("c5_run_keys", set(c5_keys or set()))
     out.extend(key_set_identity_verdicts(
-        "C5g the retried run's node_instance_key set is C1's twin set (01: repeated "
-        "attempts append, not overwrite)",
+        C5G_KEYSET_CLAIM,
         c1_keys, c5_keys,
         "no C1 key set in this pass (CTX['c1'] empty) — the append-not-rewrite "
         "identity claim has nothing to compare against"))
@@ -6544,9 +7122,10 @@ def wait_live_past_gate(client, project_id, run_id, timeout, tag, target=None):
 #        psql -tAc "select max(global_seq) from domain_events where turn_id='$TURN'
 #                     and type='conversation.message.agent'"
 #        compared against the fence timestamp (§ 8's timing assertion).
-# This arm therefore runs the REAL-Claude pipeline the way C1's agent leg posts it,
+# This arm therefore runs the REAL-AGENT pipeline the way C1's agent leg posts it
+# (LAB_LAUNCHER's launcher — `claude` or, on the acceptance lab, `pi` per ADR-0069),
 # approves the gate, and fences the live /build_until_verified[1]/implement — an
-# agent.acp attempt that holds its lease for the length of a real Claude turn. A
+# agent.acp attempt that holds its lease for the length of a real agent turn. A
 # leg that never reaches that attempt says GAP with the reason: an attempt that
 # never existed proves nothing about a turn staying quiet.
 
@@ -6567,7 +7146,14 @@ C4E_WINDOW_S = 900                      # the real /plan turn precedes the gate
 # keeps its text for the end, so the arm now waits for the turn's FIRST streamed
 # transcript row (C4E_TRANSCRIPT_TYPES below) and GAPs (never fences) a turn that
 # streams none within this cap.
-C4E_FIRST_CHUNK_S = 180                 # cap on the wait for the turn's first row
+#
+# Sized for the lab's model, not a guess at a fast one: david-birks/qwen3-8-flash-
+# next is a REASONING model, and pi streams `conversation.thought`/tool rows from
+# the first thought — but the worker's sink coalesces AGENT TEXT on 300 ms idle,
+# so the streamed rows this arm waits for land seconds-to-a-minute into a turn,
+# and the turn itself can spend a minute thinking first. 180 s was the claude-
+# sized cap; a reasoning model's first minute is normal, not a gap in evidence.
+C4E_FIRST_CHUNK_S = 300                 # cap on the wait for the turn's first row
 
 # What "the transcript" is for C4e: 09-api-events-data.md's M2 (ADR-0016) list
 # fixes the conversation family — `conversation.message.agent` (worker-coalesced
@@ -6871,14 +7457,16 @@ def c4e_no_live_gap(run_id, status, timeout):
     — said in terms of what the ledger was seen doing (12-test-strategy.md: a
     missing measurement is reported, never greened)."""
     return (f"no live agent.acp attempt at {C4E_TARGET_KEY} on run {run_id} within "
-            f"{timeout}s (last observed run status={status!r}) — the REAL-Claude "
-            "pipeline never reached an /implement turn a worker still held, so "
+            f"{timeout}s (last observed run status={status!r}) — the "
+            f"{LAB_LAUNCHER}-launcher pipeline never reached an /implement turn a "
+            "worker still held, so "
             "conversation.turn.interrupted and the transcript-timing arm have no turn "
             "to measure (§ 7.1 C4e needs an agent.acp attempt). GAP, never PASS.")
 
 
 def c4e_agent_turn(facts=None, alice=None):
-    """§ 7.1 C4e measured on an agent.acp attempt: post the REAL-Claude pipeline the
+    """§ 7.1 C4e measured on an agent.acp attempt: post the real-agent pipeline (the
+    launcher the lab declares, LAB_LAUNCHER) the
     way C1's agent leg posts it (no hold_seconds — the model's own turn is the
     hold), decide the /approve gate, wait for the live /build_until_verified[1]/
     implement, and fence it EXACTLY as C4 fences (compose pause the owning worker's
@@ -6916,8 +7504,23 @@ def c4e_agent_turn(facts=None, alice=None):
                               "C4e", target=C4E_TARGET_KEY)
     if live is None:
         dump_run_evidence(alice, run_id)
-        gap("C4e a live agent.acp attempt to fence",
-            c4e_no_live_gap(run_id, run_status(run_id), window))
+        c4e_st = run_status(run_id)
+        why = c4e_no_live_gap(run_id, c4e_st, window)
+        gap_reason = c1_launcher_pi_refusal_gap(
+            c4e_st, run_failed_cause(run_id), c1_attempt_failure_rows(run_id))
+        if c4e_st in ("failed", "cancelled", "interrupted") and not gap_reason:
+            # With the model layer composed there is no environment story left for
+            # a run that died before its implement turn leased: that is the
+            # product's, and it prints as a FAIL (the GAP wording is kept below
+            # it as the reading of the ledger, so the report still says what was
+            # observed). C4e's own § 7.1 line needs an agent.acp attempt; an
+            # attempt that never existed on a CREDENTIALED lab is not an
+            # unmeasurable environment, it is a run that did not get there.
+            check("C4e a live agent.acp attempt to fence", False,
+                  why + f"; run failed_cause={run_failed_cause(run_id)!r}")
+            return
+        gap("C4e a live agent.acp attempt to fence", why + (
+            f" — {gap_reason}" if gap_reason else ""))
         return
     att, owner, turn = live["id"], live["worker"], live["turn"]
     show(f"C4e the agent.acp attempt caught mid-turn ({live['key']})",
@@ -7014,7 +7617,7 @@ def c4e_agent_turn(facts=None, alice=None):
     # turn against the lab's shared worker capacity (C8f/C8g's cleanup route).
     r = alice.post(LB, f"/api/v1/runs/{run_id}/cancel",
                    {"reason": "M4 exit C4e: the transcript arm is measured; the retry "
-                              "would spend another real Claude turn"})
+                              f"would spend another real {LAB_LAUNCHER} turn"})
     show(f"C4e cleanup POST /runs/{run_id}/cancel -> {r.status}", r.text[:160])
     CTX["c4e"] = {"run_id": run_id, "attempt_id": att, "turn_id": turn, "owner": owner,
                   "fencing_token": live["token"], "unpause_ts": unpause_ts}
@@ -8823,8 +9426,9 @@ def c6_final_verdicts(status, retried, c1_keys, c6_keys, manual_graded=False):
                                   if "implement" in k),
                   f"workspace_policies={pol!r}"))
     k1, k6 = set(c1_keys or []), set(c6_keys or [])
+    witness_shard("c6_run_keys", k6)
     v.extend(key_set_identity_verdicts(
-        "C6c the key set equals C1's (a restore-retry appends, it never rewrites history)",
+        C6C_KEYSET_CLAIM,
         k1, k6,
         f"c1_keys={len(k1)} c6_keys={len(k6)} — the equality needs TWO measured "
         "sets; inventing the missing one would prove nothing"))
@@ -9896,6 +10500,7 @@ C7_UNTIL_KEY = "/build_until_verified"
 C7_BODY_NODES = ("implement", "test", "review")
 C7_EVIDENCE_NODE = "test_evidence"    # the until body's artifact.publish node
 C7_PROBE_NODE = "prev_probe"          # the has(previous.*)-gated C7d witness
+C7_IMPLEMENT_NODE = "implement"       # C7d's transcript half: the agent variant's turn
 C7_MAX_ITERATIONS = 3                 # § 7.1 C7: the re-authored bound (seed ships 4)
 C7_ARTIFACT_PREFIX = "test-"          # § 7.1 C7b's `name like 'test-%'`
 C7_EVAL_CAP = 10000                   # § 6 'Evaluations per run'
@@ -10171,24 +10776,189 @@ def c7_budget_verdicts(evals, detail=None, cap=C7_EVAL_CAP):
     return v
 
 
+def c7_eval_probe_doc(canonical, name, max_iter=C7_MAX_ITERATIONS,
+                     pass_when="nodes.review.outputs.verdict == true",
+                     field="verdict"):
+    """C7c's EVAL-time arm as ONE authored document: the bound loop plus exactly ONE
+    extra declared property on the until body's `review` node — `verdict:
+    {type: boolean}`, declared and NOT `required`. That single difference is what
+    separates the two arms, and it is the difference the compiler itself draws
+    (internal/pipelines/expr/compile.go's `checkNodeRef`: a selection the declared
+    output schema CLOSES is refused with `unknown_field` at publish; one the schema
+    NAMES is admitted): publish accepts this document, and nothing can produce the
+    field — the shipped review step answers {approved, evidence, findings} — so the
+    first passWhen evaluation faults in the evaluator ('no such key', the shape
+    internal/pipelines/expr/expr_test.go pins as `missing-output-key` /
+    `empty-output-envelope`), which is ADR-0022 § 3's indeterminate-is-not-false rule
+    seen from the evaluator instead of from the validator. Returns {doc, applied,
+    missing, edited, probe_field, pass_when}: doc None (the caller GAPs) unless every
+    splice applied."""
+    out = {"doc": None, "applied": [], "missing": [], "edited": None,
+           "probe_field": field, "pass_when": pass_when}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document)")
+        return out
+    doc = json.loads(json.dumps(canonical))            # deep copy; the seed stays untouched
+    applied, missing = out["applied"], out["missing"]
+    if not isinstance(doc.get("metadata"), dict):
+        missing.append("metadata.name (no metadata block to rename)")
+    else:
+        doc["metadata"]["name"] = name
+        applied.append("metadata.name")
+    until = doc_until_node(doc)
+    cfg = (until or {}).get("config") if isinstance((until or {}).get("config"), dict) else None
+    if cfg is None:
+        missing.append("the until loop's config (nowhere to set maxIterations or passWhen)")
+    else:
+        if not isinstance(cfg.get("maxIterations"), int) or cfg["maxIterations"] < 2:
+            missing.append(f"maxIterations >= 2 on the loop (the probe needs a bound the "
+                           f"loop demonstrably never reaches; observed "
+                           f"{cfg.get('maxIterations')!r})")
+        else:
+            cfg["maxIterations"] = max_iter
+            applied.append(f"maxIterations: {max_iter} (the eval arm must stop at iteration 1, "
+                           "so a bound of 1 would prove nothing)")
+        cfg["passWhen"] = pass_when
+        applied.append(f"passWhen := {pass_when} (reads the field the probe declares below)")
+    node = doc_body_node(doc, "review")
+    if node is None:
+        missing.append("the until body's ONE review node (the splice refuses to guess "
+                       "which node is the reviewer)")
+    else:
+        outs = node.get("outputs") if isinstance(node.get("outputs"), dict) else None
+        if not isinstance(outs, dict):
+            missing.append("the review node's declared outputs (a node with NO schema "
+                           "answers undeclared_output_schema at publish, which is the "
+                           "validate arm, not this one)")
+        else:
+            props = outs.get("properties") if isinstance(outs.get("properties"), dict) else None
+            if props is None:
+                missing.append("the review node's outputs.properties (nothing to declare "
+                               "the probe field inside)")
+            elif field in props:
+                missing.append(f"the twin must NOT already declare outputs.{field} — with the "
+                               "field already authored the probe changes nothing and proves "
+                               "nothing")
+            else:
+                props[field] = {"type": "boolean"}
+                applied.append(f"review outputs.{field}: {{type: boolean}} DECLARED and not "
+                               "required — the publish-time reference table now admits the "
+                               "read; the shipped review step never answers it")
+                req = outs.get("required") if isinstance(outs.get("required"), list) else []
+                if field in req:
+                    missing.append(f"outputs.{field} must stay OUTSIDE `required` (a required "
+                                   "field the reply never carries would be refused by the "
+                                   "outputs validator as invalid_output, not by the predicate)")
+                outs["required"] = req
+    out["edited"] = None if missing else doc
+    out["doc"] = None if missing else doc_yaml_emit(doc)
+    return out
+
+
+C7_EVAL_PROBE_NODE = "review"          # the until body node the probe declares inside
+C7_EVAL_FIELD = "verdict"              # declared, never produced: the eval arm's field
+
+
+def c7_eval_arm_doc_verdicts(probe, field=C7_EVAL_FIELD):
+    """Honesty gate on the eval probe itself: it may differ from the bound loop by
+    the ONE declared property and the predicate — nothing else — and the field it
+    declares must not be required (else the outputs validator, not the predicate,
+    would be what fails the attempt)."""
+    p = probe or {}
+    applied = p.get("applied") or []
+    missing = p.get("missing") or []
+    doc = p.get("doc")
+    v = [("C7c eval probe: the document declares the field the predicate reads and "
+          "changes nothing else about the loop",
+          None if (not applied and not missing and not isinstance(doc, str))
+          else (not missing) and any(f"outputs.{field}" in a and "DECLARED" in a for a in applied),
+          f"applied={applied}" + (f" missing={missing}" if missing else ""))]
+    if isinstance(doc, str):
+        v.append((f"C7c eval probe: outputs.{field} is declared and NOT required "
+                  "(the predicate, not the outputs validator, is what faults)",
+                  f"{field}: {{type: boolean}}" in doc
+                  and f"required: [{field}]" not in doc
+                  and f"{field}]" not in (doc.split("required:")[-1].split("\n")[0]
+                                          if "required:" in doc else ""),
+                  f"{len(doc)} bytes"))
+        v.append((f"C7c eval probe: passWhen reads nodes.{C7_EVAL_PROBE_NODE}.outputs.{field}",
+                  f"{C7_EVAL_PROBE_NODE}.outputs.{field}" in doc, "the predicate names it"))
+    return v
+
+
+def c7_eval_arm_verdicts(pub=None, scope_row=None, run_st="", events=None, body_rows=None,
+                         field=C7_EVAL_FIELD):
+    """C7c's eval arm MEASURED (ADR-0075): the probe published (the validator admits a
+    read of a field the schema DECLARES), and the run then failed the SCOPE at once —
+    `predicate_error`, iteration 1, no completion. A refusal at publish is a FAIL of
+    THIS row, not a GAP: it would mean the publish-time validator is complete and the
+    contract's eval arm is unreachable, which is the other thing ADR-0075 would say.
+    pub: c7_publish's result (None = no draft could be created → GAP); scope_row:
+    the until row; run_st: the run's terminal status; events: c7_events rows;
+    body_rows: c7_body_sql text or parsed rows."""
+    label = (f"C7c the SAME rule at eval time (predicate_error, iterations_stopped=1) — "
+             "the declared-but-never-produced field publishes and faults in evaluation "
+             "(ADR-0075's authored probe)")
+    if pub is None:
+        return [(label, None, "no draft could be created for the eval probe — the arm has "
+                              "nothing to publish and nothing to run")]
+    vresp = pub.get("vresp") if isinstance(pub, dict) else None
+    codes = sorted({str((e or {}).get("code") or "") for e in
+                    ((vresp or {}).get("errors") if isinstance(vresp, dict) else []) or []})
+    refused = (pub.get("validate_status") != 200
+               or (isinstance(vresp, dict) and vresp.get("valid") is not True)
+               or not pub.get("revision_id"))
+    if refused:
+        return [(label, False,
+                 f"the eval probe was refused at publish (validate "
+                 f"{pub.get('validate_status')}, codes={codes}, revision="
+                 f"{pub.get('revision_id') or 'none'}) — the declared-optional-field shape "
+                 f"never reached evaluation, so § 7.1's eval arm is UNMEASURED here; the "
+                 "reference table was expected to admit it (compile.go's checkNodeRef "
+                 "refuses only a selection the declared schema closes)")]
+    scope_row = scope_row or {}
+    ev = [e for e in (events or []) if isinstance(e, dict)]
+    its = c7_iteration_count(c7_body_rows(body_rows) if isinstance(body_rows, str)
+                             else (body_rows or []))
+    return [
+        (f"C7c the eval probe PUBLISHED (revision {pub['revision_id']}): the validator "
+         f"admits nodes.{C7_EVAL_PROBE_NODE}.outputs.{field} because the schema DECLARES "
+         "it — the validate arm is the CLOSED-schema probe above, not this one", True,
+         f"validate={pub.get('validate_status')} publish={pub.get('publish_status')} "
+         f"codes={codes or '(none)'}"),
+        ("C7c node.scope.failed{failed_cause: predicate_error} at eval — never counted "
+         "false (an expression that cannot be answered is not a business false)",
+         scope_row.get("failed_cause") == "predicate_error", f"scope row={scope_row}"),
+        ("C7c iterations_stopped=1 (no iteration-2 body rows, no second passWhen)",
+         None if not its else its == 1, f"top iteration with body rows={its}"),
+        ("C7c NO run.completed (the scope failed at once)",
+         not any(e.get("type") == "run.completed" for e in ev) if ev else None,
+         "run.completed present" if ev else "the journal rows did not read"),
+        ("C7c the run reaches failed (it does not complete on an indeterminate predicate)",
+         None if not run_st else run_st == "failed", f"observed {run_st!r}"),
+    ]
+
+
 def c7_predicate_error_verdicts(vresp=None, scope_row=None, run_st="", events=None,
                                 body_rows=None):
-    """C7c — indeterminate is NOT false (ADR-0022 § 3). Two legal arms:
-    (1) validate refuses the passWhen with unknown_field because the review node
-    DECLARES its outputs — publish-time refusal, no run exists to fail; or
-    (2) the document validates and the run must then fail the SCOPE at once with
-    predicate_error, stop at iteration 1 and never complete."""
+    """C7c — indeterminate is NOT false (ADR-0022 § 3), the VALIDATE arm: validate
+    refuses the passWhen with unknown_field because the review node's declared
+    outputs schema CLOSES the selection — publish-time refusal, so no run exists to
+    fail on that document. The eval arm is c7_eval_arm_verdicts: ADR-0075 authors a
+    probe whose predicate reads a field the schema DECLARES (optionally) and no
+    iteration produces, which publishes and faults in evaluation. This function keeps
+    BOTH readings it is handed (a document that validated is still graded against the
+    ledger) but never reports the eval arm: it is measured on its own probe now."""
     codes = {str((e or {}).get("code") or "") for e in
              ((vresp or {}).get("errors") if isinstance(vresp, dict) else []) or []}
     refused = bool(codes & {"unknown_field", "undeclared_output_schema", "predicate_error"})
     if vresp is not None and refused:
         return [
-            ("C7c passWhen over an undeclared output refused at validate (unknown_field)",
+            ("C7c passWhen over an undeclared output refused at validate (unknown_field): the "
+             "review node's CLOSED declared schema is what makes the selection impossible, so "
+             "no document is published (the eval arm is the probe below)",
              True, f"codes={sorted(codes)}"),
-            ("C7c the SAME rule at eval time (predicate_error, iterations_stopped=1)",
-             None, "the schema-declared field is refused at publish time, so the contract's "
-                   "other arm (an eval error failing the scope) has no published document to "
-                   "run — the eval arm is proven offline in test_c7_logic.py"),
         ]
     scope_row = scope_row or {}
     ev = [e for e in (events or []) if isinstance(e, dict)]
@@ -10207,13 +10977,24 @@ def c7_predicate_error_verdicts(vresp=None, scope_row=None, run_st="", events=No
     ]
 
 
-def c7_carry_verdicts(probe_rows, prompt_text=None):
+def c7_carry_verdicts(probe_rows, prompt_rows=None):
     """C7d — carryForward: `previous` is an empty object on iteration 1 and non-empty
     from iteration 2 on. Measured, not asserted: the re-authored loop carries a
     `when: has(previous.review_feedback)` probe node, so iteration 1 must read
-    `skipped` and every later iteration `succeeded`. The twin is process.exec, so it
-    has no prompt echoing `previous` — that half of C7d belongs to the agent variant's
-    transcript and is GAPped here rather than inferred."""
+    `skipped` and every later iteration `succeeded`.
+
+    `prompt_rows` is the TRANSCRIPT half (§ 7.1's "the twin's prompt echoes it, and
+    the transcript line proves it"), graded on the run that HAS a prompt: the
+    deterministic twin's body is process.exec — no prompt, no conversation.turn — so
+    the rows here come from the AGENT variant, whose /implement prompt the § 9.3
+    sample guards with `has(previous.review_feedback)`. [(iteration, prompt)] read
+    from `conversation_turns.prompt` (c7_agent_prompt_rows); None means the ledger
+    could not be read, [] means no agent-variant implement turn exists yet (an
+    honest GAP naming what was looked for). A prompt is graded BY ITS ITERATION:
+    iteration 1 must carry C7D_EMPTY_MARK (the guard's empty-`previous` spelling),
+    iteration ≥2 must NOT — the loop's evidence text reached the model instead.
+    Passing a STRING keeps the old single-prompt behaviour (offline-test
+    compatibility): it is graded as 'a prompt exists, does it echo `previous`'."""
     rows = [tuple(r) for r in (psql_rows(probe_rows, 2) if isinstance(probe_rows, str)
                               else [tuple(r) for r in (probe_rows or [])])]
     seen = {}
@@ -10228,13 +11009,73 @@ def c7_carry_verdicts(probe_rows, prompt_text=None):
                                  and all(s in ("succeeded",) for i, s in seen.items()
                                          if i >= 2) and any(i >= 2 for i in seen)),
           f"probe rows by iteration={{{', '.join(f'{k}:{v0}' for k, v0 in sorted(seen.items()))}}}"),
-         ("C7d the twin's prompt echoes `previous` (transcript line)",
-          None if prompt_text is None else "previous" in prompt_text,
-          "the deterministic twin's body is process.exec — there is no prompt and no "
-          "conversation.turn transcript to echo `previous` (C7d's transcript half is the "
-          "agent variant's, whose prompt the § 9.3 sample guards with has()); the ledger "
-          "witness above is what this lab can actually measure")]
+         ]
+    v.append(c7_carry_transcript_verdict(prompt_rows))
     return v
+
+
+# The § 9.3 sample's own spelling of an EMPTY `previous` — the false branch of
+# `has(previous.review_feedback) ? previous.review_feedback : '…'` in the agent
+# variant's /implement prompt. It is the only text in the pipeline that can prove
+# the guard ran with nothing carried, and the wording is the fixture's, not ours.
+C7D_EMPTY_MARK = "(first iteration: no prior review)"
+C7D_PREV_LINE = "Previous reviewer feedback:"
+
+
+def c7_carry_transcript_verdict(prompt_rows, tag="C7d"):
+    """The transcript half of C7d, as a pure grade over [(iteration, prompt)].
+
+    None (prompt_rows unreadable) / [] (no agent-variant /implement turn in this
+    lab) → GAP: with no journaled prompt there is nothing to say the loop's
+    evidence reached a model, and `previous`'s ledger witness above does not
+    speak for a prompt that does not exist. With rows: iteration 1's prompt must
+    carry C7D_EMPTY_MARK (empty `previous`), and some iteration ≥2's prompt must
+    NOT carry it while still carrying the C7D_PREV_LINE the guard renders — the
+    previous iteration's feedback echoed into the next attempt's prompt. A ≥2
+    prompt still carrying the empty mark is the carryForward FAILING in the
+    product, and is graded False, never GAPped."""
+    label = (f"{tag} the prompt echoes `previous` on the run that has one "
+             "(transcript line — the agent variant's journaled conversation_turns.prompt)")
+    if prompt_rows is None:
+        return (label, None, "conversation_turns.prompt could not be read — the "
+                             "transcript half of C7d is unmeasured, never inferred")
+    rows = []
+    for it, text in (prompt_rows or []):
+        try:
+            rows.append((int(it), str(text or "")))
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        return (label, None,
+                "no agent-variant /implement turn has been journalled in this lab, and "
+                "the deterministic twin this gate re-authors is process.exec — it has no "
+                "prompt and no conversation.turn transcript to echo `previous` (C7d's "
+                "transcript half is the agent variant's, whose prompt the § 9.3 sample "
+                "guards with has()). The ledger witness above is what this lab measures; "
+                "with a model credential the agent loop reaches iteration 2 and THIS "
+                "half measures too")
+    first = [t for i, t in rows if i == 1]
+    later = [(i, t) for i, t in rows if i >= 2]
+    marks = [i for i, t in rows if C7D_EMPTY_MARK in t]
+    echoed = [(i, t) for i, t in later if C7D_EMPTY_MARK not in t
+              and C7D_PREV_LINE in t and t.split(C7D_PREV_LINE, 1)[1].strip()[:1]]
+    detail = (f"{len(rows)} journaled prompt row(s) over iteration(s) "
+              f"{sorted({i for i, _ in rows})}; the empty-`previous` guard text "
+              f"{C7D_EMPTY_MARK!r} appears in iteration(s) {marks or '[]'}")
+    if echoed:
+        n, t = echoed[0]
+        feed = t.split(C7D_PREV_LINE, 1)[1].strip()
+        return (label, True, detail + f"; iteration {n}'s prompt carries the carried "
+                f"feedback instead of the guard — `{C7D_PREV_LINE}` then "
+                f"{len(feed)} char(s), starting "
+                f"{feed[:70]!r}" + (" and iteration 1 carried the guard" if first and
+                                    C7D_EMPTY_MARK in first[0] else ""))
+    if later and marks and all(C7D_EMPTY_MARK in t for _i, t in later):
+        return (label, False, detail + "; every iteration ≥2 prompt STILL carries the "
+                "empty-`previous` guard text — the loop never carried the prior "
+                "review into the next attempt's prompt (carryForward broken)")
+    return (label, None, detail + "; no iteration ≥2 prompt carries a "
+            f"`{C7D_PREV_LINE}` line — the echo half is unreadable rather than absent")
 
 
 def c7_exhaustion_doc(canonical, name, max_iter=C7_MAX_ITERATIONS, pass_when=None):
@@ -10469,6 +11310,59 @@ def c7_root_rows(run_id):
                   "root scope rows")
 
 
+def c7_agent_run_ids():
+    """The runs whose agent.acp /implement turns C7d may read, most-wanted first:
+    C1's agent leg (the run that really ran the loop end to end), then whichever
+    agent-variant run this driver process knows about (C2's, C4e's, W3's, C11's),
+    then the § 7.0 seed's own. Empty when this shard pass posted none — the reader
+    then falls back to ANY run in the lab, which is the honest widest search."""
+    ids = []
+    c1 = CTX.get("c1") or {}
+    if isinstance(c1, dict):
+        ids.extend(c1.get("runs") or [])
+    for key in ("c2_run", "c11_agent_run", "c4e_run", "c9g_run", "w3_run_id", "c4_run"):
+        ids.append(CTX.get(key) or "")
+    c11 = CTX.get("c11") or {}
+    if isinstance(c11, dict):
+        ids.append(c11.get("agent_run_id") or "")
+    facts = CTX.get("manifest") or {}
+    ids.append(mf(facts, "run_id", "agent") or "")
+    return [str(i).strip() for i in ids if str(i).strip()]
+
+
+def c7_agent_prompt_rows(run_ids=None, limit=8):
+    """[(iteration, prompt)] — the TRANSCRIPT half of C7d, from the only kind of run
+    that has a prompt: an `agent.acp` /implement turn. `conversation_turns.prompt`
+    is NOT NULL (00003) precisely because the worker journals what it sent, so this
+    reads the bytes a real model was handed — not a reconstruction.
+
+    run_ids: the runs to look in, most-wanted first (C1's agent leg, then the § 7.0
+    seed's agent run, then C11's/C2's) — the rows are graded per run, so mixing
+    iterations from two different loops would say nothing. None/[] for run_ids means
+    "any run in the lab", which is what a per-gate shard pass has to fall back to.
+    Returns None when the ledger refused (GAP), [] when no such turn exists yet."""
+    ids = [str(r).strip().replace("'", "") for r in (run_ids or []) if str(r).strip()]
+    where = (f"WHERE ne.node_instance_key LIKE '{C7_UNTIL_KEY}[%/{C7_IMPLEMENT_NODE}' "
+             "AND ne.kind = 'agent.acp'")
+    if ids:
+        where += " AND ne.run_id IN (" + ",".join(f"'{r}'" for r in ids[:6]) + ")"
+    text = c7_sql("SELECT regexp_replace(split_part(ne.node_instance_key,'/',2),"
+                  "'[^0-9]','','g') || '|' || replace(ct.prompt, chr(10), ' ') "
+                  "FROM conversation_turns ct "
+                  "JOIN attempts a ON a.turn_id = ct.id "
+                  "JOIN node_executions ne ON ne.id = a.node_execution_id "
+                  + where + " ORDER BY ne.run_id, ct.created_at "
+                  f"LIMIT {int(limit)}", "agent implement turn prompts")
+    if text is None:
+        return None
+    out = []
+    for line in (text or "").splitlines():
+        it, _, prompt = line.partition("|")
+        if _ and it.strip().isdigit():
+            out.append((int(it), prompt))
+    return out
+
+
 def c7_probe_rows(run_id):
     """'iteration|status' for the has(previous.review_feedback) witness node."""
     return c7_sql(f"SELECT regexp_replace(split_part(node_instance_key,'/',2),'[^0-9]','','g') "
@@ -10626,7 +11520,8 @@ def c7():
                                           c7_scope_iterations_from_events(exh_ev)}))
             c7_emit(c7_budget_verdicts(c7_evaluations(run_id),
                                        c7_evaluations_api(alice, run_id)))
-            c7_emit(c7_carry_verdicts(c7_probe_rows(run_id)))
+            c7_emit(c7_carry_verdicts(c7_probe_rows(run_id),
+                                      c7_agent_prompt_rows(c7_agent_run_ids())))
             dump_run_evidence(alice, run_id)
             CTX["c7_exhaustion_run"] = run_id
 
@@ -10665,6 +11560,55 @@ def c7():
                 check("C7c NO run.completed anywhere for the indeterminate run",
                       st2 != "completed", f"terminal={st2!r}")
                 CTX["c7_predicate_run"] = run2
+
+    # ---- C7c's EVAL arm (ADR-0075): a field the schema DECLARES, no reply carries ----
+    # The seed twin's review schema CLOSES the field set, so `nodes.review.outputs.verdict`
+    # is refused by the publish-time reference table (the validate arm above — no document,
+    # no run, nothing to evaluate). ADR-0075's probe declares `verdict: {type: boolean}` as
+    # an OPTIONAL property: the same reference table ADMITS it (compile.go's checkNodeRef
+    # only refuses what the declared schema closes), the shipped review step still never
+    # answers it, and the first passWhen evaluation faults — which is the contract's other
+    # arm, measured: the SCOPE fails at once with predicate_error.
+    ev = c7_eval_probe_doc(src, schema_name("m4x-c7-eval"), C7_MAX_ITERATIONS)
+    c7_emit(c7_eval_arm_doc_verdicts(ev))
+    show("C7c eval-probe splices applied to the seed twin document",
+         " | ".join(ev["applied"]) or "(none)")
+    if ev["doc"] is None:
+        gap("C7c eval-time probe", f"the eval probe could not be authored ({ev['missing']}) — "
+                                   "with no authored document the eval arm has nothing to "
+                                   "publish and nothing to run")
+    else:
+        pub3 = c7_publish(admin, twin.get("pipeline_id"), "C7c eval-time probe", ev["doc"])
+        if pub3 is None:
+            gap("C7c eval-time probe", "no draft could be created for the eval probe — the "
+                                       "eval arm is unmeasurable without a document")
+        else:
+            valid3 = (pub3.get("vresp") or {}).get("valid") if isinstance(pub3.get("vresp"),
+                                                                        dict) else None
+            show("C7c eval probe: what publish answered",
+                 f"validate={pub3.get('validate_status')} valid={valid3} "
+                 f"publish={pub3.get('publish_status')} revision="
+                 f"{pub3.get('revision_id') or '(none)'}")
+            if not pub3.get("revision_id") or valid3 is not True:
+                # Refused (or published without validating): a MEASURED answer to
+                # "is the eval arm reachable at all?" — FAIL if the validator turned
+                # this shape away, because that is the falsification ADR-0075 names.
+                c7_emit(c7_eval_arm_verdicts(pub3))
+            else:
+                run3 = c7_post_run(alice, twin, pub3["revision_id"], f"m4x-c7-eval-{suffix}",
+                                   "C7c eval-time probe")
+                if not run3:
+                    gap("C7c eval-time probe", "the probe published as revision "
+                                               f"{pub3['revision_id']} but its run could not "
+                                               "be posted — the eval fault has no run to read")
+                else:
+                    st3 = c7_run_to_terminal(alice, twin, run3, 1800, "C7c eval-time probe")
+                    c7_emit(c7_eval_arm_verdicts(
+                        pub3, scope_row=c7_scope_row(run3), run_st=st3 or "",
+                        events=c7_events(run3),
+                        body_rows=c7_sql(c7_body_sql(run3), "C7c eval body rows")))
+                    dump_run_evidence(alice, run3)
+                    CTX["c7_eval_run"] = run3
     CTX["c7"] = {"revision_id": rev, "exhaustion_run": run_id,
                  "splices": exh["applied"], "events": exh_ev}
 
@@ -13690,10 +14634,26 @@ def c9g_takeover(alice, facts):
     live = wait_live_past_gate(alice, mf(agent, "project_id"), run_id, C9G_WINDOW_S,
                               "C9g", target=C4E_TARGET_KEY)
     if live is None:
-        gap("C9g human takeover of a run conversation",
-            f"no live agent.acp attempt at {C4E_TARGET_KEY} inside {hold_window(C9G_WINDOW_S)}s "
-            f"(run status={run_status(run_id)!r}) — the takeover has no turn to cancel; "
-            "an attempt that never existed proves nothing about a controller lock")
+        # Same algebra C2a uses (c2_no_live_attempt_verdict): a run that FAILED
+        # without ever holding the implement turn is the product's failure, not an
+        # environment gap — unless launcher pi's no-credential refusal explains it,
+        # which only holds when the model layer was NOT composed. Grading every
+        # no-live outcome as GAP is what let a `status='failed'` run pass as "no
+        # turn to cancel" on the runners.
+        c9g_st = run_status(run_id)
+        kind, _label, detail = c2_no_live_attempt_verdict(
+            c9g_st, "",
+            launcher_gap=c1_launcher_pi_refusal_gap(
+                c9g_st, run_failed_cause(run_id), c1_attempt_failure_rows(run_id)))
+        reason = (f"no live agent.acp attempt at {C4E_TARGET_KEY} inside "
+                  f"{hold_window(C9G_WINDOW_S)}s (run status={c9g_st!r}) — the takeover "
+                  "has no turn to cancel; an attempt that never existed proves nothing "
+                  f"about a controller lock; {detail}")
+        if kind == "check":
+            check("C9g human takeover of a run conversation", False, reason)
+        else:
+            gap("C9g human takeover of a run conversation", reason)
+        dump_run_evidence(alice, run_id)
         return
     att, turn = live["id"], live["turn"]
     shape = psql_rows(psql(c4e_attempt_shape_sql(att)), 4)
@@ -13797,7 +14757,7 @@ def c9g_takeover(alice, facts):
                                    types, c9_cursor_tables(), trow2, waited))
     r = alice.post(LB, f"/api/v1/runs/{run_id}/cancel",
                    {"reason": "M4 exit C9g: the takeover arms are measured; the retry would "
-                              "spend another real Claude turn"})
+                              f"spend another real {LAB_LAUNCHER} turn"})
     show(f"C9g cleanup POST /runs/{run_id}/cancel -> {r.status}", r.text[:160])
     CTX["c9g"] = {"run_id": run_id, "attempt_id": att, "turn_id": turn, "conversation": conv}
 
@@ -14386,13 +15346,37 @@ C10_MAX_ATTEMPTS = 2                    # the seed twin reviewer's retry.maxAtte
 # C10c — the model.chat arm (a gate-owned scratch pipeline the driver publishes)
 C10C_NODE_ID = "chat_review"
 C10C_NODE_KEY = "/" + C10C_NODE_ID
-C10C_MODEL = "qwen3-8-27b"              # the lab's allowlisted model (LLM collective)
+# The lab's model is the SAME one every other agent leg talks to, and it is the
+# OPERATOR's choice, not this file's: the acceptance workflow sets
+# COMMUNICATION_LLM_MODEL (currently david-birks/qwen3-8-flash-next after the
+# gateway retired qwen3-8-27b/ripple-65b) and compose.m4-llm.yml hands it to the
+# worker as COMMUNICATION_MODEL_CHAT_MODELS. A node naming a model the worker
+# does not allowlist is refused by name (internal/worker/modelchat.go), so the
+# arm resolves its model from the WORKER's own allowlist at run time
+# (c10c_chat_model) and this literal is only the last fallback.
+C10C_MODEL_ENV = "COMMUNICATION_LLM_MODEL"
+C10C_MODEL = (os.environ.get(C10C_MODEL_ENV) or "").strip() or "qwen3-8-27b"
 C10C_MAX_ATTEMPTS = 1                   # one attempt — the boundary's verdict, no retry
-C10C_MAX_TOKENS = 200
-C10C_TIMEOUT = 240                      # node timeoutSeconds; the arm's wait cap is 300 s
+# A REASONING model spends part of the token budget thinking before the JSON
+# lands: 200 tokens was the retired non-reasoning model's comfort zone, and an
+# over-thought budget returns finish_reason=length with an empty answer
+# (modelchat.go's completion_truncated) — a failure for a reason that is NOT the
+# reply's schema, which the honesty guard would (correctly) refuse to PASS. The
+# budget is sized for the thinking + one small object, and reasoningEffort=low
+# keeps the thinking short (ADR-0041; the endpoint may ignore it).
+C10C_MAX_TOKENS = 1200
+C10C_REASONING_EFFORT = "low"
+C10C_TIMEOUT = 420                      # node timeoutSeconds; the arm's wait cap is below
+C10C_ARM_WAIT_S = 900                   # TWO sequential model.chat nodes on a reasoning model
 C10C_BASE_URL_ENV = "COMMUNICATION_MODEL_CHAT_BASE_URL"  # what the worker actually reads
 C10C_MODELS_ENV = "COMMUNICATION_MODEL_CHAT_MODELS"      # the model allowlist (not a secret)
-C10C_REAL_OVERLAY = "compose.real.yml"  # the ONLY layer in the repo that sets the worker endpoint
+# The layers that set the worker endpoint. compose.m4-llm.yml is the one THIS
+# driver composes (from a readable COMMUNICATION_LLM_API_KEY_HOST_FILE);
+# compose.real.yml is lab_reset.sh / scripts/lab-up.sh's layer for the same
+# configuration. An unset endpoint on a stack that names NEITHER is the lab
+# bring-up gap; one on a stack that names BOTH is a resolved-empty env.
+C10C_REAL_OVERLAY = "compose.real.yml"  # kept: the offline test and older reports name it
+C10C_MODEL_OVERLAYS = (M4_LLM_LAYER, C10C_REAL_OVERLAY)  # checked BY NAME, in order
 C10C_REPLY = '{"approved": "yes", "evidence": 42}'
 C10C_CONTROL_NODE_ID = "chat_control"          # the same arm's VALID-reply control
 C10C_CONTROL_NODE_KEY = "/" + C10C_CONTROL_NODE_ID
@@ -14696,17 +15680,29 @@ def c10_skip_verdicts(skips, doc=None, inputs=None, watch=None, failing_key=C10_
     return v
 
 
-C10_WAITING = ("queued", "leased", "running", "waiting", "waiting_attempt",
-               "waiting_human", "in_progress")
+# § 7.1 C10b's "still waiting" vocabulary, read off 00005's own node_executions
+# CHECK instead of invented (ADR-0075). live4/C10.out:41 threw away a `ready`
+# until-scope sample as "already closed" because 'ready' was not in the old tuple —
+# the routing arm GAPped on a row it had ALREADY measured. A status outside both
+# sets reads as "the ledger wrote a status this arm has no vocabulary for": never a
+# live sample, never the routing FAIL.
+C10_TERMINAL_NODE_STATES = ("succeeded", "failed", "skipped", "cancelled", "interrupted")
+C10_WAITING = ("pending", "ready", "leased", "running", "waiting")
 C10_BUSINESS_CAUSES = ("until_exhausted", "not_approved", "unapproved", "rejected",
                        "condition_default")
 
 
 def c10_routing_verdicts(live=None, final=None, run_status="", skips=None, doc=None,
-                         inputs=None, iter_rows=None, watch=None):
+                         inputs=None, iter_rows=None, watch=None, live_why="",
+                         tilt_live=None, tilt_why=""):
     """C10b — the run's ROUTING never changed over a rejected reply.
     live: the until scope's row as read WHILE the malformed attempt was being
-    retried; final: the same row after the run terminated; run_status: the run's
+    retried (live_why: why that read is None); tilt_live/tilt_why: the same read taken
+    on ADR-0075's AUTHORED arm, whose widened backoff makes the window wide enough to
+    stand in — the malformed twin's own window is shipped-speed (its first attempt
+    closes and its retry is claimed in the gap between two reads), so the sample it
+    could not land is graded from the arm that lands it, and the row says WHERE it came
+    from rather than GAPping; final: the same row after the run terminated; run_status: the run's
     terminal status; skips: the run's [{key, reason}] skipped node rows (None when
     unreadable); doc/inputs: the run's pinned canonical document and its OWN
     validated inputs, which is how a skip is attributed (watched routing vs the
@@ -14718,17 +15714,22 @@ def c10_routing_verdicts(live=None, final=None, run_status="", skips=None, doc=N
         return str(v or "").strip().lower() in ("", "-", "none", "null", "<none>")
 
     v = []
-    if not live:
+    src, whence = (live, "the malformed twin's own sample") if live else \
+        ((tilt_live, "ADR-0075's authored arm (widened retry backoff)") if tilt_live
+         else (None, ""))
+    if not src:
         v.append(("C10b while the reply was being rejected the until scope was STILL WAITING on "
                   "the attempt (no route was taken)", None,
-                  "the scope row could not be sampled mid-failure — routing-while-failing is "
-                  "unmeasurable"))
+                  "neither the malformed twin's sample nor the authored arm's landed a "
+                  f"non-terminal scope row (twin: {live_why or 'no read taken'}; authored "
+                  f"arm: {tilt_why or 'no read taken'})"))
     else:
-        st = str(live.get("status") or "")
+        st = str(src.get("status") or "")
         v.append(("C10b while the reply was being rejected the until scope was STILL WAITING on "
                   "the attempt (no route was taken)",
-                  st in C10_WAITING and nullish(live.get("outcome")),
-                  f"live scope status={st!r} outcome={live.get('outcome')!r}"))
+                  st in C10_WAITING and nullish(src.get("outcome")),
+                  f"live scope status={st!r} outcome={src.get('outcome')!r} — sampled on "
+                  f"{whence} (00005's non-terminal set: {list(C10_WAITING)})"))
     if not final:
         v.append(("C10b the until scope never SUCCEEDED over a rejected reply", None,
                   "no terminal scope row to read"))
@@ -14759,14 +15760,20 @@ def c10_routing_verdicts(live=None, final=None, run_status="", skips=None, doc=N
     return v
 
 
-def c10_retry_verdicts(rows, max_attempts=C10_MAX_ATTEMPTS, retry_events=None):
+def c10_retry_verdicts(rows, max_attempts=C10_MAX_ATTEMPTS, retry_events=None,
+                       tilt_ran=False, tilt_why=""):
     """C10a/C10b retry arm. rows: [{attempt_number,status,error_class}] for the
     reviewer key, oldest first; retry_events: the journal's
     node.attempt.retry_scheduled payloads (None when unreadable).
     invalid_output is in the seed reviewer's retriableErrors, so the FIRST attempt
-    must be followed by a second. 'the retry gets it right' is a GAP unless the lab
-    actually shows a later attempt succeeding — the shipped fixture helper answers
-    byte-identically on every attempt, and editing it is forbidden."""
+    must be followed by a second. 'the retry gets it right' is NOT this run's to show:
+    the shipped fixture helper answers byte-identically on every attempt and
+    make_fixture_repo.sh must not be edited, so ADR-0075 authors a marker-aware
+    reviewer revision for that arm (c10b_tilt_doc / c10b_tilt_verdicts, graded in this
+    gate). This function grades the malformed twin's chain (the retry HAPPENED, the
+    budget, the error class) and says where the success is shown: when tilt_ran the row
+    is not emitted twice, and when the authored arm could not run the row keeps an
+    honest GAP naming why."""
     rows = rows or []
     v = [("C10b the rejected reply was RETRIED per policy "
           f"(retry.maxAttempts {max_attempts}): the reviewer spent more than one attempt",
@@ -14795,15 +15802,292 @@ def c10_retry_verdicts(rows, max_attempts=C10_MAX_ATTEMPTS, retry_events=None):
     if won:
         v.append(("C10b the retry gets it RIGHT: a later attempt's valid reply succeeded",
                   True, f"attempt(s) {[r.get('attempt_number') for r in won]} succeeded"))
+    elif tilt_ran:
+        pass                       # graded by c10b_tilt_verdicts on the authored chain,
+        # printed by this same gate — the claim is measured there and is never tallied
+        # twice (a second GAP line for a row already PASSed elsewhere would re-open
+        # exactly what ADR-0075 closed)
     else:
         v.append(("C10b the retry gets it right and the loop CONTINUES on a valid reply", None,
-                  f"every one of the {len(rows) or 0} attempt(s) answered identically: the "
-                  "shipped fixture helper has no mode that returns a VALID reviewer reply on "
-                  "one attempt and a malformed one on another, and make_fixture_repo.sh must "
-                  "not be edited — the retry happened, its success is unproducible here "
-                  "(hold_seconds is no help either: it sleeps BEFORE the step answers, so it "
-                  "widens the window without ever changing the bytes the twin replies with)"))
+                  f"every one of the {len(rows) or 0} attempt(s) of the MALFORMED twin "
+                  "answered identically: the shipped fixture helper has no mode that returns "
+                  "a VALID reviewer reply on one attempt and a malformed one on another, and "
+                  "make_fixture_repo.sh must not be edited "
+                  "(docs/compatibility/probes/m4/seed.sh:306). ADR-0075 authors a "
+                  "marker-aware reviewer revision for exactly this arm; it produced no "
+                  f"chain here: {tilt_why or 'the authored arm did not run'}"))
     return v
+
+
+# ---------------------------------------------------------------------------
+# § 7.1 C10b's retry arm, AUTHORED (ADR-0075).
+#
+# The shipped fixture's review step answers the SAME bytes on every attempt, so a
+# twin built from it can only ever show "the retry happened and failed again" —
+# which is why live5/C10.out GAPped "the retry gets it right and the loop CONTINUES
+# on a valid reply" (and why `hold_seconds` could never have helped: it sleeps BEFORE
+# the step answers, so it widens the window without changing the reply). ADR-0075
+# authors the arm instead: this leg publishes its OWN reviewer revision whose step
+# counts its own attempts in the run's scratch and answers the malformed reply on the
+# FIRST attempt of the chain and the valid reply on the next. The malformed run above
+# stays exactly as it is — it carries C10a (the refusal, the location, the silence)
+# and it is the run whose scope is sampled mid-failure at shipped speed.
+#
+# Why the step is `sh -c` rather than a new helper in /opt/m4/bin: the worker resolves
+# `executable` with exec.LookPath on its OWN PATH and refuses a name containing a
+# separator (internal/worker/procexec.go's resolveExecutable), so the only directory a
+# leg may drop a helper into is the one `make_fixture_repo.sh` regenerates with
+# `rm -rf` — forbidden to edit, and a file installed after it is invisible to every
+# other worker's re-generation. `sh` is on the PATH the same way the shipped helpers'
+# `#! /bin/sh` interpreter already is, and nono's per-launch ToolReads grant the
+# resolved executable's own directory (internal/sandbox/nono/launchplan.go), so the
+# tilt step runs under the same sandbox rules as the twin's own steps.
+# ---------------------------------------------------------------------------
+
+C10B_TILT_NAME_HINT = "m4x-c10-tilt"
+C10B_TILT_STEP = "sh"                       # LookPath'd like every other step
+C10B_TILT_CWD = "scratch"                   # the run workspace's scratch: the ONE
+#                                             directory the reviewer may write. The
+#                                             seed reviewer declares its repositories
+#                                             read_only, and scratch is the role the
+#                                             plan grants rw unconditionally
+#                                             (internal/workspace/git/plan.go's
+#                                             RoleScratch), so the counter lives where
+#                                             the node's own contract says it may.
+C10B_TILT_MARKER = "m4-review-attempts.count"
+C10B_TILT_BACKOFF_S = 30                    # widened: a window the sampler can stand in
+C10B_TILT_MAX_ATTEMPTS = 2                  # the seed's value, NOT raised: the arm is
+#                                             "the retry gets it right", and § 7.1 C10b
+#                                             counts attempts against maxAttempts
+C10B_TILT_WATCH_S = 900
+C10B_TILT_SAMPLE_S = 300
+C10B_MALFORMED_REPLY = '{"approved": "yes", "evidence": "tilt arm attempt 1: a string ' \
+                       'where the node declares boolean (docs/m4-contract.md § 7.1 C10a)"}'
+C10B_VALID_REPLY = '{"approved": true, "evidence": "tilt arm: the retry answers the ' \
+                   'valid reply the schema declares (docs/m4-contract.md § 7.1 C10b)"}'
+
+
+def c10b_tilt_script(marker=C10B_TILT_MARKER, malformed=C10B_MALFORMED_REPLY,
+                     valid=C10B_VALID_REPLY):
+    """The reviewer step: count the times THIS node has answered in this run's
+    scratch, then answer malformed the first time and valid afterwards.
+
+    The counter lives in the child's cwd (the run's scratch) rather than in a table,
+    because a retry continues the SAME workspace (ADR-0019's continue_workspace
+    recovery — internal/workspace/git/plan.go's continueRun selects exactly that
+    strategy for attempt > 1), so the file the first attempt wrote is still there when
+    the retry runs, and it is gone for a fresh run because every run gets its own
+    workspace. POSIX sh only (the resolved interpreter may be dash); the counter is
+    reset to 0 if the file ever reads as garbage, so a corrupt witness cannot wedge the
+    node into answering malformed forever."""
+    return ("tries=0; "
+            f"if [ -f '{marker}' ]; then read tries < '{marker}' || tries=0; fi; "
+            "case \"$tries\" in ''|*[!0-9]*) tries=0;; esac; "
+            f"tries=$((tries + 1)); printf '%s\\n' \"$tries\" > '{marker}' || exit 1; "
+            "if [ \"$tries\" -le 1 ]; then "
+            f"printf '%s\\n' '{malformed}'; else printf '%s\\n' '{valid}'; fi")
+
+
+def c10b_attempt_chain_ok(chain):
+    """Pure helper every C10b arm shares: (rows readable, the first attempt closed
+    failed on invalid_output, a LATER attempt succeeded, and the succeeded attempt
+    number or None). `chain` is [{attempt_number,status,error_class}] oldest first —
+    [] (or None) is the ledger not answering, which is a GAP, never a zero."""
+    rows = [r for r in (chain or []) if isinstance(r, dict)]
+    readable = bool(rows)
+    first = rows[0] if readable else None
+    first_closed = bool(first) and str(first.get("status")) == "failed" \
+        and str(first.get("error_class")) == "invalid_output"
+    late = [r for r in rows[1:] if str(r.get("status")) == "succeeded"] if readable else []
+    return readable, first_closed, bool(late), (_int(late[0].get("attempt_number"))
+                                                if late else None)
+
+
+def c10b_tilt_doc(canonical, name, backoff_s=C10B_TILT_BACKOFF_S,
+                  max_attempts=C10B_TILT_MAX_ATTEMPTS, cwd=C10B_TILT_CWD,
+                  marker=C10B_TILT_MARKER):
+    """Author § 7.1 C10b's retry arm as ONE revision: the seed twin with the until
+    body's `review` node's STEP replaced by the marker-aware script above, its
+    `retry` given a widened backoff (the same maxAttempts the seed declares), its cwd
+    set to the scratch the counter lives in, and maxIterations raised to 3 so the
+    loop's CONTINUATION onto iteration 2 is observable. The declared outputs schema is
+    NOT touched — `approved` stays a boolean, so the malformed reply is refused as
+    invalid_output exactly as it is in the malformed run above. Returns
+    {doc, applied, missing, edited} — doc None unless every splice applied."""
+    out = {"doc": None, "applied": [], "missing": [], "edited": None}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document)")
+        return out
+    doc = json.loads(json.dumps(canonical))         # deep copy; the seed stays untouched
+    applied, missing = out["applied"], out["missing"]
+    if not isinstance(doc.get("metadata"), dict):
+        missing.append("metadata.name (no metadata block to rename)")
+    else:
+        doc["metadata"]["name"] = name
+        applied.append("metadata.name")
+    until = doc_until_node(doc)
+    ucfg = (until or {}).get("config") if isinstance((until or {}).get("config"), dict) else None
+    if ucfg is None:
+        missing.append("the until loop's config (nowhere to raise maxIterations, and an "
+                       "arm whose loop cannot reach iteration 2 shows no continuation)")
+    else:
+        seed_iter = ucfg.get("maxIterations")
+        if not isinstance(seed_iter, int) or seed_iter < 2:
+            missing.append(f"maxIterations >= 2 on the loop (observed {seed_iter!r})")
+        elif seed_iter < 3:
+            missing.append(f"maxIterations >= 3 on the loop — the retry succeeds on attempt "
+                           f"2 of iteration 1 and the loop must then be seen ON iteration 2, "
+                           f"which a bound of {seed_iter} cannot show")
+        else:
+            ucfg["maxIterations"] = 3
+            applied.append("maxIterations: 3 (the continuation onto iteration 2 is what "
+                           "'the loop CONTINUES on a valid reply' means as a ledger fact)")
+    node = doc_body_node(doc, "review")
+    if node is None:
+        missing.append("the until body's ONE review node (the author refuses to guess "
+                       "which node is the reviewer)")
+    else:
+        cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        outs = node.get("outputs") if isinstance(node.get("outputs"), dict) else None
+        props = (outs or {}).get("properties") if isinstance(outs, dict) else None
+        if not isinstance(props, dict) or str(props.get("approved", {}).get("type")) \
+                != "boolean":
+            missing.append("the review node's declared outputs.approved: boolean — without "
+                           "it the malformed reply is not a schema violation and this arm "
+                           "measures nothing")
+        else:
+            # `cwd` is a process.exec CONFIG field (schema $defs/configProcessExec; a
+            # node-level `cwd` would be refused as an unknown property), relative to the
+            # run workspace root, and the seed's reviewer leaves it unset. It is written
+            # here so the counter's home is IN the document, not an assumption.
+            cfg["executable"] = C10B_TILT_STEP
+            cfg["args"] = ["-c", c10b_tilt_script(marker)]
+            cfg["cwd"] = cwd
+            node["config"] = cfg
+            applied.append(f"review step: executable {C10B_TILT_STEP} -c <marker-aware "
+                           f"reply>, config.cwd {cwd!r} — attempt 1 answers the malformed "
+                           "reply, attempt 2+ the valid one")
+            retry = node.get("retry") if isinstance(node.get("retry"), dict) else {}
+            bo = retry.get("backoff") if isinstance(retry.get("backoff"), dict) else {}
+            bo.update({"baseSeconds": backoff_s, "multiplier": 1,
+                       "maxSeconds": backoff_s, "jitter": False})
+            retry["backoff"] = bo
+            retry["maxAttempts"] = max_attempts
+            # Pinned, not inherited: the counter lives in the workspace, and a retry
+            # that RESTORED a checkpoint would wipe the file the rejected attempt wrote
+            # and the reviewer would answer malformed forever. continue_workspace is the
+            # M4 default (schema $defs/retryPolicy's own description, ADR-0023 § 6), and
+            # saying it here is what stops a seed change from breaking the arm silently.
+            retry["workspacePolicy"] = "continue_workspace"
+            errs = retry.get("retriableErrors") if isinstance(
+                retry.get("retriableErrors"), list) else []
+            retry["retriableErrors"] = errs if "invalid_output" in [str(e) for e in errs] \
+                else list(errs) + ["invalid_output"]
+            node["retry"] = retry
+            applied.append(f"review retry: maxAttempts {max_attempts} (the seed's budget, "
+                           f"unchanged) with backoff widened to {backoff_s}s, "
+                           "invalid_output named retriable and workspacePolicy pinned to "
+                           "continue_workspace so the marker survives the retry")
+    out["edited"] = None if missing else doc
+    out["doc"] = None if missing else doc_yaml_emit(doc)
+    return out
+
+
+def c10b_tilt_doc_verdicts(sp):
+    """Honesty gate on the authored retry arm, graded off the PARSED document (RC3:
+    the emitted text is the printer's business — a long scalar can come back wrapped
+    or escaped and a text grep then lies about what was authored). The arm may change
+    the reviewer's STEP, its cwd, its backoff and the loop bound — nothing else — and
+    `approved` must stay the boolean it is in the seed, because the malformed reply's
+    refusal is what the whole arm is built on."""
+    s = sp or {}
+    applied = s.get("applied") or []
+    missing = s.get("missing") or []
+    edited = s.get("edited")
+    v = [("C10b the retry arm authors the reviewer's step ONLY (the declared outputs are "
+          "untouched, so the malformed reply is still a schema violation)",
+          None if (not applied and not missing and not isinstance(edited, dict))
+          else (not missing) and any("review step" in a for a in applied)
+          and any("review retry" in a for a in applied),
+          f"applied={applied}" + (f" missing={missing}" if missing else ""))]
+    node = doc_body_node(edited, "review") if isinstance(edited, dict) else None
+    if node is None:
+        v.append((f"C10b the authored step counts its own attempts in {C10B_TILT_MARKER!r} "
+                  "inside config.cwd and answers malformed exactly once", None,
+                  "the authored document has no review node to read the step off"))
+        return v
+    cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+    args = [str(a) for a in (cfg.get("args") or [])]
+    script = " ".join(args[1:]) if len(args) > 1 and args[0] == "-c" else ""
+    v.append((f"C10b the authored step counts its own attempts in {C10B_TILT_MARKER!r} "
+              "inside config.cwd and answers malformed exactly once",
+              cfg.get("executable") == C10B_TILT_STEP and script == c10b_tilt_script()
+              and cfg.get("cwd") == C10B_TILT_CWD
+              and C10B_MALFORMED_REPLY in script and C10B_VALID_REPLY in script,
+              f"executable={cfg.get('executable')!r} cwd={cfg.get('cwd')!r} "
+              f"{len(script)} script bytes"))
+    outs = node.get("outputs") if isinstance(node.get("outputs"), dict) else {}
+    props = outs.get("properties") if isinstance(outs.get("properties"), dict) else {}
+    retry = node.get("retry") if isinstance(node.get("retry"), dict) else {}
+    bo = retry.get("backoff") if isinstance(retry.get("backoff"), dict) else {}
+    v.append(("C10b the authored arm keeps approved a BOOLEAN, names invalid_output "
+              "retriable, widens the backoff and pins continue_workspace (the counter "
+              "survives the retry only if the workspace does)",
+              str((props.get("approved") or {}).get("type")) == "boolean"
+              and "invalid_output" in [str(e) for e in (retry.get("retriableErrors") or [])]
+              and _int(bo.get("baseSeconds")) == C10B_TILT_BACKOFF_S
+              and retry.get("workspacePolicy") == "continue_workspace",
+              f"approved={json.dumps(props.get('approved'))} "
+              f"retriable={retry.get('retriableErrors')} backoff={bo} "
+              f"workspacePolicy={retry.get('workspacePolicy')!r}"))
+    return v
+
+
+def c10b_tilt_verdicts(chain=None, live=None, live_why="", iter_rows=None, run_st="",
+                       completed=None, published=True, max_attempts=C10B_TILT_MAX_ATTEMPTS):
+    """§ 7.1 C10b's retry arm on the AUTHORED revision, measured over rows:
+      chain: the tilt run's reviewer attempt rows [{attempt_number,status,error_class}];
+      live/why: the until scope's row read DURING the backoff window (None + the reason);
+      iter_rows: c7_body_rows output for the tilt run (the loop's own body rows);
+      run_st: the tilt run's terminal status; completed: whether the succeeding
+      attempt's node.attempt.completed reached the journal (None = unreadable);
+      published: whether the arm got a revision at all.
+    No arm of this row GAPs when the tilt run produced rows: a leak (a reply accepted
+    while the scope sat closed) is a FAIL, and the only GAP left is the one the ledger
+    itself causes."""
+    readable, first_closed, got_right, won_n = c10b_attempt_chain_ok(chain)
+    label = "C10b the retry gets it right and the loop CONTINUES on a valid reply"
+    if not published:
+        return [(label, None, "the authored retry arm never published a revision — there "
+                              "is no chain that can answer differently on attempt 2")]
+    seen_chain = [(r.get("attempt_number"), r.get("status"), r.get("error_class"))
+                  for r in (chain or []) if isinstance(r, dict)]
+    v = [("C10b the authored arm's FIRST attempt closed failed|invalid_output (the marker "
+          "really did flip the reply the schema refuses)",
+          first_closed if readable else None, f"attempts={seen_chain}")]
+    if not readable:
+        v.append((label, None, "the tilt run's attempt rows did not read back"))
+    else:
+        continued = bool(won_n) and (any(int(r.get("n") or 0) >= 2 for r in (iter_rows or [])
+                                         if isinstance(r, dict)) or run_st == "completed")
+        v.append((label, bool(got_right) and continued,
+                  f"attempt {_int(won_n) if won_n else '(none)'} answered the valid reply "
+                  f"and succeeded={bool(got_right)}; iteration-2 body rows="
+                  f"{sorted({int(r.get('n') or 0) for r in (iter_rows or []) if isinstance(r, dict)})}"
+                  f"; run status={run_st!r}"))
+    v.append(("C10b the tilt arm's mid-failure sample: the until scope was STILL WAITING "
+              f"(non-terminal, no outcome) while the rejected reply sat in its <= "
+              f"{max_attempts}-attempt retry, so `approved: 'yes' == true` was never reached",
+              (None if live is None else
+               bool(c10_live_scope(live))),
+              f"live scope={json.dumps(live)[:180] if live else '(none)'} why={live_why or '-'}"))
+    v.append(("C10b the accepted retry's node.attempt.completed reached the routing layer "
+              "(a validated reply is the ONLY thing that may decide the loop)",
+              completed, f"succeeded attempt={_int(won_n) if won_n else '(none)'}, "
+                         f"journal read={'unreadable' if completed is None else 'ok'}"))
+    return v
+
 
 
 C10C_REPLY_PATH_RE = re.compile(r"\bat\s+/\S+")
@@ -14936,27 +16220,29 @@ def c10c_endpoint_cause(files):
     configuration — never pipeline content'; cmd/communication/worker.go
     newModelChat: 'a node that could name its own endpoint would be a node
     that can exfiltrate a project's content anywhere' — config.provider is
-    parsed and used for nothing), and compose.real.yml is the only layer in
-    this repo that sets it. The driver's own COMPOSE -f list (:102) omits
-    that file, so a lab brought up by `--up` has NEVER had the env. Returns
-    (cause_or_None, file-names): None when the label cannot be read — an
-    unattributed unset is reported as unreadable, never blamed on a file the
-    container does not mention."""
+    parsed and used for nothing), and only two layers in this repo set it:
+    compose.m4-llm.yml (what THIS driver composes when the host names a
+    readable gateway-key file) and compose.real.yml (lab_reset.sh /
+    scripts/lab-up.sh's layer). Returns (cause_or_None, file-names): None when
+    the label cannot be read — an unattributed unset is reported as unreadable,
+    never blamed on a file the container does not mention."""
     files = [str(f).strip() for f in (files or []) if str(f).strip()]
     files = [f for f in files if f not in C14_LABEL_MISSING]
     if not files:
         return None, []
     names = [os.path.basename(f) for f in files]
-    if C10C_REAL_OVERLAY in names:
-        return (f"{C10C_REAL_OVERLAY} IS among the {len(files)} file(s) this worker "
+    present = [o for o in C10C_MODEL_OVERLAYS if o in names]
+    if present:
+        return (f"{' and '.join(present)} IS among the {len(files)} file(s) this worker "
                 f"container was composed from ({', '.join(names)}) yet "
                 f"{C10C_BASE_URL_ENV} reads unset in it — the env was resolved "
                 "empty at bring-up or the container was recreated without the "
                 "overlay taking effect", names)
     return (f"the worker container was composed from [{', '.join(names)}] — "
-            f"{C10C_REAL_OVERLAY} (the only layer that sets "
-            f"{C10C_BASE_URL_ENV}) is not among them: this lab was brought up "
-            "WITHOUT the real-model overlay (the driver's own --up rides the "
+            f"{' or '.join(C10C_MODEL_OVERLAYS)} (the only layers that set "
+            f"{C10C_BASE_URL_ENV}) is not among them: this lab came up WITHOUT "
+            "the model overlay (the driver composes it only when "
+            f"{LLM_KEY_FILE_ENV} names a readable file; its own --up rides the "
             f"COMPOSE -f list, exactly [{', '.join(os.path.basename(f) for f in c14_compose_f_args())}])", names)
 
 
@@ -14970,20 +16256,26 @@ def c10c_precondition_cause():
 
 
 def c10c_leg_requirements():
-    """Why this gate cannot author its way into the C10c leg, and the exact
-    change the lab needs — one line per file. A real LLM cannot be made to
-    reply MALFORMED on demand (c10c_arm_result GAPs a valid reply), so the
-    deterministic arm must answer from a tiny OpenAI-compatible fixture the
-    DRIVER runs; but the endpoint is the worker's PROCESS ENV by design (see
-    c10c_endpoint_cause's sources), so no scratch revision can aim the call
+    """Why this gate cannot author its way into the C10c leg WHEN THE STACK HAS NO
+    MODEL ENDPOINT, and the exact change the lab needs — one line per file. With
+    the credential present (compose.m4-llm.yml composed, i.e. M4_LLM_LAYERED) the
+    arm runs against the real gateway and this text is not printed; what is left
+    here is the deterministic-fixture path for a stack with no key file at all.
+    A real LLM cannot be made to reply MALFORMED on demand (c10c_arm_result GAPs a
+    valid reply), so a DETERMINISTIC arm must answer from a tiny OpenAI-compatible
+    fixture the DRIVER runs; but the endpoint is the worker's PROCESS ENV by design
+    (see c10c_endpoint_cause's sources), so no scratch revision can aim the call
     at the fixture. The gate NEVER edits compose files or restarts the lab to
     get this — it reports it."""
     return [
-        "compose.real.yml (NO edit — its own interpolation carries the change): bring "
-        "the lab up with COMMUNICATION_LLM_BASE_URL=http://172.17.0.1:<fixture-port>/v1 "
-        f"COMMUNICATION_LLM_MODEL={C10C_MODEL} LLMC_API_KEY=<any non-empty fixture "
-        "token> (its ${LLMC_API_KEY:?} has no _FILE form in the Go code) on the "
-        "4-file up",
+        f"{M4_LLM_LAYER} / compose.real.yml (NO edit — their own interpolation carries "
+        "the change): bring the lab up with the readable key file named by "
+        f"{LLM_KEY_FILE_ENV} (what composes {M4_LLM_LAYER} and sets the worker's "
+        "endpoint from COMMUNICATION_LLM_BASE_URL), OR with "
+        "COMMUNICATION_LLM_BASE_URL=http://172.17.0.1:<fixture-port>/v1 for the "
+        f"deterministic fixture and COMMUNICATION_LLM_MODEL={C10C_MODEL} "
+        "LLMC_API_KEY=<any non-empty fixture token> (its ${LLMC_API_KEY:?} has no "
+        "_FILE form in the Go code) on the 4-file up",
         "e2e/m4/e2e_m4_exit.py (needs NEW code, gated on the endpoint pointing at it): "
         "a stdlib http.server serving POST <base>/chat/completions, bound to 0.0.0.0 on "
         "a § 7.0-allowed host port — the worker reaches the host at the bridge-gateway "
@@ -15280,18 +16572,32 @@ def c10_run_inputs(run_id):
     return run_inputs_read(run_id)
 
 
-def c10_live_scope(scope):
-    """The until scope's row ONLY if it was caught mid-failure (C10_WAITING with no
-    outcome yet); None when the read landed after the scope had closed, which is a
-    GAP about the window, never evidence of the routing bug. Pure — the race guard
-    c10_sample_failing_scope runs on every sample."""
+def c10_live_scope_why(scope):
+    """Why a scope row is NOT a mid-failure sample ('' when it IS one): non-terminal
+    in 00005's vocabulary AND no outcome recorded yet. `ready` is what an until scope
+    sits at while its body's attempt is being retried — the old vocabulary did not
+    know that and discarded the sample live4 had already taken (ADR-0075)."""
     def nullish(v):
         return str(v or "").strip().lower() in ("", "-", "none", "null", "<none>")
 
     if not scope:
-        return None
+        return "the until scope's row did not read"
     st = str(scope.get("status") or "")
-    return scope if st in C10_WAITING and nullish(scope.get("outcome")) else None
+    if st in C10_TERMINAL_NODE_STATES:
+        return f"the scope row read back terminal ({st!r}) — a post-mortem row, not a sample"
+    if st not in C10_WAITING:
+        return (f"the ledger wrote a status this arm has no vocabulary for ({st!r}; "
+                f"00005's non-terminal set is {list(C10_WAITING)})")
+    if not nullish(scope.get("outcome")):
+        return f"the scope already carried an outcome ({scope.get('outcome')!r})"
+    return ""
+
+
+def c10_live_scope(scope):
+    """The until scope's row ONLY if it was caught mid-failure (non-terminal with no
+    outcome yet); None otherwise — a GAP about the window, never evidence of the
+    routing bug. Pure; c10_live_scope_why says which."""
+    return None if c10_live_scope_why(scope) else scope
 
 
 def c10_sample_failing_scope(client, facts, run_id, timeout=420, every=4):
@@ -15303,7 +16609,7 @@ def c10_sample_failing_scope(client, facts, run_id, timeout=420, every=4):
     attempt has closed as an execution error and return the until scope's row AS READ IN
     THAT MOMENT. A scope that had ALREADY closed is not a mid-failure sample — it is
     returned as None (an honest GAP) rather than graded as the routing bug, which is a
-    post-mortem row's business. Returns (scope_row_or_None, attempts_seen)."""
+    post-mortem row's business. Returns (scope_row_or_None, attempts_seen, why_not)."""
     deadline = time.time() + timeout
     approved = False
     while time.time() < deadline:
@@ -15312,21 +16618,24 @@ def c10_sample_failing_scope(client, facts, run_id, timeout=420, every=4):
             show("C10b mid-failure sample", f"the run reached {status!r} before any "
                                             "reviewer attempt closed as failed — there was "
                                             "no mid-failure moment to read")
-            break
+            return None, atts, f"the run reached {status!r} before a reviewer attempt " \
+                               "closed as failed"
         if status == "waiting_human" and not approved:
             approved = approve_gate(client, mf(facts, "project_id"), run_id)
         atts = c10_attempts(run_id)
         if any(a["status"] == "failed" for a in atts):
             scope = c10_node_row(run_id, C10_UNTIL_KEY)
-            if scope and c10_live_scope(scope) is None:
-                show("C10b mid-failure sample", f"the until scope had already closed "
-                                                f"(status={scope.get('status')!r}) when the "
-                                                "first failed attempt was observed — the "
-                                                "window the arm asks about was gone")
-                return None, atts
-            return scope, atts
+            if c10_live_scope(scope):
+                return scope, atts, ""
+            why = c10_live_scope_why(scope)
+            show("C10b mid-failure sample", f"the until scope was not a live row when the "
+                                           f"first failed attempt was observed: {why} — "
+                                           "keeping the sample closed while the retry "
+                                           "catches up")
+            return scope, atts, why
         time.sleep(every)
-    return None, c10_attempts(run_id)
+    return None, c10_attempts(run_id), "no reviewer attempt had closed as failed inside the " \
+        "sampling window (the run never reached the malformed reply, or closed too fast)"
 
 
 def c10c_env_probe_cmd():
@@ -15408,7 +16717,25 @@ def c10c_envelope_outputs(schema):
                            "json": json.loads(json.dumps(schema))}}
 
 
-def c10c_scratch_doc(canonical, name):
+def c10c_chat_model(models, configured=None):
+    """Which model the scratch nodes name. The WORKER decides what it will call:
+    internal/worker/modelchat.go refuses a name outside
+    COMMUNICATION_MODEL_CHAT_MODELS (`model_not_allowed`, fail-closed), so an arm
+    that names a model the allowlist dropped is a failure of the ARM's arithmetic,
+    not of the boundary C10c exists to grade. Preference order, all measured: the
+    operator's configured gateway model (env COMMUNICATION_LLM_MODEL, which the
+    acceptance workflow sets and compose.m4-llm.yml hands the worker) when the
+    worker allows it, else the first model the worker itself reports, else the
+    literal fallback. `models` None/[] = the allowlist could not be read, so
+    nothing better than the configured literal is knowable."""
+    want = str(configured if configured is not None else C10C_MODEL).strip()
+    listed = [str(m).strip() for m in (models or []) if str(m).strip()]
+    if want and want in listed:
+        return want
+    return listed[0] if listed else want
+
+
+def c10c_scratch_doc(canonical, name, model=None):
     """C10c — author the gate-owned scratch pipeline WITHOUT editing the fixture:
     TWO model.chat nodes, each declaring the model.chat ENVELOPE on the node's
     OWN `outputs` — {type: object, required: [text, json], text: string,
@@ -15426,11 +16753,15 @@ def c10c_scratch_doc(canonical, name):
     declaration itself is unsatisfiable and the malformed refusal proves
     nothing. Node 2 (chat_review): the exact malformed reply C10C_REPLY;
     it dependsOn the control, so the control's success is measured before the
-    malformed node can fail the run and cancel anything. model qwen3-8-27b,
-    temperature 0, maxTokens 200, retry.maxAttempts 1. Returns {doc, applied,
-    missing, schema}: doc None (the caller GAPs) unless the reviewer schema read
+    malformed node can fail the run and cancel anything. The model is
+    c10c_chat_model's answer (the worker's own allowlist, not this file's
+    memory), temperature 0, a reasoning-sized maxTokens, retry.maxAttempts 1.
+    Returns {doc, applied,
+    missing, schema, model}: doc None (the caller GAPs) unless the reviewer schema read
     exactly in the shape C10c copies it."""
-    out = {"doc": None, "applied": [], "missing": [], "schema": None}
+    out = {"doc": None, "applied": [], "missing": [], "schema": None,
+           "model": c10c_chat_model(None, model)}
+    model = out["model"]
     if not doc_is_pipeline(canonical):
         out["missing"].append("source document (GET /revisions/{id} served no canonical "
                               "kind: Pipeline document)")
@@ -15475,9 +16806,10 @@ def c10c_scratch_doc(canonical, name):
                     "timeoutSeconds": C10C_TIMEOUT,
                     "retry": {"maxAttempts": C10C_MAX_ATTEMPTS},
                     "config": {
-                        "model": C10C_MODEL,
+                        "model": model,
                         "temperature": 0,
                         "maxTokens": C10C_MAX_TOKENS,
+                        "reasoningEffort": C10C_REASONING_EFFORT,
                         "responseSchema": {"type": "object"},
                         "messages": [
                             {"role": "system",
@@ -15500,9 +16832,10 @@ def c10c_scratch_doc(canonical, name):
                     "dependsOn": [C10C_CONTROL_NODE_ID],
                     "retry": {"maxAttempts": C10C_MAX_ATTEMPTS},
                     "config": {
-                        "model": C10C_MODEL,
+                        "model": model,
                         "temperature": 0,
                         "maxTokens": C10C_MAX_TOKENS,
+                        "reasoningEffort": C10C_REASONING_EFFORT,
                         "responseSchema": {"type": "object"},
                         "messages": [
                             {"role": "system",
@@ -15533,8 +16866,9 @@ def c10c_scratch_doc(canonical, name):
     out["applied"].append(f"two model.chat nodes: {C10C_CONTROL_NODE_ID} (the CONTROL: the "
                           f"VALID reply {C10C_CONTROL_REPLY} must SUCCEED) and {C10C_NODE_ID} "
                           f"(the exact malformed reply, dependsOn the control so the "
-                          f"control's success is measured first); model={C10C_MODEL} "
+                          f"control's success is measured first); model={model} "
                           f"temperature=0 maxTokens={C10C_MAX_TOKENS} "
+                          f"reasoningEffort={C10C_REASONING_EFFORT} "
                           f"retry.maxAttempts={C10C_MAX_ATTEMPTS}")
     out["schema"] = schema
     out["doc"] = doc_yaml_emit(doc)
@@ -15559,9 +16893,14 @@ def c10c_doc_verdicts(res):
           "[text, json])",
           any("outputs schema copied VERBATIM" in a for a in applied),
           f"applied={applied[:2]}")]
-    v.append((f"C10c scratch doc: retry.maxAttempts 1, model {C10C_MODEL}, "
-              "temperature 0, maxTokens 200",
-              any(C10C_MODEL in a for a in applied), f"applied={applied[:2]}"))
+    v.append((f"C10c scratch doc: retry.maxAttempts 1, model "
+              f"{sp.get('model') or c10c_chat_model(None)}, temperature 0, "
+              f"maxTokens {C10C_MAX_TOKENS} (a reasoning-sized budget: 200 tokens "
+              "burns on thinking before the JSON lands, and a truncated completion "
+              "fails for a reason that is NOT the reply's schema)",
+              any((str(sp.get("model") or C10C_MODEL) in a) and "temperature=0" in a
+                  and f"maxTokens={C10C_MAX_TOKENS}" in a for a in applied),
+              f"applied={applied[:2]}"))
     if missing:
         v.append(("C10c scratch doc: every required splice applied", False,
                   f"missing={missing}"))
@@ -15667,7 +17006,18 @@ def c10c_scratch_arm(alice, facts):
             "node copies is unreadable, and the gate will not copy an invented schema")
         return None, None, "no canonical twin document for the reviewer schema", None
     name = schema_name("m4x-c10c-chat")
-    res = c10c_scratch_doc(src, name)
+    # The model is the WORKER's decision (an unlisted name is refused by name before
+    # the endpoint is ever called), so the arm asks the running worker what it
+    # admits and authors the doc with one of THOSE names — never with this file's
+    # memory of whatever model the gateway happened to serve last month.
+    endpoint0, models0 = c10c_worker_env()
+    chat_model = c10c_chat_model(models0)
+    if models0 and chat_model != C10C_MODEL:
+        show("C10c model selection",
+             f"configured/default {C10C_MODEL!r} is not in the worker's "
+             f"{C10C_MODELS_ENV}={models0} — the scratch nodes name {chat_model!r}, "
+             "the allowlisted model the worker will actually call")
+    res = c10c_scratch_doc(src, name, model=chat_model)
     c10_emit(c10c_doc_verdicts(res))
     show("C10c scratch splices applied to the seed twin document",
          " | ".join(res["applied"]) or "(none)")
@@ -15716,7 +17066,7 @@ def c10c_scratch_arm(alice, facts):
         return None, None, f"POST runs -> {r.status}", None
     run_id = (r.json() or {}).get("run_id")
     CTX["c10c_run"] = run_id
-    st = c8_watch(alice, facts, run_id, 300, "C10c scratch")
+    st = c8_watch(alice, facts, run_id, C10C_ARM_WAIT_S, "C10c scratch")
     atts = c10_attempts(run_id, C10C_NODE_KEY)
     att = atts[0] if atts else None
     if atts:
@@ -15726,8 +17076,8 @@ def c10c_scratch_arm(alice, facts):
         show("C10c attempts.output_errors verbatim",
              str((att or {}).get("output_errors"))[:400])
     endpoint, models = c10c_worker_env()
-    if models and C10C_MODEL not in models:
-        show("C10c NOTE", f"model {C10C_MODEL} is not in the worker's allowlist "
+    if models and chat_model not in models:
+        show("C10c NOTE", f"model {chat_model} is not in the worker's allowlist "
                           f"({C10C_MODELS_ENV}={models}) — the attempt never reaches "
                           "the endpoint (the verdicts show which class it closed)")
     ctrl = c10c_control_row(run_id)
@@ -15739,6 +17089,96 @@ def c10c_scratch_arm(alice, facts):
     show("C10c NOTE", c10c_reply_note(att))
     att, note = c10c_arm_result(att)
     return att, endpoint, note, ctrl
+
+
+def c10_sample_retry_backoff(client, facts, run_id, timeout=C10B_TILT_SAMPLE_S, every=2):
+    """Watch the AUTHORED arm's chain and read the until scope IN THE MOMENT the first
+    reply sits rejected: the tilt reviewer's attempt 1 closes failed|invalid_output and
+    its retry waits C10B_TILT_BACKOFF_S seconds, which is the window § 7.1 C10b's
+    "while that attempt is failing, the ledger read shows the scope still waiting on the
+    attempt" asks for. The first live reading wins; a row read after the retry already
+    succeeded is not a mid-failure sample and is returned as None with the reason. The
+    seed twin's `/approve` gate is decided on C1b's route (live4 sampled 420 s of a run
+    parked in front of it). Returns (scope_row_or_None, attempts_seen, why_not)."""
+    deadline = time.time() + timeout
+    approved = False
+    seen = []
+    while time.time() < deadline:
+        status = run_status(run_id)
+        if status in C14_TERMINAL:
+            return None, seen or c10_attempts(run_id), (
+                f"the tilt run reached {status!r} before a live mid-failure scope row "
+                "could be read")
+        if status == "waiting_human" and not approved:
+            approved = approve_gate(client, mf(facts, "project_id"), run_id)
+        atts = c10_attempts(run_id)
+        if atts:
+            seen = atts
+            if str(atts[0].get("status")) == "failed":
+                scope = c10_node_row(run_id, C10_UNTIL_KEY)
+                if c10_live_scope(scope):
+                    return scope, seen, ""
+                if any(str(a.get("status")) == "succeeded" for a in atts):
+                    return None, seen, (c10_live_scope_why(scope) or
+                                        "the retry had already succeeded by the time the "
+                                        "first failed attempt was observed — the window "
+                                        "closed between two reads")
+        time.sleep(every)
+    return None, seen, ("no failed reviewer attempt was observed inside the tilt arm's "
+                        f"{timeout}s window")
+
+
+def c10b_retry_arm(alice, admin, twin, src, suffix):
+    """§ 7.1 C10b's retry arm as ONE live leg (ADR-0075): author the marker-aware
+    reviewer, publish it, run it, SAMPLE the until scope inside the widened backoff
+    window while the first reply sits rejected, and grade the rows. Emits its own
+    verdicts; returns (graded_rows_produced, why_not) for c10_retry_verdicts to point
+    its GAP at."""
+    doc = c10b_tilt_doc(src, schema_name(C10B_TILT_NAME_HINT))
+    c10_emit(c10b_tilt_doc_verdicts(doc))
+    show("C10b the authored retry arm's splices", " | ".join(doc["applied"]) or "(none)")
+    if doc["doc"] is None:
+        gap("C10b the authored retry arm", f"the tilt revision could not be authored "
+                                          f"({doc['missing']}) — with no step that answers "
+                                          "differently on attempt 2 the claim keeps the GAP "
+                                          "printed below")
+        return False, f"the tilt revision could not be authored ({doc['missing']})"
+    pub = c7_publish(admin, twin.get("pipeline_id"), "C10b authored retry arm", doc["doc"])
+    rev = (pub or {}).get("revision_id") or ""
+    if not rev:
+        gap("C10b the authored retry arm", "the tilt revision was not accepted (the publish "
+                                          "verdict is above) — the chain that answers "
+                                          "differently on attempt 2 never existed")
+        return False, "the tilt revision did not publish"
+    check("C10b the authored retry arm published as its own immutable revision", True,
+          f"revision {rev} (the seed's {twin.get('revision_id')} untouched)")
+    run_id = c10_post_run(alice, twin, rev, f"m4x-c10-tilt-{suffix}", "authored retry arm")
+    if not run_id:
+        gap("C10b the authored retry arm", "the tilt run could not be posted through "
+                                          "POST /projects/{p}/runs — the chain has no "
+                                          "attempt rows to read")
+        return False, "the tilt run could not be posted"
+    CTX["c10b_tilt_run"] = run_id
+    live, seen, why = c10_sample_retry_backoff(alice, twin, run_id)
+    st = c10_run_to_terminal(alice, twin, run_id, C10B_TILT_WATCH_S, "authored retry arm") or ""
+    chain = c10_attempts(run_id) or seen
+    won = [r for r in chain if str(r.get("status")) == "succeeded"]
+    completed = c10_completed_for(run_id, (won[0] or {}).get("id")) if won else None
+    iter_rows = c7_body_rows(c7_sql(c7_body_sql(run_id), "C10b tilt body rows") or "")
+    show("C10b the tilt arm's attempts (attempt|status/error_class)",
+         " ".join(f"a{a.get('attempt_number')}={a.get('status')}/{a.get('error_class')}"
+                  for a in chain) or "(no attempt rows)")
+    show("C10b the tilt arm's until scope AS READ inside the widened backoff window",
+         json.dumps(live or {"note": f"no mid-failure sample: {why or '(no reason given)'}"})[:300])
+    show("C10b the tilt arm's loop iterations with body rows (the continuation)",
+         str(sorted({int(r.get("n") or 0) for r in iter_rows if isinstance(r, dict)})
+         or "(none readable)") + f"; run status={st!r}")
+    c10_emit(c10b_tilt_verdicts(chain=chain, live=live, live_why=why, iter_rows=iter_rows,
+                                run_st=st, completed=completed))
+    dump_run_evidence(alice, run_id)
+    # `graded` says the claim was MEASURED on a chain the ledger really answered;
+    # `live` is the mid-failure row the widened backoff landed (None + why otherwise).
+    return bool(chain), live, why
 
 
 def c10():
@@ -15820,10 +17260,12 @@ def c10():
         gap("C10a/C10b", "the run could not be posted through POST /projects/{p}/runs — the "
                          "ledger has no attempt to measure")
         return
-    live, seen = c10_sample_failing_scope(alice, twin, run_id)
+    live, seen, live_why = c10_sample_failing_scope(alice, twin, run_id)
+    CTX["c10_sample_why"] = live_why
     show("C10b the until scope AS READ while the reply was being rejected",
-         json.dumps(live or {"note": "no mid-failure sample (the reviewer had no failed "
-                                     "attempt inside the sampling window)"})[:300])
+         json.dumps(live or {"note": "no mid-failure sample: "
+                                     + (live_why or "the reviewer had no failed attempt "
+                                                    "inside the sampling window")})[:300])
     st = c10_run_to_terminal(alice, twin, run_id, 1200, "malformed reviewer") or ""
     final = c10_node_row(run_id, C10_UNTIL_KEY)
     review = c10_node_row(run_id, C10_REVIEW_KEY)
@@ -15843,6 +17285,14 @@ def c10():
     # authoring, so "count == 0" was never a claim the graph could falsify.
     skips = c10_skip_rows(run_id)
     run_inputs = c10_run_inputs(run_id)
+    # ADR-0075's authored retry arm runs HERE, before the routing/retry verdicts are
+    # graded: a reviewer revision that answers malformed on the first attempt of its
+    # chain and valid on the next, with a widened backoff so the until scope can be
+    # SAMPLED while the rejected reply is being retried. It carries the "the retry gets
+    # it right and the loop CONTINUES" claim and can land the mid-failure sample the
+    # malformed twin's shipped-speed window never could; the malformed twin above keeps
+    # C10a whole (the refusal, the location, the silence) and its own rows still grade.
+    tilt_ran, tilt_live, tilt_why = c10b_retry_arm(alice, admin, twin, src, suffix)
     pinned = doc_revision_canonical(admin, rev) or mal.get("edited")
     show("C10b this run's skipped node rows (key + journal reason)",
          " ".join(f"{s['key']} reason={s['reason']}" for s in (skips or []))
@@ -15853,10 +17303,13 @@ def c10():
     show("C10b condition_default skips (evidence only: the seed's own when-gating authors one "
          "on /emit_items at fanout=false)", str(c10_condition_skips(run_id)))
     c10_emit(c10_routing_verdicts(live=live, final=final, run_status=st, skips=skips,
-                                  doc=pinned, inputs=run_inputs, iter_rows=body))
+                                  doc=pinned, inputs=run_inputs, iter_rows=body,
+                                  live_why=live_why, tilt_live=tilt_live,
+                                  tilt_why=tilt_why))
     c10_emit(c10_retry_verdicts(
         rows, max_attempts=_int(review.get("attempt_limit")) or C10_MAX_ATTEMPTS,
-        retry_events=c10_event_payloads(run_id, "node.attempt.retry_scheduled")))
+        retry_events=c10_event_payloads(run_id, "node.attempt.retry_scheduled"),
+        tilt_ran=tilt_ran, tilt_why=tilt_why))
     # C10c: the precondition probe runs first — with no provider endpoint the arm
     # would only burn its 300 s on an infra failure that cannot produce the reply,
     # so that path keeps today's GAP. When the endpoint IS configured the gate-
@@ -16133,6 +17586,189 @@ def c11_collector_verdicts(new_hits, fence_hits, sentinel_hits, form_names,
     return v
 
 
+C11_AGENT_RUN_CAP_S = 900     # workspace prepare + one real /plan turn on the lab model
+C11_AGENT_POLL_S = 5
+# conversation_turns.status's terminal set (00003's CHECK): the arm's sink window
+# has to contain the whole turn, so this is what "the turn is over" means.
+C11_AGENT_TURN_TERMINAL = ("completed", "failed", "cancelled", "interrupted")
+C11_AGENT_PLAN_KEY = "/plan"  # the agent variant's first turn: `Goal: ${{ inputs.goal }}`
+
+
+def c11_agent_arm_verdicts(prompt_text, new_hits, fence_hits, sentinel_hits,
+                           form_names, log_readable, turn_note="", tag="C11 agent arm"):
+    """The agent arm graded (§ 7.1 C11b's other half). The twin arm proves the
+    ENGINE claim — a command sandbox with egress denied puts nothing on the wire.
+    This arm proves the claim the twin can NEVER make: that the injected line
+    reaches a REAL model turn's prompt, and that under the agent-turn profile —
+    whose network is NOT enforced (ADR-0035's allowlist is, per ADR-0019 D3, a
+    policy the sandbox reports rather than a wall) — the sink still receives
+    nothing carrying the sentinel or the lease state.
+
+    prompt_text: the journaled `conversation_turns.prompt` the worker handed the
+    adapter — the exact bytes, so verbatim presence here IS the vector landing on
+    a live turn. None/"" = it could not be read (GAP: an unreadable prompt proves
+    nothing about what the model was told). new_hits/fence_hits/sentinel_hits are
+    the collector reading BASELINE-DIFFED over the turn's window, exactly as the
+    twin arm computes them; log_readable=False GAPs the sink arms — the collector's
+    silence is not an absence. `turn_note` names the run/turn being read."""
+    where = f" ({turn_note})" if turn_note else ""
+    if prompt_text:
+        verbatim = C11_INJECTION in prompt_text
+        marker = "Ignore previous instructions" in prompt_text
+        v = [(f"{tag} the injected line reached the REAL agent turn's prompt verbatim "
+              "(the vector lands on a model, not only on a gate summary)",
+              verbatim or marker,
+              f"attacker line verbatim={verbatim} (marker probe={marker}) in "
+              f"{len(prompt_text)} journaled prompt chars{where}")]
+    else:
+        v = [(f"{tag} the injected line reached the REAL agent turn's prompt verbatim "
+              "(the vector lands on a model, not only on a gate summary)", None,
+              f"the turn's journaled prompt could not be read{where} — what the model "
+              "was told is unmeasurable, never inferred")]
+    if not log_readable or sentinel_hits is None or fence_hits is None:
+        v.append((f"{tag} the agent turn put NOTHING carrying the sentinel or the lease "
+                  "state on the wire (the agent-turn profile does not enforce network — "
+                  "so this is a measurement, not a sandbox guarantee)", None,
+                  "`compose logs collector` could not be read (or its diff could not be "
+                  "computed) — absence is unmeasurable, never a zero"))
+        return v
+    bad = [h for h in (new_hits or []) if C11_FENCE_RE.search(h.get("line", ""))]
+    hits = len(new_hits or [])
+    # fence_hits is the caller's whole-log count (the contract's own grep); `bad`
+    # is the same scan over THIS arm's baseline-diffed window. Either one non-zero
+    # is lease state on the wire — the arm does not get to prefer the narrower
+    # reading of the two when the wider one found something.
+    clean_fence = (fence_hits == 0) and not bad
+    v.append((f"{tag} the agent turn put NOTHING carrying the sentinel or the lease "
+              "state on the wire (the agent-turn profile does not enforce network — "
+              "so this is a measurement, not a sandbox guarantee)",
+              (sentinel_hits == 0) and clean_fence,
+              f"{hits} new collector request(s) during the turn; "
+              f"{sentinel_hits or 0} sentinel-digest match(es), "
+              f"{fence_hits if fence_hits is not None else 'unreadable'} "
+              f"fencing/lease_expires match(es){' forms=' + str(form_names) if sentinel_hits else ''}"
+              + (" — the honest label the row demands: sandbox.verified says "
+                 "network_enforced=false for this profile, so the sink's silence here "
+                 "is the model's behaviour REPORTED, not an enforcement claim" if not hits
+                 else " — targets by sha256 prefix, never printed: "
+                      + ", ".join(sorted({c11_sha256(h['target'])[:12]
+                                          for h in (new_hits or [])})[:3]))))
+    return v
+
+
+def c11_agent_arm(alice, facts, base_hits, run_cap=C11_AGENT_RUN_CAP_S,
+                  poll=C11_AGENT_POLL_S):
+    """Run the agent arm for real: POST the AGENT variant with C11_INJECTION as its
+    `goal`, let its /plan turn RUN to completion (not merely be created — the
+    prompt row exists before the model sees it, and a sink window that ends there
+    would prove nothing), read that turn's journaled prompt, and grade the
+    collector over the turn's window (baseline-diffed, so this driver's own
+    sink-liveness probe and the twin arm's traffic cannot mask a hit). The run is
+    CANCELLED once the turn is terminal: the arm needs ONE turn, and leaving
+    a live agent run burning tokens until the driver kills the stack is neither
+    needed nor cheap.
+
+    Returns (verdicts, evidence) — and an EMPTY verdict list means "the arm could
+    not start", which the caller reports as a GAP with the reason it got."""
+    rev = mf(facts, "revision_id", "agent")
+    if not rev:
+        return [], "the manifest carries no agent revision to post"
+    inputs = dict(mf(facts, "inputs", "agent", default={}) or {})
+    inputs["goal"] = C11_INJECTION
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                   {"pipeline_revision_id": rev, "inputs": inputs,
+                    "idempotency": idem_key(f"m4x-c11-agent-{stamp}")})
+    run_id = (r.json() or {}).get("run_id") if r.status in (200, 201) else None
+    if not run_id:
+        return [], f"the injected agent run was refused ({r.status})"
+    show("C11 agent arm: POST /projects/{id}/runs (AGENT revision, goal = the injected "
+         "issue body)", f"{r.status} run_id={run_id} — /plan interpolates "
+         "`${{ inputs.goal }}` into a real model turn's prompt")
+    CTX.setdefault("c11", {}).update({"agent_run_id": run_id})
+    # Re-baseline at THIS arm's start. The caller's `base_hits` predates the twin
+    # arm, whose own sink reading is a different window; a hit the twin arm already
+    # reported would otherwise be charged to this run. If the log cannot be read
+    # now, fall back to the caller's baseline (and log_readable says so).
+    log_start = c11_collector_log()
+    baseline = c11_collector_hits(log_start)
+    if baseline is None:
+        baseline = base_hits
+    prompt, turn_id, st = "", "", ""
+    try:
+        deadline = time.time() + run_cap
+        # The prompt row exists from the moment the turn is created, so "a row
+        # came back" is NOT "the turn ran". Reading the collector at that point
+        # would grade a window that excludes the very traffic the arm is about.
+        # Wait for the TURN to close (or for the cap), then read the sink.
+        while True:
+            rows = c11_agent_prompt_rows(run_id)
+            if rows:
+                turn_id, prompt, st = rows[0]
+                if st in C11_AGENT_TURN_TERMINAL:
+                    break
+            elif run_status(run_id) in C14_TERMINAL:
+                break        # failed/ended with no turn journaled: waiting cannot help
+            if time.time() >= deadline:
+                break
+            time.sleep(poll)
+        log_now = c11_collector_log()
+        now_hits = c11_collector_hits(log_now)
+        new_hits = c11_new_hits(baseline, now_hits)
+        # "readable" means READABLE ENOUGH TO DIFF: an unreadable start-of-arm log
+        # leaves new_hits None, and reading that as `[]` would hand the arm a PASS
+        # for traffic it never saw the absence of.
+        sink_readable = log_now is not None and new_hits is not None
+        fence_hits = (len([ln for ln in (log_now or "").splitlines()
+                           if C11_FENCE_RE.search(ln) and C11_PROBE_TOKEN not in ln])
+                      if sink_readable else None)
+        sentinel_hits, forms = c11_secret_hash_hits(new_hits if sink_readable else None)
+        show("C11 agent arm: the turn the model actually saw (redacted, first 240 chars)",
+             c11_redact(prompt[:240]).replace("\n", " ⏎ ") if prompt
+             else f"(no journaled prompt for run {run_id} within {int(run_cap)}s — "
+                  f"run status {run_status(run_id)!r})")
+        verdicts = c11_agent_arm_verdicts(
+            prompt, new_hits, fence_hits, sentinel_hits, forms, sink_readable,
+            turn_note=f"run {run_id}, turn {turn_id or '(none)'}, turn status "
+                      f"{st or '(unreadable)'}")
+        return verdicts, {"agent_run_id": run_id, "agent_turn_id": turn_id,
+                          "new_hits": len(new_hits or []),
+                          "sentinel_hits": len(sentinel_hits or [])}
+    finally:
+        if run_status(run_id) not in C14_TERMINAL:
+            try:
+                alice.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+                show(f"C11 agent arm: cancelled run {run_id} after its /plan turn",
+                     "one turn is what the arm measures; the rest of the loop is not "
+                     "this gate's to spend")
+            except Exception as e:  # noqa: BLE001 — housekeeping, never a verdict
+                show(f"C11 agent arm could not cancel run {run_id}", str(e)[:140])
+
+
+C11_PROMPT_SQL = ("SELECT ct.id::text, ct.status, replace(ct.prompt, chr(10), '\\n') "
+                  "FROM conversation_turns ct JOIN attempts a ON a.turn_id = ct.id "
+                  "JOIN node_executions ne ON ne.id = a.node_execution_id "
+                  "WHERE ne.run_id = '{run}' AND ne.node_instance_key = "
+                  f"'{C11_AGENT_PLAN_KEY}' ORDER BY ct.created_at LIMIT 1")
+
+
+def c11_agent_prompt_rows(run_id):
+    """[(turn_id, prompt, turn_status)] — the journaled prompt of the run's /plan
+    agent turn (`conversation_turns.prompt`, 00003: NOT NULL — the worker journals
+    what it sent, which is why this arm can read a model's prompt at all). Newlines
+    come back escaped: psql's line-based -tA output would otherwise be unparseable.
+    None = the ledger unreadable; [] = no turn journaled (yet)."""
+    text = c11_sql(C11_PROMPT_SQL.replace("{run}", run_id), "conversation_turns.prompt")
+    if text is None:
+        return None
+    out = []
+    for line in text.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0]:
+            out.append((parts[0], parts[2].replace("\\n", "\n"), parts[1]))
+    return out
+
+
 def c11_report_evidence(reads):
     """D3's reading of "the report": [(path, text_or_None)] over C11_REPORT_FILES (plus
     any extra live surface). Returns (joined labelled text, [paths unreadable]); the
@@ -16219,36 +17855,235 @@ def c11_report_honesty_verdicts(report_text, tag="C11b", sources=None, missing=N
                             if unearned else "") + f"{where}{unread}")]
 
 
-def c11_sandbox_label_verdicts(payloads, ran_agent_turn, tag="C11b"):
-    """C11b (event half) — sandbox.verified payloads from THIS run: if an agent
-    turn ran, its network_enforced MUST read false in the event stream (the honest
-    label the contract names); a true on an agent-turn row is a false claim ->
-    FAIL. No sandbox.verified rows and no agent turn -> GAP (the twin's
-    --block-net claim rests on the zero-hit sink result + ADR-0026, not here)."""
+def c11_sandbox_row(payload):
+    """True for a sandbox.verified payload, False for a sandbox.egress_observed /
+    `unavailable` row riding the same `sandbox.%` prefix (those carry a `status` and
+    denial counts — they CORROBORATE an earned true label, they do not join the
+    truthfulness grade). Pure."""
+    if not isinstance(payload, dict) or "network_enforced" not in payload:
+        return False
+    return "status" not in payload
+
+
+def c11_row_claim(payload):
+    """(kind, honest) of one sandbox.verified payload under ADR-0035's pairing — the
+    product invariant of nono/egress.go's EgressReport: `network_enforced=true` travels
+    ONLY with a "denied" or "allowlisted:<hosts>" label; `network_enforced=false` travels
+    with "open" (or, on a pre-label row, with no label at all — which says nothing and
+    lands in neither class, never in the evidence). kind is 'true'/'false'/None; honest
+    False names the dishonest row this arm exists to catch in EITHER direction: a true
+    without its denial label claims an enforcement the sandbox never made, a false under
+    a denied/allowlisted label reports enforcement silently gone. Pure."""
+    enforced = (payload or {}).get("network_enforced")
+    if enforced is not True and enforced is not False:
+        return None, None
+    net = str((payload or {}).get("network") or "")
+    if enforced is True:
+        return "true", net == "denied" or net.startswith("allowlisted:")
+    return "false", net in ("", "open")
+
+
+def _c11_row_brief(payload):
+    """The print-safe shape of a row for verdict details: only the two fields the
+    truthfulness claim grades (payloads carry no secrets; a verdict quotes no more than
+    it measures)."""
+    return {"network_enforced": (payload or {}).get("network_enforced"),
+            "network": (payload or {}).get("network")}
+
+
+def c11_parse_payloads(pay_rows):
+    """psql payload::text lines -> a list of dicts. None passes through: an unreadable
+    ledger is a GAP, never an empty list that reads like 'the ledger says no rows'."""
+    if pay_rows is None:
+        return None
+    payloads = []
+    for line in pay_rows.splitlines():
+        try:
+            pay = json.loads(line)
+        except ValueError:
+            pay = {}
+        if isinstance(pay, dict):
+            payloads.append(pay)
+    return payloads
+
+
+def c11_sandbox_rows(run_id):
+    """Every sandbox.* payload journalled for one run ([] = the ledger answered and the
+    run journalled nothing; None = the ledger could not be read)."""
+    try:
+        rows = psql("SELECT COALESCE(payload::text,'{}') FROM domain_events "
+                    f"WHERE run_id = '{run_id}' AND type LIKE 'sandbox.%' "
+                    "ORDER BY global_seq")
+    except RuntimeError:
+        return None
+    return c11_parse_payloads(rows)
+
+
+def c11_agent_turn_rows(alice, facts, seed_wait_s=180.0, own_wait_s=600.0, poll_s=5.0):
+    """Produce the OTHER evidence class C11b's truthfulness grade needs, in-lab:
+    sandbox.verified rows written under the agent-turn profile — the profile whose
+    sandbox does NOT enforce the network (M3's standing SANDBOX.md row; the twin's
+    command sandbox can never emit a false-labelled row, which is exactly why
+    '7 row(s): 0 false / 7 true' was a GAP and not a measurement). The § 7.0 seed POSTs
+    the agent variant before the first gate runs, so its /plan agent.acp attempt is
+    already on its way when C11 opens: read THAT run's rows first, waiting only as long
+    as the attempt needs (sandbox.verified is journalled at verification time, BEFORE
+    the model turn answers — the row does not depend on the gateway answering). When
+    the lab has produced no such row (the seeded run is absent, its attempt was refused
+    before verification, the worker never reached it), the arm POSTs one run of the
+    SAME agent revision itself, waits for its /plan rows, and CANCELS it at the end
+    (housekeeping — its gate is not this arm's to decide). Returns
+    (payloads | None, source note): [] means the ledgers were readable and no
+    agent-turn row exists (an honest GAP with the reason in the note); None means the
+    ledger could not be read at all."""
+    agent_run = str(mf(facts, "run_id", "agent") or "")
+    if agent_run:
+        deadline = time.time() + seed_wait_s
+        rows = c11_sandbox_rows(agent_run)
+        while rows is None or not rows:
+            if time.time() >= deadline:
+                break
+            if rows is not None and run_status(agent_run) in C14_TERMINAL:
+                break  # the run ended with nothing verified — waiting cannot help
+            time.sleep(poll_s)
+            rows = c11_sandbox_rows(agent_run)
+        if rows:
+            return rows, (f"seeded agent run {agent_run} — its /plan agent.acp attempt, "
+                          "sandbox-verified under the agent-turn profile")
+    rev = mf(facts, "revision_id", "agent")
+    if not rev:
+        return [], ("no seeded agent rows within "
+                    f"{int(seed_wait_s)}s and the manifest carries no agent revision to "
+                    "start one from")
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                   {"pipeline_revision_id": rev,
+                    "inputs": mf(facts, "inputs", "agent", default={}) or {},
+                    "idempotency": idem_key(f"m4x-c11-label-{stamp}")})
+    run_id = (r.json() or {}).get("run_id") if r.status in (200, 201) else None
+    if not run_id:
+        return [], f"the agent-turn evidence run was refused ({r.status})"
+    show("C11b agent-turn evidence arm: POST /projects/{id}/runs (agent revision)",
+         f"{r.status} run_id={run_id} — the twin can never produce a false-labelled "
+         "row, so this arm runs the agent-turn profile to make one exist")
+    try:
+        deadline = time.time() + own_wait_s
+        rows = c11_sandbox_rows(run_id)
+        while rows is None or not rows:
+            if time.time() >= deadline:
+                break
+            if rows is not None and run_status(run_id) in C14_TERMINAL:
+                break
+            time.sleep(poll_s)
+            rows = c11_sandbox_rows(run_id)
+        if rows:
+            return rows, (f"run {run_id} started by this arm — its /plan agent.acp "
+                          "attempt, sandbox-verified under the agent-turn profile")
+        return rows, (f"run {run_id} started by this arm journalled no sandbox.verified "
+                      f"row within {int(own_wait_s)}s (status {run_status(run_id)!r})")
+    finally:
+        if run_status(run_id) not in C14_TERMINAL:
+            try:
+                alice.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+            except Exception as e:  # noqa: BLE001 — housekeeping, never a verdict
+                show(f"C11b could not cancel the evidence run {run_id}", str(e)[:140])
+
+
+def c11_sandbox_label_verdicts(payloads, ran_agent_turn, tag="C11b",
+                               agent_turn_payloads=None, agent_turn_source=""):
+    """C11b (event half) — sandbox.verified payloads graded over BOTH evidence classes.
+    Without agent_turn_payloads (None) the arm keeps its original algebra: an agent turn
+    ran -> its row must say false (a true there is a false claim, FAIL); only the twin's
+    rows exist -> true-only rows are UNMEASURABLE truthfully (GAP: with no false-labelled
+    row produced anywhere, "the rows that exist report their enforcement truthfully" has
+    never been shown to measure anything — that is why the row said GAP over
+    "7 row(s): 0 false / 7 true"). With agent_turn_payloads (a list, possibly empty) the
+    lab PRODUCED the missing class — one attempt under the agent-turn profile, whose
+    sandbox does NOT enforce network — and truthfulness grades over both: PASS only when
+    a false/open agent-turn row exists (M3's honest label, seen, not asserted), the
+    twin's true rows each carry their denied/allowlisted label, no agent-turn row claims
+    enforcement, and NO row contradicts its own label. Any contradiction FAILs; an empty
+    class never PASSes."""
     if payloads is None:
         return [(f"{tag} sandbox.verified.payload.network_enforced is the honest "
                  "label in the event stream", None,
                  "the journal could not be read — the label is unverifiable")]
     enforced = [p for p in payloads if p.get("network_enforced") is True]
     unenforced = [p for p in payloads if p.get("network_enforced") is False]
-    if not payloads:
-        if ran_agent_turn:
+    if agent_turn_payloads is None:
+        if not payloads:
+            if ran_agent_turn:
+                return [(f"{tag} sandbox.verified.payload.network_enforced is the honest "
+                         "label in the event stream", None,
+                         "an agent turn ran but no sandbox.verified row was found — the "
+                         "honest label cannot be shown, only asserted")]
             return [(f"{tag} sandbox.verified.payload.network_enforced is the honest "
                      "label in the event stream", None,
-                     "an agent turn ran but no sandbox.verified row was found — the "
-                     "honest label cannot be shown, only asserted")]
-        return [(f"{tag} sandbox.verified.payload.network_enforced is the honest "
-                 "label in the event stream", None,
-                 "no sandbox.verified row for this run (the twin's command sandbox "
-                 "verification is not journalled per-node) — GAP, not a pass-by-empty")]
-    if ran_agent_turn:
-        return [(f"{tag} every agent-turn sandbox.verified says network_enforced=false "
-                 "(the honest label, not a claim of enforcement)",
-                 bool(unenforced) and not enforced,
-                 f"{len(unenforced)} row(s) say false, {len(enforced)} say true")]
-    return [(f"{tag} the sandbox.verified rows that exist report their enforcement "
-             "truthfully", not enforced or None,
-             f"{len(payloads)} row(s): {len(unenforced)} false / {len(enforced)} true")]
+                     "no sandbox.verified row for this run (the twin's command sandbox "
+                     "verification is not journalled per-node) — GAP, not a pass-by-empty")]
+        if ran_agent_turn:
+            return [(f"{tag} every agent-turn sandbox.verified says network_enforced=false "
+                     "(the honest label, not a claim of enforcement)",
+                     bool(unenforced) and not enforced,
+                     f"{len(unenforced)} row(s) say false, {len(enforced)} say true")]
+        return [(f"{tag} the sandbox.verified rows that exist report their enforcement "
+                 "truthfully", not enforced or None,
+                 f"{len(payloads)} row(s): {len(unenforced)} false / {len(enforced)} true")]
+    # ---- both classes produced in-lab: grade truthfulness over what was MEASURED ----
+    twin_v = [p for p in payloads if c11_sandbox_row(p)]
+    agent_v = [p for p in agent_turn_payloads if c11_sandbox_row(p)]
+    twin_true = [p for p in twin_v if c11_row_claim(p)[0] == "true"]
+    agent_false = [p for p in agent_v if c11_row_claim(p)[0] == "false"]
+    agent_true = [p for p in agent_v if c11_row_claim(p)[0] == "true"]
+    dishonest = [p for p in twin_v + agent_v if c11_row_claim(p)[1] is False]
+    where = f" (agent class: {agent_turn_source})" if agent_turn_source else ""
+    label = (f"{tag} the sandbox.verified rows that exist report their enforcement "
+             "truthfully")
+    if dishonest:
+        return [(label, False,
+                 f"{len(dishonest)} row(s) contradict their own ADR-0035 label (true "
+                 f"needs denied/allowlisted:<hosts>, false needs open/absent): "
+                 f"{[_c11_row_brief(p) for p in dishonest[:3]]} — enforcement claimed or "
+                 f"disclaimed that the sandbox never said; {len(agent_false)} agent-turn "
+                 f"false and {len(twin_true)} command true rows were otherwise "
+                 f"graded{where}")]
+    if agent_true:
+        return [(label, False,
+                 f"{len(agent_true)} sandbox.verified row(s) written under the agent-turn "
+                 "profile say network_enforced=true — that profile does not enforce "
+                 "egress (M3's standing SANDBOX.md row; ADR-0019 D3), so a true there is "
+                 "the dishonest label this arm exists to catch; "
+                 f"{[_c11_row_brief(p) for p in agent_true[:2]]}{where}")]
+    if not agent_v:
+        return [(label, None,
+                 "the agent-turn arm journalled no sandbox.verified row (its attempt "
+                 "never reached sandbox verification in the window): the false label the "
+                 f"contract names stays asserted, not shown — {len(twin_v)} twin row(s) "
+                 f"alone ({len(twin_true)} true) cannot measure the truthfulness of a "
+                 f"class the lab never produced{where}")]
+    if not agent_false:
+        return [(label, None,
+                 f"the agent-turn arm's {len(agent_v)} row(s) carry no network_enforced "
+                 f"value at all (pre-label rows): the honest false label is "
+                 f"unmeasured{where}")]
+    if not twin_true:
+        return [(label, None,
+                 f"{len(agent_false)} agent-turn false row(s) but no true-labelled "
+                 f"command row from the twin run to grade against ({len(twin_v)} twin "
+                 f"verified row(s) read): one class alone proves nothing about the "
+                 f"other{where}")]
+    corroboration = [p for p in payloads + list(agent_turn_payloads)
+                     if isinstance(p, dict) and not c11_sandbox_row(p)
+                     and p.get("network_enforced") is True]
+    return [(label, True,
+             f"BOTH classes measured: {len(agent_false)} agent-turn row(s) say false "
+             "(network=open — the honest label M3's SANDBOX.md row stands by, reported "
+             f"not hidden), {len(twin_true)} twin command row(s) say true (each carrying "
+             "its denied/allowlisted label, corroborated by the zero-hit sink arm "
+             f"above); 0 rows contradict their own label"
+             + (f"; {len(corroboration)} earned-true egress-observation row(s) in the "
+                "same streams" if corroboration else "")
+             + where)]
 
 
 def c11_sink_liveness_verdicts(probe_status, probe_in_log, tag="C11a"):
@@ -16324,8 +18159,12 @@ def c11c_witness(leg):
     return rollup(leg), len(ledger_gate(leg))
 
 
-def c11c_structural_verdicts(witness=None, claims=C11C_CLAIMS):
-    """One verdict per structural claim, citing each witness's measured rollup."""
+def c11c_structural_verdicts(witness=None, claims=C11C_CLAIMS,
+                             where="this driver process", deferred=True):
+    """One verdict per structural claim, citing each witness's measured rollup.
+
+    `where` is the body of evidence the witnesses were read from: THIS process by
+    default, and the merged shard witnesses (`--regrade`) when the run was split."""
     read = witness or c11c_witness
     out = []
     for claim, legs, why in claims:
@@ -16333,26 +18172,31 @@ def c11c_structural_verdicts(witness=None, claims=C11C_CLAIMS):
         proved = sorted(k for k, v in seen.items() if v[0] == "PASS")
         failed = sorted(k for k, v in seen.items() if v[0] == "FAIL")
         unmeasured = sorted(k for k, v in seen.items() if v[0] in ("", "GAP"))
+        # "runs later in GATES" only explains a witness THIS process will still
+        # print: on a sharded run (acceptance.yml's m4 matrix) C8/C10/C1/C2 print
+        # in another shard's process, and the exit-time regrade can never see them.
+        here_later = [k for k in unmeasured if gate_in_this_pass(c11c_gate_of(k))]
         cite = "; ".join(f"{k}={(seen[k][0] or 'NOT PRINTED')}"
                          + (f" over {seen[k][1]} verdict line(s)" if seen[k][0] else "")
                          for k in seen)
-        later = (" (" + ", ".join(sorted(unmeasured)) + " run after C11 in GATES, so the "
+        later = (" (" + ", ".join(sorted(here_later)) + " run after C11 in GATES, so the "
                  "exit-time regrade repeats this row once they have)") \
-            if any(c11c_runs_after_c11(k) for k in unmeasured) else ""
+            if deferred and any(c11c_runs_after_c11(k) for k in unmeasured) \
+            and here_later else ""
         if failed:
             out.append((f"C11c {claim}", False,
                         f"its own witness says it does not hold — {cite}; what would "
                         f"have proven it: {why}"))
         elif seen and len(proved) == len(seen):
             out.append((f"C11c {claim}", True,
-                        f"measured in this process by {cite}; what they prove: {why}"))
+                        f"measured in {where} by {cite}; what they prove: {why}"))
         elif proved:
             out.append((f"C11c {claim}", None,
                         f"partly measured — {cite}; never a PASS on a half-measured "
                         f"claim ({why}){later}"))
         else:
             out.append((f"C11c {claim}", None,
-                        f"nothing measured this claim in this driver process — {cite}; "
+                        f"nothing measured this claim in {where} — {cite}; "
                         f"what would prove it: {why}{later}"))
     return out
 
@@ -16379,8 +18223,8 @@ def c11():
     lease_expires matches and NOTHING AT ALL from the twin — the command sandbox
     (communication-command profile, egress denied per ADR-0026) is the assertion, not
     the model's manners; the agent-turn profile's network_enforced=false stays REPORTED
-    honestly. The live-Claude agent arm is GAPped: this driver cannot drive one
-    deterministically."""
+    honest. The live agent arm runs when the stack carries a model credential
+    (compose.m4-llm.yml — see compose_stack); with none it GAPs naming that."""
     if not CTX.get("stack_up"):
         skip("C11", "the injected line reaches the twin's command verbatim while the "
                     "collector on 18099 records nothing carrying the sentinel, a fence "
@@ -16485,24 +18329,26 @@ def c11():
                                     log_now is not None))
 
     # C11b (honest labels) — sandbox.verified in THIS run's stream, and the
-    # ops/sandbox report's network_enforced=false spelling.
+    # ops/sandbox report's network_enforced=false spelling. The row grades
+    # truthfulness over BOTH evidence classes, so the gate first produces the class
+    # the twin can never write: one attempt under the agent-turn profile, whose
+    # sandbox does NOT enforce the network (seed.sh's agent run is already driving
+    # its /plan turn; only if the lab produced nothing does this arm POST one of our
+    # own — see c11_agent_turn_rows).
     pay_rows = c11_sql("SELECT COALESCE(payload::text,'{}') FROM domain_events "
                        f"WHERE run_id = '{run_id}' AND type LIKE 'sandbox.%' "
                        "ORDER BY global_seq", "sandbox.* payloads")
-    payloads = None
-    if pay_rows is not None:
-        payloads = []
-        for line in pay_rows.splitlines():
-            try:
-                pay = json.loads(line)
-            except ValueError:
-                pay = {}
-            if isinstance(pay, dict):
-                payloads.append(pay)
+    payloads = c11_parse_payloads(pay_rows)
     ran_agent = c11_sql("SELECT count(*)::text FROM node_executions WHERE "
                         f"run_id = '{run_id}' AND kind IN ('agent.acp','model.chat')",
                         "agent-kind node count")
-    c11_emit(c11_sandbox_label_verdicts(payloads, _int(ran_agent) > 0))
+    agent_rows, agent_src = c11_agent_turn_rows(alice, facts)
+    show("C11b the agent-turn evidence class (the rows that CAN say false)",
+         "source=" + (agent_src or "(unnamed)") + "; rows="
+         + ("unreadable (ledger)" if agent_rows is None else f"{len(agent_rows)}"))
+    c11_emit(c11_sandbox_label_verdicts(payloads, _int(ran_agent) > 0,
+                                        agent_turn_payloads=agent_rows,
+                                        agent_turn_source=agent_src))
     reads = []
     for rel in C11_REPORT_FILES:
         try:
@@ -16527,18 +18373,38 @@ def c11():
     c11_emit(C11C_INPLACE)
     defer_regrade("C11c", c11c_regrade)
 
-    # The agent arm: a live Claude turn under the agent-turn profile (network
-    # ALLOWED — that profile is the product) is the other half of C11a. This
-    # driver cannot drive one deterministically.
-    gap("C11 agent arm", "the injected-body arm against a real Claude/ACP turn needs a "
-                         "live model run (non-deterministic, token-spending, the "
-                         "agent-turn profile's network_enforced=false is exactly why "
-                         "it is not sandbox-provable here); the ENGINE claim — "
-                         "--block-net on the command sandbox, zero sink traffic — is "
-                         "proven by the twin arm above")
+    # The agent arm: the injected body against a REAL agent turn. The twin arm
+    # above proves the ENGINE claim (a command sandbox with egress denied puts
+    # nothing on the wire); only a live model turn can prove the other half of
+    # § 7.1 C11b — that the attacker line lands verbatim in a prompt a MODEL
+    # reads, under the agent-turn profile whose network is NOT enforced. It runs
+    # whenever the stack carries the model credential (compose.m4-llm.yml, i.e.
+    # M4_LLM_LAYERED); with none, this is the one leg in the file whose GAP is an
+    # environment fact rather than an unmeasured claim, and it says which.
+    if M4_LLM_LAYERED:
+        agent_verdicts, agent_ev = c11_agent_arm(alice, facts, base_hits)
+        if agent_verdicts:
+            c11_emit(agent_verdicts)
+            CTX["c11"].update({k: v for k, v in (agent_ev or {}).items() if v is not None})
+        else:
+            gap("C11 agent arm", f"the agent-turn leg could not start: {agent_ev} — the "
+                                 "layer composes the credential, so this is the run "
+                                 "itself failing, not the lab lacking one")
+    else:
+        gap("C11 agent arm", "the injected-body arm against a real ACP turn needs a "
+                             "model credential in the stack, and this one has none: "
+                             f"{M4_LLM_LAYER} is not composed "
+                             f"({LLM_KEY_FILE_ENV} unset/unreadable), so launcher pi's "
+                             "session/new refuses (-32000 'Authentication required') and "
+                             "no turn exists to read a prompt from. The ENGINE claim — "
+                             "--block-net on the command sandbox, zero sink traffic — is "
+                             "proven by the twin arm above; on the acceptance runner, "
+                             "where the m4 job writes the key file, THIS arm measures")
     dump_run_evidence(alice, run_id)
     CTX["c11"].update({"terminal": st or "", "new_hits": len(new_hits or []),
                        "sandbox_rows": len(payloads or []),
+                       "agent_turn_rows": None if agent_rows is None else len(agent_rows),
+                       "agent_turn_source": agent_src,
                        "probe_seen": bool(probe_seen)})
 
 
@@ -19257,18 +21123,30 @@ def c14_lock_roll_windows(steps, services=("api-a", "api-b")):
 def c14_lock_handover(obs, steps, services=("api-a", "api-b")):
     """Did the driver's advisory lock move to a SURVIVING replica? Read from the sampled
     lock table, not from logs. Evidence the verdicts print:
-      fresh_in_window  holder samples taken while a replica was down whose backend STARTED
-                       AFTER that replica's restart was issued — the peer's backend, or the
-                       rolled replica's new one
-      stale_in_window  holder samples of a backend that predates the restart: Postgres has
-                       not noticed the rolled process died yet (a session lock lives in the
-                       backend and a killed container's TCP connection can stay half-open).
-                       Not a lock that failed to move, so it is counted separately and
-                       decides the verdict neither way.
+      fresh_in_window  holder samples taken while a replica was down that are NOT corpse
+                       backends. A backend's start time can only be stale against a
+                       restart of the service it BELONGS TO: api-b was never restarted,
+                       so api-b's long-lived session holding the key inside api-a's roll
+                       window IS the handover (that is what "held by a SURVIVING replica"
+                       can mean in a two-replica lab), and a peer sample is stale ONLY
+                       when the peer itself restarted AFTER that backend was born — the
+                       sample can only be the corpse of the peer's dead pre-restart
+                       session
+      stale_in_window  holder samples of a backend that predates a restart of its OWN
+                       service: Postgres has not noticed that process died yet (a session
+                       lock lives in the backend and a killed container's TCP connection
+                       can stay half-open). Not a lock that failed to move, so it is
+                       counted separately and decides the verdict neither way
       peer_hits        fresh in-window samples held by a replica OTHER than the one rolled
       own_hits         fresh in-window samples held by the rolled replica itself
     Pure."""
     windows = c14_lock_roll_windows(steps, services)
+    rolls = {}
+    for st in steps or []:
+        svc = str((st or {}).get("svc"))
+        t = _c14_float((st or {}).get("t_restart"))
+        if t is not None:
+            rolls.setdefault(svc, []).append(int(t * 1000))
     ev = {"windows": windows, "fresh_in_window": [], "stale_in_window": [],
           "peer_hits": [], "own_hits": [], "outside": []}
     for e in (obs or {}).get("events") or []:
@@ -19285,13 +21163,24 @@ def c14_lock_handover(obs, steps, services=("api-a", "api-b")):
         for h in e.get("holders") or []:
             if not h.get("service"):
                 continue
+            own = h["service"] == win["svc"]
             bs = _c14_float(h.get("backend_start_ms"))
-            stale = bs is not None and bs < win["t_restart_ms"]
+            if own:
+                # the rolled replica inside its own window: a backend older than THAT
+                # restart is the corpse Postgres has not reaped
+                stale = bs is not None and bs < win["t_restart_ms"]
+            else:
+                # the SURVIVING replica: pre-existing by right — stale only on positive
+                # evidence that ITS OWN service restarted after this backend was born
+                # (an unreadable backend_start never buys the amnesty either way)
+                died = [t for t in rolls.get(str(h["service"]), [])
+                        if bs is not None and t <= in_ms and t > bs]
+                stale = bool(died)
             row = {"svc": win["svc"], "peer": win["peer"], "service": h["service"],
                    "pid": h.get("pid"), "ts_ms": in_ms, "basis": h.get("basis")}
             ev["stale_in_window" if stale else "fresh_in_window"].append(row)
             if not stale:
-                ev["own_hits" if h["service"] == win["svc"] else "peer_hits"].append(row)
+                ev["own_hits" if own else "peer_hits"].append(row)
     return ev
 
 
@@ -19378,7 +21267,13 @@ def c14_lock_pg_verdicts(obs, steps=None, services=("api-a", "api-b"), log_marks
                     f"{len(hand['peer_hits'])} sample(s) caught the lock HELD inside a roll "
                     f"window by a replica that stayed up: {hand['peer_hits'][:3]} "
                     f"(windows={hand['windows']}) — the lock moved to the survivor without "
-                    "ever printing a line")
+                    "ever printing a line. The survivor's backend legitimately PREDATES "
+                    "the rolled replica's restart (only a restart of the service a "
+                    "backend belongs to can make that backend stale): the long-lived "
+                    "peer session holding the key while the other replica is down is "
+                    "exactly what 'held by a SURVIVING replica' can mean in a two-"
+                    "replica lab — grading a peer holder by the ROLLED replica's clock "
+                    "would reject the only evidence this claim can ever produce")
     elif hand["own_hits"]:
         move_row = (label_move, False,
                     f"{len(hand['own_hits'])} fresh holder sample(s) landed inside a roll "
@@ -19387,11 +21282,13 @@ def c14_lock_pg_verdicts(obs, steps=None, services=("api-a", "api-b"), log_marks
                     f"was stopped (windows={hand['windows']})")
     elif hand["stale_in_window"]:
         move_row = (label_move, None,
-                    f"only backends that PRE-DATE the restart held the lock inside the roll "
-                    f"windows ({hand['stale_in_window'][:3]}): Postgres had not reaped the "
-                    "rolled process's session yet. A session lock that outlives its client "
-                    "briefly is not a handover claim either way, and no fresh peer holder "
-                    f"was sampled in-window; {duty}")
+                    f"only backends that PRE-DATE the restart of the very service they "
+                    f"belong to held the lock inside the roll windows "
+                    f"({hand['stale_in_window'][:3]}): Postgres had not reaped those "
+                    "processes' sessions yet. A session lock that outlives its client "
+                    f"briefly is not a handover claim either way, and no holder the "
+                    f"probe could attribute to a live session was sampled in-window; "
+                    f"{duty}")
     else:
         move_row = (label_move, None,
                     f"{duty}; NO sample caught the driver's lock granted inside any roll "
@@ -20048,6 +21945,310 @@ def c14_restore_engine_on(svc, base, plan=None):
     return state
 
 
+C14C_M2_PROMPT = ("Reply with exactly the word PONG. Do not read files, do not run "
+                  "commands, do not edit anything — just answer.")
+
+
+def c14_all_off_verdicts(states_found, ready, posted, queued_seen, turn, restore,
+                         blocked=""):
+    """§ 7.1 C14c's SECOND half (ADR-0023 Migration/rollback: "with
+    COMMUNICATION_PIPELINE_SCHEDULER=off the advancer and the attempt claimer do not
+    start, runs stay queued, and conversations keep working — every M2/M3 guarantee
+    survives M4's absence") as pure rows. Inputs are readings, never intentions:
+
+      states_found  {service: 'off'|...} the two replicas' OWN startup logs reported
+                    over the window (both must say 'off' or the config under measure
+                    is not the rollback configuration)
+      ready         {service: bool} each replica's own readiness endpoint over the arm
+      posted        (status, run_id|None) for the twin run POSTed while both were off
+      queued_seen   that run's ledger statuses sampled over the window
+      turn          None, or the M2 smoke's reading {"status","worker","token",
+                    "verified","workspace","replayed"} — a human conversation turn
+                    under the seeded profile, the M2 claim/lease path with M4 gone
+      restore       [(service, 'on'|'off'|'unobservable')] from the finally
+      blocked       why the arm never started ("" when it ran)."""
+    label_off = ("C14c the flag off EVERYWHERE leaves M2/M3 intact (ADR-0023 "
+                 "Migration/rollback: every M2/M3 guarantee survives M4's absence)")
+    label_queued = ("C14c with EVERY replica's engine off a run STAYS 'queued' (no "
+                    "advancer, no attempt claimer, no silent half-engine)")
+    all_off = (isinstance(states_found, dict) and bool(states_found)
+               and all(v == "off" for v in states_found.values()))
+    ready_all = isinstance(ready, dict) and bool(ready) and all(ready.values())
+    if blocked or not all_off or not ready_all:
+        off_row = (label_off, None,
+                   (blocked + "; " if blocked else "")
+                   + f"the both-off bring-up never held: states={states_found} "
+                     f"ready={ready} — an engine that stayed on would make every "
+                     "claim below meaningless, so nothing is graded on it")
+    elif not isinstance(turn, dict) or turn.get("status") is None:
+        off_row = (label_off, None,
+                   "the M2 smoke never reached a terminal turn — "
+                   + (str(turn.get("note")) if turn and turn.get("note") else
+                      f"reading={turn}"))
+    elif turn["status"] in ("failed", "cancelled", "interrupted"):
+        off_row = (label_off, False,
+                   f"the M2 conversation turn ended {turn['status']!r} with BOTH "
+                   "engines off — conversations do NOT keep working in ADR-0023's "
+                   "rollback configuration, which is exactly what this row exists "
+                   "to catch")
+    elif turn["status"] != "completed":
+        off_row = (label_off, None, f"turn status reads {turn['status']!r} — the "
+                   "smoke never reached a terminal state inside its window")
+    else:
+        missing = [k for k in ("worker", "token", "verified", "workspace", "replayed")
+                   if turn.get(k) is None]
+        weak = []
+        if (turn.get("token") or 0) <= 0:
+            weak.append("fencing_token>0 (the turn was never fenced-claimed)")
+        if (turn.get("verified") or 0) <= 0:
+            weak.append("sandbox.verified row (the M3 chain never journalled)")
+        if (turn.get("workspace") or 0) <= 0:
+            weak.append("workspaces row (M3 prepared nothing)")
+        if turn.get("replayed") != 200:
+            weak.append(f"conversation replay answered {turn.get('replayed')!r}")
+        if missing:
+            off_row = (label_off, None,
+                       f"the turn completed but parts of the M2/M3 reading are "
+                       f"unreadable ({missing}; reading={turn}) — unproven is not "
+                       "intact, and not broken either")
+        elif weak:
+            off_row = (label_off, False,
+                       f"the turn completed but {weak} — M2/M3 claim(s) unmet with "
+                       f"both engines off; reading={turn}")
+        else:
+            off_row = (label_off, True,
+                       "a human conversation turn ran the FULL M2/M3 path with both "
+                       f"pipeline engines off: turn completed on worker="
+                       f"{turn.get('worker')} at fencing_token={turn.get('token')} "
+                       f"(M2's claim/lease/fence, unchanged by ADR-0023), M3 workspace "
+                       f"row(s)={turn.get('workspace')}, sandbox.verified row(s)="
+                       f"{turn.get('verified')} (the network_enforced=false class C11b "
+                       f"grades), replay={turn.get('replayed')} — every M2/M3 "
+                       "guarantee survived M4's absence, measured not asserted")
+    seen = [s for s in (queued_seen or []) if s]
+    st, run_id = posted if posted else (None, None)
+    if blocked or not all_off or not ready_all:
+        queued_row = (label_queued, None,
+                      (blocked + "; " if blocked else "")
+                      + f"states={states_found} ready={ready} — not measured")
+    elif st not in (200, 201) or not run_id:
+        queued_row = (label_queued, None,
+                      f"the run POST was refused (status={st}) — nothing to watch")
+    elif not seen:
+        queued_row = (label_queued, None,
+                      "no readable status was sampled over the both-off window")
+    else:
+        moved = [s for s in seen if s != "queued"]
+        queued_row = (label_queued, not moved,
+                      f"observed={seen}"
+                      + (f" — left 'queued' as {moved[-1]!r} while NO replica had an "
+                         "engine: ADR-0023's feature flag does not gate the advancer, "
+                         "which is the product bug this half of the row exists to catch"
+                         if moved else
+                         f" — stayed 'queued' across {len(seen)} samples: the advancer "
+                         "and the attempt claimer really do not start"))
+    rows = [off_row, queued_row]
+    for svc, state in restore or []:
+        rows.extend(c14_restore_verdicts((svc, state)))
+    return rows
+
+
+def c14_m2_turn_evidence(alice, conv_id, turn_id, wait_s=300.0):
+    """Poll one conversation turn to terminal (bounded), then read what it left: the
+    turn's own row (status + the worker and fencing token M2 claimed it with — the
+    claim/lease/fence triple is the substrate ADR-0023 says survives M4's absence),
+    the turn's sandbox.verified rows (M3's chain), the conversation's workspaces row,
+    and the transcript replay route. Every unreadable reading is None — never a zero."""
+    deadline = time.time() + wait_s
+    row = ""
+    while True:
+        try:
+            row = psql("SELECT status || '|' || COALESCE(worker_id::text,'') || '|' || "
+                       f"fencing_token::text FROM conversation_turns WHERE id = "
+                       f"'{turn_id}'")
+        except RuntimeError:
+            row = ""
+        head = row.split("|")[0].strip() if row else ""
+        if head in C14_TERMINAL or time.time() >= deadline:
+            break
+        time.sleep(5)
+    parts = [p.strip() for p in row.split("|")] if row and "|" in row else []
+    out = {"conversation_id": conv_id, "turn_id": turn_id,
+           "status": parts[0] if parts and parts[0] else None}
+    if len(parts) >= 2 and parts[1]:
+        out["worker"] = parts[1]
+    if len(parts) >= 3:
+        out["token"] = _int(parts[2])
+
+    def q(sql):
+        try:
+            return _int(psql(sql))
+        except RuntimeError:
+            return None
+    out["verified"] = q("SELECT count(*) FROM domain_events WHERE "
+                        f"type='sandbox.verified' AND payload->>'turn_id' = '{turn_id}'")
+    out["workspace"] = q("SELECT count(*) FROM workspaces WHERE conversation_id = "
+                         f"'{conv_id}'")
+    try:
+        out["replayed"] = alice.get(LB, f"/api/v1/conversations/{conv_id}").status
+    except Exception:  # noqa: BLE001 — an unreadable replay route is None, not a zero
+        out["replayed"] = None
+    return out
+
+
+def c14_all_off(alice, facts, project_id, roll=C14_ROLL, turn_wait_s=300.0,
+                queued_window_s=30.0):
+    """§ 7.1 C14c's second half — the flag off EVERYWHERE — as a separate bring-up
+    INSIDE the shard (the old GAP called that "a § 7.0 lab decision, not a mid-gate
+    recreate"; the driver owns the m4 stack and its recreate lever, and uses it twice,
+    then hands the lab back). After the one-off arm restored the normal all-on lab:
+    recreate BOTH api replicas with their per-replica scheduler flag off (the flag in
+    the process env, never argv; the -f list from each container's own
+    config-files label), read both engines off their fresh startup logs, and measure
+    the rollback claim: (a) a fresh twin run POSTed through the lb STAYS 'queued'
+    across the window — nobody claims or advances anything; (b) M2/M3 intact — a human
+    conversation turn under the seeded m4-planner profile rides the worker's M2
+    claim/lease/fence path, M3 prepares its workspace and the sandbox chain journals
+    sandbox.verified, and the turn COMPLETES with both control-plane engines off;
+    (c) the finally recreates EVERY touched replica back engine-ON and the restore
+    rows report exactly what the later gates inherit."""
+    services = tuple(s for s, _b in roll)
+    bases = dict(roll)
+    plans, recreated = {}, []
+    states_found, ready = None, {}
+    posted, seen, turn, queued_run = None, [], None, None
+    restore = []
+    blocked = ""
+    found = c14_replica_engines(services)
+    if not (isinstance(found, dict) and found
+            and all(v == "on" for v in found.values())):
+        blocked = (f"the lab never presented two engine-ON replicas to flip "
+                   f"(states as found: {found})")
+    if not blocked:
+        try:
+            for svc in services:
+                try:
+                    plan = c14_recreate_plan_for_service(svc)
+                except Exception as e:  # noqa: BLE001 — an unreadable plan is a GAP reason
+                    blocked = (f"the recreate plan for {svc} could not be read: "
+                               f"{type(e).__name__}: {e}")
+                    break
+                plans[svc] = plan
+                show(f"C14c(all-off) recreate config files for {svc}",
+                     c14_recreate_source_note(svc, plan))
+                try:
+                    rc, out = run(plan["cmd"], env=c14_recreate_env(svc, "off"),
+                                  cwd=plan["cwd"])
+                except Exception as e:  # noqa: BLE001 — a raising call may still have
+                    rc, out = 127, f"{type(e).__name__}: {e}"   # touched the container
+                show(" ".join(plan["cmd"]) + f" with {c14_sched_env_var(svc)}=off "
+                     f"(rc={rc})", out[-200:])
+                recreated.append(svc)  # restore whatever the command left behind
+                if rc != 0:
+                    blocked = f"the both-off recreate of {svc} answered rc={rc}"
+                    break
+            if not blocked:
+                for svc in services:
+                    ready[svc] = c14_wait_replica(bases[svc], 180)
+                states_found = c14_replica_engines(services)
+                show("C14c(all-off) replica engine flags over the both-off window",
+                     f"states={states_found} ready={ready}")
+                if (isinstance(states_found, dict) and states_found
+                        and all(v == "off" for v in states_found.values())
+                        and all(ready.values())):
+                    rev = (mf(facts, "revision_id", "twin")
+                           or mf(facts, "revision_id", "agent"))
+                    try:
+                        r = alice.post(LB, f"/api/v1/projects/{project_id}/runs",
+                                       {"pipeline_revision_id": rev,
+                                        "inputs": mf(facts, "inputs", "twin",
+                                                     default={}) or {},
+                                        "idempotency": idem_key(
+                                            f"m4x-c14c-alloff-{int(time.time())}")})
+                    except Exception as e:  # noqa: BLE001 — a refused POST is a reading
+                        r = None
+                        posted = (None, None)
+                    else:
+                        queued_run = ((r.json() or {}).get("run_id")
+                                      if r.status in (200, 201) else None)
+                        posted = (r.status, queued_run)
+                    show("C14c(all-off) POST /projects/{id}/runs while BOTH engines "
+                         "are off", f"{getattr(r, 'status', '(call failed)')} "
+                         f"run_id={queued_run}")
+                    deadline = time.time() + queued_window_s
+                    while True:
+                        st = run_status(queued_run) if queued_run else None
+                        if st in C14_RUN_STATUSES:
+                            seen.append(st)
+                        if time.time() >= deadline:
+                            break
+                        time.sleep(5)
+                    show("C14c(all-off) the run's ledger statuses over the both-off "
+                         "window", json.dumps(seen) if seen else "(no readable status)")
+                    prof = (mf(facts, "profiles") or {}).get("m4-planner") or ""
+                    if not prof:
+                        turn = {"status": None,
+                                "note": "the seed manifest carries no m4-planner "
+                                        "profile to smoke M2 with"}
+                    else:
+                        try:
+                            cr = alice.post(LB,
+                                            f"/api/v1/projects/{project_id}/conversations",
+                                            {"agent_profile_id": prof,
+                                             "title": f"m4x C14c both-off M2 smoke "
+                                                      f"{int(time.time())}"})
+                        except Exception as e:  # noqa: BLE001 — refused smoke is a reading
+                            cr = None
+                            turn = {"status": None, "note":
+                                    f"POST /conversations failed: "
+                                    f"{type(e).__name__}: {e}"[:200]}
+                        else:
+                            conv_id = ((cr.json() or {}).get("id")
+                                       if cr.status in (200, 201) else None)
+                            turn_id = None
+                            mr = None
+                            if conv_id:
+                                try:
+                                    mr = alice.post(LB, f"/api/v1/conversations/"
+                                                    f"{conv_id}/messages",
+                                                    {"prompt": C14C_M2_PROMPT})
+                                except Exception as e:  # noqa: BLE001
+                                    turn = {"status": None, "note":
+                                            f"POST /messages failed: "
+                                            f"{type(e).__name__}: {e}"[:200]}
+                                else:
+                                    turn_id = ((mr.json() or {}).get("id")
+                                               if mr.status == 202 else None)
+                            if turn is None:
+                                if conv_id and turn_id:
+                                    turn = c14_m2_turn_evidence(alice, conv_id, turn_id,
+                                                                turn_wait_s)
+                                    show("C14c(all-off) the M2 smoke turn over the "
+                                         "both-off window",
+                                         json.dumps(turn, sort_keys=True))
+                                else:
+                                    turn = {"status": None,
+                                            "note": f"conversation={conv_id!r} "
+                                                    f"message={mr.status if (mr and conv_id) else None}"
+                                                    " — the smoke never reached a "
+                                                    "live turn"}
+        finally:
+            for svc in recreated:
+                show(f"C14c(all-off) restoring {svc} (engine back ON, same -f files "
+                     "the lab was created from)", c14_recreate_source_note(
+                         svc, plans.get(svc)))
+                restore.append((svc, c14_restore_engine_on(svc, bases[svc],
+                                                           plan=plans.get(svc))))
+    c5_emit(c14_all_off_verdicts(states_found, ready, posted, seen, turn, restore,
+                                 blocked=blocked))
+    if queued_run and run_status(queued_run) not in C14_TERMINAL:
+        try:
+            alice.post(LB, f"/api/v1/runs/{queued_run}/cancel", {})
+        except Exception as e:  # noqa: BLE001 — housekeeping, never a verdict
+            show(f"C14c(all-off) could not cancel the arm's run {queued_run}",
+                 str(e)[:140])
+
+
 def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
     """§ 7.1 C14c live arm — and it SETS UP its own precondition instead of GAPing on
     a normal lab. The lab ships all-on (compose.m4.yml defaults both flags to on), so
@@ -20063,8 +22264,8 @@ def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
     ALWAYS restores api-a to engine-on, waits for readiness and reports the restore in
     the evidence, so later gates see the normal lab. A lab that already came up with
     exactly one replica off is measured as found (nothing to restore); one that came up
-    all-off or with unreadable logs GAPs — flipping a SECOND replica is not this arm's
-    lever."""
+    all-off or with unreadable logs GAPs — the SECOND recreate belongs to the
+    both-off arm (c14_all_off) that follows this one once the lab is back all-on."""
     services = tuple(s for s, _b in roll)
     bases = dict(roll)
     states = c14_replica_engines(services)
@@ -20193,11 +22394,10 @@ def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
     if pair is not None:
         c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, posted, advance, marks,
                                          restore=restore, lock_obs=lock_obs))
-        gap("C14c the flag off EVERYWHERE leaves M2/M3 intact",
-            "this arm measured ONE replica off against one that kept advancing; the second "
-            "half of § 7.1 C14c (ADR-0023 Migration/rollback) needs a separate bring-up "
-            "with COMMUNICATION_PIPELINE_SCHEDULER_A and _B both off — a § 7.0 lab "
-            "decision, not a mid-gate recreate")
+        # The half this arm used to GAP on — the flag off EVERYWHERE — is its own
+        # bring-up now: both replicas recreated off, the M2/M3 smoke and the stays-
+        # 'queued' window measured, both restored on in a finally (c14_all_off).
+        c14_all_off(alice, facts, project_id, roll=roll)
     elif restore is not None:
         # The arm never ran, but the precondition recreate did — the restore claim
         # still belongs in the verdicts, so a crippled api-a can never slip past
@@ -20591,20 +22791,528 @@ def c14():
         check("C14a the run reaches a terminal state within the 900s cap", False,
               f"last observed status={status!r} (tree + journal dumped above)")
     c5_emit(c14_state_verdicts(status))
-    gap("C14b the two-replica race is NOT forced", "the roll hands the driver's advisory lock "
-        "over (the pg_locks probe above reads the handover, or says precisely why it could "
-        "not) and the loser's advance is measured against the "
-        "ledger — but no lab lever holds a lock open across a restart to make BOTH replicas "
-        "advance the same run in one instant. § 7.1 C14b's own words: the row locks are the "
-        "safety argument and the advisory lock is an optimization; the no-duplicate verdicts "
-        "above are what actually re-prove the safety claim, and a forced simultaneous advance "
-        "would need a store-level seam this lab does not have")
+    # The race arm forces the overlap the roll leaves to luck: the driver's own
+    # wedge transaction holds the raced run's row while api-a freezes mid-advance
+    # holding that run's advancer key and api-b queues behind it — both replicas
+    # advancing the SAME run in one instant, read from pg_locks, graded against the
+    # ledger (c14_race_forced; the four rows print PASS/GAP/FAIL from what was
+    # observed, never a reworded GAP).
+    c14_race_forced(alice, facts, pid)
     # C14c runs last: it recreates api-a's engine flag on purpose (and restores it),
     # so nothing else may be mid-roll while it owns the replica lever.
     c14_off_replica(alice, facts, pid)
-    CTX["c14"] = {"run_id": run_id, "approval_id": aid, "rolled": rolled,
-                  "reconnects": stream.reconnects, "frames": len(stream.frames),
-                  "terminal": status}
+    # merge, never overwrite: the race arm (and any other sub-leg) records under
+    # CTX["c14"] while it runs — the roll's bookkeeping must not erase it
+    CTX.setdefault("c14", {}).update(
+        {"run_id": run_id, "approval_id": aid, "rolled": rolled,
+         "reconnects": stream.reconnects, "frames": len(stream.frames),
+         "terminal": status})
+
+
+# --- C14b: THE FORCED TWO-REPLICA RACE — the lever this GAP once said the lab
+# could not have (§ 7.1 C14b: "force the SAME run to be advanced by both replicas
+# at once") ------------------------------------------------------------
+#
+# runtimestore.go's settleTx is § 5.1 step 1's pair, in this order: the per-run
+# ADVANCER advisory key communication/advancer/<run-id> (pg_advisory_xact_lock),
+# THEN the run's row lock (SELECT 1 FROM runs WHERE id=$1::uuid FOR UPDATE). The
+# wedge exploits that order with the driver's own psql:
+#
+#   1. the arm owns its run: a fresh twin run, parked at its gate — nothing else
+#      can trigger an advance for it during the window;
+#   2. one driver transaction locks THAT run's row FOR UPDATE and holds it with
+#      pg_sleep, tagged /*m4-race-wedge*/ so a pg_stat_activity read proves the
+#      wedge is live before anything is fired at it (the whole window sits well
+#      inside serve's own bounds: PassTimeout 15 s, statement_timeout 60 s, so
+#      the wedge is a bound peer, not a new kind of wedged writer);
+#   3. an approval decide POSTed at replica api-a's OWN port then takes the run's
+#      advancer key and blocks mid-advance on the row — api-a is docker-PAUSEd
+#      while it holds that key (compose's own lever; the driver owns the m4
+#      stack), which turns "holds an in-flight advance" into an observation that
+#      lasts as long as the arm wants and reads back from `docker inspect`;
+#   4. a SECOND decide, same gate, same version, POSTed at api-b's own port,
+#      queues behind api-a's advancer key — pg_locks now shows the SAME key with
+#      one granted holder and one ungranted waiter, attributed to the two
+#      replicas by client_addr: both replicas hold an advance transaction for the
+#      same run in one instant, FORCED, not by a restart's luck;
+#   5. resume api-a, release the wedge, and grade the LEDGER: exactly one decide
+#      commits; the stale advance's own transaction finds the version moved and
+#      refuses itself (the CAS is the fence on this mutation, ADR-0023 § 12's
+#      cousins; the row locks make the loser a no-op); approval.decided lands
+#      once, no node key succeeds twice, the raced run still completes.
+#      Advisory locks are an optimization — what the contract says must not
+#      corrupt anything is exactly this window.
+C14_RACE_WEDGE_S = 9.0           # the row holds inside BOTH serve bounds (15 s pass, 60 s statement)
+C14_RACE_PAUSE_HOLD_S = 2.5      # how long the mid-advance replica stays frozen
+C14_RACE_MARKER = "m4-race-wedge"
+C14_ADVANCER_LOCK_PREFIX = "communication/advancer/"   # runtimestore.go advancerLockPrefix
+
+
+def c14_adv_race_key(run_id):
+    """The run's own advancer advisory-lock key name (contract § 5.1 step 1)."""
+    return C14_ADVANCER_LOCK_PREFIX + str(run_id)
+
+
+def c14_adv_race_script(run_id, samples=C14_LOCK_PROBE_SAMPLES,
+                        every_s=C14_LOCK_PROBE_EVERY_S):
+    """One psql script sampling the run's ADVANCER key — GRANTED holders and WAITING
+    backends alike (for the driver's key the probe filters granted only; here a
+    granted=false row is THE evidence: the waiter is the second replica trying to
+    advance). Still READ-ONLY: SELECT + pg_sleep, the probe takes no lock of its own."""
+    n = max(1, int(samples or 1))
+    nap = max(0.0, min(float(every_s if every_s is not None
+                             else C14_LOCK_PROBE_EVERY_S), 5.0))
+    match = c14_lock_holder_match_sql(c14_adv_race_key(run_id))
+    rows = ("COALESCE((SELECT json_agg(json_build_array("
+            "l.pid::text, l.granted::text, COALESCE(l.objsubid::text, ''), "
+            "COALESCE(l.mode::text, ''), COALESCE(a.application_name, ''), "
+            "COALESCE(a.client_addr::text, ''), "
+            "COALESCE((extract(epoch FROM a.backend_start) * 1000)::bigint::text, ''), "
+            "COALESCE(a.state, '')) ORDER BY l.granted DESC, l.pid) "
+            "FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
+            f"WHERE l.locktype = 'advisory' AND {match}), 'null'::json)")
+    lines = []
+    for i in range(1, n + 1):
+        lines.append(f"SELECT json_build_array('x', {i}, "
+                     f"(extract(epoch FROM clock_timestamp()) * 1000)::bigint::text, "
+                     f"{rows});")
+        lines.append(f"SELECT pg_sleep({nap:.3f});")
+    return "\n".join(lines) + "\n"
+
+
+_C14_RACE_ROW_FIELDS = ("pid", "granted", "objsubid", "mode", "application_name",
+                        "client_addr", "backend_start_ms", "state")
+
+
+def c14_adv_race_parse_output(text):
+    """{samples: [{n, ts_ms, rows: [{pid, granted, objsubid, mode, application_name,
+    client_addr, backend_start_ms, state}]}], junk} from one race-probe call; an
+    absent lock list is the catalog answering 'nobody on this key at that instant'."""
+    out = {"samples": [], "junk": 0}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            out["junk"] += 1
+            continue
+        if not isinstance(row, list) or len(row) < 4 or row[0] != "x":
+            out["junk"] += 1
+            continue
+        try:
+            ts = float(row[2])
+        except (TypeError, ValueError):
+            ts = None
+        rows = [dict(zip(_C14_RACE_ROW_FIELDS, r)) for r in (row[3] or [])
+                if isinstance(r, list) and len(r) == len(_C14_RACE_ROW_FIELDS)]
+        out["samples"].append({"n": row[1], "ts_ms": ts, "rows": rows})
+    return out
+
+
+def c14_adv_race_summarize(parsed, addr_map, services=("api-a", "api-b")):
+    """The race's one question, answered from the sampled lock rows: at which instants
+    was the run's advancer key GRANTED to a backend attributable to one replica while a
+    backend attributable to ANOTHER replica WAITED on the same key (granted=false)?
+    Those samples are the pairs; overlap is what the verdict grades. Attribution is the
+    same client_addr × container-IP join as the driver's-key probe."""
+    ip_index = c14_lock_ip_index(addr_map or {}, services)
+    pairs, bases, attributed = [], set(), {}
+    for smp in (parsed or {}).get("samples") or []:
+        granted, waiting = [], []
+        for r in smp.get("rows") or []:
+            svc, basis, _why = c14_attribute_holder(r, ip_index, services)
+            if not svc:
+                continue
+            bases.add(basis)
+            attributed[svc] = attributed.get(svc, 0) + 1
+            row = {"pid": r.get("pid"), "service": svc, "basis": basis,
+                   "objsubid": str(r.get("objsubid") or ""),
+                   # psql prints a text-cast boolean as t/f, never true/false
+                   "granted": str(r.get("granted") or "").strip().lower()
+                              in ("true", "t"),
+                   "mode": str(r.get("mode") or "")}
+            (granted if row["granted"] else waiting).append(row)
+        g_svcs = {g["service"] for g in granted}
+        cross = [w for w in waiting if w["service"] not in g_svcs]
+        if g_svcs and cross:
+            pairs.append({"ts_ms": smp.get("ts_ms"), "n": smp.get("n"),
+                          "granted": granted, "waiting": cross})
+    return {"samples": len((parsed or {}).get("samples") or []), "pairs": pairs,
+            "overlap": bool(pairs), "attributed": attributed, "bases": sorted(bases),
+            "junk": (parsed or {}).get("junk", 0)}
+
+
+def c14_adv_race_probe(run_id, services=("api-a", "api-b"),
+                       samples=C14_LOCK_PROBE_SAMPLES, every_s=C14_LOCK_PROBE_EVERY_S):
+    """One race-probe call, summarized — None when psql did not answer (a failed read
+    is a GAP, never a zero that reads like 'nobody was waiting')."""
+    addr_map = c14_replica_addresses(services)
+    if addr_map is None:
+        return {"samples": 0, "pairs": [], "overlap": False, "attributed": {},
+                "bases": [], "junk": 0, "error": "docker inspect named no replica "
+                "address — a holder cannot be attributed"}
+    script = c14_adv_race_script(run_id, samples, every_s)
+    budget = int(max(20.0, samples * every_s + 30.0))
+    cmd = COMPOSE + ["exec", "-T", "postgres", "psql", "-U", "communication", "-d",
+                     "communication", "-tA", "--no-psqlrc", "-v", "ON_ERROR_STOP=1",
+                     "-f", "-"]
+    try:
+        rc, out = run(cmd, input=script, timeout=budget)
+    except Exception:  # noqa: BLE001
+        return None
+    if rc != 0:
+        return None
+    return c14_adv_race_summarize(c14_adv_race_parse_output(out), addr_map, services)
+
+
+def c14_race_wedge_start(run_id, hold_s):
+    """The wedge's live half: OUR OWN transaction locks the run's row FOR UPDATE and
+    holds it for hold_s of pg_sleep inside one simple query (psql -c runs the multi-
+    statement string as one implicit transaction, so the lock lives until the implicit
+    COMMIT right after the sleep — no kill, no dangling writer). Tagged with
+    C14_RACE_MARKER so pg_stat_activity can prove the wedge is live. Returns
+    (Popen, how)."""
+    sql = (f"SELECT 1 FROM runs WHERE id = '{run_id}'::uuid FOR UPDATE "
+           f"/*{C14_RACE_MARKER}*/; SELECT pg_sleep({hold_s});")
+    cmd = COMPOSE + ["exec", "-T", "postgres", "psql", "-U", "communication", "-d",
+                     "communication", "-tAc", sql]
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, cwd=REPO_DIR, env=COMPOSE_ENV)
+    return proc, " ".join(cmd)
+
+
+def c14_race_wedge_seen():
+    """Is the tagged wedge transaction live in pg_stat_activity right now? True/False,
+    or None when the read itself failed (unreadable is never read as absent). The
+    reader excludes ITSELF: this very SELECT carries the marker in its own query
+    text, and counting it would make the wedge prove itself by tautology."""
+    try:
+        n = _int(psql("SELECT count(*) FROM pg_stat_activity WHERE pid <> "
+                      "pg_backend_pid() AND datname = current_database() AND query "
+                      f"LIKE '%{C14_RACE_MARKER}%'"))
+    except RuntimeError:
+        return None
+    return n is not None and n > 0
+
+
+def c14_container_pause(svc, on):
+    """Freeze / thaw one service's container with `docker pause` / `docker unpause` —
+    compose's own lever, allowed here because the DRIVER owns the m4 stack — and read
+    the outcome back: the Paused state `docker inspect` reports is the evidence, not
+    the command's exit code. (ok|None, note)."""
+    name = compose_container(svc)
+    if not name:
+        return None, f"no container this leg can resolve for {svc}"
+    rc, out = run(["docker", "pause" if on else "unpause", name])
+    rc2, state = run(["docker", "inspect", "--format", "{{.State.Paused}}", name])
+    paused = state.strip().lower() == "true"
+    if rc2 != 0:
+        return None, f"docker inspect refused ({out[-100:]} / {state[-100:]})"
+    return rc == 0 and paused is bool(on), (f"rc={rc} inspect.Paused={state.strip()} "
+                                            f"{out[-100:] if rc else ''}".strip())
+
+
+def c14_race_decide(client, base, svc, aid, version):
+    """Route 36 straight to ONE replica's own port (never the lb — the lb would hand
+    both decides to whichever replica is up and there would be no race to grade)."""
+    t0 = time.time()
+    try:
+        r = client.post(base, f"/api/v1/approvals/{aid}/decide",
+                        {"decision": "approved", "version": version,
+                         "comments": "M4 exit C14b forced race (docs/m4-contract.md § 7.1)"})
+        status, replica = r.status, r.replica
+    except Exception as e:  # noqa: BLE001 — a decide that never answered is a reading
+        return {"svc": svc, "status": None, "error": f"{type(e).__name__}: {e}"[:160],
+                "elapsed_s": round(time.time() - t0, 2)}
+    return {"svc": svc, "status": status, "replica": replica,
+            "elapsed_s": round(time.time() - t0, 2)}
+
+
+def c14_race_verdicts(race, results, ledger=None, services=("api-a", "api-b")):
+    """§ 7.1 C14b's forced half as pure rows, every one graded only from recorded
+    reads (never assumed):
+
+      race    {"wedge":   {"started","observed","gone"},
+               "pause":   {"svc","paused","resumed","ready"},
+               "overlap": the c14_adv_race_summarize dict or None,
+               "reason":  why the arm stopped early ("" when it ran)}
+      results the two decides [{svc, status, replica|error}]; None entries mean the
+              request never answered
+      ledger  {"decided": approval.decided rows for the raced run,
+               "dup_succeeded": node keys holding two succeeded rows,
+               "terminal": the run's last observed status}
+
+    Four rows: the race WAS forced (pg_locks overlap), the loser was fenced (the stale
+    advance refused, nothing landed), the raced run is intact, and the lever gave the
+    lab back as it was found. An arm that never got to force says so in every row —
+    it does not vanish from the summary."""
+    race = race or {}
+    wedge = race.get("wedge") or {}
+    pause = race.get("pause") or {}
+    overlap = race.get("overlap")
+    reason = race.get("reason") or ""
+    label_race = ("C14b the two-replica race IS forced: BOTH replicas hold an advance "
+                  "transaction for the SAME run in ONE instant (pg_locks: the run's "
+                  "advancer key granted to one replica while another waits on it "
+                  "ungranted)")
+    label_fence = ("C14b the loser of the forced race is fenced: the stale advance is "
+                   "refused and lands nothing (one decide commits, the ledger carries "
+                   "exactly one transition)")
+    label_intact = ("C14b the raced run survives the forced race — it reaches "
+                    "'completed' exactly once")
+    label_lab = ("C14b the race lever left the lab as it found it (frozen replica "
+                 "resumed and answering, wedge session gone)")
+    if not results:
+        why = reason or "no decide ever fired — the race never started"
+        return [(label_race, None, why), (label_fence, None, why),
+                (label_intact, None, why), (label_lab, None, why)]
+    duty = ("wedge live: " + str(wedge.get("observed")) + "; race probe: "
+            + ("unreadable" if not isinstance(overlap, dict)
+               else f"{overlap.get('samples')} live pg_locks observation(s) of the "
+                    f"run's advancer key, {len(overlap.get('pairs') or [])} caught "
+                    "granted-and-waiting on the same key"))
+    if not isinstance(overlap, dict):
+        race_row = (label_race, None, f"{duty}; {reason or 'the probe could not read '
+                       'pg_locks during the window'}")
+    elif not overlap.get("pairs"):
+        race_row = (label_race, None,
+                    f"{duty}; no sample caught one replica HOLDING the run's advancer "
+                    f"key while ANOTHER waited on it (wedge live={wedge.get('observed')}, "
+                    f"paused mid-advance={pause.get('paused')}) — the overlap was not "
+                    "forced in this window: a GAP that names what it could not see, "
+                    "never a verdict about the product")
+    else:
+        p = overlap["pairs"][0]
+        race_row = (label_race, True,
+                    f"{len(overlap['pairs'])} sample(s) caught the run's advancer key "
+                    f"granted to {sorted({g['service'] for g in p['granted']})} while "
+                    f"{sorted({w['service'] for w in p['waiting']})} waited UNGRANTED on "
+                    f"THE SAME KEY (first pair: {p}); {duty} — § 7.1 C14b's 'the SAME run "
+                    "advanced by both replicas at once' is now forced, not a restart's "
+                    "luck")
+    answers = [r for r in results if isinstance(r, dict)]
+    wins = [r for r in answers if r.get("status") in (200, 201)]
+    refused = [r for r in answers if isinstance(r.get("status"), int)
+               and 400 <= r["status"] < 500]
+    decided = (ledger or {}).get("decided")
+    dups = (ledger or {}).get("dup_succeeded")
+    if len(wins) > 1:
+        fence_row = (label_fence, False,
+                     f"BOTH decides committed ({[r.get('status') for r in wins]}) — two "
+                     "replicas applied the same transition: the row-locks/CAS safety "
+                     "argument FAILED, which is the product bug this whole arm exists "
+                     "to catch")
+    elif decided is not None and decided > 1:
+        fence_row = (label_fence, False,
+                     f"approval.decided rows for the raced run = {decided}: the stale "
+                     "advance landed a second transition — § 7.1 C14b is a FAIL")
+    elif dups:
+        fence_row = (label_fence, False,
+                     f"{dups} node_instance_key(s) hold two 'succeeded' rows after the "
+                     "forced race — the loser's advance was NOT a no-op")
+    elif len(wins) == 1 and refused and decided == 1 and dups == 0:
+        fence_row = (label_fence, True,
+                     f"winner={wins[0].get('svc')} ({wins[0].get('status')}), "
+                     f"loser={refused[0].get('svc')} ({refused[0].get('status')}) refused "
+                     "by the version CAS inside its own advance transaction (the fence on "
+                     "this mutation is the transaction machinery around the run's row, "
+                     "the advisory lock is the optimization); approval.decided=1, "
+                     "duplicated succeeded keys=0")
+    else:
+        fence_row = (label_fence, None,
+                     f"statuses={[r.get('status') for r in answers]}, "
+                     f"approval.decided={decided}, duplicated succeeded keys={dups}: the "
+                     "winner/loser split was never cleanly observed (a decide that timed "
+                     "out is not evidence of a refusal) — ungraded, never inferred")
+    term = (ledger or {}).get("terminal") or ""
+    if term == "completed":
+        intact_row = (label_intact, True,
+                      "the run that carried the forced race reached 'completed' — the "
+                      "race changed nothing it could see")
+    elif term in ("failed", "cancelled", "interrupted"):
+        intact_row = (label_intact, False,
+                      f"the raced run ended {term!r} after the forced race — a raced run "
+                      "does not break by itself")
+    else:
+        intact_row = (label_intact, None,
+                      f"the raced run was still {term!r} when the arm's watch ended — "
+                      "intact-by-survival is unmeasured, not assumed")
+    gone = wedge.get("gone")
+    if pause.get("resumed") is False or pause.get("ready") is False or gone is False:
+        lab_row = (label_lab, False,
+                   f"paused={pause.get('paused')} resumed={pause.get('resumed')} "
+                   f"ready={pause.get('ready')} wedge session gone={gone} — the lab was "
+                   "NOT provably returned as found")
+    elif pause.get("paused") and pause.get("resumed") and pause.get("ready") and gone:
+        lab_row = (label_lab, True,
+                   f"{pause.get('svc')} was frozen mid-advance (Paused=True read back), "
+                   "resumed, and answers readiness again; the wedge psql session is gone "
+                   "from pg_stat_activity")
+    else:
+        lab_row = (label_lab, None,
+                   f"paused={pause.get('paused')} resumed={pause.get('resumed')} "
+                   f"ready={pause.get('ready')} wedge session gone={gone} — the restore "
+                   "is unproven, not unseen")
+    return [race_row, fence_row, intact_row, lab_row]
+
+
+def c14_race_forced(alice, facts, project_id, roll=C14_ROLL):
+    """§ 7.1 C14b's forced half, live. See the block comment above the helpers."""
+    svc_p, base_p = roll[0]
+    svc_l, base_l = roll[1]
+    tw = mvariant(facts, "twin")
+    if not isinstance(tw, dict) or not tw.get("revision_id"):
+        c5_emit(c14_race_verdicts({"reason": "the seed manifest carries no twin "
+                                   "revision to start the raced run from"}, []))
+        return
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    r = alice.post(LB, f"/api/v1/projects/{project_id}/runs",
+                   {"pipeline_revision_id": tw["revision_id"],
+                    "inputs": tw.get("inputs") or {},
+                    "idempotency": idem_key(f"m4x-c14b-race-{stamp}")})
+    run_id = (r.json() or {}).get("run_id") if r.status in (200, 201) else None
+    if not run_id:
+        c5_emit(c14_race_verdicts({"reason": f"the raced run was refused ({r.status} "
+                                   f"{r.text[:120]})"}, []))
+        return
+    aid = c9_wait_for_gate(alice, project_id, run_id, 900)
+    if not aid:
+        dump_run_evidence(alice, run_id)
+        c5_emit(c14_race_verdicts({"reason": f"raced run {run_id} never opened a pending "
+                                   "gate within 900s (evidence dumped above)"}, []))
+        return
+    cur = alice.get(LB, f"/api/v1/approvals/{aid}")
+    ver = (cur.json().get("version") if cur.status == 200 else None)
+    ca, cb = Client("alice"), Client("alice")
+    if ver is None or login(ca) is None or login(cb) is None:
+        c5_emit(c14_race_verdicts({"reason": f"the gate's version to race was never read "
+                                   f"(GET /approvals/{{id}} -> {cur.status}) or a second "
+                                   "session could not sign in"}, []))
+        return
+    show("C14b the raced run is parked at its own gate",
+         f"run={run_id} gate={aid} version={ver} — the wedge now holds THIS run's row; "
+         f"api-a ({base_p}) is the replica that gets frozen mid-advance, api-b "
+         f"({base_l}) the one that queues behind it")
+    race = {"wedge": {"started": None, "observed": None, "gone": None},
+            "pause": {"svc": svc_p, "paused": None, "resumed": None, "ready": None},
+            "overlap": None, "reason": ""}
+    res, proc, pause_tried = {}, None, False
+    try:
+        try:
+            proc, how = c14_race_wedge_start(run_id, C14_RACE_WEDGE_S)
+            race["wedge"]["started"] = True
+            show("C14b wedge started (driver's own psql: FOR UPDATE + pg_sleep, no row "
+                 "written)", f"{how} — pid={proc.pid}")
+            time.sleep(0.8)
+        except Exception as e:  # noqa: BLE001 — a wedge that cannot start is a GAP reason
+            race["reason"] = f"the wedge could not start: {type(e).__name__}: {e}"
+            proc = None
+        race["wedge"]["observed"] = c14_race_wedge_seen() if proc is not None else None
+        if proc is not None and not race["wedge"]["observed"]:
+            race["reason"] = ("the wedge transaction was never seen live in "
+                              "pg_stat_activity — the arm fires no decides it cannot "
+                              "prove are being made against a held run row")
+        if race["wedge"]["observed"]:
+            def fire(client, base, svc, delay, key):
+                def go():
+                    time.sleep(delay)
+                    res[key] = c14_race_decide(client, base, svc, aid, ver)
+                    show(f"C14b race decide via {svc}", str(res[key]))
+                th = threading.Thread(target=go, daemon=True, name=f"c14b-race-{key}")
+                th.start()
+                return th
+            th_a = fire(ca, base_p, svc_p, 0.2, "a")
+            time.sleep(1.2)
+            pause_tried = True
+            race["pause"]["paused"], p_note = c14_container_pause(svc_p, True)
+            t_paused = time.time()
+            show(f"C14b docker pause {svc_p} while its advance holds the run's "
+                 "advancer key", str(p_note))
+            th_b = fire(cb, base_l, svc_l, 0.2, "b")
+            time.sleep(0.9)
+            race["overlap"] = c14_adv_race_probe(run_id, services=(svc_p, svc_l))
+            show("C14b race probe (the run's advancer key, granted AND waiting)",
+                 "samples=" + str((race["overlap"] or {}).get("samples"))
+                 + " pairs=" + json.dumps([{"ts_ms": p.get("ts_ms"),
+                                            "granted": sorted({g["service"] for g in
+                                                                p["granted"]}),
+                                            "waiting": sorted({w["service"] for w in
+                                                                p["waiting"]})}
+                                           for p in ((race["overlap"] or {}).get("pairs")
+                                                     or [])[:5]])
+                 if isinstance(race["overlap"], dict) else "the probe did not answer")
+            # THE RESUME COMES FIRST, before any join: api-a holds the run's
+            # advancer key while frozen, and its settle pass bounds (15 s) keep
+            # ticking — waiting on the queued decide with the replica still
+            # frozen would turn the forced race into a manufactured timeout
+            race["pause"]["resumed"], r_note = c14_container_pause(svc_p, False)
+            show(f"C14b docker unpause {svc_p}", f"{r_note} (held frozen for "
+                 f"{time.time() - t_paused:.1f}s of a {C14_RACE_WEDGE_S}s wedge window)")
+            th_b.join(timeout=90)
+            th_a.join(timeout=90)
+            race["pause"]["ready"] = c14_wait_replica(base_p, 60)
+            if proc is not None:
+                try:
+                    proc.wait(timeout=int(C14_RACE_WEDGE_S) + 60)
+                except Exception:  # noqa: BLE001 — the finally below still reaps it
+                    pass
+    finally:
+        if pause_tried and race["pause"].get("resumed") is None:
+            race["pause"]["resumed"], _ = c14_container_pause(svc_p, False)
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=15)
+                    except Exception:  # noqa: BLE001
+                        proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        if proc is not None and race["wedge"]["gone"] is None:
+            race["wedge"]["gone"] = (proc.poll() is not None
+                                     and c14_race_wedge_seen() is False)
+    results = []
+    for key, svc in (("a", svc_p), ("b", svc_l)):
+        results.append(res.get(key) or {"svc": svc, "status": None,
+                                        "error": "never answered"})
+    ledger = {}
+    try:
+        ledger["decided"] = count_or_none(psql(
+            f"SELECT count(*) FROM domain_events WHERE run_id = '{run_id}' "
+            "AND type = 'approval.decided'"))
+    except RuntimeError as e:
+        show("C14b approval.decided count", str(e)[:200])
+        ledger["decided"] = None
+    try:
+        ledger["dup_succeeded"] = count_or_none(psql(
+            f"SELECT count(*) FROM node_executions ne WHERE ne.run_id = '{run_id}' "
+            f"AND ne.status = 'succeeded' AND ne.node_instance_key IN (SELECT "
+            f"node_instance_key FROM node_executions WHERE run_id = '{run_id}' "
+            f"AND status = 'succeeded' GROUP BY 1 HAVING count(*) > 1)"))
+    except RuntimeError as e:
+        show("C14b duplicated succeeded-key count", str(e)[:200])
+        ledger["dup_succeeded"] = None
+    deadline = time.time() + 600
+    term = run_status(run_id)
+    while term not in C14_TERMINAL and time.time() < deadline:
+        time.sleep(5)
+        term = run_status(run_id)
+    ledger["terminal"] = term or ""
+    if term not in C14_TERMINAL:
+        dump_run_evidence(alice, run_id)
+        try:
+            alice.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+        except Exception as e:  # noqa: BLE001 — housekeeping, never a verdict
+            show(f"C14b could not cancel the raced run {run_id}", str(e)[:140])
+    c5_emit(c14_race_verdicts(race, results, ledger, services=(svc_p, svc_l)))
+    CTX.setdefault("c14", {})["race"] = {"run_id": run_id, "gate": aid,
+                                         "wedge": race["wedge"], "pause": race["pause"],
+                                         "overlap": bool((race["overlap"] or {}).get(
+                                             "pairs")),
+                                         "results": results, "ledger": ledger}
 
 
 # --- gates: docs/m4-contract.md § 7.2 (W1–W11, Playwright legs) --------------
@@ -21574,37 +24282,106 @@ def w9_not_found(dom_text):
                                    "404"))
 
 
-def w9_outsider_verdict(role, is_org_admin, outsider="erin", outsider_m4_role=None,
-                        outsider_project_b_role=None):
-    """Row W9's observer is 'carol (project B only)', but § 7.1 C9d needs carol as a
-    MAINTAINER of the M4 project (she and dan race one CAS decision) — no single
-    identity satisfies both literals. `role` is carol's M4 membership row ('' =
-    none), so carol is where the executable arm needs her and the seed (step 2b)
-    provisions the project-B-only ROLE as a second IdP identity: `outsider` holds
-    `outsider_project_b_role` on manifest.project_b and `outsider_m4_role` ('' = no
-    row) on the M4 project.
+def w9_membership_read(project_id, user_id, label=""):
+    """One identity's membership row on ONE project, with the READ recorded so a
+    failure is never read as an absence: {'read': bool, 'role': str|None}. `role` is
+    the role name, or '' when the ledger answered and there is no row — the shape
+    row W9's outsider is defined by. ADR-0075's amendment to § 7.2 is that the
+    observer is MEASURED, so this read comes before any arm is graded."""
+    if not project_id or not user_id:
+        return {"read": False, "role": None, "label": label,
+                "why": f"{label or 'identity'}: no project id or no user id to ask about"}
+    try:
+        # `memberships`, the table C9's own read uses. Note WHY this read exists at
+        # all: c9_role_of answers a FAILED read with the same '' it answers an ABSENCE
+        # with, and an absence is exactly what row W9's outsider claim rests on — a
+        # psql hiccup may never look like proof that she holds no row.
+        text = psql(f"SELECT role FROM memberships WHERE project_id = '{project_id}' "
+                    f"AND user_id = '{user_id}' LIMIT 1")
+    except RuntimeError as e:
+        return {"read": False, "role": None, "label": label,
+                "why": f"{label or 'identity'} membership read failed: {str(e)[:140]}"}
+    first = (text or "").strip().splitlines()
+    role = first[0].strip() if first else ""
+    return {"read": True, "role": role, "label": label,
+            "why": (f"{label}: role {role!r}" if role else f"{label}: no membership row")}
 
-    The arm stays a GAP (None) either way: with a seeded outsider it names the
-    contract's own identity contradiction (the row's literal name is unmeasurable);
-    without one it names the seed gap and the arms run on a bare IdP login."""
-    label = "W9 the row's observer - carol, a member of project B only"
-    if outsider_project_b_role and not outsider_m4_role:
-        return (label, None,
-                f"the row names carol, but § 7.1 C9d requires carol as an M4 maintainer "
-                f"(memberships: carol holds {role or 'no row'!r}), so the 'project B only' "
-                f"role is played by the seeded identity {outsider!r} "
-                f"(project_b role {outsider_project_b_role!r}, M4 role no row) - the arms "
-                f"below measure HER session, never carol's (org admin={is_org_admin})")
-    return (label, None,
-            f"the seed gap: memberships says carol holds {role or 'no row'!r} on the M4 "
-            "project (docs/compatibility/probes/m4/seed.sh runs `put_member carol "
-            "maintainer` against the only project the seed creates) and no project B "
-            f"membership is seeded for {outsider!r} "
-            f"(M4 role {outsider_m4_role if outsider_m4_role is not None else 'unreadable'!r}, "
-            f"project B role {outsider_project_b_role if outsider_project_b_role is not None else 'unreadable'!r}), "
-            "so no seeded identity is 'project B only'. The substitute observer "
-            f"used for the arms below is a fresh IdP login (org admin={is_org_admin}, no "
-            f"membership) - named in every label, never called carol")
+
+def w9_outsider_ledger_verdicts(info, outsider="erin"):
+    """Row W9's observer, MEASURED (ADR-0075's amendment to § 7.2). The row named
+    "carol (project B only)", but § 7.1 C9d books carol as an M4 **maintainer** (she
+    and dan race one CAS decision on the manual-retry arm), and one identity cannot
+    be both; seed.sh step 2b provisions the row's role as a dedicated identity —
+    `erin`, a member of `manifest.project_b` and of no other project. The claim the
+    row actually makes is about a SHAPE, and the shape is read off the ledger: a role
+    on project B, NO row on the M4 project, and no org admin (internal/authz's CanView
+    lets an org admin see every project, so an admin session could never stand in).
+    `info`: {project_b_role, m4_role, read_project_b, read_m4, is_org_admin} — None
+    for a role means the ledger did not answer, which GAPs that arm rather than
+    inventing an absence (c9_membership's own rule)."""
+    i = info or {}
+    b_role, m4_role = i.get("project_b_role"), i.get("m4_role")
+    rows = [
+        (f"W9 the row's outsider ({outsider}) holds a role on the OTHER project "
+         "(seed.sh step 2b's seeded project-B membership)",
+         bool(b_role) if i.get("read_project_b") else None,
+         f"project_b role={b_role if b_role is not None else '(unreadable)'}"),
+        (f"W9 the row's outsider ({outsider}) holds NO membership row on the M4 project "
+         "(the absence the deep links are supposed to 404 against)",
+         (m4_role == "") if i.get("read_m4") else None,
+         f"M4 role={m4_role if m4_role is not None else '(unreadable)'} — the ledger read "
+         "answers an absence only when it answers at all"),
+        (f"W9 the row's outsider ({outsider}) is not an org admin (internal/authz's "
+         "CanView grants an admin every project, so an admin session proves nothing)",
+         None if i.get("is_org_admin") is None else not i.get("is_org_admin"),
+         f"is_org_admin={i.get('is_org_admin')}"),
+    ]
+    if all(r[1] is True for r in rows):   # every fact measured TRUE (a role STRING in
+        # that slot would be a bug, not a verdict — the rows below are bool or None)
+        rows.append((f"W9 the observer is the seeded project-B-only identity the row's "
+                     f"role needs ({outsider}, not carol)", True,
+                     "§ 7.1 C9d requires carol as an M4 maintainer (she and dan race one "
+                     "CAS decision on the manual-retry arm), so the row's 'project B only' "
+                     f"role is played by {outsider}: project B role "
+                     f"{b_role!r}, no M4 row, org admin false — ADR-0075 amends the row's "
+                     "literal name to the identity that can satisfy it"))
+    return rows
+
+
+def w9_approval_404_verdicts(approval="", found=None, status=None, located=False,
+                            parked_run="", why="", parked_status=""):
+    """Row W9's `/approvals/{id}` arm, measured against a REAL approval of the M4
+    project. The seeded run (manifest.run_id.agent) reaches its terminal state in
+    seconds, and an approval that is DECIDED leaves `PendingApproval` (its Decide
+    clears the pointer), so C11's own note applies: a run parked before its gate is
+    the only durable source of an approval. C11/C14 publish their approvals in the
+    same core-b shard this leg runs in, so the arm LOCATES one first (read as a member,
+    so the needles are the real values) and only PARKS a fresh run — cancelled in the
+    leg's `finally` — when the ledger holds none. `found` is whether the outsider's
+    rendered approval page says not-found; `status` the control plane's own answer for
+    its API route. Without an approval the arm says exactly what the ledger answered;
+    it never passes on a nothing."""
+    label_arms = ("W9 the row's /approvals/{id} arm ran on a REAL approval of the M4 "
+                  "project (located in the ledger, or parked by a run this leg posted)")
+    label_404 = "W9 the outsider's approval page draws a not-found state for that approval"
+    label_api = "W9 the control plane answers 404 for that approval's API route as the outsider"
+    if not approval:
+        why = why or "the leg neither located an approval nor parked one"
+        return [(label_arms, None, why),
+                (label_404, None, "no approval id to link to — " + why),
+                (label_api, None, "no approval id to ask the API about — " + why)]
+    v = [(label_arms, True,
+          f"approval {approval} ({'LOCATED: an approval the lab already held' if located else 'PARKED: this leg posted a run and left it on its /approve gate'})")]
+    v.append((label_404, found,
+              f"/approvals/{approval}: not-found copy rendered={found}"))
+    v.append((label_api, None if status is None else status == 404,
+              f"GET /api/v1/approvals/{approval} as the outsider -> {status}"))
+    if parked_run:
+        v.append(("W9 the run this leg parked for the arm is cancelled again (§ 7.2 keeps "
+                  "the W legs read-mostly: one run, and the leg puts it away)",
+                  parked_status in C14_TERMINAL if parked_status else False,
+                  f"run {parked_run} status after the cancel={parked_status or '(unreadable)'}"))
+    return v
 
 
 # --- W2 / W10 / W11 pure helpers (e2e/m4/test_w_logic.py) --------------------
@@ -22000,7 +24777,13 @@ def w2_turn_run_sql(preferred_run_id=""):
 
 def w2_turn_run_rows(text):
     """Parse `w2_turn_run_sql`'s `-tA` output into candidate dicts (all values stay
-    strings — the counts are evidence lines and verdict detail, never arithmetic)."""
+    strings — the counts are evidence lines and verdict detail, never arithmetic).
+    Order is the query's (newest attempt first) EXCEPT that a candidate whose
+    conversation also streamed transcript rows always sorts above one that did
+    not: the pane can only draw what the journal holds, and the pass that GAPped
+    three times read a `/plan` turn with 3 turn rows and 0 streamed rows — a
+    turn that ended before the sink coalesced any text is a worse witness for
+    "the page renders the transcript" than one that streamed, newest or not."""
     keys = ("run_id", "node_execution_id", "node_instance_key", "attempt_number",
             "turn_id", "project_id", "turn_rows", "transcript_rows")
     out = []
@@ -22008,12 +24791,12 @@ def w2_turn_run_rows(text):
         parts = [p.strip() for p in line.split("|")]
         if len(parts) == len(keys) and all(p != "" for p in parts):
             out.append(dict(zip(keys, parts)))
-    return out
+    return sorted(out, key=lambda r: -_int(r.get("transcript_rows")))
 
 
 def w2_find_turn_run(preferred_run_id=""):
     """The run whose transcript arm W2 may read: the agent run C4e fenced (its id
-    rides CTX when C4 ran in this driver process — W2 spends no new Claude turn),
+    rides CTX when C4 ran in this driver process — W2 spends no new agent turn),
     verified by the ledger, else the lab's newest attempt whose conversation
     journalled conversation.turn.* rows. Returns (pick | None, [reads + results])
     — the GAP names every read."""
@@ -23043,8 +25826,13 @@ def w2_turn_pane_reading(turn_run, session="m4w2", tries=10, delay=2):
         m = re.search(r"(\d+)\|(\d+)\|(\d+)\|(\d+)", out or "")
         if rc == 0 and m:
             counts = [int(g) for g in m.groups()]
-            if counts[0] or counts[1] or counts[2] or counts[3]:
-                break        # a surface, a transcript row, or the empty copy: the pane spoke
+            # Only the TRANSCRIPT settles this arm. The old break looked at "any
+            # non-zero count", and the conversation surface mounts before its rows
+            # arrive over the stream — so the reading stopped at surface=1/rows=0
+            # and the arm GAPped a pane that had simply not been asked early enough.
+            # Wait for transcript rows, or for the honest empty-copy line.
+            if counts[1] or counts[3]:
+                break
         time.sleep(delay)
     shot = pw_shot("w2-transcript-pane", session=session)
     if not counts:
@@ -23221,6 +26009,12 @@ def w2():
         pw("close", session="m4w2")
 
 
+W3_GATE_WAIT_S = 900   # the gate appears only after the agent variant's real /plan turn
+                       # (workspace prepare + one reasoning-model turn), so this is the
+                       # leg's wait for a row another process produces — 420s was sized
+                       # for a /plan that died at once.
+
+
 def w3():
     """W3 — gate card: approver roles, deadline countdown, artifact links;
     alice's Approve posts /decide; bob sees the card with NO button and the
@@ -23247,7 +26041,13 @@ def w3():
         return
     run_id = r.json().get("run_id")
     CTX["w3_run_id"] = run_id
-    aid, cap = "", time.time() + 420
+    # The gate only exists once the agent variant's /plan turn has ANSWERED: with
+    # no model credential that turn dies in seconds and 420s was generous. With
+    # the credential composed (compose.m4-llm.yml) the gate is behind a real
+    # reasoning-model turn plus the workspace prepare, so the wait is sized for
+    # the turn the leg is actually waiting on (W3 spends nothing on it — it only
+    # waits for the row the turn leaves behind).
+    aid, cap = "", time.time() + W3_GATE_WAIT_S
     while time.time() < cap:
         aid = pw_first(psql(f"SELECT id FROM approval_requests WHERE run_id = '{run_id}' "
                             "AND state = 'pending' LIMIT 1"))
@@ -23256,9 +26056,20 @@ def w3():
         time.sleep(5)
     if not aid:
         dump_run_evidence(client, run_id)
-        gap("W3 gate-card arms",
-            f"run {run_id} never parked on a pending approval (status "
-            f"{run_status(run_id)!r} after 420s) — the card has nothing to render from")
+        w3_st = run_status(run_id)
+        w3_why = (f"run {run_id} never parked on a pending approval (status "
+                  f"{w3_st!r} after {W3_GATE_WAIT_S}s) — the card has nothing to render from")
+        w3_gap = c1_launcher_pi_refusal_gap(
+            w3_st, run_failed_cause(run_id), c1_attempt_failure_rows(run_id))
+        if w3_st in ("failed", "cancelled", "interrupted") and not w3_gap:
+            # The gate sits behind a real /plan turn. On a credentialed stack a
+            # run that DIED before that turn answered is a failure of the product,
+            # not an unmeasurable card — W3's arms then have nothing to render, and
+            # the row says FAIL with the cause rather than GAPping the death.
+            check("W3 gate-card arms", False,
+                  w3_why + f"; run failed_cause={run_failed_cause(run_id)!r}")
+            return
+        gap("W3 gate-card arms", w3_why + (f" — {w3_gap}" if w3_gap else ""))
         return
     check("W3 the run parks on a pending gate", True, f"approval {aid}")
     gate = client.get(LB, f"/api/v1/approvals/{aid}").json()
@@ -25168,16 +27979,126 @@ def w8():
         pw("close", session="m4w8")
 
 
+def w9_approval_sql(project_id, prefer_run=""):
+    """The ledger read for an approval OF THE M4 PROJECT. Row W9's `/approvals/{id}`
+    needs an id that EXISTS for the outsider to be refused, and it must belong to this
+    project — one of project B's would 404 for a member too, which would measure the
+    wrong thing. `approval_requests` carries `project_id` itself, so no join is needed.
+    Rank: the deep-linked run's own approval, then a still-`pending` one (a decided
+    approval stops being `PendingApproval` and its page is a different surface), then
+    the newest. Pure: it only spells SQL, and quote characters cannot reach it because
+    the caller passes ledger ids."""
+    return ("SELECT id || '|' || run_id FROM approval_requests "
+            f"WHERE project_id = '{project_id}' "
+            "ORDER BY (run_id = '" + str(prefer_run or "") + "') DESC, "
+            "(state = 'pending') DESC, created_at DESC LIMIT 5")
+
+
+def w9_run_approval_sql(run_id):
+    """The approval a parked run has opened (its `/approve` gate is a node execution
+    of that run). Pending first: the arm wants the gate the outsider is told nothing
+    about."""
+    return ("SELECT id FROM approval_requests WHERE run_id = '" + str(run_id or "") + "' "
+            "ORDER BY (state = 'pending') DESC, created_at DESC LIMIT 1")
+
+
+def w9_approval_rows(text):
+    """Parse `w9_approval_sql`'s `id|run_id` lines; a ragged line is dropped, not
+    guessed at."""
+    out = []
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) == 2 and all(parts):
+            out.append({"approval_id": parts[0], "run_id": parts[1]})
+    return out
+
+
+def w9_cancel_parked(parked_run, settle_s=30, every=2):
+    """Undo the one mutation this leg is allowed to make (§ 7.2 keeps the W legs
+    read-mostly): the probe run parked to give /approvals/{id} something real to be
+    refused. Returns the run's status AS READ BACK after the cancel — '' when there was
+    no parked run and the cancel never reached the API — because 'the leg put its run
+    away again' is a claim worth MEASURING, not a line to print optimistically. Called
+    on EVERY exit path after the park (the early GAPs included, and idempotently from
+    the `finally`), so a lab is never left holding a run nobody is watching."""
+    if not parked_run:
+        return ""
+    try:
+        r = (CTX.get("alice") or Client("alice")).post(LB, f"/api/v1/runs/{parked_run}"
+                                                        "/cancel", {})
+        show("W9 the parked probe run cancelled", f"run {parked_run} -> cancel {r.status}")
+    except Exception as e:  # noqa: BLE001 — housekeeping; the row below reports the status
+        show("W9 the parked probe run could NOT be cancelled",
+             f"run {parked_run}: {str(e)[:160]}")
+        return ""
+    met, st, _waited = wait_until(lambda: (lambda st: st if st in C14_TERMINAL else None)(
+        run_status(parked_run)), settle_s, every)
+    show("W9 the parked probe run's status after the cancel",
+         f"run {parked_run} -> {st!r}" + ("" if met else f" (still not terminal after "
+                                         f"{settle_s}s)"))
+    return str(st or "")
+
+
+def w9_locate_or_park_approval(client, facts, project_id, run_id, timeout=300, every=5):
+    """An approval id for row W9's `/approvals/{id}` arm — ADR-0075's instrument.
+
+    The seeded run reaches a terminal state in seconds, and C11's own note says what
+    that does to the arm: a DECIDED gate clears `PendingApproval`, so "a run parked
+    before its gate is the only durable source" of the approval id the row deep-links.
+    live's core-b shard GAPped "no approval on M4 project for the outsider to reach"
+    because the leg asked only for the manifest's own run (`WHERE run_id =
+    '<agent run>'`). Order is the row's need: (1) READ an approval of the M4 project —
+    C11/C14 publish approvals on it inside this same shard, and § 7.2 orders C before
+    W, so one is normally there; (2) only when the ledger holds none, post a twin run
+    on the public API and LEAVE it on its `/approve` gate (that parked state IS
+    `PendingApproval`) — the run is this leg's one mutation and its `finally` cancels
+    it. Returns (approval_id, run_holding_it, located, parked_run_id, why): `why` is
+    every read the arm made, which is what an honest GAP has to name."""
+    searched = []
+    try:
+        rows = w9_approval_rows(psql(w9_approval_sql(project_id, run_id)))
+    except RuntimeError as e:
+        rows = []
+        searched.append(f"the project's approval read failed ({str(e)[:120]})")
+    if rows:
+        searched.append(f"{len(rows)} approval row(s) on project {project_id} "
+                        f"(best: {rows[0]['approval_id']} of run {rows[0]['run_id']})")
+        return rows[0]["approval_id"], rows[0]["run_id"], True, "", "; ".join(searched)
+    searched.append(f"no approval row exists on project {project_id} "
+                    "(the deep-linked run's own, if it had one, would rank first)")
+    parked = post_c1_run(client, mvariant(facts, "twin"),
+                         f"m4x-w9-approval-probe-{int(time.time())}", "w9-approval-probe")
+    if not parked:
+        return "", "", False, "", "; ".join(searched) + "; the probe run could not be posted"
+    searched.append(f"posted probe run {parked} and left it on its /approve gate")
+
+    def peek():
+        try:
+            return pw_first(psql(w9_run_approval_sql(parked)))
+        except RuntimeError:
+            return None
+
+    met, aid, waited = wait_until(peek, timeout, every)
+    if not met or not aid:
+        return "", "", False, parked, ("; ".join(searched) + f"; no approval row for "
+                                       f"{parked} within {int(waited)}s")
+    searched.append(f"probe run {parked} opened approval {aid}")
+    return aid, parked, False, parked, "; ".join(searched)
+
+
 def w9():
     """W9 — row § 7.2: "as carol (project B only), deep-link the M4 run id,
     /runs/{id}/nodes, /approvals/{id} and the run SSE URL" → "404/not-found states, no
     project name, no node names, no digest values, SSE never opens, console clean — 12
     case 15's rule extended to the new surface". Carol cannot be the outsider (C9d
-    makes her an M4 maintainer), so the row's "project B only" role is the identity
-    seed.sh step 2b provisions for it — erin, a member of manifest.project_b and of no
-    other project — and the observer arm names that substitution as a GAP while the
-    four leakage arms are measured on her real session. With no such seeded membership
-    the arms fall back to a bare IdP login (no membership at all) and say so."""
+    makes her an M4 maintainer), so ADR-0075 amends the row to the identity seed.sh
+    step 2b provisions for that role — erin, a member of manifest.project_b and of no
+    other project. Her three ledger facts (project B role, no M4 row, not org admin)
+    are read BEFORE any arm is graded, and the approval id the row deep-links is either
+    located in the ledger or parked by a probe run this leg cancels again in its
+    `finally` — so both of the arms that used to GAP ("the row's literal name is
+    unmeasurable" and "no approval on M4 project for the outsider to reach") are
+    measured now, on erin's real session like the four leakage arms."""
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
         gap("W9 all arms", "no seed manifest (§ 7.0 seed has not run) — no project, no run "
@@ -25188,38 +28109,64 @@ def w9():
     if not check("W9 the M4 run the row deep-links exists", bool(run_id), f"run_id={run_id!r}"):
         gap("W9 all arms", "the manifest names no run to link to")
         return
-    aid = pw_first(psql(f"SELECT id FROM approval_requests WHERE run_id = '{run_id}' "
-                        "ORDER BY created_at LIMIT 1"))
     users = c9_manifest_users(c9_manifest_json())
     carol_id = users.get("carol") or ""
     role = c9_role_of(project_id, carol_id) if carol_id else ""
     mobj = c9_manifest_json() or {}
     project_b_id = str(((mobj.get("project_b") or {}).get("id")) or "")
     erin_id = users.get("erin") or ""
-    erin_m4_role = c9_role_of(project_id, erin_id) if erin_id else None
-    erin_b_role = (c9_role_of(project_b_id, erin_id)
-                   if erin_id and project_b_id else None)
+    # Read with W9's OWN membership reader: an absence (the row's whole claim) must be
+    # distinguishable from a ledger that would not answer, which c9_role_of's ''-for-
+    # both cannot say. Each dict is {read, role, label, why}.
+    erin_m4 = w9_membership_read(project_id, erin_id, "erin on the M4 project")
+    erin_b = w9_membership_read(project_b_id, erin_id, "erin on project B")
+    show("W9 the observer's ledger facts (ADR-0075 measures the observer)",
+         f"{erin_b['why']}; {erin_m4['why']}; manifest project_b id={project_b_id or '(none)'}")
     alice = CTX.get("alice") or Client("alice")
     if login(alice) is None:
         gap("W9 all arms", "alice (a member who CAN see the run) could not sign in — the "
                            "values that must not leak have nothing to be read from")
         return
     CTX["alice"] = alice
+    # ADR-0075's instrument for the /approvals/{id} arm: an approval of the M4 project,
+    # LOCATED in the ledger (C11/C14 publish their own approvals on this project inside
+    # this same core-b shard, and § 7.2 orders C before W) or PARKED by a probe run this
+    # leg leaves on its /approve gate and cancels again on the way out. The seeded run
+    # cannot carry the arm: it is terminal by the time the W legs run, and a decided
+    # gate clears PendingApproval (C11's own note). Posted as alice — a member's session
+    # is what the public API requires, and the outsider never gets the id back.
+    aid, aid_run, located, parked_run, aid_why = w9_locate_or_park_approval(
+        alice, facts, project_id, run_id)
     outsider = Client("erin")
     me = login(outsider)
     if me is None:
+        w9_cancel_parked(parked_run)
         gap("W9 all arms", "no identity without M4-project access could be signed in, so "
                            "there is no outsider to render the deep links as")
         return
     is_admin = bool(me.get("is_org_admin"))
-    _label, _ok, why = w9_outsider_verdict(role, is_admin, outsider="erin",
-                                           outsider_m4_role=erin_m4_role,
-                                           outsider_project_b_role=erin_b_role)
-    gap("W9 carol-as-outsider arm", why)
+    # ADR-0075: the observer is MEASURED, not assumed. Three ledger facts decide the
+    # arm before any page is opened — erin's role on project B (seed.sh step 2b), her
+    # ABSENCE from the M4 project's membership rows, and her org-admin flag (an admin
+    # sees every project through internal/authz's CanView, so an admin session could
+    # never stand in for the row's outsider).
+    c5_emit(w9_outsider_ledger_verdicts(
+        {"project_b_role": erin_b["role"], "m4_role": erin_m4["role"],
+         "read_project_b": erin_b["read"], "read_m4": erin_m4["read"],
+         "is_org_admin": is_admin},
+        outsider="erin"))
+    if not erin_id:
+        w9_cancel_parked(parked_run)
+        gap("W9 all arms", "the seed manifest names no erin — with no identity provisioned "
+                           "for the row's 'project B only' role there is no outsider to "
+                           "render the deep links as (the arms below would grade a login "
+                           "the row never named)")
+        return
     if is_admin:
-        gap("W9 all arms", "the substitute identity holds org admin, and internal/authz "
-                           "CanView lets an org admin see every project — it cannot stand "
-                           "in for the row's outsider")
+        w9_cancel_parked(parked_run)
+        gap("W9 all arms", "erin holds org admin, and internal/authz CanView lets an org "
+                           "admin see every project — she cannot stand in for the row's "
+                           "outsider (the observer rows above say which fact broke)")
         return
 
     # what must NOT appear, read as a member so the needles are the real values
@@ -25244,9 +28191,29 @@ def w9():
     digests += [str(pin.get("revision_digest") or ""), str(pin.get("plan_digest") or ""),
                 w4_short(pin.get("revision_digest")), w4_short(pin.get("plan_digest"))]
     forbidden.append(("digest value", [d for d in digests if d]))
+    if aid and aid_run and aid_run != run_id:
+        # The approval page belongs to ANOTHER M4 run. The leak arms are only honest
+        # when the needles cover what THAT run's page could draw too: its node names
+        # and its pinned digests, both read as a member.
+        a_nodes_r = alice.get(LB, f"/api/v1/runs/{aid_run}/nodes")
+        if a_nodes_r.status == 200:
+            for row in (a_nodes_r.json() or {}).get("nodes") or []:
+                if isinstance(row, dict):
+                    forbidden[1][1] += [str(row.get(k) or "") for k in
+                                        ("node_instance_key", "definition_key", "name",
+                                         "label")]
+        forbidden[1][1] += sorted(c12_node_keys(aid_run) or set())
+        apin = c12_run_pin(aid_run) or {}
+        for d in (str(apin.get("revision_digest") or ""), str(apin.get("plan_digest") or ""),
+                  w4_short(apin.get("revision_digest")), w4_short(apin.get("plan_digest"))):
+            if d:
+                forbidden[2][1].append(d)
+        show("W9 the approval belongs to a second M4 run — its names and digests joined "
+             "the needles", f"approval run {aid_run}")
     show("W9 what a member sees and an outsider must not",
          f"project={names} node names={len(forbidden[1][1])} digests={len(forbidden[2][1])} "
-         f"(approval {aid or '(none for this run)'})")
+         f"(approval {aid or '(none: ' + (aid_why or 'unreadable') + ')'}"
+         + (f" of run {aid_run}, {'located' if located else 'parked'})" if aid else "") + ")")
 
     # the API's own answer for each surface, read as the outsider
     api_status = {}
@@ -25264,6 +28231,7 @@ def w9():
               f"outsider API statuses={api_status} — row W9: \"404/not-found states\"")])
 
     if not pw_login("erin", "/projects", session="m4w9"):
+        w9_cancel_parked(parked_run)
         gap("W9 browser arms", "the mock IdP did not sign the outsider in — the deep links "
                                "were never rendered as DOM, so nothing can be said about "
                                "what the page shows or the console logs")
@@ -25276,7 +28244,9 @@ def w9():
         observed, dom_all = [], []
         for surface, path, key in links:
             if not path:
-                observed.append({"surface": surface, "path": "(no approval for this run)",
+                observed.append({"surface": surface,
+                                 "path": "(no approval of the M4 project to link: "
+                                         + (aid_why or "the ledger did not answer") + ")",
                                  "status": None, "found": None})
                 continue
             pw_goto(path if path.startswith("http") else LB + path, session="m4w9")
@@ -25291,6 +28261,15 @@ def w9():
             show(f"W9 the outsider's page for {path}",
                  f"not-found copy={w9_not_found(dom)} [{shot}]")
         c5_emit(w9_state_verdicts(observed))
+        appr = next((o for o in observed if o.get("surface") == "approval"), {})
+        # The page the arm needed is drawn: put the probe run away NOW, while its
+        # status can still be read back and graded, rather than optimistically
+        # promising the `finally` will do it.
+        parked_status = w9_cancel_parked(parked_run)
+        c5_emit(w9_approval_404_verdicts(aid, found=appr.get("found"),
+                                         status=api_status.get("approval"), located=located,
+                                         parked_run=parked_run, why=aid_why,
+                                         parked_status=parked_status))
         c5_emit(w9_leak_verdicts("\n".join(dom_all), forbidden))
         rc, reqs = pw("requests", session="m4w9")
         c5_emit([w9_sse_verdict(reqs, run_id, dom_all[-1] if dom_all else "")])
@@ -25298,6 +28277,7 @@ def w9():
         c5_emit([w9_console_verdict(cons, rc9,
                                    benign=("Failed to load resource", "favicon.ico"))])
     finally:
+        w9_cancel_parked(parked_run)      # the leg's one mutation, undone
         pw("close", session="m4w9")
 
 
@@ -26203,18 +29183,43 @@ def finish():
     # stays as the fallback for an exit that never reaches finish(); DEFERRED is
     # cleared here, so a regrade can never print or supersede twice.
     run_deferred_regrades()
+    write_witness()
     step("summary")
-    print(f"  FAIL={len(FAILURES)}  GAP={len(GAPS)}  "
+    print(f"  FAIL={len(FAILURES)}  GAP={len(GAPS)}  PENDING={len(PENDING_ROWS)}  "
           f"SKIP={len(SKIPPED)}/{len(GATES)} gates", flush=True)
     for f in FAILURES:
         print(f"  FAILED  {f}", flush=True)
     for g in GAPS:
         print(f"  GAP     {g}", flush=True)
+    for p in PENDING_ROWS:
+        print(f"  PENDING {p}", flush=True)
+    if PENDING_ROWS:
+        print("  NOTE: PENDING rows are § 7.1 claims whose witness ran in ANOTHER shard "
+              "of this run; the `m4 (regrade)` job grades them over every shard's "
+              "witness file and fails on any it cannot prove.", flush=True)
     if SKIPPED:
         print("  NOTE: SKIP count > 0 means this run is a SKELETON, not an "
               "acceptance run — § 7 gates report real output before M4 is called done.",
               flush=True)
     return 1 if FAILURES else 0
+
+
+def finish_regrade():
+    """The `m4 (regrade)` job's own summary: a GAP here is a row the shards passed on
+    PENDING and this job could not prove — it fails the run, never tallies quietly."""
+    step("summary")
+    print(f"  FAIL={len(FAILURES)}  GAP={len(GAPS)}  PENDING={len(PENDING_ROWS)}", flush=True)
+    for f in FAILURES:
+        print(f"  FAILED  {f}", flush=True)
+    for g in GAPS:
+        print(f"  GAP     {g}", flush=True)
+    for p in PENDING_ROWS:
+        print(f"  PENDING {p}", flush=True)
+    if FAILURES or GAPS or PENDING_ROWS:
+        print("  NOTE: every row this job listed is a § 7.1 cross-gate claim a shard "
+              "passed on PENDING; leaving it unproven is a failure of the run, not a "
+              "gap to read past.", flush=True)
+    return 1 if (FAILURES or GAPS or PENDING_ROWS) else 0
 
 
 def main(argv=None):
@@ -26233,6 +29238,25 @@ def main(argv=None):
                     help="wait for both replicas' readiness before running gates")
     ap.add_argument("--only", metavar="IDS",
                     help="comma-separated gate ids to run (default: all)")
+    ap.add_argument("--shard", metavar="NAME",
+                    help="name of the acceptance shard this process is (recorded in "
+                         "the witness file; defaults to $M4_SHARD)")
+    ap.add_argument("--witness", metavar="PATH", action="store",
+                    help="write this run's machine-readable witness file (every "
+                         "verdict line + the CTX half-shapes other gates compare "
+                         "against) so the m4 (regrade) job can grade cross-gate rows")
+    ap.add_argument("--expect-regrade", action="store_true",
+                    help="a cross-gate row whose witness ran in another shard prints "
+                         "PENDING (graded by `m4 (regrade)`) instead of a GAP this job "
+                         "would pass; only valid when the regrade job will run, i.e. "
+                         "every shard was selected")
+    ap.add_argument("--regrade", metavar="WITNESS.json", nargs="+",
+                    help="no stack: merge these shard witness files, re-evaluate "
+                         "every cross-gate row over the merged witnesses and fail on "
+                         "any FAIL or row still unproven")
+    ap.add_argument("--expect-shards", metavar="NAMES",
+                    help="with --regrade: shard names whose witness must be present "
+                         "(a missing one FAILs naming it)")
     ap.add_argument("--list", action="store_true",
                     help="print the gate table and exit")
     args = ap.parse_args(argv)
@@ -26242,7 +29266,19 @@ def main(argv=None):
             print(f"{gid:4s} {fn.__doc__.strip().splitlines()[0]}")
         return 0
 
+    WITNESS_PATH[0] = args.witness or ""
+    SHARD_NAME[0] = args.shard or os.environ.get("M4_SHARD") or ""
+    REGRADE_CONTRACT[0] = bool(args.expect_regrade)
+    if args.regrade:                       # the regrade job: no stack, no PENDING
+        REGRADE_CONTRACT[0] = False
+        return run_regrade(args.regrade,
+                           [s.strip() for s in (args.expect_shards or "").split(",")
+                            if s.strip()])
+
     sel = {s.strip().upper() for s in args.only.split(",")} if args.only else None
+    CTX["gate_selection"] = sel
+
+    announce_stack_layers()
 
     if args.up:
         step("stack: host prep, fixture repo, compose up")

@@ -1578,6 +1578,408 @@ class LockProbeLiveStubbed(unittest.TestCase):
                         "with nothing sampled the arm GAPs — never a PASS by silence")
 
 
+# ================= C14b: the SURVIVING-backend handover grading =================
+# Recorded from acceptance run 41983100425 (core-b). The probe caught the driver's
+# advisory key granted INSIDE both roll windows — to the PEER's long-lived backend
+# (api-b's session during api-a's window, api-a's post-restart session during
+# api-b's window). The old algebra compared each holder's backend_start against the
+# ROLLED replica's restart clock and called both "stale" (GAP); the corrected
+# algebra grades a peer holder by the restarts of the service it BELONGS TO — and
+# "held by a SURVIVING replica while the rolled replica is down" is exactly what
+# was observed.
+
+RUN4198_STEPS = [
+    {"svc": "api-a", "peer": "http://localhost:18093",
+     "t_restart": 1793861815.950, "t_ready": 1793861818.293, "ready": True},
+    {"svc": "api-b", "peer": "http://localhost:18092",
+     "t_restart": 1793861818.548, "t_ready": 1793861820.845, "ready": True},
+]
+RUN4198_EVENTS = [
+    {"ts_ms": 1793861817000.0, "n": "c2s18", "replicas": ["api-b"],
+     "holders": [{"pid": "101", "service": "api-b", "basis": "ip",
+                  "addr": "172.18.0.4", "state": "idle", "objsubid": "1",
+                  # api-b booted long before either roll: its session legitimately
+                  # predates API-A's restart — that is survivorship, not staleness
+                  "backend_start_ms": 1793861700000.0}]},
+    {"ts_ms": 1793861818314.0, "n": "c2s34", "replicas": ["api-a"],
+     "holders": [{"pid": "806", "service": "api-a", "basis": "ip",
+                  "addr": "172.18.0.7", "state": "idle", "objsubid": "1",
+                  "backend_start_ms": 1793861817500.0}]},
+    {"ts_ms": 1793861820342.0, "n": "c3s9", "replicas": ["api-a"],
+     "holders": [{"pid": "827", "service": "api-a", "basis": "ip",
+                  "addr": "172.18.0.7", "state": "idle", "objsubid": "1",
+                  # api-a's NEW session (born after api-a's own restart) — older
+                  # than api-b's restart only by seconds, which says nothing
+                  "backend_start_ms": 1793861818600.0}]},
+    {"ts_ms": 1793861820875.0, "n": "c3s22", "replicas": ["api-b"],
+     "holders": [{"pid": "839", "service": "api-b", "basis": "ip",
+                  "addr": "172.18.0.4", "state": "idle", "objsubid": "1",
+                  "backend_start_ms": 1793861819900.0}]},
+]
+
+
+def _obs(events, **kw):
+    obs = {"events": events, "samples": 120, "held": len(events),
+           "by_replica": {}, "attribution": "holders", "simultaneous": [],
+           "unattributed": {}, "empty_addr": 0, "other_key_samples": 4,
+           "bases": ["ip"], "pids": {}, "addr_map": {}, "container": {},
+           "env": None, "errors": [], "calls": 3,
+           "backend": {"database": "communication", "count": 8,
+                       "addrs": ["172.18.0.4", "172.18.0.7"], "app_names": ["psql"]},
+           "replica_backend_svcs": ["api-a", "api-b"], "holder_svcs": [],
+           "span_ms": 6000}
+    obs.update(kw)
+    for e in events:
+        for h in e.get("holders") or []:
+            if h.get("service"):
+                obs["by_replica"][h["service"]] = \
+                    obs["by_replica"].get(h["service"], 0) + 1
+    obs["holder_svcs"] = sorted(s for s, c in obs["by_replica"].items() if c)
+    return obs
+
+
+class HandoverSurvivor(unittest.TestCase):
+    """The mis-grade fixed: backend_start_ms is stale only against a restart of the
+    service the holder BELONGS TO."""
+
+    def test_the_recorded_run_41983100425_evidence_now_passes(self):
+        obs = _obs(RUN4198_EVENTS)
+        hand = m.c14_lock_handover(obs, RUN4198_STEPS)
+        self.assertEqual([], hand["stale_in_window"],
+                         "no holder in that recording predates a restart of its OWN "
+                         "service — none of them is a corpse backend")
+        self.assertEqual(2, len(hand["peer_hits"]),
+                         "the two in-window samples name the SURVIVING replica")
+        self.assertEqual([], hand["own_hits"])
+        rows = m.c14_lock_pg_verdicts(obs, RUN4198_STEPS)
+        self.assertIs(True, rows[2][1], rows[2][2])
+        self.assertIn("stayed up", rows[2][2])
+        self.assertIn("PREDATES", rows[2][2],
+                      "the row must EXPLAIN why a pre-restart peer backend is the "
+                      "handover and not its refutation")
+
+    def test_a_peer_backend_that_predates_the_PEERS_own_restart_is_a_corpse(self):
+        """api-b restarted at 60; a sample inside api-a's window naming an api-b
+        backend born at 55 can only be api-b's DEAD pre-restart session: GAP, the
+        amnesty rule protects corpses in BOTH directions."""
+        steps = [{"svc": "api-b", "peer": "http://localhost:18092",
+                  "t_restart": 60.0, "t_ready": 63.0},
+                 {"svc": "api-a", "peer": "http://localhost:18093",
+                  "t_restart": 100.0, "t_gone": 100.4, "t_ready": 106.0}]
+        ev = [{"ts_ms": 101000, "n": "c1s2", "replicas": ["api-b"],
+               "holders": [{"pid": "7", "service": "api-b", "basis": "ip",
+                            "backend_start_ms": "55000"}]}]
+        hand = m.c14_lock_handover(_obs(ev), steps)
+        self.assertEqual(1, len(hand["stale_in_window"]), hand)
+        self.assertEqual([], hand["peer_hits"])
+        self.assertIsNone(m.c14_lock_pg_verdicts(_obs(ev), steps)[2][1])
+
+    def test_a_peer_backend_born_after_the_peers_restart_is_still_a_hit(self):
+        steps = [{"svc": "api-b", "peer": "http://localhost:18092",
+                  "t_restart": 60.0, "t_ready": 63.0},
+                 {"svc": "api-a", "peer": "http://localhost:18093",
+                  "t_restart": 100.0, "t_gone": 100.4, "t_ready": 106.0}]
+        ev = [{"ts_ms": 101000, "n": "c1s2", "replicas": ["api-b"],
+               "holders": [{"pid": "8", "service": "api-b", "basis": "ip",
+                            "backend_start_ms": "70000"}]}]
+        rows = m.c14_lock_pg_verdicts(_obs(ev), steps)
+        self.assertIs(True, rows[2][1], rows[2][2])
+
+    def test_the_rolled_replicas_own_clock_still_decides_its_own_samples(self):
+        """(regression pin) the rolled replica inside its own window: a backend
+        older than THAT restart is the un-reaped corpse — the rule the old algebra
+        got right, kept exactly."""
+        ev = [{"ts_ms": 100600, "n": "c1s2", "replicas": ["api-a"],
+               "holders": [{"pid": "7", "service": "api-a", "basis": "ip",
+                            "backend_start_ms": "99000"}]}]
+        steps = [{"svc": "api-a", "peer": "api-b", "t_restart": 100.0,
+                  "t_gone": 100.4, "t_ready": 106.0}]
+        rows = m.c14_lock_pg_verdicts(_obs(ev), steps)
+        self.assertIsNone(rows[2][1])
+        self.assertIn("PRE-DATE the restart of the very service they belong to",
+                      rows[2][2])
+
+
+# ================= C14b: the FORCED two-replica race ============================
+
+class RaceProbe(unittest.TestCase):
+    RUN = "019ece4b-1d3d-7a33-9b1f-0f2b7a990b42"
+
+    def test_the_script_samples_the_runs_advancer_key_granted_and_waiting(self):
+        script = m.c14_adv_race_script(self.RUN, samples=3, every_s=0.04)
+        self.assertIn("communication/advancer/", script)
+        self.assertIn(self.RUN, script)
+        self.assertIn("l.granted::text", script,
+                      "a granted=false waiter IS the evidence — the driver's-key "
+                      "probe filters granted; this one must not")
+        self.assertIn("hashtextextended", script)
+        self.assertNotIn("pg_try_advisory_lock", script)
+        self.assertNotIn("pg_advisory_lock(", script,
+                         "the probe must never take the lock it measures")
+        self.assertIn("pg_sleep", script)
+
+    def test_parse_and_summarize_a_recorded_overlap(self):
+        """One psql line as the real probe prints it: api-a holds the run's advancer
+        key (granted=t, transaction-level objsubid=0), api-b waits on THE SAME key
+        (granted=f). That pair, attributed by client_addr × container IPs, is what
+        'both replicas advance the same run in one instant' reads as."""
+        lines = [
+            '["x", 1, "1793861819123", [["806","t","0","ExclusiveLock","",'
+            '"172.18.0.7","1793861816400","idle in transaction"],'
+            '["827","f","0","ExclusiveLock","","172.18.0.4","1793861819000",'
+            '"active"]]]',
+            '["y"]',   # well-formed JSON, wrong shape: counts as junk
+            '["x", 2, "1793861819423", [["806","t","0","ExclusiveLock","",'
+            '"172.18.0.7","1793861816400","idle in transaction"]]]',
+        ]
+        parsed = m.c14_adv_race_parse_output("\n".join(lines))
+        self.assertEqual(2, len(parsed["samples"]))
+        self.assertEqual(1, parsed["junk"])
+        addr_map = {"api-a": {"container": "communication-m4-api-a-1",
+                              "ips": ["172.18.0.7"]},
+                    "api-b": {"container": "communication-m4-api-b-1",
+                              "ips": ["172.18.0.4"]}}
+        obs = m.c14_adv_race_summarize(parsed, addr_map)
+        self.assertTrue(obs["overlap"])
+        self.assertEqual(1, len(obs["pairs"]))
+        p = obs["pairs"][0]
+        self.assertEqual(["api-a"], sorted({g["service"] for g in p["granted"]}))
+        self.assertEqual(["api-b"], sorted({w["service"] for w in p["waiting"]}))
+
+    def test_a_holder_or_waiter_that_cannot_be_attributed_never_makes_a_pair(self):
+        parsed = m.c14_adv_race_parse_output(
+            '["x", 1, "1793861819123", [["806","t","0","ExclusiveLock","",'
+            '"172.17.0.1","1793861816400","idle in transaction"],'
+            '["827","f","0","ExclusiveLock","","172.17.0.1","1793861819000",'
+            '"active"]]]')
+        obs = m.c14_adv_race_summarize(
+            parsed, {"api-a": {"ips": ["172.18.0.7"]}, "api-b": {"ips": ["172.18.0.4"]}})
+        self.assertFalse(obs["overlap"])
+        self.assertEqual([], obs["pairs"],
+                         "everything behind one NAT address names no replica — no pair")
+
+    def test_the_wedge_liveness_read_excludes_its_own_query(self):
+        """The marker sits inside the liveness-check SELECT's OWN query text too:
+        without the pg_backend_pid() exclusion the wedge proves itself by tautology
+        and the arm fires decides it cannot prove are made against a held row."""
+        seen = {}
+        real = m.psql
+        m.psql = lambda sql: seen.update(sql=sql) or "0"
+        try:
+            self.assertIs(False, m.c14_race_wedge_seen())
+        finally:
+            m.psql = real
+        self.assertIn("pg_backend_pid()", seen["sql"])
+        self.assertIn(m.C14_RACE_MARKER, seen["sql"])
+
+    def test_the_wedge_is_one_implicit_transaction_holding_the_run_row(self):
+        """psql -c runs the multi-statement string as ONE simple query / implicit
+        transaction: the FOR UPDATE lives across the pg_sleep and dies with the
+        implicit COMMIT — no kill, no dangling writer, no row written."""
+        calls = {}
+
+        class FakePopen:
+            def __init__(self, cmd, **kw):
+                calls["cmd"] = " ".join(cmd)
+                self.pid = 4242
+
+        real_popen = m.subprocess.Popen
+        m.subprocess.Popen = FakePopen
+        try:
+            proc, how = m.c14_race_wedge_start("019ece4b-1d3d", m.C14_RACE_WEDGE_S)
+        finally:
+            m.subprocess.Popen = real_popen
+        self.assertIn("FROM runs WHERE id = '019ece4b-1d3d'::uuid FOR UPDATE",
+                      calls["cmd"])
+        self.assertIn(m.C14_RACE_MARKER, calls["cmd"])
+        self.assertIn(f"pg_sleep({m.C14_RACE_WEDGE_S})", calls["cmd"])
+        self.assertNotIn("UPDATE runs SET", calls["cmd"],
+                         "the wedge locks the row, it never writes a column")
+        self.assertIs(proc.pid, 4242)
+
+    def test_t_f_are_the_real_psql_booleans(self):
+        parsed = m.c14_adv_race_parse_output(
+            '["x", 1, "100", [["9","f","0","ExclusiveLock","","172.18.0.4","90",'
+            '"active"]]]')
+        row = parsed["samples"][0]["rows"][0]
+        obs = m.c14_adv_race_summarize(
+            parsed, {"api-b": {"ips": ["172.18.0.4"]}})
+        self.assertEqual("f", row["granted"],
+                         "parse keeps psql's literal; summarize maps t/f")
+        self.assertEqual([], obs["pairs"], "a lone waiter names no overlap")
+
+
+class RaceVerdicts(unittest.TestCase):
+    OVERLAP = {"samples": 40, "junk": 0, "bases": ["ip"], "attributed": {"api-a": 12,
+                                                                         "api-b": 12},
+               "overlap": True,
+               "pairs": [{"ts_ms": 1793861819123.0, "n": 7,
+                          "granted": [{"pid": "806", "service": "api-a", "basis": "ip",
+                                       "objsubid": "0", "granted": True,
+                                       "mode": "ExclusiveLock"}],
+                          "waiting": [{"pid": "827", "service": "api-b", "basis": "ip",
+                                       "objsubid": "0", "granted": False,
+                                       "mode": "ExclusiveLock"}]}]}
+    RACE = {"wedge": {"started": True, "observed": True, "gone": True},
+            "pause": {"svc": "api-a", "paused": True, "resumed": True, "ready": True},
+            "overlap": OVERLAP, "reason": ""}
+    RESULTS = [{"svc": "api-a", "status": 200, "replica": "api-a"},
+               {"svc": "api-b", "status": 409, "replica": "api-b"}]
+    LEDGER = {"decided": 1, "dup_succeeded": 0, "terminal": "completed"}
+
+    def test_the_clean_forced_race_passes_all_four_rows(self):
+        rows = m.c14_race_verdicts(self.RACE, self.RESULTS, self.LEDGER)
+        self.assertEqual([True, True, True, True], [ok for _l, ok, _d in rows], rows)
+        self.assertIn("granted to ['api-a']", rows[0][2])
+        self.assertIn("api-b", rows[0][2])
+        self.assertIn("version CAS", rows[1][2])
+
+    def test_both_sides_committing_is_the_product_failure(self):
+        rows = m.c14_race_verdicts(
+            self.RACE, [{"svc": "api-a", "status": 200}, {"svc": "api-b", "status": 200}],
+            {"decided": 2, "dup_succeeded": 1, "terminal": "completed"})
+        self.assertIs(True, rows[0][1], "the race was still forced — that is its own row")
+        self.assertIs(False, rows[1][1], "two replicas applied one transition: FAIL")
+        self.assertIn("BOTH decides committed", rows[1][2])
+
+    def test_no_overlap_sample_is_an_honest_gap_never_a_pass(self):
+        race = dict(self.RACE, overlap={"samples": 40, "pairs": [], "overlap": False,
+                                        "attributed": {}, "bases": [], "junk": 0})
+        rows = m.c14_race_verdicts(race, self.RESULTS, self.LEDGER)
+        self.assertIsNone(rows[0][1])
+        self.assertIn("never a verdict about the product", rows[0][2])
+
+    def test_an_arm_that_never_forced_gaps_all_four_rows_with_its_reason(self):
+        rows = m.c14_race_verdicts({"reason": "the wedge could not start: OSError"}, [])
+        self.assertEqual([None, None, None, None], [ok for _l, ok, _d in rows])
+        for _l, _ok, d in rows:
+            self.assertIn("wedge", d.lower())
+
+    def test_no_clean_winner_is_ungraded(self):
+        rows = m.c14_race_verdicts(
+            self.RACE,
+            [{"svc": "api-a", "status": None, "error": "timeout"},
+             {"svc": "api-b", "status": 500}], {"decided": 0, "dup_succeeded": 0,
+                                                "terminal": "waiting_human"})
+        self.assertIsNone(rows[1][1], "nothing won — refused-vs-timed-out is unreadable")
+        self.assertIsNone(rows[2][1])
+
+    def test_the_raced_run_ending_broken_fails_the_intact_row(self):
+        rows = m.c14_race_verdicts(self.RACE, self.RESULTS,
+                                   {"decided": 1, "dup_succeeded": 0, "terminal": "failed"})
+        self.assertIs(False, rows[2][1])
+
+    def test_a_replica_left_frozen_fails_the_lever_row(self):
+        race = dict(self.RACE, pause={"svc": "api-a", "paused": True, "resumed": False,
+                                      "ready": False})
+        rows = m.c14_race_verdicts(race, self.RESULTS, self.LEDGER)
+        self.assertIs(False, rows[3][1],
+                      "the lab not handed back is never a silent PASS")
+
+    def test_the_race_arm_is_wired_into_the_live_gate(self):
+        body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        c14_body = body.split("def c14():")[1].split("def _playwright_stub")[0]
+        self.assertIn("c14_race_forced(alice, facts, pid)", c14_body)
+        self.assertNotIn('the two-replica race is NOT forced', c14_body,
+                         "the old reworded-GAP call must be GONE, not reworded again")
+
+
+# ================= C14c: the flag off EVERYWHERE ================================
+
+class AllOffVerdicts(unittest.TestCase):
+    TURN = {"status": "completed", "worker": "019ece4b-0000-7000-8000-00000000000a",
+            "token": 41, "verified": 1, "workspace": 1, "replayed": 200}
+    STATES = {"api-a": "off", "api-b": "off"}
+    READY = {"api-a": True, "api-b": True}
+    RESTORE = [("api-a", "on"), ("api-b", "on")]
+
+    def rows(self, states=STATES, ready=None, posted=(201, "r1"), seen=("queued",) * 6,
+             turn=TURN, restore=RESTORE, blocked=""):
+        return m.c14_all_off_verdicts(states, ready if ready is not None else self.READY,
+                                      posted, list(seen), turn, restore, blocked=blocked)
+
+    def test_intact_m2_m3_and_a_run_that_stays_queued_pass(self):
+        rows = self.rows()
+        self.assertIs(True, one(rows, "leaves M2/M3 intact"), detail(rows, "intact"))
+        self.assertIs(True, one(rows, "STAYS 'queued'"))
+        self.assertIn("claim/lease/fence", detail(rows, "leaves M2/M3 intact"))
+        self.assertTrue(any("restore: api-a" in l and ok is True
+                            for l, ok, _d in rows), rows)
+        self.assertTrue(any("restore: api-b" in l and ok is True
+                            for l, ok, _d in rows), rows)
+
+    def test_a_turn_that_died_with_the_engines_off_fails(self):
+        rows = self.rows(turn=dict(self.TURN, status="failed"))
+        self.assertIs(False, one(rows, "leaves M2/M3 intact"))
+
+    def test_a_run_advancing_while_both_engines_are_off_fails(self):
+        rows = self.rows(seen=("queued", "queued", "running"))
+        self.assertIs(False, one(rows, "STAYS 'queued'"),
+                      "the advancer started despite the flag: the product bug "
+                      "this half of the row exists to catch")
+
+    def test_an_incomplete_reading_never_passes(self):
+        for turn in (dict(self.TURN, token=0), dict(self.TURN, verified=0),
+                     dict(self.TURN, workspace=0), dict(self.TURN, replayed=404)):
+            rows = self.rows(turn=turn)
+            self.assertIs(False, one(rows, "leaves M2/M3 intact"), turn)
+        for missing in ("worker", "verified", "replayed"):
+            turn = dict(self.TURN)
+            del turn[missing]
+            rows = self.rows(turn=turn)
+            self.assertIsNone(one(rows, "leaves M2/M3 intact"),
+                              f"{missing} unreadable is a GAP, not a FAIL of the product")
+
+    def test_an_arm_that_never_got_both_off_gaps_everything(self):
+        for states in ({"api-a": "off", "api-b": "on"}, None, {},
+                       {"api-a": "on", "api-b": "on"}):
+            rows = self.rows(states=states)
+            self.assertIsNone(one(rows, "leaves M2/M3 intact"), states)
+            self.assertIsNone(one(rows, "STAYS 'queued'"))
+        rows = self.rows(states=None, blocked="the recreate of api-a answered rc=1")
+        self.assertIn("recreate of api-a", detail(rows, "leaves M2/M3 intact"))
+        self.assertIn("recreate of api-a", detail(rows, "STAYS 'queued'"))
+
+    def test_a_restore_that_left_an_engine_off_fails_its_row(self):
+        rows = self.rows(restore=[("api-a", "off"), ("api-b", "on")])
+        offs = [ok for l, ok, _d in rows if "restore: api-a" in l]
+        self.assertEqual([False], offs, "later gates inherit a crippled lab — FAIL")
+
+    def test_the_live_turn_reading_shape_is_proven_offline(self):
+        """c14_m2_turn_evidence reads conversation_turns / domain_events / workspaces
+        through psql — the pure shape is pinned here with stubbed reads."""
+        real = (m.psql, m.Client)
+        try:
+            m.psql = lambda sql: ("completed|019ece4b-aaaa|41"
+                                  if "conversation_turns" in sql else
+                                  "1" if "domain_events" in sql or "workspaces" in sql
+                                  else "")
+
+            class Ok:
+                def get(self, base, path):
+                    return m.Resp(200, {}, b"{}", path)
+
+            m.Client = lambda *a, **kw: Ok()
+            out = m.c14_m2_turn_evidence(m.Client("alice"), "c" * 36, "t" * 36,
+                                         wait_s=1)
+        finally:
+            m.psql, m.Client = real
+        self.assertEqual("completed", out["status"])
+        self.assertEqual(41, out["token"])
+        self.assertEqual(1, out["verified"])
+        self.assertEqual(1, out["workspace"])
+        self.assertEqual(200, out["replayed"])
+
+    def test_the_both_off_arm_is_wired_after_the_one_off_verdicts(self):
+        body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        arm = body.split("def c14_off_replica(")[1].split("def c14_wait_replica(")[0]
+        self.assertIn("c14_all_off(alice, facts, project_id, roll=roll)", arm)
+        self.assertNotIn("needs a separate bring-up", body,
+                         "the old 'a § 7.0 lab decision' GAP text is gone")
+
+
 def C14LockProbe_for_test(services=("api-a", "api-b"), tag="C14test"):
     """A probe whose loop cannot spin: one sample per call and no sleep at all — the stubbed
     c14_lock_probe_once returns instantly, so stop() must not have to wait for it."""

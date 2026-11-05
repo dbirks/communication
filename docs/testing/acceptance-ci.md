@@ -13,7 +13,8 @@ runner with a fresh `communication-m4` stack brought up from this checkout —
 | --- | --- | --- |
 | `lab-e2e` | Every lab-gated Playwright suite (M5, shell, issue2, home, harness, shell-journey) against a fresh seeded lab; the list-reporter summary must contain no `failed`/`skipped`/`flaky`/`did not run` line, and a run that never reaches a summary fails too. | `lab` |
 | `m4 (<shard>)` | The live M4 exit gates (docs/m4-contract.md § 7.1/§ 7.2) against `--up --ready --seed`, sharded (below). | `m4` |
-| `verification` | The "play the user" emulator loop, up to 6 passes with a full lab rebuild before each; passes only on **two consecutive clean passes**. New defect fingerprints file as GitHub issues (label `emulator`) with the job's `GITHUB_TOKEN`. | `emu` |
+| `m4 (regrade)` | The § 7.1 rows whose witnesses ran in another shard, re-graded over the six shards' uploaded witness files — no stack, no new measurements (below). | `m4` (regrade half) |
+| `verification` | The "play the user" emulator loop, up to 6 passes with a full lab rebuild before each; passes only on **two consecutive clean passes**. New defect fingerprints file as GitHub issues (label `emulator`) with the job's `GITHUB_TOKEN`; the same token is also written to a mode-600 `$RUNNER_TEMP` file and exported only as `E2E_GITHUB_READ_TOKEN_FILE`, so the emulator's `server` repo reads GitHub authenticated through its ADR-0061 credential instead of the anonymous 60/hour budget. | `emu` |
 | `github-loop` | The real issue → draft-PR loop on the throwaway repo `dbirks/comms-test-repo-1`: two labeled issues must return as draft PRs from `comm/issue-*` refs. | (addition) |
 
 Triggers: `workflow_dispatch`, every push to `main`, and nightly at 04:00
@@ -89,6 +90,37 @@ re-checks at run time that its ids are in `--list`.
 | `core-a` | C1, C2, C7, C9, C10, W1, W3, W7 | Everything else, half one. |
 | `core-b` | C11, C12, C13, C14, W4, W8, W9, W10 | C11c's structural rows are regraded at exit from C12/C13/C14's verdict lines, so they share a runner. |
 
+### Cross-shard regrade (`m4 (regrade)`)
+
+Several § 7.1 rows are graded from ANOTHER gate's measurement — C11c's structural
+arms over C8b/C14a/C10a/C10b/C7c/C1f/C2c/C13c/C2d/C12a/C12b/C13b, C5g's and C6c's
+"the same node_instance_key set as C1", C3d's citation of C4's fence — and the
+driver's exit-time regrade only sees verdicts printed in ITS OWN process, so in a
+six-shard matrix those witnesses live in a different job. That is why acceptance
+run 41983100425 filed `C11c outputs are project-scoped data … C8B=NOT PRINTED` and
+`C5g … no C1 key set in this pass (CTX['c1'] empty)` as GAPs that still let the
+shard jobs pass. Now every shard runs with `--shard <name> --witness
+m4-witness.json`, uploading a machine-readable witness file (each verdict line's
+leg id and status, plus the CTX half-shapes later gates compare against — C1's
+twin `node_instance_key` set, the retried run's own key set), and the
+`m4 (regrade)` job downloads all six and runs `python3 e2e/m4/e2e_m4_exit.py
+--regrade <files…> --expect-shards <names>` with **no stack at all**, so every
+cross-gate row is re-graded purely over the recorded measurements and the job
+FAILs on any FAIL, any row whose witness no shard ever measured (naming the leg
+and the shard that owed it), and any shard whose witness never arrived. While the
+regrade is contracted (select's `m4-all`, i.e. all six shards ran) a shard prints
+such a row as `PENDING <row id> (regraded by m4 (regrade))` instead of a GAP —
+visible in the summary, counted in its own `PENDING=` tally, and owned by the
+regrade job; on a partial shard selection there is nothing to merge, so the rows
+keep the honest GAP and the regrade job prints a notice saying it was skipped.
+Key-set rows compared across shards compare **structure** — the
+`node_instance_key` SETs the same § 7.0 seed pipeline produces on two fresh
+stacks, iteration-normalized with `collapse_iterations()` and guarded by
+`loop_history_holes()` — which is exactly what those contract rows claim, and the
+row text says so. The algebra is proven offline in
+`e2e/m4/test_regrade_logic.py` (witness round-trip, PENDING-not-GAP, merged
+regrade PASS/FAIL over recorded shard witnesses).
+
 ## Running it
 
 ```bash
@@ -104,29 +136,39 @@ Required repository secrets (settings → secrets → actions):
   under `$RUNNER_TEMP` and exports only
   `COMMUNICATION_LLM_API_KEY_HOST_FILE` (the form `compose.real.yml` and
   `e2e/tests/helpers.ts` already speak); `LLMC_API_KEY` itself is read from
-  that file by `scripts/lab-up.sh`. The value is never echoed and never an
-  argv word.
+  that file by `scripts/lab-up.sh`, and — for the m4 job — by the job itself
+  and by `e2e/m4/e2e_m4_exit.py` (worker.go's `COMMUNICATION_MODEL_CHAT_API_KEY`
+  has no `_FILE` form, so the value must exist in the environment compose
+  renders with). The value is never echoed and never an argv word.
 - `COMMUNICATION_TEST_REPO_TOKEN` — fine-grained token for the throwaway
   repo, delivered the same way as
   `COMMUNICATION_TEST_REPO_TOKEN_FILE` (`gh-loop.sh` reads only the file).
 
 Lab launcher selection: the workflow sets `COMMUNICATION_LAB_LAUNCHER=pi`
 (`seed.sh` / `seed-github-loop.sh` read it; unset = `claude`, the local
-default). The pi launcher's per-turn config comes from `compose.real.yml`
-into the worker containers — `COMMUNICATION_PI_BASE_URL`,
-`COMMUNICATION_PI_MODEL` (default
-`david-birks/qwen3-8-27b`, the exact id form pi's `models.json`
-carries on the operator host) and `COMMUNICATION_PI_API_KEY_FILE`, which
-inside the container is `/run/comm/llm-api-key`: **the same
+default), which seeds the agent profiles `autonomous_within_sandbox` — the
+mode ADR-0069 added for a launcher that cannot prompt, since pi runs no turn
+under a mode that claims a review (`preapproved_within_sandbox` is ADR-0036's
+claude-only exception). The pi launcher's per-turn config reaches the worker
+containers from `compose.real.yml` on the lab stack and from
+**`compose.m4-llm.yml`** on the m4 exit stack — `COMMUNICATION_PI_BASE_URL`,
+`COMMUNICATION_PI_MODEL` (default `david-birks/qwen3-8-flash-next`, the exact
+id form pi's `models.json` carries on the operator host; the gateway retired
+the `qwen3-8-27b`/`ripple-65b` pair) and `COMMUNICATION_PI_API_KEY_FILE`,
+which inside the container is `/run/comm/llm-api-key`: **the same
 `COMMUNICATION_LLM_API_KEY` secret file**, bind-mounted read-only — no
-second secret, no Claude token.
+second secret, no Claude token. Setting the base URL is also what admits the
+gateway host to the agent-turn egress allowlist (ADR-0069), so neither layer
+sets `COMMUNICATION_AGENT_EGRESS_ALLOW` and the § 7.1 C11 probe keeps
+measuring the shipped policy rather than a widened one.
 
 ## Evidence artifacts (7-day retention)
 
 | Artifact | Contents |
 | --- | --- |
 | `lab-e2e-<attempt>` | `lab-list.txt` (the Playwright list report the gate greps) + `lab-compose.log` (stack logs with timestamps). |
-| `m4-<shard>-<attempt>` | `m4.out` (the full exit-driver transcript for that shard) + `m4-compose.log`. |
+| `m4-<shard>-<attempt>` | `m4.out` (the full exit-driver transcript for that shard) + `m4-compose.log` + `m4-witness.json` (this shard's verdict lines and CTX half-shapes, read by `m4 (regrade)`). |
+| `regrade-m4-<attempt>` | `m4-regrade.out` — the cross-gate rows re-graded over every shard's merged witness file. |
 | `emulator-out-<attempt>` | `e2e/emulator/out/` — every pass's screenshots, `results.json` and `index.html` report. The passes' session storage states (`admin.json`, `alice.json`) are **excluded**: they are live cookies. |
 | `github-loop-<attempt>` | `gh-loop.out` (the PASS/FAIL verdict lines per issue, failing-node errors, journal tails) + compose logs. |
 
@@ -136,48 +178,64 @@ These jobs prove what a GitHub runner can prove; where the laptop acceptance
 run leaned on the operator's host, the CI stack says so instead of faking it
 (12-test-strategy: a mocked green is never evidence):
 
-- **Agent turns (the launcher is pi on CI, and pi cannot run one yet).**
+- **Agent turns: CI carries the pi credential; the refusal GAP is local-only.**
   Runners have no `~/.claude` login and the operator decision is **no Claude
   token on CI**, so the acceptance jobs seed the lab's agent profiles with
-  `COMMUNICATION_LAB_LAUNCHER=pi` against the LLM collective. Honesty first:
-  **launcher `pi` runs no `agent.acp` node or conversation turn under ANY
-  recorded permission mode on the current product** — `ask`, `deny` and
-  `preapproved_within_sandbox` all require the launcher's *verified prompting
-  mode* (ADR-0019 D6; `internal/agent/acp/launchers.go` registers
-  `AskModeID: ""` for pi; observed 2026-10-24 in `docs/compatibility/ACP.md`
-  "Pi" and `docs/compatibility/SANDBOX.md` § "pi launcher in nono": the
-  worker refuses with `no verified prompting mode … before sandbox
-  verification`). There is therefore **no permission mode to pick that makes
-  a pi profile run**; the seeds keep `preapproved_within_sandbox` (the mode
-  the claude lab seeds use — for pi it changes nothing except the refusal's
-  wording). Affected legs, which must land as FAIL/GAP verdicts naming
-  launcher `pi`, never a pass:
-  - m4 § 7.1: the agent-variant legs that spend a real turn — **C2**'s
-    agent-leg secret-materialization witness, **C4e** (the fenced real
-    turn's transcript arm), **C11a**'s live-agent-turn arm; and in § 7.2,
-    **W2**'s transcript arm (it reads C4e's fenced turn) and the turn-
-    dependent arms of **W5/W11** in the watch shard. These fall into the
-    driver's existing "turn never ran" GAP paths (e.g. its C4e note for
-    attempts carrying no transcript arm).
-  - **github-loop**: both issues' `implement` nodes are `agent.acp` on the
-    seeded profiles, so the run cannot complete and the job FAILS with the
-    attempt detail naming launcher pi. That is the honest state of the
-    decision, not a regression to hide.
+  `COMMUNICATION_LAB_LAUNCHER=pi` against the LLM collective. Since ADR-0069
+  that launcher **does** run turns (`autonomous_within_sandbox`, no review
+  claim), and since the m4 job mounts the gateway key the legs that spend a
+  real turn **measure** on CI rather than reporting an environment gap:
+  `e2e/m4/e2e_m4_exit.py` composes `compose.m4-llm.yml` on top of its three
+  files whenever `COMMUNICATION_LLM_API_KEY_HOST_FILE` names a readable file
+  (it prints one line naming the composed layers — never the key), which
+  gives `worker-a`/`worker-b` `COMMUNICATION_PI_API_KEY_FILE` +
+  `COMMUNICATION_PI_BASE_URL`/`_MODEL` and the `model.chat` endpoint, and the
+  two serve replicas their assistant triple. The legs this turned from GAP to
+  measurement: § 7.1 **C1c**/C1's cross-variant key set, **C2a**, **C4e**,
+  **C9g**, **C7d**'s transcript half (the agent variant's journaled
+  `conversation_turns.prompt`), **C10c** (a real `model.chat` reviewer arm),
+  **C11**'s agent arm, and § 7.2 **W2**/**W3**.
+  What the credential does NOT change, stated plainly:
+  - **The local path.** A laptop with no readable key file keeps the 3-file
+    stack, and launcher pi then dies at `session/new` -32000 `Authentication
+    required`. The driver still GAPs there — naming `compose.m4-llm.yml`, the
+    variable that would have composed it, and the fact that on the runners the
+    same refusal is a **FAIL**, not a GAP. Composing the layer is the only
+    branch where that refusal may not be gap-worded.
+  - **A real model is not deterministic.** § 7.1 C1g expects it: the twin's
+    two-iteration loop is the loop's ledger witness, and an agent loop that
+    finishes in one iteration leaves that run's iteration-2 rows genuinely
+    unmeasurable (the twin arm above still measures).
+  - **Windows are the model's, not the harness's.** The lab model is a
+    reasoning model (~10-60 s per turn, and it thinks before it streams), so
+    the legs that wait for a first streamed transcript row (`C4E_FIRST_CHUNK_S`),
+    for a gate to park (`W3_GATE_WAIT_S`), for two sequential `model.chat`
+    nodes (`C10C_ARM_WAIT_S`) or for C11's single `/plan` turn
+    (`C11_AGENT_RUN_CAP_S`) are sized for that. A truncated `model.chat`
+    completion is also why C10c names a 1200-token budget with
+    `reasoningEffort: low` rather than the old 200.
+  - **github-loop / emulator**: both already write the same key file, and their
+    agent legs run on the lab stack's own `compose.real.yml`, so their launcher
+    story is theirs to report (see their job sections below) — this bullet is
+    about the **m4 exit stack**, which now carries its own model layer.
   - **lab-e2e**: `home-cluster` step 5, `m5-agents-schedules` and
     `issue2-conversations` create/assert profiles on the **claude** launcher
     through the UI itself (hardcoded in those specs, outside this workflow's
     launcher knob) — those legs still answer with the adapter's own
     "Authentication required" on a runner with an empty `${HOME}/.claude`.
-  Making pi runnable is a product decision (a verified prompting mode for
-  `pi-acp`, or an ADR relaxing ADR-0019 D6 for never-asks launchers) — not
+  Making pi run under a *prompting* mode remains a product decision (a
+  verified prompting mode for `pi-acp`, or an ADR relaxing ADR-0019 D6) — not
   something CI may fake. Porting the Claude legs instead would need an
   operator-provided non-interactive credential (a `claude setup-token` file,
   ACP.md — the worker already takes `COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE`)
   as a third secret; explicitly NOT taken this round.
 - **`compose.real.yml` is part of the lab-up stack** (assistant + model.chat
   + the pi launcher reach the gateway with the secret above), exactly like
-  the host's `lab_reset.sh`. The m4 exit driver still brings its own 3-file
-  stack up with `--up`, exactly like `accept_run.sh` did.
+  the host's `lab_reset.sh`. The m4 exit driver brings its own stack up with
+  `--up` on three files plus `compose.m4-llm.yml` **only when a readable key
+  file is named** — so `m4.out`'s first lines and the worker container's own
+  compose `config_files` label (which C10c reads) always agree on which stack
+  actually ran.
 - **Sandbox enforcement** is whatever the runner kernel offers (the
   ubuntu-24.04 line is Landlock ABI v6); `docs/compatibility/SANDBOX.md`
   rows claimed on other kernels are not re-observed here.

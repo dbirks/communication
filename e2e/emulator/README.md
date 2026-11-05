@@ -420,7 +420,16 @@ UI to show what the API serves, or an honest empty state.
   workflow, arms a labeled issue trigger on `server` (the server REFUSES
   one on `web`: `not_a_github_repository`, and that refusal is exactly the
   List view's asserted OPEN ISSUES state) and seeds one repo-bound chat
-  (ADR-0067). Seeds resolve-or-create by their pass-stamped slug/name/label:
+  (ADR-0067). `server`'s tracker read is AUTHENTICATED on Actions: when the job
+  exports `E2E_GITHUB_READ_TOKEN_FILE` (a mode-600 file holding the run's
+  `GITHUB_TOKEN`), `github-read-credential.ts` attaches it to that row as an
+  ADR-0061 `integration_broker` credential — the same knob
+  `e2e/tests/m5-issue-run.spec.ts` uses — so the rcn-3b ISSUES lane is not at
+  the mercy of the anonymous 60-requests/hour budget the runner's egress IP
+  shares; unset (every local run) keeps today's anonymous read. Either way the
+  token value goes only into the secret's create/rotate body — never argv, a
+  log line, a screenshot or `results.json`. Seeds resolve-or-create by their
+  pass-stamped slug/name/label:
   Playwright restarts the worker after a serial-group failure, and a fresh
   process must reuse the dead one's rows, never 409 on them. The journeys:
   **rcn-3c** — the one sidebar expanded, the ⋯ project menu, the collapse to

@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import e2e_m4_exit as drv  # noqa: E402  (the module object, for the psql stub below)
 from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     SEED_PIPELINE_YAML,
     _SNAP_SHAPE,
@@ -28,10 +29,15 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w8_milestone_verdicts,
     w8_redaction_verdict,
     w8_render_verdicts,
+    w9_approval_404_verdicts,
+    w9_approval_rows,
+    w9_approval_sql,
     w9_console_verdict,
     w9_leak_verdicts,
+    w9_membership_read,
     w9_not_found,
-    w9_outsider_verdict,
+    w9_outsider_ledger_verdicts,
+    w9_run_approval_sql,
     w9_sse_verdict,
     w9_state_verdicts,
     w10_continuity_verdicts,
@@ -836,27 +842,154 @@ def test_w9_outsider_verdicts():
 
 
 def test_w9_outsider_observer_arm():
-    """§ 7.2 W9 names its observer "carol (project B only)" while § 7.1 C9d makes
-    carol an M4 maintainer; seed.sh step 2b provisions the ROLE as a second identity
-    (erin, member of manifest.project_b only). The observer arm is a GAP in both
-    worlds — it never reports a PASS for a carol who is not project-B-only."""
-    label, ok, why = w9_outsider_verdict("maintainer", False, outsider="erin",
-                                        outsider_m4_role="",
-                                        outsider_project_b_role="maintainer")
-    assert ok is None, "the row's literal name (carol) is still not the observer"
-    assert "project B only" in label and "C9d" in why, (label, why)
-    assert "'erin'" in why and "no row" in why, why
-    assert "org admin=False" in why, why
-    # no seeded project-B-only membership: the arms fall back to a bare IdP login
-    label, ok, why = w9_outsider_verdict("maintainer", False, outsider="erin",
-                                        outsider_m4_role=None,
-                                        outsider_project_b_role=None)
-    assert ok is None and "the seed gap" in why, (label, why)
-    # an outsider who DOES hold an M4 row can never stand in for the row's outsider
-    label, ok, why = w9_outsider_verdict("maintainer", False, outsider="erin",
-                                        outsider_m4_role="contributor",
-                                        outsider_project_b_role="maintainer")
-    assert ok is None and "the seed gap" in why, (label, why)
+    """§ 7.2 W9's observer, MEASURED (ADR-0075). The row used to name carol, whom
+    § 7.1 C9d books as an M4 maintainer (she and dan race one CAS decision), so the
+    arm could only GAP on its own literal. seed.sh step 2b provisions the row's role as
+    a dedicated identity — erin, a member of manifest.project_b and of nothing else —
+    and the arm now reads her three ledger facts and PASSes on them. An unreadable
+    membership read GAPs the arm it belongs to; it never reads as an absence."""
+    seeded = {"project_b_role": "maintainer", "m4_role": "",
+              "read_project_b": True, "read_m4": True, "is_org_admin": False}
+    v = w9_outsider_ledger_verdicts(seeded)
+    assert one(v, "holds a role on the OTHER project") is True, v
+    assert one(v, "holds NO membership row on the M4 project") is True, v
+    assert one(v, "is not an org admin") is True, v
+    assert one(v, "the seeded project-B-only identity") is True, v
+    assert "C9d" in one(v, "the seeded project-B-only identity", detail=True)
+    assert any("step 2b" in l for l, _o, _d in v), \
+        "the row names where the identity comes from: " + str([l for l, _o, _d in v])
+
+    # an org admin sees every project (internal/authz CanView): the observer cannot be
+    # her, and the fourth row (the substitution) is NOT emitted on a false third
+    admin = dict(seeded, is_org_admin=True)
+    v = w9_outsider_ledger_verdicts(admin)
+    assert one(v, "is not an org admin") is False, v
+    assert [l for l, _o, _d in v if "substitution" in l or "project-B-only identity" in l] == [], v
+
+    # a ledger that will not answer GAPs the arm instead of proving an absence
+    unreadable = {"project_b_role": None, "m4_role": None,
+                  "read_project_b": False, "read_m4": False, "is_org_admin": False}
+    v = w9_outsider_ledger_verdicts(unreadable)
+    assert one(v, "holds a role on the OTHER project") is None, v
+    assert one(v, "holds NO membership row on the M4 project") is None, v
+    assert "(unreadable)" in one(v, "holds NO membership row", detail=True), v
+
+    # erin holding an M4 row at all destroys the outsider (never a PASS on a name)
+    v = w9_outsider_ledger_verdicts(dict(seeded, m4_role="contributor"))
+    assert one(v, "holds NO membership row on the M4 project") is False, v
+    assert [l for l, _o, _d in v if "project-B-only identity" in l] == [], v
+    # and no project B membership either: the seed did not provision the role
+    v = w9_outsider_ledger_verdicts(dict(seeded, project_b_role=""))
+    assert one(v, "holds a role on the OTHER project") is False, v
+
+
+def test_w9_membership_read_distinguishes_absence_from_a_broken_read():
+    """The read row W9's whole outsider claim rests on. c9_role_of answers BOTH 'no
+    row' and 'psql failed' with '' — an absence may never be inferred from a hiccup."""
+    real = drv.psql
+    try:
+        drv.psql = lambda sql, *a, **k: "maintainer\n"
+        assert w9_membership_read("p", "u", "erin on the M4 project") == {
+            "read": True, "role": "maintainer", "label": "erin on the M4 project",
+            "why": "erin on the M4 project: role 'maintainer'"}
+        drv.psql = lambda sql, *a, **k: "\n"
+        got = w9_membership_read("p", "u", "erin on the M4 project")
+        assert got["read"] is True and got["role"] == "", got
+        assert "no membership row" in got["why"], got
+        drv.psql = lambda sql, *a, **k: (_ for _ in ()).throw(RuntimeError("connection refused"))
+        got = w9_membership_read("p", "u", "erin")
+        assert got["read"] is False and got["role"] is None, got
+        assert "connection refused" in got["why"], got
+        for blank in (("", "u"), ("p", ""), ("", ""), (None, "u")):
+            assert w9_membership_read(*blank)["read"] is False, blank
+    finally:
+        drv.psql = real
+
+
+def test_w9_approval_arm_is_located_or_parked_and_never_assumed():
+    """live's core-b shard GAPped 'no approval on M4 project for the outsider to
+    reach': the leg asked only for the manifest's own run, which is terminal by the
+    time the W legs run (and a DECIDED gate clears PendingApproval — C11's note). C11
+    and C14 publish approvals on the M4 project in this same shard, so the arm reads
+    for one and parks a probe run only when the ledger holds none."""
+    sql = w9_approval_sql("proj-m4", "run-deep-linked")
+    assert "FROM approval_requests" in sql and "project_id = 'proj-m4'" in sql, sql
+    assert "ORDER BY (run_id = 'run-deep-linked') DESC" in sql, sql
+    assert "(state = 'pending') DESC" in sql, "a pending gate outranks a decided one"
+    assert "'" in w9_run_approval_sql("run-1") and "run-1" in w9_run_approval_sql("run-1")
+    rows = w9_approval_rows("ar-1|run-a\nar-2|run-b\nragged\n|\n")
+    assert rows == [{"approval_id": "ar-1", "run_id": "run-a"},
+                    {"approval_id": "ar-2", "run_id": "run-b"}], rows
+    assert w9_approval_rows("") == [] and w9_approval_rows(None) == []
+
+    # located: the arm is measured against the real row
+    v = w9_approval_404_verdicts("ar-1", found=True, status=404, located=True)
+    assert one(v, "REAL approval") is True and "LOCATED" in one(v, "REAL approval",
+                                                                detail=True), v
+    assert one(v, "approval page draws a not-found state") is True, v
+    assert one(v, "answers 404 for that approval") is True, v
+
+    # parked: same measurement, and 'the leg put its run away' is GRADED on the status
+    # the leg read back — a promise printed from a finally is not a measurement
+    v = w9_approval_404_verdicts("ar-9", found=True, status=404, located=False,
+                                 parked_run="run-parked", parked_status="cancelled")
+    assert "PARKED" in one(v, "REAL approval", detail=True), v
+    assert one(v, "cancelled again") is True, v
+    v = w9_approval_404_verdicts("ar-9", found=True, status=404, located=False,
+                                 parked_run="run-parked", parked_status="running")
+    assert one(v, "cancelled again") is False, v
+    v = w9_approval_404_verdicts("ar-9", found=True, status=404, located=False,
+                                 parked_run="run-parked", parked_status="")
+    assert one(v, "cancelled again") is False, \
+        "a cancel whose status never read back is not a pass"
+    # a LOCATED approval cost the leg nothing to park, so there is no cancel row at all
+    v = w9_approval_404_verdicts("ar-1", found=True, status=404, located=True)
+    assert [l for l, _o, _d in v if "cancelled again" in l] == [], v
+
+    # a page that drew the approval is the row's leak, told LOUD
+    v = w9_approval_404_verdicts("ar-1", found=False, status=200, located=True)
+    assert one(v, "approval page draws a not-found state") is False, v
+    assert one(v, "answers 404 for that approval") is False, v
+
+    # no approval anywhere: honest GAPs naming the reads, never a PASS on a nothing
+    v = w9_approval_404_verdicts("", why="no approval row exists on project p; the probe "
+                                        "run never left an approval row within 300s")
+    assert [ok for _l, ok, _d in v] == [None, None, None], v
+    assert all("probe run" in d for _l, _o, d in v[1:]), v
+    # an unrendered page is a GAP on that arm only — the located row still measures
+    v = w9_approval_404_verdicts("ar-1", found=None, status=404, located=True)
+    assert one(v, "REAL approval") is True and one(v, "approval page draws") is None, v
+
+
+def test_w9_leg_measures_its_observer_and_undoes_its_park():
+    """The gate, not only the algebra: the permanent GAP line is gone, the observer is
+    graded from the ledger, and every exit after the park cancels the probe run."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "e2e_m4_exit.py"), encoding="utf-8").read()
+    leg = src.split("def w9():")[1].split("\ndef w10(")[0]
+    pre = src.split("def w9():")[0]
+    assert 'gap("W9 carol-as-outsider arm"' not in leg, "the permanent GAP came back"
+    assert "w9_outsider_ledger_verdicts(" in leg and "w9_locate_or_park_approval(" in leg
+    assert "w9_approval_404_verdicts(" in leg
+    assert "w9_membership_read(" in leg, "the absence must be read where an unreadable " \
+                                        "ledger cannot look like an absence"
+    assert "c9_role_of(project_id, erin_id)" not in leg, \
+        "c9_role_of answers a failed read and an absence with the same ''"
+    for needle in ("def w9_membership_read(", "def w9_approval_sql(", "def w9_run_approval_sql(",
+                   "def w9_locate_or_park_approval(", "def w9_cancel_parked("):
+        assert needle in pre, f"{needle} is missing from the module"
+    assert leg.index("w9_locate_or_park_approval(") > leg.index("CTX[\"alice\"] = alice"), \
+        "the probe run is posted through the public API, which needs a session"
+    # every early exit AFTER the park cancels the run (§ 7.2: one run, one cancel)
+    for tail in ("there is no outsider to render the deep links as",
+                 "there is no outsider to render", "no identity without M4-project access",
+                 'gap("W9 browser arms"'):
+        i = leg.find(tail)
+        assert i > 0, tail
+        assert "w9_cancel_parked(parked_run)" in leg[max(0, i - 400):i], tail
+    assert "w9_cancel_parked(parked_run)" in leg, "the finally still undoes the park"
+    assert "parked_status = w9_cancel_parked(parked_run)" in leg, \
+        "and the cancel is graded on a status read back, not promised"
 
 
 def test_snapshot_spill_guard():
@@ -2616,6 +2749,9 @@ if __name__ == "__main__":
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,
+               test_w9_membership_read_distinguishes_absence_from_a_broken_read,
+               test_w9_approval_arm_is_located_or_parked_and_never_assumed,
+               test_w9_leg_measures_its_observer_and_undoes_its_park,
                test_w2_live_and_order_verdicts, test_w2_turn_gap_and_no_gap,
                test_w2_iteration_verdicts, test_w_strip_cells_takes_only_the_strip,
                test_w2_strip_verdict_is_read_on_the_view_that_has_the_strip,

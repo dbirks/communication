@@ -235,12 +235,18 @@ class SkipAttribution(unittest.TestCase):
         """live4/C10.out:54's other half: the arm may only be graded on a row read
         WHILE the scope was waiting. A post-mortem row GAPs; it never becomes the
         routing FAIL."""
+        # ADR-0075: the vocabulary is 00005's node_executions CHECK, not invented
+        # names. `ready` is what an until scope actually sits at while its body's
+        # attempt is being retried — live4 measured that row and threw it away.
         for waiting in ({"status": "running", "outcome": None},
-                        {"status": "waiting_human", "outcome": "-"},
-                        {"status": "leased", "outcome": ""}):
+                        {"status": "ready", "outcome": "-"},
+                        {"status": "pending", "outcome": ""},
+                        {"status": "leased", "outcome": ""},
+                        {"status": "waiting", "outcome": None}):
             self.assertEqual(m.c10_live_scope(waiting), waiting, str(waiting))
         for late in ({"status": "succeeded", "outcome": "approved"},
                      {"status": "failed", "outcome": None, "failed_cause": "child_failed"},
+                     {"status": "interrupted", "outcome": None},
                      {"status": "running", "outcome": "approved"}, {}, None):
             self.assertIsNone(m.c10_live_scope(late), str(late))
 
@@ -294,10 +300,20 @@ class Retry(unittest.TestCase):
         v = m.c10_retry_verdicts(self._rows(ec="agent_error"))
         self.assertFalse(one(v, "EVERY failed reviewer attempt"))
 
-    def test_retry_getting_it_right_gaps_when_the_fixture_cannot_flip(self):
+    def test_retry_getting_it_right_gaps_only_until_the_authored_arm_grades_it(self):
+        """The shipped fixture cannot flip its answer (seed.sh:306 says it answers
+        byte-identically every attempt) and it must not be edited — so ADR-0075
+        authors a marker-aware reviewer revision for this arm. Until that arm has
+        produced a chain the row GAPs and NAMES the authored arm; once it has, the
+        row is graded there and is never tallied twice from here."""
         v = m.c10_retry_verdicts(self._rows())
         self.assertIsNone(one(v, "CONTINUES on a valid reply"))
-        self.assertIn("make_fixture_repo.sh", detail(v, "CONTINUES on a valid reply"))
+        d = detail(v, "CONTINUES on a valid reply")
+        self.assertIn("make_fixture_repo.sh", d)
+        self.assertIn("ADR-0075", d)
+        self.assertEqual([], [l for l, _o, _dd in
+                              m.c10_retry_verdicts(self._rows(), tilt_ran=True)
+                              if "CONTINUES on a valid reply" in l])
 
     def test_retry_getting_it_right_passes_on_a_real_success(self):
         v = m.c10_retry_verdicts(self._rows(n=2, last=True))
@@ -453,9 +469,19 @@ class C10cScratchDoc(unittest.TestCase):
             self.assertEqual(node["kind"], "model.chat")
             self.assertEqual(node["retry"], {"maxAttempts": 1})
             cfg = node["config"]
-            self.assertEqual(cfg["model"], "qwen3-8-27b")
+            self.assertEqual(cfg["model"], m.C10C_MODEL,
+                             "the default arm names the configured gateway model; "
+                             "c10c_chat_model re-picks it off the WORKER's allowlist "
+                             "when the configured one is not listed (the gateway "
+                             "retired qwen3-8-27b — a literal here is a stale claim)")
             self.assertEqual(cfg["temperature"], 0)
-            self.assertEqual(cfg["maxTokens"], 200)
+            self.assertGreaterEqual(cfg["maxTokens"], m.C10C_MAX_TOKENS,
+                                    "a reasoning model spends part of the budget thinking: "
+                                    "200 tokens truncated the completion, and a truncated "
+                                    "reply fails for a reason that is NOT the schema")
+            self.assertEqual(cfg["reasoningEffort"], m.C10C_REASONING_EFFORT,
+                             "ADR-0041's knob keeps the thinking bounded (the endpoint "
+                             "may ignore it; the worker only sends it when set)")
             self.assertEqual(cfg["responseSchema"], {"type": "object"},
                              "the PERMISSIVE wire constraint: the endpoint only has to "
                              "produce an object, so the instructed reply is producible")
@@ -851,6 +877,375 @@ class C10cLabCause(unittest.TestCase):
         self.assertIn("c10c_precondition_cause", pre)
         self.assertIn("c14_container_compose_labels(WORKER_A)", pre)
 
+
+
+class C10bLiveVocabulary(unittest.TestCase):
+    """§ 7.1 C10b's 'the ledger read shows the scope still waiting on the attempt',
+    with the vocabulary read off 00005's OWN node_executions CHECK instead of
+    invented (ADR-0075). live4/C10.out:41 had already MEASURED a `ready` until-scope
+    row and threw it away as 'already closed' because the old tuple did not name
+    'ready' — a GAP on a row the driver was holding."""
+
+    MIGRATION = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                             os.pardir, "internal", "store", "postgres", "migrations",
+                             "00005_m4_pipelines.sql")
+
+    def read(self):
+        with open(self.MIGRATION, encoding="utf-8") as fh:
+            return fh.read()
+
+    def _node_statuses(self):
+        """(terminal, non-terminal) straight out of 00005: the column CHECK names every
+        status the table can hold, `node_executions_terminal_timestamped` names which
+        of them are terminal. The live set is the difference — exactly what § 7.1
+        C10b's 'still waiting on the attempt' needs."""
+        src = self.read()
+        held = re.search(r"status\s+text\s+NOT NULL DEFAULT 'pending'\s*\n\s*"
+                         r"CHECK \(status IN \(([^)]*)\)\)", src)
+        term = re.search(r"CONSTRAINT node_executions_terminal_timestamped\s+CHECK "
+                         r"\(status NOT IN \(([^)]*)\)", src)
+        self.assertIsNotNone(held, "no node_executions status IN (...) column CHECK")
+        self.assertIsNotNone(term, "no node_executions_terminal_timestamped CONSTRAINT")
+        split = lambda blob: [x.strip().strip("'") for x in blob.split(",") if x.strip()]
+        all_st, terminal = split(held.group(1)), split(term.group(1))
+        return terminal, [x for x in all_st if x not in terminal]
+
+    def test_the_vocabulary_IS_the_migrations_check(self):
+        term, live = self._node_statuses()
+        self.assertEqual(sorted(live), sorted(m.C10_WAITING),
+                         "C10b's live set drifted from the ledger's non-terminal vocabulary")
+        self.assertEqual(sorted(term), sorted(m.C10_TERMINAL_NODE_STATES),
+                         "C10b's terminal set drifted from the ledger's terminal vocabulary")
+        self.assertEqual(set(live) & set(term), set(), "a status cannot be both")
+        self.assertEqual(["pending", "ready", "leased", "running", "waiting"], live,
+                         "00005's own non-terminal vocabulary moved — so must the arm")
+        self.assertIn("ready", m.C10_WAITING, "the status live4 measured and discarded")
+
+    def test_the_c4c_amendment_quotes_the_real_constraint(self):
+        """ADR-0075's C4c half rests on ONE sentence of schema. If it ever stops being
+        the schema's sentence, the amendment has to be re-read, not re-quoted."""
+        src = " ".join(self.read().split())
+        self.assertIn("CONSTRAINT attempts_terminal_timestamped CHECK ((status IN "
+                      "('succeeded','failed', 'cancelled','interrupted')) = "
+                      "(finished_at IS NOT NULL))", src)
+
+    def test_ready_is_a_live_sample(self):
+        """The exact row live4 discarded: an until scope sits at `ready` with no
+        outcome while its body's attempt is being retried."""
+        row = {"key": m.C10_UNTIL_KEY, "status": "ready", "outcome": "-"}
+        self.assertEqual(m.c10_live_scope(row), row)
+        self.assertEqual(m.c10_live_scope_why(row), "")
+        for st, _t in [("pending", 0), ("leased", 0), ("running", 0), ("waiting", 0)]:
+            self.assertEqual(m.c10_live_scope({"status": st, "outcome": None}),
+                             {"status": st, "outcome": None}, st)
+
+    def test_a_terminal_or_outcome_carrying_row_is_not_a_sample_and_says_why(self):
+        for row, needle in (({"status": "succeeded", "outcome": "approved"}, "terminal"),
+                            ({"status": "failed", "outcome": None,
+                              "failed_cause": "child_failed"}, "terminal"),
+                            ({"status": "running", "outcome": "approved"}, "outcome")):
+            self.assertIsNone(m.c10_live_scope(row), str(row))
+            self.assertIn(needle, m.c10_live_scope_why(row), str(row))
+
+    def test_an_unknown_status_is_never_quietly_a_live_sample(self):
+        """A run status ('waiting_human') is NOT a node_executions status, and the
+        old tuple mixed the two vocabularies. An unrecognised row says so."""
+        for st in ("waiting_human", "queued", "", "succeeded_elsewhere"):
+            self.assertIsNone(m.c10_live_scope({"status": st, "outcome": None}), st)
+            self.assertIn("no vocabulary", m.c10_live_scope_why({"status": st,
+                                                                 "outcome": None}), st)
+        self.assertIn("did not read", m.c10_live_scope_why(None))
+        self.assertIn("did not read", m.c10_live_scope_why({}))
+
+
+class C10bTiltArm(unittest.TestCase):
+    """ADR-0075's authored retry arm: the seed twin's shipped reviewer answers
+    byte-identically on EVERY attempt (docs/compatibility/probes/m4/seed.sh:306 says
+    so), and make_fixture_repo.sh must not be edited — so the gate authors its OWN
+    reviewer revision whose step counts its attempts in the run workspace's scratch
+    and answers malformed once, then valid. These tests prove the authoring is the
+    one-node change it claims to be and that the verdict algebra fails loudly."""
+
+    TWIN = {
+        "apiVersion": "communication.dev/v1alpha1", "kind": "Pipeline",
+        "metadata": {"name": "feature-development-deterministic"},
+        "spec": {"nodes": [
+            {"id": "plan", "kind": "process.exec",
+             "config": {"executable": "m4-exit.sh", "args": ["plan"]}},
+            {"id": "build_until_verified", "kind": "until",
+             "config": {"maxIterations": 4, "carryForward": True,
+                        "passWhen": "nodes.review.outputs.approved == true",
+                        "body": {"nodes": [
+                            {"id": "implement", "kind": "process.exec",
+                             "config": {"executable": "m4-exit.sh", "args": ["implement"]}},
+                            {"id": "review", "kind": "process.exec",
+                             "config": {"executable": "m4-exit.sh", "args": ["review"]},
+                             "retry": {"maxAttempts": 2,
+                                       "backoff": {"baseSeconds": 5, "multiplier": 2,
+                                                   "maxSeconds": 60, "jitter": True},
+                                       "retriableErrors": ["infra", "interrupted"]},
+                             "outputs": {"type": "object",
+                                         "required": ["approved", "evidence"],
+                                         "properties": {"approved": {"type": "boolean"},
+                                                        "evidence": {"type": "string"}}}},
+                        ]}}},
+        ]},
+    }
+
+    def twin(self):
+        return yaml.safe_load(yaml.safe_dump(self.TWIN, indent=4, sort_keys=True))
+
+    def review(self, doc):
+        return doc["spec"]["nodes"][1]["config"]["body"]["nodes"][1]
+
+    def test_only_the_reviewers_step_cwd_retry_and_the_bound_move(self):
+        base = self.twin()
+        frozen = yaml.safe_load(yaml.safe_dump(base))
+        sp = m.c10b_tilt_doc(base, "m4x-c10-tilt-a")
+        self.assertEqual(sp["missing"], [], str(sp["missing"]))
+        self.assertEqual(frozen, base, "the author must not mutate the caller's document")
+        want = yaml.safe_load(yaml.safe_dump(frozen))
+        want["metadata"]["name"] = "m4x-c10-tilt-a"
+        want["spec"]["nodes"][1]["config"]["maxIterations"] = 3
+        node = want["spec"]["nodes"][1]["config"]["body"]["nodes"][1]
+        node["config"]["executable"] = m.C10B_TILT_STEP
+        node["config"]["args"] = ["-c", m.c10b_tilt_script()]
+        node["config"]["cwd"] = m.C10B_TILT_CWD
+        # The backoff is WIDENED in place: the seed's own shape survives with its
+        # window pulled out, so a diff of the document shows the retry's timing and
+        # nothing else about the retry policy moving.
+        node["retry"]["backoff"] = {"baseSeconds": m.C10B_TILT_BACKOFF_S, "multiplier": 1,
+                                   "maxSeconds": m.C10B_TILT_BACKOFF_S, "jitter": False}
+        node["retry"]["maxAttempts"] = m.C10B_TILT_MAX_ATTEMPTS
+        node["retry"]["retriableErrors"] = ["infra", "interrupted", "invalid_output"]
+        # Pinned, not inherited: a retry that restored a checkpoint would wipe the
+        # scratch counter and the reviewer would answer malformed forever.
+        node["retry"]["workspacePolicy"] = "continue_workspace"
+        self.assertEqual(want, yaml.safe_load(sp["doc"]),
+                         "the authored arm moved a node other than the reviewer's step, "
+                         "cwd and backoff (or the loop bound)")
+        self.assertNotIn("m4-exit.sh", sp["doc"].split("id: review")[1].split("id: ")[0]
+                         .split("retry:")[0],
+                         "the reviewer's step is the authored one, not the shipped helper")
+
+    def test_the_authored_step_counts_once_and_flips_its_answer(self):
+        script = m.c10b_tilt_script()
+        self.assertIn(m.C10B_TILT_MARKER, script)
+        self.assertIn('if [ "$tries" -le 1 ]', script)
+        self.assertIn(m.C10B_MALFORMED_REPLY, script)
+        self.assertIn(m.C10B_VALID_REPLY, script)
+        self.assertIn('"$tries" -le 1', script)
+        # The malformed answer must be the § 7.1 C10a literal: a STRING for approved.
+        self.assertIn('"approved": "yes"', m.C10B_MALFORMED_REPLY)
+        self.assertIn('"approved": true', m.C10B_VALID_REPLY)
+        self.assertIsNone(re.search(r"(^|[;&|]\s*)(rm|unlink)(\s|$)", script),
+                          "the reviewer's step may count a file, never delete one")
+        self.assertNotIn("$(", script.replace("$((", "<arith>("))
+        self.assertNotIn("`", script)
+        self.assertIn("$((", script), "the counter is shell arithmetic, not a subshell call"
+
+    def test_the_author_refuses_a_twin_it_cannot_tilt(self):
+        for mutate, needle in (
+                (lambda d: d["spec"]["nodes"][1]["config"].pop("maxIterations"),
+                 "maxIterations"),
+                (lambda d: d["spec"]["nodes"][1]["config"].__setitem__("maxIterations", 2),
+                 "iteration 2"),
+                (lambda d: self.review(d)["outputs"]["properties"]["approved"].update(
+                    {"type": "string"}), "boolean"),
+                (lambda d: d["spec"]["nodes"][1]["config"]["body"]["nodes"].pop(1),
+                 "review node")):
+            doc = self.twin()
+            mutate(doc)
+            sp = m.c10b_tilt_doc(doc, "m4x-c10-tilt-r")
+            self.assertIsNone(sp["doc"], str(mutate))
+            self.assertTrue(any(needle in x for x in sp["missing"]),
+                            f"{needle}: {sp['missing']}")
+            self.assertFalse(any(ok is True for _l, ok, _d in m.c10b_tilt_doc_verdicts(sp)),
+                             str(m.c10b_tilt_doc_verdicts(sp)))
+
+    def test_the_honesty_gate_passes_only_the_authored_shape(self):
+        sp = m.c10b_tilt_doc(self.twin(), "m4x-c10-tilt-b")
+        v = m.c10b_tilt_doc_verdicts(sp)
+        self.assertTrue(all(ok is True for _l, ok, _d in v), str(v))
+        self.assertTrue(any("approved" in l and "BOOLEAN" in l for l, _o, _d in v), str(v))
+        self.assertTrue(any("continue_workspace" in l for l, _o, _d in v),
+                        "the counter's survival is a graded claim, not an assumption")
+        self.assertTrue(any(m.C10B_TILT_MARKER in l for l, _o, _d in v), str(v))
+
+    def test_attempt_chain_helper(self):
+        ok, first, right, n = m.c10b_attempt_chain_ok(
+            [{"attempt_number": 1, "status": "failed", "error_class": "invalid_output"},
+             {"attempt_number": 2, "status": "succeeded", "error_class": "-"}])
+        self.assertEqual((ok, first, right, n), (True, True, True, 2))
+        self.assertEqual(m.c10b_attempt_chain_ok([])[:2], (False, False))
+        self.assertEqual(m.c10b_attempt_chain_ok(None)[:2], (False, False))
+        self.assertEqual(m.c10b_attempt_chain_ok(
+            [{"attempt_number": 1, "status": "failed", "error_class": "agent_error"}])[:3],
+            (True, False, False))
+
+    CHAIN = [{"attempt_number": 1, "status": "failed", "error_class": "invalid_output"},
+             {"attempt_number": 2, "status": "succeeded", "error_class": "-"}]
+    ITERS = [{"n": 1, "node": "review", "status": "succeeded"},
+             {"n": 2, "node": "implement", "status": "succeeded"}]
+    LIVE = {"status": "ready", "outcome": "-"}
+
+    def test_the_arm_passes_on_the_measured_shape(self):
+        v = m.c10b_tilt_verdicts(chain=self.CHAIN, live=self.LIVE, live_why="",
+                                iter_rows=self.ITERS, run_st="completed", completed=True)
+        self.assertNotIn(False, [ok for _l, ok, _d in v], str(v))
+        self.assertTrue(one(v, "FIRST attempt closed failed|invalid_output"))
+        self.assertTrue(one(v, "CONTINUES on a valid reply"))
+        self.assertTrue(one(v, "mid-failure sample"))
+
+    def test_the_arm_fails_when_the_marker_never_flipped(self):
+        v = m.c10b_tilt_verdicts(
+            chain=[{"attempt_number": 1, "status": "failed", "error_class": "invalid_output"},
+                   {"attempt_number": 2, "status": "failed", "error_class": "invalid_output"}],
+            live=self.LIVE, live_why="", iter_rows=[{"n": 1, "node": "review",
+                                                     "status": "failed"}],
+            run_st="failed", completed=False)
+        self.assertIs(False, one(v, "CONTINUES on a valid reply"))
+        self.assertIs(False, one(v, "node.attempt.completed reached"))
+
+    def test_the_arm_fails_when_a_reply_was_accepted_while_nothing_waited(self):
+        v = m.c10b_tilt_verdicts(
+            chain=self.CHAIN, live={"status": "succeeded", "outcome": "approved"},
+            live_why="the scope row read back terminal ('succeeded') — a post-mortem row",
+            iter_rows=self.ITERS, run_st="completed", completed=True)
+        self.assertIs(False, one(v, "mid-failure sample"))
+        self.assertIn("post-mortem", detail(v, "mid-failure sample"),
+                      "the row that FAILs carries the closed window — no second line")
+
+    def test_the_arm_gaps_only_on_rows_that_never_arrived(self):
+        v = m.c10b_tilt_verdicts(chain=[], live=None,
+                                live_why="the tilt run reached 'failed' before a live "
+                                         "mid-failure scope row could be read",
+                                iter_rows=[], run_st="", completed=None)
+        self.assertIsNone(one(v, "FIRST attempt closed"))
+        self.assertIsNone(one(v, "CONTINUES on a valid reply"))
+        self.assertIsNone(one(v, "mid-failure sample"))
+        self.assertIn("reached 'failed' before a live", detail(v, "mid-failure sample"),
+                      "the GAP says the window it could not land")
+        self.assertIsNone(one(v, "node.attempt.completed reached"))
+        self.assertEqual([], [l for l, _o, _d in v if "window that closed" in l],
+                         "one claim, one row: the why rides in the row it explains")
+
+    def test_an_unpublished_arm_never_passes_the_retry_claim(self):
+        v = m.c10b_tilt_verdicts(chain=self.CHAIN, live=self.LIVE, iter_rows=self.ITERS,
+                                 run_st="completed", completed=True, published=False)
+        self.assertIsNone(one(v, "CONTINUES on a valid reply"))
+        self.assertEqual(1, len(v), str(v))
+
+
+class C10bRetryHandoff(unittest.TestCase):
+    """The malformed twin's chain still carries C10a; the 'retry gets it right' claim
+    moves to the authored arm (ADR-0075) and must be graded ONCE."""
+    CHAIN = [{"attempt_number": 1, "status": "failed", "error_class": "invalid_output"},
+             {"attempt_number": 2, "status": "failed", "error_class": "invalid_output"}]
+
+    def test_all_malformed_attempts_gap_and_name_the_authored_arm(self):
+        v = m.c10_retry_verdicts(self.CHAIN, retry_events=[{"error_class": "invalid_output"}])
+        self.assertIsNone(one(v, "CONTINUES on a valid reply"))
+        d = detail(v, "CONTINUES on a valid reply")
+        self.assertIn("ADR-0075", d)
+        self.assertIn("make_fixture_repo.sh", d)
+        self.assertIn("did not run", d)
+
+    def test_the_gap_is_not_printed_twice_when_the_authored_arm_graded_it(self):
+        v = m.c10_retry_verdicts(self.CHAIN, retry_events=[], tilt_ran=True,
+                                tilt_why="the tilt run reached 'failed' early")
+        self.assertEqual([], [l for l, _o, _d in v if "CONTINUES on a valid reply" in l],
+                         str(v))
+        self.assertTrue(one(v, "RETRIED per policy"), "the chain's own claims still grade")
+
+    def test_a_real_success_on_the_malformed_chain_still_passes_here(self):
+        chain = self.CHAIN[:1] + [{"attempt_number": 2, "status": "succeeded",
+                                   "error_class": "-"}]
+        v = m.c10_retry_verdicts(chain, tilt_ran=False)
+        self.assertTrue(one(v, "retry gets it RIGHT"))
+
+
+class C10bRoutingTakesTheAuthoredSample(unittest.TestCase):
+    """The routing claim ('the scope was STILL WAITING when the reply was rejected, so
+    `approved: \'yes\' == true` was never reached') is a statement about a WINDOW, and
+    the malformed twin's window is shipped-speed: live4/C10.out:41 sampled 420 s and
+    never landed a non-terminal row. ADR-0075's authored arm widens the retry backoff
+    and lands it — so the row is graded from that sample, SAYING where it came from,
+    instead of GAPping while an equally true row sits unused."""
+
+    FINAL = {"status": "failed", "outcome": "-", "failed_cause": "child_failed"}
+
+    def test_its_own_sample_still_wins(self):
+        v = m.c10_routing_verdicts(live={"status": "running", "outcome": None},
+                                   final=self.FINAL, run_status="failed",
+                                   tilt_live={"status": "ready", "outcome": "-"})
+        d = detail(v, "STILL WAITING")
+        self.assertTrue(one(v, "STILL WAITING"))
+        self.assertIn("the malformed twin's own sample", d, d)
+        self.assertIn("'running'", d)
+
+    def test_the_authored_sample_grads_the_row_when_the_twins_window_closed(self):
+        v = m.c10_routing_verdicts(live=None, live_why="the scope row read back terminal",
+                                   final=self.FINAL, run_status="failed",
+                                   tilt_live={"status": "ready", "outcome": "-"})
+        self.assertIs(True, one(v, "STILL WAITING"), str(v))
+        d = detail(v, "STILL WAITING")
+        self.assertIn("authored arm", d)
+        self.assertIn("ready", d)
+        self.assertIn("pending", d, "the row names the vocabulary it measured against")
+
+    def test_a_leak_on_the_authored_sample_is_still_a_fail(self):
+        v = m.c10_routing_verdicts(final=self.FINAL, run_status="failed",
+                                   tilt_live={"status": "succeeded", "outcome": "approved"})
+        self.assertIs(False, one(v, "STILL WAITING"), str(v))
+
+    def test_no_sample_from_either_side_gaps_naming_both_reasons(self):
+        v = m.c10_routing_verdicts(live=None, live_why="twin window closed", final=self.FINAL,
+                                   run_status="failed", tilt_live=None,
+                                   tilt_why="the tilt run reached 'failed' early")
+        self.assertIsNone(one(v, "STILL WAITING"), str(v))
+        d = detail(v, "STILL WAITING")
+        self.assertIn("twin window closed", d)
+        self.assertIn("tilt run reached", d)
+
+
+class DriverWiresTheRetryArm(unittest.TestCase):
+    """The gate, not just the algebra: the authored arm runs inside c10() and the
+    reason a sample closed rides to the GAP text."""
+
+    def source(self):
+        return open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+
+    def test_the_authored_arm_runs_before_the_rows_it_grads(self):
+        body = self.source().split("def c10():")[1].split("\ndef c11(")[0]
+        self.assertLess(body.index("c10b_retry_arm("), body.index("c10_routing_verdicts("),
+                        "the routing row takes the authored arm's mid-failure sample, so "
+                        "the arm has to have run first")
+        self.assertIn("tilt_live=tilt_live", body)
+        self.assertIn("tilt_why=tilt_why", body)
+        self.assertEqual(1, body.count("c10b_retry_arm("),
+                         "one authored arm per gate — a second chain would double the rows")
+
+    def test_c10_runs_the_authored_arm_and_hands_it_to_the_retry_verdicts(self):
+        body = self.source().split("def c10():")[1].split("\ndef c11(")[0]
+        self.assertIn("c10b_retry_arm(alice, admin, twin, src, suffix)", body)
+        self.assertIn("tilt_ran=tilt_ran, tilt_why=tilt_why", body)
+        self.assertLess(body.index("c10b_retry_arm("), body.index("c10_retry_verdicts("))
+
+    def test_the_sampler_returns_its_reason_and_the_gate_shows_it(self):
+        pre = self.source().split("def c10():")[0]
+        self.assertIn("def c10_sample_retry_backoff(", pre)
+        self.assertIn("def c10_sample_failing_scope(", pre)
+        body = self.source().split("def c10():")[1].split("\ndef c11(")[0]
+        self.assertIn("live, seen, live_why = c10_sample_failing_scope(", body)
+        self.assertIn('CTX["c10_sample_why"]', body)
+
+    def test_the_live_set_is_not_hardcoded_a_second_time(self):
+        src = self.source()
+        self.assertNotIn('"waiting_attempt"', src, "the invented node-status vocabulary "
+                                                  "must not come back")
+        self.assertIn("C10_TERMINAL_NODE_STATES", src)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

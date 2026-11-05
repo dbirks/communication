@@ -157,6 +157,107 @@ class Labels(unittest.TestCase):
             [{"network_enforced": True}], False), "truthfully"))
 
 
+class LabelsBothClasses(unittest.TestCase):
+    """C11b's truthfulness row after the arm PRODUCED the missing evidence class
+    (an agent-turn-profile attempt, whose sandbox does not enforce network). The
+    rows below are recorded in the shapes the real ledger yields — the twin's
+    command sandbox says true/'denied' (ADR-0026), the agent turn says false/'open'
+    (M3's standing SANDBOX.md row) — and every grading path is proven offline
+    before the runner ever measures it live."""
+    TWIN = ([{"network_enforced": True, "network": "denied", "verified": True,
+              "backend": "nono"}] * 7)
+    AGENT = [{"network_enforced": False, "network": "open", "verified": True,
+              "backend": "nono"}]
+
+    def graded(self, twin, agent, source="run 01a1 label-arm"):
+        rows = m.c11_sandbox_label_verdicts(twin, False, agent_turn_payloads=agent,
+                                            agent_turn_source=source)
+        return one(rows, "truthfully"), detail(rows, "truthfully")
+
+    def test_the_recorded_gap_case_now_passes_over_both_classes(self):
+        """Run 41983100425 printed GAP '7 row(s): 0 false / 7 true'. With the false
+        class produced in-lab the SAME true rows are graded — and pass — beside it."""
+        ok, d = self.graded(self.TWIN, self.AGENT)
+        self.assertIs(True, ok, d)
+        self.assertIn("BOTH classes measured", d)
+        self.assertIn("M3's SANDBOX.md row", d)
+
+    def test_an_agent_turn_row_claiming_enforcement_fails(self):
+        """true under the agent-turn profile is the dishonest label in the stream
+        (the profile never enforced anything) — FAIL, not GAP."""
+        ok, d = self.graded(self.TWIN, [{"network_enforced": True, "network": "denied",
+                                         "verified": True}])
+        self.assertIs(False, ok, d)
+        self.assertIn("does not enforce", d)
+
+    def test_a_true_row_without_its_denial_label_is_dishonest(self):
+        """EgressReport's invariant is the pairing: network_enforced=true must carry
+        denied/allowlisted:<hosts>. A bare true (or true beside 'open') claims an
+        enforcement the sandbox never said."""
+        for bad in ({"network_enforced": True, "verified": True},
+                    {"network_enforced": True, "network": "open", "verified": True}):
+            ok, d = self.graded(self.TWIN + [bad], self.AGENT)
+            self.assertIs(False, ok, d)
+            self.assertIn("contradict", d)
+
+    def test_a_false_row_under_a_denied_label_is_the_other_lie(self):
+        """false is honest only beside 'open'/absent: a --block-net row saying false
+        would report enforcement silently gone."""
+        ok, d = self.graded(self.TWIN, [{"network_enforced": False,
+                                         "network": "denied", "verified": True}])
+        self.assertIs(False, ok, d)
+        self.assertIn("contradict", d)
+
+    def test_an_empty_agent_class_never_buys_the_pass(self):
+        ok, d = self.graded(self.TWIN, [])
+        self.assertIsNone(ok, d)
+        self.assertIn("never reached sandbox verification", d)
+
+    def test_no_true_class_is_also_unmeasured(self):
+        ok, d = self.graded([], self.AGENT)
+        self.assertIsNone(ok, d)
+
+    def test_egress_observed_rows_corroborate_and_never_join_the_grade(self):
+        """sandbox.egress_observed (status + counts) rides the same `sandbox.%`
+        prefix; its earned allowlisted/true pair is corroboration, not a row that
+        could FAIL the verified-row grade by pairing rules it never promised."""
+        egress = {"network_enforced": True, "network": "allowlisted:api.example",
+                  "status": "observed", "denied": 7, "allowed": 20}
+        ok, d = self.graded(self.TWIN + [egress], self.AGENT + [egress])
+        self.assertIs(True, ok, d)
+        self.assertIn("earned-true egress-observation", d)
+
+    def test_legacy_two_arg_algebra_is_untouched(self):
+        """The agent evidence is additive: the old call shapes (twin-only, agent-
+        turn-only) keep printing their original rows."""
+        self.assertIsNone(one(m.c11_sandbox_label_verdicts(self.TWIN, False),
+                              "truthfully"))
+        self.assertTrue(one(m.c11_sandbox_label_verdicts(self.AGENT, True),
+                            "network_enforced=false"))
+
+    def test_row_claim_algebra(self):
+        self.assertEqual(("true", True), m.c11_row_claim(
+            {"network_enforced": True, "network": "denied"}))
+        self.assertEqual(("true", True), m.c11_row_claim(
+            {"network_enforced": True, "network": "allowlisted:a.example,b.example"}))
+        self.assertEqual(("false", True), m.c11_row_claim(
+            {"network_enforced": False, "network": "open"}))
+        self.assertEqual(("false", True), m.c11_row_claim({"network_enforced": False}))
+        self.assertEqual(("true", False), m.c11_row_claim(
+            {"network_enforced": True, "network": "open"}))
+        self.assertEqual(("false", False), m.c11_row_claim(
+            {"network_enforced": False, "network": "denied"}))
+        self.assertEqual((None, None), m.c11_row_claim({"backend": "nono"}))
+
+    def test_the_agent_arm_is_wired_into_the_live_gate(self):
+        body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        c11_body = body.split("def c11():")[1].split("# --- C12 pure logic")[0]
+        self.assertIn("c11_agent_turn_rows(alice, facts)", c11_body,
+                      "the live gate must PRODUCE the false class, not reword the GAP")
+        self.assertIn("agent_turn_payloads=agent_rows", c11_body)
+
+
 class ReportAndSink(unittest.TestCase):
     def test_report_spelling_false_passes_claiming_true_fails(self):
         good = "agent-turn profile: network_enforced=false (reported, ADR-0019 D3)"

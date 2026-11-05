@@ -1044,7 +1044,13 @@ C4c  THE assertion — a stale owner must be unable to publish success. worker-a
      believing it owns the attempt, and its next fenced write is refused by the store helper:
      docker compose -p communication-m4 logs worker-a | grep -ciE 'stale (owner|token)|fence'
        # > 0: the refusal is observed in the worker's own log, not simulated
-     psql -tAc "select status,outputs is null,finished_at from attempts where id='$ATT'"   # interrupted | t | NULL
+     psql -tAc "select status,outputs is null,finished_at is not null from attempts where id='$ATT'"
+       # interrupted | t | t — as amended by ADR-0075. A fenced attempt is TERMINAL, and
+       # 00005's attempts_terminal_timestamped CHECK ((status IN ('succeeded','failed',
+       # 'cancelled','interrupted')) = (finished_at IS NOT NULL)) makes a terminal row
+       # WITHOUT finished_at unrepresentable: it is one of ADR-0016 § 3's three lease lies.
+       # The timestamp is therefore positive evidence — the reconciler's own write
+       # (ADR-0023 § 5.4, ADR-0074), not the fenced worker limping home
      psql -tAc "select count(*) from artifacts where attempt_id='$ATT' and state='ready'"            # 0: a dead attempt publishes nothing
      psql -tAc "select count(*) from run_checkpoints where attempt_id='$ATT'"                         # 0
      psql -tAc "select count(*) from domain_events where attempt_id='$ATT' and type='node.attempt.completed'"   # 0
@@ -1151,9 +1157,15 @@ C7b  per-iteration evidence preserved and readable:
      psql -tAc "select count(*) from artifacts where run_id='$RUN' and name like 'test-%'"   # 3
 C7c  indeterminate is NOT false (ADR-0022 § 3): point passWhen at a field no iteration produces —
      passWhen: nodes.review.outputs.verdict == true  (the reviewer emits `evidence`, not `verdict`)
-     → predicate_error (unknown_field at validate-time when the schema declares it, or an eval error
-     when it does not), failing the SCOPE at once: node.scope.failed{failed_cause:'predicate_error'},
-     iterations_stopped=1, and NO run.completed
+     → predicate_error, failing the SCOPE at once: node.scope.failed{failed_cause:'predicate_error'},
+     iterations_stopped=1, and NO run.completed. Two arms, both authored and measured (ADR-0075):
+     (a) the review node's declared outputs schema CLOSES the field set and does not name `verdict`
+         → the publish-time reference table refuses it (`unknown_field`), so there is no document to
+         run and the refusal itself is what the arm measures; (b) the schema NAMES `verdict` as an
+         optional property (declared, not `required`) while no iteration's reply ever carries it →
+         publish ACCEPTS it and the first evaluation faults with the same `predicate_error`. The
+         engine's promise is the same in both shapes: an expression that cannot be answered is never
+         counted false — the difference is only WHICH side of publish the field is invisible to.
 C7d  carryForward observed: the `previous` root was non-empty on iteration 2 and an empty object on
      iteration 1 (ADR-0022 § 2 as amended — it is not named `loop`, which the engine reserves), and
      the twin's prompt echoes it, and the transcript line proves it (`03`'s "address previous review
@@ -1239,8 +1251,16 @@ C10a prompt the reviewer to answer {"approved":"yes","evidence":"…"} (a string
      output_errors populated with the JSON-Schema locations; NO node.attempt.completed for it
 C10b the retry (maxAttempts 2) gets it right and succeeds — and during the failure the run's ROUTING
      never changed: psql -tAc "select status from node_executions where node_instance_key='/build_until_verified[1]'"
-     shows the scope still waiting on the attempt, i.e. `approved:'yes' == true` (which the spike
-     measured as a silent `false`) was never reached, because outputs are schema-validated first
+     shows the scope still waiting on the attempt (a NON-terminal row from 00005's own vocabulary —
+     pending/ready/leased/running/waiting, with no outcome: 'ready' is what an until scope sits at
+     while its body's attempt is being retried), i.e. `approved:'yes' == true` (which the spike
+     measured as a silent `false`) was never reached, because outputs are schema-validated first.
+     The retry's success is authored, not assumed (ADR-0075): the seed twin's shipped review step
+     answers byte-identically on every attempt, so the gate publishes its OWN reviewer revision
+     whose step answers the malformed reply on the first attempt of the chain and the valid reply
+     on the next, with a widened `retry.backoff` so the scope row above can be SAMPLED while the
+     rejected reply is being retried. The all-malformed twin still carries the "no route was taken"
+     half — a leak there would complete the run
 C10c and the same reply delivered through the model.chat variant fails identically: the guarantee is
      the boundary's, not the adapter's
 ```
@@ -1353,7 +1373,7 @@ is read-mostly with one mutation per case.
 | W6 | run the C6e different-volume case, open the run | "prior edits lost, rerun required" and an error class chip `workspace_lost`; no auto-retry is offered (M3 W8's rule, unchanged wording) |
 | W7 | Ops page | the § 6.2 counters: queued/running/waiting attempts, lease expirations, retry loops, `queued_unbindable_runs`; per-worker `active_attempts/capacity`. With one worker offline the page says the run is *waiting for its worker* in those words |
 | W8 | an authored YAML with the seven deferred kinds + the config typos, pasted into the YAML viewer's "Validate" panel (a textarea + button is **not** an editor and does not pre-empt M5) | each error renders with `instance_location` on the document, `source` (loader/schema/compiler) and the `hint`; `kind_not_implemented` names the milestone (M5/M6); a secret-literal finding renders redacted |
-| W9 | as carol (project B only), deep-link the M4 run id, `/runs/{id}/nodes`, `/approvals/{id}` and the run SSE URL | `404`/not-found states, no project name, no node names, no digest values, SSE never opens, console clean — `12` case 15's rule extended to the new surface |
+| W9 | as the seeded **project-B-only** identity (`erin` — `seed.sh` step 2b, a member of the second project and of no other; ADR-0075 amends the row's original "carol", because § 7.1 C9d books carol as an M4 **maintainer** and one identity cannot play both roles), deep-link the M4 run id, `/runs/{id}/nodes`, `/approvals/{id}` (a real approval on the M4 project — located in the ledger, or parked by a run this leg leaves on its `/approve` gate) and the run SSE URL | `404`/not-found states, no project name, no node names, no digest values, SSE never opens, console clean — `12` case 15's rule extended to the new surface. The observer arm is measured, not assumed: the outsider's role on project B, her **absence** from the M4 project's membership rows, and her org-admin flag all read back before any arm is graded |
 | W10 | reload the app mid-run and reconnect the stream with `Last-Event-ID`, then roll an API replica (C14a) | continuity across the new event types with no gap and no cross-project event (M1/M2/M3's mechanism re-proven with the advancer as a writer) |
 | W11 | open a child-run tree (C8's 25 children) and one node execution's attempt list | the tree renders depth 1 children with their own statuses; the attempt list shows attempt 1 `interrupted` with `retry_context` and attempt 2 `succeeded`; `fencing_token`/`lease_expires_at`/`worker_id` appear **nowhere** in the DOM (ADR-0016 § 8, re-asserted against the new routes) |
 

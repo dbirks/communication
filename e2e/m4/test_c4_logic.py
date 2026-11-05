@@ -31,6 +31,15 @@ _TABLE_RE = re.compile(r"CREATE TABLE ([a-z_][a-z0-9_]*) \((.*?)\n\);", re.S)
 _NOT_COLUMN = ("constraint", "check", "unique", "primary", "foreign", "exclude")
 _ALIAS_STOP = {"on", "where", "join", "left", "right", "inner", "outer", "cross", "group",
                "order", "limit", "lateral", "using", "set", "having", "filter"}
+
+
+def one_(verdicts, needle):
+    """The ok of the (label, ok, detail) row whose label contains NEEDLE — None when
+    no row matches, which the asserts below surface as a failure of their own."""
+    for label, ok, _detail in verdicts or []:
+        if needle in label:
+            return ok
+    return None
 _ALIAS_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)\s*(?:AS\s+)?([a-z_][a-z0-9_]*)?",
                        re.I)
 _QUALIFIED_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b")
@@ -336,6 +345,81 @@ class MigrationReaderTest(unittest.TestCase):
         self.assertIn("status", TABLES["node_executions"])
         self.assertIn("node_instance_key", TABLES["node_executions"])
         self.assertIn("fencing_token", TABLES["attempts"])
+
+
+class C4TerminalRowVerdictsTest(unittest.TestCase):
+    """§ 7.1 C4c asked for `interrupted | t | NULL`; 00005's
+    attempts_terminal_timestamped CHECK
+    ((status IN ('succeeded','failed','cancelled','interrupted')) =
+     (finished_at IS NOT NULL)) makes that row unrepresentable, so the acceptance run's
+    `GAP C4c finished_at IS NULL (§ 7.1's literal expectation)` could never close.
+    ADR-0075 amends the row to the claim the schema can answer — terminal WITH
+    finished_at, published nothing — and these are its measured shapes, built from
+    EXACTLY the evidence the fence shard printed (run 41983100425:
+    `observed finished_at='2026-11-05 06:58:58.32704+00'`)."""
+
+    LIVE = {"status": "interrupted",
+            "finished_at": "2026-11-05 06:58:58.32704+00",
+            "now_ts": "2026-11-05 07:00:12.901224+00", "ts_le_now": "t"}
+
+    def test_the_recorded_fence_row_is_a_measured_pass(self):
+        v = m.c4_terminal_row_verdicts(self.LIVE)
+        self.assertTrue(one_(v, "TERMINAL WITH finished_at"), v)
+        self.assertTrue(one_(v, "Postgres's own clock"), v)
+
+    def test_a_terminal_row_without_a_timestamp_is_a_fail_not_a_gap(self):
+        """The lie the amendment exists to catch: the CHECK makes it impossible, so
+        seeing it means the store wrote a row Postgres should have refused."""
+        row = dict(self.LIVE, finished_at="NULL", ts_le_now="NULL")
+        v = m.c4_terminal_row_verdicts(row)
+        self.assertIs(False, one_(v, "TERMINAL WITH finished_at"), v)
+        self.assertIsNone(one_(v, "Postgres's own clock"),
+                          "an unreadable comparison is not a timestamp verdict, but the "
+                          "terminal-with-timestamp row already FAILed")
+
+    def test_a_non_terminal_fenced_attempt_fails_the_row(self):
+        for st in ("running", "leased"):
+            v = m.c4_terminal_row_verdicts(dict(self.LIVE, status=st))
+            self.assertIs(False, one_(v, "TERMINAL WITH finished_at"), f"{st}: {v}")
+
+    def test_a_future_timestamp_is_a_fail(self):
+        v = m.c4_terminal_row_verdicts(dict(self.LIVE, ts_le_now="f"))
+        self.assertTrue(one_(v, "TERMINAL WITH finished_at"), v)
+        self.assertIs(False, one_(v, "Postgres's own clock"), v)
+
+    def test_no_row_gaps_instead_of_inventing_a_pass(self):
+        v = m.c4_terminal_row_verdicts({})
+        self.assertIsNone(v[0][1], v)
+        self.assertEqual(len(v), 1, v)
+
+    def test_the_c4_gate_calls_the_terminal_arm_and_no_longer_gaps_it(self):
+        """The GAP line is gone from the gate: c4() grades the amended claim."""
+        called, _args = functions_and_calls()["c4"]
+        self.assertIn("c4_terminal_row_verdicts", called, sorted(called))
+        src = open(DRIVER, encoding="utf-8").read()
+        self.assertNotIn("finished_at IS NULL (§ 7.1", src,
+                         "the pre-amendment GAP line must not come back")
+
+
+class C4DeadAttemptStillMeasuresPublishedNothing(unittest.TestCase):
+    """The half of C4c the amendment leaves untouched, graded on the recorded fence
+    row: a dead attempt publishes NOTHING."""
+
+    LIVE = {"status": "interrupted", "outputs_null": "t", "artifacts_ready": "0",
+            "checkpoints": "0", "completed_events": "0"}
+
+    def test_the_recorded_row_passes_every_arm(self):
+        v = m.c4_dead_attempt_verdicts(self.LIVE)
+        self.assertTrue(all(ok for _l, ok, _d in v), v)
+
+    def test_a_published_artifact_or_completion_is_a_fail(self):
+        for key, needle in (("artifacts_ready", "zero ready artifacts"),
+                            ("checkpoints", "zero run_checkpoints"),
+                            ("completed_events", "zero node.attempt.completed")):
+            self.assertIs(False, one_(m.c4_dead_attempt_verdicts(
+                dict(self.LIVE, **{key: "1"})), needle), key)
+        self.assertIs(False, one_(m.c4_dead_attempt_verdicts(
+            dict(self.LIVE, outputs_null="f")), "published NO outputs"))
 
 
 if __name__ == "__main__":

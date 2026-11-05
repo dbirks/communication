@@ -549,11 +549,14 @@ class C1cUnattendedPermissionTest(unittest.TestCase):
 class C1cLauncherPiRefusalTest(unittest.TestCase):
     """The OTHER decided agent-arm failure (Actions runs 41423602047 onward,
     e.g. 41447122534 C1c/C2a): launcher pi is gated autonomous_within_sandbox
-    (ADR-0069), so the attempt reaches pi-acp — and the m4 stack composes no
-    compose.real.yml, so the worker carries no pi gateway key and pi-acp
-    answers session/new with -32000 'Authentication required'. Per
-    docs/testing/acceptance-ci.md that leg lands FAIL/GAP NAMING launcher pi,
-    never a pass; the GAP wording must say exactly that."""
+    (ADR-0069), so the attempt reaches pi-acp — and a stack that composes no
+    model layer carries no pi gateway key, so pi-acp answers session/new with
+    -32000 'Authentication required'. Since compose.m4-llm.yml that leg is a
+    LOCAL path only: the acceptance m4 job writes the key file, the driver
+    composes the layer, and the refusal has no environment explanation left —
+    so it must be a FAIL there, never a reworded GAP (docs/testing/
+    acceptance-ci.md). The GAP wording still names launcher pi and the layer
+    it did not get."""
 
     PI_DETAIL = ("agent session unavailable: acp: session/new: {\"code\":-32000,"
                  "\"message\":\"Authentication required: Configure an API key or log "
@@ -565,12 +568,36 @@ class C1cLauncherPiRefusalTest(unittest.TestCase):
 
     def test_every_plan_attempt_a_pi_session_new_refusal_is_a_gap(self):
         why = m.c1_launcher_pi_refusal_gap("failed", "node_execution_failed:/plan",
-                                           self.ATTEMPTS)
+                                           self.ATTEMPTS, pi_credential=False)
         self.assertIsNotNone(why)
         self.assertIn("launcher pi", why)
-        self.assertIn("compose.real.yml", why)
+        self.assertIn(m.M4_LLM_LAYER, why, "the GAP names the layer it did not get")
+        self.assertIn(m.LLM_KEY_FILE_ENV, why, "and the env that would have composed it")
         self.assertIn("docs/testing/acceptance-ci.md", why)
-        self.assertIn("never a pass", why)
+        self.assertIn("is a FAIL", why,
+                      "the GAP must say the same refusal is not a GAP on CI")
+
+    def test_with_the_credential_mounted_the_same_refusal_is_a_fail(self):
+        """The whole point of composing compose.m4-llm.yml: once the key file is
+        mounted, 'Authentication required' is a fault. Returning None is what
+        makes the caller print the honest FAIL instead of the GAP."""
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", self.ATTEMPTS, pi_credential=True))
+
+    def test_the_credential_default_is_the_composed_stack(self):
+        """Omitting pi_credential reads M4_LLM_LAYERED — the driver's own decision
+        about this run's stack — so no caller can forget to thread it and GAP a
+        refusal the runner has no excuse for."""
+        keep = m.M4_LLM_LAYERED
+        try:
+            for layered in (True, False):
+                m.M4_LLM_LAYERED = layered
+                why = m.c1_launcher_pi_refusal_gap(
+                    "failed", "node_execution_failed:/plan", self.ATTEMPTS)
+                self.assertIs(why is None, layered,
+                              f"M4_LLM_LAYERED={layered} must decide the verdict")
+        finally:
+            m.M4_LLM_LAYERED = keep
 
     def test_the_same_words_without_the_pi_fingerprint_stay_a_fail(self):
         """A CLAUDE leg that died on a stale login says 'Authentication
@@ -590,14 +617,16 @@ class C1cLauncherPiRefusalTest(unittest.TestCase):
     def test_only_the_plan_node_and_failed_status_qualify(self):
         self.assertIsNone(m.c1_launcher_pi_refusal_gap(
             "failed", "node_execution_failed:/build_until_verified[1]/implement",
-            self.ATTEMPTS))
+            self.ATTEMPTS, pi_credential=False))
         self.assertIsNone(m.c1_launcher_pi_refusal_gap(
-            "completed", "", self.ATTEMPTS))
-        self.assertIsNone(m.c1_launcher_pi_refusal_gap("failed", "", self.ATTEMPTS))
+            "completed", "", self.ATTEMPTS, pi_credential=False))
         self.assertIsNone(m.c1_launcher_pi_refusal_gap(
-            "failed", "node_execution_failed:/plan", [["/verdict", "infra", "x"]]))
+            "failed", "", self.ATTEMPTS, pi_credential=False))
         self.assertIsNone(m.c1_launcher_pi_refusal_gap(
-            "failed", "node_execution_failed:/plan", []))
+            "failed", "node_execution_failed:/plan", [["/verdict", "infra", "x"]],
+            pi_credential=False))
+        self.assertIsNone(m.c1_launcher_pi_refusal_gap(
+            "failed", "node_execution_failed:/plan", [], pi_credential=False))
         business = [["/plan", "invalid_output", self.PI_DETAIL]]
         self.assertIsNone(m.c1_launcher_pi_refusal_gap(
             "failed", "node_execution_failed:/plan", business),

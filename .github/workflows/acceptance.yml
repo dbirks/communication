@@ -5,7 +5,9 @@
 # Playwright suites, the live M4 exit gates (§ 7.1/§ 7.2), the "play the user"
 # emulator loop and the real GitHub issue→draft-PR probe — codified as four
 # PARALLEL jobs, one fresh communication-m4 stack per ubuntu-latest runner
-# (4 vCPU / 16 GB; the repo is public, so the runners are free).
+# (4 vCPU / 16 GB; the repo is public, so the runners are free). The m4 phase is
+# a SIX-shard matrix plus a stackless `m4 (regrade)` job that re-grades the
+# § 7.1 cross-gate rows over the shards' uploaded witness files (see below).
 #
 # What this is NOT: the `ci` and `e2e` phases of accept_run.sh ARE ci.yml
 # (go/contract/ui/e2e/m4-gate-logic jobs). Nothing here duplicates them; this
@@ -13,11 +15,13 @@
 #
 # Pinned actions follow ci.yml exactly (actions on major tags):
 #   actions/checkout@v7 · actions/setup-node@v7 · pnpm/action-setup@v6 ·
-#   actions/upload-artifact@v7. Node 24.22.0 and pnpm (from e2e/package.json)
-#   are the ci.yml pins. Playwright chromium comes from the e2e package's own
-#   @playwright/test 1.64.1. nono and apm are NOT installed on the host here:
-#   the lab's worker image bakes both binaries in (worker/Dockerfile's
-#   executionbin stage, sha256-pinned), so the runners need nothing extra.
+#   actions/upload-artifact@v7 · actions/download-artifact@v7 (the regrade job's
+#   witness download — the same major as the upload pin above). Node 24.22.0 and
+#   pnpm (from e2e/package.json) are the ci.yml pins. Playwright chromium comes
+#   from the e2e package's own @playwright/test 1.64.1. nono and apm are NOT
+#   installed on the host here: the lab's worker image bakes both binaries in
+#   (worker/Dockerfile's executionbin stage, sha256-pinned), so the runners need
+#   nothing extra.
 #
 # Secrets (repository secrets, written to 0600 files under $RUNNER_TEMP and
 # named through the *_FILE env vars the scripts already read — the values
@@ -124,6 +128,8 @@ jobs:
     outputs:
       lab-e2e: ${{ steps.pick.outputs.lab-e2e }}
       m4: ${{ steps.pick.outputs.m4 }}
+      m4-all: ${{ steps.pick.outputs.m4-all }}
+      m4-shards: ${{ steps.pick.outputs.m4-shards }}
       verification: ${{ steps.pick.outputs.verification }}
       github-loop: ${{ steps.pick.outputs.github-loop }}
     steps:
@@ -154,13 +160,26 @@ jobs:
           # every shard's gate ids at run time ("check the shard's gate ids
           # exist"), so drift between this table and the driver fails loudly.
           inc=()
+          names=()
           for pair in "fence:C3,C4,C5,W2" "restore:C6" "watch:W5,W6,W11" "fanout:C8" "core-a:C1,C2,C7,C9,C10,W1,W3,W7" "core-b:C11,C12,C13,C14,W4,W8,W9,W10"; do
             if sel m4 || sel "m4:${pair%%:*}"; then
               inc+=("{\"shard\":\"${pair%%:*}\",\"gates\":\"${pair#*:}\"}")
+              names+=("${pair%%:*}")
             fi
           done
           m4_json="[$(IFS=,; printf '%s' "${inc[*]}")]"
           echo "m4=$m4_json" >> "$GITHUB_OUTPUT"
+          echo "m4-shards=$(IFS=,; printf '%s' "${names[*]}")" >> "$GITHUB_OUTPUT"
+          # m4-all: EVERY shard ran, so every cross-gate witness exists somewhere in
+          # this run and `m4 (regrade)` can grade the rows the shards printed PENDING
+          # for. One shard short and the answer is false — those rows must stay GAPs
+          # in their own shard rather than promise a regrade that will not run.
+          if [ "${#names[@]}" -eq 6 ]; then
+            echo "m4-all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "m4-all=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::m4 (regrade) will be SKIPPED: only [$(IFS=,; printf '%s' "${names[*]}")] of the six m4 shards ran, so a cross-gate row's witness (C11c over C8b/C10a/C1f/C2c/C2d, C5g/C6c against C1's key set) may never exist in this run — those rows print GAP where they ran, and the run carries no merged verdict."
+          fi
           echo "selection: $J -> m4 matrix $m4_json"
 
   # ────────────────────────────────────────────────────────────────────
@@ -397,9 +416,24 @@ jobs:
           [ -n "$COMMUNICATION_LLM_API_KEY" ] \
             || { echo "::error::repository secret COMMUNICATION_LLM_API_KEY is missing"; exit 1; }
           d="$RUNNER_TEMP/comm-secrets"; mkdir -p "$d"; chmod 700 "$d"
+          d="$RUNNER_TEMP/comm-secrets"; mkdir -p "$d"; chmod 700 "$d"
           printf '%s' "$COMMUNICATION_LLM_API_KEY" > "$d/llm-api-key"
           chmod 600 "$d/llm-api-key"
+          # The FILE path is what compose.m4-llm.yml MOUNTS for the pi launcher
+          # (COMMUNICATION_PI_API_KEY_FILE: file delivery per ADR-0040/0059 — the
+          # only form the Go launcher code reads).
           echo "COMMUNICATION_LLM_API_KEY_HOST_FILE=$d/llm-api-key" >> "$GITHUB_ENV"
+          # …and the VALUE is what the SAME layer feeds the worker's model.chat
+          # key: cmd/communication/worker.go's parseModelChatOptions reads
+          # COMMUNICATION_MODEL_CHAT_API_KEY from the environment and has NO
+          # _FILE form (checked 2026-11-05), so § 7.1 C10c's model.chat reviewer
+          # arm needs the value in the env the exit driver renders compose with.
+          # A shell assignment that reads the file back (the scripts/lab-up.sh
+          # idiom for compose.real.yml): never an argv word, never echoed, never
+          # logged. The m4 exit driver composes compose.m4-llm.yml off these two
+          # variables and prints only the layer NAMES.
+          LLMC_API_KEY="$(cat "$d/llm-api-key")"; export LLMC_API_KEY
+          echo "LLMC_API_KEY=$LLMC_API_KEY" >> "$GITHUB_ENV"
       - name: check the shard's gate ids exist
         run: |
           set -euo pipefail
@@ -416,20 +450,46 @@ jobs:
           print(f"shard {sys.argv[2]}: {len(wanted)} gate ids, all listed: {','.join(wanted)}")
           PY
       - name: run shard (fresh stack via --up --ready --seed)
+        env:
+          # The witness contract: every shard records what it measured, and the
+          # cross-gate rows may only print PENDING when `m4 (regrade)` will run to
+          # grade them (select's m4-all — one shard short and there is nothing to
+          # merge, so the honest word stays GAP).
+          M4_ALL: ${{ needs.select.outputs.m4-all }}
+        # The driver composes compose.m4-llm.yml ON TOP of its three files
+        # because this job exported COMMUNICATION_LLM_API_KEY_HOST_FILE (plus
+        # LLMC_API_KEY for the worker's model.chat): with the layer the agent
+        # legs MEASURE (launcher pi reaches the gateway on the mounted key) and
+        # m4.out's first line names the composed files. With no readable key
+        # file the driver stays on the three files and the launcher-pi refusal
+        # GAP path stands (docs/testing/acceptance-ci.md).
         run: |
           set -uo pipefail
           HOST_UID="$(id -u)"; HOST_GID="$(id -g)"; export HOST_UID HOST_GID
           rc=0
-          python3 e2e/m4/e2e_m4_exit.py --up --ready --seed --only "$GATES" > m4.out 2>&1 || rc=$?
+          args=(--up --ready --seed --only "$GATES" --shard "$SHARD"
+                --witness m4-witness.json)
+          [ "$M4_ALL" = "true" ] && args+=(--expect-regrade)
+          python3 e2e/m4/e2e_m4_exit.py "${args[@]}" > m4.out 2>&1 || rc=$?
           echo "m4 shard $SHARD exit rc=$rc — summary tail:"
           tail -60 m4.out
+          [ -f m4-witness.json ] || echo "::warning::shard $SHARD left no m4-witness.json — m4 (regrade) will fail naming it"
           exit $rc
       - name: capture compose logs
         if: always()
         run: |
-          docker compose -p communication-m4 -f compose.yml -f compose.harness.yml -f compose.m4.yml \
+          set -uo pipefail
+          # The same -f list the driver brought the stack up with: the m4-llm
+          # layer rides this job's exported key variables, and capturing logs
+          # WITHOUT it would describe a stack that is not the one that ran.
+          M4_F=(-f compose.yml -f compose.harness.yml -f compose.m4.yml)
+          if [ -n "${COMMUNICATION_LLM_API_KEY_HOST_FILE:-}" ] \
+              && [ -r "$COMMUNICATION_LLM_API_KEY_HOST_FILE" ]; then
+            M4_F+=(-f compose.m4-llm.yml)
+          fi
+          docker compose -p communication-m4 "${M4_F[@]}" \
             logs --no-color --timestamps > m4-compose.log 2>&1 || true
-          docker compose -p communication-m4 -f compose.yml -f compose.harness.yml -f compose.m4.yml \
+          docker compose -p communication-m4 "${M4_F[@]}" \
             down -v --remove-orphans || true
       - name: upload shard evidence
         if: always()
@@ -439,6 +499,90 @@ jobs:
           path: |
             m4.out
             m4-compose.log
+            m4-witness.json
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────────────
+  # m4 (regrade): the cross-GATE rows the shards could only print PENDING
+  # for. docs/m4-contract.md § 7.1 grades several rows off ANOTHER gate's
+  # measurement (C11c's structural arms over C8b/C14a/C10a/C10b/C7c/C1f/
+  # C2c/C13c/C2d/C12a/C12b/C13b; C5g's and C6c's "the same node_instance_key
+  # set as C1"; C3d's citation of C4's fence), and the shards are six
+  # separate driver processes on six fresh stacks — so the in-process ledger
+  # can never see them and the row used to file a GAP that still let the
+  # shard job pass. Each shard now uploads m4-witness.json (every verdict
+  # line + the node_instance_key sets later gates compare against); this job
+  # merges them and re-grades every cross-gate row over the union with NO
+  # stack, failing on any FAIL and on any witness no shard ever measured
+  # (including a shard whose witness never arrived). It runs when ALL six
+  # shards ran; otherwise it prints a notice and exits — a partial selection
+  # has no merged record, and there the rows stay honest GAPs in their own
+  # shard rather than promises nobody keeps. Key-set rows compare STRUCTURE
+  # (the node_instance_key SETs the same § 7.0 seed pipeline produces on
+  # fresh stacks), which is exactly what the contract rows claim.
+  # ──────────────────────────────────────────────────────────────────────
+  m4-regrade:
+    name: m4 (regrade)
+    # !cancelled(): a shard that went red still uploaded its witness (the
+    # upload step is `if: always()`), and grading what those shards measured
+    # is information the run should not lose behind the shard's own failure.
+    needs: [select, m4]
+    if: ${{ needs.select.outputs.m4 != '[]' && needs.select.outputs.m4 != '' && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      M4_ALL: ${{ needs.select.outputs.m4-all }}
+      M4_SHARDS: ${{ needs.select.outputs.m4-shards }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: check the shard coverage
+        id: scope
+        run: |
+          set -eu
+          if [ "$M4_ALL" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Skipped WITH a notice: a job-level `if` that hides this job would
+          # leave the PENDING rows unowned and unread, which is the silence
+          # the whole regrade exists to prevent.
+          echo "::notice::m4 (regrade) SKIPPED — the run selected [$M4_SHARDS] of the six m4 shards, so no merged witness record exists. Cross-gate rows (§ 7.1 C11c arms, C5g, C6c, C3d) printed GAP where they ran; run the full 'm4' (or 'all') matrix to grade them."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+      - name: download the shards' witness files
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          # Only the six shard artifacts (m4-<shard>-<attempt>); this job's own
+          # regrade evidence artifact is uploaded after the download.
+          pattern: m4-*-${{ github.run_attempt }}
+          path: m4-witnesses
+          merge-multiple: false
+      - name: regrade the cross-gate rows over every shard's witnesses
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -uo pipefail
+          files=()
+          while IFS= read -r f; do files+=("$f"); done \
+            < <(find m4-witnesses -name m4-witness.json 2>/dev/null | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no m4-witness.json in any shard artifact — every cross-gate row this run passed on PENDING is ungradeable"
+            exit 1
+          fi
+          echo "regrading over ${#files[@]} witness file(s), expected shards: $M4_SHARDS"
+          rc=0
+          python3 e2e/m4/e2e_m4_exit.py --regrade "${files[@]}" \
+            --expect-shards "$M4_SHARDS" > m4-regrade.out 2>&1 || rc=$?
+          echo "m4 (regrade) exit rc=$rc — verdict tail:"
+          tail -80 m4-regrade.out
+          exit $rc
+      - name: upload the regrade verdicts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regrade-m4-${{ github.run_attempt }}
+          path: |
+            m4-regrade.out
+          if-no-files-found: warn
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -510,7 +654,37 @@ jobs:
           printf '%s' "$COMMUNICATION_LLM_API_KEY" > "$d/llm-api-key"
           chmod 600 "$d/llm-api-key"
           echo "COMMUNICATION_LLM_API_KEY_HOST_FILE=$d/llm-api-key" >> "$GITHUB_ENV"
+      - name: write the GitHub read-token file (ADR-0061 credential for `server`)
+        env:
+          # The job's own token — any valid GITHUB_TOKEN reads PUBLIC repo
+          # data (api.github.com), and an authenticated read costs 5000
+          # requests/hour instead of the anonymous 60 this egress IP shares
+          # with every other workflow. e2e/emulator/github-read-credential.ts
+          # reads this file and attaches it to the journey's `server`
+          # repository row as an integration_broker secret credential
+          # (ADR-0061), so the rcn-3b ISSUES lane's live read is
+          # authenticated and the pass is not at the mercy of a spent budget.
+          GH_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          [ -n "$GH_READ_TOKEN" ] \
+            || { echo "::error::the run's GITHUB_TOKEN is empty — the emulator cannot read GitHub authenticated"; exit 1; }
+          d="$RUNNER_TEMP/comm-secrets"; mkdir -p "$d"; chmod 700 "$d"
+          # printf is the bash builtin: the value never enters an argv word
+          # and is never echoed; only the file PATH is exported (the *_FILE
+          # indirection the lab scripts already use everywhere else), and the
+          # spec reads it into a secret POST body only — never a log, argv or
+          # the pass's results.json.
+          printf '%s' "$GH_READ_TOKEN" > "$d/github-read-token"
+          chmod 600 "$d/github-read-token"
+          echo "E2E_GITHUB_READ_TOKEN_FILE=$d/github-read-token" >> "$GITHUB_ENV"
       - name: run the emulator loop (max 6 passes, 2 consecutive clean to pass)
+        env:
+          # Named explicitly at the consumer (same idiom as lab-e2e's run
+          # step): loop.sh passes its own environment straight to
+          # `pnpm --dir e2e exec playwright test`, so this is how the knob
+          # reaches the spec process that writes the ADR-0061 credential.
+          E2E_GITHUB_READ_TOKEN_FILE: ${{ env.E2E_GITHUB_READ_TOKEN_FILE }}
         run: bash e2e/emulator/loop.sh --max-passes 6
       - name: upload pass evidence (screenshots, results.json, reports)
         if: always()

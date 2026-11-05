@@ -45,8 +45,24 @@ for n in $(seq 1 "$MAX_PASSES"); do
   out_dir="e2e/emulator/out/$pass_id"
   results="$out_dir/results.json"
 
+  # Which GitHub budget this pass plays on. Only the variable's PRESENCE is
+  # reported — the token file's contents are never read here, never echoed and
+  # never an argv word (e2e/emulator/github-read-credential.ts reads it into a
+  # secret's create body, and nothing else). acceptance.yml's verification job
+  # writes it; unset means the anonymous 60/hour read (local runs).
+  if [[ -n "${E2E_GITHUB_READ_TOKEN_FILE:-}" ]]; then
+    echo "pass $n: server reads GitHub AUTHENTICATED (E2E_GITHUB_READ_TOKEN_FILE is set)"
+  else
+    echo "pass $n: server reads GitHub anonymously (E2E_GITHUB_READ_TOKEN_FILE is unset)"
+  fi
+
   # The suite records defects even when a journey fails; its exit code is
   # not the pass's verdict — the defect count is.
+  #
+  # The step environment reaches the spec process through this line unchanged:
+  # pnpm exec inherits the shell's exported env and Playwright's workers
+  # inherit theirs, so E2E_GITHUB_READ_TOKEN_FILE (and any other knob) is
+  # visible to the specs without being named in an argv word.
   EMU_PASS_ID="$pass_id" pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts \
     || echo "pass $n: suite exited non-zero (journey failure is recorded as an assertion defect)" >&2
 

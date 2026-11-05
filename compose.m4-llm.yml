@@ -1,0 +1,139 @@
+# compose.m4-llm.yml — the pi-gateway / model.chat layer for the M4 EXIT stack.
+#
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) \
+#     COMMUNICATION_LLM_API_KEY_HOST_FILE=$HOME/.config/communication/llmc-api-key \
+#     LLMC_API_KEY=<the same key, from the host environment> \
+#     docker compose -p communication-m4 \
+#       -f compose.yml -f compose.harness.yml -f compose.m4.yml -f compose.m4-llm.yml \
+#       up -d --build
+#
+# WHY THIS FILE EXISTS (and compose.real.yml does not).
+#   The M4 exit driver (e2e/m4/e2e_m4_exit.py) brings up its OWN stack —
+#   compose.yml + compose.harness.yml + compose.m4.yml — and compose.real.yml was
+#   never among those -f files (docs/testing/acceptance-ci.md used to promise
+#   exactly that: "launcher pi legs land FAIL/GAP naming launcher pi, never a
+#   pass", because the workers carried no pi gateway config and every real-agent
+#   leg died at acp `session/new` -32000 "Authentication required"). That made
+#   every § 7.1/§ 7.2 agent arm a GAP on CI. This layer is the SAME configuration
+#   compose.real.yml carries, retargeted at the two services the M4 stack
+#   actually runs (worker-a/worker-b from compose.m4.yml — NOT compose.yml's
+#   single `worker`, which the M4 stack profile-gates off) plus the two serve
+#   replicas, so the driver can compose it whenever the host names a readable key
+#   file and the agent arm becomes a MEASUREMENT instead of an excuse.
+#
+# What this layer adds (per service — nothing else, and no key VALUE in this file):
+#   * worker-a / worker-b — the `pi` ACP launcher (ADR-0059/ADR-0069):
+#       - the operator's gateway key FILE bind-mounted read-only at
+#         /run/comm/llm-api-key (worker-a/worker-b run as ${HOST_UID} —
+#         compose.harness.yml / compose.m4.yml — so a 0600 host file owned by
+#         that uid reads with no chmod);
+#       - COMMUNICATION_PI_API_KEY_FILE=/run/comm/llm-api-key — FILE delivery
+#         only: cmd/communication/worker.go + internal/agent/acp/launchers.go
+#         resolve the pi key from that path at EACH launch (no plain-env form
+#         exists), and the value never enters argv or the audit journal
+#         (ADR-0040's rule);
+#       - COMMUNICATION_PI_BASE_URL / COMMUNICATION_PI_MODEL — rendered into
+#         the agent-home provider config per turn (models.json + the
+#         defaultProvider/defaultModel pin, ADR-0069). Setting the base URL is
+#         ALSO what admits the gateway host to the agent-turn egress allowlist:
+#         internal/worker/egress.go's launcherProviderEgressHosts adds the
+#         launcher's operator-configured provider host to whatever list
+#         resolves, so this layer deliberately does NOT set
+#         COMMUNICATION_AGENT_EGRESS_ALLOW — the M4 § 7.1 C11 egress probe
+#         measures the shipped default + provider host, not a widened list.
+#   * worker-a / worker-b — `model.chat` nodes (§ 4 step 8, § 7.1 C10c):
+#       COMMUNICATION_MODEL_CHAT_BASE_URL      server root; unset means the
+#         kind is not registered at all and § 7.1 C10c cannot run
+#       COMMUNICATION_MODEL_CHAT_API_KEY       bearer token — there is NO
+#         _FILE variant for this one in the Go code (cmd/communication/
+#         worker.go's parseModelChatOptions reads the env value and nothing
+#         else; verified 2026-11-05), so the VALUE interpolates from the host
+#         environment by NAME and is never a literal here. The acceptance
+#         workflow's m4 job already writes the secret to a mode-600 file and
+#         exports only COMMUNICATION_LLM_API_KEY_HOST_FILE; e2e_m4_exit.py
+#         fills LLMC_API_KEY from THAT file (a process-env assignment inside
+#         compose's own resolver — never argv, never echoed, never logged),
+#         exactly the fallback scripts/lab-up.sh documents for compose.real.yml.
+#       COMMUNICATION_MODEL_CHAT_MODELS        one-model allowlist (§ 7.1
+#         C10c's node names a model the worker must admit by name)
+#   * api-a / api-b — the in-app assistant (ADR-0034). serve DOES support file
+#     delivery for its key (cmd/communication/serve.go reads
+#     COMMUNICATION_ASSISTANT_API_KEY_FILE when _API_KEY is unset), so the
+#     replicas take the mounted file, never an env value. model.chat is NOT
+#     serve configuration at all — it is the worker's process env by design
+#     (internal/worker/modelchat.go: "Endpoint, model allowlist and API key
+#     are WORKER configuration — never pipeline content").
+#
+# Host variables (defaults identical to compose.real.yml's, so one repoint moves
+# both; set explicitly in .github/workflows/acceptance.yml's workflow env):
+#   COMMUNICATION_LLM_API_KEY_HOST_FILE  REQUIRED: host path of the key file
+#   LLMC_API_KEY                         REQUIRED: the gateway key value (the
+#                                        worker's model.chat has no _FILE form)
+#   COMMUNICATION_LLM_BASE_URL   (default https://llm-collective.e-gineering.com/v1)
+#   COMMUNICATION_LLM_MODEL      (default david-birks/qwen3-8-flash-next)
+#
+# `docker compose ... -f compose.yml -f compose.harness.yml -f compose.m4.yml
+# -f compose.m4-llm.yml config --quiet` MUST render before `up`; with either `:?`
+# variable unset it refuses to render, which is the point — a half-configured
+# agent arm is exactly the state this layer exists to end.
+#
+# The driver composes this layer ONLY when COMMUNICATION_LLM_API_KEY_HOST_FILE
+# names a readable file (e2e_m4_exit.py's llm_key_file() feeds compose_stack(),
+# the one -f decision every compose call in the driver rides); without it the
+# stack is today's three files and the launcher-pi refusal GAP path stays
+# local-only (docs/testing/acceptance-ci.md).
+name: communication-m4
+
+services:
+  worker-a:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
+    environment:
+      # pi launcher (ADR-0059/ADR-0069): the key rides the mounted file, read
+      # at each launch; base URL + model go into the agent-home models.json and
+      # the settings.json pin, and the base URL's host joins the egress
+      # allowlist by ADR-0069 (see the header — no _API_KEY here, none exists).
+      COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
+      COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
+      # model.chat (§ 4 step 8) — § 7.1 C10c's reviewer variant. The endpoint
+      # is the worker's own configuration; the node only ever names a model.
+      COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the environment the driver runs compose with (e2e_m4_exit.py fills it from COMMUNICATION_LLM_API_KEY_HOST_FILE; worker.go has no _FILE form for this key)}"
+      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
+
+  worker-b:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
+    environment:
+      COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
+      COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
+      COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the environment the driver runs compose with (e2e_m4_exit.py fills it from COMMUNICATION_LLM_API_KEY_HOST_FILE; worker.go has no _FILE form for this key)}"
+      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
+
+  api-a:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
+    environment:
+      # ADR-0034: an unset COMMUNICATION_ASSISTANT_BASE_URL is the honest
+      # absence (503 assistant_not_configured); naming it makes THIS replica
+      # egress app content to the gateway, which is the operator's explicit
+      # intent in applying this layer. The key rides the mounted FILE — serve
+      # prefers _API_KEY_FILE (cmd/communication/serve.go).
+      COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
+      COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
+      # The broker's 30s default is too short for the real gateway (the lab's
+      # assistant journeys timed out on it); parsed with time.ParseDuration.
+      COMMUNICATION_ASSISTANT_TIMEOUT: 180s
+
+  api-b:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
+    environment:
+      COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
+      COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
+      COMMUNICATION_ASSISTANT_TIMEOUT: 180s

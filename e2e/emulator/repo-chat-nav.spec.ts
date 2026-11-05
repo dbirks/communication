@@ -84,6 +84,11 @@ import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test, apiMutate } from "./fixtures.js";
 import {
+  attachGitHubReadCredential,
+  ensureGitHubReadCredential,
+  gitHubReadModeNote,
+} from "./github-read-credential.js";
+import {
   EMU_ADMIN_STATE,
   EMU_ALICE_STATE,
   EMU_BASE_URL,
@@ -113,10 +118,16 @@ const GH_REPO = "server";
 // before a turn runs, and an unreachable remote fails the turn's workspace
 // prep outright (observed with the missing-* shape: `server.git failed:
 // could not read Username`). octocat/Hello-World mirrors in a keystroke, its
-// issue reads ride the anonymous GitHub budget, and the trigger stays inert
+// issue reads go to the live tracker (authenticated on Actions through the
+// ADR-0061 credential in github-read-credential.ts, anonymously locally), and
+// the trigger stays inert
 // — no issue of it carries this pass's label, and the pass PAUSES the
 // trigger at the end anyway.
 const GH_URL = "https://github.com/octocat/Hello-World.git";
+/** The ADR-0061 `integration_broker` secret carrying this run's GitHub read
+ * token (see github-read-credential.ts). Stamped with the pass id, so a pass
+ * never reuses another run's — expired — `GITHUB_TOKEN`. */
+const GH_READ_SLUG = `emu-gh-read-${EMU_PASS_ID}`.toLowerCase();
 /** The lab's `app.git` fixture branch. Its remote lives on the worker's own
  * host (`file:///srv/m4/fixtures/app.git`), unreachable from the runner, so
  * it cannot be read the way {@link remoteDefaultBranch} reads a network one;
@@ -933,7 +944,16 @@ function remoteDefaultBranch(url: string): string {
 /** alice: `web` on the lab's file:// fixture remote, `server` on a real
  * public GitHub repo (the issue trigger's honest home — the server refuses
  * one on a non-GitHub repo with `not_a_github_repository`, which is exactly
- * the List view's asserted empty state on `web`). */
+ * the List view's asserted empty state on `web`).
+ *
+ * `server`'s issues read is authenticated on Actions: when the job exported
+ * `E2E_GITHUB_READ_TOKEN_FILE`, the row is created with (or patched to) the
+ * ADR-0061 `integration_broker` credential so the ISSUES lane reads
+ * api.github.com at 5000 requests/hour instead of the anonymous 60 this egress
+ * IP shares with every other workflow — the same knob e2e/tests/m5-issue-run
+ * .spec.ts uses for its `m5gh-*` row. Without the variable the row carries no
+ * credential and the read stays anonymous, exactly as before. The token value
+ * never reaches a row, a log line or results.json. */
 async function ensureRepos(page: Page): Promise<void> {
   if (ids.fileRepoId !== "" && ids.ghRepoId !== "") return;
   const list = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`);
@@ -941,30 +961,55 @@ async function ensureRepos(page: Page): Promise<void> {
   const repos = (await list.json()) as { items?: { id: string; name: string }[] };
   const find = (name: string): string =>
     (repos.items ?? []).find((entry) => entry.name === name)?.id ?? "";
-  const create = async (name: string, gitUrl: string, defaultBranch: string): Promise<string> => {
+  // null when no token file is configured — today's anonymous behaviour.
+  const credentialSecretId = await ensureGitHubReadCredential(page, ids.projectId, GH_READ_SLUG);
+  const create = async (
+    name: string,
+    gitUrl: string,
+    defaultBranch: string,
+    credential: string | null,
+  ): Promise<string> => {
     const res = await apiMutate(
       page,
       "POST",
       `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`,
-      { name, git_url: gitUrl, default_branch: defaultBranch },
+      {
+        name,
+        git_url: gitUrl,
+        default_branch: defaultBranch,
+        ...(credential === null ? {} : { credential_secret_id: credential }),
+      },
     );
     const body = await res.text();
     expect(
       res.status(),
       `adding ${name} answers 201 (got ${res.status()}: ${body.slice(0, 240)})`,
     ).toBe(201);
-    return (JSON.parse(body) as { id: string }).id;
+    const created = JSON.parse(body) as { id: string; credential?: string };
+    if (credential !== null) {
+      expect(
+        created.credential,
+        `${name} was created without the ADR-0061 credential attached`,
+      ).toBe("configured");
+    }
+    return created.id;
   };
   ids.fileRepoId =
     find(FILE_REPO) !== ""
       ? find(FILE_REPO)
-      : await create(FILE_REPO, "file:///srv/m4/fixtures/app.git", FILE_REPO_BRANCH);
+      : await create(FILE_REPO, "file:///srv/m4/fixtures/app.git", FILE_REPO_BRANCH, null);
   // Read the remote's own HEAD rather than naming a branch by habit (see
   // `remoteDefaultBranch`): this repo is the one the 3d agent turn mirrors.
+  const existingGhRepo = find(GH_REPO);
   ids.ghRepoId =
-    find(GH_REPO) !== ""
-      ? find(GH_REPO)
-      : await create(GH_REPO, GH_URL, remoteDefaultBranch(GH_URL));
+    existingGhRepo !== ""
+      ? existingGhRepo
+      : await create(GH_REPO, GH_URL, remoteDefaultBranch(GH_URL), credentialSecretId);
+  if (existingGhRepo !== "" && credentialSecretId !== null) {
+    // Patch even when the row reads `configured`: resolve-or-create seeding
+    // can reuse a row whose token died with the run that wrote it.
+    await attachGitHubReadCredential(page, ids.projectId, existingGhRepo, credentialSecretId);
+  }
 }
 
 /** alice: the pin — one assignment per (project, pipeline), resolved first. */
@@ -1287,9 +1332,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     page,
     emu,
   }) => {
-    // The GH_REPO capture reads a real GitHub tracker on the lab's anonymous
-    // budget; a refusal (502 github_rate_limited) is honest state, declared
-    // so it never counts as harness noise (see issuesReadOf).
+    // The GH_REPO capture reads a real GitHub tracker (authenticated on
+    // Actions, anonymous locally — see github-read-credential.ts); a refusal
+    // (502 github_rate_limited) is honest state, declared so it never counts
+    // as harness noise (see issuesReadOf).
     emu.expectFailure(issuesReadOf(ids.projectId));
     await test.step("3a empty — a repo with nothing said yet says so", async () => {
       await page.goto(`/p/${ids.projectId}/${GH_REPO}`);
@@ -1552,9 +1598,11 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("repo-lanes"), "design 3b: the Lanes view").toBeVisible({
         timeout: 15_000,
       });
-      // The cards come from GitHub. If the anonymous budget (60 requests/hour
-      // per egress IP) is spent, the lane says so with the upstream's own
-      // words and this journey FAILS naming that cause — it does not drag an
+      // The cards come from GitHub. Whichever budget this pass reads on — the
+      // authenticated 5000/hour one when the job exported the token file, the
+      // anonymous 60/hour one otherwise — a spent budget (or a closed
+      // tracker) leaves the lane saying so with the upstream's own words, and
+      // this journey FAILS naming the mode it ran in — it does not drag an
       // invented card (the mockdata rule) and it does not skip.
       await expect
         .poll(
@@ -1569,8 +1617,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
           },
           {
             timeout: 45_000,
-            message:
-              "the ISSUES lane listed no open issue to drag — `server` reads api.github.com anonymously, so a spent budget (or a closed tracker) is a real refusal the lane names in its own error line",
+            message: `the ISSUES lane listed no open issue to drag — ${gitHubReadModeNote(GH_REPO)}; the lane names the upstream's own refusal in its error line (it never drags an invented card and never skips)`,
           },
         )
         .not.toBe("");

@@ -40,6 +40,10 @@ def one(rows, needle):
     return vs[0]
 
 
+def detail(rows, needle):
+    return [d for l, _o, d in hits(rows, needle)][0]
+
+
 K = "/build_until_verified"
 BODY = ("implement", "test", "review")
 
@@ -361,19 +365,96 @@ class C7gBudget(unittest.TestCase):
 
 
 class C7cIndeterminate(unittest.TestCase):
-    def test_pass_validate_refusal_and_gap_the_eval_arm(self):
+    """§ 7.1 C7c has TWO arms and ADR-0075 authors both. The seed twin's review schema
+    CLOSES its field set, so a passWhen that reads an unnamed field never survives
+    publish (`unknown_field`) — that refusal is the validate arm. A schema that NAMES
+    the field as an optional property publishes, and the first evaluation faults — the
+    eval arm, with the same node.scope.failed{predicate_error} behind it. The old
+    driver GAPped the second arm because nothing in the lab authored it."""
+
+    def test_validate_arm_refusal_is_measured_on_its_own(self):
         vresp = {"valid": False, "errors": [{"code": "unknown_field",
                                              "instance_location": "/spec/nodes/2/config/passWhen"}]}
         v = m.c7_predicate_error_verdicts(vresp=vresp)
+        self.assertEqual(1, len(v), f"the validate arm is one measured row: {v}")
         self.assertIs(True, one(v, "refused at validate"))
-        self.assertIs(None, one(v, "at eval time"))
+        label = [l for l, _o, _d in v][0]
+        self.assertIn("CLOSED declared schema", label,
+                      "the row says WHY the selection is impossible at publish")
+        self.assertIn("eval arm", label, "and POINTS at the arm that measures the rest")
+        self.assertIn("codes=['unknown_field']", detail(v, "refused at validate"))
 
-    def test_pass_eval_error_stops_at_iteration_one(self):
+    def test_a_validating_document_leaves_the_grading_to_the_ledger(self):
+        """The validate arm's refusal is ONE row; when the document VALIDATES there is
+        no refusal to measure and the function falls through to the ledger arms (which
+        GAP on absent rows rather than inventing a refusal)."""
+        v = m.c7_predicate_error_verdicts(vresp={"valid": True, "errors": []})
+        self.assertEqual([], [l for l, _o, _d in v if "refused at validate" in l], str(v))
+        self.assertEqual(4, len(v), str(v))
+        # No refused row, and the ledger reading is what stands: an absent scope row is
+        # a scope that did NOT fail with predicate_error, which is the FAIL this
+        # function has always meant. (The eval probe's own arm GAPs on absent rows —
+        # c7_eval_arm_verdicts — because there the rows may legitimately not exist yet.)
+        self.assertIs(False, one(v, "never counted false"))
+
+    def test_a_refusal_naming_another_code_is_not_the_validate_arm(self):
+        v = m.c7_predicate_error_verdicts(vresp={"valid": False, "errors": [{"code":
+                                                                           "schema_error"}]})
+        self.assertEqual([], [l for l, _o, _d in v if "refused at validate" in l], str(v))
+
+    def test_the_eval_arm_measures_the_whole_ledger_story(self):
+        pub = {"revision_id": "rev-eval", "validate_status": 200, "publish_status": 201,
+               "vresp": {"valid": True, "errors": []}}
+        v = m.c7_eval_arm_verdicts(
+            pub, scope_row={"status": "failed", "outcome": "-",
+                            "failed_cause": "predicate_error"},
+            run_st="failed", events=[{"type": "node.scope.failed", "payload": {}}],
+            body_rows=canned_rows(1))
+        self.assertNotIn(False, [ok for _l, ok, _d in v], str(v))
+        self.assertTrue(one(v, "PUBLISHED"), "the validator admits a DECLARED field")
+        self.assertTrue(one(v, "at eval"))
+        self.assertTrue(one(v, "iterations_stopped=1"))
+        self.assertTrue(one(v, "NO run.completed"))
+
+    def test_the_eval_arm_fails_loudly_if_publish_refuses_the_probe(self):
+        """This is the falsification ADR-0075 names: if the reference table turned a
+        declared-optional field away too, the contract's eval arm is unreachable and
+        the row says so rather than GAPping forever."""
+        pub = {"revision_id": "", "validate_status": 200, "publish_status": 400,
+               "vresp": {"valid": False, "errors": [{"code": "unknown_field"}]}}
+        v = m.c7_eval_arm_verdicts(pub)
+        self.assertIs(False, one(v, "at eval"))
+        self.assertIn("UNMEASURED", detail(v, "at eval"))
+
+    def test_the_eval_arm_gap_is_only_a_missing_draft(self):
+        self.assertIs(None, one(m.c7_eval_arm_verdicts(None), "at eval"))
+        v = m.c7_eval_arm_verdicts({"revision_id": "r", "validate_status": 200,
+                                    "publish_status": 201,
+                                    "vresp": {"valid": True, "errors": []}})
+        self.assertIs(None, one(v, "iterations_stopped=1"))
+        self.assertIs(None, one(v, "NO run.completed"))
+
+    def test_the_eval_arm_fails_when_the_loop_outruns_the_error(self):
+        pub = {"revision_id": "r", "validate_status": 200, "publish_status": 201,
+               "vresp": {"valid": True, "errors": []}}
+        v = m.c7_eval_arm_verdicts(pub, scope_row={"status": "succeeded", "outcome": "-",
+                                                   "failed_cause": None},
+                                   run_st="completed",
+                                   events=[{"type": "run.completed", "payload": {}}],
+                                   body_rows=canned_rows(3))
+        self.assertIs(False, one(v, "never counted false"))
+        self.assertIs(False, one(v, "NO run.completed"))
+        self.assertIs(False, one(v, "at eval"))
+
+    def test_the_ledger_algebra_still_grads_a_run_without_a_publish_body(self):
+        """The eval arm ALSO produces a ledger story; c7_predicate_error_verdicts keeps
+        grading it (the published-probe path) with no GAP row at the end."""
         v = m.c7_predicate_error_verdicts(
             scope_row={"status": "failed", "outcome": "-", "failed_cause": "predicate_error"},
             run_st="failed", events=[{"type": "node.scope.failed", "payload": {}}],
             body_rows=canned_rows(1))
         self.assertNotIn(False, [ok for _l, ok, _d in v], str(v))
+        self.assertNotIn(None, [ok for _l, ok, _d in v], str(v))
 
     def test_fail_loop_kept_going_past_the_error(self):
         v = m.c7_predicate_error_verdicts(
@@ -381,13 +462,136 @@ class C7cIndeterminate(unittest.TestCase):
             run_st="failed", events=[], body_rows=canned_rows(2))
         self.assertIs(False, one(v, "iterations_stopped=1"))
 
-    def test_fail_predicate_counted_false_and_run_completed(self):
-        v = m.c7_predicate_error_verdicts(
-            scope_row={"status": "succeeded", "outcome": "-", "failed_cause": None},
-            run_st="completed", events=[{"type": "run.completed", "payload": {}}],
-            body_rows=canned_rows(3))
-        self.assertIs(False, one(v, "never counted false"))
-        self.assertIs(False, one(v, "NO run.completed"))
+
+TILT_TWIN = {
+    "apiVersion": "communication.dev/v1alpha1", "kind": "Pipeline",
+    "metadata": {"name": "feature-development-deterministic"},
+    "spec": {"nodes": [
+        {"id": "plan", "kind": "process.exec",
+         "config": {"executable": "m4-exit.sh", "args": ["plan"]}},
+        {"id": "approve", "kind": "human.approval", "dependsOn": ["plan"]},
+        {"id": "build_until_verified", "kind": "until", "dependsOn": ["approve"],
+         "config": {"maxIterations": 4, "carryForward": True,
+                    "passWhen": "nodes.test.outputs.result.successful == true && "
+                                "nodes.review.outputs.approved == true",
+                    "resultBindings": {"approved": "${{ nodes.review.outputs.approved }}"},
+                    "body": {"nodes": [
+                        {"id": "implement", "kind": "process.exec",
+                         "config": {"executable": "m4-exit.sh", "args": ["implement"]}},
+                        {"id": "test", "kind": "process.exec", "dependsOn": ["implement"],
+                         "config": {"executable": "m4-exit.sh", "args": ["test"]}},
+                        {"id": "review", "kind": "process.exec", "dependsOn": ["test"],
+                         "config": {"executable": "m4-exit.sh", "args": ["review"]},
+                         "outputs": {"type": "object", "required": ["approved", "evidence"],
+                                     "properties": {"approved": {"type": "boolean"},
+                                                    "evidence": {"type": "string"},
+                                                    "findings": {"type": "array",
+                                                                 "items": {"type": "string"}}}}},
+                    ]}},
+         "outputs": {"type": "object", "properties": {"approved": {"type": "boolean"}}}},
+    ]},
+}
+
+
+class C7cEvalProbe(unittest.TestCase):
+    """The eval arm's document: the bound loop with ONE extra DECLARED (not required)
+    property on the reviewer, and a passWhen that reads it. That single difference from
+    the validate probe is the difference compile.go draws — a selection the declared
+    schema CLOSES is refused; one the schema NAMES is admitted."""
+
+    def twin(self):
+        return yaml.safe_load(yaml.safe_dump(TILT_TWIN, indent=4, sort_keys=True))
+
+    def test_the_probe_declares_the_field_the_predicate_reads(self):
+        base = self.twin()
+        frozen = yaml.safe_load(yaml.safe_dump(base))
+        p = m.c7_eval_probe_doc(base, "m4x-c7-eval-a")
+        self.assertEqual(p["missing"], [], str(p["missing"]))
+        self.assertEqual(frozen, base, "the probe must not mutate the caller's document")
+        self.assertTrue(any(m.C7_EVAL_FIELD in a and "DECLARED" in a for a in p["applied"]),
+                        str(p["applied"]))
+        self.assertTrue(all(ok is True for _l, ok, _d in m.c7_eval_arm_doc_verdicts(p)),
+                        str(m.c7_eval_arm_doc_verdicts(p)))
+        review = p["edited"]["spec"]["nodes"][2]["config"]["body"]["nodes"][2]
+        props = review["outputs"]["properties"]
+        self.assertEqual(props[m.C7_EVAL_FIELD], {"type": "boolean"})
+        self.assertNotIn(m.C7_EVAL_FIELD, review["outputs"]["required"],
+                         "a REQUIRED field the reply never carries is refused by the "
+                         "outputs validator as invalid_output, not by the predicate")
+        self.assertEqual(p["edited"]["spec"]["nodes"][2]["config"]["passWhen"],
+                         f"nodes.{m.C7_EVAL_PROBE_NODE}.outputs.{m.C7_EVAL_FIELD} == true")
+        self.assertEqual(p["edited"]["spec"]["nodes"][2]["config"]["maxIterations"],
+                         m.C7_MAX_ITERATIONS)
+        self.assertEqual(p["edited"]["metadata"]["name"], "m4x-c7-eval-a")
+
+    def test_the_probe_changes_nothing_but_the_predicate_and_one_property(self):
+        """The whole-document proof, not a spot check: the authored probe equals the
+        bound twin with the name, the bound, the predicate and ONE declared property
+        moved. Anything else the probe touched would confound the arm."""
+        p = m.c7_eval_probe_doc(self.twin(), "m4x-c7-eval-b")
+        want = yaml.safe_load(yaml.safe_dump(TILT_TWIN, indent=4, sort_keys=True))
+        want["metadata"]["name"] = "m4x-c7-eval-b"
+        cfg = want["spec"]["nodes"][2]["config"]
+        cfg["maxIterations"] = m.C7_MAX_ITERATIONS
+        cfg["passWhen"] = f"nodes.{m.C7_EVAL_PROBE_NODE}.outputs.{m.C7_EVAL_FIELD} == true"
+        cfg["body"]["nodes"][2]["outputs"]["properties"][m.C7_EVAL_FIELD] = {"type": "boolean"}
+        self.assertEqual(want, p["edited"],
+                         "the eval probe moved a node, a binding or a predicate other "
+                         "than the ones ADR-0075's arm names")
+
+    def test_a_twin_that_already_declares_the_field_refuses_to_guess(self):
+        doc = self.twin()
+        review = doc["spec"]["nodes"][2]["config"]["body"]["nodes"][2]
+        review["outputs"]["properties"][m.C7_EVAL_FIELD] = {"type": "boolean"}
+        p = m.c7_eval_probe_doc(doc, "m4x-c7-eval-c")
+        self.assertIsNone(p["doc"])
+        self.assertTrue(any(m.C7_EVAL_FIELD in x for x in p["missing"]), str(p["missing"]))
+        v = m.c7_eval_arm_doc_verdicts(p)
+        self.assertNotIn(True, [ok for _l, ok, _d in v], str(v))
+
+    def test_a_required_field_is_refused(self):
+        doc = self.twin()
+        review = doc["spec"]["nodes"][2]["config"]["body"]["nodes"][2]
+        review["outputs"]["required"].append(m.C7_EVAL_FIELD)
+        p = m.c7_eval_probe_doc(doc, "m4x-c7-eval-d")
+        self.assertIsNone(p["doc"], "the emitted probe declared the field REQUIRED")
+        self.assertTrue(any("required" in x for x in p["missing"]), str(p["missing"]))
+
+    def test_a_closed_or_absent_schema_is_refused(self):
+        for mutate, needle in (
+                (lambda d: d["spec"]["nodes"][2]["config"]["body"]["nodes"][2].pop("outputs"),
+                 "declared outputs"),
+                (lambda d: d["spec"]["nodes"][2]["config"]["body"][
+                    "nodes"][2]["outputs"].pop("properties"), "outputs.properties"),
+                (lambda d: d["spec"]["nodes"][2]["config"].pop("maxIterations"),
+                 "maxIterations"),
+                (lambda d: d["spec"]["nodes"][2]["config"]["body"]["nodes"].pop(2),
+                 "review node")):
+            doc = self.twin()
+            mutate(doc)
+            p = m.c7_eval_probe_doc(doc, "m4x-c7-eval-e")
+            self.assertIsNone(p["doc"], str(mutate))
+            self.assertTrue(any(needle in x for x in p["missing"]),
+                            f"{needle}: {p['missing']}")
+        for junk in ({"apiVersion": "v1", "kind": "Thing"}, None, "kind: Thing"):
+            self.assertTrue(m.c7_eval_probe_doc(junk, "n")["missing"])
+
+    def test_the_gate_wires_both_arms(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = src.split("def c7():")[1].split("\ndef c8(")[0]
+        self.assertIn("c7_eval_probe_doc(", body)
+        self.assertIn("c7_eval_arm_verdicts(", body)
+        self.assertIn("c7_eval_arm_doc_verdicts(", body)
+        self.assertLess(body.index("c7_eval_probe_doc("), body.index('CTX["c7"] = {'))
+        # The old wording is what must not come back: the arm was GAPped as a thing
+        # the lab could not build. GAPs remain for a probe the API would not take
+        # (no draft, no run), which is an infrastructure fact, not the row's excuse.
+        c7c = body[body.index("C7c \u2014 indeterminate is NOT false"):]
+        for phrase in ("stays a GAP", "never built", "eval-time arm GAP",
+                       "the eval-time arm GAP"):
+            self.assertNotIn(phrase, c7c, "C7c's arms are authored and measured")
+        self.assertIn("m4x-c7-eval", body)
 
 
 class C7dCarryForward(unittest.TestCase):
