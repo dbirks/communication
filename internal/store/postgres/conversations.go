@@ -350,9 +350,11 @@ type CnvSummary struct {
 	// the run it is linked to. Both empty when neither says one.
 	RepositoryID   string
 	RepositoryName string
-	// LastAgentLine (ADR-0065): the newest agent message chunk rendered to a
-	// single preview line (cnvLastAgentLine); empty when the agent has not
-	// spoken.
+	// LastAgentLine (ADR-0065, amended 2026-11-05): the newest agent message
+	// chunk THAT HAS WORDS (letters or digits — cnvLastAgentSubquery skips
+	// blank/markup-only chunks so a streaming agent does not flicker the row)
+	// rendered to a single preview line (cnvLastAgentLine); empty when no
+	// agent chunk says anything readable.
 	LastAgentLine string
 }
 
@@ -1518,12 +1520,27 @@ const cnvRunRepoSubquery = `
 		) runrepo ON true`
 
 // cnvLastAgentSubquery selects the newest agent-message chunk of the
-// conversation's transcript (ADR-0065): the last `conversation.message.agent`
-// journal row by global_seq, the order the transcript itself renders in. The
-// chunk is bounded by the worker's MaxChunkBytes at write time; the preview
-// line is cut further by cnvLastAgentLine. The lateral rides the partial
-// index domain_events_conversation_agent_message_idx (migration 00021):
-// a conversation whose agent never spoke is one empty index seek, not a
+// conversation's transcript THAT HAS WORDS (ADR-0065 as amended 2026-11-05):
+// the last `conversation.message.agent` journal row by global_seq whose text
+// carries at least one letter or digit, the order the transcript itself
+// renders in. The chunk is bounded by the worker's MaxChunkBytes at write
+// time; the preview line is cut further by cnvLastAgentLine.
+//
+// The alnum predicate is the fix for the mid-turn flicker the acceptance lab
+// caught on run 41977664801: while the agent streams, the newest chunk is
+// often whitespace, a lone newline or markup only (`"- "`, `"**"`, `"\n\n"`),
+// which cnvLastAgentLine renders as nothing — so the row's last line vanished
+// for a second and came back, on every list width. Skipping chunks with no
+// letters or digits keeps the LAST SPOKEN SENTENCE on the row until the agent
+// says something new. A thread whose agent has only ever emitted such a chunk
+// previews as null, the same honest answer as a silent agent: the row never
+// invents a line the transcript does not hold.
+//
+// The predicate is a plain filter on `payload`, never a function on the
+// indexed columns, so the lateral still rides the partial index
+// domain_events_conversation_agent_message_idx (migration 00021): the walk is
+// the same global_seq DESC descent, stopping at the first matching row. A
+// conversation whose agent never spoke stays one empty index seek, not a
 // backward walk over its whole event stream (ADR-0063).
 const cnvLastAgentSubquery = `
 		LEFT JOIN LATERAL (
@@ -1531,6 +1548,7 @@ const cnvLastAgentSubquery = `
 		    FROM domain_events e
 		    WHERE e.conversation_id = c.id
 		      AND e.type = 'conversation.message.agent'
+		      AND e.payload ->> 'text' ~ '[[:alnum:]]'
 		    ORDER BY e.global_seq DESC
 		    LIMIT 1
 		) lastmsg ON true`

@@ -508,3 +508,103 @@ func TestCnvLastAgentLine(t *testing.T) {
 		})
 	}
 }
+
+// TestConversationListLastAgentLineSkipsWordlessChunks is ADR-0065's amendment
+// of 2026-11-05 proven against a real PostgreSQL (acceptance run
+// 41977664801, verification pass 2): the project overview's RECENT THREADS row
+// for a running thread showed "The repo is a fixture whose tests fail on
+// purpose. Plan:" in the 1280 capture and NOTHING one second later in the 390
+// capture. The renderer was innocent — the newest conversation.message.agent
+// chunk had changed, and while an agent streams that newest chunk is often
+// whitespace or markup only ("\n\n", "- ", "**"), which renders as nothing. So
+// the preview is now the newest agent chunk WITH WORDS: chunks with no letters
+// or digits are skipped in SQL (cnvLastAgentSubquery), and the row keeps the
+// sentence the agent last actually said until a new one arrives. Both list
+// READS answer from the same lateral, so both are asserted here.
+func TestConversationListLastAgentLineSkipsWordlessChunks(t *testing.T) {
+	f := cnvSetup(t)
+	ctx := f.ctx()
+
+	// streaming: one real sentence, then the two wordless chunks a turn ends
+	// on while the model is mid-list — a blank separator and a lone bullet.
+	streaming := f.cnvCreate(t, f.alice, "Plan · feature-development", "")
+	clAgentMessage(t, f, streaming.ID, "The repo is a fixture. Plan:")
+	clAgentMessage(t, f, streaming.ID, "\n\n")
+	clAgentMessage(t, f, streaming.ID, "- ")
+
+	// markupOnly: the agent has emitted nothing readable yet. The row stays
+	// null — the same honest answer as a thread whose agent never spoke, and
+	// the reason the row never prints a lone `**` or `"]}}` any more.
+	markupOnly := f.cnvCreate(t, f.alice, "Nothing readable yet", "")
+	clAgentMessage(t, f, markupOnly.ID, "\n")
+	clAgentMessage(t, f, markupOnly.ID, "**")
+
+	// silent: no agent row at all — the empty-seek case the partial index of
+	// migration 00021 buys (the predicate filters `payload`, never an indexed
+	// column, so the descent is unchanged).
+	silent := f.cnvCreate(t, f.alice, "Silent thread", "")
+
+	// clLastAgentLines asserts the wanted preview on the project-scoped READ
+	// and requires the cross-project READ (the /threads page) to answer the
+	// same line for every row.
+	clLastAgentLines := func(want map[string]string) {
+		t.Helper()
+		items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
+		if err != nil {
+			t.Fatalf("ListConversations: %v", err)
+		}
+		got := map[string]string{}
+		for _, cv := range items {
+			got[cv.ID] = cv.LastAgentLine
+		}
+		xp := APICrossProjectStore{Pool: f.pool}
+		views, _, err := xp.ListVisibleConversations(ctx,
+			api.Caller{UserID: f.bob, OrganizationID: f.orgID}, 50, "")
+		if err != nil {
+			t.Fatalf("ListVisibleConversations: %v", err)
+		}
+		for _, v := range views {
+			line := ""
+			if v.LastAgentLine != nil {
+				line = *v.LastAgentLine
+			}
+			if got[v.ID] != line {
+				t.Errorf("row %s: project read %q, cross-project read %q — the two reads disagree",
+					v.ID, got[v.ID], line)
+			}
+		}
+		if len(views) != len(items) {
+			t.Fatalf("cross-project list returned %d rows, project list %d", len(views), len(items))
+		}
+		for id, w := range want {
+			if got[id] != w {
+				t.Errorf("row %s: last_agent_line = %q, want %q", id, got[id], w)
+			}
+		}
+	}
+
+	clLastAgentLines(map[string]string{
+		streaming.ID:  "The repo is a fixture. Plan:",
+		markupOnly.ID: "",
+		silent.ID:     "",
+	})
+
+	// The next chunk WITH words replaces the preview: skipping wordless chunks
+	// is a fallback, not a freeze. Whitespace around real words still trims to
+	// them — the predicate asks for a letter or a digit, not for an
+	// untrimmed line.
+	clAgentMessage(t, f, streaming.ID, "1. Fix the failing test in hello.py.")
+	clAgentMessage(t, f, markupOnly.ID, "  hello  ")
+	spoken := map[string]string{
+		streaming.ID:  "1. Fix the failing test in hello.py.",
+		markupOnly.ID: "hello",
+		silent.ID:     "",
+	}
+	clLastAgentLines(spoken)
+
+	// And the wordless chunks that stream in AFTER it do not take the line
+	// away again — the flicker, pinned off.
+	clAgentMessage(t, f, streaming.ID, "\n\n")
+	clAgentMessage(t, f, streaming.ID, "**")
+	clLastAgentLines(spoken)
+}

@@ -226,3 +226,30 @@ Amended (2026-10-27, after the same commit was seen on the lab at `a6e06bb`):
    (`ConversationSummary.last_agent_line`) and `ui/src/api/schema.d.ts` (generated)
    carry the same text; the plain rule, the 160-rune cap, the null-means-silent
    rule, the SQL, the indexes and the additive-ness of the members are unchanged.
+
+Amended (2026-11-05, acceptance run `41977664801` verification pass 2):
+
+1. **The preview skips chunks with no letters or digits.** `last_agent_line` is now
+   the newest `conversation.message.agent` chunk **that has words**:
+   `cnvLastAgentSubquery` adds `AND e.payload ->> 'text' ~ '[[:alnum:]]'` to the seek,
+   because while an agent streams the newest row is often whitespace or markup only
+   (`"\n\n"`, `"- "`, `"**"`) — text that renders as no line at all, so a running
+   thread's last line vanished and came back (the project-1b capture at 1280 held
+   `The repo is a fixture whose tests fail on purpose. Plan:`, the same row at 390 one
+   second later held nothing). A thread whose agent has emitted only such chunks
+   answers null, the same honest answer as a silent one — and wordless punctuation can
+   no longer stand in for a line (`TestConversationListJSONTailLastAgentLine`'s
+   `bareTail` moves from `structured output` to null for exactly that reason; the
+   mid-blob tail that still carries letters keeps saying `structured output`). The
+   predicate filters `payload` and never an indexed column, so the lateral still rides
+   `domain_events_conversation_agent_message_idx` (`EXPLAIN`: `Index Scan … Filter:
+   ((payload ->> 'text') ~ '[[:alnum:]]')`, `Index Searches: 1`), `ORDER BY global_seq
+   DESC LIMIT 1` is unchanged, and both list READS move together because both compose
+   the same `cnvListSummaryExtraJoins`. `cnvLastAgentLine`, the 160-rune cap and the
+   structured-output arm are unchanged, as are the schema members — `api/openapi.yaml`
+   still reads "the newest `conversation.message.agent` journal row's text", which this
+   amendment qualifies (its wording, and the generated `ui/src/api/schema.d.ts`, change
+   together in one commit or not at all, since CI fails on that drift). Pinned on real
+   PostgreSQL by `TestConversationListLastAgentLineSkipsWordlessChunks`: the sentence →
+   `"\n\n"` → `"- "` stream still previews the sentence in the project list and the
+   cross-project list, and the next chunk with words replaces it.

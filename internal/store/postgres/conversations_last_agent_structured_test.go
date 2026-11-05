@@ -135,7 +135,16 @@ func TestConversationListLastAgentLineNewestChunk(t *testing.T) {
 // the real read: the worker's chunk cap (DefaultMaxChunkBytes) splits a run
 // node's structured output mid-blob, so the NEWEST agent chunk is its tail.
 // The row must say `structured output` — never the blob's punctuation, the
-// `"]}}` the list printed.
+// `"]}}` // `"]}}` the list printed.
+//
+// Amended (2026-11-05, ADR-0065): the chunk the read looks at is now the newest
+// one WITH WORDS. A tail that still carries letters (chunkedPlan's `"files":
+// ["a.ts",` …) is such a chunk and says `structured output` as before; a thread
+// whose ONLY agent chunk is bare punctuation (bareTail) has said nothing
+// readable, so the row is null. The round-11 leak stays closed — and wordless
+// punctuation can no longer stand in for a preview line at all, which is what
+// made a streaming row's line flicker away mid-turn (see
+// TestConversationListLastAgentLineSkipsWordlessChunks).
 func TestConversationListJSONTailLastAgentLine(t *testing.T) {
 	f := cnvSetup(t)
 	ctx := f.ctx()
@@ -151,7 +160,7 @@ func TestConversationListJSONTailLastAgentLine(t *testing.T) {
 
 	want := map[string]string{
 		chunkedPlan.ID: "structured output",
-		bareTail.ID:    "structured output",
+		bareTail.ID:    "",
 	}
 
 	items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "", "")
@@ -168,7 +177,7 @@ func TestConversationListJSONTailLastAgentLine(t *testing.T) {
 	}
 
 	// The /threads page read shares the renderer, so the same tails answer the
-	// same line there.
+	// same line there — and an empty want means literal null on the wire.
 	xp := APICrossProjectStore{Pool: f.pool}
 	views, _, err := xp.ListVisibleConversations(ctx,
 		api.Caller{UserID: f.bob, OrganizationID: f.orgID}, 50, "")
@@ -183,6 +192,12 @@ func TestConversationListJSONTailLastAgentLine(t *testing.T) {
 		v, ok := byView[id]
 		if !ok {
 			t.Fatalf("cross-project list misses conversation %s", id)
+		}
+		if w == "" {
+			if v.LastAgentLine != nil {
+				t.Errorf("cross row %s: last_agent_line = %q, want null", id, *v.LastAgentLine)
+			}
+			continue
 		}
 		if v.LastAgentLine == nil || *v.LastAgentLine != w {
 			t.Errorf("cross row %s: last_agent_line = %v, want %q", id, v.LastAgentLine, w)
