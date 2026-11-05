@@ -1668,7 +1668,7 @@ func outputsEnvelope(val any) (AttemptResult, *AttemptResult) {
 // carried — and the caller MUST journal every one, because neither is silently
 // a success.
 func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof AgentProfile, text string) (AttemptResult, []outputNote, *AttemptResult) {
-	ex := selectOutputDocument(text, a.outputsChecker(c))
+	ex := selectOutputDocument(text, a.outputsChecker(c), declaredOutputProperties(c.OutputsSchema))
 	if ex.failed != nil {
 		r := invalidOutput(*ex.failed)
 		return AttemptResult{}, nil, &r
@@ -1703,7 +1703,8 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 //     verified, and a thought is the least trustworthy text in the journal
 //     (events.ThoughtPayload: "never as evidence of what the agent did").
 //   - the document must be one the node's own judge ACCEPTS — selectOutputDocument's
-//     valid arm or its disjoint-union merge, never its refused pick and never
+//     most-complete-valid winner (an accepted object or its disjoint-union
+//     merge), never its refused pick and never
 //     a verdict on a schema it could not compile. The reply channel's own
 //     failure evidence is what the attempt reports when the thought does not
 //     validate: this arm can only rescue, never add a new way to fail.
@@ -1717,7 +1718,7 @@ func (a *AgentTurn) outputsFromThought(c AttemptClaim, message, thought string) 
 	if c.OutputsSchema == nil || strings.TrimSpace(thought) == "" || !chatterOnly(message) {
 		return AttemptResult{}, nil, false
 	}
-	ex := selectOutputDocument(thought, a.outputsChecker(c))
+	ex := selectOutputDocument(thought, a.outputsChecker(c), declaredOutputProperties(c.OutputsSchema))
 	if ex.failed != nil || ex.rejection != nil || ex.unverified || ex.value == nil {
 		// No accepted document: the attempt fails exactly as it did before this
 		// arm existed, on the reply channel's own evidence.
@@ -1785,7 +1786,7 @@ type outputSelection struct {
 // exactly as before the schema-aware arm. Every extraction test pinned here
 // still pins this behaviour.
 func extractStructuredOutput(text string) (any, *string) {
-	ex := selectOutputDocument(text, nil)
+	ex := selectOutputDocument(text, nil, nil)
 	if ex.failed != nil {
 		return nil, ex.failed
 	}
@@ -1815,22 +1816,30 @@ func extractStructuredOutput(text string) (any, *string) {
 // the document the agent actually answered with.
 //
 // When a judge is present (the node declared an outputs schema) the pick is
-// schema-aware: among the candidates that decode to JSON objects, the FIRST
-// one that validates wins. If none validates alone and two or more decoded
-// top-level objects carry pairwise-DISJOINT keys whose UNION validates, the
-// model split ONE answer across objects (run 42079149686, C1c: the /implement
-// reply ended `…valid Python."} {"files_changed": ["app/hello.py"]}` — a
-// summary object and a files_changed object; the extractor took the second,
-// the envelope lacked summary, and the review prompt's
-// `${{ nodes.implement.outputs.summary }}` died binding_error) and the union
-// is accepted with an honest note, never silently. Otherwise today's pick
-// stands and carries the schema errors as evidence (invalid_output, unchanged
-// semantics). The schema rule itself is untouched — this function only
-// chooses WHICH document to hand it, through the boundary's own
-// implementation; the chosen document — even today's refused pick — still
-// travels to the engine's validation at Complete, which reports the schema
-// errors with unchanged semantics.
-func selectOutputDocument(text string, check outputJudge) outputSelection {
+// schema-aware MOST-COMPLETE-VALID selection. The candidate set is every
+// decoded top-level object PLUS the pairwise-disjoint union of them all (the
+// split-answer merge path); among the candidates that validate, the one that
+// carries the MOST of the schema's declared top-level properties wins, and
+// ties go to the earliest in candidate order (decoded objects in reply order,
+// the union last). With a single object the rule degrades to the old
+// first-valid-wins exactly, and a schema whose declared properties this layer
+// cannot read scores every candidate equally, so the earliest valid pick
+// stands there too. The union wins only by STRICTLY out-completing every
+// valid object: run 42079149686 (C1c, `…valid Python."} {"files_changed":
+// ["app/hello.py"]}` — neither object validated alone against a schema
+// requiring both, the union does) and run 42102418191 (C1c, the /implement
+// schema requires only `summary`, so the leading `{"summary": …}` fragment
+// validated alone and the old first-valid rule took it, dropping the
+// trailing `{"files_changed": […]}` object; `/build_until_verified[2]/review`
+// then died binding_error on `${{ nodes.implement.outputs.files_changed }}`)
+// are both the merged shape, journalled with an honest note, never silently.
+// Otherwise today's pick stands and carries the schema errors as evidence
+// (invalid_output, unchanged semantics). The schema rule itself is untouched
+// — this function only chooses WHICH document to hand it, through the
+// boundary's own implementation; the chosen document — even today's refused
+// pick — still travels to the engine's validation at Complete, which reports
+// the schema errors with unchanged semantics.
+func selectOutputDocument(text string, check outputJudge, declared map[string]bool) outputSelection {
 	fail := func(msg string) outputSelection {
 		return outputSelection{failed: &msg}
 	}
@@ -1854,6 +1863,8 @@ func selectOutputDocument(text string, check outputJudge) outputSelection {
 	var firstObject any // today's pick: the first candidate that decoded to an object
 	var firstRejection *runtime.OutputRejection
 	var objects []map[string]any // decoded TOP-LEVEL spans, in reply order
+	var accepted []any           // candidates the judge ACCEPTED, in candidate order
+	var acceptedScore []int      // declared-property completeness of each accepted candidate
 	for idx, cand := range candidates {
 		dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(cand)))
 		dec.UseNumber() // integers stay integers into outputs and digests
@@ -1882,26 +1893,90 @@ func selectOutputDocument(text string, check outputJudge) outputSelection {
 			return outputSelection{value: firstObject, unverified: true}
 		}
 		if ok {
-			return outputSelection{value: val}
-		}
-		if firstRejection == nil {
+			accepted = append(accepted, val)
+			acceptedScore = append(acceptedScore, documentCompleteness(val, declared))
+		} else if firstRejection == nil {
 			firstRejection = rej
 		}
 	}
-	if firstObject != nil {
-		// Nothing validated alone. One split shape is worth accepting: the
-		// disjoint-union arm below. Everything else stays today's behaviour —
-		// the first decoded object, now WITH the schema errors as evidence.
-		if merged, n, ok := mergeSplitAnswer(objects, check); ok {
-			return outputSelection{
-				value: merged,
-				note: fmt.Sprintf("merged %d objects: the agent split one answer across %d top-level JSON objects (%s); their pairwise-disjoint union validates against the node's declared outputs schema",
-					n, n, describeObjectKeys(objects)),
+	if firstObject == nil {
+		return fail("agent reply is not a JSON object; structuredOutput extraction failed (§ 4 step 6) and the engine's schema validation never got a document to judge")
+	}
+	if len(accepted) > 0 {
+		best := 0
+		for i := 1; i < len(accepted); i++ {
+			if acceptedScore[i] > acceptedScore[best] {
+				best = i
 			}
 		}
-		return outputSelection{value: firstObject, rejection: firstRejection}
+		// The disjoint-union merge is the LAST candidate in candidate order,
+		// so under ties-earn-earliest it wins only by STRICTLY out-completing
+		// the best valid object. When the declared properties are unknown
+		// every score is 0 and the earliest valid object stands — the old
+		// first-valid-wins pick, unchanged.
+		if merged, n, ok := mergeSplitAnswer(objects, check); ok &&
+			documentCompleteness(merged, declared) > acceptedScore[best] {
+			return mergedAnswerSelection(merged, n, objects)
+		}
+		return outputSelection{value: accepted[best]}
 	}
-	return fail("agent reply is not a JSON object; structuredOutput extraction failed (§ 4 step 6) and the engine's schema validation never got a document to judge")
+	// Nothing validated alone. One split shape is still worth accepting: the
+	// disjoint-union arm below. Everything else stays today's behaviour —
+	// the first decoded object, now WITH the schema errors as evidence.
+	if merged, n, ok := mergeSplitAnswer(objects, check); ok {
+		return mergedAnswerSelection(merged, n, objects)
+	}
+	return outputSelection{value: firstObject, rejection: firstRejection}
+}
+
+// mergedAnswerSelection wraps an accepted disjoint union with the honest
+// note every merge owes (the outputs_merged transcript row).
+func mergedAnswerSelection(merged any, n int, objects []map[string]any) outputSelection {
+	return outputSelection{
+		value: merged,
+		note: fmt.Sprintf("merged %d objects: the agent split one answer across %d top-level JSON objects (%s); their pairwise-disjoint union validates against the node's declared outputs schema",
+			n, n, describeObjectKeys(objects)),
+	}
+}
+
+// declaredOutputProperties returns the TOP-LEVEL property names the node's
+// declared outputs schema enumerates, as the membership set most-complete
+// selection scores candidates against (selectOutputDocument). A schema this
+// function cannot read (nil, non-object, no properties map) yields nil:
+// scoring then rates every valid candidate equal and the earliest wins, which
+// is exactly the pre-existing first-valid behaviour — the rule degrades to
+// today's pick, never to a guess.
+func declaredOutputProperties(schema any) map[string]bool {
+	obj, ok := jsonMap(schema)
+	if !ok {
+		return nil
+	}
+	props, ok := jsonMap(obj["properties"])
+	if !ok || len(props) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(props))
+	for name := range props {
+		set[name] = true
+	}
+	return set
+}
+
+// documentCompleteness counts how many of the schema's declared top-level
+// properties a candidate document actually carries. With no declared set
+// readable it scores 0 — every candidate equal, earliest wins, unchanged.
+func documentCompleteness(doc any, declared map[string]bool) int {
+	if len(declared) == 0 {
+		return 0
+	}
+	obj, _ := doc.(map[string]any)
+	n := 0
+	for k := range obj {
+		if declared[k] {
+			n++
+		}
+	}
+	return n
 }
 
 // mergeSplitAnswer accepts the ONE split shape worth accepting: two or more
@@ -1909,7 +1984,10 @@ func selectOutputDocument(text string, check outputJudge) outputSelection {
 // DIFFERENT piece of the declared answer — run 42079149686's summary object
 // and files_changed object) and whose union validates against the schema.
 // Overlapping keys mean the model answered the same field twice, not once in
-// pieces: no merge. A merge is never silent — the note is part of the verdict.
+// pieces: no merge. The union is a CANDIDATE, not an override: most-complete
+// selection lets it win only when it strictly out-completes every valid
+// object, or when nothing validated alone. A merge is never silent — the note
+// is part of the verdict.
 func mergeSplitAnswer(objects []map[string]any, check outputJudge) (any, int, bool) {
 	if check == nil || len(objects) < 2 {
 		return nil, 0, false

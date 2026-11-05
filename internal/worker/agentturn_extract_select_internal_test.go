@@ -23,15 +23,18 @@ import (
 	"github.com/dbirks/communication/internal/pipelines/runtime"
 )
 
-func judgeFor(t *testing.T, schema any) outputJudge {
+func judgeFor(t *testing.T, schema any) (outputJudge, map[string]bool) {
 	t.Helper()
-	return func(doc any) (bool, *runtime.OutputRejection, error) {
+	check := func(doc any) (bool, *runtime.OutputRejection, error) {
 		rej, err := runtime.CheckNodeOutputs("\x00test\x00"+t.Name(), t.Name(), schema, doc)
 		if err != nil {
 			return false, nil, err
 		}
 		return rej == nil, rej, nil
 	}
+	// The declared-property set is derived through the SAME production helper
+	// the worker uses, so these tests pin the real selection rule.
+	return check, declaredOutputProperties(schema)
 }
 
 // implementSchema is /implement's declared outputs with BOTH fields required
@@ -78,7 +81,8 @@ func decodeSelected(t *testing.T, ex outputSelection) map[string]any {
 // object + files_changed object, neither validates alone, keys are disjoint,
 // the union validates — merged, with the honest note and no rejection.
 func TestSelectOutputDocumentMergesSplitAnswer(t *testing.T) {
-	ex := selectOutputDocument(splitReply, judgeFor(t, implementSchema()))
+	judge, declared := judgeFor(t, implementSchema())
+	ex := selectOutputDocument(splitReply, judge, declared)
 	obj := decodeSelected(t, ex)
 	if s, _ := obj["summary"].(string); !strings.Contains(s, "syntactically valid Python.") {
 		t.Fatalf("summary = %q, want the journaled reply's summary", s)
@@ -96,15 +100,24 @@ func TestSelectOutputDocumentMergesSplitAnswer(t *testing.T) {
 	}
 
 	// The same reply against a schema where the FIRST object already
-	// validates (summary-only required) needs no merge: first valid wins
-	// and no note is owed.
-	ex2 := selectOutputDocument(splitReply, judgeFor(t, implementSchema("summary")))
+	// validates (summary-only required): under the OLD first-valid-wins rule
+	// this took the summary fragment whole and dropped files_changed — the
+	// exact shape that lost run 42102418191 (the review prompt's
+	// `${{ nodes.implement.outputs.files_changed }}` died binding_error).
+	// Selection is now most-complete-valid: the disjoint union carries BOTH
+	// declared properties, strictly out-completes each valid fragment, and
+	// wins — with the honest merge note.
+	judge2, declared2 := judgeFor(t, implementSchema("summary"))
+	ex2 := selectOutputDocument(splitReply, judge2, declared2)
 	obj2 := decodeSelected(t, ex2)
-	if _, has := obj2["files_changed"]; has {
-		t.Fatalf("a valid first candidate must be taken whole, not merged: %v", obj2)
+	if _, has := obj2["summary"]; !has {
+		t.Fatalf("most-complete pick %v lacks summary", obj2)
 	}
-	if ex2.note != "" {
-		t.Fatalf("note = %q, want empty — nothing was merged", ex2.note)
+	if _, has := obj2["files_changed"]; !has {
+		t.Fatalf("most-complete pick %v lacks files_changed — the union strictly out-completes the valid summary fragment and must win", obj2)
+	}
+	if !strings.Contains(ex2.note, "merged 2 objects") {
+		t.Fatalf("note = %q, want the 'merged 2 objects' evidence line — a merged winner is never silent", ex2.note)
 	}
 
 	// Schema-blind, today's pick is unchanged: the FIRST decoded object
@@ -121,8 +134,61 @@ func TestSelectOutputDocumentMergesSplitAnswer(t *testing.T) {
 	}
 }
 
+// TestSelectOutputDocumentMostCompleteWinsOnTheIncidentReply replays run
+// 42102418191's /implement answer verbatim in shape (evidence m4.out seq=320):
+// a valid `{"summary": …}` fragment followed by a valid `{"files_changed": …}`
+// object against document 1's schema (required [summary], files_changed
+// optional). First-valid-wins took the fragment and the run died
+// binding_error; the merged union must win with BOTH fields present.
+func TestSelectOutputDocumentMostCompleteWinsOnTheIncidentReply(t *testing.T) {
+	reply := `{"summary": "The approved plan was already largely in place from the prior pass, so I verified each acceptance criterion against the working tree and made two small hardening edits."} {"files_changed": ["app/hello.py", "app/tests/test_hello.py", "app/README.md", "app/build/test-result.json"]}`
+	judge, declared := judgeFor(t, implementSchema("summary"))
+	ex := selectOutputDocument(reply, judge, declared)
+	obj := decodeSelected(t, ex)
+	if s, _ := obj["summary"].(string); !strings.HasPrefix(s, "The approved plan") {
+		t.Fatalf("summary = %q, want the fragment's summary carried through", s)
+	}
+	paths, _ := obj["files_changed"].([]any)
+	if len(paths) != 4 || paths[0] != "app/hello.py" {
+		t.Fatalf("files_changed = %v, want all four reported paths", obj["files_changed"])
+	}
+	if ex.rejection != nil {
+		t.Fatalf("a merged winner must not carry a rejection: %v", ex.rejection)
+	}
+	if !strings.Contains(ex.note, "merged 2 objects") {
+		t.Fatalf("note = %q, want the 'merged 2 objects' evidence line", ex.note)
+	}
+
+	// The same reply through attachOutputs: success, both fields, and exactly
+	// the one outputs_merged note the caller journals.
+	c := AttemptClaim{
+		AttemptID: "a1", RunID: "r1", NodeID: "/implement",
+		NodeInstanceKey: "/build_until_verified[2]/implement",
+		OutputsSchema:   implementSchema("summary"),
+	}
+	built, notes, fail := (&AgentTurn{}).attachOutputs(c, agentTurnSpec{}, AgentProfile{}, reply)
+	if fail != nil {
+		t.Fatalf("the incident reply must now succeed merged: %+v", *fail)
+	}
+	both := built.Outputs.(map[string]any)
+	if _, has := both["summary"]; !has {
+		t.Fatalf("outputs %v lack summary", both)
+	}
+	if _, has := both["files_changed"]; !has {
+		t.Fatalf("outputs %v lack files_changed — the review binding needs them", both)
+	}
+	if len(notes) != 1 || notes[0].kind != noticeKindOutputsMerged {
+		t.Fatalf("notes = %+v, want the one outputs_merged row", notes)
+	}
+}
+
 // TestSelectOutputDocumentPicksFirstValidObject: two objects, only the second
-// validates — the second is taken, no merge note, no rejection.
+// validates — the second is taken, no merge note, no rejection. The union of
+// these objects is disjoint and validates too, but carries the SAME number of
+// declared properties (the schema declares only approved+evidence), so the
+// tie breaks to the earliest candidate: the valid object is taken whole and
+// the junk-object's `note` key never rides along. Ties -> earliest keeps this
+// pre-most-complete behaviour exactly.
 func TestSelectOutputDocumentPicksFirstValidObject(t *testing.T) {
 	reply := `{"note": "thinking out loud"} {"approved": true, "evidence": "pytest green, 12 passed"}`
 	schema := map[string]any{
@@ -133,10 +199,14 @@ func TestSelectOutputDocumentPicksFirstValidObject(t *testing.T) {
 			"evidence": map[string]any{"type": "string"},
 		},
 	}
-	ex := selectOutputDocument(reply, judgeFor(t, schema))
+	judge, declared := judgeFor(t, schema)
+	ex := selectOutputDocument(reply, judge, declared)
 	obj := decodeSelected(t, ex)
 	if obj["approved"] != true {
 		t.Fatalf("selected %v, want the SECOND object (the one that validates)", obj)
+	}
+	if _, has := obj["note"]; has {
+		t.Fatalf("selected %v, want the valid object whole — the union only wins by STRICTLY out-completing it", obj)
 	}
 	if ex.note != "" || ex.rejection != nil {
 		t.Fatalf("note=%q rejection=%v, want neither — a valid candidate is taken whole", ex.note, ex.rejection)
@@ -149,7 +219,8 @@ func TestSelectOutputDocumentPicksFirstValidObject(t *testing.T) {
 // semantics — the document travels to the engine, which validates at Complete.
 func TestSelectOutputDocumentOverlappingKeysNoMerge(t *testing.T) {
 	reply := `{"summary": "first half"} {"summary": "second half", "files_changed": "app/hello.py"}`
-	ex := selectOutputDocument(reply, judgeFor(t, implementSchema()))
+	judge, declared := judgeFor(t, implementSchema())
+	ex := selectOutputDocument(reply, judge, declared)
 	obj := decodeSelected(t, ex)
 	if obj["summary"] != "first half" {
 		t.Fatalf("pick = %v, want today's choice (the first decoded object)", obj)

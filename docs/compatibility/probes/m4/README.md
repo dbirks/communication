@@ -509,7 +509,9 @@ deviation ledger, eleven entries as of `/implement` retrying `invalid_output` in
     42079149686's C1c is exactly that shape: the /implement answer arrived split
     across two objects (`{"summary": …}` then `{"files_changed": […]}`), the
     extractor took the second, and the missing `summary` failed the run — the
-    worker-side fix (schema-aware selection and the disjoint split merge in
+    worker-side fix (schema-aware selection that takes the MOST COMPLETE valid
+    document — an accepted object, or the disjoint split merge when its union
+    strictly carries more of the declared properties — in
     `internal/worker/agentturn.go`) now accepts that reply, but a schema refusal
     should cost an attempt, not a run, whatever produced it. Document 1's
     `/implement` gained `invalid_output` in `retriableErrors` (becoming
