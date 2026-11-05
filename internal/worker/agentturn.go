@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
+	"github.com/dbirks/communication/internal/pipelines/runtime"
 	"github.com/dbirks/communication/internal/sandbox/nono"
 	"github.com/dbirks/communication/internal/secrets"
 	wsgit "github.com/dbirks/communication/internal/workspace/git"
@@ -832,7 +834,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	endTurn := res.Status == "" && !ts.asked && !ts.ackTimedOut &&
 		ctx.Err() == nil && promptErr == nil && stop == domain.StopEndTurn
 	if endTurn {
-		built, fail := a.attachOutputs(c, spec, prof, final.text())
+		built, mergeNote, fail := a.attachOutputs(c, spec, prof, final.text())
 		if fail != nil {
 			// Extraction refused the reply. Before blaming the agent's answer,
 			// ask whether there was an answer to blame: a harness whose
@@ -847,6 +849,14 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 				res = *fail
 			}
 		} else {
+			if mergeNote != "" {
+				// A merged envelope is never silent: the note rides the
+				// attempt's transcript as a conversation.notice row (worker
+				// actor, redacted and bounded like every other notice), so a
+				// reader of the attempt sees WHICH shape the extractor accepted
+				// and that the envelope was assembled, not spoken whole.
+				transcript.notice(noticeKindOutputsMerged, mergeNote)
+			}
 			built.Checkpoint = a.checkpointFor(ctx, c, spec, prof, built.OutputsDigest)
 			if built.Checkpoint.VolumeID == "" {
 				// Honest: there is no boundary to write. The turn answered;
@@ -1574,21 +1584,42 @@ func failureDiagnostics(detail, stderr string) string {
 // ptrResult lifts a value refusal into the pointer the parse helpers return.
 func ptrResult(r AttemptResult) *AttemptResult { return &r }
 
+// noticeKindOutputsMerged tags the conversation.notice row that records a
+// merged extraction (selectOutputDocument's split-answer arm). The kind is a
+// transcript label, not an event type: the row stays a conversation.notice
+// with a worker actor, so no reader mistakes it for the agent's answer.
+const noticeKindOutputsMerged = "outputs_merged"
+
 // attachOutputs is the end_turn arm of the outcome table: JSON in, envelope
-// out, or the honest invalid_output evidence the extraction failed. The
-// engine validates the document against the node's schema at Complete
-// (§ 4 step 6, ADR-0022 § 4 rule 2); this executor emits parsed JSON or
-// evidence, never a schema verdict it cannot compute.
-func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof AgentProfile, text string) (AttemptResult, *AttemptResult) {
-	val, bad := extractStructuredOutput(text)
-	if bad != nil {
-		r := invalidOutput(*bad)
-		return AttemptResult{}, &r
+// out, or the honest invalid_output evidence the extraction failed. When the
+// claim carries the node's declared outputs schema it is used ONLY to pick
+// which candidate document answers (selectOutputDocument): the engine still
+// validates the document at Complete and speaks the schema errors there
+// (§ 4 step 6, ADR-0022 § 4 rule 2) — at this layer the reply itself is the
+// evidence, unchanged. With no declared schema selection is schema-blind,
+// exactly today's behaviour. The returned note is non-empty exactly when the
+// answer was assembled from objects the agent split across its reply — the
+// caller MUST journal it, because a merged envelope is not silently a
+// success.
+func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof AgentProfile, text string) (AttemptResult, string, *AttemptResult) {
+	ex := selectOutputDocument(text, a.outputsChecker(c))
+	if ex.failed != nil {
+		r := invalidOutput(*ex.failed)
+		return AttemptResult{}, "", &r
 	}
+	if ex.rejection != nil {
+		// Nothing validated and no split merge applied: today's pick goes
+		// forward and the boundary's own verdict lands at Complete, with the
+		// same invalid_output class and the same output_errors evidence it
+		// always had. Logged, never swallowed.
+		a.logger().Warn("agent.acp reply refused its declared outputs schema; handing today's pick to the boundary's verdict",
+			slog.String("attempt_id", c.AttemptID), slog.String("detail", bounded(ex.rejection.Error(), 240)))
+	}
+	val := ex.value
 	raw, err := json.Marshal(val)
 	if err != nil {
 		r := invalidOutput("outputs are not re-encodable JSON: " + err.Error())
-		return AttemptResult{}, &r
+		return AttemptResult{}, "", &r
 	}
 	if len(raw) > agentInlineOutput {
 		r := AttemptResult{
@@ -1599,7 +1630,7 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 				"code": "outputs_too_large", "message": "outputs exceeded the inline cap",
 			}},
 		}
-		return AttemptResult{}, &r
+		return AttemptResult{}, "", &r
 	}
 	return AttemptResult{
 		Status:        AttemptStatusSucceeded,
@@ -1607,13 +1638,63 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 		OutputsDigest: "sha256:" + sha256Hex(raw),
 		ArtifactRefs:  []any{},
 		Outcome:       "passed",
-	}, nil
+	}, ex.note, nil
 }
 
-// extractStructuredOutput is § 4 step 6's structuredOutput extraction, held
+// outputJudge answers, for one candidate document, whether the node's
+// declared outputs schema accepts it. ok=false with a non-nil rej carries the
+// violations as boundary evidence; a non-nil err means the schema itself
+// could not be compiled — the selection then owes no verdict at all, the
+// same rule the boundary follows (never refuse a reply on a check it could
+// not run).
+type outputJudge func(doc any) (ok bool, rej *runtime.OutputRejection, err error)
+
+// outputsChecker wires the judge to the claim's pinned schema. A nil schema
+// (the node declares no outputs) returns nil: extraction keeps its
+// schema-blind first-object selection, unchanged.
+func (a *AgentTurn) outputsChecker(c AttemptClaim) outputJudge {
+	if c.OutputsSchema == nil {
+		return nil
+	}
+	return func(doc any) (bool, *runtime.OutputRejection, error) {
+		rej, err := runtime.CheckNodeOutputs("\x00extract\x00"+c.RunID+"\x00"+c.NodeID,
+			c.NodeInstanceKey, c.OutputsSchema, doc)
+		if err != nil {
+			return false, nil, err
+		}
+		return rej == nil, rej, nil
+	}
+}
+
+// outputSelection is one extraction's whole verdict: the chosen document, an
+// honest merge note (empty unless the answer was assembled from split
+// objects), the schema verdict on the chosen document (nil = accepted, or no
+// check ran), or the unchanged extraction failure message.
+type outputSelection struct {
+	value     any
+	note      string
+	rejection *runtime.OutputRejection
+	failed    *string
+}
+
+// extractStructuredOutput is the schema-blind extraction: selectOutputDocument
+// with no judge, i.e. the first candidate that decodes to a JSON object wins,
+// exactly as before the schema-aware arm. Every extraction test pinned here
+// still pins this behaviour.
+func extractStructuredOutput(text string) (any, *string) {
+	ex := selectOutputDocument(text, nil)
+	if ex.failed != nil {
+		return nil, ex.failed
+	}
+	return ex.value, nil
+}
+
+// selectOutputDocument is § 4 step 6's structuredOutput extraction, held
 // to what the worker may claim: the node's output schema travels with the
-// pinned plan and the ENGINE validates at Complete, so this executor emits
-// parsed JSON or invalid_output evidence — never a schema verdict it cannot
+// pinned plan and the ENGINE validates at Complete; when the claim carries
+// that schema the executor judges candidates through the boundary's own
+// implementation (outputsChecker), and when it does not this emits parsed
+// JSON or invalid_output evidence — never a schema verdict it cannot
 // compute. Accepts the whole reply, one fenced json block, or the outermost
 // brace-balanced object inside prose (C7's realistic agents narrate).
 //
@@ -1629,39 +1710,136 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 // fallback so no reply that extracted before regresses. Schema validation is
 // untouched and still decides what the engine accepts — this only hands it
 // the document the agent actually answered with.
-func extractStructuredOutput(text string) (any, *string) {
+//
+// When a judge is present (the node declared an outputs schema) the pick is
+// schema-aware: among the candidates that decode to JSON objects, the FIRST
+// one that validates wins. If none validates alone and two or more decoded
+// top-level objects carry pairwise-DISJOINT keys whose UNION validates, the
+// model split ONE answer across objects (run 42079149686, C1c: the /implement
+// reply ended `…valid Python."} {"files_changed": ["app/hello.py"]}` — a
+// summary object and a files_changed object; the extractor took the second,
+// the envelope lacked summary, and the review prompt's
+// `${{ nodes.implement.outputs.summary }}` died binding_error) and the union
+// is accepted with an honest note, never silently. Otherwise today's pick
+// stands and carries the schema errors as evidence (invalid_output, unchanged
+// semantics). The schema rule itself is untouched — this function only
+// chooses WHICH document to hand it, through the boundary's own
+// implementation; the chosen document — even today's refused pick — still
+// travels to the engine's validation at Complete, which reports the schema
+// errors with unchanged semantics.
+func selectOutputDocument(text string, check outputJudge) outputSelection {
+	fail := func(msg string) outputSelection {
+		return outputSelection{failed: &msg}
+	}
 	s := strings.TrimSpace(text)
 	if s == "" {
-		msg := "agent turn produced no text to extract structured outputs from (01 invariant 4: a succeeded attempt HAS outputs)"
-		return nil, &msg
+		return fail("agent turn produced no text to extract structured outputs from (01 invariant 4: a succeeded attempt HAS outputs)")
 	}
 	if len(s) > agentExtractMax {
-		msg := fmt.Sprintf("agent reply is %d bytes, over the 1 MiB extraction bound (§ 6); it must travel as an artifact", len(s))
-		return nil, &msg
+		return fail(fmt.Sprintf("agent reply is %d bytes, over the 1 MiB extraction bound (§ 6); it must travel as an artifact", len(s)))
 	}
 	candidates := []string{s}
 	if m := fencedJSONRe.FindAllStringSubmatch(s, -1); len(m) > 0 {
 		candidates = append(candidates, m[len(m)-1][1]) // the LAST block is the final answer
 	}
-	candidates = append(candidates, braceBalancedObjects(s)...)
+	spans := braceBalancedObjects(s)
+	spansFrom, spansTo := len(candidates), len(candidates)+len(spans)
+	candidates = append(candidates, spans...)
 	if i, j := strings.IndexByte(s, '{'), strings.LastIndexByte(s, '}'); i >= 0 && j > i {
 		candidates = append(candidates, s[i:j+1])
 	}
-	for _, cand := range candidates {
+	var firstObject any // today's pick: the first candidate that decoded to an object
+	var firstRejection *runtime.OutputRejection
+	var objects []map[string]any // decoded TOP-LEVEL spans, in reply order
+	for idx, cand := range candidates {
 		dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(cand)))
 		dec.UseNumber() // integers stay integers into outputs and digests
 		var val any
 		if err := dec.Decode(&val); err != nil || dec.More() {
 			continue
 		}
-		if _, isObject := val.(map[string]any); !isObject {
-			msg := fmt.Sprintf("agent reply parsed as JSON but is not an object (%s); the node output schema is an object (01 invariant 4)", jsonKind(val))
-			return nil, &msg
+		obj, isObject := val.(map[string]any)
+		if !isObject {
+			return fail(fmt.Sprintf("agent reply parsed as JSON but is not an object (%s); the node output schema is an object (01 invariant 4)", jsonKind(val)))
 		}
-		return val, nil
+		if check == nil {
+			return outputSelection{value: val}
+		}
+		if firstObject == nil {
+			firstObject = val
+		}
+		if idx >= spansFrom && idx < spansTo {
+			objects = append(objects, obj)
+		}
+		ok, rej, err := check(val)
+		if err != nil {
+			// The schema could not be compiled: this executor owes no verdict
+			// it cannot compute — today's pick goes forward and the boundary
+			// answers for it (an unusable plan schema is its own hard error).
+			return outputSelection{value: firstObject}
+		}
+		if ok {
+			return outputSelection{value: val}
+		}
+		if firstRejection == nil {
+			firstRejection = rej
+		}
 	}
-	msg := "agent reply is not a JSON object; structuredOutput extraction failed (§ 4 step 6) and the engine's schema validation never got a document to judge"
-	return nil, &msg
+	if firstObject != nil {
+		// Nothing validated alone. One split shape is worth accepting: the
+		// disjoint-union arm below. Everything else stays today's behaviour —
+		// the first decoded object, now WITH the schema errors as evidence.
+		if merged, n, ok := mergeSplitAnswer(objects, check); ok {
+			return outputSelection{
+				value: merged,
+				note: fmt.Sprintf("merged %d objects: the agent split one answer across %d top-level JSON objects (%s); their pairwise-disjoint union validates against the node's declared outputs schema",
+					n, n, describeObjectKeys(objects)),
+			}
+		}
+		return outputSelection{value: firstObject, rejection: firstRejection}
+	}
+	return fail("agent reply is not a JSON object; structuredOutput extraction failed (§ 4 step 6) and the engine's schema validation never got a document to judge")
+}
+
+// mergeSplitAnswer accepts the ONE split shape worth accepting: two or more
+// decoded top-level objects whose keys are pairwise disjoint (each carries a
+// DIFFERENT piece of the declared answer — run 42079149686's summary object
+// and files_changed object) and whose union validates against the schema.
+// Overlapping keys mean the model answered the same field twice, not once in
+// pieces: no merge. A merge is never silent — the note is part of the verdict.
+func mergeSplitAnswer(objects []map[string]any, check outputJudge) (any, int, bool) {
+	if check == nil || len(objects) < 2 {
+		return nil, 0, false
+	}
+	union := map[string]any{}
+	for _, o := range objects {
+		for k, v := range o {
+			if _, dup := union[k]; dup {
+				return nil, 0, false
+			}
+			union[k] = v
+		}
+	}
+	ok, _, err := check(union)
+	if err != nil || !ok {
+		return nil, 0, false
+	}
+	return union, len(objects), true
+}
+
+// describeObjectKeys renders each split object's key set in reply order
+// (keys sorted, so the note is deterministic) for the merge evidence line.
+func describeObjectKeys(objects []map[string]any) string {
+	parts := make([]string, 0, len(objects))
+	for _, o := range objects {
+		ks := make([]string, 0, len(o))
+		for k := range o {
+			ks = append(ks, k)
+		}
+		sort.Strings(ks)
+		parts = append(parts, "{"+strings.Join(ks, ",")+"}")
+	}
+	return strings.Join(parts, " + ")
 }
 
 var fencedJSONRe = regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")

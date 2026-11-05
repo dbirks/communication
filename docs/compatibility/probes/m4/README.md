@@ -250,7 +250,7 @@ written to the manifest or the log.
 Document 1 is `internal/pipelines/testdata/feature-development-contract.yaml`
 (contract § 9.3, the shape `contractprobe`/`cmd/probes` already compile) with
 deliberate, provenance-headed adjustments — the numbered list below is the
-deviation ledger, ten entries as of the loop floor in 10:
+deviation ledger, eleven entries as of `/implement` retrying `invalid_output` in 11:
 
 1. **Test node executes the fixture script.** § 9.3's `go test ./...` carried
    over from the spec example, but § 7.0's fixture is Python (`pytest.ini`,
@@ -502,6 +502,27 @@ deviation ledger, ten entries as of the loop floor in 10:
     deviation narrows nothing the contract grades: C7a's exhaustion arithmetic
     re-authors its own loop, C10's arms splice steps not predicates, and C1's
     cross-variant key-set equality is iteration-normalized either way.
+
+11. **`/implement` retries `invalid_output`** (both documents). The reviewer has
+    retried its own schema refusals since § 7.1 C10b made the arm measurable; the
+    implementer never did, so one refused reply cost the whole run. Run
+    42079149686's C1c is exactly that shape: the /implement answer arrived split
+    across two objects (`{"summary": …}` then `{"files_changed": […]}`), the
+    extractor took the second, and the missing `summary` failed the run — the
+    worker-side fix (schema-aware selection and the disjoint split merge in
+    `internal/worker/agentturn.go`) now accepts that reply, but a schema refusal
+    should cost an attempt, not a run, whatever produced it. Document 1's
+    `/implement` gained `invalid_output` in `retriableErrors` (becoming
+    `[infra, interrupted, timeout, agent_error, invalid_output]`) and document 2's
+    twin the same (`[infra, interrupted, invalid_output]`, mirroring its own
+    review node). `maxAttempts: 2` with the jittered backoff (`baseSeconds: 10,
+    multiplier: 2, maxSeconds: 120, jitter: true`) was already the review node's
+    shape on both documents and is unchanged. The ADR-0073 loop pays for itself
+    here: attempt 2's prompt carries `retry_context.validation_errors`, so the
+    retry is told which field broke. The node key set does not move; C1e's
+    `attempt_count = 1` assertion is on `/build_until_verified[2]/test`, not
+    `/implement`, and the twin prints a valid envelope verbatim, so it spends
+    one attempt exactly as before.
 
 ### Offline validation (no server needed)
 

@@ -161,7 +161,7 @@ spec:
           retry:
             maxAttempts: 2
             backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
-            retriableErrors: [infra, interrupted, timeout, agent_error]
+            retriableErrors: [infra, interrupted, timeout, agent_error, invalid_output]
           config:
             profile: m4-implementer
             sessionMode: resume_if_supported
@@ -493,7 +493,7 @@ spec:
           retry:
             maxAttempts: 2
             backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
-            retriableErrors: [infra, interrupted]
+            retriableErrors: [infra, interrupted, invalid_output]
           config:
             executable: m4-exit.sh
             args: [implement]
