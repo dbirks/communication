@@ -1089,3 +1089,292 @@ func TestNotesPromptBoundsTheDataBlock(t *testing.T) {
 		t.Fatal("an issue beyond the cap is truth")
 	}
 }
+
+// —— the action's two spellings ————
+//
+// Observed against the lab gateway on the repository scope (run 42114732911's
+// empty ASSISTANT NOTICED panel, reproduced locally over the DATA block the
+// panel's own GET builds from octocat/Hello-World, the lab's `server`
+// repository): the model wrote real, in-block advice, and three of seven
+// completions spelled the action with the KIND AS THE MEMBER NAME —
+// `{"hand_off":{"issue_numbers":[11658,11659]}}` — which a struct decode over
+// `kind` calls an unknown field. The element was dropped, every note in the
+// reply was lost with it, and the panel served `{"notes":[]}`.
+//
+// These pin the reading of both spellings AND the closed vocabulary that has to
+// stay closed while doing it: a tag outside the four kinds, a tag carrying
+// another kind's payload, a bare action, and an invented issue number all still
+// lose the note.
+
+func TestParseNotesAnswerReadsTheTaggedActionSpelling(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want NoteActionDraft
+	}{
+		{"kind-tagged hand_off",
+			`[{"text":"Triage the probe issues.","action":{"hand_off":{"issue_numbers":[12,7]}}}]`,
+			NoteActionDraft{Kind: NoteActionHandOff, IssueNumbers: []int{12, 7}}},
+		{"kind-tagged hand_off with a bare list",
+			`[{"text":"Triage the probe issues.","action":{"hand_off":[12]}}]`,
+			NoteActionDraft{Kind: NoteActionHandOff, IssueNumbers: []int{12}}},
+		{"kind-tagged start_chat with a bare prompt",
+			`[{"text":"Ask about the flaky test.","action":{"start_chat":"why is review red?"}}]`,
+			NoteActionDraft{Kind: NoteActionStartChat, Prompt: "why is review red?"}},
+		{"kind-tagged start_chat with its object",
+			`[{"text":"Ask about the flaky test.","action":{"start_chat":{"prompt":"why?"}}}]`,
+			NoteActionDraft{Kind: NoteActionStartChat, Prompt: "why?"}},
+		{"kind-tagged open_run with a bare id",
+			`[{"text":"Look at the failed run.","action":{"open_run":"` + genRun + `"}}]`,
+			NoteActionDraft{Kind: NoteActionOpenRun, RunID: genRun}},
+		{"kind-tagged open_run with its object",
+			`[{"text":"Look at the failed run.","action":{"open_run":{"run_id":"` + genRun + `"}}}]`,
+			NoteActionDraft{Kind: NoteActionOpenRun, RunID: genRun}},
+		{"kind-tagged make_workflow",
+			`[{"text":"Turn this thread into a workflow.","action":{"make_workflow":"` + genConv + `"}}]`,
+			NoteActionDraft{Kind: NoteActionMakeWorkflow, ConversationID: genConv}},
+		{"the flat spelling the prompt asks for still reads",
+			`[{"text":"Triage the probe issues.","action":{"kind":"hand_off","issue_numbers":[12]}}]`,
+			NoteActionDraft{Kind: NoteActionHandOff, IssueNumbers: []int{12}}},
+	}
+	for _, tc := range cases {
+		drafts, err := ParseNotesAnswer(tc.raw)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(drafts) != 1 {
+			t.Fatalf("%s: drafts = %+v, want the one note", tc.name, drafts)
+		}
+		if drafts[0].Action == nil || !sameNoteActionDraft(*drafts[0].Action, tc.want) {
+			t.Fatalf("%s: action = %+v, want %+v", tc.name, drafts[0].Action, tc.want)
+		}
+	}
+}
+
+func TestParseNotesAnswerRefusesAnActionThatIsNotTheUnion(t *testing.T) {
+	// Each of these is the model reaching outside the closed vocabulary while
+	// spelling it the tolerant way: a tag the union does not have, two tags at
+	// once, another kind's payload, a payload of the wrong JSON type, a bare
+	// string where an object belongs, and a flat kind outside the four. Reading
+	// the second spelling admits none of them — and what does reach validation
+	// is checked against the DATA block here, which is where the note dies.
+	scope := NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo}
+	truth := repoTruth(repoFacts())
+	for _, raw := range []string{
+		`[{"text":"One.","action":{"close_everything":{"issue_numbers":[12]}}}]`,
+		`[{"text":"One.","action":{"hand_off":{"issue_numbers":[12]},"start_chat":"do it"}}]`,
+		`[{"text":"One.","action":{"hand_off":{"prompt":"do it"}}}]`,
+		`[{"text":"One.","action":{"hand_off":{"issue_numbers":[12],"url":"https://evil.example"}}}]`,
+		`[{"text":"One.","action":{"open_run":[1,2]}}]`,
+		`[{"text":"One.","action":{"open_run":null}}]`,
+		`[{"text":"One.","action":"hand_off"}]`,
+		`[{"text":"One.","action":{"hand_off":"12"}}]`,
+		`[{"text":"One.","action":{"kind":"nope","issue_numbers":[12]}}]`,
+		`[{"text":"One.","action":{"kind":"hand_off","run_id":"` + genRun + `"}}]`,
+		`[{"text":"One.","action":{"kind":"open_run","conversation_id":"` + genConv + `"}}]`,
+	} {
+		drafts, err := ParseNotesAnswer(raw)
+		if err != nil {
+			t.Fatalf("%s refused the whole answer: %v", raw, err)
+		}
+		for _, d := range drafts {
+			if _, ok := validateNoteAction(d.Action, scope, truth); ok {
+				t.Fatalf("%s admitted an action the union does not have: %+v", raw, d.Action)
+			}
+		}
+	}
+	// The same guard on the spelling the model actually answers in: an invented
+	// issue number is still the lie that loses the whole note.
+	drafts, err := ParseNotesAnswer(`[{"text":"One.","action":{"hand_off":{"issue_numbers":[12,999]}}}]`)
+	if err != nil || len(drafts) != 1 {
+		t.Fatalf("tagged answer: %d drafts, err %v", len(drafts), err)
+	}
+	if _, ok := validateNoteAction(drafts[0].Action, scope, truth); ok {
+		t.Fatal("an invented issue number survived validation")
+	}
+}
+
+// The end-to-end shape of the loss: the same answer the gateway actually sent,
+// replayed through Generate, must reach the writer — and the same answer with a
+// number the DATA block never showed must still not.
+func TestNotesGenerateStoresTheAnswerTheGatewayActuallySends(t *testing.T) {
+	const answer = `[{"text":"Several recent issues appear to be temporary probes for tool functionality; clean them up.","action":{"hand_off":{"issue_numbers":[12,7]}}}]`
+	writer := &fakeNotesWriter{}
+	g := newNotesGen(t, &fakeNotesModel{answer: answer}, &fakeNotesReader{repo: repoFacts()}, writer,
+		func(f func()) { f() })
+	written, err := g.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if written != 1 {
+		t.Fatalf("written = %d, want 1 — the tagged action is the shape the model answers in", written)
+	}
+	got := writer.wait(t, 1)[0]
+	if got.Action.Kind != NoteActionHandOff || len(got.Action.IssueNumbers) != 2 {
+		t.Fatalf("stored action = %+v", got.Action)
+	}
+	// The same spelling, one number the block never showed: an invented issue
+	// number is still the lie that loses the whole note.
+	writer2 := &fakeNotesWriter{}
+	g2 := newNotesGen(t, &fakeNotesModel{answer: `[{"text":"Close the stale probe.","action":{"hand_off":{"issue_numbers":[12,999]}}}]`},
+		&fakeNotesReader{repo: repoFacts()}, writer2, func(f func()) { f() })
+	if written, err := g2.Generate(context.Background(), genCaller,
+		NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo}); err != nil || written != 0 {
+		t.Fatalf("an invented issue number stored %d notes (err %v)", written, err)
+	}
+}
+
+// sameNoteActionDraft compares two drafts, slices included.
+func sameNoteActionDraft(a, b NoteActionDraft) bool {
+	return a.Kind == b.Kind && a.Prompt == b.Prompt &&
+		a.ConversationID == b.ConversationID && a.RunID == b.RunID &&
+		fmt.Sprint(a.IssueNumbers) == fmt.Sprint(b.IssueNumbers)
+}
+
+func TestNotesPromptNamesTheFlatActionSpelling(t *testing.T) {
+	system, _ := NotesGenPrompt(NoteScope{Kind: NoteScopeRepository}, "{}")
+	for _, want := range []string{
+		`{"kind":"hand_off","issue_numbers":[42]}`,
+		`"kind"`,
+		"never itself a",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("the notes prompt does not name the action shape with %q", want)
+		}
+	}
+}
+
+// —— the cooldown ladder ————
+//
+// The 30-minute cooldown exists to turn ten concurrent panel loads into one
+// completion. It was also turning one gateway blip, and one answer the filters
+// honestly refused, into a panel dark for half an hour — with the reader
+// watching it. An attempt that stored nothing re-arms the scope on a short
+// ladder (30s, then 1min, then 2min, at most noteGenMaxRearms of them); an
+// attempt that stored a note, and one that found nothing honest to say about an
+// empty scope, hold the full cooldown.
+
+type notesClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *notesClock) Set(t time.Time) { c.mu.Lock(); c.now = t; c.mu.Unlock() }
+func (c *notesClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+func (c *notesClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+
+func TestNotesListedRearmsAScopeWhoseAttemptStoredNothing(t *testing.T) {
+	cases := []struct {
+		name  string
+		model *fakeNotesModel
+		facts NoteRepoFacts
+		// advances is how far the clock moves before each following read; want
+		// is the completions the generator has asked for by then.
+		advances []time.Duration
+		want     []int
+	}{
+		{
+			name:  "the model answered nothing usable",
+			model: &fakeNotesModel{answer: "[]"}, facts: repoFacts(),
+			advances: []time.Duration{10 * time.Second, 21 * time.Second, 30 * time.Second,
+				31 * time.Second, 61 * time.Second, 2 * time.Minute, 10 * time.Second},
+			want: []int{1, 1, 2, 2, 3, 3, 4, 4},
+		},
+		{
+			name:  "the completion failed",
+			model: &fakeNotesModel{fail: &Failure{Code: FailModelUnreachable, Detail: "gateway 502"}},
+			facts: repoFacts(),
+			advances: []time.Duration{10 * time.Second, 21 * time.Second, 30 * time.Second,
+				31 * time.Second, 61 * time.Second, 2 * time.Minute, 10 * time.Second},
+			want: []int{1, 1, 2, 2, 3, 3, 4, 4},
+		},
+		{
+			name:  "a productive scope keeps the whole cooldown",
+			model: &fakeNotesModel{answer: `[{"text":"Triage the flaky checkout test.","action":{"kind":"hand_off","issue_numbers":[7]}}]`},
+			facts: repoFacts(),
+			advances: []time.Duration{10 * time.Second, 31 * time.Second, 2 * time.Minute,
+				10 * time.Minute, 29 * time.Minute},
+			want: []int{1, 1, 1, 1, 1, 2},
+		},
+		{
+			name:  "a scope with no facts at all has nothing to retry",
+			model: &fakeNotesModel{answer: "[]"}, facts: NoteRepoFacts{Repository: "web"},
+			advances: []time.Duration{10 * time.Second, 31 * time.Second, 2 * time.Minute,
+				10 * time.Minute, 29 * time.Minute},
+			want: []int{1, 1, 1, 1, 1, 2},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &notesClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
+			writer := &fakeNotesWriter{}
+			var ran int
+			var mu sync.Mutex
+			g := NewNotesGenerator(NotesDeps{
+				Model: tc.model, Reader: &fakeNotesReader{repo: tc.facts}, Writer: writer,
+				Spawn: func(f func()) { mu.Lock(); ran++; mu.Unlock(); f() },
+				Now:   clock.Now, Log: notesTestLog(),
+			})
+			scope := NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo}
+			check := func(want int, at string) {
+				t.Helper()
+				mu.Lock()
+				got := ran
+				mu.Unlock()
+				if got != want {
+					t.Fatalf("after %s the generator has asked for %d completions, want %d", at, got, want)
+				}
+			}
+			g.NotesListed(context.Background(), genCaller, scope, time.Time{}, 0)
+			check(tc.want[0], "the first read")
+			for i, d := range tc.advances {
+				clock.Advance(d)
+				g.NotesListed(context.Background(), genCaller, scope, time.Time{}, 0)
+				check(tc.want[i+1], "a later read")
+			}
+		})
+	}
+}
+
+// The ladder is what stops the re-arm from becoming a reload storm: three
+// re-arms, then the whole cooldown stands again — four completions per reader
+// per scope per half hour, never one per page load.
+func TestNotesRearmLadderIsBounded(t *testing.T) {
+	clock := &notesClock{now: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
+	model := &fakeNotesModel{answer: "[]"}
+	g := NewNotesGenerator(NotesDeps{
+		Model: model, Reader: &fakeNotesReader{repo: repoFacts()}, Writer: &fakeNotesWriter{},
+		Spawn: func(f func()) { f() }, Now: clock.Now, Log: notesTestLog(),
+	})
+	scope := NoteScope{Kind: NoteScopeRepository, ProjectID: genProject, ScopeID: genRepo}
+	// storm reads the panel once a second — a browser left open and re-loading —
+	// for the given number of seconds, checking the completion count at each
+	// checkpoint the caller names (seconds since the first read → want).
+	storm := func(seconds int, checkpoints map[int]int) {
+		t.Helper()
+		for i := 1; i <= seconds; i++ {
+			g.NotesListed(context.Background(), genCaller, scope, time.Time{}, 0)
+			clock.Advance(time.Second)
+			if want, ok := checkpoints[i]; ok {
+				if _, _, calls := model.snapshot(); calls != want {
+					t.Fatalf("%ds of once-a-second reads cost %d completions, want %d",
+						i, calls, want)
+				}
+			}
+		}
+	}
+	// The first read claims; the re-arms it earns are the ladder's gaps and no
+	// more: 30s, 1min, 2min, so the fourth completion lands at 210s. (Read i of
+	// a storm is taken i-1 seconds after the first one.)
+	storm(211, map[int]int{31: 2, 91: 3, 211: noteGenMaxRearms + 1})
+	// Past the ladder the whole cooldown stands again: 20 minutes of reloading
+	// buys nothing, and only a full cooldown after the last attempt asks once
+	// more — four completions per reader per scope per half hour, ever.
+	storm(1200, map[int]int{1200: noteGenMaxRearms + 1})
+	storm(600, map[int]int{600: noteGenMaxRearms + 2})
+}

@@ -530,10 +530,16 @@ func (r *assistantNotesReader) ReadRepoFacts(ctx context.Context, c assistant.Ca
 		return assistant.NoteRepoFacts{}, err
 	}
 	var gitURL string
+	// Whether the ROW names a credential, read off the same view the name and
+	// the remote came from — the route's own rule (github_issues.go resolves one
+	// only `if repo.CredentialSecretID != nil`), and the reason the two reads
+	// cannot drift into asking the same tracker a different way.
+	var credentialConfigured bool
 	for _, repo := range repos {
 		if repo.ID == repositoryID {
 			facts.Repository = repo.Name
 			gitURL = repo.GitURL
+			credentialConfigured = repo.CredentialSecretID != nil && *repo.CredentialSecretID != ""
 			break
 		}
 	}
@@ -574,7 +580,7 @@ func (r *assistantNotesReader) ReadRepoFacts(ctx context.Context, c assistant.Ca
 			Age:          noteAge(run.CreatedAt),
 		})
 	}
-	facts.Issues = r.openIssues(ctx, caller, repositoryID, gitURL)
+	facts.Issues = r.openIssues(ctx, caller, repositoryID, gitURL, credentialConfigured)
 	return facts, nil
 }
 
@@ -583,7 +589,7 @@ func (r *assistantNotesReader) ReadRepoFacts(ctx context.Context, c assistant.Ca
 // silence when any of it fails. A non-GitHub remote is not a note problem — it
 // is a repository with no tracker here.
 func (r *assistantNotesReader) openIssues(ctx context.Context, c Caller,
-	repositoryID, gitURL string) []assistant.NoteIssueFact {
+	repositoryID, gitURL string, credentialConfigured bool) []assistant.NoteIssueFact {
 	if r.lister == nil || strings.TrimSpace(gitURL) == "" {
 		return nil
 	}
@@ -591,13 +597,26 @@ func (r *assistantNotesReader) openIssues(ctx context.Context, c Caller,
 	if err != nil {
 		return nil
 	}
+	// The route's rule, restated here because the generator must not see more
+	// of the tracker than the page does: anonymous when the repository names no
+	// credential, and NOTHING rather than an anonymous pretence when it names
+	// one that will not open (that is a private tracker, and reading it
+	// anonymously answers "not found" about issues the reader can see).
+	//
+	// Asking the resolver unconditionally was its own bug: the store refuses a
+	// row that carries no credential — loudly, as the wiring fault it is for a
+	// credentialed read — so every public repository without one lost its
+	// tracker from the DATA block, and a repository with no runs then had
+	// nothing to be about at all. No notes, and no log line to say why.
 	token := ""
-	if r.creds != nil {
+	if credentialConfigured {
+		if r.creds == nil {
+			r.log.Warn("assistant notes: this deployment cannot resolve the issue credential",
+				slog.String("repository_id", repositoryID))
+			return nil
+		}
 		got, cerr := r.creds.ResolveRepositoryCredential(ctx, repositoryID, ghConsumerIssueRead, c.UserID)
 		if cerr != nil {
-			// Anonymous is the honest fallback only for a repository that names
-			// no credential; one whose credential will not open answers nothing
-			// rather than pretending to have read the private tracker.
 			r.log.Warn("assistant notes: issue credential unavailable",
 				slog.String("repository_id", repositoryID), slog.String("error", cerr.Error()))
 			return nil
