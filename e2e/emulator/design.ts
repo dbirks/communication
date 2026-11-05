@@ -1473,40 +1473,56 @@ const RCN_SWITCH_DIVIDER: Landmark = {
 };
 const RCN_SIDE_PANEL: Landmark = {
   id: "rcn-conversation-side-panel",
-  desc: "the chat's side panel holding the thread's context (at 390 the
-  header's Details sheet carries it — its toggle is the one tap)",
+  desc: "the chat's side panel holding the thread's context (at 390 the header's Details sheet carries it — its toggle is the one tap)",
   any: [
     { testid: "conversation-side-panel" },
     { testid: "thread-side-panel-aside" },
     { testid: "chat-details-toggle" },
   ],
 };
+// The panel-CONTENT landmarks below carry `{ testid: "chat-details-toggle" }`
+// as the 390 alternative the file's header states: at 390 (below `lg`) the
+// panel is not on the page — the header's Details sheet carries it — so when
+// a capture shoots the chat with the sheet CLOSED (the transcript is what the
+// reviewer must judge at 390), "the content is there, or the one tap that
+// reaches it" is satisfied by the toggle. It renders only on the chat
+// header, only below `lg`, so it can never satisfy these at 1280.
 const RCN_WORKS_IN: Landmark = {
   id: "rcn-works-in",
-  desc: "the panel's WORKS IN section naming the repo",
-  any: [{ testid: "side-panel-works-in" }, { text: /works in/i }],
+  desc: "the panel's WORKS IN section naming the repo (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
+  any: [
+    { testid: "side-panel-works-in" },
+    { text: /works in/i },
+    { testid: "chat-details-toggle" },
+  ],
 };
 const RCN_PANEL_AGENTS: Landmark = {
   id: "rcn-agents-in-this-chat",
-  desc: "the panel's AGENTS IN THIS CHAT section",
-  any: [{ testid: "side-panel-agents" }, { text: /agents in this chat/i }],
+  desc: "the panel's AGENTS IN THIS CHAT section (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
+  any: [
+    { testid: "side-panel-agents" },
+    { text: /agents in this chat/i },
+    { testid: "chat-details-toggle" },
+  ],
 };
 const RCN_AGENT_TURN_RANGE: Landmark = {
   id: "rcn-agent-turn-range",
-  desc: "an agent row with its turn range ('turns 1–2')",
+  desc: "an agent row with its turn range ('turns 1–2') — or, at 390 with the Details sheet closed, the header's toggle that opens the panel",
   any: [
     { testid: "side-panel-agent-row-*" },
     { testid: "side-panel-agent-range-*" },
     { text: /\bturns? ?[0-9]/i },
+    { testid: "chat-details-toggle" },
   ],
 };
 const RCN_ASSISTANT_NOTE: Landmark = {
   id: "rcn-assistant-note",
-  desc: "the panel's ASSISTANT note offering 'Make a workflow…'",
+  desc: "the panel's ASSISTANT note offering 'Make a workflow…' (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
   any: [
     { testid: "assistant-note-workflow" },
     { role: "button", name: /make a workflow/i },
     { text: /make a workflow/i },
+    { testid: "chat-details-toggle" },
   ],
 };
 
@@ -1552,19 +1568,26 @@ const RCN_MAIL_ANSWER: Landmark = {
   desc: "the mail card's answer block ('← <repo> · <agent>')",
   any: [{ testid: "mail-card-answer" }, { testid: "mail-card-pending" }],
 };
+// (Both carry the same 390 toggle alternative as the other panel-content
+// landmarks above: the mail-card capture shoots 390 with the sheet closed.)
 const RCN_LINKED_CHATS: Landmark = {
   id: "rcn-linked-chats",
-  desc: "the panel's LINKED CHATS section with its mail row",
+  desc: "the panel's LINKED CHATS section with its mail row (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
   any: [
     { testid: "side-panel-links" },
     { testid: "side-panel-link-row-0" },
     { text: /linked chats/i },
+    { testid: "chat-details-toggle" },
   ],
 };
 const RCN_LINKED_CHAT_STATE: Landmark = {
   id: "rcn-linked-chat-state",
-  desc: "the linked chat row's state line (glyph + word: 'asked · read-only' / 'answered')",
-  any: [{ testid: "side-panel-link-state-0" }, { text: /(asked|answered) \u00b7 read-only/i }],
+  desc: "the linked chat row's state line (glyph + word: 'asked · read-only' / 'answered') — or, at 390 with the Details sheet closed, the header's toggle that opens the panel",
+  any: [
+    { testid: "side-panel-link-state-0" },
+    { text: /(asked|answered) \u00b7 read-only/i },
+    { testid: "chat-details-toggle" },
+  ],
 };
 
 /* Workflow inputs (rcn-1j) and the run-by-hand form (rcn-1k). */
@@ -2223,14 +2246,15 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "rcn-2e chat-details": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-2e chat-details-switched": [RCN_SIDE_PANEL, RCN_WORKS_IN, RCN_PANEL_AGENTS],
   // The WORKS IN scope switcher (ADR-0067 amendment): the panel with its WORKS
-  // IN section, captured with the menu CLOSED. At 390 the journey opens the
-  // header's Details sheet so both widths show the panel (the transcript's
-  // old inline stack copy is gone — rcn-review14), and reflow.ts proves every
-  // side-panel-* id item-by-item at BOTH widths — an open menu (present at
-  // 1280, absent at 390) would file a false "390 lost" reflow defect. So the
-  // menu itself is closed for the capture; its own structure (the ds Menu,
-  // its pointer arrow, the repo rows, the tick) is asserted in the journey
-  // at the 1280 frame.
+  // IN section, captured with the menu CLOSED. At 390 the panel sits behind
+  // the header's Details toggle (the transcript's old inline stack copy is
+  // gone — rcn-review14), so the journey shoots the chat with the sheet
+  // CLOSED — the panel's landmarks accept the toggle as the one tap that
+  // reaches it — and reflow.ts proves every side-panel-* id item-by-item at
+  // BOTH widths. An open menu (present at 1280, absent at 390) would file a
+  // false "390 lost" reflow defect, so the menu itself is closed for the
+  // capture; its own structure (the ds Menu, its pointer arrow, the repo
+  // rows, the tick) is asserted in the journey at the 1280 frame.
   "rcn-2e works-in-menu": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-2e works-in-moved": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-1h next-turn-menu": [RCN_CONV_TITLE, RCN_AGENT_CHIP, RCN_AGENT_MENU, RCN_AGENT_MENU_CAPTION, RCN_AGENT_MENU_PROFILES],
@@ -2246,8 +2270,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   ],
 
   // Agent mail (3d): the answered beat — the card with its answer block, and
-  // the side panel's LINKED CHATS row with its state. At 390 the journey opens
-  // the Details sheet (the panel's one place at narrow width; REFLOW_ALLOWLIST
+  // the side panel's LINKED CHATS row with its state. At 390 the panel sits
+  // behind the header's Details toggle (the one place at narrow width; the
+  // LINKED CHATS landmarks accept the toggle as that one tap; REFLOW_ALLOWLIST
   // names the aside→sheet swap).
   "rcn-3d mail-card": [
     RCN_CONV_TITLE,

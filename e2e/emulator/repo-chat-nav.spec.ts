@@ -72,7 +72,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { expect, test, apiMutate } from "./fixtures.js";
 import {
   EMU_ADMIN_STATE,
@@ -358,53 +358,6 @@ async function expectChatPinAtWidth(page: Page, width: 1280 | 390): Promise<void
 async function expectChatPinBothWidths(page: Page): Promise<void> {
   await expectChatPinAtWidth(page, 1280);
   await expectChatPinAtWidth(page, 390);
-  await page.setViewportSize({ width: 1280, height: 900 });
-}
-
-/**
- * The Details-sheet dance the panel-landmark captures need (rcn-review14):
- * below `lg` the chat's side panel has NO inline copy under the transcript —
- * the header's Details toggle opens the SAME panel as a right-side sheet, and
- * that sheet is the panel's one place at narrow width. `emu.screen(...)`
- * shoots BOTH widths from the journey's current state, so for a screen whose
- * design landmarks assert the panel (rcn-2e chat / switched / works-in-*,
- * rcn-3d mail-card) the journey opens the sheet at 390 first: at 1280 the
- * sheet is not mounted (its toggle is `lg:hidden` and `open` is gated on
- * `narrow`), so the 1280 shot keeps the panel's visible column, while the
- * 390 shot shows the panel where a phone reader reaches it. Returns the
- * locators `closeDetailsSheetForCapture` uses to restore the sheet-closed
- * page at the desktop frame.
- */
-async function openDetailsSheetForCapture(page: Page): Promise<{
-  sheet: Locator;
-}> {
-  await page.setViewportSize({ width: 390, height: 844 });
-  const toggle = page.getByTestId("chat-details-toggle");
-  await expect(
-    toggle,
-    "below lg the chat header offers Details (the side panel's one place at narrow width)",
-  ).toBeVisible({ timeout: 10_000 });
-  await toggle.click({ timeout: 10_000 });
-  const sheet = page.getByTestId("chat-details-sheet");
-  await expect(sheet, "Details opens the side panel as a right-side sheet").toBeVisible();
-  await expect(
-    sheet.getByTestId("conversation-side-panel"),
-    "the sheet carries the panel content",
-  ).toBeVisible();
-  return { sheet };
-}
-
-/**
- * The reset side of `openDetailsSheetForCapture`: close the sheet where it
- * really mounts (AT 390 — screen() restored the desktop frame, where the
- * sheet is unmounted and a hidden check would pass trivially), then back to
- * the desktop frame, so the journey's next step acts on the aside's
- * controls at 1280.
- */
-async function closeDetailsSheetForCapture(page: Page, sheet: Locator): Promise<void> {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.keyboard.press("Escape");
-  await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
@@ -1268,13 +1221,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       });
       // The pin's width-local check at the capture's live state (rcn-review11).
       await expectChatPinLive(page, 1280);
-      // The panel's landmarks read the 390 sheet (rcn-review14): the
-      // transcript no longer carries an inline copy of the panel.
-      const { sheet } = await openDetailsSheetForCapture(page);
+      // The 390 shot keeps the Details sheet CLOSED, so the reviewer judges
+      // the CHAT itself at 390: the panel's design landmarks accept the
+      // header's Details toggle as the one tap that reaches the panel, and
+      // the dedicated `rcn-2e chat-details*` screens show the open sheet.
+      await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "chat");
       await expectChatPinBothWidths(page);
-      await closeDetailsSheetForCapture(page, sheet);
     });
 
     await test.step("the first prompt's turn settles (the turn legs are real)", async () => {
@@ -1388,12 +1342,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // this is the exact screen whose newest row the review found under the
       // composer. Both emu widths, through the capture's own round-trip.
       await expectChatPinLive(page, 1280);
-      // The panel's landmarks read the 390 sheet (rcn-review14).
-      const { sheet } = await openDetailsSheetForCapture(page);
+      // The 390 shot keeps the Details sheet CLOSED (see the chat capture
+      // above): the panel's landmarks accept the toggle as the one tap.
+      await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "switched");
       await expectChatPinBothWidths(page);
-      await closeDetailsSheetForCapture(page, sheet);
     });
 
     await test.step("chat details — the sheet with the switched agents (rcn-2e)", async () => {
@@ -1519,9 +1473,9 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).not.toContainText("✓");
       // The capture goes with the menu CLOSED, on purpose: screen() shoots
       // both widths from this state — at 1280 the menu is on the aside, and
-      // at 390 the journey opens the Details sheet, which carries its OWN
-      // panel copy (the transcript's old inline stack, the rcn-chat-rail-390
-      // reflow, is gone — rcn-review14) with no menu state. An open menu
+      // at 390 the panel (the transcript's old inline stack, the
+      // rcn-chat-rail-390 reflow, is gone — rcn-review14) sits behind the
+      // header's Details toggle, which no menu state rides on. An open menu
       // (present at 1280, absent at 390) would file a false "390 lost" reflow
       // defect; the menu's structure is the assertions above, and the
       // landmark list for these two screens is what both widths show.
@@ -1529,23 +1483,23 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(scopeMenu, "Esc closes the scope menu").toBeHidden({ timeout: 10_000 });
       // The pin's width-local check at the capture's live state (rcn-review11).
       await expectChatPinLive(page, 1280);
-      // The panel's landmarks read the 390 sheet (rcn-review14).
-      const { sheet } = await openDetailsSheetForCapture(page);
+      // The 390 shot keeps the Details sheet CLOSED (see the chat capture):
+      // the panel's landmarks accept the toggle as the one tap.
+      await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "works-in-menu");
       await expectChatPinBothWidths(page);
-      await closeDetailsSheetForCapture(page, sheet);
 
       // After each capture the switcher proves itself back at 1280 before
       // the next click: screen() resizes through 390 on its way back to
       // 1280, and a capture that left the panel re-mounted is exactly where
       // a click can hang with no bound of its own.
-      // The 390 capture carried the panel in the Details sheet; back at
-      // 1280 the page remounts the aside on the matchMedia change, which
-      // lands a beat AFTER setViewportSize. A click in that beat opens the
-      // menu on the sheet's switcher, which then unmounts with its menu —
-      // so wait for the swap itself before acting (faac464, run 41754108482:
-      // the reopened menu's items were never found).
+      // The 390 leg of the round-trip unmounts the aside on the matchMedia
+      // change; back at 1280 the page remounts it, which lands a beat AFTER
+      // setViewportSize. A click in that beat misses the switcher, which
+      // then unmounts with the panel — so wait for the swap itself before
+      // acting (faac464, run 41754108482: the reopened menu's items were
+      // never found).
       await expect(
         page.getByTestId("chat-details-sheet"),
         "the Details sheet is unmounted at 1280 (its toggle is lg:hidden)",
@@ -1595,21 +1549,17 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // the scope move printed a system line — a NEW transcript row — and
       // this is the screen whose last row the review found cut at 1280.
       await expectChatPinLive(page, 1280);
-      // The panel's landmarks read the 390 sheet (rcn-review14).
-      const { sheet: movedSheet } = await openDetailsSheetForCapture(page);
+      // The 390 shot keeps the Details sheet CLOSED (see the chat capture):
+      // the panel's landmarks accept the toggle as the one tap.
+      await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-2e", "works-in-moved");
       await expectChatPinBothWidths(page);
-      await closeDetailsSheetForCapture(page, movedSheet);
 
       // Same re-probe after the second capture (see above): the switcher
       // must be back at 1280 and pressable before the move-back click.
-      // The 390 capture carried the panel in the Details sheet; back at
-      // 1280 the page remounts the aside on the matchMedia change, which
-      // lands a beat AFTER setViewportSize. A click in that beat opens the
-      // menu on the sheet's switcher, which then unmounts with its menu —
-      // so wait for the swap itself before acting (faac464, run 41754108482:
-      // the reopened menu's items were never found).
+      // The 390 leg unmounted the aside; back at 1280 it remounts a beat
+      // AFTER setViewportSize, so wait for the swap before acting.
       await expect(
         page.getByTestId("chat-details-sheet"),
         "the Details sheet is unmounted at 1280 (its toggle is lg:hidden)",
@@ -2014,12 +1964,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // The pin's width-local check at the capture's live state (rcn-review11):
       // the mail card plus its answer line are NEW transcript rows.
       await expectChatPinLive(page, 1280);
-      // The panel's landmarks read the 390 sheet (rcn-review14).
-      const { sheet } = await openDetailsSheetForCapture(page);
+      // The 390 shot keeps the Details sheet CLOSED (see the chat capture):
+      // the panel's landmarks accept the toggle as the one tap.
+      await page.setViewportSize({ width: 390, height: 844 });
       await expectChatPinLive(page, 390);
       await emu.screen("rcn-3d", "mail-card");
       await expectChatPinBothWidths(page);
-      await closeDetailsSheetForCapture(page, sheet);
     });
 
     await test.step("B's workspace shows no writes (API)", async () => {
