@@ -38,9 +38,11 @@
  * default, the run-by-hand form opens instead of a doomed POST.
  * `Chat about it instead` creates a repo-bound chat (ADR-0067) seeded with
  * the issue. The keyboard path is each card's `Start…` button — the same
- * menu, the same actions. Below the phone cut the menu is a bottom sheet, as
- * every other narrow menu in the app is (rcn-3b round 19: anchored, it
- * flipped up over the NEEDS YOU lane).
+ * menu, the same actions. The menu is the ONE anchored surface at every
+ * width (the handoff's rule: every menu has a pointer arrow). At the phone
+ * cut it never flips up over the lane above the drop — rcn-3b round 19 — it
+ * opens below the caught card and may overlay the lane beneath it while
+ * open, which is ordinary popover layering.
  *
  * Round 19's other MINORs: a run card started from an issue wears its
  * `#<n>` beside the title (ADR-0056's `trigger.ref`, the same served fact
@@ -70,7 +72,7 @@ import type {
   RunSummary,
 } from "../../api/types";
 import { VARIANT_CLASS } from "../ds/Button";
-import { Menu, MENU_ITEM_CLASS, type MenuEntry } from "../ds/Menu";
+import { Menu, type MenuEntry } from "../ds/Menu";
 import type { ProgressSegment } from "../ds/ProgressStrip";
 import { legacyRunThreadTitle } from "../threads/runThreadTitle";
 import { runStepSegments, conversationWord } from "./RepoActivity";
@@ -286,9 +288,11 @@ function startMenuKey(): string {
  * app frame (drawer, palette, sidebar) into this module's graph. */
 const NARROW_QUERY = "(max-width: 1023.98px)";
 
-/** Does the viewport ask for the phone layout? Where `matchMedia` is
- * missing (a jsdom without it) the answer is no — the anchored menu is the
- * layout the desktop keeps. */
+/** Does the viewport ask for the phone layout? There, the stacked lanes sit
+ * one under another, so a menu that flipped upward would bury the NEEDS YOU
+ * lane (rcn-3b round 19); the answer decides whether the anchored menu may
+ * flip. Where `matchMedia` is missing (a jsdom without it) the answer is no
+ * — the menu may then flip upward as it always has on the desktop. */
 function useNarrowViewport(): boolean {
   const [narrow, setNarrow] = useState(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
@@ -512,18 +516,25 @@ export function StartIssueMenu({
     });
   }
 
-  // At the phone cut the menu is a bottom sheet: anchored and flipped, it
-  // buried the lane above the drop (rcn-3b round 19).
-  if (narrow) {
-    return (
-      <StartIssueSheet
-        items={items}
-        caption={`Start #${start.issue.number} with`}
-        onClose={onClose}
-      />
-    );
-  }
+  // At the phone cut the caught card can be the last row of a lane that runs
+  // past the fold, and the menu opens BELOW it — so the card is brought into
+  // view and the whole surface, arrow included, lands on screen (rcn-3b round
+  // 19 evidence: at 390 the sheet was visible while the card it answered was
+  // not). Scrolling moves the trigger and its absolutely-positioned surface
+  // together, so the anchor geometry the menu measured stays true.
+  useEffect(() => {
+    if (!narrow) return;
+    const anchor = (start.anchor === "drop" ? dropCardRef : triggerRef).current;
+    if (!anchor || typeof anchor.scrollIntoView !== "function") return;
+    anchor.scrollIntoView({ block: "center" });
+  }, [narrow, start.anchor, dropCardRef, triggerRef]);
 
+  // ONE surface at every width: the ds anchored menu with its pointer arrow,
+  // clamped to the viewport horizontally while the arrow keeps riding the
+  // trigger. Only the flip is turned off at the phone cut — below 1024px the
+  // lanes stack, so flipping up would paint the menu over NEEDS YOU (rcn-3b
+  // round 19). Opening below may overlay the lane under the drop; that is the
+  // normal layering of an open popover.
   return (
     <Menu
       open
@@ -532,78 +543,12 @@ export function StartIssueMenu({
       side="bottom"
       width={230}
       height={190}
+      flip={!narrow}
       caption={`Start #${start.issue.number} with`}
       ariaLabel={`Start #${start.issue.number} with`}
       data-testid="repo-start-issue-menu"
       items={items}
     />
-  );
-}
-
-/**
- * The `START #<n> WITH` choices as the phone's bottom sheet (rcn-3b round
- * 19: at 390 the anchored menu flipped up and buried the NEEDS YOU lane).
- * The same `items`, the same mono caps caption, `MENU_ITEM_CLASS` rows — and
- * the same `repo-start-issue-menu` test hook, so the start's contract is
- * what it was; only the mounting changes. Esc and the scrim close it, focus
- * parks on the first enabled row.
- */
-function StartIssueSheet({
-  items,
-  caption,
-  onClose,
-}: {
-  items: MenuEntry[];
-  caption: string;
-  onClose: () => void;
-}) {
-  const boxRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    boxRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus();
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-40" data-testid="repo-start-issue-sheet">
-      <button
-        type="button"
-        aria-label="Close the start menu"
-        onClick={onClose}
-        className="absolute inset-0 h-full w-full cursor-default bg-ink/25"
-      />
-      <div
-        ref={boxRef}
-        role="menu"
-        aria-label={caption}
-        data-testid="repo-start-issue-menu"
-        className="absolute inset-x-0 bottom-0 rounded-t-[8px] border border-ink bg-surface pb-[max(8px,env(safe-area-inset-bottom))] shadow-(--shadow-raised)"
-      >
-        <span className="block px-3 pt-[10px] font-mono text-[10px] uppercase tracking-[0.05em] text-faint">
-          {caption}
-        </span>
-        {items.map((entry, index) =>
-          "separator" in entry ? (
-            <hr key={`sep-${index}`} role="separator" className="my-[6px] border-line" />
-          ) : (
-            <button
-              key={entry.id}
-              type="button"
-              role="menuitem"
-              disabled={entry.disabled}
-              title={entry.title}
-              data-testid={entry.testId}
-              onClick={entry.onSelect}
-              className={MENU_ITEM_CLASS}
-            >
-              {entry.label}
-            </button>
-          ),
-        )}
-      </div>
-    </div>
   );
 }
 

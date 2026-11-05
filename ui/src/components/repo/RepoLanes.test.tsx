@@ -6,7 +6,9 @@
  * - the drag: the card is the source, the RUNNING lane lights (dashed accent
  *   border over an accent-tint fill) with its in-flight preview, and the drop
  *   opens the `START #<n> WITH` menu anchored on the caught card WITH its
- *   pointer arrow (ds/Menu — the handoff's "all popovers/menus get an arrow");
+ *   pointer arrow (ds/Menu — the handoff's "all popovers/menus get an arrow",
+ *   at EVERY width: the phone's menu is the same anchored surface, it just
+ *   never flips up over the lane above the drop);
  * - the start: choosing a workflow POSTs the run with the issue bound to the
  *   input the PINNED REVISION declares (ADR-0066 `input_specs` — the input is
  *   named `ticket` here, so a hard-coded `issue` would fail), plus the ADR-0064
@@ -629,8 +631,9 @@ describe("RepoLanes — a long unbreakable title stays in its own column (rcn-3b
  *    nothing about its run — it now wears the List view's active-run tag
  *    (a link, dimming the card) instead of the start button;
  * 4. at the phone cut the anchored `START #<n> WITH` menu flipped up over
- *    the NEEDS YOU lane — it is a bottom sheet there now, as the app's
- *    other narrow menus are.
+ *    the NEEDS YOU lane — it opens below the drop there now, with its arrow
+ *    (the sheet that replaced it for a round lost the arrow; see the last
+ *    describe in this file).
  */
 describe("RepoLanes — the run card tells the truth about its progress and its issue (rcn-3b round 19)", () => {
   /** The ADR-0070 progress the project run list serves on a live row. */
@@ -733,12 +736,15 @@ describe("RepoLanes — the run card tells the truth about its progress and its 
 });
 
 /**
- * rcn-3b round 19, item 4: at 390 the anchored `START #<n> WITH` menu
- * flipped up and buried the NEEDS YOU lane. Below the phone cut the same
- * items mount as a bottom sheet — the pattern the app's other narrow menus
- * use — with the same test hooks so the start's contract is unchanged.
+ * rcn-3b round 19 item 4, and the round-19 fix that broke the rule: at 390
+ * the anchored `START #<n> WITH` menu flipped up and buried the NEEDS YOU
+ * lane, so it was remounted as a bottom sheet — and a bottom sheet has no
+ * anchor, so the handoff's landmark ("every menu has a pointer arrow") went
+ * missing at the phone cut (verification action 42079149686: `390 lost 1 of
+ * the 1280 items: menu-arrow`). The menu is ONE anchored surface at every
+ * width; at the phone cut it only loses its permission to flip upward.
  */
-describe("RepoLanes — at the phone cut the start menu is a bottom sheet (rcn-3b round 19)", () => {
+describe("RepoLanes — the start menu is anchored with its arrow at every width (round 19/20)", () => {
   function stubMatchMedia(matches: boolean) {
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches,
@@ -752,19 +758,82 @@ describe("RepoLanes — at the phone cut the start menu is a bottom sheet (rcn-3
     }));
   }
 
-  it("the sheet carries the caption, the workflow and the chat, and it starts the run", async () => {
+  /** The phone's geometry: the trigger's bottom edge sits 28px above the
+   * viewport's, so the 230x190 box cannot fit below it — the exact condition
+   * that made the menu flip up over NEEDS YOU. */
+  function stubTriggerAtViewportBottom(button: HTMLElement) {
+    button.getBoundingClientRect = () => ({
+      x: 12,
+      y: 700,
+      top: 700,
+      left: 12,
+      bottom: 728,
+      right: 252,
+      width: 240,
+      height: 28,
+      toJSON: () => ({}),
+    });
+  }
+
+  it("at the phone cut the menu keeps its arrow and opens BELOW the trigger", async () => {
+    stubMatchMedia(true);
+    mount();
+    await dragIntoRunning();
+
+    const menu = await screen.findByTestId("repo-start-issue-menu");
+    const arrow = screen.getByTestId("menu-arrow");
+    expect(menu.contains(arrow), "the narrow menu keeps its pointer arrow").toBe(true);
+    expect(
+      screen.queryByTestId("repo-start-issue-sheet"),
+      "there is no bottom-sheet branch any more",
+    ).toBeNull();
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.getAttribute("aria-label")).toBe(`Start #${issue.number} with`);
+    // The caption is ds/Menu's mono caps (CSS uppercase over the DOM text).
+    expect(menu.textContent?.toUpperCase()).toContain(`START #${issue.number} WITH`);
+    // jsdom measures nothing, so the placement decision is what this asserts:
+    // the side the box actually landed on is the anchored BELOW side.
+    expect(menu.getAttribute("data-side"), "the surface is anchored below").toBe("bottom");
+
+    // The start's contract is the sheet's, unchanged: the pin whose revision
+    // takes the issue, then the chat.
+    const workflow = await screen.findByTestId(`repo-start-issue-workflow-${issuePinKey}`);
+    expect(within(menu).getByTestId("repo-start-issue-chat")).toBeTruthy();
+    expect(workflow.textContent).toBe("Feature development");
+  });
+
+  it("the phone never flips the menu up over NEEDS YOU, even with no room below", async () => {
+    stubMatchMedia(true);
+    mount();
+    const button = await screen.findByTestId(`repo-lane-issue-start-${issue.number}`);
+    stubTriggerAtViewportBottom(button);
+    fireEvent.click(button);
+
+    const menu = await screen.findByTestId("repo-start-issue-menu");
+    expect(screen.getByTestId("menu-arrow"), "the arrow is the anchor's proof").toBeTruthy();
+    // 728 + gap + 190 is past the 768px viewport: the desktop would flip this
+    // up. The phone keeps it below — it may overlay the lane under the drop,
+    // it never buries the lane above it.
+    expect(menu.getAttribute("data-side")).toBe("bottom");
+  });
+
+  it("at the desktop cut the same trigger with no room below still flips up", async () => {
+    stubMatchMedia(false);
+    mount();
+    const button = await screen.findByTestId(`repo-lane-issue-start-${issue.number}`);
+    stubTriggerAtViewportBottom(button);
+    fireEvent.click(button);
+
+    const menu = await screen.findByTestId("repo-start-issue-menu");
+    expect(menu.contains(screen.getByTestId("menu-arrow"))).toBe(true);
+    expect(menu.getAttribute("data-side")).toBe("top");
+  });
+
+  it("the phone's menu starts the run it is shown for", async () => {
     stubMatchMedia(true);
     const { requests } = mount();
     await dragIntoRunning();
-
-    const sheet = await screen.findByTestId("repo-start-issue-sheet");
-    const menu = screen.getByTestId("repo-start-issue-menu");
-    expect(sheet.contains(menu), "the sheet box IS the start menu").toBe(true);
-    // No anchored arrow: this surface is pinned to the viewport edge.
-    expect(screen.queryByTestId("menu-arrow"), "no arrow — no anchor").toBeNull();
-    expect(menu.getAttribute("role")).toBe("menu");
-    expect(menu.getAttribute("aria-label")).toBe(`Start #${issue.number} with`);
-    expect(menu.textContent?.toUpperCase()).toContain(`START #${issue.number} WITH`);
+    await screen.findByTestId("menu-arrow");
 
     fireEvent.click(await screen.findByTestId(`repo-start-issue-workflow-${issuePinKey}`));
     const body = JSON.parse((await postedRun(requests)).body ?? "{}") as Record<string, unknown>;
@@ -772,23 +841,55 @@ describe("RepoLanes — at the phone cut the start menu is a bottom sheet (rcn-3
     await waitFor(() => expect(seenPath).toBe(`/runs/${startedRunId}`));
   });
 
-  it("Esc and the scrim close the sheet with the caught card", async () => {
+  it("Esc and an outside click close the narrow menu with the caught card", async () => {
     stubMatchMedia(true);
     mount();
     await dragIntoRunning();
-    await screen.findByTestId("repo-start-issue-sheet");
+    await screen.findByTestId("repo-start-issue-menu");
 
     fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId("repo-start-issue-sheet")).toBeNull());
-    expect(screen.queryByTestId("repo-lane-drop-card")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("repo-start-issue-menu")).toBeNull());
+    expect(screen.queryByTestId("repo-lane-drop-card"), "the caught card goes with it").toBeNull();
+
+    await dragIntoRunning();
+    await screen.findByTestId("repo-start-issue-menu");
+    // The sheet's scrim is gone; the primitive's outside-pointerdown is the
+    // dismissal the page keeps — clicking the lane closes it.
+    fireEvent.pointerDown(screen.getByTestId("repo-lane-running"), { bubbles: true });
+    await waitFor(() => expect(screen.queryByTestId("repo-start-issue-menu")).toBeNull());
   });
 
-  it("at desktop width the menu stays anchored with its arrow", async () => {
-    stubMatchMedia(false);
-    mount();
-    await dragIntoRunning();
-    const menu = await screen.findByTestId("repo-start-issue-menu");
-    expect(screen.queryByTestId("repo-start-issue-sheet")).toBeNull();
-    expect(menu.contains(screen.getByTestId("menu-arrow"))).toBe(true);
+  it("the phone brings the caught card on screen so the menu below it is reachable", async () => {
+    stubMatchMedia(true);
+    // The round-19 evidence: the sheet was on screen while the card it
+    // answered was not. The menu opens below the card, so the card is centred
+    // — the arrow, the box and the card are all inside the viewport together.
+    const seen: unknown[] = [];
+    const hadScroll = typeof Element.prototype.scrollIntoView === "function";
+    const original = hadScroll ? Element.prototype.scrollIntoView : undefined;
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+        seen.push(options);
+        original?.call(this, options);
+      },
+    });
+    try {
+      mount();
+      await dragIntoRunning();
+      await screen.findByTestId("repo-start-issue-menu");
+      expect(seen).toEqual([{ block: "center" }]);
+      // The keyboard path centres its own trigger, never the caught card.
+      expect(screen.getByTestId("repo-lane-drop-card")).toBeTruthy();
+    } finally {
+      Object.defineProperty(
+        Element.prototype,
+        "scrollIntoView",
+        hadScroll && original
+          ? { configurable: true, writable: true, value: original }
+          : { configurable: true, writable: true, value: undefined },
+      );
+    }
   });
 });
