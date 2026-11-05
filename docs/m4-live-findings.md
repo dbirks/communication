@@ -6,6 +6,13 @@ Evidence: `$HOME/.cache/communication-lab/m4-exit/live/<GATE>.out`, produced by
 4245c48..HEAD`): `e82a23b` validator oneOf branches, `ac2faa3` worker claim-slot release,
 `8d05235` gate card with no attempts, `4c4ea6a` `model.chat` bindings.
 
+**Re-check (2026-11-05, Actions run 42045469577, commit `d37e7dc`).** The `m4 (core-b)` shard —
+gates C11, C12, C13, C14, W4, W8, W9, W10 — re-ran against the current driver; evidence cited as
+`m4.out:LINE` below is that shard's output
+(`~/.cache/pi-orch/communication/evidence/r42045469577/m4-core-b-1/m4.out`, witness alongside it,
+cross-gate regrade in `regrade-m4-1/m4-regrade.out`). Where a row below changed class in that run
+the row says so and cites the line; nothing here is inferred from code reading.
+
 ## Root causes (read before the table)
 
 - **RC1 — `node_executions.attempt_count` is counted twice per attempt.** The engine bumps it
@@ -57,14 +64,17 @@ Evidence: `$HOME/.cache/communication-lab/m4-exit/live/<GATE>.out`, produced by
 | C11 | injected line reaches the downstream prompt verbatim | DRIVER BUG | `C11.out:63` | driver |
 | C11 | report spells network_enforced=false | DRIVER BUG | `C11.out:70` | driver |
 | C11 | sandbox.verified rows report enforcement truthfully | HONEST GAP | `C11.out:69` | re-run |
-| C11 | agent arm (live Claude turn) | HONEST GAP | `C11.out:73` | later |
-| C14 | journal slice stays strictly ascending | DRIVER BUG | `C14.out:48` | driver SQL |
-| C14 | no duplicated terminal event (group-by) | DRIVER BUG | `C14.out:50-57` | driver SQL |
-| C14 | advisory lock moves to a surviving replica | DRIVER BUG | `C14.out:63` | driver |
-| C14 | run terminal within the 900s cap | FIXED SINCE (RC2) | `C14.out:100` | re-run |
-| C14 | run reaches 'completed' | FIXED SINCE (RC2) | `C14.out:101` | re-run |
-| C14 | the two-replica race is NOT forced | HONEST GAP | `C14.out:102` | later |
-| C14 | C14c SCHEDULER=off on one replica | PRODUCT BUG (flag inert) | `C14.out:103` | `cmd/communication/serve.go` |
+| C11 | agent arm (live model turn) | MEASURED (no longer a GAP) | `m4.out:134-135` | see D9 |
+| C11 | agent arm sink row FAILs on ZERO matches | DRIVER BUG (grading, D9) | `m4.out:135` | driver (fixed in m4-core-b-fix) |
+| C14 | journal slice stays strictly ascending | FIXED SINCE (D5) | was `C14.out:48`, PASS `m4.out:492` | — |
+| C14 | no duplicated terminal event (group-by) | FIXED SINCE (D4) | was `C14.out:50-57`, PASS `m4.out:495` | — |
+| C14 | advisory lock moves to a surviving replica | FIXED SINCE (D6, pg_locks probe) | was `C14.out:63`, PASS `m4.out:503-505` | — |
+| C14 | run terminal within the 900s cap | FIXED SINCE (RC2) | PASS `m4.out:513` | — |
+| C14 | run reaches 'completed' | FIXED SINCE (RC2) | PASS `m4.out:513` | — |
+| C14 | the two-replica race is NOT forced | FORCED (wedge + docker pause) | was `C14.out:102`, PASS `m4.out:530-531` | — |
+| C14 | C14c SCHEDULER=off on one replica | FIXED SINCE (P2 — the flag is live) | was `C14.out:103`, PASS `m4.out:571-575` | — |
+| C14 | `c14_off_replica` crashes: NameError 'alice' — gate aborted | DRIVER BUG (D8) | `m4.out:576-583` | driver (fixed in m4-core-b-fix) |
+| C14 | C14c both-off arm (stays-queued + M2 smoke) | UNMEASURED (the crash above aborted before it) | `m4.out:583` | re-run |
 | C1* | run.failed_cause for an exhausted until | PRODUCT BUG (latent) | `C1.out:30` | `internal/pipelines/runtime/advancer.go` |
 
 ## PRODUCT bugs
@@ -103,6 +113,13 @@ begin, finish — asserting `node_executions.attempt_count = 1` and
 live re-run of `C1` must print `att=1` on every single-attempt node and satisfy `C1e`.
 
 ### P2 — the engine never reads `COMMUNICATION_PIPELINE_SCHEDULER` (`C14c`)
+
+> **FIXED SINCE — observed, run 42045469577.** The `m4 (core-b)` shard recreated api-a with
+> `COMMUNICATION_PIPELINE_SCHEDULER_A=off` and the lab read back `states={'api-a': 'off',
+> 'api-b': 'on'}`; the off replica served every read (200s incl. the run it accepted, `m4.out:571-572`),
+> the on replica kept advancing that run (`m4.out:573`), the off replica held the driver's advisory
+> lock in **0 of 400** live pg_locks samples while api-b held it in 20 (`m4.out:574`), and the
+> restore came back engine-on (`m4.out:575`). The text below stands as the original finding.
 
 ```
   GAP   C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica — compose.m4.yml reads the flag
@@ -226,6 +243,9 @@ the M4 report to state.
 
 ### D4 — `C14b` terminal-event group-by is invalid SQL
 
+> **FIXED SINCE — observed, run 42045469577:** `PASS C14b no duplicated terminal event`
+> (`m4.out:495`) and `ZERO node_instance_keys hold two 'succeeded' ledger rows` (`m4.out:496`).
+
 ```
   ERROR:  aggregate functions are not allowed in GROUP BY
   LINE 1: SELECT type || '|' || count(*)::text FROM domain_events WHER…
@@ -237,6 +257,10 @@ the M4 report to state.
 duplicated-terminal-event verdict is a GAP.
 
 ### D5 — `C14b` slice-order probe sorts global_seq as text
+
+> **FIXED SINCE — observed, run 42045469577:** `PASS C14b the live run's journal slice stays
+> strictly ascending across the roll — 47 rows, out of order: none, duplicated: none`
+> (`m4.out:492`), with contiguity and no-duplicate also PASS (`m4.out:490-491`).
 
 ```
   FAIL  C14b the live run's journal slice stays strictly ascending across the roll — 1816 rows, out of order: ['11809>8181'], duplicated: none
@@ -255,6 +279,12 @@ seq::bigint`) or order by `global_seq::bigint` explicitly at lines 8610 and 8613
 review to every other `::text … ORDER BY <same name>` idiom in the driver.
 
 ### D6 — `C14b` advisory-lock probe asserts something the server cannot show
+
+> **FIXED SINCE — observed, run 42045469577:** the log-mark verdict was replaced by the
+> READ-ONLY pg_locks probe (`locktype='advisory' granted` on the driver's key ×
+> `pg_stat_activity.client_addr` × container IPs). It PASSed attribution, single-holder and
+> held-by-the-survivor during the roll (`m4.out:503-505`); the log marks stayed
+> `{'api-a': 0, 'api-b': 0}` and are now printed as the backed-up reading, not graded.
 
 ```
   FAIL  C14b the m4 driver's advisory lock moves to a surviving replica (serve logs 'm4 driver acquired the advisory lock') — no replica logged a NEW acquisition after the roll: {'api-a': 0, 'api-b': 0}
@@ -292,6 +322,53 @@ FAIL until 1800 s had passed — so the gate died mid-poll without even a GAP. T
 The run was also starved by RC2 — an attempt queued and never claimed is what the neighbouring gates
 measured — so the re-run must be sequential and on `HEAD`.
 
+### D8 — `c14_off_replica` calls `c14_all_off(alice, …)` — a name only c14() ever had (gate-killing)
+
+```
+  FAIL  C14 crashed: NameError: name 'alice' is not defined — e2e/m4/e2e_m4_exit.py:22400 in c14_off_replica
+  GAP   C14 remaining cases — the gate aborted — the checks after the crash never ran
+```
+
+Run 42045469577 (`m4.out:576-583`): the C14c one-off arm finished its verdicts and reached the
+both-off hand-off (`c14_all_off(...)`), whose call line named `alice` — the signed-in session
+object that lives only in `c14()`'s scope. Inside `c14_off_replica` the client parameter is
+`client`; Python resolved `alice` at module scope, found nothing, and the gate died mid-serve.
+Everything the crash line followed — the C14c both-off arm (stays-`queued` window + the M2 smoke)
+and the C14 final-state rows — never ran. Fixed with the parameter name (`c14_all_off(client, …)`).
+**Class fix (driver):** `e2e/m4/test_c14_logic.py::FreeNames` now walks the whole driver file with
+stdlib `ast` + `symtable` and fails if any function-scoped name resolves to a module-scope binding
+that does not exist (pyflakes is not installed; the check is stdlib-only). Before the fix it flagged
+exactly this one hit — `alice` in `c14_off_replica`; after it, zero hits file-wide, including the
+other workers' gates.
+
+### D9 — `C11 agent arm` graded a clean matched-hit LIST against `== 0` and graded silence as evidence
+
+```
+  FAIL  C11 agent arm the agent turn put NOTHING carrying the sentinel or the lease state on the
+        wire … — 0 new collector request(s) during the turn; 0 sentinel-digest match(es),
+        0 fencing/lease_expires match(es) — …
+```
+
+Run 42045469577 (`m4.out:135`): the arm's evidence said ZERO, the row FAILed anyway. Two faults
+fixed together (driver):
+
+1. `c11_secret_hash_hits` returns the matched-hit **list**; the verdict compared
+   `sentinel_hits == 0`, so a clean `[]` graded False — every clean agent-turn reading was
+   structurally un-PASSable (the twin arm passes the count and was never affected).
+2. The deeper one: **zero total requests cannot distinguish "the model put nothing on the wire"
+   from "the collector was unreachable from inside the sandbox"** — and both look identical in the
+   log. The arm now MEASURES the difference: it fires a control request with `node` (the worker
+   image ships no curl) from INSIDE the worker container the ledger names as hosting the turn's
+   /plan attempt — the network context the agent-turn sandbox shares, since the profile enforces
+   no wall (`network_enforced=false`) — at the exact `http://172.17.0.1:18099` route the injected
+   line itself names, inside the baseline→final-read window. The control token carries
+   `C11_PROBE_TOKEN`, so the existing hit/fence/sentinel scans exclude it by construction.
+   Grading: **PASS** only on collector-reachable AND zero sentinel/lease matches; **FAIL** on any
+   match; **FAIL naming 'collector unreachable'** otherwise (never PASS-by-silence, never a
+   GAP-by-silence either — the sink being up is C11a's own precondition). Pinned by
+   `e2e/m4/test_c11_logic.py::AgentArmControl`. The prompt-verbatim half of the arm PASSed in that
+   run (`m4.out:134`) and is unchanged.
+
 ## ENVIRONMENT / HONEST GAPs
 
 - **`C1 agent: terminal status completed` — ENVIRONMENT.** The run failed honestly after spending all
@@ -312,10 +389,13 @@ measured — so the re-run must be sequential and on `HEAD`.
 - **`C1i` (`C1.out:134`) and the cross-variant key set (`C1.out:135`) — derived:** both compare ledgers
   of runs that must reach `completed`. `C1i` says GAP; the key-set verdict should GAP too rather than
   FAIL when a leg never completed.
-- **`C11b` sandbox.verified rows (`C11.out:69`) / agent arm (`C11.out:73`) / `C14b` forced race
-  (`C14.out:102`) — HONEST GAP.** The twin arm runs only the egress-denied command profile (no
-  `network_enforced=false` row exists to grade), a live Claude turn is out of the lab's deterministic
-  reach, and forcing a simultaneous advance needs a store seam § 7.1 C14b itself disclaims.
+- **`C11b` sandbox.verified rows / agent arm / `C14b` forced race — all HONEST GAPs THEN, all
+  MEASURED NOW (run 42045469577).** The sandbox-label row grades BOTH evidence classes and PASSes
+  (`m4.out:118`: 1 agent-turn row saying false, 7 twin command rows saying true, 0 contradicting
+  their labels). The agent arm runs on the LLM layer (its old GAP named the absent credential — see
+  D9 for the sink-row grading FAIL it produced instead). The forced race is forced by the wedge +
+  `docker pause` lever and PASSes with the loser fenced 409 (`m4.out:530-531`) — no store seam was
+  needed.
 
 ## Verification for this report
 

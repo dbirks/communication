@@ -428,6 +428,8 @@ func TestAgentTurnOutcomeMapping(t *testing.T) {
 		{"end_turn json object is outputs", []string{`{"summary":"done"}`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
 		{"fenced json block extracts", []string{"Answer:\n```json\n{\"approved\": true}\n```"}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
 		{"json inside prose extracts", []string{`Done. Result: {"ok": 1}`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
+		{"object + narrated tail with braces extracts (run 42045469577 C1c)", []string{`{"summary": "done"} Verified: watch the {status} line { in full }.`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
+		{"a doubled object still extracts its first (run 42045469577 C1c)", []string{`{"summary": "done"} {"summary": "again"}`}, "", domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""},
 		{"text before a tool call is not final", []string{`{"stale": true}`}, `{"fresh": true}`, domain.StopEndTurn, nil, AttemptStatusSucceeded, "", ""}, {"no json is invalid_output", []string{"I could not do it"}, "", domain.StopEndTurn, nil, AttemptStatusFailed, ErrorClassInvalidOutput, "invalid_json"},
 		{"empty reply is invalid_output", nil, "", domain.StopEndTurn, nil, AttemptStatusFailed, ErrorClassInvalidOutput, "no text"},
 		{"a json array is not outputs", []string{`[1,2]`}, "", domain.StopEndTurn, nil, AttemptStatusFailed, ErrorClassInvalidOutput, "not an object"},

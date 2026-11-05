@@ -250,7 +250,7 @@ written to the manifest or the log.
 Document 1 is `internal/pipelines/testdata/feature-development-contract.yaml`
 (contract § 9.3, the shape `contractprobe`/`cmd/probes` already compile) with
 deliberate, provenance-headed adjustments — the numbered list below is the
-deviation ledger, nine entries as of the two publishers in 9:
+deviation ledger, ten entries as of the loop floor in 10:
 
 1. **Test node executes the fixture script.** § 9.3's `go test ./...` carried
    over from the spec example, but § 7.0's fixture is Python (`pytest.ini`,
@@ -479,6 +479,29 @@ deviation ledger, nine entries as of the two publishers in 9:
    contract names, and only `bash seed.sh && python3 e2e/m4/e2e_m4_exit.py --only C7,C9`
    on a real lab says whether the engine writes and keeps them readable
    (`12-test-strategy.md`: a mocked green is not done).
+
+10. **Both documents' `/build_until_verified` passWhen ends with
+    `&& iteration >= 2`** (§ 7.1 C7d's transcript half). C7d's ledger witness grades
+    the exhaustion twin, but its *transcript* half — “the prompt echoes `previous`” —
+    reads the journaled `conversation_turns.prompt` of an `agent.acp` `/implement`,
+    and needs an iteration **≥ 2** to exist. The twin gets one by construction
+    (`m4-exit.sh implement` applies ONE edit per invocation, so iteration 1's test is
+    honestly red). The agent variant had no floor: a capable model fixes docstring
+    AND assertion in one pass, the reviewer approves, and § 9.3's predicate ends the
+    loop at iteration 1 — run 42045469577's GAP said exactly that
+    (“2 journaled prompt row(s) over iteration(s) [1]”), and the row would GAP the
+    same way on every run where the model happens to be good. The guard makes the
+    loop's second iteration a fact the ENGINE authors, not a hope about the model:
+    `iteration` is until's declared IntType root (ADR-0022 § 2; `env.go` declares it,
+    `runtime.varsAt` activates it for `passWhen`), `_>=_` is on the § 5 allowlist, and
+    the published predicate still only passes when the test is green and the reviewer
+    approved — it simply cannot pass before a review has been carried into a second
+    iteration. `go test ./internal/pipelines/compiler/
+    -run TestSeedHeaderSelfInvokeProbeIsRefused` compiles document 1 exactly as
+    shipped with the guard; the seed's `validate` route covers document 2. The
+    deviation narrows nothing the contract grades: C7a's exhaustion arithmetic
+    re-authors its own loop, C10's arms splice steps not predicates, and C1's
+    cross-variant key-set equality is iteration-normalized either way.
 
 ### Offline validation (no server needed)
 

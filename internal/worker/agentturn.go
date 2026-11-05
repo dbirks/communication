@@ -1601,6 +1601,19 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 // parsed JSON or invalid_output evidence — never a schema verdict it cannot
 // compute. Accepts the whole reply, one fenced json block, or the outermost
 // brace-balanced object inside prose (C7's realistic agents narrate).
+//
+// The balanced-object arm is what makes that sentence true (run 42045469577,
+// C1c): the /implement reply OPENED with a well-formed {"summary": …} object
+// and the attempt still died invalid_output. The previous reading of
+// "outermost brace-balanced object" — the slice from the FIRST '{' to the
+// LAST '}' — is not balanced at all: one narration sentence after the object
+// (`see the {status} line`), or a second JSON object, stretches that slice
+// past the answer into unparseable prose and the extraction refuses a reply
+// that contains a complete object. A string-aware scan finds the actual
+// top-level spans instead; the old first-to-last slice stays as the final
+// fallback so no reply that extracted before regresses. Schema validation is
+// untouched and still decides what the engine accepts — this only hands it
+// the document the agent actually answered with.
 func extractStructuredOutput(text string) (any, *string) {
 	s := strings.TrimSpace(text)
 	if s == "" {
@@ -1615,6 +1628,7 @@ func extractStructuredOutput(text string) (any, *string) {
 	if m := fencedJSONRe.FindAllStringSubmatch(s, -1); len(m) > 0 {
 		candidates = append(candidates, m[len(m)-1][1]) // the LAST block is the final answer
 	}
+	candidates = append(candidates, braceBalancedObjects(s)...)
 	if i, j := strings.IndexByte(s, '{'), strings.LastIndexByte(s, '}'); i >= 0 && j > i {
 		candidates = append(candidates, s[i:j+1])
 	}
@@ -1636,6 +1650,55 @@ func extractStructuredOutput(text string) (any, *string) {
 }
 
 var fencedJSONRe = regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
+
+// braceBalancedObjects lists the top-level brace-balanced spans of s in
+// order, string-aware: double-quoted JSON strings (with their backslash
+// escapes) hide braces, so prose never fakes a span that a quoted `{…}`
+// inside the answer would hide. Spans are returned verbatim for the caller's
+// decoder to judge — an unquoted-prose span like `{today}` simply fails to
+// decode and the scan's NEXT span gets its turn. The list is bounded so a
+// pathological reply cannot multiply candidates.
+func braceBalancedObjects(s string) []string {
+	const maxExtractObjects = 16
+	var out []string
+	depth, start := 0, -1
+	inStr, esc := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					out = append(out, s[start:i+1])
+					start = -1
+					if len(out) >= maxExtractObjects {
+						return out
+					}
+				}
+			}
+		}
+	}
+	return out
+}
 
 func jsonKind(v any) string {
 	switch v.(type) {

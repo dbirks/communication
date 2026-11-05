@@ -921,5 +921,75 @@ class C1PermissionEventsSqlTest(unittest.TestCase):
                          m.PERMISSION_DECIDED_BY_POLICY)
 
 
+class C1ExtractionEvidenceDump(unittest.TestCase):
+    """The widened agent-message dump (run 42045469577): C1c died
+    invalid_output with only the first 600 journal chars printed, and the shape
+    that decides 'product extraction bug' vs 'honest invalid reply' lives at
+    the message's END. head_tail=True renders head+tail+len+raw-newline-count;
+    the default spelling stays what test_cdiag_logic pins."""
+
+    def test_head_tail_shows_both_ends_and_the_raw_shape(self):
+        body = "x" * 40 + "\n" + "y" * 40
+        lines = m.agent_message_tail_lines(json.dumps([207, body]), limit=1,
+                                           clip=30, head_tail=True)
+        self.assertEqual(len(lines), 1, lines)
+        line = lines[0]
+        self.assertIn("seq=207", line)
+        self.assertIn("len=81", line, "raw length before whitespace-collapse")
+        self.assertIn("nl=1", line, "a raw newline survives inside the JSON string "
+                                    "— invalid JSON the extractor must refuse")
+        self.assertIn("head=" + "x" * 15 + "…", line)
+        self.assertIn("tail=…" + "y" * 15, line)
+
+    def test_short_messages_and_defaults_keep_the_old_spelling(self):
+        lines = m.agent_message_tail_lines(json.dumps([7, "short\nbody"]), limit=1,
+                                           clip=30, head_tail=True)
+        self.assertEqual(lines, ["seq=7 text=short body"])
+        lines = m.agent_message_tail_lines(json.dumps([7, "z" * 100]), limit=1,
+                                           clip=10)
+        self.assertEqual(lines, ["seq=7 text=" + "z" * 10 + "…"],
+                         "without head_tail the clipped head is unchanged")
+
+
+class C1SeedLoopFloor(unittest.TestCase):
+    """The § 7.0 seed's until loop must spend AT LEAST TWO iterations in BOTH
+    documents, deterministically (README deviation 10): C7d's transcript half
+    grades the iteration-2 `previous` echo of the AGENT variant's journaled
+    /implement prompt, and a capable model that fixes the fixture in one pass
+    would otherwise end § 9.3's loop at iteration 1 — GAP forever (run
+    42045469577: '2 journaled prompt row(s) over iteration(s) [1]'). The guard
+    is `&& iteration >= 2` on passWhen — engine-authored (iteration is the
+    until scope's IntType root), never a hope about the model, and the loop
+    still only passes on green tests + approval."""
+
+    def setUp(self):
+        path = os.path.join(m.REPO_DIR, "docs", "compatibility", "probes", "m4",
+                            "pipeline.yaml")
+        with open(path, encoding="utf-8") as f:
+            self.docs = [d for d in re.split(r"(?m)^---\s*$", f.read())
+                         if "kind: Pipeline" in d][:2]
+        self.assertEqual(len(self.docs), 2, "the seed set must carry both documents")
+
+    def test_both_documents_gate_their_until_on_a_second_iteration(self):
+        preds = []
+        for doc in self.docs:
+            until = next(n for n in yaml.safe_load(doc)["spec"]["nodes"]
+                         if n["kind"] == "until")
+            preds.append(until["config"]["passWhen"])
+        self.assertEqual(preds[0], preds[1],
+                         "the twin's claim is an unchanged passWhen across documents")
+        for p in preds:
+            self.assertIn("iteration >= 2", p, p)
+            self.assertIn("nodes.test.outputs.result.successful == true", p,
+                          "the guard ADDS a floor; it never drops the verified clause")
+            self.assertIn("nodes.review.outputs.approved == true", p)
+
+    def test_the_agent_implement_prompt_carries_the_previous_feedback_guard(self):
+        """C7d grades the guard's two renderings; the seed must keep spelling them."""
+        agent = self.docs[0]
+        self.assertIn(m.C7D_EMPTY_MARK, agent)
+        self.assertIn(m.C7D_PREV_LINE, agent)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1247,5 +1247,65 @@ class DriverWiresTheRetryArm(unittest.TestCase):
                                                   "must not come back")
         self.assertIn("C10_TERMINAL_NODE_STATES", src)
 
+class CompletedRead(unittest.TestCase):
+    """c10_completed_for's reading, pinned after run 42045469577's C10b FAIL
+    ('succeeded attempt=2, journal read=ok'): node.attempt.completed carries the
+    attempt uuid in the domain_events ATTEMPT_ID COLUMN — FinishAttempt's fenced
+    append passes c.AttemptID into runAppendTx (internal/store/postgres/
+    attempts.go) — while the NodeAttemptCompleted PAYLOAD carries
+    project/run/node_instance_key/attempt_NUMBER, never the attempt row id
+    (internal/pipelines/events/events.go). The old `payload::text LIKE '%uuid%'`
+    could therefore only ever count 0: the C10b line FAILed on a completion that
+    was journaled, and C10a's 'NO node.attempt.completed for the malformed
+    attempt' PASSed vacuously. The reading must name the column."""
+
+    def test_sql_reads_the_attempt_id_column_not_the_payload(self):
+        sql = m.c10_completed_sql("run-1", "att-1")
+        self.assertIn("type = 'node.attempt.completed'", sql)
+        self.assertIn("attempt_id::text = 'att-1'", sql)
+        self.assertNotIn("payload::text LIKE", sql,
+                         "the attempt uuid is not in the payload — a LIKE over it "
+                         "is how run 42045469577 read a journaled completion as absent")
+        self.assertIn("run_id = 'run-1'", sql)
+
+    def test_count_maps_to_true_false_and_gap(self):
+        import unittest.mock as mock
+        seen = []
+        with mock.patch.object(m, "c10_sql",
+                               side_effect=lambda sql, what: seen.append(sql) or "1"):
+            self.assertIs(True, m.c10_completed_for("run-1", "att-1"))
+        with mock.patch.object(m, "c10_sql", return_value="0"):
+            self.assertIs(False, m.c10_completed_for("run-1", "att-1"))
+        with mock.patch.object(m, "c10_sql", return_value=None):
+            self.assertIsNone(m.c10_completed_for("run-1", "att-1"))
+        with mock.patch.object(m, "c10_sql", return_value="garbage"):
+            self.assertIsNone(m.c10_completed_for("run-1", "att-1"),
+                              "a ledger that will not answer is a GAP, never a zero")
+        self.assertTrue(seen and seen[0] == m.c10_completed_sql("run-1", "att-1"))
+
+    def test_no_attempt_id_is_a_gap_without_a_query(self):
+        import unittest.mock as mock
+        with mock.patch.object(m, "c10_sql", side_effect=AssertionError(
+                "must not query the ledger for an attempt the chain never named")):
+            self.assertIsNone(m.c10_completed_for("run-1", None))
+            self.assertIsNone(m.c10_completed_for("run-1", ""))
+
+    def test_tilt_verdicts_grade_the_read(self):
+        chain = [{"attempt_number": 1, "status": "failed", "error_class": "invalid_output",
+                  "id": "a1"},
+                 {"attempt_number": 2, "status": "succeeded", "error_class": None,
+                  "id": "a2"}]
+        live = {"status": "succeeded"}
+        base = dict(chain=chain, live=live, iter_rows=[{"n": 1}, {"n": 2}],
+                    run_st="completed")
+        v = m.c10b_tilt_verdicts(completed=True, **base)
+        self.assertIs(True, one(v, "reached the routing layer"))
+        v = m.c10b_tilt_verdicts(completed=False, **base)
+        self.assertIs(False, one(v, "reached the routing layer"))
+        v = m.c10b_tilt_verdicts(completed=None, **base)
+        self.assertIsNone(one(v, "reached the routing layer"))
+        self.assertIn("journal read=unreadable", detail(v, "reached the routing layer"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

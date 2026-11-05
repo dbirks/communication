@@ -26,7 +26,18 @@
 # instead of the run, and the loop's review_feedback binding carries the same union to /implement
 # (an agent reader, via expr.Stringify's canonical JSON). The twin keeps § 9.3's string because
 # m4-exit.sh answers one, and C1 compares node_instance_key SETS, not output shapes. README § 7
-# deviations 6-7 carry the detail.
+# deviations 6-7 carry the detail; and (g) BOTH documents' /build_until_verified passWhen carries
+# `&& iteration >= 2`: the twin's m4-exit.sh applies ONE edit per invocation, so its iteration 1
+# is honestly red and the loop spends exactly two iterations — the property C7d's carryForward
+# transcript half measures (iteration 2's /implement prompt must carry `previous.review_feedback,
+# never the first-iteration guard). The agent variant has no such floor: a capable model fixes
+# docstring AND assertion in one pass, the reviewer approves, and § 9.3's predicate ends the loop
+# at iteration 1 — the echo line could then NEVER be read, no matter how many runs graded it.
+# `iteration >= 2` is the engine-authored mirror of the twin's two-iteration contract (iteration
+# is the until scope's declared IntType root, ADR-0022 § 2/§ 5; `_>=_` is on the allowlist): the
+# loop still only PASSes when tests are green and the reviewer approved — it just cannot pass
+# before the loop has carried a review into a second iteration, deterministically, whatever the
+# model answers. README deviation 10 carries it.
 # Validated offline against internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json —
 # see README.md "Offline validation" for the exact commands. seed.sh posts one document per
 # `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
@@ -141,7 +152,7 @@ spec:
     config:
       maxIterations: 4
       maxDurationSeconds: 7200
-      passWhen: nodes.test.outputs.result.successful == true && nodes.review.status == 'succeeded' && nodes.review.outputs.approved == true
+      passWhen: nodes.test.outputs.result.successful == true && nodes.review.status == 'succeeded' && nodes.review.outputs.approved == true && iteration >= 2
       carryForward: true
       body:
         nodes:
@@ -472,7 +483,7 @@ spec:
     config:
       maxIterations: 4
       maxDurationSeconds: 7200
-      passWhen: nodes.test.outputs.result.successful == true && nodes.review.status == 'succeeded' && nodes.review.outputs.approved == true
+      passWhen: nodes.test.outputs.result.successful == true && nodes.review.status == 'succeeded' && nodes.review.outputs.approved == true && iteration >= 2
       carryForward: true
       body:
         nodes:

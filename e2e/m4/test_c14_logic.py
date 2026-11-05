@@ -1975,7 +1975,15 @@ class AllOffVerdicts(unittest.TestCase):
         body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "e2e_m4_exit.py"), encoding="utf-8").read()
         arm = body.split("def c14_off_replica(")[1].split("def c14_wait_replica(")[0]
-        self.assertIn("c14_all_off(alice, facts, project_id, roll=roll)", arm)
+        # The arm's own parameter is `client`; run 42045469577 (m4.out:576-600)
+        # died here because this line pinned `alice` — a name that exists only
+        # in c14()'s scope — and the call raised NameError mid-gate. The
+        # FreeNames static check below is the class-level guard; this is the
+        # string-level one.
+        self.assertIn("c14_all_off(client, facts, project_id, roll=roll)", arm)
+        self.assertNotIn("c14_all_off(alice", arm,
+                         "`alice` is not in scope inside c14_off_replica — this is "
+                         "exactly the NameError of run 42045469577")
         self.assertNotIn("needs a separate bring-up", body,
                          "the old 'a § 7.0 lab decision' GAP text is gone")
 
@@ -1984,6 +1992,296 @@ def C14LockProbe_for_test(services=("api-a", "api-b"), tag="C14test"):
     """A probe whose loop cannot spin: one sample per call and no sleep at all — the stubbed
     c14_lock_probe_once returns instantly, so stop() must not have to wait for it."""
     return m.C14LockProbe(services=services, samples=1, every_s=0.0, tag=tag)
+
+
+class OffReplicaLiveArm(unittest.TestCase):
+    """Run 42045469577 killed the gate on a NAME (`alice`) at the hand-off line
+    after every pure verdict in this file was green. Every helper had tests; the
+    arm itself had none that EXECUTED it. This drives c14_off_replica's live
+    path with stubbed I/O (engines read as one-off, docker/pg_locks/HTTP/time
+    stubbed) THROUGH the hand-off that crashed — an execution proof, which fails
+    on classes of mistake the static FreeNames check above does not cover (and
+    vice versa)."""
+
+    def test_the_arm_executes_start_to_handoff_and_hands_off_its_own_client(self):
+        import time as _time
+        real = {k: getattr(m, k) for k in (
+            "c14_replica_engines", "C14LockProbe", "run_status", "c14_lock_marks",
+            "c5_emit", "c14_all_off", "time")}
+        captured = []
+
+        class Resp:
+            status = 201
+            replica = "api-a"
+            text = "{}"
+
+            def json(self):
+                return {"run_id": "r-1"}
+
+        class OkClient:
+            def get(self, base, path):
+                return Resp()
+
+            def post(self, base, path, body):
+                return Resp()
+
+        class Probe:
+            addr_map = {"api-a": {"ips": ["172.18.0.5"]},
+                        "api-b": {"ips": ["172.18.0.6"]}}
+
+            def start(self):
+                return self
+
+            def stop(self):
+                return None
+
+        class NoSleep:
+            def __getattr__(self, name):
+                return getattr(_time, name)
+
+            sleep = staticmethod(lambda s: None)
+
+        client = OkClient()
+        try:
+            m.c14_replica_engines = (lambda services=("api-a", "api-b"):
+                                     {"api-a": "off", "api-b": "on"})
+            m.C14LockProbe = lambda **kw: Probe()
+            m.run_status = lambda run_id: "completed"
+            m.c14_lock_marks = lambda services, since=None: {"api-a": 0, "api-b": 1}
+            m.c5_emit = lambda rows: None
+            m.c14_all_off = lambda *a, **kw: captured.append((a, kw))
+            m.time = NoSleep()
+            m.c14_off_replica(client, {}, "0-project", roll=m.C14_ROLL)
+        finally:
+            for k, v in real.items():
+                setattr(m, k, v)
+        self.assertEqual(1, len(captured),
+                         "the both-off arm's hand-off must RUN (it only GAPed here "
+                         "after the crash was fixed upstream of the next run — a "
+                         "NameError on this line means zero captured calls)")
+        args, kwargs = captured[0]
+        self.assertIs(args[0], client,
+                      "the hand-off is passed THIS arm's client — run 42045469577 "
+                      "passed a name that exists only in c14()'s scope and died "
+                      "with NameError (m4.out:576-600)")
+        self.assertEqual("0-project", args[2])
+        self.assertEqual(m.C14_ROLL, kwargs.get("roll"))
+
+
+# --- static free-name check ---------------------------------------------------
+# run 42045469577 died mid-C14: c14_off_replica() ended with
+#     c14_all_off(alice, facts, project_id, roll=roll)
+# and `alice` is a name that only ever exists inside c14()'s OWN scope — at the
+# moment that line ran, c14_off_replica's parameter is `client`, Python resolved
+# `alice` at module scope, found nothing, and raised NameError (m4.out:576-600).
+# symtable answers exactly this question offline: for every function scope, a
+# name the compiler resolves at MODULE scope (never bound in any enclosing
+# function either) MUST be bound at module scope, or that line is a NameError
+# waiting for its first execution. `python3 -m pyflakes` is not installed and
+# no new deps are allowed, so this is the stdlib equivalent.
+
+import ast
+import builtins
+import symtable
+
+
+def _module_bindings(tree):
+    """Every name the module statement list binds (defs, classes, imports,
+    assignments anywhere the module EXECUTES — if/try included), plus builtins
+    and the module dunders."""
+    names = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__spec__",
+                                  "__loader__", "__builtins__", "__package__",
+                                  "__debug__"}
+
+    def add_target(t):
+        if isinstance(t, ast.Name):
+            names.add(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for e in t.elts:
+                add_target(e)
+        elif isinstance(t, ast.Starred):
+            add_target(t.value)
+
+    class Collect(ast.NodeVisitor):
+        # Nested scopes are NOT module bindings; stop descending there.
+        def visit_FunctionDef(self, node):
+            names.add(node.name)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node):
+            names.add(node.name)
+
+        def visit_Import(self, node):
+            for a in node.names:
+                names.add((a.asname or a.name).split(".")[0])
+
+        visit_ImportFrom = visit_Import
+
+        def visit_Assign(self, node):
+            for t in node.targets:
+                add_target(t)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            add_target(node.target)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node):
+            add_target(node.target)
+            self.generic_visit(node)
+
+        def visit_For(self, node):
+            add_target(node.target)
+            self.generic_visit(node)
+
+        visit_AsyncFor = visit_For
+
+        def visit_With(self, node):
+            for it in node.items:
+                if it.optional_vars:
+                    add_target(it.optional_vars)
+            self.generic_visit(node)
+
+        visit_AsyncWith = visit_With
+
+        def visit_ExceptHandler(self, node):
+            if node.name:
+                names.add(node.name)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            add_target(node.target)
+            self.generic_visit(node)
+
+        def visit_Global(self, node):
+            # a function assigning through `global` binds the module name — by
+            # the time any function body RUNS the binding exists; module-order
+            # hazards are a different (exec-time) class, out of scope here.
+            names.update(node.names)
+
+    for stmt in tree.body:
+        Collect().visit(stmt)
+    return names
+
+
+def free_name_hits(source):
+    """[(owner, table, name)] — every name a function/lambda/comprehension
+    scope resolves at module scope that the module never binds. `owner` is the
+    TOP-LEVEL def/class whose source range contains the scope ('module' when
+    nothing does), so hits can be attributed to the gate that owns them."""
+    tree = ast.parse(source)
+    module = _module_bindings(tree)
+    tops = []
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            tops.append((stmt.name, stmt.lineno, stmt.end_lineno))
+
+    def owner_of(line):
+        for name, lo, hi in tops:
+            if lo <= line <= hi:
+                return name
+        return "module"
+
+    st = symtable.symtable(source, "<driver>", "exec")
+    found = []
+
+    def walk(tbl):
+        if tbl.get_type() in ("function", "classmethod", "staticmethod", "lambda",
+                              "comprehension", "annotation"):
+            for sym in tbl.get_symbols():
+                # referenced, never bound here, never a closure cell: the
+                # compiler resolves it at module scope.
+                if (sym.is_referenced() or sym.is_global()) and not sym.is_assigned() \
+                        and not sym.is_free() and not sym.is_local() \
+                        and not sym.is_parameter() and sym.get_name() not in module:
+                    found.append((owner_of(tbl.get_lineno()), tbl.get_name(),
+                                  sym.get_name()))
+        for child in tbl.get_children():
+            walk(child)
+
+    walk(st)
+    seen, rows = set(), []
+    for owner, tblname, name in sorted(found, key=lambda r: (r[0], r[1], r[2])):
+        if (owner, tblname, name) in seen:
+            continue
+        seen.add((owner, tblname, name))
+        rows.append((owner, tblname, name))
+    return rows
+
+
+CORE_B_OWNERS = ("c11", "c12", "c13", "c14", "w4", "w8", "w9", "w10")
+
+
+class FreeNames(unittest.TestCase):
+    """The whole-file static check (brief: run it over e2e_m4_exit.py; fix every
+    undefined-name hit in core-b's gates C11-C14/W4/W8-W10 — the `alice`
+    NameError class — while other workers own C1/C7/C10)."""
+
+    def _src(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "e2e_m4_exit.py"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_checker_catches_the_alice_shape_it_was_written_for(self):
+        """A positive control: a source where one gate's function passes a name
+        that only another function's PARAMETER list ever defines must be
+        flagged, attributed to the wrong-using function's owner. The real driver
+        had exactly this and died with NameError mid-gate (run 42045469577)."""
+        synthetic = (
+            "def c14():\n"
+            "    alice = 'a session'\n"
+            "    c14_off_replica(alice)\n"
+            "\n"
+            "def c14_off_replica(client):\n"
+            "    return c14_all_off(alice, client)\n"
+            "\n"
+            "def c14_all_off(alice, client):\n"
+            "    return alice + client\n")
+        rows = free_name_hits(synthetic)
+        self.assertIn(("c14_off_replica", "c14_off_replica", "alice"), rows, rows)
+
+    def test_a_function_defined_later_is_not_flagged(self):
+        synthetic = ("def helper(x):\n    return x\n"
+                     "\n"
+                     "def gate(client):\n    return helper(later_name, client)\n"
+                     "\n"
+                     "def later_name():\n    return 1\n")
+        self.assertNotIn(("gate", "gate", "later_name"), free_name_hits(synthetic),
+                         "a function VALUE exists by call time — free names are matched "
+                         "against the module BINDINGS SET, not line order (that is what "
+                         "keeps the check false-positive-free for the driver's style)")
+
+    def test_c14_off_replica_is_the_named_regression(self):
+        body = self._src().split("def c14_off_replica(")[1].split("def c14_wait_replica(")[0]
+        self.assertNotIn("c14_all_off(alice", body,
+                         "run 42045469577: m4.out:576-600 — NameError: name 'alice' "
+                         "is not defined (the arm's parameter is `client`)")
+        self.assertIn("c14_all_off(client,", body)
+        rows = [r for r in free_name_hits(self._src()) if r[0] == "c14_off_replica"]
+        self.assertEqual([], rows, f"free names left unbound in c14_off_replica: {rows}")
+
+    def test_core_b_gates_have_no_free_name_resolving_to_nothing(self):
+        """C11-C14 and W4/W8-W10 (their top-level defs AND every nested helper —
+        attribution is by source range, so c14()'s inner `def q` counts as c14,
+        and C14LockProbe's methods count as C14LockProbe). A hit owned by
+        another gate is LISTED on failure of this test only if it ever exists —
+        C1/C7/C10 belong to another worker's brief."""
+        rows = free_name_hits(self._src())
+        core_b = [r for r in rows
+                  if r[0].lower().startswith(CORE_B_OWNERS) or r[0] == "module"]
+        self.assertEqual([], core_b,
+                         "undefined free names (NameError when the line runs): "
+                         + "; ".join(f"{o}.{t}: {n}" for o, t, n in core_b))
+
+    def test_module_bucket_is_clean_so_is_the_whole_file_today(self):
+        """The 'module' bucket (free names outside any top-level def) breaks the
+        DRIVER AT IMPORT, every gate's owner; core-b may not ship one. The whole
+        file is asserted too — at the time of writing it is zero outside the
+        fixed `alice`, so a NEW hit anywhere fails fast; if another worker's
+        gate ever grows one, the failure names its owner."""
+        rows = free_name_hits(self._src())
+        self.assertEqual([], [r for r in rows if r[0] == "module"], rows)
 
 
 if __name__ == "__main__":
