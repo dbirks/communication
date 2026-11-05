@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -139,37 +140,109 @@ func TestNewTextOnlyNotConfigured(t *testing.T) {
 func TestSummarizeApprovalRetriesTransientUntilSuccess(t *testing.T) {
 	// The approval-summary text-only broker must go through the SAME retrying
 	// completion the ask/proposal paths use (ADR-0034/ADR-0023 §7): a transient
-	// upstream failure (here: 503) is retried within the broker's budget before
-	// the failure is named.
-	var calls int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
-			http.Error(w, "wrong path", http.StatusNotFound)
-			return
-		}
-		if atomic.AddInt64(&calls, 1) == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":{"message":"upstream down"}}`))
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{
-			"message":       map[string]any{"role": "assistant", "content": `{"summary":"First. Second.","actions":[{"label":"Approve","intent":"approve","risk":"proceed"},{"label":"Reject","intent":"reject","risk":"refuse"}]}`},
-			"finish_reason": "stop",
-		}}})
-	}))
-	t.Cleanup(srv.Close)
-	b, err := NewTextOnly(Config{BaseURL: srv.URL, HTTPClient: srv.Client()})
-	if err != nil {
-		t.Fatalf("NewTextOnly: %v", err)
+	// upstream failure is retried within the broker's budget before the
+	// failure is named. The lab's turn-killer was a 502 in the 300 ms range —
+	// every transient class the policy names must survive here.
+	summaryBody := `{"choices":[{"message":{"content":"{\"summary\":\"First. Second.\",\"actions\":[{\"label\":\"Approve\",\"intent\":\"approve\",\"risk\":\"proceed\"},{\"label\":\"Reject\",\"intent\":\"reject\",\"risk\":\"refuse\"}]}"},"finish_reason":"stop"}]}`
+	for status, name := range map[int]string{
+		http.StatusTooManyRequests:     "429 rate-limited",
+		http.StatusInternalServerError: "500 internal error",
+		http.StatusBadGateway:          "502 gateway blip",
+		http.StatusServiceUnavailable:  "503 unavailable",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ep := newRetryEndpoint(t,
+				retryOutcome{status: status, body: `{"error":{"message":"upstream blip"}}`},
+				retryOutcome{status: http.StatusOK, body: summaryBody})
+			b := retryBroker(t, ep, (&fakeSleeper{}).sleep)
+			out, fail := b.SummarizeApproval(context.Background(), "gate summary", "")
+			if fail != nil {
+				t.Fatalf("SummarizeApproval after a transient retry (http %d): %v", status, fail)
+			}
+			if out.Summary != "First. Second." {
+				t.Fatalf("summary = %q, want the retried completion's answer", out.Summary)
+			}
+			if got := atomic.LoadInt64(&ep.calls); got != 2 {
+				t.Fatalf("model calls = %d, want 2 (one retry)", got)
+			}
+		})
 	}
-	out, fail := b.SummarizeApproval(context.Background(), "gate summary", "")
-	if fail != nil {
-		t.Fatalf("SummarizeApproval after a transient retry: %v", fail)
+}
+
+// TestSummarizeApprovalExhaustsTransientRetriesWithTheEgressFailure pins the
+// terminal contract: after the budget is spent the summary path reports the
+// SAME egress failure a single attempt would (model_unreachable / 503), not a
+// new one and not a 502 that would blame the answer.
+func TestSummarizeApprovalExhaustsTransientRetriesWithTheEgressFailure(t *testing.T) {
+	ep := newRetryEndpoint(t)
+	ep.outcomes = make([]retryOutcome, MaxAttempts)
+	for i := range ep.outcomes {
+		ep.outcomes[i] = retryOutcome{status: http.StatusBadGateway, body: `{"error":{"message":"upstream refused"}}`}
 	}
-	if out.Summary != "First. Second." {
-		t.Fatalf("summary = %q, want the retried completion's answer", out.Summary)
+	sleep := &fakeSleeper{}
+	b := retryBroker(t, ep, sleep.sleep)
+
+	_, fail := b.SummarizeApproval(context.Background(), "gate summary", "")
+	if fail == nil {
+		t.Fatal("expected the terminal failure after the retry budget")
 	}
-	if got := atomic.LoadInt64(&calls); got != 2 {
-		t.Fatalf("model calls = %d, want 2 (one retry)", got)
+	if fail.Code != FailModelUnreachable || fail.Status != http.StatusServiceUnavailable {
+		t.Fatalf("fail = %+v, want model_unreachable / http %d (the egress mapping, unchanged)", fail, http.StatusServiceUnavailable)
+	}
+	if got := atomic.LoadInt64(&ep.calls); got != int64(MaxAttempts) {
+		t.Fatalf("model calls = %d, want %d", got, MaxAttempts)
+	}
+	sleep.mu.Lock()
+	defer sleep.mu.Unlock()
+	if len(sleep.delays) != MaxAttempts-1 {
+		t.Fatalf("backoff waits = %v, want %d", sleep.delays, MaxAttempts-1)
+	}
+}
+
+// TestSummarizeApprovalMalformedAnswerIsNotRetried pins the "never a re-ask"
+// rule at the summary boundary: a structurally bad answer is a 502 after
+// exactly ONE model call — it is an answer problem, not an egress one.
+func TestSummarizeApprovalMalformedAnswerIsNotRetried(t *testing.T) {
+	ep := newRetryEndpoint(t, retryOutcome{
+		status: http.StatusOK,
+		body:   `{"choices":[{"message":{"content":"not json at all"},"finish_reason":"stop"}]}`,
+	})
+	b := retryBroker(t, ep, (&fakeSleeper{}).sleep)
+
+	_, fail := b.SummarizeApproval(context.Background(), "gate summary", "")
+	if fail == nil {
+		t.Fatal("expected a malformed failure")
+	}
+	if fail.Code != FailBadModelResponse || fail.Status != http.StatusBadGateway {
+		t.Fatalf("fail = %+v, want malformed_completion / http %d", fail, http.StatusBadGateway)
+	}
+	if got := atomic.LoadInt64(&ep.calls); got != 1 {
+		t.Fatalf("model calls = %d, want 1 (bad answers are never retried)", got)
+	}
+}
+
+// TestSummarizeApprovalStopsRetryingOnContextCancel pins the deadline rule:
+// once the request's context cancels mid-backoff, the summary path stops
+// retrying immediately instead of firing the next attempt into the void.
+func TestSummarizeApprovalStopsRetryingOnContextCancel(t *testing.T) {
+	ep := newRetryEndpoint(t)
+	ep.outcomes = make([]retryOutcome, MaxAttempts)
+	for i := range ep.outcomes {
+		ep.outcomes[i] = retryOutcome{status: http.StatusServiceUnavailable, body: `{"error":{"message":"upstream unavailable"}}`}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := retryBroker(t, ep, (&blockingSleeper{}).sleep)
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		cancel()
+	}()
+
+	_, fail := b.SummarizeApproval(ctx, "gate summary", "")
+	if fail == nil {
+		t.Fatal("expected a failure")
+	}
+	if got := atomic.LoadInt64(&ep.calls); got > 2 {
+		t.Fatalf("retried after the context cancelled: %d calls", got)
 	}
 }

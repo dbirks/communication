@@ -466,6 +466,21 @@ function attach(page: Page): void {
   ledgers.set(page, logged);
   page.on("console", (message) => {
     if (message.type() !== "error") return;
+    // The one exemption: an UPSTREAM failure (502/503/504) of the model-backed
+    // approval summary (POST /api/v1/approvals/{id}/summary). That endpoint asks
+    // the live model for a summary; a gateway blip or an answer the broker
+    // refuses (malformed or secret-shaped, never re-asked by design) is the
+    // model's outcome, not this page's layout, and the Inbox shows it honestly
+    // ("model summary unavailable · retry", Inbox.test.tsx). Lab run
+    // 41949859596 failed /inbox at 1500 on exactly that. Every other console
+    // error, and every uncaught exception, still fails the screen.
+    const url = message.location()?.url ?? "";
+    if (
+      /\/api\/v1\/approvals\/[^/?#]+\/summary(?:[?#]|$)/.test(url) &&
+      /status of 50[234]\b/.test(message.text())
+    ) {
+      return;
+    }
     logged.push(`console.error: ${oneLine(message.text())}`);
   });
   page.on("pageerror", (error) => {

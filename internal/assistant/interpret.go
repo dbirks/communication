@@ -53,9 +53,10 @@ func InterpretPrompt(gate, reply string) (string, string) {
 	return system, user
 }
 
-// InterpretReply makes ONE completion and returns the validated proposal.
-// Egress failures carry the broker's Failure mapping; a structurally bad or
-// secret-bearing answer is a 502, never returned as-is.
+// InterpretReply makes ONE model turn and returns the validated proposal.
+// Transient egress failures are retried by the shared completion loop with
+// its bounded policy; a structurally bad or secret-bearing answer is a 502,
+// never retried and never returned as-is.
 func (b *Broker) InterpretReply(ctx context.Context, gate, reply string) (Interpretation, *Failure) {
 	system, user := InterpretPrompt(gate, reply)
 	raw, fail := b.CompleteText(ctx, system, user)

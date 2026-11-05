@@ -1,7 +1,8 @@
 package assistant
 
 // This file is ADR-0052's approval summarization pass: ONE bounded model turn
-// (no tool loop, the same broker path ADR-0034/0044 use) that turns a pipeline
+// (no tool loop, the same broker path ADR-0034/0044 use; a transient egress
+// failure is retried by that shared path's bounded policy, never this one) that turns a pipeline
 // gate's summary plus its artifact references into a short decider summary and
 // a small set of suggested actions. The model is not trusted: its answer must
 // be exactly one JSON object, unknown intent/risk members are coerced to
@@ -95,10 +96,14 @@ func SummaryPrompt(gate, refs string) (string, string) {
 	return system, user
 }
 
-// SummarizeApproval makes ONE completion and returns the validated summary.
-// Egress failures carry the broker's Failure mapping (503 unreachable, 504
-// timeout, 502 malformed); a structurally bad or secret-bearing answer is a
-// 502, never a re-ask and never returned as-is.
+// SummarizeApproval makes ONE model turn and returns the validated summary.
+// Transient egress failures — a gateway 429/500/502/503/504 blip, a
+// connection reset — are retried by the shared completion loop (complete)
+// with its bounded MaxAttempts/backoff policy, always inside the request's
+// own deadline; after the budget the egress failure keeps the broker's
+// Failure mapping (503 unreachable, 504 timeout). A structurally bad or
+// secret-bearing answer is a 502: it is never retried, never a re-ask and
+// never returned as-is.
 func (b *Broker) SummarizeApproval(ctx context.Context, gate, refs string) (ApprovalSummary, *Failure) {
 	system, user := SummaryPrompt(gate, refs)
 	raw, fail := b.CompleteText(ctx, system, user)

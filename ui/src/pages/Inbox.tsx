@@ -44,6 +44,7 @@ import {
   useDecideApproval,
 } from "../api/approvals";
 import { problemOf } from "../api/client";
+import { assistantNotConfigured } from "../api/assistant";
 import { FRAME_BATCH_MS, useOrgEvents } from "../api/events";
 import { usePipelines } from "../api/pipelines";
 import { queryKeys, useMe, useProjects } from "../api/queries";
@@ -240,6 +241,9 @@ export default function Inbox() {
  * never asks before it mounts, and a `503 assistant_not_configured` — or
  * any other failure — falls back to the gate's own summary as the title
  * plus the static Approve / Read pair; the card never invents a label.
+ * Only a FAILED read says so: the card then carries an honest
+ * "model summary unavailable — retry" line, so a gateway blip is visible and
+ * re-tryable without opening the detail.
  * Tapping the card body opens the approval detail (`routes.approval`); the
  * card's own controls (its buttons, the summary's "More") keep their own
  * meaning.
@@ -253,7 +257,12 @@ function InboxDecisionCard({ project, approval }: { project: Project; approval: 
 
   // One lazy model read per card; a failed or absent summary is honest —
   // the gate's own text stays the title and the card shows the fallback.
-  const model = useApprovalSummary(approval.id).data;
+  const summary = useApprovalSummary(approval.id);
+  const model = summary.data;
+  // A `503 assistant_not_configured` is a deployment fact (the fallback card
+  // is the whole story); any OTHER failed read is transient and worth saying
+  // out loud with a retry, instead of pretending the server never had a model.
+  const summaryUnavailable = summary.isError && !assistantNotConfigured(summary.error);
 
   const submit = (decision: "approved" | "rejected") => {
     setError(null);
@@ -317,6 +326,22 @@ function InboxDecisionCard({ project, approval }: { project: Project; approval: 
           onOpen={openDetail}
         />
       </div>
+      {summaryUnavailable ? (
+        <p
+          className="px-1 pt-1 font-mono text-[10.5px] text-st-failed-tag-fg"
+          data-testid={`inbox-decision-summary-unavailable-${testid}`}
+        >
+          model summary unavailable
+          <button
+            type="button"
+            className="ml-1 font-medium text-accent-text underline decoration-accent-mid"
+            data-testid={`inbox-decision-summary-retry-${testid}`}
+            onClick={() => void summary.refetch()}
+          >
+            retry
+          </button>
+        </p>
+      ) : null}
       {error ? (
         <p
           className="px-1 pb-1 font-mono text-[10.5px] text-st-failed-tag-fg"

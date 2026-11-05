@@ -222,6 +222,43 @@ describe("/inbox", () => {
     expect(
       within(row).queryByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-1`),
     ).toBeNull();
+    // Not-configured is a deployment fact, not a failure: no unavailable line
+    // and no retry offer — the fallback card is the whole story.
+    expect(
+      within(row).queryByTestId(`inbox-decision-summary-unavailable-${testidOf(WIRE_APPROVAL_ID)}`),
+    ).toBeNull();
+  });
+
+  it("states a failed model summary honestly with a retry on a 502", async () => {
+    const { requests } = mountInbox(wireApprovalList, { runs: [] }, [
+      {
+        path: SUMMARY_PATH,
+        method: "POST",
+        status: 502,
+        body: {
+          type: "https://communication.dev/errors/malformed_completion",
+          title: "Bad Gateway",
+          status: 502,
+          detail: "the model gateway answered with an error",
+        },
+      },
+    ]);
+
+    const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
+    // The card stays the honest fallback: gate text, static pair, no model label.
+    expect(row.textContent).toContain("The plan is ready");
+    expect(within(row).getByTestId(`inbox-card-read-${testidOf(WIRE_APPROVAL_ID)}`)).toBeTruthy();
+    // …and the failure itself is named with a retry, not hidden.
+    const note = await within(row).findByTestId(
+      `inbox-decision-summary-unavailable-${testidOf(WIRE_APPROVAL_ID)}`,
+    );
+    expect(note.textContent).toContain("model summary unavailable");
+
+    const before = requestsTo(requests, SUMMARY_PATH, "POST").length;
+    fireEvent.click(
+      within(note).getByTestId(`inbox-decision-summary-retry-${testidOf(WIRE_APPROVAL_ID)}`),
+    );
+    await waitFor(() => expect(requestsTo(requests, SUMMARY_PATH, "POST").length).toBe(before + 1));
   });
 
   it("opens the approval detail when the card body is tapped", async () => {
