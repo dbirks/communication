@@ -104,9 +104,9 @@ env:
   # own names on the host.
   COMMUNICATION_LAB_LAUNCHER: pi
   COMMUNICATION_LLM_BASE_URL: https://llm-collective.e-gineering.com/v1
-  COMMUNICATION_LLM_MODEL: david-birks/ripple-65b
+  COMMUNICATION_LLM_MODEL: david-birks/qwen3-8-flash-next
   COMMUNICATION_PI_BASE_URL: https://llm-collective.e-gineering.com/v1
-  COMMUNICATION_PI_MODEL: david-birks/ripple-65b
+  COMMUNICATION_PI_MODEL: david-birks/qwen3-8-flash-next
 
 jobs:
   # ────────────────────────────────────────────────────────────────────

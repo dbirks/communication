@@ -126,7 +126,7 @@ spec:
           - timeout
           - invalid_output
       config:
-        model: david-birks/ripple-65b
+        model: david-birks/qwen3-8-flash-next
         temperature: 0.2
         maxTokens: 16000 # reasoning models spend part of this budget thinking before they answer
         messages:

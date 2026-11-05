@@ -36,7 +36,7 @@ import (
 // COMMUNICATION_MODEL_CHAT_MODELS one-model allowlist) is documented to
 // serve; the gateway retired the former `qwen3-8-27b` id (2026-10-25 model
 // catalogue), and the worker's allowlist match is an exact string.
-const sampleModel = "david-birks/ripple-65b"
+const sampleModel = "david-birks/qwen3-8-flash-next"
 
 type sample struct {
 	path string
