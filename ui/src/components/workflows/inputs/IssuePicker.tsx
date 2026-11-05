@@ -12,6 +12,17 @@
  * Search is client-side over the read: GitHub's anonymous budget is per IP
  * and a keystroke per request is how the old form got rate-limited. The list
  * is the open issues the API already served; typing filters them.
+ *
+ * The open list takes its OWN ROOM in the form rather than floating over it as
+ * an absolutely positioned popup, for two facts of the screen it lives on: the
+ * run-by-hand dialog raises itself with `overflow-hidden`, so a floating list
+ * is CUT at the box's bottom edge (only the sliver of rows that fits below the
+ * field survives — on a form whose one declared input is the issue, most of the
+ * 168px list never paints), and the reflow checker reads a list painted over
+ * the fields under it as content colliding with content — every candidate
+ * inside an open dialog shares one layer (`findOverlaps`). Design 1k draws the
+ * list in that room anyway: rows under the field, the rest of the form below
+ * them.
  */
 import { useMemo, useState } from "react";
 import { isGitHubRepository, useRepoIssues, type GitHubIssue } from "../../../api/issues";
@@ -135,7 +146,7 @@ export function IssuePicker({
             id={`${id}-list`}
             role="listbox"
             aria-label="Open issues"
-            className="absolute z-20 mt-[2px] max-h-[168px] w-full overflow-auto rounded-[3px] border border-ink bg-surface py-[2px] [box-shadow:2px_2px_0_var(--color-ink)]"
+            className="relative z-20 mt-[2px] max-h-[168px] w-full overflow-auto rounded-[3px] border border-ink bg-surface py-[2px] [box-shadow:2px_2px_0_var(--color-ink)]"
             data-testid={`${id}-options`}
           >
             {issues.isPending ? (

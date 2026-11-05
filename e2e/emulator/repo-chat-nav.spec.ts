@@ -46,8 +46,13 @@
 //            input no trigger fills, save the draft, and read the WHO FILLS
 //            rows — the by-hand line, the trigger's ✓ and the server's `!`.
 //   rcn-1k — Run from the repo's workflow row opens the form whose fields are
-//            built from the pinned revision's declared inputs. Cancelled —
-//            these journeys never start a run of this pin.
+//            built from the pinned revision's declared inputs. The 1k screen
+//            itself — the ISSUE PICKER — plays on `server` with the pass's
+//            `Emu lanes` pin, the one pin whose revision declares the
+//            `github_issue` input, and is captured with the picker open over
+//            real GitHub issues; the `Emu rcn` pin's goal/repository/revision
+//            form keeps its own screen (`rcn-1k run-form-fields`). Cancelled —
+//            these journeys never start a run of either pin.
 //   3d     — agent mail (ADR-0072): the settings switch turned ON through
 //            the UI, a chat in `web` whose CONTROLLER asks the agent in
 //            `server` with the composer @-path (`@server <question>` →
@@ -2355,11 +2360,164 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
   // form): it is the file's longest leg — two real-model turns plus the
   // asked chat's — and nothing queues behind it.
 
+  // Design 1k's central element is the ISSUE PICKER, so the `rcn-1k run-form`
+  // capture opens the run-by-hand form on the pass's `Emu lanes` pin — the one
+  // pin whose pinned revision declares the ADR-0066 `github_issue` input — on
+  // `server`, whose GitHub remote the pass has already attached a read
+  // credential to (github-read-credential.ts). The picker reads that tracker
+  // itself and is captured OPEN over real issues, exactly as the handoff draws
+  // it. The project-wide `Emu rcn` pin declares goal / repository / revision
+  // and no issue input, so its form keeps its own capture on
+  // `rcn-1k run-form-fields` — neither half of 1k loses its screen, and neither
+  // one starts a run.
   test("run by hand — the form is built from the pinned revision's inputs", async ({
     page,
     emu,
   }) => {
-    await test.step("Run from the repo's workflow row", async () => {
+    // The picker's rows come from api.github.com; the budget this pass reads on
+    // is the one github-read-credential.ts names.
+    test.setTimeout(8 * 60_000);
+
+    await test.step("the pass's issue-accepting pin on `server`", async () => {
+      await ensureDragPin(page);
+      expect(
+        ids.dragAssignmentId,
+        "the pin whose revision declares the github_issue input exists",
+      ).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    await test.step("Run on `server` opens the raised form on that pin", async () => {
+      await page.goto(`/p/${ids.projectId}/${GH_REPO}`);
+      await expect(page.getByTestId("repo-page"), "design 3a: the repo page renders").toBeVisible({
+        timeout: 30_000,
+      });
+      // The workflow row lives on the List view, and the view is a saved
+      // per-repository preference another journey may have left on Lanes.
+      if (!(await page.getByTestId("repo-workflows").isVisible().catch(() => false))) {
+        await page.getByTestId("repo-view-list").click();
+        await expect(
+          page.getByTestId("repo-workflows"),
+          "design 3a: List is back, with the repository's workflow rows",
+        ).toBeVisible({ timeout: 30_000 });
+      }
+      const row = page
+        .locator('[data-testid^="repo-workflow-row-"]')
+        .filter({ hasText: DRAG_WF_NAME })
+        .first();
+      await expect(row, "the issue-accepting pin's row is on the page").toBeVisible({
+        timeout: 30_000,
+      });
+      await row.locator('[data-testid^="repo-workflow-run-"]').first().click();
+      await expect(
+        page.getByTestId("run-form-dialog"),
+        "design 1k: Run opens the raised form",
+      ).toBeVisible({ timeout: 30_000 });
+    });
+
+    await test.step("the github_issue input is a picker, not a number field", async () => {
+      await expect(
+        page.getByTestId("run-form-title"),
+        "design 1k: the title names the run",
+      ).toContainText(/run /i);
+      await expect(
+        page.getByTestId("run-form-subtitle"),
+        "design 1k: the mono subtitle names the pin",
+      ).toContainText(/pinned r\d+/);
+      await expect(
+        page.getByTestId("new-run-input-issue-picker"),
+        "design 1k: ISSUE TO WORK ON is the searchable picker over the repo's issues",
+      ).toBeVisible({ timeout: 15_000 });
+      const field = page.getByTestId("new-run-input-issue");
+      expect(
+        await field.evaluate((el) => el.tagName),
+        "design 1k: the picker is a searchable input",
+      ).toBe("INPUT");
+      expect(
+        await field.evaluate((el) => (el as HTMLInputElement).type),
+        "design 1k: the issue is picked, never typed as a number",
+      ).toBe("text");
+      // It really has a tracker to read: neither honest fallback renders — the
+      // "not pinned to one repository" line, nor the "not a GitHub repository"
+      // one, nor the upstream's own error line.
+      await expect(page.getByTestId("new-run-input-issue-no-repo")).toHaveCount(0);
+      await expect(page.getByTestId("new-run-input-issue-not-github")).toHaveCount(0);
+      await expect(page.getByTestId("new-run-input-issue-error")).toHaveCount(0);
+    });
+
+    let issueNumber = 0;
+    let issueTitle = "";
+    await test.step("the picker opens on `server`'s REAL open issues", async () => {
+      // Focus opens it — the same interaction a person has, and the state the
+      // design's 1k renders. It stays open across the widths `emu.screen`
+      // captures at: nothing in a resize or a screenshot blurs the field.
+      await page.getByTestId("new-run-input-issue").click();
+      await expect(
+        page.getByTestId("new-run-input-issue-options"),
+        "design 1k: the field opens its list of issues",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect
+        .poll(
+          async () => {
+            issueNumber = await page.evaluate(() => {
+              const ids = Array.from(
+                document.querySelectorAll('[data-testid^="new-run-input-issue-option-"]'),
+              )
+                .map((el) => el.getAttribute("data-testid") ?? "")
+                .filter((id) => /^new-run-input-issue-option-\d+$/.test(id));
+              const first = ids[0] ?? "";
+              return first === "" ? 0 : Number(first.replace("new-run-input-issue-option-", ""));
+            });
+            return issueNumber;
+          },
+          {
+            timeout: 45_000,
+            message: `the issue picker listed no open issue — ${gitHubReadModeNote(GH_REPO)}; the picker shows the upstream's own refusal in its error line (it never invents a row and never skips)`,
+          },
+        )
+        .not.toBe(0);
+      // The row is one the tracker read answers — the picker did not make it up
+      // (the same honesty check the rcn-3b lane drag makes against its card).
+      const issues = await page.request.get(
+        `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos/${ids.ghRepoId}/issues?state=open`,
+      );
+      const issuesBody = await issues.text();
+      expect(
+        issues.status(),
+        `the tracker read the picker stands on answered (got ${issues.status()}: ${issuesBody.slice(0, 240)})`,
+      ).toBe(200);
+      const listed = JSON.parse(issuesBody) as {
+        items?: { number: number; title: string }[];
+      };
+      const row = (listed.items ?? []).find((item) => item.number === issueNumber) ?? null;
+      expect(
+        row,
+        `the picker's #${issueNumber} is a row the issues route answers for`,
+      ).toBeTruthy();
+      issueTitle = row!.title;
+      await expect(
+        page.getByTestId(`new-run-input-issue-option-${issueNumber}`),
+        "the issue row carries the title the tracker gave",
+      ).toContainText(issueTitle.slice(0, 24));
+
+      await emu.screen("rcn-1k", "run-form");
+    });
+
+    await test.step("Cancel — this journey never starts a run", async () => {
+      await page.getByTestId("new-run-cancel").click();
+      await expect(page.getByTestId("run-form-dialog")).toBeHidden({ timeout: 15_000 });
+      // The dialog owns the page's scroll only while it is up (1k review):
+      // closing it hands the wheel back to the repo page.
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.style.overflow), {
+          timeout: 10_000,
+          message: "the closed run form left the page scroll-locked",
+        })
+        .toBe("");
+    });
+
+    // The other half of 1k: a pinned revision that declares no issue input gets
+    // the goal/repository/revision form — the same modal, none of the picker.
+    await test.step("a revision with no issue input keeps its own capture", async () => {
       await page.goto(`/p/${ids.projectId}/${FILE_REPO}`);
       await expect(page.getByTestId("repo-chat-box"), "the List view is up").toBeVisible({
         timeout: 30_000,
@@ -2376,17 +2534,6 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         page.getByTestId("run-form-dialog"),
         "design 1k: Run opens the raised form",
       ).toBeVisible({ timeout: 30_000 });
-    });
-
-    await test.step("the fields are the declared inputs", async () => {
-      await expect(
-        page.getByTestId("run-form-title"),
-        "design 1k: the title names the run",
-      ).toContainText(/run /i);
-      await expect(
-        page.getByTestId("run-form-subtitle"),
-        "design 1k: the mono subtitle names the pin",
-      ).toContainText(/pinned r\d+/);
       // The pinned revision declares goal (long_text → textarea), repository
       // (text → input) and revision (branch → mono text field on its default).
       const goal = page.getByTestId("new-run-input-goal");
@@ -2403,14 +2550,17 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         "design 1k: a branch input renders as a text field on its default",
       ).toBeVisible();
       await expect(revision).toHaveValue("main");
+      // This pin declares no issue input, so 1k's picker is NOT on the form —
+      // the fields come from the pinned revision, never from a guess.
+      await expect(page.getByTestId("new-run-input-issue-picker")).toHaveCount(0);
       await expect(
         page.getByTestId("new-run-submit"),
         "design 1k: the footer's primary verb is Start run",
       ).toBeVisible();
-      await emu.screen("rcn-1k", "run-form");
+      await emu.screen("rcn-1k", "run-form-fields");
     });
 
-    await test.step("Cancel — this journey never starts a run", async () => {
+    await test.step("Cancel — and no run on this pin either", async () => {
       await page.getByTestId("new-run-cancel").click();
       await expect(page.getByTestId("run-form-dialog")).toBeHidden({ timeout: 15_000 });
     });

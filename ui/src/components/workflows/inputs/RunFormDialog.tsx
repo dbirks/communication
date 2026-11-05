@@ -6,8 +6,14 @@
  * (ghost) and `Start run` (primary). The form inside is NewRunForm's — this
  * shell owns only the dialog chrome and the Esc key (which asks the owner to
  * cancel; it never unmounts anything itself).
+ *
+ * The shell also owns the page's scroll: while the form is up the document is
+ * locked (`lib/scrollLock`), because a page that still scrolls behind a
+ * `fixed inset-0` dim leaves whatever sits below the fold painting bright and
+ * undimmed — which is exactly how round-20's `rcn-1k-run-form-390` read.
  */
 import { useEffect, useRef, type ReactNode } from "react";
+import { useBodyScrollLock } from "../../../lib/scrollLock";
 
 export interface RunFormDialogProps {
   title: string;
@@ -30,6 +36,9 @@ export function RunFormDialog({
   children,
 }: RunFormDialogProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
+  // The dialog is mounted only while it is open, so locking for the whole
+  // mount is locking for exactly as long as the dialog owns the screen.
+  useBodyScrollLock();
   useEffect(() => {
     if (!onCancel) return;
     const onKey = (event: KeyboardEvent) => {

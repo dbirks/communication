@@ -1748,6 +1748,29 @@ const RCN_RUN_HELPER: Landmark = {
   desc: "the footer's helper line",
   any: [{ testid: "run-form-helper" }],
 };
+// Design 1k's central element: “Running it by hand — the form is built from the
+// inputs. Issue is a picker, not a number field.” The control and the open list
+// are claimed separately: the form on a revision that declares no issue input
+// (`rcn-1k run-form-fields`) carries the first shape of the control claim and
+// never the list.
+const RCN_RUN_ISSUE_PICKER: Landmark = {
+  id: "rcn-run-form-issue-picker",
+  desc: "the ISSUE picker — a searchable combobox over the repository's issues, not a number field",
+  any: [
+    { testid: "new-run-input-issue-picker" },
+    { testid: "new-run-input-issue-options" },
+    { role: "listbox" },
+  ],
+};
+const RCN_RUN_ISSUE_LIST: Landmark = {
+  id: "rcn-run-form-issue-list",
+  desc: "the picker open with the tracker's issue rows (#<n> + title) on screen",
+  any: [
+    { testid: "new-run-input-issue-option-*" },
+    { testid: "new-run-input-issue-options" },
+    { role: "option" },
+  ],
+};
 
 /* ------------------------------------------------------------- the screens */
 
@@ -2379,6 +2402,24 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_INPUTS_YAML,
   ],
   "rcn-1k run-form": [
+    RCN_RUN_DIALOG,
+    RCN_RUN_TITLE,
+    RCN_RUN_SUBTITLE,
+    // The pin this screen is captured on declares the `github_issue` input, so
+    // 1k's picker is the screen's central element — a form without it is a
+    // different form (round-20's defect).
+    RCN_RUN_ISSUE_PICKER,
+    RCN_RUN_ISSUE_LIST,
+    RCN_RUN_FIELDS,
+    RCN_RUN_HELPER,
+    RCN_RUN_CANCEL,
+    RCN_RUN_START,
+  ],
+  // The same modal on the pass's project-wide pin, whose pinned revision
+  // declares goal/repository/revision and NO issue input: the form is still
+  // built from the declared inputs, minus the picker the design draws for the
+  // issue type.
+  "rcn-1k run-form-fields": [
     RCN_RUN_DIALOG,
     RCN_RUN_TITLE,
     RCN_RUN_SUBTITLE,

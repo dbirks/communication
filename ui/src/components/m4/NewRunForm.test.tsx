@@ -655,6 +655,11 @@ describe("NewRunForm — the typed form builds one widget per input (1k)", () =>
     ]);
     const box = (await screen.findByTestId("new-run-input-issue")) as HTMLInputElement;
     fireEvent.focus(box);
+    // The open list takes its own room in the form: inside the dialog's
+    // `overflow-hidden` box an absolutely positioned list is clipped, and a
+    // list painted over the fields below it is content colliding with content.
+    const list = screen.getByTestId("new-run-input-issue-options");
+    expect(list.className.split(/\s+/)).not.toContain("absolute");
     expect(screen.getByTestId("new-run-input-issue-running-9").textContent).toBe(
       "● run in progress",
     );
