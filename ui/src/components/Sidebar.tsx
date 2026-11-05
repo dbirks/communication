@@ -60,7 +60,7 @@ import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { useSidebarFlags } from "../lib/sidebarFlags";
 import { Mark } from "./ds/Mark";
-import { Menu, Popover, type MenuEntry } from "./ds/Menu";
+import { Menu, MenuArrow, Popover, type MenuEntry } from "./ds/Menu";
 import NewConversationDialog from "./NewConversationDialog";
 import UserMenu from "./UserMenu";
 
@@ -582,6 +582,14 @@ function ProjectSwitcher() {
           </button>
         </div>
       ) : null}
+      {/* Handoff 3c's rule in the shell's own surface: every anchored surface
+          gets the pointer arrow. The switcher's list is the box its trigger
+          opens, and it scrolls inside that box — an arrow riding inside it
+          would be clipped — so the arrow mounts on the same wrapper the box is
+          measured against. The trigger spans that wrapper and the box is
+          positioned against it, so `centerOnTrigger` lands the shared 9px
+          square on the trigger's centre, on the box's own top border line. */}
+      {open ? <MenuArrow centerOnTrigger /> : null}
       {selected ? (
         <RepoList projectHref={routes.project(selected.id)} projectId={selected.id} />
       ) : null}

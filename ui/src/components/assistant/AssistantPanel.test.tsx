@@ -553,6 +553,26 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     );
   });
 
+  it("the Recent menu carries the shared pointer arrow (handoff 3c)", () => {
+    renderPanel({ onSwitchConversation: () => {}, recentConversations: recent });
+    expect(screen.queryByTestId("menu-arrow")).toBeNull();
+    const trigger = screen.getByTestId("assistant-history");
+    fireEvent.click(trigger);
+    const menu = screen.getByTestId("assistant-history-menu");
+    const arrow = screen.getByTestId("menu-arrow") as HTMLElement;
+    // Handoff 3c's rule, in the hand-rolled Recent menu: the shared arrow,
+    // mounted on the wrapper that hugs the `Recent ▾` trigger rather than
+    // inside the box (the rule centres it on the TRIGGER, not on the box).
+    expect(arrow.getAttribute("aria-hidden")).toBe("true");
+    expect(arrow.style.width).toBe("9px");
+    expect(arrow.style.transform).toContain("rotate(45deg)");
+    expect(arrow.style.left).toBe("50%");
+    expect(menu.contains(arrow)).toBe(false);
+    expect(trigger.parentElement?.contains(arrow)).toBe(true);
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByTestId("menu-arrow")).toBeNull();
+  });
+
   it("esc in the Recent menu closes only the menu, then the panel", () => {
     const onClose = vi.fn();
     renderPanel({

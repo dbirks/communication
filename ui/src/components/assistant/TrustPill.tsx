@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { MenuArrow } from "../ds/Menu";
 import { DEFAULT_TRUST_LEVEL, TRUST_LEVELS, trustPillLabel, type TrustLevel } from "./types";
 
 /**
@@ -196,6 +197,11 @@ export function TrustPill({ value, onChange, className = "" }: TrustPillProps) {
           </p>
         </div>
       ) : null}
+      {/* Handoff 3c: every anchored surface gets the pointer arrow. The ds
+          Menu/Popover mount it inside the box; this menu places its own box
+          (`right:0`) and centres the arrow on the wrapper — which IS the pill,
+          the trigger — so the rule holds with one implementation. */}
+      {open ? <MenuArrow centerOnTrigger /> : null}
     </div>
   );
 }

@@ -48,6 +48,25 @@ describe("TrustPill", () => {
     expect(screen.queryByTestId("assistant-pill-menu")).toBeNull();
   });
 
+  it("carries the shared pointer arrow while the menu is open (handoff 3c)", () => {
+    render(<TrustPill value="ask_risky" onChange={() => {}} />);
+    // Closed: no arrow anywhere — it belongs to the surface, not the pill.
+    expect(screen.queryByTestId("menu-arrow")).toBeNull();
+    const pill = screen.getByTestId("assistant-pill");
+    fireEvent.click(pill);
+    const arrow = screen.getByTestId("menu-arrow") as HTMLElement;
+    // The ds primitive's arrow: aria-hidden, the 9px square, rotated 45° and
+    // centred on the wrapper that hugs the trigger — which is the pill.
+    expect(arrow.getAttribute("aria-hidden")).toBe("true");
+    expect(arrow.style.width).toBe("9px");
+    expect(arrow.style.transform).toContain("rotate(45deg)");
+    expect(arrow.style.left).toBe("50%");
+    expect(pill.parentElement?.contains(arrow)).toBe(true);
+    expect(screen.getByTestId("assistant-pill-menu").contains(arrow)).toBe(false);
+    fireEvent.click(screen.getByTestId("assistant-pill-option-no_ask"));
+    expect(screen.queryByTestId("menu-arrow")).toBeNull();
+  });
+
   it("navigates the options with arrow keys and selects with Enter", () => {
     const onChange = vi.fn();
     render(<TrustPill value="ask_risky" onChange={onChange} />);

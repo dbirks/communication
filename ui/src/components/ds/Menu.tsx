@@ -29,6 +29,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -317,23 +318,65 @@ function useAnchoredSurface(options: AnchorOptions) {
   return { panelRef, arrowRef, landedSide };
 }
 
-function Arrow({
+export interface MenuArrowProps {
+  /** The anchor hook's ref — `useAnchoredSurface` writes the centring `left`/
+   * `top` into it. Omitted by a surface that places its own box (below). */
+  arrowRef?: RefObject<HTMLSpanElement | null>;
+  /** Which box edge the square straddles. */
+  side?: MenuSide;
+  /** Extra classes, merged after the side's edge classes. */
+  className?: string;
+  /** Placement a surface that positions its own box passes instead of the
+   * hook: an inline style outranks the edge class, so `left: "50%"` centres
+   * the square on a wrapper that hugs (or spans) its trigger — which IS the
+   * trigger's centre, the handoff's rule, with no measurement. */
+  style?: CSSProperties;
+  /**
+   * For a surface that positions its own box with CSS rather than through
+   * `useAnchoredSurface`: sit the arrow on the trigger's centre and stack it
+   * over the box, instead of waiting for the hook to measure it. Only
+   * meaningful with the default `side="bottom"` (every surface that uses it
+   * opens downward), and it keeps the placement math in this file rather than
+   * in a hand-copy at each surface.
+   */
+  centerOnTrigger?: boolean;
+}
+
+/**
+ * The shared pointer arrow. Handoff 3c is the rule it implements — "all
+ * popovers/menus get a pointer arrow: a 9px square, white, 1px ink border on
+ * two sides, rotated 45°, centered on the trigger" — and it is the one place
+ * the `menu-arrow` testid the design checks ask for is spelled.
+ *
+ * `Menu` and `Popover` mount it themselves and hand it the anchor hook's ref.
+ * It is exported for the anchored surfaces that still place their own box —
+ * the sidebar's PROJECT switcher and the assistant popover's trust pill and
+ * Recent menus, which drew the ds box and missed the arrow — so the rule has
+ * one implementation instead of three near-misses.
+ */
+export function MenuArrow({
   arrowRef,
-  side,
-}: {
-  arrowRef: RefObject<HTMLSpanElement | null>;
-  side: MenuSide;
-}) {
+  side = "bottom",
+  className,
+  style,
+  centerOnTrigger = false,
+}: MenuArrowProps) {
   return (
     <span
       ref={arrowRef}
       aria-hidden="true"
       data-testid="menu-arrow"
-      className={`pointer-events-none absolute z-10 block border-ink bg-surface ${ARROW_EDGE_CLASS[side]}`}
+      className={`pointer-events-none absolute z-10 block border-ink bg-surface ${ARROW_EDGE_CLASS[side]}${
+        className ? ` ${className}` : ""
+      }`}
       style={{
         width: ARROW_SIZE_PX,
         height: ARROW_SIZE_PX,
         transform: ARROW_TRANSFORM[side],
+        // 50% of the wrapper is the trigger's centre; -1px lands the square's
+        // middle on the box's own border line (the box starts 4px below).
+        ...(centerOnTrigger ? { left: "50%", top: "calc(100% - 1px)", zIndex: 40 } : null),
+        ...style,
       }}
     />
   );
@@ -395,7 +438,7 @@ export function Menu({ items, children, "data-testid": dataTestid, ...surface }:
       className={`${SURFACE_CLASS} py-[4px] ${surface.className ?? ""}`}
       style={{ width: anchor.width }}
     >
-      <Arrow arrowRef={arrowRef} side={landedSide} />
+      <MenuArrow arrowRef={arrowRef} side={landedSide} />
       <Caption caption={surface.caption} />
       {(items ?? []).map((entry, index) =>
         "separator" in entry ? (
@@ -451,7 +494,7 @@ export function Popover({ children, "data-testid": dataTestid, ...surface }: Pop
       className={`${SURFACE_CLASS} p-2 ${surface.className ?? ""}`}
       style={{ width: anchor.width }}
     >
-      <Arrow arrowRef={arrowRef} side={landedSide} />
+      <MenuArrow arrowRef={arrowRef} side={landedSide} />
       <Caption caption={surface.caption} />
       {children}
     </div>

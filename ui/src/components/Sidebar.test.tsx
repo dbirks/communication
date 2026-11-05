@@ -294,6 +294,21 @@ describe("the sidebar switcher (a saved layout preference)", () => {
     expect(within(listbox).getByText("Widgets")).toBeTruthy();
     expect(within(listbox).getByTestId("project-switcher-all")).toBeTruthy();
     expect(within(listbox).getByText("All projects")).toBeTruthy();
+    // Handoff 3c's rule — every anchored surface carries the shared pointer
+    // arrow (`ds/Menu`'s `menu-arrow`). It mounts as the list's sibling rather
+    // than inside it: the listbox owns the scroll (`overflow-y-auto`), and the
+    // half of the square that rides above the border line would be clipped.
+    const arrow = sidebar.querySelector('[data-testid="menu-arrow"]');
+    expect(arrow, "the switcher's list carries the shared pointer arrow").toBeTruthy();
+    expect(listbox.contains(arrow as Element)).toBe(false);
+    expect(arrow?.getAttribute("aria-hidden")).toBe("true");
+    // 9px square, rotated 45°, centred on the wrapper the trigger spans.
+    expect((arrow as HTMLElement).style.width).toBe("9px");
+    expect((arrow as HTMLElement).style.transform).toContain("rotate(45deg)");
+    expect((arrow as HTMLElement).style.left).toBe("50%");
+    // Closed surface, no arrow — it belongs to the open list, not the column.
+    fireEvent.click(trigger);
+    expect(sidebar.querySelector('[data-testid="menu-arrow"]')).toBeNull();
   });
 });
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Minimize2, Plus } from "lucide-react";
 import { Button } from "../ds/Button";
+import { MenuArrow } from "../ds/Menu";
 import { formatAge } from "../../lib/format";
 import { useIsNarrow } from "../Shell";
 import { useSpeechToText } from "../../lib/speech";
@@ -347,6 +348,11 @@ function RecentMenu({
           )}
         </div>
       ) : null}
+      {/* Handoff 3c's rule ("all popovers/menus get a pointer arrow") in this
+          hand-rolled surface: the menu places its own box, so it mounts the
+          shared arrow on the wrapper that hugs its trigger — the same 9px
+          square `Menu`/`Popover` draw, with the same `menu-arrow` hook. */}
+      {open ? <MenuArrow centerOnTrigger /> : null}
     </div>
   );
 }
