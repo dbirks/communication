@@ -27,6 +27,7 @@ import { CONVERSATION_STATE, RUN_STATE, SHORT_WORD, STATES, type StateName } fro
 import { ProgressStrip, type ProgressSegment } from "../ds/ProgressStrip";
 import { Spinner } from "../Feedback";
 import { RepoLoadError } from "./RepoLoadError";
+import { legacyRunThreadTitle } from "../threads/runThreadTitle";
 import { formatAge, shortId, testidOf } from "../../lib/format";
 import { routes } from "../../lib/routes";
 
@@ -402,6 +403,15 @@ function ActivityRowView({
   const conversation = row.conversation;
   if (!conversation) return null;
   const agent = profileNameFor(conversation.agent_profile_id);
+  // Round-16: a run-origin chat the server still named in raw ids
+  // (`run 01a1a992 /plan attempt 1`) renders in words from the row's own
+  // run_link — the same humanised form the threads pane says — never the
+  // raw id prefix.
+  const legacy =
+    conversation.origin === "run"
+      ? legacyRunThreadTitle(conversation.title, conversation.run_link)
+      : null;
+  const shownTitle = legacy ? legacy.title : conversation.title;
   return (
     <li>
       <Link
@@ -417,7 +427,9 @@ function ActivityRowView({
         <span className="font-mono text-[10px] font-semibold text-accent-text">CHAT</span>
         <span className="min-w-0">
           <span className="flex min-w-0 items-baseline gap-[3px] text-[12.5px] text-ink">
-            <span className="min-w-0 truncate font-semibold">{conversation.title}</span>
+            <span className="min-w-0 truncate font-semibold" title={shownTitle}>
+              {shownTitle}
+            </span>
             <span className="shrink-0">{`· ${conversationWord(conversation, state)}`}</span>
           </span>
           <RowMetaMobile

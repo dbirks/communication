@@ -52,6 +52,7 @@ import { CONVERSATION_STATE, STATES, stateOf, type StateName } from "../ds/state
 import { formatAge, shortId } from "../../lib/format";
 import { previewLine } from "../../lib/preview";
 import { routes } from "../../lib/routes";
+import { legacyRunThreadTitle, type RunThreadTitle } from "./runThreadTitle";
 
 type CrossProjectConversations = components["schemas"]["CrossProjectConversationList"];
 
@@ -286,6 +287,17 @@ function ThreadItem({
   // strips its leading markdown markers and inline emphasis, so the row
   // leads with the sentence, not a bullet (pass-1 review).
   const preview = previewLine(conversation.last_agent_line);
+  // Round-16: a run-origin row the server still named in raw ids (`run
+  // 01a1a992 /plan attempt 1`) is rendered in words — the same humanised
+  // form the new server-side title carries — from the row's own run_link
+  // (ADR-0043), with the run reference demoted to a muted secondary line.
+  // A title a person wrote, or a link that cannot name the node, stays
+  // exactly what the wire sent.
+  const legacy: RunThreadTitle | null =
+    conversation.origin === "run"
+      ? legacyRunThreadTitle(conversation.title, conversation.run_link)
+      : null;
+  const shownTitle = legacy ? legacy.title : conversation.title;
   return (
     <li>
       <Link
@@ -304,7 +316,7 @@ function ThreadItem({
             {spec.glyph}
           </span>
           <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">
-            {conversation.title}
+            {shownTitle}
           </span>
           <span className="shrink-0 font-mono text-[10.5px] text-faint">
             {formatAge(conversation.updated_at)}
@@ -314,6 +326,17 @@ function ThreadItem({
           {scope ? `${projectName} / ${scope}` : projectName} · {profileName}
           {word ? ` · ${word}` : ""}
         </span>
+        {legacy ? (
+          // The run reference as secondary metadata (screens 1g/2a name runs
+          // by a short `#ref`), muted — never the raw id the stored title
+          // carried.
+          <span
+            className="block truncate pl-[17px] font-mono text-[10.5px] text-muted"
+            data-testid={`thread-run-ref-${conversation.id}`}
+          >
+            {legacy.secondary}
+          </span>
+        ) : null}
         {preview ? (
           <span
             className="block truncate pl-[17px] text-[12px] text-muted"
@@ -393,6 +416,18 @@ export function ThreadListPane({
     profiles.data?.items.find((profile) => profile.id === id)?.name ?? shortId(id);
 
   const query = search.trim().toLowerCase();
+  // The search matches what the row RENDERS: the stored title, and — for a
+  // run row the pane re-renders in words from its legacy id title — the
+  // worded title too, so "plan" finds it.
+  const matchesQuery = (conversation: ConversationSummary): boolean => {
+    if (query === "") return true;
+    if (conversation.title.toLowerCase().includes(query)) return true;
+    const legacy =
+      conversation.origin === "run"
+        ? legacyRunThreadTitle(conversation.title, conversation.run_link)
+        : null;
+    return legacy ? legacy.title.toLowerCase().includes(query) : false;
+  };
   // `mine` before `me` has resolved filters nothing yet — an unloaded
   // directory is not evidence that a thread is nobody's.
   const mineKnown = chip !== "mine" || Boolean(me.data);
@@ -401,7 +436,7 @@ export function ThreadListPane({
       (chip === "all" ||
         (chip === "mine" && (!mineKnown || conversation.created_by === me.data?.id)) ||
         (chip === "runs" && conversation.origin === "run")) &&
-      (query === "" || conversation.title.toLowerCase().includes(query)),
+      matchesQuery(conversation),
   );
   const live = rows.filter(isLive);
   const earlier = rows.filter((conversation) => !isLive(conversation));

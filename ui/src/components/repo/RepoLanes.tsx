@@ -60,6 +60,7 @@ import type {
 import { VARIANT_CLASS } from "../ds/Button";
 import { Menu, type MenuEntry } from "../ds/Menu";
 import { ProgressStrip } from "../ds/ProgressStrip";
+import { legacyRunThreadTitle } from "../threads/runThreadTitle";
 import { runStepSegments, conversationWord } from "./RepoActivity";
 import { triggerLine } from "./RepoWorkflowPanel";
 import { CONVERSATION_STATE, RUN_STATE, SHORT_WORD, STATES } from "../ds/states";
@@ -901,6 +902,14 @@ function RunLaneCard({
 function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
   const state = CONVERSATION_STATE[conversation.status] ?? "info";
   const spec = STATES[state];
+  // Round-16: a run-origin chat the server still named in raw ids
+  // (`run 01a1a992 /plan attempt 1`) renders in words from the card's own
+  // run_link — the same humanised form the threads pane says.
+  const legacy =
+    conversation.origin === "run"
+      ? legacyRunThreadTitle(conversation.title, conversation.run_link)
+      : null;
+  const shownTitle = legacy ? legacy.title : conversation.title;
   return (
     <li
       className={CARD_CLASS}
@@ -923,7 +932,7 @@ function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
           to={routes.thread(conversation.id)}
           className="min-w-0 flex-1 text-[12.5px] font-semibold text-ink hover:underline"
         >
-          {conversation.title}
+          {shownTitle}
         </Link>
         <span className="shrink-0 font-mono text-[10.5px] text-faint">
           {formatAge(conversation.updated_at)}

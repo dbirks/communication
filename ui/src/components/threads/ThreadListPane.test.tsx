@@ -56,6 +56,9 @@ const boundRow: ConversationSummary = {
 // preview rule (internal/store/postgres/conversations.go) reads the blob's own
 // `summary`/`title` when one is there and otherwise answers the plain word —
 // a chunk the worker's cap split mid-blob never reaches the row as `"]}}`.
+// The title is the LEGACY server naming (run-id prefix + node instance key)
+// with the row's own run_link (ADR-0043) beside it: the pane renders that
+// row in words from the link, never the raw ids (round-16 DEFECT).
 const runRow: ConversationSummary = {
   ...conversationSummaryFixture,
   id: "01987a63-3333-7000-8000-abcdef000003",
@@ -63,18 +66,35 @@ const runRow: ConversationSummary = {
   status: "idle",
   origin: "run",
   last_agent_line: "structured output",
+  run_link: {
+    run_id: "01a1a4f5-bbbb-7000-8000-abcdef000003",
+    node_execution_id: "01987a80-cccc-7000-8000-abcdef000003",
+    node_instance_key: "/plan",
+    node_id: "plan",
+    attempt_id: "01987a80-dddd-7000-8000-abcdef000003",
+    attempt_number: 1,
+  },
 };
 
 // A run row whose served preview still carries a real newline (the server
 // collapses its previews, but the wire contract is one line — the row must
-// render it as such, never wrap, never add escaping of its own).
+// render it as such, never wrap, never add escaping of its own). Its node is
+// nested in an until body: the worded title keeps only the last segment.
 const newlineRow: ConversationSummary = {
   ...conversationSummaryFixture,
   id: "01987a63-4444-7000-8000-abcdef000004",
-  title: "run 01a1a58e /plan attempt 1",
+  title: "run 01a1a58e /build_until_verified[1]/code_review attempt 1",
   status: "idle",
   origin: "run",
   last_agent_line: "Fix hello.py so it is documented.\n- Keep the API stable",
+  run_link: {
+    run_id: "01a1a58e-eeee-7000-8000-abcdef000004",
+    node_execution_id: "01987a80-ffff-7000-8000-abcdef000004",
+    node_instance_key: "/build_until_verified[1]/code_review",
+    node_id: "code_review",
+    attempt_id: "01987a80-1111-7000-8000-abcdef000004",
+    attempt_number: 1,
+  },
 };
 
 function routes(): RouteStub[] {
@@ -149,9 +169,43 @@ describe("thread list previews stay readable for structured output", () => {
       expect(row.textContent).not.toContain("]}}");
       expect(row.textContent).not.toContain('{"plan');
       // The thread sits in the EARLIER group: an idle run thread is not live.
+      // The group shows the worded title, not the stored id title.
+      const worded = "Plan · run #01a1";
       const earlier = screen.getByTestId("threads-group-earlier");
-      expect(earlier.textContent).toContain(runRow.title);
-      expect(screen.getByTestId("threads-group-live").textContent).not.toContain(runRow.title);
+      expect(earlier.textContent).toContain(worded);
+      expect(earlier.textContent).not.toContain(runRow.title);
+      expect(screen.getByTestId("threads-group-live").textContent).not.toContain(worded);
+    },
+  );
+
+  it(
+    "a run-origin row still named in raw ids renders in words, the run reference demoted to muted text (round-16)",
+    { timeout: 15_000 },
+    async () => {
+      renderApp({ path: "/threads", routes: routes() });
+      const row = await screen.findByTestId(`thread-row-${runRow.id}`);
+      // The worded title: the node's human label and the short run reference —
+      // the raw run-id prefix and the bare node key never reach the screen.
+      expect(row.textContent).toContain("Plan · run #01a1");
+      expect(row.textContent).not.toContain(runRow.title);
+      // The run reference demotes to its own muted secondary line.
+      const ref = screen.getByTestId(`thread-run-ref-${runRow.id}`);
+      expect(ref.textContent).toBe("run #01a1 · attempt 1");
+      expect(ref.className).toContain("text-muted");
+      // A nested node keeps only its last segment — the same words the server
+      // now titles with.
+      const nested = await screen.findByTestId(`thread-row-${newlineRow.id}`);
+      expect(nested.textContent).toContain("Code review · run #01a1");
+      expect(nested.textContent).not.toContain(newlineRow.title);
+      expect(screen.getByTestId(`thread-run-ref-${newlineRow.id}`).textContent).toBe(
+        "run #01a1 · attempt 1",
+      );
+      // A manual row keeps its own title verbatim and carries no run line.
+      const manual = screen.getByTestId(`thread-row-${wholeProjectRow.id}`);
+      expect(manual.textContent).toContain(wholeProjectRow.title);
+      expect(
+        manual.querySelector(`[data-testid="thread-run-ref-${wholeProjectRow.id}"]`),
+      ).toBeNull();
     },
   );
 
@@ -169,10 +223,13 @@ describe("thread list previews stay readable for structured output", () => {
       expect(lastLine.textContent).not.toContain("\\n");
       expect(lastLine.textContent).not.toContain("\\\\n");
       // One line no matter what the wire carries: the preview is a block
-      // whose `truncate` keeps it a single (clipped) line, not a wrap.
+      // whose `truncate` keeps it a single (clipped) line, not a wrap. The
+      // row's own title is the worded form — the stored raw-id title is
+      // gone from the screen (round-16).
       expect(lastLine.className).toContain("truncate");
       expect(lastLine.className).toContain("block");
-      expect(row.textContent).toContain(newlineRow.title);
+      expect(row.textContent).toContain("Code review · run #01a1");
+      expect(row.textContent).not.toContain(newlineRow.title);
     },
   );
 });

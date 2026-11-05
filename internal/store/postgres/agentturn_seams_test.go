@@ -681,3 +681,115 @@ func TestAttemptTurnSpecGaps(t *testing.T) {
 		t.Errorf("oversize prompt err = %v, want the 65536 refusal", err)
 	}
 }
+
+// TestAttemptConversationTitleNamesInWords pins the WORDED run-origin
+// title (round-16 DEFECT: `run 01a1a992 /plan attempt 1` — a raw run id
+// prefix plus the node instance key — is gone). The title says the node's
+// human label and the workflow's display name; the short run reference
+// (the design's `#71aa` secondary metadata) stands in only when the
+// pipeline carries no display name; the attempt suffix appears only past
+// attempt 1. Pure: no pool, no fixtures.
+func TestAttemptConversationTitleNamesInWords(t *testing.T) {
+	const runID = "01a1a992-8822-7000-8000-abcdef000000"
+	claim := func(key, nodeID string, attempt int) AttemptClaim {
+		return AttemptClaim{RunID: runID, NodeID: nodeID, NodeInstanceKey: key, AttemptNumber: attempt}
+	}
+	cases := []struct {
+		name         string
+		key          string
+		nodeID       string
+		attempt      int
+		workflowName string
+		want         string
+	}{
+		{
+			name:         "top-level node, workflow display name",
+			key:          "/plan",
+			nodeID:       "plan",
+			attempt:      1,
+			workflowName: "Build and verify",
+			want:         "Plan · Build and verify",
+		},
+		{
+			name:         "nested instance key keeps only the last segment",
+			key:          "/build_until_verified[1]/code_review",
+			nodeID:       "code_review",
+			attempt:      1,
+			workflowName: "CI",
+			want:         "Code review · CI",
+		},
+		{
+			name:         "attempt 2 appends the suffix",
+			key:          "/plan",
+			nodeID:       "plan",
+			attempt:      2,
+			workflowName: "Build and verify",
+			want:         "Plan · Build and verify (attempt 2)",
+		},
+		{
+			name:         "no display name falls back to the short run reference",
+			key:          "/plan",
+			nodeID:       "plan",
+			attempt:      1,
+			workflowName: "",
+			want:         "Plan · run #01a1",
+		},
+		{
+			name:         "whitespace-only display name falls back too",
+			key:          "/plan",
+			nodeID:       "plan",
+			attempt:      1,
+			workflowName: "   ",
+			want:         "Plan · run #01a1",
+		},
+		{
+			name:         "empty instance key falls back to the node id",
+			key:          "",
+			nodeID:       "code_review",
+			attempt:      1,
+			workflowName: "CI",
+			want:         "Code review · CI",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := attemptConversationTitle(claim(c.key, c.nodeID, c.attempt), c.workflowName)
+			if got != c.want {
+				t.Errorf("attemptConversationTitle = %q, want %q", got, c.want)
+			}
+			if len(got) > 200 {
+				t.Errorf("attemptConversationTitle = %d chars, over the 200 bound", len(got))
+			}
+		})
+	}
+
+	// The 200 bound still binds: a long display name truncates, never the
+	// node label.
+	long := strings.Repeat("workflow", 30) // 300 chars
+	got := attemptConversationTitle(claim("/plan", "plan", 1), long)
+	if len(got) != 200 {
+		t.Errorf("truncated title = %d chars, want exactly 200", len(got))
+	}
+	if !strings.HasPrefix(got, "Plan · ") {
+		t.Errorf("truncated title %q lost its node label", got)
+	}
+}
+
+// TestHumanizeNodeLabel pins the node's words from its id: last path
+// segment, iteration brackets dropped, underscores as spaces, capitalised.
+func TestHumanizeNodeLabel(t *testing.T) {
+	cases := map[string]string{
+		"plan":                                 "Plan",
+		"/plan":                                "Plan",
+		"/build_until_verified[1]/code_review": "Code review",
+		"build_until_verified[2]/review":       "Review",
+		"/fan_out[3]/invoke":                   "Invoke",
+		"/[1]":                                 "",
+		"":                                     "",
+	}
+	for key, want := range cases {
+		if got := humanizeNodeLabel(key); got != want {
+			t.Errorf("humanizeNodeLabel(%q) = %q, want %q", key, got, want)
+		}
+	}
+}

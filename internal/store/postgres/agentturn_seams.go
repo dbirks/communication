@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -119,10 +120,17 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 			return nil
 		}
 
-		var projectID, orgID string
+		// The pipeline's display name joins here, off the run row this
+		// transaction already needs: the attempt's conversation title says the
+		// node AND the workflow in words (round-16: the raw `run <id> <key>`
+		// naming is gone), and runs.pipeline_id is the run's own pin — a PK
+		// join, no mutable state.
+		var projectID, orgID, workflowName string
 		err := tx.QueryRow(ctx, `
-			SELECT project_id::text, organization_id::text
-			FROM runs WHERE id = $1::uuid`, st.RunID).Scan(&projectID, &orgID)
+			SELECT r.project_id::text, r.organization_id::text, COALESCE(p.display_name, '')
+			FROM runs r
+			LEFT JOIN pipelines p ON p.id = r.pipeline_id
+			WHERE r.id = $1::uuid`, st.RunID).Scan(&projectID, &orgID, &workflowName)
 		if err != nil {
 			return fmt.Errorf("postgres: read run %s for the attempt conversation: %w", st.RunID, err)
 		}
@@ -163,7 +171,7 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO conversations (project_id, agent_profile_id, title, created_by)
 				VALUES ($1::uuid, $2::uuid, $3, $4::uuid) RETURNING id::text`,
-				projectID, profileID, attemptConversationTitle(st), submitter).Scan(&conversationID); err != nil {
+				projectID, profileID, attemptConversationTitle(st, workflowName), submitter).Scan(&conversationID); err != nil {
 				return fmt.Errorf("postgres: create attempt conversation for %s: %w", st.AttemptID, err)
 			}
 		}
@@ -414,21 +422,66 @@ func attemptTurnSpec(c worker.AttemptClaim) (attemptTurnSpecShape, bool, error) 
 	return attemptTurnSpecShape{prompt: prompt, profile: profile}, true, nil
 }
 
-// attemptConversationTitle names the conversation for the human reader of the
-// timeline: run, node, attempt — ids the UI already carries, no prompt text.
-func attemptConversationTitle(c AttemptClaim) string {
-	t := fmt.Sprintf("run %s %s attempt %d", shortID(c.RunID), c.NodeInstanceKey, c.AttemptNumber)
+// attemptConversationTitle names the run-origin conversation for the human
+// reader in words: the node's human label and the workflow's display name, with
+// the short run reference (the design's `#71aa` secondary metadata, screens
+// 1g/2a) standing in when the pipeline carries no display name. Past the first
+// attempt the title appends `(attempt N)` — the attempts of one node share the
+// conversation, so the name must say WHICH one the reader is looking at. No
+// prompt text, and no raw id anywhere: a run id is a reference, not a name.
+func attemptConversationTitle(c AttemptClaim, workflowName string) string {
+	label := humanizeNodeLabel(c.NodeInstanceKey)
+	if label == "" {
+		label = humanizeNodeLabel(c.NodeID)
+	}
+	if label == "" {
+		label = "Run step"
+	}
+	name := strings.TrimSpace(workflowName)
+	if name == "" {
+		name = "run #" + runRef(c.RunID)
+	}
+	t := label + " · " + name
+	if c.AttemptNumber > 1 {
+		t += fmt.Sprintf(" (attempt %d)", c.AttemptNumber)
+	}
 	if len(t) > 200 {
 		t = t[:200]
 	}
 	return t
 }
 
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
+// humanizeNodeLabel names a pipeline node from its id in the reader's words:
+// the id's last path segment (a node_instance_key is a path, ADR-0023 § 1),
+// its iteration brackets dropped, underscores as spaces, first letter
+// capitalised — `plan` → "Plan", `/build_until_verified[1]/code_review` →
+// "Code review". The compiled plan carries no node titles (a revision's
+// nodes name only ids), so this says what the key already is, in words. ""
+// when nothing is left to name.
+func humanizeNodeLabel(key string) string {
+	seg := key
+	if i := strings.LastIndex(seg, "/"); i >= 0 {
+		seg = seg[i+1:]
 	}
-	return id
+	if i := strings.IndexByte(seg, '['); i >= 0 {
+		seg = seg[:i]
+	}
+	seg = strings.TrimSpace(strings.ReplaceAll(seg, "_", " "))
+	if seg == "" {
+		return ""
+	}
+	return strings.ToUpper(seg[:1]) + seg[1:]
+}
+
+// runRef is the design's short run reference (screens 1g/2a name runs by four
+// hex characters — `✓ #71aa done`): the run id's head, dashes dropped, at
+// most four characters.
+func runRef(id string) string {
+	s := strings.ReplaceAll(id[:min(len(id), 16)], "-", "")
+	if len(s) > 4 {
+		return s[:4]
+	}
+	return s
 }
 
 // ResumableSession is TurnStore's rule verbatim (the seam's own words): the

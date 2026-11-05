@@ -10,10 +10,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildActivityRows, RepoActivity } from "./RepoActivity";
-import { projectFixture } from "../../test/fakes";
+import { conversationFixture, conversationSummaryFixture, projectFixture } from "../../test/fakes";
 import { testidOf } from "../../lib/format";
 import type { ConversationSummary } from "../../api/types";
-import { conversationFixture } from "../../test/fakes";
 
 afterEach(cleanup);
 
@@ -74,5 +73,28 @@ describe("the repo feed's chat rows never name the chat's repository", () => {
     expect(row.textContent).toContain("Claude Code");
     expect(row.textContent).not.toContain("server");
     expect(row.textContent).not.toContain("web");
+  });
+
+  it("a run-origin chat still stored with the raw id title rows in words, not raw ids (round-16)", () => {
+    // The legacy server naming (`run 01a1a992 /plan attempt 1`) with the row's
+    // own run_link beside it: the feed renders the same worded form the
+    // threads pane says, from the link's node key and run id.
+    const chat: ConversationSummary = {
+      ...conversationSummaryFixture,
+      title: "run 01a1a992 /build_until_verified[1]/code_review attempt 1",
+      origin: "run",
+      run_link: {
+        run_id: "01a1a992-8822-7000-8000-abcdef000000",
+        node_execution_id: "01987a80-aaaa-7000-8000-abcdef000001",
+        node_instance_key: "/build_until_verified[1]/code_review",
+        node_id: "code_review",
+        attempt_id: "01987a80-bbbb-7000-8000-abcdef000002",
+        attempt_number: 1,
+      },
+    };
+    renderFeed(buildActivityRows([], [chat]));
+    const row = screen.getByTestId(`repo-chat-row-${testidOf(chat.id)}`);
+    expect(row.textContent).toContain("Code review · run #01a1");
+    expect(row.textContent).not.toContain(chat.title);
   });
 });
