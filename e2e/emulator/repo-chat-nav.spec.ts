@@ -1468,7 +1468,17 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // the hidden check would pass on the desktop width alone while the
       // sheet's open state leaked into the next 390 capture. Back to 390
       // first, where the sheet really mounts — then the desktop frame.
+      // Readiness is the sheet itself: `open` is viewport-gated, so the
+      // matchMedia change + React remount land asynchronously after the
+      // resize, and the sheet registers its Escape listener synchronously
+      // in its mount commit — a visible sheet is by construction an
+      // Esc-listening one. (Pass 2's flake: Esc fired before the remount
+      // and the sheet came back open.)
       await page.setViewportSize({ width: 390, height: 844 });
+      await expect(
+        sheet,
+        "the sheet is remounted and visible AT 390 before Esc",
+      ).toBeVisible({ timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
       await page.setViewportSize({ width: 1280, height: 900 });
@@ -1989,7 +1999,17 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // desktop frame, where the sheet is unmounted and a hidden check is
       // trivially true — so the Esc fires AT 390, where the sheet really
       // mounts, and the picker step below acts in the desktop frame.
+      // Readiness is the sheet itself: `open` is viewport-gated, so the
+      // matchMedia change + React remount land asynchronously after the
+      // resize, and the sheet registers its Escape listener synchronously
+      // in its mount commit — a visible sheet is by construction an
+      // Esc-listening one. (Pass 2's flake: Esc fired before the remount
+      // and the sheet came back open.)
       await page.setViewportSize({ width: 390, height: 844 });
+      await expect(
+        sheet,
+        "the sheet is remounted and visible AT 390 before Esc",
+      ).toBeVisible({ timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(sheet, "Esc closes the sheet AT 390").toBeHidden({ timeout: 10_000 });
       await page.setViewportSize({ width: 1280, height: 900 });

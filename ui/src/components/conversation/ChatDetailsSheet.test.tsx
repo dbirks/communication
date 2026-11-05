@@ -29,8 +29,9 @@ describe("ChatDetailsSheet", () => {
     expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
     expect(screen.queryByTestId("chat-details-backdrop")).toBeNull();
     expect(screen.queryByTestId("chat-details-overlay")).toBeNull();
-    // Closed, it listens to nothing either.
-    fireEvent.keyDown(window, { key: "Escape" });
+    // Closed, it listens to nothing either — not even to a real keydown
+    // path (body → document → window).
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -84,10 +85,60 @@ describe("ChatDetailsSheet", () => {
         {panelChildren()}
       </ChatDetailsSheet>,
     );
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
     // Other keys are the page's business.
-    fireEvent.keyDown(window, { key: "Enter" });
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // The emulator's flake (repo-chat-nav rcn-2e): the capture helper resizes
+  // 390 → 1280 (where the page gates `open` on the viewport, so the sheet's
+  // DOM unmounts and its listener detaches) → back to 390, and presses
+  // Escape with focus on body. The remounted sheet must be Esc-closable
+  // from its first frame — the listener attaches in the mount commit
+  // (layout effect), not after paint.
+  it("closes on Esc after a viewport round-trip remount, with focus on body", () => {
+    const onClose = vi.fn();
+    const sheet = (
+      <ChatDetailsSheet open onClose={onClose}>
+        {panelChildren()}
+      </ChatDetailsSheet>
+    );
+    const { rerender } = render(sheet);
+    // Desktop frame: the caller's `open` gate flips false, the sheet's DOM
+    // and listener go away, and focus falls back to body.
+    rerender(
+      <ChatDetailsSheet open={false} onClose={onClose}>
+        {panelChildren()}
+      </ChatDetailsSheet>,
+    );
+    expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
+    // Back to the phone frame: the sheet remounts ALREADY open and the
+    // very next Escape — pressed while focus sits on body, never having
+    // entered the sheet — must close it.
+    rerender(sheet);
+    expect(screen.getByTestId("chat-details-sheet")).toBeTruthy();
+    // The mount focus lands on the close button; force the keyboard back to
+    // body — the emulator's state after the 1280 unmount — for this case.
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Esc closes even when a focused child inside the sheet holds the keyboard", () => {
+    // The sheet's close button has focus on mount; the keydown originates
+    // there (bubbling to document), which is the real browser path.
+    const onClose = vi.fn();
+    render(
+      <ChatDetailsSheet open onClose={onClose}>
+        {panelChildren()}
+      </ChatDetailsSheet>,
+    );
+    const close = screen.getByTestId("chat-details-close");
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(close, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

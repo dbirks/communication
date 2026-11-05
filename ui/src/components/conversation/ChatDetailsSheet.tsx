@@ -13,7 +13,7 @@
  * closes it, focus moves into the sheet on open, and the caller's close
  * path returns it to the button that opened the sheet.
  */
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { X } from "lucide-react";
 
@@ -29,20 +29,33 @@ export interface ChatDetailsSheetProps {
 
 export function ChatDetailsSheet({ open, onClose, children }: ChatDetailsSheetProps) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   // Focus moves INTO the sheet when it opens — the close button is its
   // first control, so it is where the keyboard lands.
   useLayoutEffect(() => {
     if (open) closeRef.current?.focus();
   }, [open]);
-  // Esc closes — the same listener shape the shell's phone drawer uses.
-  useEffect(() => {
+  // Esc closes — the shell drawer's listener shape, but registered inside
+  // a LAYOUT effect, not a passive one. A responsive
+  // remount (the emulator's 1280→390 round-trip: `open` is gated on the
+  // viewport, so the sheet's DOM is unmounted at `lg+` and remounts below
+  // it) must be closable by the very next keypress, with focus wherever it
+  // happens to be (body, a select inside the panel). A `useEffect`
+  // listener attaches only after paint, so a key that lands in between is
+  // swallowed; a layout effect runs synchronously in the mount commit,
+  // so from the first painted frame the sheet is Esc-closable. The
+  // window-level listener sees the keydown from ANY focused element —
+  // real keydowns bubble focus-target → document → window — so the open
+  // sheet closes on Escape regardless of where the keyboard sits.
+  useLayoutEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
