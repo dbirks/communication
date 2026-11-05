@@ -1009,7 +1009,10 @@ export default function ConversationPage({
               context is a click away at every width, and every rail testid is
               unchanged. (1280 shows it collapsed; an expanded proof is the
               disclosure opened, never the default.) */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-6 lg:px-6">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-6 lg:px-6"
+            data-capture-keep-scroll
+          >
             <div
               className="w-full min-w-0 max-w-[720px] space-y-3 [&_li.ml-auto]:border-0 [&_li.ml-auto>span.font-semibold]:sr-only"
               data-testid="conversation-main"
@@ -1077,18 +1080,11 @@ export default function ConversationPage({
               </summary>
               <div className="mt-[8px] border-t border-line pt-[10px]">{rail}</div>
             </details>
-            {/* 2e's context rail below 1024px: the same side panel, mounted
-                once (the `useIsNarrow` question decides where — never the
-                same content twice in the tree), collapsing under the
-                transcript exactly as the brief allows. */}
-            {narrow ? (
-              <div
-                className="mt-4 min-w-0 max-w-[720px] rounded-[3px] border border-line-strong bg-surface"
-                data-testid="thread-side-panel-stack"
-              >
-                {sidePanel}
-              </div>
-            ) : null}
+            {/* rcn-review14: the inline transcript copy of the side panel
+                (`thread-side-panel-stack`) is gone — at narrow widths the
+                panel's one place is the header's Details sheet
+                (`ChatDetailsSheet`, one tap away in the header), the same
+                panel content mounted once. */}
           </div>
           {/* The composer pins to the bottom of the pane (1g): the last thing
               on the column, visible without scrolling at any width, the ink
@@ -1114,8 +1110,8 @@ export default function ConversationPage({
           </div>
         </div>
         {/* 2e's side panel: 280px, white, left border, at `lg+` its own
-            column beside the thread; below `lg` it mounts under the
-            transcript instead (the block above), never both. */}
+            column beside the thread; below `lg` it lives in the Details
+            sheet instead, never both. */}
         {narrow ? null : (
           <aside
             className="min-h-0 w-full shrink-0 overflow-y-auto border-t border-line-strong bg-surface lg:h-full lg:w-[280px] lg:border-t-0 lg:border-l"

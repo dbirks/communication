@@ -152,14 +152,17 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     stubViewport(390);
     renderApp({ path: `/threads/${conversationId}`, routes: threadRoutes });
     const toggle = await screen.findByTestId("chat-details-toggle");
-    // Before the click: no sheet, and the rail rides its stacked place.
+    // Before the click: no sheet, and the panel has NO inline place under
+    // the transcript at this width — the Details sheet is its one home
+    // (rcn-review14: the old `thread-side-panel-stack` copy is gone).
     expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
-    expect(screen.getByTestId("thread-side-panel-stack")).toBeTruthy();
+    expect(screen.queryByTestId("thread-side-panel-stack")).toBeNull();
+    expect(screen.queryByTestId("thread-side-panel-aside")).toBeNull();
     fireEvent.click(toggle);
     const sheet = await screen.findByTestId("chat-details-sheet");
     expect(sheet.getAttribute("role")).toBe("dialog");
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    // The SAME panel the aside and the stack carry — not a re-drawn copy.
+    // The SAME panel the aside carries — not a re-drawn copy.
     expect(within(sheet).getByTestId("conversation-side-panel")).toBeTruthy();
     expect(within(sheet).getByTestId("assistant-note-workflow")).toBeTruthy();
     // Focus moved into the sheet, at its first control.
@@ -169,8 +172,8 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     // The keyboard went back to the button that opened the sheet.
     expect(document.activeElement).toBe(toggle);
-    // The stacked panel under the transcript stays where it was.
-    expect(screen.getByTestId("thread-side-panel-stack")).toBeTruthy();
+    // Still nothing inline under the transcript after the round-trip.
+    expect(screen.queryByTestId("thread-side-panel-stack")).toBeNull();
   });
 
   it("closing the sheet from its close button (or the backdrop) returns focus to the toggle", async () => {

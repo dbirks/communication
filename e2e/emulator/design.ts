@@ -1473,11 +1473,12 @@ const RCN_SWITCH_DIVIDER: Landmark = {
 };
 const RCN_SIDE_PANEL: Landmark = {
   id: "rcn-conversation-side-panel",
-  desc: "the chat's side panel holding the thread's context",
+  desc: "the chat's side panel holding the thread's context (at 390 the
+  header's Details sheet carries it — its toggle is the one tap)",
   any: [
     { testid: "conversation-side-panel" },
     { testid: "thread-side-panel-aside" },
-    { testid: "thread-side-panel-stack" },
+    { testid: "chat-details-toggle" },
   ],
 };
 const RCN_WORKS_IN: Landmark = {
@@ -2222,13 +2223,14 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "rcn-2e chat-details": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-2e chat-details-switched": [RCN_SIDE_PANEL, RCN_WORKS_IN, RCN_PANEL_AGENTS],
   // The WORKS IN scope switcher (ADR-0067 amendment): the panel with its WORKS
-  // IN section, captured with the menu CLOSED. The 390 frame remounts the side
-  // panel under the transcript (thread-side-panel-aside → -stack) and resets the
-  // menu's open state, and reflow.ts proves every side-panel-* id item-by-item
-  // at BOTH widths — an open menu (present at 1280, absent at 390) would file a
-  // false "390 lost" reflow defect. So only what both widths show is asserted
-  // here; the menu's own structure (the ds Menu, its pointer arrow, the repo
-  // rows, the tick) is asserted in the journey at the 1280 frame.
+  // IN section, captured with the menu CLOSED. At 390 the journey opens the
+  // header's Details sheet so both widths show the panel (the transcript's
+  // old inline stack copy is gone — rcn-review14), and reflow.ts proves every
+  // side-panel-* id item-by-item at BOTH widths — an open menu (present at
+  // 1280, absent at 390) would file a false "390 lost" reflow defect. So the
+  // menu itself is closed for the capture; its own structure (the ds Menu,
+  // its pointer arrow, the repo rows, the tick) is asserted in the journey
+  // at the 1280 frame.
   "rcn-2e works-in-menu": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-2e works-in-moved": [RCN_SIDE_PANEL, RCN_WORKS_IN],
   "rcn-1h next-turn-menu": [RCN_CONV_TITLE, RCN_AGENT_CHIP, RCN_AGENT_MENU, RCN_AGENT_MENU_CAPTION, RCN_AGENT_MENU_PROFILES],
@@ -2244,8 +2246,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   ],
 
   // Agent mail (3d): the answered beat — the card with its answer block, and
-  // the side panel's LINKED CHATS row with its state. The 390 side panel
-  // rides the `thread-side-panel-stack` swap (REFLOW_ALLOWLIST names it).
+  // the side panel's LINKED CHATS row with its state. At 390 the journey opens
+  // the Details sheet (the panel's one place at narrow width; REFLOW_ALLOWLIST
+  // names the aside→sheet swap).
   "rcn-3d mail-card": [
     RCN_CONV_TITLE,
     RCN_COMPOSER,

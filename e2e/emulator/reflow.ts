@@ -155,20 +155,24 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
     reason: "desktop-only affordance (drag resizer for the side dock); the phone sheet replaces it",
     reach: "workbench-dock-panel",
   },
-  // The chat's side panel (`ui/src/pages/Conversation.tsx`): at desktop widths
-  // it is the 280px right column `thread-side-panel-aside`; below 1024px the
-  // SAME panel reflows under the transcript as `thread-side-panel-stack`. The
-  // swap is pinned by
-  // `ui/src/components/conversation/ConversationChatSurface.test.tsx`
-  // ("the side panel follows the width": "mounts as the 280px right column at
-  // desktop widths" / "collapses under the transcript below 1024px"). No
-  // `subtree`: only the aside wrapper's own testid swaps — the panel inside it
-  // (`conversation-side-panel` and every `side-panel-*` id) renders in the
-  // stack too, so parity stays proven item-by-item at 390.
+  // The chat's side panel (`ui/src/pages/Conversation.tsx`): at desktop
+  // widths it is the 280px right column `thread-side-panel-aside`; below
+  // `lg` it has no inline copy at all — the header's Details toggle
+  // (`chat-details-toggle`, `lg:hidden`) opens the SAME panel as a
+  // right-side sheet (`ChatDetailsSheet`), and that sheet is the panel's one
+  // place at narrow widths. (The transcript's inline stack copy, the old
+  // `thread-side-panel-stack`, is gone — rcn-review14: the sheet was already
+  // the one place since e99e5c0, so the stack was redundant and half-hidden
+  // under the composer in the 390 captures.) `subtree` covers the panel
+  // CONTENT items (`conversation-side-panel` and every `side-panel-*` id)
+  // while the sheet is closed — they sit under the aside at 1280 and are one
+  // tap from the toggle at 390; when the sheet IS open they render inside it
+  // (a dialog, in scope) and need no exemption at all.
   "thread-side-panel-aside": {
     reason:
-      "the chat side panel reflows under the transcript below 1024px as thread-side-panel-stack (ConversationChatSurface.test.tsx pins the swap; the panel's content renders inside the stack)",
-    reach: "thread-side-panel-stack",
+      "below 1024px the chat side panel leaves the page: the header's Details toggle opens it as a right-side sheet (Conversation.test.tsx pins the sheet's panel content)",
+    reach: "chat-details-toggle",
+    subtree: true,
   },
   // The repo feed's per-row meta swap (2174d36, ui/src/components/repo/
   // RepoActivity.tsx `RowMetaMobile`): below `sm` the run's workflow-name

@@ -507,7 +507,8 @@ export default function Repository() {
             />
           </div>
           <div className="min-w-0 space-y-4">
-            <AssistantNotes notes={assistantNotes} onDismiss={dismissAssistantNote} />
+            {/* Design 3a's side panel order: WORKFLOWS, OPEN ISSUES, and
+                ASSISTANT NOTICED at the BOTTOM (rcn-review14, item 3). */}
             <RepoWorkflowPanel
               projectId={id}
               project={projectData}
@@ -534,6 +535,7 @@ export default function Repository() {
               canManageGitHub={projectData.my_role === "maintainer"}
               onAddGitHubAccess={() => ghAccess.current?.open()}
             />
+            <AssistantNotes notes={assistantNotes} onDismiss={dismissAssistantNote} />
           </div>
         </div>
       )}

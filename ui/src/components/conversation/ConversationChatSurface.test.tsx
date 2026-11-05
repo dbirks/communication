@@ -671,7 +671,7 @@ describe("the side panel follows the width", () => {
     expect(screen.queryByTestId("thread-side-panel-stack")).toBeNull();
   });
 
-  it("collapses under the transcript below 1024px", async () => {
+  it("mounts in the Details sheet below 1024px, never inline under the transcript", async () => {
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query.includes("max-width"),
       media: query,
@@ -689,9 +689,15 @@ describe("the side panel follows the width", () => {
         { path: "/api/v1/conversations", body: { items: [], next_cursor: null } },
       ]),
     });
-    const stack = await screen.findByTestId("thread-side-panel-stack");
-    expect(within(stack).getByTestId("conversation-side-panel")).toBeTruthy();
+    // Below 1024px the panel has no inline copy under the transcript and no
+    // aside column — its one place is the header's Details sheet
+    // (rcn-review14: the old `thread-side-panel-stack` mount is gone).
+    expect(await screen.findByTestId("chat-details-toggle")).toBeTruthy();
+    expect(screen.queryByTestId("thread-side-panel-stack")).toBeNull();
     expect(screen.queryByTestId("thread-side-panel-aside")).toBeNull();
+    fireEvent.click(screen.getByTestId("chat-details-toggle"));
+    const sheet = await screen.findByTestId("chat-details-sheet");
+    expect(within(sheet).getByTestId("conversation-side-panel")).toBeTruthy();
   });
 });
 

@@ -145,6 +145,24 @@ describe("ASSISTANT NOTICED on the repository page", () => {
     expect(panel.querySelector("[data-testid^='repo-assistant-note-'")).toBeNull();
   });
 
+  it("sits at the BOTTOM of the side panel — under WORKFLOWS and OPEN ISSUES (design 3a)", async () => {
+    renderFeed(null);
+    const notes = await screen.findByTestId("repo-assistant-notes");
+    // The panel's order is the design's: WORKFLOWS, then OPEN ISSUES, then
+    // the ASSISTANT NOTICED block (rcn-review14, item 3 — it led the panel
+    // for three rounds).
+    const workflows = screen.getByTestId("repo-workflows");
+    const issues = screen.getByTestId("repo-issues");
+    expect(
+      workflows.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "ASSISTANT NOTICED follows the WORKFLOWS panel",
+    ).toBeTruthy();
+    expect(
+      issues.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "ASSISTANT NOTICED follows the OPEN ISSUES panel",
+    ).toBeTruthy();
+  });
+
   it("draws the notes the store served, newest first, with the store's own labels", async () => {
     renderFeed(
       notesList([

@@ -487,6 +487,17 @@ export async function takeControl(page: Page, timeout = 120_000): Promise<void> 
  * The reset covers the document (`window` + `documentElement`/`body`) AND every
  * element holding a scroll offset — the app scrolls `window` on some pages and
  * its own `<main>` on others, and a capture must not depend on which.
+ *
+ * ONE exception: an element carrying `data-capture-keep-scroll` keeps its
+ * scroll offset. The marker names the surfaces where the PRODUCT owns the
+ * reader's view — the thread's transcript scroller, whose offset the
+ * transcript pin (`ui/src/components/conversation/useTranscriptScroll.ts`)
+ * holds at the newest row. Resetting it reads the reader as scrolled up and
+ * re-pins mid-reflow, so the capture caught a transient harness state where
+ * the newest reply sat under the composer while the live page's own pin check
+ * passed. Descendants are NOT shielded by the marker: an element reset
+ * applies to the marked container only, and a scrollable inside it (a code
+ * block) still resets.
  */
 export async function scrollToTopForCapture(page: Page): Promise<void> {
   await page.evaluate(async () => {
@@ -501,6 +512,9 @@ export async function scrollToTopForCapture(page: Page): Promise<void> {
         }
       }
       for (const el of Array.from(document.querySelectorAll("*"))) {
+        // The product-owned reader view keeps its place (see the header
+        // note on `data-capture-keep-scroll`).
+        if (el.hasAttribute("data-capture-keep-scroll")) continue;
         if (el.scrollTop === 0 && el.scrollLeft === 0) continue;
         el.scrollTop = 0;
         el.scrollLeft = 0;
