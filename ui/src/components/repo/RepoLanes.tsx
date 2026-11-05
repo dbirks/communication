@@ -38,9 +38,21 @@
  * default, the run-by-hand form opens instead of a doomed POST.
  * `Chat about it instead` creates a repo-bound chat (ADR-0067) seeded with
  * the issue. The keyboard path is each card's `Start…` button — the same
- * menu, the same actions.
+ * menu, the same actions. Below the phone cut the menu is a bottom sheet, as
+ * every other narrow menu in the app is (rcn-3b round 19: anchored, it
+ * flipped up over the NEEDS YOU lane).
+ *
+ * Round 19's other MINORs: a run card started from an issue wears its
+ * `#<n>` beside the title (ADR-0056's `trigger.ref`, the same served fact
+ * the List view's active-run tag reads); an issue with a live run is dimmed
+ * and wears that run's state tag — a link, replacing `Start…` exactly as the
+ * List view's issues panel does; and the RUNNING card's progress area is the
+ * design's thin segmented strip over the List feed's own served step states
+ * (`runStepSegments`), never the bordered variant-J box, which read as an
+ * empty focused input (rcn-3b round 19). No steps served yet says `starting`,
+ * not an empty box.
  */
-import { useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch, problemOf } from "../../api/client";
@@ -58,12 +70,12 @@ import type {
   RunSummary,
 } from "../../api/types";
 import { VARIANT_CLASS } from "../ds/Button";
-import { Menu, type MenuEntry } from "../ds/Menu";
-import { ProgressStrip } from "../ds/ProgressStrip";
+import { Menu, MENU_ITEM_CLASS, type MenuEntry } from "../ds/Menu";
+import type { ProgressSegment } from "../ds/ProgressStrip";
 import { legacyRunThreadTitle } from "../threads/runThreadTitle";
 import { runStepSegments, conversationWord } from "./RepoActivity";
 import { triggerLine } from "./RepoWorkflowPanel";
-import { CONVERSATION_STATE, RUN_STATE, SHORT_WORD, STATES } from "../ds/states";
+import { CONVERSATION_STATE, RUN_STATE, SEGMENT_COLOR, SHORT_WORD, STATES } from "../ds/states";
 import { Spinner } from "../Feedback";
 import { RepoLoadError } from "./RepoLoadError";
 import { formatAge, shortId, testidOf } from "../../lib/format";
@@ -84,6 +96,48 @@ export interface Lanes {
 
 /** Seven days, in ms — the window the FINISHED header names. */
 export const FINISHED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+const TERMINAL_RUN_STATUSES = new Set<string>(["completed", "failed", "cancelled", "interrupted"]);
+
+/**
+ * The issue an issue-started run carries, from the served fact alone:
+ * ADR-0056's `trigger` — `kind: "issue"`, `ref: "owner/repo#<number>"` —
+ * which ADR-0064 says both trigger fires and inline starts from an issue
+ * record. Null means the wire never named an issue; nothing is guessed.
+ */
+export function runIssueNumber(run: RunSummary): number | null {
+  const trigger = run.trigger;
+  if (!trigger || trigger.kind !== "issue" || !trigger.ref) return null;
+  const match = /#(\d+)$/.exec(trigger.ref);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Issue number → the newest live run it started, by the SAME served facts
+ * the List view's issues panel reads (`Repository.activeIssueRuns`): the
+ * `owner/repo#<number>` trigger ref, terminal runs not counting, and the
+ * run list's newest-first order deciding which live run wins. No invented
+ * link — a run the wire never tied to the issue never marks the card.
+ */
+export function activeIssueRunsByNumber(
+  runs: readonly RunSummary[],
+  repository: string,
+): ReadonlyMap<number, RunSummary> {
+  const map = new Map<number, RunSummary>();
+  if (repository === "") return map;
+  const prefix = `${repository}#`;
+  for (const run of runs) {
+    const trigger = run.trigger;
+    if (!trigger || trigger.kind !== "issue" || !trigger.ref) continue;
+    if (!trigger.ref.startsWith(prefix)) continue;
+    if (TERMINAL_RUN_STATUSES.has(run.status)) continue;
+    const number = Number(trigger.ref.slice(prefix.length));
+    if (!Number.isInteger(number) || number <= 0) continue;
+    // The run list is newest-first: the first match is the newest run.
+    if (!map.has(number)) map.set(number, run);
+  }
+  return map;
+}
 
 const NEEDS_YOU_RUN_STATUSES = new Set<string>(["waiting_human", "paused"]);
 const RUNNING_RUN_STATUSES = new Set<string>(["queued", "preparing", "running"]);
@@ -226,6 +280,32 @@ function startMenuKey(): string {
   return `lanedrop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+/** The phone cut — the same 1024px the lanes themselves stack at and the
+ * shell's `PHONE_MAX_WIDTH_PX` rule. Spelled here rather than imported from
+ * `Shell` because pulling `Shell` into a leaf component would drag the whole
+ * app frame (drawer, palette, sidebar) into this module's graph. */
+const NARROW_QUERY = "(max-width: 1023.98px)";
+
+/** Does the viewport ask for the phone layout? Where `matchMedia` is
+ * missing (a jsdom without it) the answer is no — the anchored menu is the
+ * layout the desktop keeps. */
+function useNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(NARROW_QUERY).matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(NARROW_QUERY);
+    const onChange = () => setNarrow(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
+
 /** The ADR-0066 runtime value a `github_issue` input receives. */
 function issueInputValue(issue: GitHubIssue, repo: string): Record<string, unknown> {
   return {
@@ -292,6 +372,7 @@ export function StartIssueMenu({
   onClose,
 }: StartIssueMenuProps) {
   const navigate = useNavigate();
+  const narrow = useNarrowViewport();
   const createRun = useCreateRun(projectId);
   const createChat = useCreateConversation(projectId);
   const inFlight = useRef(false);
@@ -431,6 +512,18 @@ export function StartIssueMenu({
     });
   }
 
+  // At the phone cut the menu is a bottom sheet: anchored and flipped, it
+  // buried the lane above the drop (rcn-3b round 19).
+  if (narrow) {
+    return (
+      <StartIssueSheet
+        items={items}
+        caption={`Start #${start.issue.number} with`}
+        onClose={onClose}
+      />
+    );
+  }
+
   return (
     <Menu
       open
@@ -444,6 +537,73 @@ export function StartIssueMenu({
       data-testid="repo-start-issue-menu"
       items={items}
     />
+  );
+}
+
+/**
+ * The `START #<n> WITH` choices as the phone's bottom sheet (rcn-3b round
+ * 19: at 390 the anchored menu flipped up and buried the NEEDS YOU lane).
+ * The same `items`, the same mono caps caption, `MENU_ITEM_CLASS` rows — and
+ * the same `repo-start-issue-menu` test hook, so the start's contract is
+ * what it was; only the mounting changes. Esc and the scrim close it, focus
+ * parks on the first enabled row.
+ */
+function StartIssueSheet({
+  items,
+  caption,
+  onClose,
+}: {
+  items: MenuEntry[];
+  caption: string;
+  onClose: () => void;
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    boxRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus();
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-40" data-testid="repo-start-issue-sheet">
+      <button
+        type="button"
+        aria-label="Close the start menu"
+        onClick={onClose}
+        className="absolute inset-0 h-full w-full cursor-default bg-ink/25"
+      />
+      <div
+        ref={boxRef}
+        role="menu"
+        aria-label={caption}
+        data-testid="repo-start-issue-menu"
+        className="absolute inset-x-0 bottom-0 rounded-t-[8px] border border-ink bg-surface pb-[max(8px,env(safe-area-inset-bottom))] shadow-(--shadow-raised)"
+      >
+        <span className="block px-3 pt-[10px] font-mono text-[10px] uppercase tracking-[0.05em] text-faint">
+          {caption}
+        </span>
+        {items.map((entry, index) =>
+          "separator" in entry ? (
+            <hr key={`sep-${index}`} role="separator" className="my-[6px] border-line" />
+          ) : (
+            <button
+              key={entry.id}
+              type="button"
+              role="menuitem"
+              disabled={entry.disabled}
+              title={entry.title}
+              data-testid={entry.testId}
+              onClick={entry.onSelect}
+              className={MENU_ITEM_CLASS}
+            >
+              {entry.label}
+            </button>
+          ),
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -538,6 +698,9 @@ export function RepoLanes({
   const lanes = buildLanes(runs, conversations, now);
   const issueItems: GitHubIssue[] = issues.data?.items ?? [];
   const issueRepo = issues.data?.repository ?? "";
+  // The List view's active-run lookup, on the same served facts: an issue a
+  // live run already carries says so on its ISSUES card (rcn-3b round 19).
+  const activeRuns = activeIssueRunsByNumber(runs, issueRepo);
 
   const beginDrag = (event: DragEvent<HTMLLIElement>, issue: GitHubIssue) => {
     // Native HTML5 transfer; the state is what the lane reads (jsdom hands no
@@ -628,43 +791,71 @@ export function RepoLanes({
             </p>
           ) : null}
           <ul className="space-y-2">
-            {issueItems.slice(0, 12).map((issue) => (
-              <li
-                key={issue.number}
-                draggable
-                onDragStart={(event) => beginDrag(event, issue)}
-                onDragEnd={endDrag}
-                data-testid={`repo-lane-issue-${issue.number}`}
-                className={`${CARD_CLASS} cursor-grab ${
-                  dragIssue?.number === issue.number ? "opacity-50" : ""
-                }`}
-              >
-                <div className="flex items-start gap-2">
-                  <span className="flex-none font-mono text-[10px] text-faint">
-                    #{issue.number}
-                  </span>
-                  <span
-                    className={`${CARD_TITLE_CLASS} flex-1 text-[12.5px] font-semibold text-ink`}
-                    data-testid={`repo-lane-issue-title-${issue.number}`}
-                  >
-                    {issue.title}
-                  </span>
-                  {/* The keyboard route to the drop menu (required). `flex-none`
-                      (flex: none) — the button never shrinks and never shares
-                      its box with the title's overflow. */}
-                  <button
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-label={`Start #${issue.number} with a workflow`}
-                    onClick={(event) => openFromKeyboard(issue, event.currentTarget)}
-                    className="flex-none whitespace-nowrap rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10px] text-accent-text hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    data-testid={`repo-lane-issue-start-${issue.number}`}
-                  >
-                    Start…
-                  </button>
-                </div>
-              </li>
-            ))}
+            {issueItems.slice(0, 12).map((issue) => {
+              const activeRun = activeRuns.get(issue.number) ?? null;
+              const activeState = activeRun ? (RUN_STATE[activeRun.status] ?? "queued") : null;
+              return (
+                <li
+                  key={issue.number}
+                  draggable
+                  onDragStart={(event) => beginDrag(event, issue)}
+                  onDragEnd={endDrag}
+                  data-testid={`repo-lane-issue-${issue.number}`}
+                  className={`${CARD_CLASS} cursor-grab ${
+                    // The design greys the card the drag carries; an issue a
+                    // live run already carries greys the same way, with its
+                    // run's tag beside it (rcn-3b round 19).
+                    dragIssue?.number === issue.number
+                      ? "opacity-50"
+                      : activeRun
+                        ? "opacity-60"
+                        : ""
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <span className="flex-none font-mono text-[10px] text-faint">
+                      #{issue.number}
+                    </span>
+                    <span
+                      className={`${CARD_TITLE_CLASS} flex-1 text-[12.5px] font-semibold text-ink`}
+                      data-testid={`repo-lane-issue-title-${issue.number}`}
+                    >
+                      {issue.title}
+                    </span>
+                    {/* The keyboard route to the drop menu (required) — for
+                        an issue a live run already carries, the List view's
+                        active-run tag stands in its place: a link onto the
+                        run, in the run's own state, and no second start one
+                        click away. */}
+                    {activeRun && activeState ? (
+                      <Link
+                        to={routes.run(activeRun.id)}
+                        title={`Run ${activeRun.id}`}
+                        aria-label={`#${issue.number} is ${SHORT_WORD[activeState]} — open the run`}
+                        className={`flex-none whitespace-nowrap rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10px] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${STATES[activeState].tagFg}`}
+                        data-testid={`repo-lane-issue-run-${issue.number}`}
+                      >
+                        <span aria-hidden="true" className="mr-1">
+                          {STATES[activeState].glyph}
+                        </span>
+                        {SHORT_WORD[activeState]}
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        aria-haspopup="menu"
+                        aria-label={`Start #${issue.number} with a workflow`}
+                        onClick={(event) => openFromKeyboard(issue, event.currentTarget)}
+                        className="flex-none whitespace-nowrap rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10px] text-accent-text hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        data-testid={`repo-lane-issue-start-${issue.number}`}
+                      >
+                        Start…
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
           {issueItems.length > 12 ? (
             <p className="font-mono text-[10.5px] text-faint" data-testid="repo-lane-issues-more">
@@ -850,6 +1041,10 @@ function RunLaneCard({
   const state = RUN_STATE[run.status] ?? "queued";
   const spec = STATES[state];
   const segments = showStrip ? runStepSegments(run) : null;
+  // ADR-0056/0064: an issue start records `owner/repo#<number>` on the run
+  // row — the design's card says `#418 Add Apple Pay`, not the bare title
+  // (rcn-3b round 19). No served ref, no number: nothing is guessed.
+  const issueNumber = runIssueNumber(run);
   const waiting = state === "waiting";
   const failedState = state === "failed";
   return (
@@ -880,14 +1075,24 @@ function RunLaneCard({
         data-testid={`repo-lane-run-open-${testidOf(run.id)}`}
         className={`mt-1 block text-[12.5px] font-semibold text-ink hover:underline ${CARD_TITLE_CLASS}`}
       >
+        {issueNumber !== null ? (
+          <span className="mr-1 font-mono text-[10.5px] text-muted">#{issueNumber}</span>
+        ) : null}
         {run.title ?? `Run #${shortId(run.id)}`}
       </Link>
-      {segments ? (
-        <ProgressStrip
-          variant="J"
-          stages={[{ label: "steps", active: true, segments }]}
-          className="mt-[3px] max-w-[200px]"
-        />
+      {showStrip ? (
+        segments ? (
+          <RunStepBar segments={segments} />
+        ) : (
+          /* No step states served yet (queued run, unreadable plan snapshot):
+             the honest word, not the empty box (rcn-3b round 19). */
+          <p
+            className="mt-1 font-mono text-[10px] text-faint"
+            data-testid={`repo-lane-run-starting-${testidOf(run.id)}`}
+          >
+            starting — no steps reported yet
+          </p>
+        )
       ) : null}
       {gate ? (
         <p
@@ -918,6 +1123,35 @@ function RunLaneCard({
         </div>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * The design's thin segmented strip (3b): one outlined cell per served step
+ * state, widths by count — the List feed's OWN segments (`runStepSegments`,
+ * ADR-0070 `progress` / ADR-0047 `steps`) in `SEGMENT_COLOR`, with the
+ * counts on the accessible name (state is never color-only, rule 06). Not
+ * the ds variant-J box: at card size its border-ink frame, accent wash and
+ * mono `steps` label read as an empty, focused input (rcn-3b round 19).
+ * Each cell carries a 1px ink inset so an all-open strip still shows its
+ * cells instead of vanishing into the card.
+ */
+function RunStepBar({ segments }: { segments: ProgressSegment[] }) {
+  return (
+    <div
+      className="mt-[4px] flex h-[7px] max-w-[200px] gap-[2px]"
+      role="img"
+      aria-label={`Progress: ${segments.map((segment) => `${segment.count} ${segment.word ?? segment.kind}`).join(", ")}`}
+      data-testid="repo-lane-run-steps"
+    >
+      {segments.map((segment) => (
+        <span
+          key={segment.kind}
+          className={`${SEGMENT_COLOR[segment.kind]} min-w-[3px] rounded-[1px] shadow-[inset_0_0_0_1px_var(--color-ink)]`}
+          style={{ flexGrow: segment.count, flexBasis: 0 }}
+        />
+      ))}
+    </div>
   );
 }
 

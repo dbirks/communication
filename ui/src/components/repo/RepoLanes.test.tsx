@@ -29,6 +29,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
   type RenderResult,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -114,9 +115,13 @@ const startedRunId = "01987c99-0000-7000-8000-abcdef012345";
 /** A fixed clock: the seven-day window is the FINISHED lane's own promise. */
 const NOW = Date.parse("2026-11-02T10:00:00Z");
 
+/** The ADR-0056 trigger fact ADR-0064 says an issue start records — the
+ * wire's own answer to “which issue is this run?”, nothing invented. */
+const issueTrigger = { kind: "issue" as const, ref: `${issueList.repository}#${issue.number}` };
+
 /** The run the drop started, as the project run list answers it afterwards —
  * the lane buckets the served status, it never writes a hoped-for one. */
-function startedRunRow(status: "queued" | "running"): RunSummary {
+function startedRunRow(status: "queued" | "running", extra: Partial<RunSummary> = {}): RunSummary {
   return {
     id: startedRunId,
     project_id: projectFixture.id,
@@ -134,6 +139,7 @@ function startedRunRow(status: "queued" | "running"): RunSummary {
     priority: 0,
     created_at: new Date(NOW).toISOString(),
     started_at: status === "running" ? new Date(NOW + 1_000).toISOString() : null,
+    ...extra,
   };
 }
 
@@ -287,6 +293,7 @@ async function postedRun(requests: RecordedRequest[]): Promise<RecordedRequest> 
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   seenPath = PAGE_PATH;
 });
 
@@ -606,5 +613,182 @@ describe("RepoLanes — a long unbreakable title stays in its own column (rcn-3b
     expect(title.className).toContain("wrap-anywhere");
     expect(title.className).toContain("min-w-0");
     expect(age?.className, "the age stamp never shrinks").toContain("flex-none");
+  });
+});
+
+/**
+ * The rcn-3b round-19 MINORs, read off `rcn-3b--lanes-running.png`:
+ * 1. the run card's progress area was a bordered `steps` box around an
+ *    (all-open) bar — it read as an empty focused input. It is now the
+ *    design's thin segmented strip over the List feed's OWN served step
+ *    states, and no served steps means the honest `starting` word;
+ * 2. an issue-started run showed its bare title — the design says
+ *    `#418 Add Apple Pay`, and ADR-0064 says the run row carries the issue
+ *    ref to say so;
+ * 3. the issue a live run already carried sat in ISSUES with `Start…` and
+ *    nothing about its run — it now wears the List view's active-run tag
+ *    (a link, dimming the card) instead of the start button;
+ * 4. at the phone cut the anchored `START #<n> WITH` menu flipped up over
+ *    the NEEDS YOU lane — it is a bottom sheet there now, as the app's
+ *    other narrow menus are.
+ */
+describe("RepoLanes — the run card tells the truth about its progress and its issue (rcn-3b round 19)", () => {
+  /** The ADR-0070 progress the project run list serves on a live row. */
+  function progressingRun(): RunSummary {
+    return {
+      ...startedRunRow("running", { trigger: issueTrigger }),
+      // `progress` rides RunListRow, the shape the page's list answers with.
+      progress: {
+        steps: [
+          { node_id: "plan", state: "done" },
+          { node_id: "implement", state: "running" },
+          { node_id: "review", state: "open" },
+          { node_id: "pr", state: "open" },
+        ],
+        more: 0,
+      },
+    } as RunSummary;
+  }
+
+  it("draws the strip from the served step states — no bordered steps box", async () => {
+    const { withRuns } = mount();
+    withRuns([progressingRun()]);
+    const card = screen.getByTestId(`repo-lane-run-${testidOf(startedRunId)}`);
+    const strip = within(card).getByTestId("repo-lane-run-steps");
+    // Segments come from the real step states; the counts ride the name
+    // (rule 06: state is never color-only).
+    expect(strip.getAttribute("role")).toBe("img");
+    expect(strip.getAttribute("aria-label")).toBe("Progress: 1 done, 1 running, 2 open");
+    // Not the variant-J box: no `steps` label, no framed input look.
+    expect(card.textContent, "the strip carries no 'steps' label box").not.toContain("steps");
+    expect(
+      card.querySelector(".border-ink, [class*='bg-accent-wash']"),
+      "no heavy frame or accent wash around the progress area",
+    ).toBeNull();
+  });
+
+  it("says `starting` when no steps are served yet, instead of drawing an empty box", async () => {
+    const { withRuns } = mount();
+    // The row as the wire answers it before any step projection exists.
+    withRuns([startedRunRow("running", { trigger: issueTrigger })]);
+    const card = screen.getByTestId(`repo-lane-run-${testidOf(startedRunId)}`);
+    const starting = within(card).getByTestId(`repo-lane-run-starting-${testidOf(startedRunId)}`);
+    expect(starting.textContent).toContain("starting");
+    expect(within(card).queryByTestId("repo-lane-run-steps")).toBeNull();
+  });
+
+  it("wears the issue number the run's own trigger carries beside its title", async () => {
+    const { withRuns } = mount();
+    withRuns([startedRunRow("running", { trigger: issueTrigger })]);
+    const open = screen.getByTestId(`repo-lane-run-open-${testidOf(startedRunId)}`);
+    // The design's `#418 Add Apple Pay`: the number is the served ref, not
+    // a guess, and the title rides along with it.
+    expect(open.textContent).toContain(`#${issue.number}`);
+    expect(open.textContent).toContain(issue.title);
+  });
+
+  it("names no number when the run's trigger named no issue", async () => {
+    const { withRuns } = mount();
+    withRuns([startedRunRow("running", { trigger: { kind: "manual" } })]);
+    const open = screen.getByTestId(`repo-lane-run-open-${testidOf(startedRunId)}`);
+    expect(open.textContent).not.toContain("#");
+    expect(open.textContent).toContain(issue.title);
+  });
+
+  it("marks the running issue in ISSUES with its live run — and no second Start", async () => {
+    const { withRuns } = mount();
+    // Before the run exists: the plain card with its keyboard start.
+    expect(screen.getByTestId(`repo-lane-issue-start-${issue.number}`)).toBeTruthy();
+    expect(screen.queryByTestId(`repo-lane-issue-run-${issue.number}`)).toBeNull();
+
+    withRuns([startedRunRow("running", { trigger: issueTrigger })]);
+
+    const card = screen.getByTestId(`repo-lane-issue-${issue.number}`);
+    expect(card.className, "the live issue dims like the design's #421").toContain("opacity-60");
+    const tag = screen.getByTestId(`repo-lane-issue-run-${issue.number}`);
+    expect(tag.getAttribute("href"), "the tag links to the run").toBe(`/runs/${startedRunId}`);
+    expect(tag.textContent).toContain("running");
+    expect(
+      within(card).queryByTestId(`repo-lane-issue-start-${issue.number}`),
+      "the start button stands down while the issue runs",
+    ).toBeNull();
+
+    // The run reaches a terminal status: the tag goes, the start returns —
+    // the mark reads the served status, never a hoped-for one.
+    withRuns([{ ...startedRunRow("running", { trigger: issueTrigger }), status: "completed" }]);
+    expect(screen.queryByTestId(`repo-lane-issue-run-${issue.number}`)).toBeNull();
+    expect(screen.getByTestId(`repo-lane-issue-start-${issue.number}`)).toBeTruthy();
+    expect(card.className).not.toContain("opacity-60");
+  });
+
+  it("ties the mark to THIS repository's ref, not to any number", async () => {
+    const { withRuns } = mount();
+    // Same number, another repository — not this lane's issue.
+    withRuns([
+      startedRunRow("running", { trigger: { kind: "issue", ref: `other/repo#${issue.number}` } }),
+    ]);
+    expect(screen.queryByTestId(`repo-lane-issue-run-${issue.number}`)).toBeNull();
+    expect(screen.getByTestId(`repo-lane-issue-start-${issue.number}`)).toBeTruthy();
+  });
+});
+
+/**
+ * rcn-3b round 19, item 4: at 390 the anchored `START #<n> WITH` menu
+ * flipped up and buried the NEEDS YOU lane. Below the phone cut the same
+ * items mount as a bottom sheet — the pattern the app's other narrow menus
+ * use — with the same test hooks so the start's contract is unchanged.
+ */
+describe("RepoLanes — at the phone cut the start menu is a bottom sheet (rcn-3b round 19)", () => {
+  function stubMatchMedia(matches: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+  }
+
+  it("the sheet carries the caption, the workflow and the chat, and it starts the run", async () => {
+    stubMatchMedia(true);
+    const { requests } = mount();
+    await dragIntoRunning();
+
+    const sheet = await screen.findByTestId("repo-start-issue-sheet");
+    const menu = screen.getByTestId("repo-start-issue-menu");
+    expect(sheet.contains(menu), "the sheet box IS the start menu").toBe(true);
+    // No anchored arrow: this surface is pinned to the viewport edge.
+    expect(screen.queryByTestId("menu-arrow"), "no arrow — no anchor").toBeNull();
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.getAttribute("aria-label")).toBe(`Start #${issue.number} with`);
+    expect(menu.textContent?.toUpperCase()).toContain(`START #${issue.number} WITH`);
+
+    fireEvent.click(await screen.findByTestId(`repo-start-issue-workflow-${issuePinKey}`));
+    const body = JSON.parse((await postedRun(requests)).body ?? "{}") as Record<string, unknown>;
+    expect(body.issue).toEqual({ number: issue.number });
+    await waitFor(() => expect(seenPath).toBe(`/runs/${startedRunId}`));
+  });
+
+  it("Esc and the scrim close the sheet with the caught card", async () => {
+    stubMatchMedia(true);
+    mount();
+    await dragIntoRunning();
+    await screen.findByTestId("repo-start-issue-sheet");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("repo-start-issue-sheet")).toBeNull());
+    expect(screen.queryByTestId("repo-lane-drop-card")).toBeNull();
+  });
+
+  it("at desktop width the menu stays anchored with its arrow", async () => {
+    stubMatchMedia(false);
+    mount();
+    await dragIntoRunning();
+    const menu = await screen.findByTestId("repo-start-issue-menu");
+    expect(screen.queryByTestId("repo-start-issue-sheet")).toBeNull();
+    expect(menu.contains(screen.getByTestId("menu-arrow"))).toBe(true);
   });
 });
