@@ -172,12 +172,12 @@ func TestSelectOutputDocumentOverlappingKeysNoMerge(t *testing.T) {
 		NodeInstanceKey: "/build_until_verified[1]/implement",
 		OutputsSchema:   implementSchema(),
 	}
-	built, note, fail := (&AgentTurn{}).attachOutputs(c, agentTurnSpec{}, AgentProfile{}, reply)
+	built, notes, fail := (&AgentTurn{}).attachOutputs(c, agentTurnSpec{}, AgentProfile{}, reply)
 	if fail != nil {
 		t.Fatalf("attachOutputs refused locally (status=%s class=%s); the schema verdict belongs to the boundary at Complete", fail.Status, fail.ErrorClass)
 	}
-	if note != "" {
-		t.Fatalf("note=%q, want none — nothing merged", note)
+	if len(notes) != 0 {
+		t.Fatalf("notes=%v, want none — nothing merged and no channel fallback", notes)
 	}
 	if got := built.Outputs.(map[string]any)["summary"]; got != "first half" {
 		t.Fatalf("outputs = %v, want today's pick handed to the engine", built.Outputs)
@@ -194,7 +194,7 @@ func TestAttachOutputsSplitsMergeAndNoSchema(t *testing.T) {
 		NodeInstanceKey: "/build_until_verified[1]/implement",
 		OutputsSchema:   implementSchema(),
 	}
-	built, note, fail := turn.attachOutputs(c, agentTurnSpec{}, AgentProfile{}, splitReply)
+	built, notes, fail := turn.attachOutputs(c, agentTurnSpec{}, AgentProfile{}, splitReply)
 	if fail != nil {
 		t.Fatalf("the split answer must succeed merged: %+v", *fail)
 	}
@@ -205,8 +205,9 @@ func TestAttachOutputsSplitsMergeAndNoSchema(t *testing.T) {
 	if _, has := obj["files_changed"]; !has {
 		t.Fatalf("merged outputs %v lack files_changed", obj)
 	}
-	if !strings.Contains(note, "merged 2 objects") {
-		t.Fatalf("note = %q, want the 'merged 2 objects' evidence", note)
+	if len(notes) != 1 || notes[0].kind != noticeKindOutputsMerged ||
+		!strings.Contains(notes[0].text, "merged 2 objects") {
+		t.Fatalf("notes = %v, want the one 'merged 2 objects' evidence row", notes)
 	}
 	if built.OutputsDigest == "" {
 		t.Fatal("merged envelope owes a digest like any other")
@@ -215,14 +216,14 @@ func TestAttachOutputsSplitsMergeAndNoSchema(t *testing.T) {
 	// No declared outputs: today's behaviour, schema-blind, no note.
 	plain := c
 	plain.OutputsSchema = nil
-	built2, note2, fail2 := turn.attachOutputs(plain, agentTurnSpec{}, AgentProfile{}, splitReply)
+	built2, notes2, fail2 := turn.attachOutputs(plain, agentTurnSpec{}, AgentProfile{}, splitReply)
 	if fail2 != nil {
 		t.Fatalf("schema-less attachOutputs regressed: %+v", *fail2)
 	}
 	if _, has := built2.Outputs.(map[string]any)["files_changed"]; has {
 		t.Fatalf("schema-less pick = %v, want today's first object", built2.Outputs)
 	}
-	if note2 != "" {
-		t.Fatalf("note = %q, want empty without a declared schema", note2)
+	if len(notes2) != 0 {
+		t.Fatalf("notes = %v, want none without a declared schema", notes2)
 	}
 }

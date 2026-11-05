@@ -834,7 +834,8 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	endTurn := res.Status == "" && !ts.asked && !ts.ackTimedOut &&
 		ctx.Err() == nil && promptErr == nil && stop == domain.StopEndTurn
 	if endTurn {
-		built, mergeNote, fail := a.attachOutputs(c, spec, prof, final.text())
+		built, notes, fail := a.attachOutputs(c, spec, prof, final.text())
+		answered := fail == nil
 		if fail != nil {
 			// Extraction refused the reply. Before blaming the agent's answer,
 			// ask whether there was an answer to blame: a harness whose
@@ -842,20 +843,37 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 			// not let that silence be reported as invalid_output — the class is
 			// reserved for a reply that fails its schema. A completed turn with
 			// a bad reply still says invalid_output (the case below).
+			//
+			// The transport's story is told FIRST and wins: a harness that never
+			// got to answer has no answer sitting in its thoughts, and rescuing
+			// its silence from the thought channel would invent an output for an
+			// agent that was dead (ADR-0076 § Decision 1).
 			if transient, detail := turnUnavailableClass(final.text(), midTurnDisc, discInfo,
 				peerGone, final.retryNotices()); transient {
 				res = failedResult(ErrorClassInfra, detail)
-			} else {
-				res = *fail
+				fail = nil
+			} else if tb, tnotes, ok := a.outputsFromThought(c, final.text(), final.thoughtText()); ok {
+				// ADR-0076: the agent DID answer — a reasoning model routed
+				// through pi put its final document on the thought channel and
+				// left the reply channel blank. The document is the node's own
+				// schema's verdict, not a guess, and the transcript says out loud
+				// which channel supplied it.
+				built, notes, fail = tb, tnotes, nil
+				answered = true
 			}
-		} else {
-			if mergeNote != "" {
-				// A merged envelope is never silent: the note rides the
-				// attempt's transcript as a conversation.notice row (worker
-				// actor, redacted and bounded like every other notice), so a
-				// reader of the attempt sees WHICH shape the extractor accepted
-				// and that the envelope was assembled, not spoken whole.
-				transcript.notice(noticeKindOutputsMerged, mergeNote)
+		}
+		if fail != nil {
+			res = *fail
+		} else if answered {
+			for _, n := range notes {
+				// An extraction that had to work to find the answer is never
+				// silent: each note rides the attempt's transcript as a
+				// conversation.notice row (worker actor, redacted and bounded
+				// like every other notice), so a reader of the attempt sees
+				// WHICH shape the extractor accepted, that the envelope was
+				// assembled rather than spoken whole, and WHICH channel it came
+				// from.
+				transcript.notice(n.kind, n.text)
 			}
 			built.Checkpoint = a.checkpointFor(ctx, c, spec, prof, built.OutputsDigest)
 			if built.Checkpoint.VolumeID == "" {
@@ -1590,36 +1608,32 @@ func ptrResult(r AttemptResult) *AttemptResult { return &r }
 // with a worker actor, so no reader mistakes it for the agent's answer.
 const noticeKindOutputsMerged = "outputs_merged"
 
-// attachOutputs is the end_turn arm of the outcome table: JSON in, envelope
-// out, or the honest invalid_output evidence the extraction failed. When the
-// claim carries the node's declared outputs schema it is used ONLY to pick
-// which candidate document answers (selectOutputDocument): the engine still
-// validates the document at Complete and speaks the schema errors there
-// (§ 4 step 6, ADR-0022 § 4 rule 2) — at this layer the reply itself is the
-// evidence, unchanged. With no declared schema selection is schema-blind,
-// exactly today's behaviour. The returned note is non-empty exactly when the
-// answer was assembled from objects the agent split across its reply — the
-// caller MUST journal it, because a merged envelope is not silently a
-// success.
-func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof AgentProfile, text string) (AttemptResult, string, *AttemptResult) {
-	ex := selectOutputDocument(text, a.outputsChecker(c))
-	if ex.failed != nil {
-		r := invalidOutput(*ex.failed)
-		return AttemptResult{}, "", &r
-	}
-	if ex.rejection != nil {
-		// Nothing validated and no split merge applied: today's pick goes
-		// forward and the boundary's own verdict lands at Complete, with the
-		// same invalid_output class and the same output_errors evidence it
-		// always had. Logged, never swallowed.
-		a.logger().Warn("agent.acp reply refused its declared outputs schema; handing today's pick to the boundary's verdict",
-			slog.String("attempt_id", c.AttemptID), slog.String("detail", bounded(ex.rejection.Error(), 240)))
-	}
-	val := ex.value
+// noticeKindOutputsFromThought tags the conversation.notice row that records
+// ADR-0076's fallback: the reply channel (conversation.message.agent) carried
+// nothing the agent said, and the node's declared outputs schema accepted a
+// document read out of the turn's final thought text. A reader of the thread —
+// or of the mail that quotes this turn's message rows (ADR-0072 § 7) — must be
+// able to see that the envelope came from the reasoning channel, because the
+// message channel is where the agent's words are quoted from and it was empty.
+const noticeKindOutputsFromThought = "outputs_from_thought"
+
+// outputNote is one conversation.notice row the extraction owes the attempt's
+// transcript. Extraction verdicts that needed judgement are never silent (the
+// merged envelope's note was the only one until ADR-0076).
+type outputNote struct {
+	kind string
+	text string
+}
+
+// outputsEnvelope is the half of attachOutputs that has nothing to do with
+// finding the answer: encode the chosen document, bound it, digest it. Shared
+// with the thought-channel fallback so a rescued answer is held to exactly the
+// same inline cap and identity as an answer that arrived on the reply channel.
+func outputsEnvelope(val any) (AttemptResult, *AttemptResult) {
 	raw, err := json.Marshal(val)
 	if err != nil {
 		r := invalidOutput("outputs are not re-encodable JSON: " + err.Error())
-		return AttemptResult{}, "", &r
+		return AttemptResult{}, &r
 	}
 	if len(raw) > agentInlineOutput {
 		r := AttemptResult{
@@ -1630,7 +1644,7 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 				"code": "outputs_too_large", "message": "outputs exceeded the inline cap",
 			}},
 		}
-		return AttemptResult{}, "", &r
+		return AttemptResult{}, &r
 	}
 	return AttemptResult{
 		Status:        AttemptStatusSucceeded,
@@ -1638,7 +1652,90 @@ func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof Agent
 		OutputsDigest: "sha256:" + sha256Hex(raw),
 		ArtifactRefs:  []any{},
 		Outcome:       "passed",
-	}, ex.note, nil
+	}, nil
+}
+
+// attachOutputs is the end_turn arm of the outcome table: JSON in, envelope
+// out, or the honest invalid_output evidence the extraction failed. When the
+// claim carries the node's declared outputs schema it is used ONLY to pick
+// which candidate document answers (selectOutputDocument): the engine still
+// validates the document at Complete and speaks the schema errors there
+// (§ 4 step 6, ADR-0022 § 4 rule 2) — at this layer the reply itself is the
+// evidence, unchanged. With no declared schema selection is schema-blind,
+// exactly today's behaviour. The returned notes are non-empty exactly when the
+// answer needed a verdict to reach it — an envelope assembled from objects the
+// agent split across its reply, or (ADR-0076) one the reply channel never
+// carried — and the caller MUST journal every one, because neither is silently
+// a success.
+func (a *AgentTurn) attachOutputs(c AttemptClaim, spec agentTurnSpec, prof AgentProfile, text string) (AttemptResult, []outputNote, *AttemptResult) {
+	ex := selectOutputDocument(text, a.outputsChecker(c))
+	if ex.failed != nil {
+		r := invalidOutput(*ex.failed)
+		return AttemptResult{}, nil, &r
+	}
+	if ex.rejection != nil {
+		// Nothing validated and no split merge applied: today's pick goes
+		// forward and the boundary's own verdict lands at Complete, with the
+		// same invalid_output class and the same output_errors evidence it
+		// always had. Logged, never swallowed.
+		a.logger().Warn("agent.acp reply refused its declared outputs schema; handing today's pick to the boundary's verdict",
+			slog.String("attempt_id", c.AttemptID), slog.String("detail", bounded(ex.rejection.Error(), 240)))
+	}
+	built, fail := outputsEnvelope(ex.value)
+	if fail != nil {
+		return AttemptResult{}, nil, fail
+	}
+	if ex.note != "" {
+		return built, []outputNote{{noticeKindOutputsMerged, ex.note}}, nil
+	}
+	return built, nil, nil
+}
+
+// outputsFromThought is ADR-0076's one fallback: when the reply channel said
+// nothing the agent said — after the banner/retry filtering agentText already
+// applies — a reasoning model may have answered on the thought channel instead
+// (Actions run 42094770050, issue #351, /implement attempt 1: the reply rows
+// were `"\n\n"`, and the final `conversation.thought` closed with the fenced
+// json envelope the schema wanted; the attempt died invalid_output while draft
+// PR #352 sat opened on the branch). The arm is deliberately narrow:
+//
+//   - the node must DECLARE an outputs schema. Without one nothing can be
+//     verified, and a thought is the least trustworthy text in the journal
+//     (events.ThoughtPayload: "never as evidence of what the agent did").
+//   - the document must be one the node's own judge ACCEPTS — selectOutputDocument's
+//     valid arm or its disjoint-union merge, never its refused pick and never
+//     a verdict on a schema it could not compile. The reply channel's own
+//     failure evidence is what the attempt reports when the thought does not
+//     validate: this arm can only rescue, never add a new way to fail.
+//   - a reply with ANY substantive text never gets here (the caller's
+//     chatterOnly gate): the message channel is the agent's answer, and an
+//     agent that spoke is not overruled by its own reasoning.
+//
+// The caller owes the returned note to the transcript: an envelope that came
+// from the reasoning channel must say so in the thread.
+func (a *AgentTurn) outputsFromThought(c AttemptClaim, message, thought string) (AttemptResult, []outputNote, bool) {
+	if c.OutputsSchema == nil || strings.TrimSpace(thought) == "" || !chatterOnly(message) {
+		return AttemptResult{}, nil, false
+	}
+	ex := selectOutputDocument(thought, a.outputsChecker(c))
+	if ex.failed != nil || ex.rejection != nil || ex.unverified || ex.value == nil {
+		// No accepted document: the attempt fails exactly as it did before this
+		// arm existed, on the reply channel's own evidence.
+		return AttemptResult{}, nil, false
+	}
+	built, fail := outputsEnvelope(ex.value)
+	if fail != nil {
+		return AttemptResult{}, nil, false
+	}
+	channel := a.redact("the agent's reply (conversation.message.agent) carried no substantive text — " +
+		"the outputs document was taken from this turn's final conversation.thought text and validates " +
+		"against the node's declared outputs schema (ADR-0076); the message channel stays the agent's words, " +
+		"and here it was silent")
+	notes := []outputNote{{noticeKindOutputsFromThought, channel}}
+	if ex.note != "" {
+		notes = append(notes, outputNote{noticeKindOutputsMerged, ex.note})
+	}
+	return built, notes, true
 }
 
 // outputJudge answers, for one candidate document, whether the node's
@@ -1675,6 +1772,12 @@ type outputSelection struct {
 	note      string
 	rejection *runtime.OutputRejection
 	failed    *string
+	// unverified marks the one arm that returns a value without ever asking
+	// the schema: the plan's schema could not be compiled, so this executor
+	// owes no verdict and today's pick travels to the boundary. An ADR-0076
+	// thought-channel rescue needs a document the schema ACCEPTED, which this
+	// is not, so it refuses this arm.
+	unverified bool
 }
 
 // extractStructuredOutput is the schema-blind extraction: selectOutputDocument
@@ -1776,7 +1879,7 @@ func selectOutputDocument(text string, check outputJudge) outputSelection {
 			// The schema could not be compiled: this executor owes no verdict
 			// it cannot compute — today's pick goes forward and the boundary
 			// answers for it (an unusable plan schema is its own hard error).
-			return outputSelection{value: firstObject}
+			return outputSelection{value: firstObject, unverified: true}
 		}
 		if ok {
 			return outputSelection{value: val}
@@ -1962,6 +2065,7 @@ func (a *AgentTurn) journal(ctx context.Context, sink AttemptSink, c AttemptClai
 type agentText struct {
 	mu      sync.Mutex
 	buf     strings.Builder
+	thought strings.Builder // ADR-0076 fallback source; see thoughtText
 	open    map[string]bool // tool-call ids the stream has seen announced
 	retries int             // launcher transport-retry status chunks seen this turn
 }
@@ -1994,8 +2098,17 @@ func (t *agentText) add(ev domain.ConversationEvent) {
 			return
 		}
 		t.buf.WriteString(ev.Text)
+	case "thought_chunk":
+		// Reasoning text is never the answer (ADR-0016's transcript rule,
+		// events.ThoughtPayload: never evidence of what the agent did). It is
+		// coalesced into its own buffer for ONE narrow use: ADR-0076's fallback
+		// for a reasoning model that answered on this channel and left the reply
+		// channel empty (Actions run 42094770050). Same window, same rules as
+		// the message buffer — a tool call ends both.
+		t.thought.WriteString(ev.Text)
 	case "tool_call":
 		t.buf.Reset()
+		t.thought.Reset()
 		if ev.ToolCallID != "" {
 			if t.open == nil {
 				t.open = map[string]bool{}
@@ -2009,6 +2122,7 @@ func (t *agentText) add(ev domain.ConversationEvent) {
 			return
 		}
 		t.buf.Reset()
+		t.thought.Reset()
 		if ev.ToolCallID != "" {
 			if t.open == nil {
 				t.open = map[string]bool{}
@@ -2016,9 +2130,21 @@ func (t *agentText) add(ev domain.ConversationEvent) {
 			t.open[ev.ToolCallID] = true
 		}
 	default:
-		// permission_request is bridged durably by the Decider; thought, plan
-		// and unknown kinds are not message text (04).
+		// permission_request is bridged durably by the Decider; plan and
+		// unknown kinds are not message text (04).
 	}
+}
+
+// thoughtText is the turn's final thought stream: every thought chunk since
+// the last tool window, coalesced exactly like the message buffer. It is read
+// by ONE caller — AgentTurn.outputsFromThought (ADR-0076), and only for a turn
+// whose reply channel carried nothing the agent said and whose node declared an
+// outputs schema. It is never the agent's answer, never journalled as one, and
+// never quoted by the transcript's message rows.
+func (t *agentText) thoughtText() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.thought.String()
 }
 
 func (t *agentText) text() string {

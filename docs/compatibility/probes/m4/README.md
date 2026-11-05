@@ -640,10 +640,26 @@ The one gap this loop first hit — issue-trigger inputs could not fill a
 non-string declared input (`{{issue.number}}` vs `issue_number: integer`) and
 the broker secret 500'd without an allowlist — is fixed by de42a9f/f2ca905.
 
+**`/implement`'s retry list is `[infra, interrupted, timeout, agent_error]` and
+stays that way** (`ui/src/lib/pipeline/templates/issue-to-pr.yaml.txt`, the file
+this seed sed-renames and publishes). `invalid_output` is deliberately absent:
+that turn is **not idempotent**. Step 1 lets the model choose the branch slug
+and steps 5/6 are a bare `git push -u origin <branch>` + `gh pr create --draft`,
+so a second attempt of the same node — `sessionMode: new`, no memory of the
+first — can push a second branch and open a second draft PR on the same issue. A
+schema-refused reply is therefore an ADR-0073 feedback problem (the refusal
+rides `retry_context.validation_errors` to the next attempt only where retrying
+is safe), not a retry-policy knob. If a future change wants `invalid_output`
+retriable there, the prompt/seed must first make a re-run reuse the branch
+(`<branch_prefix><issue_number>-*` when it already exists) and UPDATE the
+existing PR (`gh pr view`/`gh pr edit` before `gh pr create`). ADR-0076 is the
+decision that removed the run-42094770050 pressure from this knob.
+
 ## Troubleshooting — symptoms seen running this for real
 
 | Symptom | Cause |
 | --- | --- |
+| Implement attempt fails `invalid_output … "agent turn produced no text to extract structured outputs from"` while the branch IS pushed and the draft PR exists | A reasoning model routed through pi streamed its final ```json envelope on `conversation.thought` and left `conversation.message.agent` with `"\n\n"` (run 42094770050, issue #351, rows E359/E365/E370). A worker ≥ ADR-0076 accepts a thought document that validates against the node's declared outputs schema and journals an `outputs_from_thought` notice; on an older image the run fails, and the safe move is to re-run the ISSUE — do not widen `/implement`'s retry list, because that turn is not idempotent (see the note above). |
 | Attempt fails with `exit 126` | The attempt's tool read grant is missing — the script (`m4-exit.sh` under `/opt/m4/bin`) is mounted but not readable/executable by the unit's sandbox policy. Fix the grant, not the script. |
 | Agent attempt fails `invalid_output … at /evidence: got array, want string` (or the same at `/plan`) | The run pinned a revision authored before deviations 6–7, whose outputs schema still declares § 9.3's strings while the agent answers an array. Republish from the current `pipeline.yaml` and re-run; the pinned snapshot, not the agent, is what changed. |
 | Run ends `failed_cause: until_exhausted` with `test` green and every `/review` `succeeded` but `approved: false` | A revision authored before deviation 8: its `/review` prompt judges "the plan", which no until body can interpolate (ADR-0022 § 2) and which is not in the workspace, so the reviewer honestly refuses. Republish from the current `pipeline.yaml` and re-run — the prompt, not the change, was wrong. |

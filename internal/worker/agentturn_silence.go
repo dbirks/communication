@@ -39,6 +39,14 @@ import (
 //
 // A reply with substance that fails extraction is untouched — that is the
 // agent's own bad answer, and invalid_output still says so.
+//
+// Ordering is part of the rule. A banner-only silence whose harness is alive
+// and reported no provider trouble stays invalid_output HERE, and only then
+// may ADR-0076 read the turn's thought channel for a document the node's own
+// schema accepts (agentturn.go's outputsFromThought). A silence this file
+// classifies infra never reaches that arm: an agent that never got to answer
+// has no answer waiting in its thoughts, and rescuing one would invent output
+// for an outage. Keep this classifier first in the end_turn arm.
 var (
 	// launcherBannerLine is a launcher's own start-up banner, streamed as
 	// agent message text before any answer: pi prints `pi v1.4.0` and
