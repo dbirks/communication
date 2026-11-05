@@ -7,9 +7,9 @@
  * 3a watched the single-line phone row clip the hint to
  * `Ask, plan or paste an iss` — the agent chip and `Start` left no room for
  * the one sentence that tells a person what to type. At that width the
- * placeholder is the verb, not the repo name (`Chat in web…` kept the prefix
- * while its hint clipped away), and the repository the chat is born bound to
- * is already the page's own title.
+ * placeholder SHORTENS BUT KEEPS THE REPO CUE (round-19 review 3a: dropping
+ * to the bare verb lost the "this chat starts in this repo" promise the page
+ * is built on — `Chat in web…` says less and still names the repository).
  *
  * Start creates a conversation BORN BOUND to this repository (ADR-0067: the
  * POST carries `repository` — the name — plus the chosen profile and the typed
@@ -44,7 +44,8 @@ export interface RepoChatBoxProps {
  * with the hint still readable, so the row wraps and the two controls take a
  * second line. The wrap is asked the same way `Shell` asks its own widths
  * (`matchMedia`, so CSS and mount logic never disagree), and the same answer
- * picks the shorter placeholder — at phone width the hint IS the sentence. */
+ * picks the shorter placeholder — at phone width the hint is the shortened
+ * sentence, repo cue first (`Chat in <repo>…`). */
 const PHONE_WIDTH_QUERY = "(max-width: 639.98px)";
 
 function usePhoneWidth(): boolean {
@@ -147,14 +148,15 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
           aria-label={`Chat in ${repositoryName}`}
           placeholder={
             phoneWidth
-              ? "Ask, plan or paste an issue…"
+              ? `Chat in ${repositoryName}…`
               : `Chat in ${repositoryName}… ask, plan, or paste an issue`
           }
           className={`min-w-0 bg-transparent px-2 text-[13px] text-ink outline-none placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
             // The wrap: a phone input asks for the whole first line (`w-full`
             // is what pushes the chip and `Start` onto the second one), so the
-            // hint reads instead of stopping mid-word. From 640px the line is
-            // the design's single row and the input only takes what is left.
+            // shortened hint — repo cue and all — reads instead of stopping
+            // mid-word. From 640px the line is the design's single row and the
+            // input only takes what is left.
             phoneWidth ? "w-full grow" : "flex-1"
           }`}
           data-testid="repo-chat-input"

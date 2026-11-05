@@ -831,3 +831,49 @@ describe("NewRunForm — typed inputs send the JSON type the schema declares", (
     expect(inputs.fanout).toBe(false);
   });
 });
+
+/* ------------- round-19 (1k @390): the form's selects fit the phone width */
+
+describe("NewRunForm — long select values truncate, never clip mid-glyph (1k @390)", () => {
+  it("the WORKFLOW select is a full-width control that truncates its value", async () => {
+    // Two enabled assignments render the design's `WORKFLOW` picker; the lab
+    // pins carry names longer than a 390px phone (rcn-1k-run-form-390 clipped
+    // the value to `… · 1.0.(` at the arrow).
+    mountTyped([
+      {
+        path: ASSIGNMENTS_PATH,
+        body: {
+          assignments: [
+            ...typedAssignments.assignments,
+            {
+              ...wireAssignmentList.assignments[0],
+              id: "assignment-second",
+              pinned_revision_digest: "b".repeat(64),
+            },
+          ],
+        },
+      },
+    ]);
+    const select = (await screen.findByTestId("new-run-assignment")) as HTMLSelectElement;
+    const classes = select.className.split(/\s+/);
+    // The control stays full-width (fits the phone); the DISPLAYED value
+    // ellipsises inside it (`truncate` = overflow-hidden + text-overflow:
+    // ellipsis + nowrap; `min-w-0` lets it shrink below its content).
+    expect(classes).toContain("w-full");
+    expect(classes).toContain("min-w-0");
+    expect(classes).toContain("truncate");
+    expect(classes).not.toContain("overflow-visible");
+  });
+
+  it("every select the typed form renders truncates — no option label clips", async () => {
+    mountTyped();
+    const dialog = await screen.findByTestId("run-form-dialog");
+    const selects = [...dialog.querySelectorAll("select")];
+    expect(selects.length).toBeGreaterThan(0);
+    for (const select of selects) {
+      const classes = select.className.split(/\s+/);
+      expect(classes).toContain("min-w-0");
+      expect(classes).toContain("truncate");
+    }
+  });
+});

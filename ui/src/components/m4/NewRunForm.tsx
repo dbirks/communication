@@ -781,10 +781,15 @@ export function NewRunForm({
         <div className="space-y-[12px]" data-testid="new-run-form">
           {options.length > 1 ? (
             <Field id="new-run-assignment" label="Workflow">
+              {/* Round-19 1k: at phone width the pinned workflow's name is
+                 longer than the control — the select stays full-width and
+                 TRUNCATES the displayed value with an ellipsis (never clips
+                 mid-glyph at the arrow). */}
               <Select
                 id="new-run-assignment"
                 value={active.id}
                 onChange={(event) => setAssignmentId(event.target.value)}
+                className="min-w-0 truncate"
                 data-testid="new-run-assignment"
               >
                 {options.map((option) => (
@@ -848,6 +853,7 @@ export function NewRunForm({
             id="new-run-assignment"
             value={active?.id ?? ""}
             onChange={(event) => setAssignmentId(event.target.value)}
+            className="min-w-0 truncate"
             data-testid="new-run-assignment"
           >
             {options.map((option) => (
@@ -1197,6 +1203,7 @@ export function InputFieldControl({
           id={id}
           value={known ? String(value) : ""}
           onChange={(event) => onChange(event.target.value)}
+          className="min-w-0 truncate"
           data-testid={id}
         >
           <option value="">
@@ -1639,6 +1646,7 @@ function ProfileField({ id, value, invalid, required = false, onChange }: Profil
       required={required || undefined}
       aria-required={required || undefined}
       onChange={(event) => onChange(event.target.value)}
+      className="min-w-0 truncate"
       data-testid={id}
     >
       <option value="">

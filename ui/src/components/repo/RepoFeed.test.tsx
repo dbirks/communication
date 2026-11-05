@@ -206,13 +206,15 @@ describe("the chat box placeholder at phone width", () => {
     expect(input.className).toContain("flex-1");
   });
 
-  it("shortens to the verb below 640 — the hint fits instead of clipping away", () => {
+  it("keeps the repo cue below 640 — shortened, not stripped (round-19 3a)", () => {
     renderBox(390);
     const input = screen.getByTestId("repo-chat-input") as HTMLInputElement;
-    // Review 3a: the old phone placeholder kept `Chat in web…` and lost the
-    // hint to the box's edge. The hint IS the placeholder now, in its short
-    // form; the repository stays in the accessible name (aria-label).
-    expect(input.placeholder).toBe("Ask, plan or paste an issue…");
+    // Review 3a (round 3) shortened the phone hint to the bare verb; round-19
+    // review caught that losing the repository — the one line that says the
+    // chat starts IN this repo (ADR-0067) is the line to keep. The phone
+    // placeholder is the shortened sentence, repo cue first; the full hint
+    // stays at 1280 and the accessible name always carries the repo.
+    expect(input.placeholder).toBe("Chat in web…");
     expect(input.getAttribute("aria-label")).toBe("Chat in web");
   });
 
