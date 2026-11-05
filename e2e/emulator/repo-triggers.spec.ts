@@ -130,7 +130,7 @@ test.describe("repo-triggers (admin pre-publishes the gated workflow)", () => {
     );
     // The lab worker's allowlist names the endpoint's real model
     // (docs/samples/home/plan-with-approval.yaml runs it live).
-    const ALLOWED_MODEL = "david-birks/qwen3-8-27b";
+    const ALLOWED_MODEL = "david-birks/ripple-65b";
     const option = model.locator("option").filter({ hasText: /flash/i }).first();
     const isSelect = (await model.evaluate((el) => el.tagName)) === "SELECT";
     if (isSelect) {

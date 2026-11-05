@@ -129,9 +129,9 @@ spec:
           - timeout
           - invalid_output
       config:
-        model: david-birks/qwen3-8-27b
+        model: david-birks/ripple-65b
         temperature: 0.1
-        maxTokens: 16000 # reasoning models (qwen3-8-27b) spend part of this budget thinking before they answer
+        maxTokens: 16000 # reasoning models spend part of this budget thinking before they answer
         messages:
           - role: system
             content: >-

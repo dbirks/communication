@@ -227,7 +227,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
             className="min-w-0 truncate font-mono text-[11px] leading-[15px] text-ink-2"
             data-testid={`canvas-step-fact-${data.id}`}
             // The full text the ellipsis stands for — kind word and the
-            // kind's own key fact (`model · david-birks/qwen3-8-27b`),
+            // kind's own key fact (`model · david-birks/ripple-65b`),
             // which at 390 never fits the 200px box. The issue #65 icon in
             // front of it is aria-hidden decoration, never in this string.
             title={secondLine}
