@@ -982,4 +982,3 @@ func TestLooksLikeToolCallMarkup(t *testing.T) {
 		})
 	}
 }
-
