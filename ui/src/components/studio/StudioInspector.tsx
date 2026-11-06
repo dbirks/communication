@@ -89,20 +89,24 @@ function getAt(obj: unknown, path: string[]): unknown {
   return cur;
 }
 
-/** Deep-clones `root` (the object at `path`'s prefix) and sets/deletes the tail. */
+/**
+ * Deep-sets `value` at the end of `tail` under `root` (undefined DELETES the
+ * leaf), shallow-cloning every object it touches. Deletion prunes: a parent
+ * left as an empty object is removed with it, so clearing the last backoff
+ * field leaves no `backoff: {}` and an emptied `retry` comes back as
+ * `undefined` for the caller to delete whole. Field paths address object
+ * keys only (they come from schema properties), so a non-object holding a
+ * path step is replaced by a fresh object, never indexed as an array.
+ */
 function setAt(root: unknown, tail: string[], value: unknown): unknown {
-  const clone: unknown =
-    root === undefined || root === null || Array.isArray(root) ? [] : { ...root };
   if (tail.length === 0) return value;
+  if (!isObj(root)) return setAt({}, tail, value);
   const [head, ...rest] = tail;
-  if (Array.isArray(clone)) {
-    (clone as unknown[])[Number(head)] = setAt((clone as unknown[])[Number(head)], rest, value);
-    return clone;
-  }
-  if (!isObj(clone)) return value;
-  if (value === undefined) delete (clone as Record<string, unknown>)[head];
-  else (clone as Record<string, unknown>)[head] = setAt(clone[head], rest, value);
-  return clone;
+  const clone: Record<string, unknown> = { ...root };
+  const next = setAt(clone[head], rest, value);
+  if (next === undefined) delete clone[head];
+  else clone[head] = next;
+  return Object.keys(clone).length === 0 ? undefined : clone;
 }
 
 /**
@@ -1183,27 +1187,41 @@ export function StudioInspector({
       if (value === undefined || value === null || value === "") delete next.onExecutionError;
       else next.onExecutionError = value;
       if (value !== "route") delete next.errorRoute;
-      apply((t) => updateNodeFields(t, nodeId as string, { onFailure: next }));
+      const merged = Object.keys(next).length === 0 ? undefined : next;
+      apply((t) => updateNodeFields(t, nodeId as string, { onFailure: merged }));
       return;
     }
-    const topKey = field.path[0];
-    if (field.path.length <= 2) {
-      const key = field.path.length === 1 ? field.path[0] : field.path[1];
-      const v = value === undefined || value === null || value === "" ? undefined : value;
-      apply((t) =>
-        topKey === "config"
-          ? updateConfig(t, nodeId as string, { [key]: v })
-          : updateNodeFields(t, nodeId as string, { [key]: v }),
-      );
+    // Clearing a field means deleting it: "", null and an emptied list all
+    // normalize to undefined, whatever the field's depth.
+    const v =
+      value === undefined ||
+      value === null ||
+      value === "" ||
+      (Array.isArray(value) && value.length === 0)
+        ? undefined
+        : value;
+    // A field path is <container> + nested keys, where the container is a
+    // top-level node field (`retry`, `onFailure`, `when`, …) or `config`. The
+    // write is always ONE whole-container patch: the nested keys are applied
+    // to the node's CURRENT value, so `retry.maxAttempts` merges into the
+    // existing `retry:` map (the leaf alone is not a node field) and
+    // `retry.backoff.baseSeconds` nests `backoff` INSIDE `retry` (a bare
+    // `retry: {baseSeconds: …}` is not a retryPolicy).
+    const [topKey, ...tail] = field.path;
+    if (topKey !== "config" && tail.length === 0) {
+      apply((t) => updateNodeFields(t, nodeId as string, { [topKey]: v }));
       return;
     }
-    const holder = getAt(nodeObj, [topKey, field.path[1]]);
-    const nextHolder = setAt(holder, field.path.slice(2), value);
-    const v = nextHolder === undefined || nextHolder === null ? undefined : nextHolder;
+    if (topKey === "config") {
+      const [key, ...nested] = tail;
+      const next = nested.length === 0 ? v : setAt(getAt(nodeObj, ["config", key]), nested, v);
+      apply((t) => updateConfig(t, nodeId as string, { [key]: next }));
+      return;
+    }
     apply((t) =>
-      topKey === "config"
-        ? updateConfig(t, nodeId as string, { [field.path[1]]: v })
-        : updateNodeFields(t, nodeId as string, { [topKey]: v }),
+      updateNodeFields(t, nodeId as string, {
+        [topKey]: setAt(getAt(nodeObj, [topKey]), tail, v),
+      }),
     );
   }
 

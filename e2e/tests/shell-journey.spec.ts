@@ -1,7 +1,9 @@
 // THE app-shell + IA redesign acceptance journey: one continuous pass through
 // the shipped UI with real agents and no top bar —
 //   a. Studio: insert a NEW agent step after plan, created with a brand-new
-//      profile through the New-profile dialog (contract C6);
+//      profile through the New-profile dialog (contract C6), with the step's
+//      retry policy authored in the same pass (one real retry after the
+//      takeover hand-back — see authorStepRetryPolicy);
 //   b. Validate + Publish, and the published revision number increments;
 //   c. start a run of the new revision from the project's new-run form;
 //   d. approve the run's human gate from the Inbox at PHONE width (390x844);
@@ -14,7 +16,10 @@
 // EXECUTION ORDER: e runs before d. journey_step's deterministic long turn
 // (its instruction, STEP_INSTRUCTION) settles before the approve gate can
 // open, so the takeover must land during that turn — the gate is then
-// approved (d) after the hand-back's re-queued attempt 2 has run.
+// approved (d) after the hand-back's re-queued attempt has run. That attempt,
+// and the ONE retry step a's policy allows it, are both inside the gate window
+// GATE_TIMEOUT_MS sizes for: on run 42157903826 the hand-back's attempt gave
+// one bad answer, nothing retried it, and the gate never opened.
 //
 // Runs ONLY against the app-shell lab when COMMUNICATION_E2E_SHELL_JOURNEY=1:
 //   cd e2e && COMMUNICATION_E2E_SHELL_JOURNEY=1 E2E_BASE_URL=http://localhost:15173 \
@@ -92,12 +97,60 @@ const STEP_INSTRUCTION =
 /** The node id the new step is renamed to (renamed LAST — the rename commit
  * drops the node selection, so no other field may follow it). */
 const NEW_NODE_ID = "journey_step";
+/** journey_step's retry ceiling — how many attempts the step may spend.
+ *
+ * 3, not 2, because the step e hand-back's re-queued attempt is NOT a retry and
+ * still spends one of the node's attempts:
+ *   · internal/pipelines/runtime/retry.go:580 numbers it `n.AttemptCount + 1`
+ *     and retry.go:589 bumps `n.AttemptCount` — queueTakeoverAttempt takes “the
+ *     same accounting queueAttempt does” (retry.go:572-574), so after the
+ *     hand-back the node's ledger reads 2;
+ *   · internal/pipelines/runtime/advancer.go:357 gives the node
+ *     `AttemptLimit: max1(pn.Retry.MaxAttempts)`, and the retry gate at
+ *     advancer.go:628 is `row.AttemptCount < row.AttemptLimit` (mirrored by
+ *     internal/store/postgres/attempts.go:275-278, where the claim deliberately
+ *     does not bump the count “because the advancer gates the retry on
+ *     attempt_count < attempt_limit”).
+ * A ceiling of 2 therefore fails the node the moment the hand-back attempt
+ * fails — the run-42157903826 death that lost the approve gate — and a ceiling
+ * of 3 queues ONE real retry (attempt 3) after it, still taking the node
+ * terminal if the model answers badly twice in a row.
+ *
+ * That is ADR-0043 § 4's rule read literally: “a worker-declared failure on the
+ * hand-back attempt follows the node's retry policy as normal. If that attempt
+ * exhausts the policy, the node fails”
+ * (docs/adr/ADR-0043-run-workbench-graph-first.md:126-129). ADR-0055 § 4's
+ * “Hand-back queueing is NOT a retry and must not consume the node's attempt
+ * budget” (docs/adr/ADR-0055-pause-before-next-step.md:209-213) is about the
+ * hand-back's QUEUEING bypassing the gate — the resume re-queues explicitly
+ * rather than consulting the retry decision (retry.go:501-506) — not about the
+ * ledger the gate reads afterwards, which is why the ceiling needs the seat.
+ */
+const RETRY_MAX_ATTEMPTS = 3;
+/** The retriable half of ADR-0023 § 7's classes, exactly as $defs/retryPolicy
+ * admits them (internal/pipelines/schema/assets/
+ * pipeline-v1alpha1.schema.json:152-167). workspace_lost, predicate_error,
+ * approval_expired and cancelled are never retriable and stay out. */
+const RETRY_RETRIABLE_ERRORS = [
+  "infra",
+  "interrupted",
+  "timeout",
+  "agent_error",
+  "invalid_output",
+] as const;
+/** No backoff block is authored: nothing in $defs/retryPolicy is required (same
+ * schema file, lines 118-171), and an authored block without one defaults to
+ * 30 s × 2 with jitter (internal/pipelines/compiler/policy.go:106-118) — about
+ * two minutes before attempt 3, well inside the widened GATE_TIMEOUT_MS below. */
 /** The assistant's change target (step f), asserted through the draft YAML. */
 const ASSISTANT_STEP_NAME = "journey_check";
 /** One node step is worker polls plus sleep inputs, not milliseconds. */
 const NODE_STEP_TIMEOUT_MS = Number(process.env.E2E_NODE_STEP_TIMEOUT_MS ?? 420_000);
-/** Two real agent turns (plan, then the new journey step) precede the gate. */
-const GATE_TIMEOUT_MS = 2 * NODE_STEP_TIMEOUT_MS;
+/** Two real agent turns (plan, then the new journey step) precede the gate, plus
+ * the ONE retry the step's own policy now allows: the hand-back's attempt and
+ * its retry are both in flight before approve can open (execution order note at
+ * the top of this file), so the window carries three node steps. */
+const GATE_TIMEOUT_MS = 3 * NODE_STEP_TIMEOUT_MS;
 
 /** Shared across the serial steps of this one-page journey. */
 interface JourneyState {
@@ -395,6 +448,78 @@ interface NodeRow {
   attempt_count: number;
 }
 
+/** One row of NodeExecutionDetail.attempts — the append-only history the node
+ * detail route serves (GET /api/v1/runs/{runId}/nodes/{nodeExecutionId},
+ * internal/api/runs.go:870, with the detail type at internal/api/runs.go:452
+ * and the attempt's error_class / detail / output_errors at :405-410). The
+ * other e2e reads of attempt rows use the same members
+ * (e2e/tests/issue2-workbench.spec.ts:414-417, e2e/tests/home-cluster.spec.ts:1135).
+ */
+interface AttemptDetailRow {
+  attempt_number: number;
+  status: string;
+  error_class?: string | null;
+  detail?: string | null;
+  output_errors?: unknown;
+}
+
+/** One node execution's latest attempt, by the detail route above. */
+async function latestAttempt(
+  request: APIRequestContext,
+  runId: string,
+  nodeExecutionId: string,
+): Promise<AttemptDetailRow | null> {
+  const res = await request.get(`${BASE_URL}/api/v1/runs/${runId}/nodes/${nodeExecutionId}`);
+  if (!res.ok()) throw new Error(`GET /runs/${runId}/nodes/${nodeExecutionId} -> ${res.status()}`);
+  const body = (await res.json()) as { attempts?: AttemptDetailRow[] };
+  const rows = body.attempts ?? [];
+  if (rows.length === 0) return null;
+  return rows.reduce((newest, row) => (row.attempt_number > newest.attempt_number ? row : newest));
+}
+
+/** A diagnostic never prints an unbounded blob. */
+function clipText(value: unknown, max = 400): string {
+  const text =
+    typeof value === "string"
+      ? value
+      : value === undefined || value === null
+        ? ""
+        : JSON.stringify(value);
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= max) return oneLine;
+  return `${oneLine.slice(0, max - 1)}…`;
+}
+
+/** WHY the failed nodes failed, for the messages that already say THAT they
+ * failed. Acceptance run 42157903826 ended with `journey_step:failed` and no
+ * reason: the class, the worker's detail line and the output errors are what
+ * told the reader a single bad model answer had exhausted a policy-less node.
+ *
+ * Printed, never asserted — a diagnostic must not quietly become a contract. */
+async function failedNodeReasons(
+  request: APIRequestContext,
+  runId: string,
+  nodes: NodeRow[],
+): Promise<string> {
+  const parts: string[] = [];
+  for (const node of nodes.filter((row) => row.status === "failed")) {
+    try {
+      const attempt = await latestAttempt(request, runId, node.id);
+      parts.push(
+        attempt === null
+          ? `${node.node_id}: failed with no attempt row`
+          : `${node.node_id} attempt n${attempt.attempt_number} [${attempt.status}] ` +
+            `error_class=${attempt.error_class ?? "none"} ` +
+            `detail=${clipText(attempt.detail ?? "")} ` +
+            `output_errors=${clipText(attempt.output_errors ?? null)}`,
+      );
+    } catch (err) {
+      parts.push(`${node.node_id}: attempt history unreadable (${String(err)})`);
+    }
+  }
+  return parts.join(" ; ") || "no node failed";
+}
+
 /** GET /runs/{id}/nodes — every node execution of the run. */
 async function runNodes(request: APIRequestContext, runId: string): Promise<NodeRow[]> {
   const res = await request.get(`${BASE_URL}/api/v1/runs/${runId}/nodes`);
@@ -438,10 +563,11 @@ async function waitForApproval(request: APIRequestContext, runId: string): Promi
     if (row) return row.id;
     if (Date.now() > deadline) {
       const nodes = await runNodes(request, runId);
+      const reasons = await failedNodeReasons(request, runId, nodes);
       throw new Error(
         `no pending approval for run ${runId} after the gate window (nodes: ${
           nodes.map((n) => `${n.node_id}:${n.status}`).join(" ") || "none"
-        })`,
+        }; why: ${reasons})`,
       );
     }
     await sleep(3_000);
@@ -501,6 +627,105 @@ async function crossRunRow(
   return (body.runs ?? []).find((r) => r.id === runId);
 }
 
+/** One node's own lines in a YAML document: from its item line to the first
+ * line at or left of that item's key indent — so a journey_step named inside a
+ * prompt, or another node's nested block, never counts as this node's. Same
+ * scan yamlHasNodeOfKind (above) does. */
+function yamlNodeLines(yaml: string, nodeId: string): string[] {
+  const lines = yaml.split("\n");
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const idRe = new RegExp(`^id:\\s*["']?${esc(nodeId)}["']?\\s*$`);
+  for (let i = 0; i < lines.length; i++) {
+    const dash = lines[i].match(/^(\s*)- (.*)$/);
+    if (!dash) continue;
+    const keyIndent = dash[1].length + 2;
+    const keys: string[] = [dash[2].trim()];
+    let end = i + 1;
+    for (; end < lines.length; end++) {
+      const line = lines[end];
+      if (line.trim() === "") continue;
+      const indent = line.match(/^(\s*)/)![1].length;
+      if (indent < keyIndent) break;
+      if (indent === keyIndent) keys.push(line.trim());
+    }
+    if (keys.some((key) => idRe.test(key))) return lines.slice(i, end);
+  }
+  return [];
+}
+
+/** The retry block one node carries, as ONE space-collapsed line — "" when the
+ * node declares none. Block and flow spellings collapse to the same text, so
+ * the assertion says what was authored rather than how the editor indented it. */
+function yamlNodeRetryBlock(yaml: string, nodeId: string): string {
+  const block = yamlNodeLines(yaml, nodeId);
+  const at = block.findIndex((line) => /^\s*retry:/.test(line));
+  if (at < 0) return "";
+  const indent = block[at].match(/^(\s*)/)![1].length;
+  const out = [block[at].trim()];
+  if (out[0] !== "retry:") return out[0].replace(/\s+/g, " "); // flow style on one line
+  for (const line of block.slice(at + 1)) {
+    if (line.trim() === "") continue;
+    if (line.match(/^(\s*)/)![1].length <= indent) break;
+    out.push(line.trim());
+  }
+  return out.join(" ").replace(/\s+/g, " ");
+}
+
+/**
+ * Author the new step's retry policy through the Studio inspector's generated
+ * retry fields, and return the surface that wrote it.
+ *
+ * The field table comes from $defs/retryPolicy (inspectorSchema's
+ * commonSections), so the widgets are `insp-retry-maxAttempts` (a
+ * range-checked NumberField that commits on blur or Enter) and
+ * `insp-retry-retriableErrors` (an add/remove ListField: `-add` arms a blank
+ * row, `-row-<index>` is its input, and every keystroke commits the whole
+ * array). Each commit is a nested write merged into the node's existing
+ * `retry:` map — the inspector is the only author, and the read-back below
+ * fails this journey if any of its writes is dropped.
+ */
+/** The retry fields live inside the design's collapsed “Retries, timeout and
+ * outputs” disclosure (1g pass 2 #2) — open it when the build has it closed, so
+ * nothing in this journey depends on which fields the design chose to collapse. */
+async function openRetryFields(page: Page): Promise<void> {
+  if (await page.getByTestId("insp-retry-maxAttempts").isVisible().catch(() => false)) return;
+  await page
+    .getByTestId("insp-advanced-disclosure")
+    .locator("summary")
+    .click({ timeout: 30_000 });
+  await expect(page.getByTestId("insp-retry-maxAttempts")).toBeVisible({ timeout: 30_000 });
+}
+
+async function authorStepRetryPolicy(page: Page): Promise<string> {
+  await openRetryFields(page);
+
+  // maxAttempts: the NumberField commits on blur or Enter.
+  const maxAttempts = page.getByTestId("insp-retry-maxAttempts");
+  await maxAttempts.fill(String(RETRY_MAX_ATTEMPTS), { timeout: 30_000 });
+  await maxAttempts.press("Enter", { timeout: 30_000 });
+
+  // retriableErrors: the ListField arms one blank row per Add click and commits
+  // the whole array on every keystroke, so the rows are filled in order.
+  const errorList = page.getByTestId("insp-retry-retriableErrors");
+  await expect(errorList).toBeVisible({ timeout: 30_000 });
+  for (const [index, kind] of RETRY_RETRIABLE_ERRORS.entries()) {
+    await page.getByTestId("insp-retry-retriableErrors-add").click({ timeout: 30_000 });
+    await page
+      .getByTestId(`insp-retry-retriableErrors-row-${index}`)
+      .fill(kind, { timeout: 30_000 });
+  }
+
+  // The widgets read their values from the draft document itself: a write the
+  // inspector dropped leaves them empty and fails here, before the rename.
+  await expect(maxAttempts).toHaveValue(String(RETRY_MAX_ATTEMPTS), { timeout: 30_000 });
+  for (const [index, kind] of RETRY_RETRIABLE_ERRORS.entries()) {
+    await expect(page.getByTestId(`insp-retry-retriableErrors-row-${index}`)).toHaveValue(kind, {
+      timeout: 30_000,
+    });
+  }
+  return "the inspector's retry fields";
+}
+
 /** Poll until the run's journey_step agent.acp node execution is in flight.
  *
  * The node's own status is the live signal: a worker-leased agent step sits
@@ -526,10 +751,11 @@ async function waitForAgentRunning(request: APIRequestContext, runId: string): P
     );
     if (live) return live;
     if (Date.now() > deadline) {
+      const reasons = await failedNodeReasons(request, runId, nodes);
       throw new Error(
         `journey_step (${NEW_NODE_ID}) never went in-flight (leased/running) in run ${runId} within the window (nodes: ${
           nodes.map((n) => `${n.node_id}:${n.status}`).join(" ") || "none"
-        })`,
+        }; why: ${reasons})`,
       );
     }
     await sleep(1_000);
@@ -564,7 +790,7 @@ async function waitForAssistantTurn(page: Page, timeoutMs = 240_000): Promise<vo
 test.describe.serial("shell journey — the app-shell acceptance journey end to end", () => {
   test.skip(!JOURNEY_ENABLED, JOURNEY_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
-  test.setTimeout(30 * 60_000);
+  test.setTimeout(40 * 60_000); // covers the widened gate window in d (see GATE_TIMEOUT_MS)
 
   let stopWatching: (() => void) | null = null;
 
@@ -610,7 +836,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     // Re-run safety: a previous run of this journey published a revision that
     // carries journey_step, so restore the seeded twin first (the oldest
     // revision's document plus ONE stamped metadata line for a fresh digest)
-    // through the Studio's own YAML view — the node graph stays pristine and
+    // through the Studio's YAML editor — the node graph stays pristine and
     // the new digest makes the restoration publishable.
     const revRes = await page.request.get(`/api/v1/pipelines/${state.pipeline.id}/revisions`);
     expect(revRes.status()).toBe(200);
@@ -756,6 +982,13 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.getByTestId("insp-config-prompt").fill(STEP_INSTRUCTION, { timeout: 30_000 });
     await page.getByTestId("insp-config-prompt").blur();
 
+    // The step's retry policy, BEFORE the rename. Without it one bad model
+    // answer anywhere in this node's life fails it with nothing to try again:
+    // acceptance run 42157903826 lost step d exactly there (nodes:
+    // journey_step:failed, approve:cancelled) when the hand-back's re-queued
+    // attempt answered without the json block.
+    const retryAuthoredBy = await authorStepRetryPolicy(page);
+
     // The id rename LAST: the rename commit drops the node selection.
     const nodeIdField = page.getByTestId("insp-node-id");
     await nodeIdField.fill(NEW_NODE_ID, { timeout: 30_000 });
@@ -764,10 +997,23 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     // Save so the insertion persists (the Studio keeps edits in memory until saved).
     await page.getByTestId("studio-save").click({ timeout: 30_000 });
     await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
+
+    // The policy is asserted through the saved draft's own bytes, not the form:
+    // journey_step's node block carries retry.maxAttempts 3 over the five
+    // retriable classes.
+    const savedDraftYaml = await draftYaml(page.request, state.draftId);
+    const retryBlock = yamlNodeRetryBlock(savedDraftYaml, NEW_NODE_ID);
+    expect(
+      retryBlock,
+      `the saved draft carries ${NEW_NODE_ID}'s retry block (authored by ${retryAuthoredBy})`,
+    ).toMatch(new RegExp(`maxAttempts:\\s*${RETRY_MAX_ATTEMPTS}`));
+    for (const kind of RETRY_RETRIABLE_ERRORS) {
+      expect(retryBlock, `retriableErrors must admit ${kind} (${retryBlock})`).toContain(kind);
+    }
     await evidence(
       page,
       `journey-a-step-${STAMP}`,
-      `agent.acp step ${NEW_NODE_ID} inserted after plan, profile ${PROFILE_NAME} created through the dialog and now selected, instruction set, draft saved`,
+      `agent.acp step ${NEW_NODE_ID} inserted after plan, profile ${PROFILE_NAME} created through the dialog and now selected, instruction set, retry policy maxAttempts ${RETRY_MAX_ATTEMPTS} over [${RETRY_RETRIABLE_ERRORS.join(", ")}] authored by ${retryAuthoredBy}, draft saved`,
     );
   });
 
@@ -802,10 +1048,25 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       (state.pipeline.revision_count ?? 0) + 1,
     );
     state.revisionDigest = await newestRevisionDigest(page.request, state.pipeline.id);
+    // And it is the PUBLISHED bytes that carry the policy — the run in step c
+    // pins this revision, so this is the retry gate the engine will read.
+    const publishedRetry = yamlNodeRetryBlock(
+      await revisionDocument(page, state.revisionDigest),
+      NEW_NODE_ID,
+    );
+    expect(
+      publishedRetry,
+      `the published revision carries ${NEW_NODE_ID}'s retry block`,
+    ).toMatch(new RegExp(`maxAttempts:\\s*${RETRY_MAX_ATTEMPTS}`));
+    for (const kind of RETRY_RETRIABLE_ERRORS) {
+      expect(publishedRetry, `retriableErrors must admit ${kind} (${publishedRetry})`).toContain(
+        kind,
+      );
+    }
     await evidence(
       page,
       `journey-b-published-${STAMP}`,
-      `draft validated (“${verdictText}”) and published — revision ${state.revisionBefore} → ${row?.latest_revision_number} (${state.revisionDigest.slice(0, 19)}…), asserted via the API`,
+      `draft validated (“${verdictText}”) and published — revision ${state.revisionBefore} → ${row?.latest_revision_number} (${state.revisionDigest.slice(0, 19)}…), asserted via the API, and the revision document carries ${NEW_NODE_ID}'s retry policy`,
     );
   });
 
@@ -1016,14 +1277,14 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         throw new Error(
           `no new attempt of ${state.agentNodeId} after the hand-back (attempt_count: ${
             row?.attempt_count ?? "absent"
-          }) — ADR-0043/ADR-0055 semantics unmet`,
+          }; why: ${await failedNodeReasons(page.request, state.runId, rows)}) — ADR-0043/ADR-0055 semantics unmet`,
         );
       await sleep(3_000);
     }
     await evidence(
       page,
       `journey-e-handed-back-${STAMP}`,
-      `control returned to the factory: a new attempt of ${state.agentNodeId} is queued (attempt_count ≥ 2 via the API) — the accepted takeover semantics (ADR-0043/ADR-0055)`,
+      `control returned to the factory: a new attempt of ${state.agentNodeId} is queued (attempt_count ≥ 2 via the API; the step's own ceiling is ${RETRY_MAX_ATTEMPTS}, so a bad answer on this hand-back attempt is retried once before the gate in step d) — the accepted takeover semantics (ADR-0043/ADR-0055)`,
     );
     await checkShellScreen(page, "workbench-after-takeover", stopWatching ?? undefined);
   });

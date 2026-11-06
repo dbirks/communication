@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse, stringify } from "yaml";
 import { parseGraph, type OpResult } from "../../lib/pipeline/graphDoc";
+import { PIPELINE_SCHEMA_DEFS } from "../../lib/pipeline/schemaAsset";
 import type { AgentProfile, SystemSandbox } from "../../api/types";
 import type { components } from "../../api/schema";
 import { StudioInspector } from "./StudioInspector";
@@ -596,5 +597,138 @@ describe("StudioInspector", () => {
     // The rule is never a hidden field: this shape is not a list of named
     // values, so the box that writes it verbatim stays.
     expect(getByTestId("insp-pipeline-inputs-json")).toBeTruthy();
+  });
+
+  /* The retry section (studio-retry-fields): every field in it is a NESTED
+   * write — `retry` is the container updateNodeFields knows, the keys below
+   * it are merged into the node's current retry policy, never sent as bare
+   * node fields and never flattened under `retry:` itself. */
+  function retryDoc(retry?: Record<string, unknown>): string {
+    return stringify({
+      apiVersion: "communication.dev/v1alpha1",
+      kind: "Pipeline",
+      metadata: { name: "feature-delivery" },
+      spec: {
+        nodes: [
+          {
+            id: "loop",
+            kind: "until",
+            config: { passWhen: "true", maxIterations: 2 },
+            ...(retry ? { retry } : {}),
+          },
+        ],
+      },
+    });
+  }
+
+  /** Runs every captured op in order; an op that the document refuses is a
+   * failure, not something to tolerate. */
+  function runOps(ops: ((t: string) => OpResult)[], text: string): string {
+    let out = text;
+    for (const op of ops) {
+      const res = op(out);
+      expect(res.ok).toBe(true);
+      if (res.ok) out = res.text;
+    }
+    return out;
+  }
+
+  function retryOf(text: string): Record<string, unknown> | undefined {
+    const doc = parse(text) as { spec: { nodes: Record<string, unknown>[] } };
+    return doc.spec.nodes[0]?.retry as Record<string, unknown> | undefined;
+  }
+
+  /** The same shape the canonical schema draws: only the keys $defs/retryPolicy
+   * (and its backoff sub-object) declare may appear. */
+  function expectRetryShape(policy: Record<string, unknown> | undefined): void {
+    expect(policy).toBeDefined();
+    const def = PIPELINE_SCHEMA_DEFS.retryPolicy;
+    const allowed = Object.keys(def.properties ?? {});
+    expect(Object.keys(policy!).every((k) => allowed.includes(k))).toBe(true);
+    if (policy!.backoff !== undefined) {
+      const backoffKeys = Object.keys(def.properties?.backoff?.properties ?? {});
+      expect(Object.keys(policy!.backoff as object).every((k) => backoffKeys.includes(k))).toBe(
+        true,
+      );
+    }
+  }
+
+  it("retry.maxAttempts edits MERGE into the node's retry policy", () => {
+    const text = retryDoc({ workspacePolicy: "restore_checkpoint" });
+    const { getByTestId, ops } = renderInspector(text, { nodeId: "loop" });
+    const input = getByTestId("insp-retry-maxAttempts") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "3" } });
+    fireEvent.blur(input);
+    expect(ops.length).toBe(1);
+    const out = runOps(ops, text);
+    expect(retryOf(out)).toEqual({ workspacePolicy: "restore_checkpoint", maxAttempts: 3 });
+    expectRetryShape(retryOf(out));
+  });
+
+  it("retry.retriableErrors rows write the list under retry, not a leaf key", () => {
+    const text = retryDoc();
+    const { getByTestId, ops } = renderInspector(text, { nodeId: "loop" });
+    fireEvent.click(getByTestId("insp-retry-retriableErrors-add"));
+    fireEvent.change(getByTestId("insp-retry-retriableErrors-row-0"), {
+      target: { value: "infra" },
+    });
+    fireEvent.click(getByTestId("insp-retry-retriableErrors-add"));
+    fireEvent.change(getByTestId("insp-retry-retriableErrors-row-1"), {
+      target: { value: "timeout" },
+    });
+    const out = runOps(ops, text);
+    expect(retryOf(out)).toEqual({ retriableErrors: ["infra", "timeout"] });
+    expectRetryShape(retryOf(out));
+  });
+
+  it("retry.backoff.baseSeconds nests inside retry and keeps its siblings", () => {
+    const text = retryDoc({ maxAttempts: 2, backoff: { jitter: false } });
+    const { getByTestId, ops } = renderInspector(text, { nodeId: "loop" });
+    const input = getByTestId("insp-retry-backoff-baseSeconds") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "5" } });
+    fireEvent.blur(input);
+    const out = runOps(ops, text);
+    expect(retryOf(out)).toEqual({
+      maxAttempts: 2,
+      backoff: { jitter: false, baseSeconds: 5 },
+    });
+    expectRetryShape(retryOf(out));
+  });
+
+  it("clearing the last retry field removes the retry block cleanly", () => {
+    const text = retryDoc({ maxAttempts: 3 });
+    const { getByTestId, ops } = renderInspector(text, { nodeId: "loop" });
+    const input = getByTestId("insp-retry-maxAttempts") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    const out = runOps(ops, text);
+    expect(retryOf(out)).toBeUndefined();
+    expect(out).not.toContain("retry:");
+  });
+
+  it("onFailure.errorRoute writes under onFailure", () => {
+    const text = stringify({
+      apiVersion: "communication.dev/v1alpha1",
+      kind: "Pipeline",
+      metadata: { name: "feature-delivery" },
+      spec: {
+        nodes: [
+          { id: "plan", kind: "model.chat", config: { model: "gpt-x" } },
+          {
+            id: "ship",
+            kind: "process.exec",
+            dependsOn: ["plan"],
+            config: { executable: "make" },
+          },
+        ],
+      },
+    });
+    const { getByTestId, ops } = renderInspector(text, { nodeId: "ship" });
+    const select = getByTestId("insp-onFailure-errorRoute") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "plan" } });
+    expect(ops.length).toBe(1);
+    const out = runOps(ops, text);
+    const doc = parse(out) as { spec: { nodes: Record<string, unknown>[] } };
+    expect(doc.spec.nodes[1].onFailure).toEqual({ errorRoute: "plan" });
   });
 });
