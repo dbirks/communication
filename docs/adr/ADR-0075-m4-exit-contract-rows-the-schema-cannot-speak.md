@@ -182,3 +182,17 @@ gate pair FAILs, orphan/cancelled/human-decided permission rows still FAIL under
 inputs do not crash), and the parenthesisation discipline for the three new reads. Live: the
 `core-a` shard's C1j pi arms on the next Actions m4 pass — **pending there, and not claimed until
 the shard quotes them** (a mocked green never substitutes, `12`-test-strategy).
+
+## Acceptance 2026-11-06 — the C1j launcher-conditional addendum is accepted
+
+The project owner accepted the 2026-11-05 addendum as the closing proof of § 7.1 C1j's agent leg on
+launcher `pi`, rather than adding credentials for a prompting launcher to the acceptance runners.
+The live evidence the addendum's Verification section left pending is now quoted: Actions run
+42141759794 (commit 3178372, `jobs=all`), shard `m4 (core-a)`, prints every C1j agent arm PASS —
+the profile rows read pi/autonomous_within_sandbox/required, every succeeded agent attempt
+launched sandbox-verified, every approval.requested has exactly one approval.decided with a named
+decider, every decided permission row carries decided_by=node_policy:preapproved_within_sandbox,
+no orphans and no doubles — and the shard's summary reads `FAIL=0 GAP=0 SKIP=0/25`. The stated
+limitation stands unchanged: positive `conversation.permission.*` evidence from a launcher that
+prompts remains the claude pass-29 rows (ADR-0036 addendum); re-acquiring it on a prompting
+launcher is still a lab-credential decision and is not claimed here.
