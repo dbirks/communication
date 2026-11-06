@@ -199,7 +199,13 @@ spec:
     #    push token (secretRefs: project/github-push-token, env GH_TOKEN — the
     #    only profile the secret is authorized for). It implements, tests until
     #    green, pushes the branch and opens a DRAFT PR itself; the token never
-    #    lands in argv or any file (ADR-0045, ADR-0040).
+    #    lands in argv or any file (ADR-0045, ADR-0040). invalid_output is
+    #    retriable like /plan (run 42213500404: the agent opened PR #411, then
+    #    its final message was broken tool-call markup, and the run died with
+    #    no second attempt); the retry is idempotent because workspacePolicy
+    #    defaults to continue_workspace (ADR-0023 § 6) and the prompt below
+    #    makes the agent reuse the existing branch and PR instead of opening
+    #    duplicates.
     - id: implement
       kind: agent.acp
       dependsOn:
@@ -217,6 +223,7 @@ spec:
           - interrupted
           - timeout
           - agent_error
+          - invalid_output
       config:
         profile: pi-implementer
         sessionMode: new
@@ -234,20 +241,35 @@ spec:
 
           Issue number: ${{ inputs.issue_number }} (0 means no issue); branch
           prefix: ${{ inputs.branch_prefix }}
-          1. Create the branch <branch_prefix><issue_number>-<short-slug> — a
-             short slug of a few lowercase words from the goal — or
+          This attempt may be a RETRY: the workspace carries what earlier
+          attempts did and the branch may already be pushed with a draft PR
+          open. Finish that work — never create a second branch or a second
+          pull request for this issue.
+          1. Look FIRST for an existing branch for this issue, locally
+             (git branch --list "<issue branch prefix>*") and on origin
+             (git ls-remote --heads origin "<issue branch prefix>*"), where
+             the issue branch prefix is <branch_prefix><issue_number>- (or
+             <branch_prefix>run- when the issue number is 0); if one exists,
+             check it out and work on it. Only when none exists, create
+             <branch_prefix><issue_number>-<short-slug> — a short slug of a
+             few lowercase words from the goal — or
              <branch_prefix>run-<short-slug> when the issue number is 0.
           2. Implement the plan step by step; add or adjust tests for the change.
           3. Find the project's test command (README first, then package.json
              scripts — for this sample's repo it is `npm test`) and run it; fix
              and re-run until the whole suite is green.
           4. Commit with a message referencing Fixes #<issue_number> when the
-             issue number is > 0.
+             issue number is > 0; when an earlier attempt already committed
+             the work and the tree is clean, there is nothing to commit.
           5. Push: git push -u origin <branch>.
-          6. Open a DRAFT pull request: gh pr create --draft --title "<goal in
-             one line>" --body "<plan summary, then the tail of the final test
-             output, then a line Closes #<issue_number> when the issue number is
-             > 0>". Use the GH_TOKEN environment for authentication.
+          6. Publish the DRAFT pull request for that branch. Check for an
+             existing PR first (gh pr view on the branch): if one exists — an
+             earlier attempt opened it — update it with gh pr edit and report
+             its URL; NEVER open a duplicate. Only when no PR exists yet, run
+             gh pr create --draft --title "<goal in one line>" --body "<plan
+             summary, then the tail of the final test output, then a line
+             Closes #<issue_number> when the issue number is > 0>". Use the
+             GH_TOKEN environment for authentication.
           7. Reply with JSON of exactly this shape:
           {"summary": "<what you changed and why, in prose>",
            "branch": "<the branch you pushed, exactly as pushed>",
@@ -259,7 +281,10 @@ spec:
           https://github.com/<owner>/<repo>/pull/<n>. tests_passed is a JSON
           boolean, true only if the last full test run was green. files_changed
           is an ARRAY of repository path strings, one per element, [] when
-          nothing changed. Write nothing outside this object.
+          nothing changed. Write nothing outside this object. Your FINAL
+          message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence; a final message that is not the object
+          fails the node even when the work is done.
       outputs:
         type: object
         required:

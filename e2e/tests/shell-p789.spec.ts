@@ -134,6 +134,53 @@ function installSseFrameTap(page: Page): void {
   });
 }
 
+/**
+ * The coalescer flush window: `FRAME_BATCH_MS` in ui/src/api/events.ts — the
+ * sidebar/home/board invalidators (lib/sidebarFlags.ts, api/home.ts,
+ * api/board.ts) arm one `setTimeout(flush, 1_000)` per window, keyed only off
+ * run./approval. org-stream frames. No refetchInterval or timer owns these
+ * reads (verified by reading those files); any tolerated idle-window GET must
+ * sit within one flush window of a frame.
+ */
+const COALESCER_FLUSH_MS = 1_000;
+/** Flush → invalidateQueries → the fetch starts; slack for that dispatch. */
+const IDLE_DISPATCH_SLACK_MS = 500;
+/** The tap timestamps in the page's clock, the netTap in the runner's. */
+const IDLE_CLOCK_SLACK_MS = 250;
+
+/** A frame the sidebar/home flag reads refetch for (typed, or an envelope
+ * frame whose payload carries a run./approval. type). */
+function isRunOrApprovalFrame(frame: { type: string; data: string | null }): boolean {
+  const matches = (type: string) => type.startsWith("run.") || type.startsWith("approval.");
+  if (matches(frame.type)) return true;
+  if (frame.type !== "message" || frame.data === null) return false;
+  try {
+    const envelope = JSON.parse(frame.data) as { type?: unknown };
+    return typeof envelope.type === "string" && matches(envelope.type);
+  } catch {
+    return false;
+  }
+}
+
+/** Every org-SSE frame the init-script tap captured, with page timestamps. */
+async function readSseFrames(
+  page: Page,
+): Promise<{ type: string; data: string | null; t: number }[]> {
+  return (
+    (await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __sseFrames?: { type: string; data: string | null; t: number }[];
+          }
+        ).__sseFrames,
+    )) ?? []
+  );
+}
+
+/** Path + query identity of a sampled request. */
+const urlKey = (url: string): string => `${new URL(url).pathname}${new URL(url).search}`;
+
 export interface Csrf {
   token: string;
   origin: string;
@@ -467,13 +514,53 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     const before = await inboxFlagCount(page);
     const idleStart = samples.length;
     // No timer may own this column: eight quiet seconds prove nothing is
-    // polling /runs or /approvals while the flag sits still.
+    // polling /runs or /approvals while the flag sits still. The suite shares
+    // one lab, though, so a run./approval. frame from ANOTHER spec's run can
+    // land on this org stream mid-window and legitimately dirty the
+    // sidebar/home reads through their coalescer (lib/sidebarFlags.ts,
+    // api/home.ts — no refetchInterval on those keys). So a GET is tolerated
+    // only if such a frame arrived before it within the coalescer's flush
+    // window, and per URL the count respects the same per-frame bound the
+    // live half of this test enforces. A GET with no preceding frame is a
+    // timer poll and fails with the same message as ever.
+    const idleStartT = Date.now();
     await page.waitForTimeout(8_000);
-    const idlePolls = samples.slice(idleStart).filter((s) => s.method !== "SSE");
+    const idleEndT = Date.now();
+    const idleReads = samples.slice(idleStart).filter((s) => s.method !== "SSE");
+    const idleFrames = (await readSseFrames(page)).filter(isRunOrApprovalFrame);
+    const frameDriven = idleReads.filter((sample) =>
+      idleFrames.some(
+        (frame) =>
+          sample.t >= frame.t - IDLE_CLOCK_SLACK_MS &&
+          sample.t - frame.t <= COALESCER_FLUSH_MS + IDLE_DISPATCH_SLACK_MS,
+      ),
+    );
+    const idlePolls = idleReads.filter((sample) => !frameDriven.includes(sample));
+    // Frames that could flush a refetch into this window (same bound as the
+    // attribution above): the per-URL budget is keysPerUrl x frame windows.
+    const idleWindows = idleFrames.filter(
+      (frame) =>
+        frame.t + COALESCER_FLUSH_MS + IDLE_DISPATCH_SLACK_MS >= idleStartT &&
+        frame.t <= idleEndT,
+    ).length;
+    const idleUrls = frameDriven.map((sample) => urlKey(sample.url));
+    for (const url of new Set(idleUrls)) {
+      const keysPerUrl = url.startsWith("/api/v1/approvals") ? 2 : 1;
+      const count = idleUrls.filter((row) => row === url).length;
+      expect(
+        count,
+        `idle refetch count for ${url} exceeds ${keysPerUrl} key(s) x ${idleWindows} frame window(s)`,
+      ).toBeLessThanOrEqual(keysPerUrl * idleWindows);
+    }
     expect(
       idlePolls,
       `timer polls fired while the page sat idle: ${idlePolls.map((s) => s.url).join(" | ")}`,
     ).toEqual([]);
+    if (frameDriven.length > 0) {
+      console.log(
+        `EVIDENCE P789-T1: ${frameDriven.length} idle refetch(es) were frame-driven by ${idleWindows} run/approval SSE frame(s); uncaused timer polls: 0`,
+      );
+    }
     // Now a real event: a scratch gate run enters waiting_human at the API.
     const project = await apiScratchProject(request);
     expect(project, "the lab holds a project to run the scratch gate in").toBeTruthy();
@@ -495,15 +582,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
       })
       .toBe(before + 1);
     const refetches = samples.slice(runStart).filter((s) => s.method !== "SSE" && s.t >= runStartT);
-    const frames =
-      (await page.evaluate(
-        () =>
-          (
-            window as unknown as {
-              __sseFrames?: { type: string; data: string | null; t: number }[];
-            }
-          ).__sseFrames,
-      )) ?? [];
+    const frames = await readSseFrames(page);
     // The bound, derived from the invalidating consumers (not a magic 4):
     // a run./approval. frame dirties, per coalescer, at most these keys on
     // the open Home — the sidebar's two flag reads (GET /runs?status…&limit=200,
@@ -515,11 +594,8 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     // scratch run commits at least run.created + run.waiting_human). So:
     // per distinct URL, at most (its key count) x (frame windows); a URL
     // refetching beyond that is a coalescing bug and fails on its own list.
-    const runFrames = frames.filter(
-      (frame) => frame.type.startsWith("run.") || frame.type.startsWith("approval."),
-    );
+    const runFrames = frames.filter(isRunOrApprovalFrame);
     const frameWindows = Math.max(runFrames.length, 2);
-    const urlKey = (url: string): string => `${new URL(url).pathname}${new URL(url).search}`;
     const refetchUrls = refetches.map((sample) => urlKey(sample.url));
     console.log(
       `P789-T1 refetches after the frame (${refetchUrls.length}): ${refetchUrls.join(" | ")}`,
@@ -559,7 +635,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await evidence(
       page,
       "shell-p789-live-flag",
-      `the sidebar Inbox flag rose from ${before} to ${before + 1} within 10 s of run ${runId.slice(0, 8)} entering waiting_human, with ZERO /runs|/approvals GETs during the 8 s idle window, ${refetches.length} invalidation refetch(es) after the run, and ${frames.length} SSE frame(s) captured on /api/v1/events${frames.length > 0 ? " — every refetch timestamped after the first frame" : " — the frame hook captured nothing, so the no-timer half of the claim rests on the idle window only"}`,
+      `the sidebar Inbox flag rose from ${before} to ${before + 1} within 10 s of run ${runId.slice(0, 8)} entering waiting_human, with ZERO uncaused /runs|/approvals GETs during the 8 s idle window (${frameDriven.length} frame-driven refetch(es) tolerated, bound respected), ${refetches.length} invalidation refetch(es) after the run, and ${frames.length} SSE frame(s) captured on /api/v1/events${frames.length > 0 ? " — every refetch timestamped after the first frame" : " — the frame hook captured nothing, so the no-timer half of the claim rests on the idle window only"}`,
     );
   });
 
