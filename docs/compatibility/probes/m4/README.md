@@ -229,7 +229,7 @@ keyed so gates never re-derive ids:
     "issue-implementation": { "…no run_id — the fan-out child…" }},
   "runs": [ {"run_id": "…", "variant": "agent", "pipeline_slug": "feature-development",
              "revision_digest": "…", "plan_digest": "…",
-             "inputs": {"goal": "Document and fix add() in hello.py",
+             "inputs": {"goal": "Add a docstring to add() in hello.py, and correct the wrong expectation in tests/test_hello.py (add(1, 2) is 3, not 99) so the tests pass",
                          "repository": "app", "fanout": false, "fanout_count": 0}},
            {"…variant": "twin"…} ],
   "fixture": {"git_url": "file:///srv/m4/fixtures/app.git",

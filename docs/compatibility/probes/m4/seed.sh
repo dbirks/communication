@@ -75,7 +75,13 @@ PROJECT_SLUG="${M4_SEED_PROJECT_SLUG:-m4-exit}"
 # W9's outsider needs a second project to be "project B only" (§ 7.2 W9 vs § 7.1 C9d).
 PROJECT_B_SLUG="${M4_SEED_PROJECT_B_SLUG:-m4-project-b}"
 REPO_URL="${M4_SEED_REPO_URL:-file:///srv/m4/fixtures/app.git}"
-GOAL="${M4_SEED_GOAL:-Document and fix add() in hello.py}"
+# The goal names BOTH halves of the fixture's planted fault: tests/test_hello.py
+# asserts add.__doc__ *and* `add(1, 2) == 99`, which is wrong on purpose. A goal
+# that only says "document and fix" leaves the reviewer no way to tell whether
+# correcting the test expectation is in scope, and real reviewers refuse the plan
+# (run 42134056322). Keep this free of double quotes and backslashes: it is
+# interpolated into a JSON body below.
+GOAL="${M4_SEED_GOAL:-Add a docstring to add() in hello.py, and correct the wrong expectation in tests/test_hello.py (add(1, 2) is 3, not 99) so the tests pass}"
 SENTINEL="${M4_SEED_SECRET_VALUE:-SENTINEL-m4-7c1e9d42-exit-test-only}"
 PIPELINE_YAML="${M4_SEED_PIPELINE:-$M4_DIR/pipeline.yaml}"
 # ---- launcher selection (lab-only; default keeps local behaviour) ----------

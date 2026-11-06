@@ -948,7 +948,7 @@ always takes the same branch — the exit gate is then about the engine, not abo
 
 ```bash
 C1a  POST /api/v1/projects/$P/runs -d '{"pipeline_revision_id":"'$REV',
-        "inputs":{"goal":"Document and fix add() in hello.py","repository":"app"}}'  → 201, status=queued
+        "inputs":{"goal":"Add a docstring to add() in hello.py, and correct the wrong expectation in tests/test_hello.py (add(1, 2) is 3, not 99) so the tests pass","repository":"app"}}'  → 201, status=queued
 C1b  alice decides the gate: POST /api/v1/approvals/$AID/decide '{"decision":"approved","version":1}' → 200
 C1c  poll until terminal (cap 30 min agents / 5 min twin):
      psql -tAc "select status,failed_cause from runs where id='$RUN'"      # completed |

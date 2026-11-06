@@ -62,8 +62,11 @@ const REPO_BRANCH = "master";
 const PROFILE = IS_PI_LAUNCHER ? `m2-pi-${STAMP}` : "Claude Code";
 
 // Phrased as instructions to one specific tool with exact content: the journey
-// is about who is driving, not about what the model chooses to do.
-const FIRST_PROMPT = `Read the README in repos/${REPO_NAME} and summarise it in one sentence.`;
+// is about who is driving, not about what the model chooses to do. The file is
+// named exactly: octocat/Hello-World's only file is `README` with no extension,
+// and a prompt that said "the README" sent a real model to read `README.md`,
+// whose failed read it papered over with a hallucinated summary.
+const FIRST_PROMPT = `Read the file repos/${REPO_NAME}/README (it has no file extension) and summarise it in one sentence.`;
 // ~50s of work, so the takeover below lands while the turn is still running.
 const LONG_PROMPT =
   "Use the Bash tool to run exactly: for i in 1 2 3 4 5 6 7 8 9 10; do echo tick $i; " +
