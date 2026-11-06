@@ -787,3 +787,199 @@ func TestCompleteTextProseAnswerIsStillRefusedWithTheReplyPrefix(t *testing.T) {
 		t.Fatalf("refusal = %v", err)
 	}
 }
+
+// proposalToolTag is the tool-call opening tag with its angle brackets
+// \u-escaped, so the literal sequence never appears in this source file (the
+// same rule prose.go follows for the think tags).
+const proposalToolTag = "\u003ctool_call\u003e"
+
+// proposalToolCallAnswer is the pseudo tool-call markup the lab's model sent
+// on acceptance run 42213500404 (issue2 A8): the proposal request carries no
+// tools, the model hallucinated a read_file tool turn anyway, and echoing
+// that answer back on the re-ask primed the model to repeat it.
+const proposalToolCallAnswer = "\u003ctool_call\u003e\n\u003cfunction=read_file\u003e\n\u003cparameter=path\u003e/tmp/a8-notes.md\u003c/parameter\u003e\n\u003c/function\u003e\n\u003c/tool_call\u003e"
+
+// scriptedTurnServer stands in for the gateway with a scripted answer per
+// turn, recording every request envelope the broker sends.
+func scriptedTurnServer(t *testing.T, answers []string) (*httptest.Server, *[][]chatMessage) {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		turns [][]chatMessage
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			http.Error(w, "wrong path", http.StatusNotFound)
+			return
+		}
+		var req chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		turns = append(turns, req.Messages)
+		idx := len(turns) - 1
+		if idx >= len(answers) {
+			idx = len(answers) - 1
+		}
+		answer := answers[idx]
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]any{"role": "assistant", "content": answer},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &turns
+}
+
+// TestProposalToolCallMarkupReAskDoesNotEcho proves the flake-a8b fix: when
+// the malformed first answer is pseudo tool-call markup, the single re-ask
+// goes out over the ORIGINAL (system, user) pair plus the no-tools repair
+// turn — the bad answer is never echoed back — and a valid second answer
+// succeeds in exactly two model calls.
+func TestProposalToolCallMarkupReAskDoesNotEcho(t *testing.T) {
+	const valid = `{"op":"insert_on_edge","from":"approve","to":"build_until_verified","kind":"model.chat","id":"check_plan","config":{"prompt":"look"},"summary":"adds a plan check"}`
+	srv, turns := scriptedTurnServer(t, []string{proposalToolCallAnswer, valid})
+	broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+	if err != nil {
+		t.Fatalf("broker: %v", err)
+	}
+	system, user := ProposalPrompt([]byte("[]"), nil, "insert a code reviewer after the approval gate")
+	raw, fail := broker.CompleteText(t.Context(), system, user)
+	if fail != nil {
+		t.Fatalf("completion: %v", fail)
+	}
+	if len(*turns) != 2 {
+		t.Fatalf("model calls = %d, want exactly 2", len(*turns))
+	}
+	if raw != valid {
+		t.Fatalf("answer = %q, want the re-ask's valid proposal", raw)
+	}
+	if _, xerr := ExtractProposal(raw); xerr != nil {
+		t.Fatalf("extract: %v", xerr)
+	}
+	reask := (*turns)[1]
+	if len(reask) != 3 {
+		t.Fatalf("re-ask envelope = %d messages, want system, user, user (no echo)", len(reask))
+	}
+	if reask[0].Role != "system" || reask[1].Role != "user" || reask[2].Role != "user" {
+		t.Fatalf("re-ask roles = %v", []string{reask[0].Role, reask[1].Role, reask[2].Role})
+	}
+	if *reask[0].Content != system || *reask[1].Content != user {
+		t.Fatalf("re-ask must carry the original system and user turns unchanged")
+	}
+	if *reask[2].Content != proposalToolCallRepair {
+		t.Fatalf("re-ask repair turn = %q, want proposalToolCallRepair", *reask[2].Content)
+	}
+	for _, m := range reask {
+		if strings.Contains(*m.Content, proposalToolTag) {
+			t.Fatalf("re-ask echoes the pseudo tool-call markup in role %s: %q", m.Role, *m.Content)
+		}
+	}
+}
+
+// TestProposalPlainMalformedReAskStillEchoes pins the unchanged half: a
+// plain malformed prose answer keeps today's re-ask — the bounded first
+// answer echoed as an assistant turn plus the shape repair instruction.
+func TestProposalPlainMalformedReAskStillEchoes(t *testing.T) {
+	const valid = `{"op":"insert_on_edge","from":"approve","to":"build_until_verified","kind":"model.chat","id":"check_plan","config":{"prompt":"look"},"summary":"adds a plan check"}`
+	const prose = "I am sure you can guess what I meant"
+	srv, turns := scriptedTurnServer(t, []string{prose, valid})
+	broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+	if err != nil {
+		t.Fatalf("broker: %v", err)
+	}
+	system, user := ProposalPrompt([]byte("[]"), nil, "insert a code reviewer after the approval gate")
+	raw, fail := broker.CompleteText(t.Context(), system, user)
+	if fail != nil {
+		t.Fatalf("completion: %v", fail)
+	}
+	if len(*turns) != 2 {
+		t.Fatalf("model calls = %d, want exactly 2", len(*turns))
+	}
+	if raw != valid {
+		t.Fatalf("answer = %q, want the re-ask's valid proposal", raw)
+	}
+	reask := (*turns)[1]
+	if len(reask) != 4 {
+		t.Fatalf("re-ask envelope = %d messages, want system, user, assistant, user", len(reask))
+	}
+	if reask[0].Role != "system" || reask[1].Role != "user" || reask[2].Role != "assistant" || reask[3].Role != "user" {
+		t.Fatalf("re-ask roles = %v", []string{reask[0].Role, reask[1].Role, reask[2].Role, reask[3].Role})
+	}
+	if *reask[2].Content != prose {
+		t.Fatalf("re-ask echo = %q, want the bounded first answer", *reask[2].Content)
+	}
+	if *reask[3].Content != proposalRepairInstruction {
+		t.Fatalf("re-ask repair = %q, want proposalRepairInstruction", *reask[3].Content)
+	}
+	for _, m := range reask {
+		if strings.Contains(*m.Content, proposalToolTag) {
+			t.Fatalf("plain prose re-ask must not mention tool-call markup: %q", *m.Content)
+		}
+	}
+}
+
+// TestProposalToolCallMarkupTwiceKeepsFirstAnswer pins the shared budget: a
+// re-ask that answers tool-call markup again spends nothing further — the
+// FIRST answer stands and the route's original error is unchanged.
+func TestProposalToolCallMarkupTwiceKeepsFirstAnswer(t *testing.T) {
+	srv, turns := scriptedTurnServer(t, []string{proposalToolCallAnswer, proposalToolCallAnswer})
+	broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+	if err != nil {
+		t.Fatalf("broker: %v", err)
+	}
+	system, user := ProposalPrompt([]byte("[]"), nil, "insert a code reviewer after the approval gate")
+	raw, fail := broker.CompleteText(t.Context(), system, user)
+	if fail != nil {
+		t.Fatalf("completion: %v", fail)
+	}
+	if len(*turns) != 2 {
+		t.Fatalf("model calls = %d, want exactly 2", len(*turns))
+	}
+	if raw != proposalToolCallAnswer {
+		t.Fatalf("answer = %q, want the first answer unchanged", raw)
+	}
+	_, err = ExtractProposal(raw)
+	_, origErr := ExtractProposal(proposalToolCallAnswer)
+	if err == nil || err.Error() != origErr.Error() {
+		t.Fatalf("error = %v, want the original %v", err, origErr)
+	}
+}
+
+// TestLooksLikeToolCallMarkup exercises the detector directly: the three
+// opening shapes, wrappers that stripModelProse peels first, and the
+// negatives that must keep the ordinary echo re-ask.
+func TestLooksLikeToolCallMarkup(t *testing.T) {
+	const valid = `{"op":"insert_on_edge","from":"approve","to":"build_until_verified","kind":"model.chat","id":"check_plan","config":{"prompt":"look"},"summary":"adds a plan check"}`
+	cases := []struct {
+		name string
+		s    string
+		want bool
+	}{
+		{"full tool-call block", proposalToolCallAnswer, true},
+		{"leading whitespace before the tag", "  \ufeff" + proposalToolCallAnswer, true},
+		{"function= tag alone", "\u003cfunction=read_file\u003e\n\u003cparameter=path\u003e/tmp/x\u003c/parameter\u003e\n\u003c/function\u003e", true},
+		{"function_call tag alone", "\u003cfunction_call\u003eread_file\u003c/function_call\u003e", true},
+		{"tool tag after a think block", openTag + "planning" + thinkClose + proposalToolCallAnswer, true},
+		{"tool tag inside a fence", "```json\n" + proposalToolCallAnswer + "\n```", true},
+		{"tool tag before any brace", "here you go " + proposalToolTag + "\u003cfunction=run\u003e{\"a\":1}", true},
+		{"valid proposal object", valid, false},
+		{"brace before the tool tag", valid + " " + proposalToolTag, false},
+		{"plain prose", "I am sure you can guess", false},
+		{"empty", "", false},
+		{"think block then valid object", openTag + "planning" + thinkClose + valid, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksLikeToolCallMarkup(tc.s); got != tc.want {
+				t.Fatalf("looksLikeToolCallMarkup = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+

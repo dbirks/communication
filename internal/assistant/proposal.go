@@ -719,6 +719,41 @@ const proposalSystemLead = "You edit pipeline drafts for a software engineering 
 // question to the model.
 const proposalRepairInstruction = "Your previous answer was not one JSON object. Answer again with exactly one JSON object (a single JSON object, never a JSON array) in one of the shapes the instructions list, and no other text."
 
+// proposalToolCallRepair is the corrective user turn for a malformed answer
+// that is pseudo tool-call markup (see looksLikeToolCallMarkup). The echo
+// route is deliberately NOT taken for that shape: the proposal request sends
+// no tools, so replaying the hallucinated tool turn as an assistant message
+// primes the model to repeat it — the lab's issue2 A8 re-ask failed for
+// exactly that reason (acceptance 42213500404). The repair states plainly
+// that this step has no tools and everything needed is already in the prompt.
+const proposalToolCallRepair = "You have no tools in this step and cannot read files or run commands; everything you need is in the message above. Answer with exactly one JSON object in one of the shapes the instructions list, and no other text."
+
+// looksLikeToolCallMarkup reports whether a malformed answer is pseudo
+// tool-call markup: a model that hallucinated a tool turn opens with the
+// tool-call tag or a function tag (the tags are \u-escaped so the raw
+// sequences never appear in this source file). It runs the same
+// stripModelProse the extractor does — a think block or fence wrapped around
+// the markup is still tool-call markup — falling back to plain trimming when
+// the answer has no peelable wrapper shape. A real proposal object is never
+// misread: the tool tag must appear before any '{'.
+func looksLikeToolCallMarkup(s string) bool {
+	body, err := stripModelProse(s)
+	if err != nil {
+		body = strings.TrimSpace(s)
+	}
+	if strings.HasPrefix(body, "\u003ctool_call\u003e") ||
+		strings.HasPrefix(body, "\u003cfunction=") ||
+		strings.HasPrefix(body, "\u003cfunction_call") {
+		return true
+	}
+	tag := strings.Index(body, "\u003ctool_call\u003e")
+	if tag < 0 {
+		return false
+	}
+	brace := strings.IndexByte(body, '{')
+	return brace < 0 || tag < brace
+}
+
 // proposalDraftSummaryLead opens the user turn ProposalPrompt builds. It is
 // the anchor proposalDocFromUser cuts the draft summary back out of, so the
 // broker can re-run ValidateProposal on a proposal turn — the prompt and the
@@ -842,7 +877,11 @@ Worked example: the draft has nodes tests and review, where review depends on te
 // already named a real refusal and the re-ask is refused too, the FIRST
 // answer is returned unchanged, so the route reports the original error: the
 // re-ask never replaces the existing failure story, and no turn ever asks
-// twice.
+// twice. One shape exception (issue2 A8, acceptance 42213500404): when the
+// malformed first answer is pseudo tool-call markup the re-ask does NOT echo
+// it — the echo primes the model to repeat the hallucinated tool turn — and
+// sends proposalToolCallRepair over the original (system, user) pair instead.
+// The budget, the accept/return-first rules and the log line are unchanged.
 func (b *Broker) CompleteText(ctx context.Context, system, user string) (string, *Failure) {
 	messages := []chatMessage{
 		{Role: "system", Content: text(system)},
@@ -863,12 +902,23 @@ func (b *Broker) CompleteText(ctx context.Context, system, user string) (string,
 	// The excerpt is the diagnosis for any shape prose.go does not already
 	// handle: this line and the 422 the browser shows are the only record of
 	// what the model sent, because the proposal turn stores nothing.
+	toolMarkup := firstDefect.malformed && looksLikeToolCallMarkup(first)
 	b.logger().Info("assistant proposal re-asking once after a malformed or refused answer",
 		slog.String("endpoint", b.EndpointHost()),
+		slog.Bool("tool_call_markup", toolMarkup),
 		slog.String("answer_excerpt", modelAnswerExcerpt(first)))
-	reask := append(append([]chatMessage(nil), messages...),
-		chatMessage{Role: "assistant", Content: text(bounded(first, MaxResultBytes))},
-		chatMessage{Role: "user", Content: text(firstDefect.repair)})
+	var reask []chatMessage
+	if toolMarkup {
+		// No echo: replaying the pseudo tool-call answer as an assistant
+		// turn teaches the model the shape that just failed. The re-ask is
+		// the original (system, user) pair plus the no-tools repair turn.
+		reask = append(append([]chatMessage(nil), messages...),
+			chatMessage{Role: "user", Content: text(proposalToolCallRepair)})
+	} else {
+		reask = append(append([]chatMessage(nil), messages...),
+			chatMessage{Role: "assistant", Content: text(bounded(first, MaxResultBytes))},
+			chatMessage{Role: "user", Content: text(firstDefect.repair)})
+	}
 	second, rfail := b.completeText(ctx, reask)
 	if rfail != nil {
 		return first, nil
