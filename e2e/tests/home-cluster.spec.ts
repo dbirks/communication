@@ -286,6 +286,8 @@ interface NodeExecutionDetailView extends NodeExecutionView {
     error_class: string | null;
     detail: string | null;
     outputs: unknown;
+    conversation_id: string | null;
+    turn_id: string | null;
   }[];
 }
 interface CheckpointView {
@@ -306,6 +308,113 @@ async function getJson<T>(context: BrowserContext, path: string): Promise<T> {
   const response = await context.request.get(`${HOME_BASE_URL}${path}`);
   expect(response.status(), `GET ${path} must answer 200, got ${response.status()}`).toBe(200);
   return (await response.json()) as T;
+}
+
+/**
+ * The attempt list of one node, rendered for a failure message: every
+ * attempt with its own verdict, each detail cut to 240 characters. A node
+ * with a retry block can carry failed attempts AND still complete, so the
+ * list — not just the newest row — is what names the shape.
+ */
+function attemptList(attempts: NodeExecutionDetailView["attempts"]): string {
+  if (attempts.length === 0) return "(no attempt rows)";
+  const byNumber = [...attempts].sort((a, b) => a.attempt_number - b.attempt_number);
+  return (
+    byNumber
+      .map(
+        (a) =>
+          `att ${a.attempt_number} ${a.status}${a.error_class ? `/${a.error_class}` : ""}: ${(
+            a.detail ?? "(no detail)"
+          )
+            .replace(/\s+/g, " ")
+            .slice(0, 240)}`,
+      )
+      .join(" | ") + ` (${byNumber.length} attempt row(s) served)`
+  );
+}
+
+/** The agent's streamed text cut to a bounded first/last window, so a
+ * failure message names the reply's shape without dumping a whole turn. */
+function boundedReply(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat === "") return "(no agent text on this turn's transcript)";
+  if (flat.length <= 800) return flat;
+  return `${flat.slice(0, 400)} … [${flat.length - 800} chars omitted] … ${flat.slice(-400)}`;
+}
+
+/**
+ * The agent's own last words, read the way the UI reads them: the
+ * conversation transcript IS the journal, so
+ * GET /api/v1/conversations/{id}/events replays every committed
+ * `conversation.message.agent` row from the start (ADR-0014 § 9) before it
+ * goes live. One bounded replay: collect rows, stop 1.5 s after the last one
+ * (the live tail is a 15 s heartbeat, not data) and never past the 8 s budget,
+ * so the diagnostics cannot extend a failing step by minutes. It runs in the
+ * page (the app's own origin and cookies) and refuses loudly: a missing
+ * transcript is reported as such, it never fails the step by itself.
+ */
+async function agentReplyText(
+  page: Page,
+  conversationId: string,
+  budgetMs = 8_000,
+): Promise<string> {
+  const path = `/api/v1/conversations/${conversationId}/events`;
+  const url = `${HOME_BASE_URL}${path}`;
+  try {
+    return await page.evaluate(
+      async ({ streamUrl, budget }: { streamUrl: string; budget: number }) => {
+        const rows: { turn: string; text: string }[] = [];
+        let refused = false;
+        await new Promise<void>((resolve) => {
+          const source = new EventSource(streamUrl);
+          let quiet: ReturnType<typeof setTimeout> | undefined;
+          let done = false;
+          const hard = setTimeout(stop, budget);
+          function stop() {
+            if (done) return;
+            done = true;
+            if (quiet) clearTimeout(quiet);
+            clearTimeout(hard);
+            source.close();
+            resolve();
+          }
+          source.addEventListener("conversation.message.agent", (event) => {
+            try {
+              const frame = JSON.parse((event as MessageEvent).data as string) as {
+                payload?: { turn_id?: unknown; text?: unknown };
+              };
+              const text = frame?.payload?.text;
+              if (typeof text === "string" && text.length > 0) {
+                rows.push({
+                  turn: typeof frame?.payload?.turn_id === "string" ? frame.payload.turn_id : "",
+                  text,
+                });
+                if (quiet) clearTimeout(quiet);
+                quiet = setTimeout(stop, 1_500);
+              }
+            } catch {
+              // A frame this reader cannot parse is not worth failing a report.
+            }
+          });
+          source.onerror = () => {
+            refused = rows.length === 0;
+            stop();
+          };
+        });
+        if (refused) return "(the transcript stream refused the connection)";
+        // The LAST turn's rows: the attempt asked once, and a conversation
+        // replay carries every row the journal holds.
+        const lastTurn = rows.length > 0 ? rows[rows.length - 1].turn : "";
+        return rows
+          .filter((row) => row.turn === lastTurn)
+          .map((row) => row.text)
+          .join("");
+      },
+      { streamUrl: url, budget: budgetMs },
+    );
+  } catch (error) {
+    return `(the transcript at GET ${path} was not readable: ${String(error)})`;
+  }
 }
 
 /**
@@ -433,7 +542,24 @@ spec:
   nodes:
   - id: read_readme
     kind: agent.acp
-    timeoutSeconds: 900
+    # The per-attempt deadline, sized for the retry ladder below: two attempts
+    # of 360 s plus the backoff fit inside the suite's bounded 15-minute wait
+    # (AGENT_TIMEOUT_MS, 900 s — clone included), which a 900 s single-attempt
+    # budget cannot once the node retries.
+    timeoutSeconds: 360
+    # The node only READS README.md, so a second attempt is the same promise.
+    # Without it one bad gateway answer fails the whole proof: Actions run
+    # 42126595292 lost step 5 on attempt 1 (15 s, error_class invalid_output,
+    # "agent reply is not a JSON object") and the identical job passed on run
+    # 42114732911. The block is the bundled agent nodes' own shape
+    # (docs/compatibility/probes/m4/pipeline.yaml, docs/samples/home/*.yaml):
+    # maxAttempts + jittered backoff + retriableErrors; invalid_output is the
+    # refusal this node can flake on and infra is the provider outage
+    # (internal/worker/agentturn_silence.go reports a silent turn as infra).
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: true}
+      retriableErrors: [invalid_output, infra]
     config:
       profile: __PROFILE__
       sessionMode: new
@@ -1461,8 +1587,13 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           const summary = typeof outputs.summary === "string" ? outputs.summary : "";
           expect(summary, "the attempt's outputs must carry a non-empty summary").not.toBe("");
           console.log(`agent summary (first 200 chars): ${summary.slice(0, 200)}`);
+          // The outcome is what this suite asserts; the attempt list is what it
+          // reports, so a run that needed its retry says so in the evidence
+          // instead of looking like it never flaked at all.
+          console.log(`read_readme attempts: ${attemptList(detail.attempts)}`);
           evidence.push(
-            `claude run ${shortRefOf(claudeRunId)}: completed; summary ${summary.slice(0, 200)}`,
+            `claude run ${shortRefOf(claudeRunId)}: completed; summary ${summary.slice(0, 200)}; ` +
+              `attempts ${detail.attempt_count} (${attempt.attempt_number} succeeded)`,
           );
           await recordWorkerEvidence("claude run", claudeRunId);
           await shot(page, "home-12-claude-completed");
@@ -1481,16 +1612,38 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
                 `/api/v1/runs/${claudeRunId}/nodes/${node.id}`,
               )
             : null;
-          const attempt = detail
-            ? [...detail.attempts].sort((a, b) => b.attempt_number - a.attempt_number)[0]
-            : null;
+          const attempts = detail
+            ? [...detail.attempts].sort((a, b) => b.attempt_number - a.attempt_number)
+            : [];
+          const attempt = attempts[0] ?? null;
           const errorClass = attempt?.error_class ?? node?.error_class ?? "unknown";
           const detailText = attempt?.detail ?? "";
           // § 3's evidence lives in the run's own journal: the page's Timeline
           // renders it, and the unattended ask is journalled as decided with
-          // decided_by `node_policy:ask_unattended`.
+          // decided_by `node_policy:ask_unattended`. The page loads FIRST:
+          // the transcript read below runs in it (same origin, same session
+          // cookies), and a run page that never renders is itself a failure
+          // the two bounded waits below name.
           const runPath = `/runs/${claudeRunId}`;
           await gotoApp(page, runPath);
+          // The diagnostics § 5 owes the next reader: every attempt's own
+          // verdict and the AGENT's last reply text, read from the transcript
+          // the product itself serves (GET /runs/{id}/nodes/{node} for the
+          // rows, GET /api/v1/conversations/{id}/events for the agent rows —
+          // the journal replay, no internals). Read BEFORE the Timeline walk,
+          // so the message below carries the shape even when the page's own
+          // text comes back empty, and bounded (first/last 400 chars of the
+          // reply) so a long model turn cannot bloat the report.
+          const replyText = attempt?.conversation_id
+            ? await agentReplyText(page, attempt.conversation_id)
+            : "(the newest attempt carries no conversation row)";
+          const diagnostics =
+            `\n  conversation: ${attempt?.conversation_id ?? "(none)"} turn: ${attempt?.turn_id ?? "(none)"}` +
+            `\n  attempts: ${attemptList(detail?.attempts ?? [])}` +
+            `\n  agent reply (bounded): ${boundedReply(replyText)}`;
+          console.log(
+            `claude run ${shortRefOf(claudeRunId)} ${status} — last attempt ${errorClass}: ${detailText}${diagnostics}`,
+          );
           // The same ADR-0043 surface as step 4: on the Workbench the Timeline
           // tab is `workbench-tab-timeline` (`run-tab-*` is the inspector, now
           // hosted by Diagnostics). Bounded, so a missing tab is a two-minute
@@ -1511,7 +1664,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
             finding =
               `FINDING (docs/home-cluster.md § 3): the unattended agent.acp attempt ` +
               `was cancelled by permission_mode:ask — status ${status}, ` +
-              `error_class ${errorClass}, detail: ${detailText || "(none)"}`;
+              `error_class ${errorClass}, detail: ${detailText || "(none)"}${diagnostics}`;
             console.log(finding);
             test.info().annotations.push({ type: "finding", description: finding });
             evidence.push(`claude run ${shortRefOf(claudeRunId)}: ${status}; ${finding}`);
@@ -1521,8 +1674,11 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
               `claude run ${shortRefOf(claudeRunId)} reached ${status} without the recorded ` +
                 `unattended-ask evidence (error_class ${errorClass}; detail: ${detailText}; ` +
                 `timeline: ${timelineText.slice(0, 400) || "(empty)"})` +
+                `${diagnostics}\n  — a retried node reaches this line only when EVERY attempt it was ` +
+                `allowed failed (read_readme declares retry.maxAttempts 2 over ` +
+                `[invalid_output, infra]), so the shape above is the shape to fix.` +
                 (IS_PI_LAUNCHER
-                  ? " — launcher pi runs autonomous_within_sandbox (ADR-0069): nothing is " +
+                  ? "\n  launcher pi runs autonomous_within_sandbox (ADR-0069): nothing is " +
                     "asked and nothing can be left unattended, so this run must simply complete"
                   : ""),
             );

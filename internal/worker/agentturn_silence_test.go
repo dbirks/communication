@@ -139,6 +139,95 @@ func TestAgentTurnSilenceIsNotInvalidOutput(t *testing.T) {
 	})
 }
 
+// TestAgentTurnProviderErrorIsInfra covers the other half of the outage: the
+// harness stayed alive and never printed its retry series, but it said out
+// loud that its provider failed (pi-acp@0.0.34 prints its own error sentences,
+// and pi composes provider errors as `"<prefix> (<status>): <body>"` —
+// pi-ai's formatProviderError). A reply that is NOTHING but that line is not
+// an agent answer to judge, and the shapes in our own evidence (Actions run
+// 42126595292: a 15-second attempt, att 1, invalid_output, no retry) are the
+// ones a retry must be allowed to eat.
+func TestAgentTurnProviderErrorIsInfra(t *testing.T) {
+	t.Run("banner + an explicit gateway 502 line is infra", func(t *testing.T) {
+		res := runSilhouette(t, []string{piBannerChunk, "Error: 502 Bad Gateway\n"}, false)
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want failed/infra — a spoken provider failure is the transport's, not an agent verdict", res)
+		}
+		for _, want := range []string{"no substantive reply", "1 provider-failure line(s)", "502 Bad Gateway"} {
+			if !strings.Contains(res.Detail, want) {
+				t.Errorf("detail %q must name the spoken failure (want %q)", res.Detail, want)
+			}
+		}
+		if len(res.OutputErrors) != 0 {
+			t.Errorf("output_errors = %v, want none: an infra close has no schema refusal to carry", res.OutputErrors)
+		}
+	})
+
+	t.Run("pi-acp's composed provider error and its bare retry status are both non-speech", func(t *testing.T) {
+		for _, chunk := range []string{
+			"OpenAI API error (429): too many requests\n",
+			"429: Too Many Requests\n",
+			"Proxy error: 502 Bad Gateway\n",
+			"Retrying…\n",
+		} {
+			res := runSilhouette(t, []string{piBannerChunk, chunk}, false)
+			if res.ErrorClass != ErrorClassInfra {
+				t.Errorf("chunk %q: res = %+v, want infra", chunk, res)
+			}
+		}
+	})
+
+	t.Run("prose that merely mentions a status stays the agent's own bad answer", func(t *testing.T) {
+		for _, chunk := range []string{
+			"The README documents Error: 502 handling in the gateway module.",
+			"I could not summarize it.",
+			"Error: 502 is what the gateway module documents.",
+		} {
+			res := runSilhouette(t, []string{piBannerChunk, chunk}, false)
+			if res.ErrorClass != ErrorClassInvalidOutput {
+				t.Errorf("chunk %q: res = %+v, want invalid_output — ordinary prose is a reply to judge", chunk, res)
+			}
+		}
+	})
+}
+
+// TestProviderErrorLineShape pins the recognizer's own boundary at the line
+// level — the executor's extraction is not part of the question. Every
+// accepted line is a harness error sentence or pi-ai's composed
+// `"<status>: <body>"`; every refused one is something a person or a model
+// wrote, including prose that merely mentions an outage.
+func TestProviderErrorLineShape(t *testing.T) {
+	harness := []string{
+		"Error: 502 Bad Gateway",
+		"Error: upstream provider returned 429 Too Many Requests",
+		"OpenAI API error (502): {\"error\":{\"type\":\"overloaded_error\"}}",
+		"Proxy error: 503 Service Unavailable",
+		"500: <html><body>Bad Gateway</body></html>",
+		"error: request timed out after 60s",
+		"Error: connect ECONNRESET 10.0.0.1:443",
+	}
+	for _, line := range harness {
+		if providerErrorLine(line) == "" {
+			t.Errorf("providerErrorLine(%q) = \"\", want the harness's own failure line", line)
+		}
+	}
+	answers := []string{
+		"Error: 502 is what the gateway module documents in README.md, and the retry policy behind it is the interesting part of the design.",
+		"I could not answer",
+		"The API returned an error: see the logs",
+		"Here is the summary: it covers rate limiting and timeouts in the gateway.",
+		"42",
+		"- item",
+		"",
+		"   ",
+	}
+	for _, line := range answers {
+		if got := providerErrorLine(line); got != "" {
+			t.Errorf("providerErrorLine(%q) = %q, want \"\": ordinary prose is the agent's answer", line, got)
+		}
+	}
+}
+
 // TestChatterOnlyIsAnchoredOnLauncherBoilerplate pins the classifier's own
 // boundary: it takes the shapes a launcher streams about itself and NOTHING
 // that could be the agent's answer — the rescue must never swallow a real
@@ -150,6 +239,9 @@ func TestChatterOnlyIsAnchoredOnLauncherBoilerplate(t *testing.T) {
 		"pi v1.4.0\n---\n",
 		"pi v1.4.0\n---\nRetrying (attempt 1/3, waiting 2s)…\nRetrying (attempt 2/3, waiting 4s)…\nRetry finished, resuming.\n",
 		"pi-acp v0.0.34 (npm)\n===\n",
+		"pi v1.4.0\n---\nError: 502 Bad Gateway\n",
+		"OpenAI API error (429): too many requests\n",
+		"503: service unavailable\nRetrying…\n",
 	}
 	for _, text := range chatter {
 		if !chatterOnly(text) {
@@ -163,6 +255,8 @@ func TestChatterOnlyIsAnchoredOnLauncherBoilerplate(t *testing.T) {
 		"I'll summarize the JSON after the model reco", // the truncated C1c reply
 		"pi v1.4.0\n---\nWorking on it",
 		"pi v1.4.0\n---\nRetrying (attempt 1/3, waiting 2s)…\nHere is my answer, honestly.",
+		"pi v1.4.0\n---\nThe gateway answered Error: 502 once and I recovered.",
+		"Error: the fixture is missing the reviewer field",
 		"- item",
 		"42",
 	}
