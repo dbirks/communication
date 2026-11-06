@@ -689,7 +689,15 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     expect(flyout.style.width).toBe("260px");
     expect(project.className).toContain("break-words");
     expect(project.className).not.toContain("truncate");
-    const repo = within(flyout).getByRole("link", { name: "acme-widgets" });
+    // The flyout's repository rows ride a lazy `useRepositories` read that
+    // starts when the flyout mounts, so they land one round trip after the
+    // flyout itself (@tanstack/query 5.105+ subscribes the observer before it
+    // fetches). Await the row rather than assuming the cache is already warm.
+    const repo = await within(flyout).findByRole(
+      "link",
+      { name: "acme-widgets" },
+      { timeout: READ_MS },
+    );
     expect(repo.getAttribute("href")).toBe(`/p/${P}/acme-widgets`);
     // The flyout is a `ds/Popover`: the pointer arrow is its own element.
     expect(flyout.querySelector('[data-testid="menu-arrow"]')).toBeTruthy();
