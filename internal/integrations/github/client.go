@@ -24,6 +24,10 @@ type Client struct {
 	// HTTP is the client used for the call; nil means one with the 10 s
 	// requestTimeout.
 	HTTP *http.Client
+	// sleep is the retry wait seam (retry.go): tests set it so a backoff or
+	// Retry-After is observed as a number, not slept through. Nil means
+	// sleepContext. Set by tests only, never during a request.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // New returns a Client against api.github.com with the package timeout.
@@ -152,28 +156,15 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery, 
 	target := c.base() + "/repos/" + url.PathEscape(repo.Owner) + "/" +
 		url.PathEscape(repo.Name) + "/issues?" + query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	// The transient-upstream retry (retry.go): one wobble from github.com
+	// — a 5xx, a secondary-limit refusal, a reset — must not empty the
+	// lane. The error this loop finally returns is typed exactly as a
+	// single-attempt call classified it before the retry existed.
+	resp, err := c.getRetried(ctx, target, repo, token)
 	if err != nil {
-		return nil, fmt.Errorf("github: build request: %w", err)
-	}
-	req.Header.Set("Accept", acceptHeader)
-	req.Header.Set(apiVersionHead, apiVersion)
-	req.Header.Set("User-Agent", userAgent)
-	if token != "" {
-		// ADR-0061 §5: a per-call credential authorizes this one request; it
-		// is never cached on the Client or echoed into an error.
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := c.client().Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("github: GET %s: %w", target, err)
-	}
-	defer resp.Body.Close()
-
-	if err := classify(resp, repo); err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {

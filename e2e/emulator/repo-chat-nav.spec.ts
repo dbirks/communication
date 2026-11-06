@@ -633,6 +633,19 @@ function issuesReadOf(projectId: string): RegExp {
 }
 
 /**
+ * Record a journey NOTE — a fact about the check, not a defect — the way
+ * e2e/emulator/fixtures.ts's recorder does: the same `[emu] NOTE` line in the
+ * pass log, plus a Playwright annotation so the test result carries it too.
+ * The recorder's own note() is private and fixtures.ts is outside this
+ * file's brief, so a journey that must record a fact it observed (e.g. that
+ * a transient upstream read forced one reload) records it here.
+ */
+function journeyNote(detail: string): void {
+  console.log(`[emu] NOTE ${test.info().titlePath.join(" > ")}: ${detail}`);
+  test.info().annotations.push({ type: "note", description: detail });
+}
+
+/**
  * One leg of a REAL HTML5 drag on the lanes. Playwright's mouse cannot carry a
  * DataTransfer, so the DragEvents are dispatched inside the page — the
  * technique proven in e2e/tests/issue2-studio.spec.ts — with ONE DataTransfer
@@ -1838,23 +1851,79 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // tracker) leaves the lane saying so with the upstream's own words, and
       // this journey FAILS naming the mode it ran in — it does not drag an
       // invented card (the mockdata rule) and it does not skip.
-      await expect
-        .poll(
-          async () => {
-            cardTestid = await page.evaluate(() => {
-              const ids = Array.from(document.querySelectorAll('[data-testid^="repo-lane-issue-"]'))
-                .map((el) => el.getAttribute("data-testid") ?? "")
-                .filter((id) => /^repo-lane-issue-\d+$/.test(id));
-              return ids[0] ?? "";
-            });
-            return cardTestid;
-          },
-          {
-            timeout: 45_000,
-            message: `the ISSUES lane listed no open issue to drag — ${gitHubReadModeNote(GH_REPO)}; the lane names the upstream's own refusal in its error line (it never drags an invented card and never skips)`,
-          },
-        )
-        .not.toBe("");
+      //
+      // A transient upstream failure (run 42164529404 pass 2: one GitHub 5xx
+      // emptied a lane over a tracker that was there the whole time) gets
+      // what a person would do: while the lane shows its error line, ONE page
+      // reload and ONE more poll — with the reload recorded as a note, never
+      // hidden. Every final failure quotes what the lane actually said (its
+      // visible error line) and what the issues route answers to a direct GET
+      // (status + first 240 chars), so the next triage never has to guess.
+      const issuesUrl = `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos/${ids.ghRepoId}/issues?state=open`;
+      const laneErrorText = (): Promise<string> =>
+        page.evaluate(() => {
+          const el = document.querySelector('[data-testid="repo-lane-issues-error"]');
+          return el ? (el.textContent ?? "").replace(/\s+/g, " ").trim() : "";
+        });
+      const pollIssueCard = async (attempt: string): Promise<void> => {
+        await expect
+          .poll(
+            async () => {
+              cardTestid = await page.evaluate(() => {
+                const ids = Array.from(
+                  document.querySelectorAll('[data-testid^="repo-lane-issue-"]'),
+                )
+                  .map((el) => el.getAttribute("data-testid") ?? "")
+                  .filter((id) => /^repo-lane-issue-\d+$/.test(id));
+                return ids[0] ?? "";
+              });
+              return cardTestid;
+            },
+            {
+              timeout: 45_000,
+              message: `the ISSUES lane listed no open issue to drag — ${gitHubReadModeNote(GH_REPO)}; the lane names the upstream's own refusal in its error line (it never drags an invented card and never skips) [${attempt}]`,
+            },
+          )
+          .not.toBe("");
+      };
+      const laneFailure = async (why: unknown, preReloadError: string): Promise<Error> => {
+        const probe = await page.request.get(issuesUrl);
+        const probeBody = (await probe.text()).slice(0, 240);
+        const laneText = await laneErrorText();
+        const quoted = why instanceof Error ? why.message : String(why);
+        const pre = preReloadError === "" ? "" : ` (before the reload: "${preReloadError}")`;
+        return new Error(
+          `${quoted}\n` +
+            `the lane's visible error line: "${laneText || "(none visible)"}"${pre}\n` +
+            `direct GET of the issues route: ${probe.status()}: ${probeBody}`,
+        );
+      };
+      try {
+        await pollIssueCard("first attempt");
+      } catch (firstFailure) {
+        const firstError = await laneErrorText();
+        if (firstError === "") {
+          // The lane shows no error line to refresh against: nothing a
+          // reload could fix — fail now, still quoting the lane's state and
+          // the route's direct answer.
+          throw await laneFailure(firstFailure, "");
+        }
+        journeyNote(
+          "ISSUES lane: the first read left the lane saying " +
+            `"${firstError}" — ${gitHubReadModeNote(GH_REPO)}; reloaded ONCE and ` +
+            "polling again (a transient upstream failure gets the refresh a person would try)",
+        );
+        await page.reload();
+        await expect(
+          page.getByTestId("repo-lanes"),
+          "design 3b: the Lanes view is back after the one reload",
+        ).toBeVisible({ timeout: 30_000 });
+        try {
+          await pollIssueCard("after one reload");
+        } catch (secondFailure) {
+          throw await laneFailure(secondFailure, firstError);
+        }
+      }
       await savedPatch;
       issueNumber = Number(cardTestid.replace("repo-lane-issue-", ""));
       // The card is a row the tracker read answers — the lane did not make it up.

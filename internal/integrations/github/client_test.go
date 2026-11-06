@@ -118,7 +118,12 @@ func (s *ghiStub) server() *httptest.Server {
 func ghiClient(t *testing.T, status int, headers http.Header, body string) (*Client, *ghiStub) {
 	t.Helper()
 	stub := &ghiStub{t: t, status: status, headers: headers, body: body}
-	return &Client{BaseURL: stub.server().URL}, stub
+	c := &Client{BaseURL: stub.server().URL}
+	// These tests pin the request shape and the typed errors, not the
+	// backoff (retry_test.go owns that); zero the wait seam so a stub that
+	// always refuses with a transient status is not slept through twice.
+	c.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	return c, stub
 }
 
 const ghiOneIssue = `[{"number":7,"title":"Fix the parser","body":"detail",

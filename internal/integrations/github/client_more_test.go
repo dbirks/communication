@@ -244,6 +244,9 @@ func TestListIssuesGivesUpOnASlowUpstream(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	c := &Client{BaseURL: srv.URL, HTTP: &http.Client{Timeout: 25 * time.Millisecond}}
+	// The timeout is the subject here; the retry waits are retry_test.go's
+	// subject, so zero this run's seam.
+	c.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	_, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err == nil {
 		t.Fatal("want a timeout error, got none")
