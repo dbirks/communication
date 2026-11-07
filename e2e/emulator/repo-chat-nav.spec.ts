@@ -1365,7 +1365,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       const receipt = await written;
       expect(
         receipt.status(),
-        `the dismissal answers 2xx for its owner (got ${receipt.status()})`,
+        `the dismissal answers 2xx for its owner (got ${receipt.status()}: ${(await receipt.text()).slice(0, 200)})`,
       ).toBeGreaterThanOrEqual(200);
       expect(
         receipt.status(),
@@ -2606,50 +2606,108 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         // QuestionCard.tsx / AssistantPanel.tsx). A question card IS the
         // design's state — capturing it is the right 2f. Bounded, generous
         // for a live model, the way the turn legs bound their waits.
-        const thinking = page.getByTestId("assistant-thinking");
-        const thinkDeadline = Date.now() + 10 * 60_000;
-        let thinkingGone = false;
-        for (;;) {
-          if ((await thinking.count()) === 0) {
-            thinkingGone = true;
+        //
+        // v565 pass-3 (defect B): the shared model gateway answers transient
+        // 5xx to this stack even after the product's own egress retries
+        // (internal/assistant/model.go: any 5xx/429, up to 3 attempts with
+        // backoff). A failed turn stores nothing (ADR-0034) and the panel
+        // answers the failed ask with its honest line and its own Retry
+        // (Issue #63) — the journey takes that affordance (which proves it
+        // works) up to twice, declaring the 503 itself as expected scratch
+        // noise the way the GH-page legs declare their 502s, and quotes the
+        // SERVER's failure bodies in the assertion when the turn still ends
+        // without a drafting state. The assertion itself is unchanged.
+        emu.expectFailure(/\/api\/v1\/assistant\/conversations\/[0-9a-f-]+\/messages$/, 503);
+        const turnFailures: string[] = [];
+        const onResponse = (res: import("playwright").Response) => {
+          if (
+            res.request().method() === "POST" &&
+            res.url().includes(`/api/v1/assistant/conversations/${ids.chatId}/messages`) &&
+            res.status() >= 500
+          ) {
+            void res
+              .text()
+              .then((body) =>
+                turnFailures.push(
+                  `http ${res.status()}: ` +
+                    // Only the problem envelope's code+detail is quoted; the
+                    // body is the server's own words, capped like everything
+                    // else this file prints.
+                    body.slice(0, 300),
+                ),
+              )
+              .catch(() => turnFailures.push(`http ${res.status()}: <body unreadable>`));
+          }
+        };
+        page.on("response", onResponse);
+        try {
+          const thinking = page.getByTestId("assistant-thinking");
+          const askDeadline = Date.now() + 10 * 60_000;
+          let retriesUsed = 0;
+          let thinkingGone = false;
+          for (;;) {
+            for (;;) {
+              if ((await thinking.count()) === 0) {
+                thinkingGone = true;
+                break;
+              }
+              if (Date.now() >= askDeadline) break;
+              await page.waitForTimeout(2_000);
+            }
+            // A failed turn leaves the user bubble with `Retry` under it
+            // (MessageList's Issue #63 row). Send the ask again the way the
+            // product tells a human to — but never past a terminal answer:
+            // only retry while the last thing seen was a failure line.
+            const retry = page.getByTestId("assistant-send-retry");
+            if (thinkingGone && (await retry.count()) > 0 && retriesUsed < 2) {
+              retriesUsed += 1;
+              await retry.last().click();
+              thinkingGone = false;
+              await page.waitForTimeout(2_000);
+              continue;
+            }
             break;
           }
-          if (Date.now() >= thinkDeadline) break;
-          await page.waitForTimeout(2_000);
-        }
-        expect(
-          thinkingGone,
-          "design 2f: the assistant stopped thinking within the live-model budget",
-        ).toBe(true);
-        const draftingLocators = [
-          page.getByTestId("assistant-step-list"),
-          page.getByTestId("assistant-question"),
-          page.getByTestId("assistant-open-draft"),
-          page.getByTestId("assistant-link"),
-        ];
-        const lastAnswer = page.locator('[data-testid="assistant-msg-assistant"]').last();
-        let drafted = false;
-        let answerText = "";
-        const draftDeadline = Date.now() + 10 * 60_000;
-        for (;;) {
-          if ((await lastAnswer.count()) > 0) {
-            answerText = (await lastAnswer.innerText()).trim();
-          }
-          for (const locator of draftingLocators) {
-            if ((await locator.count()) > 0) {
-              drafted = true;
-              break;
+          expect(
+            thinkingGone,
+            "design 2f: the assistant stopped thinking within the live-model budget",
+          ).toBe(true);
+          const draftingLocators = [
+            page.getByTestId("assistant-step-list"),
+            page.getByTestId("assistant-question"),
+            page.getByTestId("assistant-open-draft"),
+            page.getByTestId("assistant-link"),
+          ];
+          const lastAnswer = page.locator('[data-testid="assistant-msg-assistant"]').last();
+          let drafted = false;
+          let answerText = "";
+          const draftDeadline = Date.now() + 10 * 60_000;
+          for (;;) {
+            if ((await lastAnswer.count()) > 0) {
+              answerText = (await lastAnswer.innerText()).trim();
             }
+            for (const locator of draftingLocators) {
+              if ((await locator.count()) > 0) {
+                drafted = true;
+                break;
+              }
+            }
+            if (drafted || Date.now() >= draftDeadline) break;
+            await page.waitForTimeout(2_000);
           }
-          if (drafted || Date.now() >= draftDeadline) break;
-          await page.waitForTimeout(2_000);
+          expect(
+            drafted,
+            `design 2f: the answer must carry the drafting state — a step list, a QUESTION card or the draft door (Open draft). What the model actually answered: "${answerText.slice(0, 500)}"` +
+              (retriesUsed > 0 ? ` [journey re-sent the failed ask ${retriesUsed}×]` : "") +
+              (turnFailures.length > 0
+                ? ` The server's own failure bodies: ${turnFailures.join(" | ")}`
+                : ""),
+          ).toBe(true);
+          await emu.screen("rcn-2f", "workflow-draft");
+          await page.keyboard.press("Escape");
+        } finally {
+          page.off("response", onResponse);
         }
-        expect(
-          drafted,
-          `design 2f: the answer must carry the drafting state — a step list, a QUESTION card or the draft door (Open draft). What the model actually answered: "${answerText.slice(0, 500)}"`,
-        ).toBe(true);
-        await emu.screen("rcn-2f", "workflow-draft");
-        await page.keyboard.press("Escape");
       });
     });
   });

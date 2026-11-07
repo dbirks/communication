@@ -159,6 +159,34 @@ describe("useDismissAssistantNote", () => {
     ).toEqual(["note-1"]);
   });
 
+  it("a dismissal that 404s reconciles with the server rather than resurrecting the row", async () => {
+    // A 404 says the row is no longer this reader's to dismiss — already
+    // dismissed, expired, or replaced by the generator's cap (acceptance
+    // 42339622074 pass-2). The store serves it no more, so putting it back
+    // on the panel would draw a row the next read contradicts; the row
+    // stays off and the list is re-read instead. (v565 pass-2's product
+    // fix makes this path rare; the UI behavior is still the honest one.)
+    const h = harness(
+      [
+        {
+          method: "POST",
+          path: DISMISS_PATH,
+          status: 404,
+          body: { type: "x", title: "Not Found", status: 404 },
+        },
+      ],
+      30_000,
+    );
+    const { result } = renderHook(() => useDismissAssistantNote(), { wrapper: h.wrapper });
+    const key = repoNotesKey(PROJECT_ID, REPO_ID);
+    h.queryClient.setQueryData(key, { notes: [note("note-1"), note("note-2")] });
+    result.current.mutate(note("note-1"));
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(
+      (h.queryClient.getQueryData<{ notes: AssistantNote[] }>(key)?.notes ?? []).map((n) => n.id),
+    ).toEqual(["note-2"]);
+  });
+
   it("a conversation note is removed from the conversation's own cache", async () => {
     const h = harness([{ method: "POST", path: DISMISS_PATH, status: 204 }]);
     const { result } = renderHook(() => useDismissAssistantNote(), { wrapper: h.wrapper });

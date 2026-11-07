@@ -101,6 +101,18 @@ var ErrAssistantNoteNotFound = errors.New("api: assistant note not found")
 // bug to fix, typed so it stays out of the 500s.
 var ErrAssistantNoteValidation = errors.New("api: invalid assistant note")
 
+// ErrAssistantNoteScopeFull is the write guard's refusal: this reader's panel
+// already holds AssistantNotesActiveCap active notes, so storing one more
+// would push the OLDEST active row out of the table (the cap insert's own
+// eviction) — a note the panel may be drawing right now, under a reader whose
+// dismiss button is about to 404 against the deleted row (acceptance
+// 42339622074 pass-2/pass-5: the per-replica generation cooldown let two
+// replicas generate the same (user, scope) and the second generation evicted
+// the first). No route answers it: like ErrAssistantNoteValidation it is the
+// generator's seam, and a refused write costs the caller nothing — the note
+// the guard protects was served before the model was ever asked.
+var ErrAssistantNoteScopeFull = errors.New("api: assistant note scope already full")
+
 // AssistantNoteList is the AssistantNoteList schema: the caller's active
 // notes, newest first. Fewer than three rows is normal, zero is the common
 // case — the panel in the design draws nothing at all when there is nothing
@@ -410,6 +422,72 @@ func BuildAssistantNotesGenerator(deps AssistantNotesGenDeps) AssistantNotesTrig
 type assistantNotesTrigger struct {
 	gen *assistant.NotesGenerator
 	log *slog.Logger
+	// store is the routes' own list read, attached by RegisterAssistantNotes
+	// (the builder is handed the writer, not the reader, and serve.go wires
+	// the two separately). It is what lets the write guard below ask "is this
+	// reader's panel already full?" through the same authorized read the
+	// browser itself gets an answer from.
+	store AssistantNotesStore
+}
+
+// noteWriteGuardKey keys the per-generation guard into the context. The
+// generation runs on context.WithoutCancel of this request — values survive —
+// which is how the guard reaches assistantNotesWriter.WriteNote without the
+// assistant package (which may not import api) knowing anything about it.
+type noteWriteGuardKey struct{}
+
+// noteWriteGuard is the anti-eviction seam: before the generator stores
+// another note, the guard re-reads the caller's ACTIVE notes through the
+// routes' own store. At the cap, the write is refused — because inserting a
+// fourth note deletes the oldest active one, and that oldest row may be a
+// note the panel served and the reader is about to act on. The cooldown that
+// normally keeps one (user, scope) to one generation lives in each replica's
+// memory (ADR-0071 § Storage, ADR-0077's per-replica stance), so two replicas
+// asked at the same moment CAN both finish; this read is the check they
+// share.
+type noteWriteGuard struct {
+	store     AssistantNotesStore
+	caller    Caller
+	scopeKind string
+	projectID string
+	scopeID   string
+	log       *slog.Logger
+}
+
+func (g *noteWriteGuard) logger() *slog.Logger {
+	if g != nil && g.log != nil {
+		return g.log
+	}
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// appliesTo reports whether one write belongs to the (user, scope) this guard
+// was scheduled for. A write for any other pair is the generator's bug, not
+// this guard's call to make.
+func (g *noteWriteGuard) appliesTo(n assistant.NoteWrite) bool {
+	return n.UserID == g.caller.UserID &&
+		assistantNoteScopeKind(n.ScopeKind) == g.scopeKind &&
+		n.ScopeID == g.scopeID
+}
+
+// scopeIsFull asks the routes' own read whether the reader already holds the
+// panel's cap of active notes. The answer is best-effort by contract: a read
+// that fails is reported and the caller proceeds, because losing a note is
+// cheaper than losing the panel to a transient store hiccup.
+func (g *noteWriteGuard) scopeIsFull(ctx context.Context) (bool, error) {
+	var (
+		notes []AssistantNoteView
+		err   error
+	)
+	if g.scopeKind == AssistantNoteScopeConversation {
+		notes, err = g.store.ListConversationNotes(ctx, g.caller, g.scopeID)
+	} else {
+		notes, err = g.store.ListRepositoryNotes(ctx, g.caller, g.projectID, g.scopeID)
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(notes) >= AssistantNotesActiveCap, nil
 }
 
 func (t *assistantNotesTrigger) NotesListed(ctx context.Context, c Caller,
@@ -422,6 +500,15 @@ func (t *assistantNotesTrigger) NotesListed(ctx context.Context, c Caller,
 		if n.CreatedAt.After(newest) {
 			newest = n.CreatedAt
 		}
+	}
+	if t.store != nil {
+		// The value survives the generator's context.WithoutCancel — which is
+		// exactly the window in which the eviction this guard prevents would
+		// otherwise happen.
+		ctx = context.WithValue(ctx, noteWriteGuardKey{}, &noteWriteGuard{
+			store: t.store, caller: c, scopeKind: scopeKind,
+			projectID: projectID, scopeID: scopeID, log: t.log,
+		})
 	}
 	t.gen.NotesListed(ctx, assistant.Caller{UserID: c.UserID,
 		OrganizationID: c.OrganizationID, IsOrgAdmin: c.IsOrgAdmin},
@@ -436,6 +523,23 @@ type assistantNotesWriter struct {
 }
 
 func (w *assistantNotesWriter) WriteNote(ctx context.Context, n assistant.NoteWrite) error {
+	// The write guard, when this generation came from a route that armed one:
+	// a new note is never allowed to push a served note out of the reader's
+	// panel (ErrAssistantNoteScopeFull's doc names the failure it prevents).
+	if g, ok := ctx.Value(noteWriteGuardKey{}).(*noteWriteGuard); ok && g != nil && g.appliesTo(n) {
+		full, err := g.scopeIsFull(ctx)
+		if err != nil {
+			// The guard could not ask. Proceeding costs at most the rare
+			// eviction; refusing on a store hiccup would cost the reader
+			// their notes, and the insert itself is still the store's one
+			// validated statement.
+			g.logger().Warn("assistant notes: write guard could not read the scope; storing anyway",
+				slog.String("scope_id", n.ScopeID), slog.String("error", err.Error()))
+		} else if full {
+			return fmt.Errorf("%w: %s %s already holds %d active notes",
+				ErrAssistantNoteScopeFull, n.ScopeKind, n.ScopeID, AssistantNotesActiveCap)
+		}
+	}
 	_, err := w.store.InsertAssistantNote(ctx, AssistantNoteInput{
 		ProjectID: n.ProjectID,
 		UserID:    n.UserID,
@@ -724,6 +828,13 @@ func RegisterAssistantNotes(s *Server, store AssistantNotesStore, gen ...Assista
 			h.gen = g
 			break
 		}
+	}
+	// The generator's builder never sees the routes' store (serve.go hands
+	// the two separately), so the write guard's read is attached here: an
+	// api trigger registered without this would generate with the guard
+	// disarmed, which is the pre-fix behaviour the seam exists to end.
+	if bt, ok := h.gen.(*assistantNotesTrigger); ok {
+		bt.store = store
 	}
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/repos/{repositoryId}/notes",
 		http.HandlerFunc(h.listRepoNotes))

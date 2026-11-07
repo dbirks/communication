@@ -20,7 +20,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryKey } from "@tanstack/react-query";
-import { apiFetch } from "./client";
+import { apiFetch, ApiError } from "./client";
 import type { components } from "./schema";
 
 export type AssistantNote = components["schemas"]["AssistantNote"];
@@ -112,9 +112,19 @@ export function useDismissAssistantNote() {
       return { key, previous };
     },
     onError: (_error, _note, rollback) => {
-      // The write failed, so the note was never dismissed: it goes back on the
-      // panel. A dismissal that silently vanished would be a claim about a
-      // write that did not happen.
+      // A 404 says the row is no longer this reader's to dismiss: it was
+      // already dismissed, it aged out, or the generator's cap replaced it
+      // (acceptance 42339622074 pass-2). In every one of those cases the
+      // store serves it no more — putting it back on the panel would be a
+      // claim about a row that a fresh read contradicts. Reconcile with the
+      // server instead of rolling back. Any other failure (the network, a
+      // 5xx) means the write did not happen and the note was never
+      // dismissed: it goes back on the panel, because a dismissal that
+      // silently vanished would be a claim about a write that did not.
+      if (_error instanceof ApiError && _error.status === 404) {
+        void queryClient.invalidateQueries({ queryKey: notesKeyFor(_note) });
+        return;
+      }
       if (rollback?.previous) {
         queryClient.setQueryData(rollback.key, rollback.previous);
       }

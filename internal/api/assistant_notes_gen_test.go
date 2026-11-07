@@ -10,6 +10,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -239,13 +241,207 @@ func TestBuildAssistantNotesGeneratorNeedsAModelAndEveryRead(t *testing.T) {
 	}
 }
 
-// —— the fakes the builder test needs (the store seams are one method each) ———
-
+// fakeAssistantNoteInserter records the fakes the builder test needs (the store seams are one method each)
 type fakeAssistantNoteInserter struct{}
 
 func (fakeAssistantNoteInserter) InsertAssistantNote(context.Context,
 	AssistantNoteInput) (AssistantNoteView, error) {
 	return AssistantNoteView{}, nil
+}
+
+// —— the write guard (acceptance 42339622074 pass-2/pass-5) ———
+
+// raceFlowStore is the routes' store with the two answers a racing second
+// generation needs: the first read is what the GET serves (one STALE note,
+// which is the read that asks the model), every later read is the GUARD's —
+// the active rows as they stand at write time, which the race has meanwhile
+// filled to the cap. A full set here is exactly the situation in which
+// storing one more note would DELETE the note the panel just served.
+type raceFlowStore struct {
+	mu2       sync.Mutex
+	reads     int
+	live      []AssistantNoteView
+	guardRead chan string
+	fakeAssistantNotes
+}
+
+func (r *raceFlowStore) ListRepositoryNotes(ctx context.Context, c Caller,
+	projectID, repositoryID string) ([]AssistantNoteView, error) {
+	r.mu2.Lock()
+	r.reads++
+	n := r.reads
+	r.mu2.Unlock()
+	if n == 1 {
+		return r.repoNotes, nil // the route's own read
+	}
+	select {
+	case r.guardRead <- projectID + "/" + repositoryID:
+	default:
+	}
+	return r.live, nil
+}
+
+// countingInserter is the generator's write seam: every store attempt lands
+// on a channel, so "the guard refused" and "the guard let it through" are
+// both observable without a database.
+type countingInserter struct {
+	mu     sync.Mutex
+	wrote  []AssistantNoteInput
+	writes chan AssistantNoteInput
+}
+
+func (c *countingInserter) InsertAssistantNote(_ context.Context,
+	in AssistantNoteInput) (AssistantNoteView, error) {
+	c.mu.Lock()
+	c.wrote = append(c.wrote, in)
+	c.mu.Unlock()
+	select {
+	case c.writes <- in:
+	default:
+	}
+	return AssistantNoteView{ID: anNoteID, Text: in.Text}, nil
+}
+
+func TestAssistantNotesRouteArmsTheWriteGuardForItsGeneration(t *testing.T) {
+	t.Parallel()
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"[{\"text\":\"Nobody has asked about the flaky checkout test.\",` +
+			`\"action\":{\"kind\":\"start_chat\",\"prompt\":\"why is the checkout test flaky?\"}}]"},` +
+			`"finish_reason":"stop"}]}`))
+	}))
+	defer model.Close()
+	broker, err := assistant.NewTextOnly(assistant.Config{BaseURL: model.URL + "/v1"})
+	if err != nil {
+		t.Fatalf("NewTextOnly: %v", err)
+	}
+
+	store := &raceFlowStore{
+		guardRead: make(chan string, 8),
+		fakeAssistantNotes: fakeAssistantNotes{repoNotes: []AssistantNoteView{{
+			ID: anNoteID, ProjectID: anProjectID, ScopeKind: AssistantNoteScopeRepository,
+			ScopeID: anRepoID, Text: "An older note, due for a refresh.",
+			// Stale past the TTL: this is the read that asks the model.
+			CreatedAt: time.Now().UTC().Add(-7 * time.Hour),
+		}}},
+		// By write time the race has stored the cap: another insert would
+		// evict the oldest active row.
+		live: fullActiveNoteSet(),
+	}
+	inserter := &countingInserter{writes: make(chan AssistantNoteInput, 8)}
+	gen := BuildAssistantNotesGenerator(AssistantNotesGenDeps{
+		Broker:    broker,
+		Notes:     inserter,
+		Runs:      oneRunNotesReader{},
+		Pipelines: fakeAssistantNotesPipelines{},
+		Repos:     fakeAssistantNotesRepos{},
+		Threads:   fakeAssistantNotesThreads{},
+		Chats:     fakeAssistantNotesChats{},
+	})
+	if gen == nil {
+		t.Fatal("BuildAssistantNotesGenerator returned no generator")
+	}
+	srv := newNotesServerWithGen(t, store, gen)
+	rec := do(t, srv, anGet("http://localhost:8080/api/v1/projects/"+anProjectID+
+		"/repos/"+anRepoID+"/notes"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+	}
+
+	// The generation ran and the guard read the scope through the routes'
+	// own store before writing.
+	select {
+	case got := <-store.guardRead:
+		if want := anProjectID + "/" + anRepoID; got != want {
+			t.Fatalf("guard read = %s, want %s", got, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write guard never read the scope before storing a note")
+	}
+	// And nothing was stored: the cap insert would have DELETED the note the
+	// panel just served — the eviction that turned a click-to-dismiss into a
+	// 404 (pass-2) and a render into a missing row (pass-5).
+	select {
+	case in := <-inserter.writes:
+		t.Fatalf("the guard let an overflowing note through: %+v", in)
+	case <-time.After(500 * time.Millisecond):
+	}
+	inserter.mu.Lock()
+	defer inserter.mu.Unlock()
+	if len(inserter.wrote) != 0 {
+		t.Fatalf("insert calls = %+v, want none", inserter.wrote)
+	}
+}
+
+func TestAssistantNotesWriteGuardDirect(t *testing.T) {
+	t.Parallel()
+	caller := Caller{UserID: "u-1", OrganizationID: "o-1"}
+	note := assistant.NoteWrite{
+		ProjectID: anProjectID, UserID: "u-1", ScopeKind: "repository",
+		ScopeID: anRepoID, Text: "Nobody has asked about the flaky checkout test.",
+		Action:    &assistant.NoteActionDraft{Kind: assistant.NoteActionStartChat, Prompt: "why?"},
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	armed := func(store AssistantNotesStore) context.Context {
+		return context.WithValue(context.Background(), noteWriteGuardKey{}, &noteWriteGuard{
+			store: store, caller: caller, scopeKind: AssistantNoteScopeRepository,
+			projectID: anProjectID, scopeID: anRepoID,
+		})
+	}
+
+	full := &fakeAssistantNotes{repoNotes: fullActiveNoteSet()}
+	inserter := &countingInserter{writes: make(chan AssistantNoteInput, 4)}
+	w := &assistantNotesWriter{store: inserter}
+	if err := w.WriteNote(armed(full), note); !errors.Is(err, ErrAssistantNoteScopeFull) {
+		t.Fatalf("full-scope WriteNote err = %v, want ErrAssistantNoteScopeFull", err)
+	}
+
+	room := &fakeAssistantNotes{repoNotes: fullActiveNoteSet()[:2]}
+	if err := w.WriteNote(armed(room), note); err != nil {
+		t.Fatalf("a scope with room refused its note: %v", err)
+	}
+
+	broken := &fakeAssistantNotes{err: errors.New("db is having a day")}
+	if err := w.WriteNote(armed(broken), note); err != nil {
+		t.Fatalf("a guard read that failed must proceed, not lose the note: %v", err)
+	}
+
+	other := note
+	other.ScopeID = anConvID
+	if err := w.WriteNote(armed(full), other); err != nil {
+		t.Fatalf("a write for another scope is not this guard's call: %v", err)
+	}
+
+	// No guard in the context (a generation armed outside the routes) stores
+	// exactly as it did before this seam existed.
+	if err := w.WriteNote(context.Background(), note); err != nil {
+		t.Fatalf("an unarmed WriteNote failed: %v", err)
+	}
+}
+
+func fullActiveNoteSet() []AssistantNoteView {
+	out := make([]AssistantNoteView, 0, AssistantNotesActiveCap)
+	for i := 0; i < AssistantNotesActiveCap; i++ {
+		out = append(out, AssistantNoteView{
+			ID:        fmt.Sprintf("01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b8%d", i),
+			ProjectID: anProjectID, ScopeKind: AssistantNoteScopeRepository,
+			ScopeID: anRepoID, Text: fmt.Sprintf("Stored note %d.", i),
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	return out
+}
+
+// oneRunNotesReader gives the DATA block a run, so the attempt has something
+// honest to be about (an empty DATA block answers "nothing", never the model).
+type oneRunNotesReader struct{}
+
+func (oneRunNotesReader) ListProjectRunsFiltered(context.Context, Caller,
+	string, RunListFilter) ([]RunSummaryView, error) {
+	return []RunSummaryView{{
+		ID: anNoteID, PipelineID: anRepoID, Status: "failed", CreatedAt: time.Now().UTC(),
+	}}, nil
 }
 
 type fakeAssistantNotesRuns struct{}
