@@ -153,6 +153,11 @@ func newTestManager(t *testing.T) (*Manager, string) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// The fixtures clone file:// origins (what a lab repositories.git_url row
+	// holds), so the test manager carries the same setting the lab compose
+	// stacks set on the worker: COMMUNICATION_ALLOW_FILE_GIT_URLS=true. The
+	// gate itself is tested in workspace_fileurl_test.go.
+	m.AllowFileGitURLs = true
 	return m, root
 }
 

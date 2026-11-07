@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	wsgit "github.com/dbirks/communication/internal/workspace/git"
 )
 
 // Workspace prepares the per-conversation working directory described by
@@ -46,7 +48,7 @@ type Workspace struct {
 // contract: "failures are visible, not fatal"), so the refusal reads like the
 // other notes and names the exact switch that lifts it.
 func refuseFileGitURL(label, gitURL string) string {
-	return fmt.Sprintf("clone of %s from %s refused: file:// repository URLs are disabled on this worker; set COMMUNICATION_ALLOW_FILE_GIT_URLS=true for local development", label, redactURL(gitURL))
+	return fmt.Sprintf("clone of %s from %s refused: %s", label, redactURL(gitURL), wsgit.FileGitURLRefusal)
 }
 
 var (

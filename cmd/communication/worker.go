@@ -789,6 +789,21 @@ func acpAskModeID(launcherID string) string {
 	return l.AskModeID
 }
 
+// newWorkspaceManager builds the worker's own mirror-capable git manager from
+// the process options, threading the audit F6 file:// gate (opts.allowFileGitURLs,
+// read once from COMMUNICATION_ALLOW_FILE_GIT_URLS in workerOptionsFromEnv) into
+// every Manager that can clone or fetch a project repository URL: the M4 run
+// workspace preparer, the M3 unit service, and the checkpoint restorer all share
+// this one door, so no call site can drift from the process setting.
+func newWorkspaceManager(opts workerOptions) (*wsgit.Manager, error) {
+	mgr, err := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	if err != nil {
+		return nil, err
+	}
+	mgr.AllowFileGitURLs = opts.allowFileGitURLs
+	return mgr, nil
+}
+
 // newRunWorkspacePreparer is docs/m4-contract.md § 4 step 3's worker half:
 // the on-disk tree (wsgit.Manager.Prepare under the `run` scope, the M3 D1
 // tree M4 finally populates) and the rows that make it a fact
@@ -830,7 +845,7 @@ func acpAskModeID(launcherID string) string {
 //     'preparing' with no repo rows at all.
 func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID func() string,
 	log *slog.Logger) worker.RunWorkspacePreparer {
-	mgr, mgrErr := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	mgr, mgrErr := newWorkspaceManager(opts)
 	workspaces := &postgres.WorkspaceStore{Pool: pool}
 	runs := &postgres.RunWorkspaces{Pool: pool}
 	repoRead := &postgres.TurnStore{Pool: pool}
@@ -1138,7 +1153,7 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 	facts := sandboxRegistration{
 		Backend: "none", Enforcement: string(opts.sandboxEnforcement), Verified: false,
 	}
-	workMgr, err := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	workMgr, err := newWorkspaceManager(opts)
 	if err != nil {
 		return nil, nil, facts, fmt.Errorf("workspace roots: %w", err)
 	}
@@ -1575,7 +1590,7 @@ func (c attemptChain) wrap(inner worker.AttemptExecutor) worker.AttemptExecutor 
 // runs today — keeps running exactly as it did before this arm existed.
 func newAttemptChain(opts workerOptions, pool *pgxpool.Pool, prepare worker.RunWorkspacePreparer,
 	log *slog.Logger) (attemptChain, error) {
-	mgr, err := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	mgr, err := newWorkspaceManager(opts)
 	if err != nil {
 		log.Warn("checkpoint restore has no git manager: restore_checkpoint attempts will be refused, "+
 			"continue_workspace is unaffected", slog.String("error", err.Error()))

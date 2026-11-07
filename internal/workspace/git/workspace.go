@@ -23,9 +23,22 @@ type Manager struct {
 	ReposRoot string
 	// Git runs the git commands; nil uses a default Runner.
 	Git *Runner
+	// AllowFileGitURLs (audit F6) admits `file://` repository URLs for this
+	// manager's mirror clone/fetch. Default false — the zero value refuses —
+	// so a Manager built without threading the setting cannot clone a file://
+	// URL. The worker process sources it from its own
+	// COMMUNICATION_ALLOW_FILE_GIT_URLS (the same variable the API replica
+	// and the M2 Workspace gate read), so a deployment says it once per
+	// process, never per call site.
+	AllowFileGitURLs bool
 	// Locks serializes per-mirror mutations.
 	locks *mirrorLocks
 }
+
+// FileGitURLRefusal is the sentence every file:// gate answers with — the M2
+// conversation-workspace note and this package's prepare error share it verbatim
+// so an operator grepping one string finds every gate (audit F6).
+const FileGitURLRefusal = "file:// repository URLs are disabled on this worker; set COMMUNICATION_ALLOW_FILE_GIT_URLS=true for local development"
 
 // NewManager validates the two roots and returns a Manager. Both roots must be
 // absolute, `..`-free and outside the temp tree (ADR-0017 D5).
@@ -353,6 +366,19 @@ func mirrorCredentialEnv(token string) []string {
 // prepare (ref work, worktree add, clone into the workspace, exclusions)
 // runs on the ordinary Runner and inherits nothing.
 func (m *Manager) ensureMirror(ctx context.Context, mirror Mirror, spec RepoSpec) (bool, error) {
+	if !m.AllowFileGitURLs && strings.HasPrefix(spec.GitURL, "file://") {
+		// Defence in depth (audit F6), checked before the mirror is even
+		// stat'ed — the same rule the M2 Workspace applies to its shallow
+		// clones: a file:// mirror created while the flag was on is not
+		// silently fetched (the fetch talks to the same file:// remote) by a
+		// worker that has since turned the flag off. Refusing here keeps both
+		// network-facing commands — `clone --mirror` and `fetch origin` —
+		// behind one gate, and the error is an ordinary prepare failure:
+		// RunWorkspaceExecutor classifies it `infra` (not a lost-workspace
+		// sentinel), exactly as a failed clone is classified today.
+		return false, fmt.Errorf("workspace: clone of %s from %s refused: %s",
+			spec.Name, Redact(spec.GitURL), FileGitURLRefusal)
+	}
 	if _, err := os.Stat(filepath.Join(mirror.Path, "HEAD")); err == nil {
 		// `--git-dir` is not decoration: `git fetch <mirror> <refspec>` from
 		// anywhere else means "fetch *from* the mirror into the repository at
