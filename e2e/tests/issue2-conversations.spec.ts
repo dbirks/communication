@@ -80,6 +80,113 @@ function agentItem(page: Page, text: string): Locator {
     .filter({ hasText: text });
 }
 
+/* ---- fail-fast reply wait with the turn's own diagnostics ---------------- */
+
+/** The turn statuses with no future for a reply still to come, read off the
+ * page's own words (`turnStatusText` in `ui/src/api/transcript.ts`). */
+const TERMINAL_TURN_STATUS = /completed|cancelled|failed|stopped — outcome unknown/i;
+/** Statuses that prove the wait is watching a LIVE turn (not a stale chip). */
+const LIVE_TURN_STATUS = /idle|queued|starting|running/i;
+/** How long a terminal chip must hold (with no reply landing) before the
+ * wait calls the turn dead — room for the transcript's own SSE/refetch lag. */
+const REPLY_TERMINAL_CONFIRM_MS = 15_000;
+
+/** One locator's text, whitespace-flattened, or "" when it is not on the page. */
+async function flatText(target: Locator): Promise<string> {
+  const raw = await target.innerText().catch(() => "");
+  return (raw ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** The last AGENT transcript line, flattened and clipped — what the agent
+ * DID say when the expected reply never landed. */
+async function readLastAgentLine(page: Page): Promise<string> {
+  const items = page
+    .getByTestId("transcript-item")
+    .filter({ has: page.getByTestId("agent-speaker") });
+  const count = await items.count().catch(() => 0);
+  if (count === 0) return "(no agent lines)";
+  const text = await flatText(items.nth(count - 1));
+  if (!text) return "(last agent line empty)";
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+/** The wire's account of the thread, read only on the failure path: the
+ * conversation's status plus its active turn's status/stop_reason/worker —
+ * the facts behind a silent turn (a refused file:// prepare, say, lands as a
+ * failed turn with a stop_reason the page's chip alone does not name). */
+async function readTurnWire(page: Page): Promise<string> {
+  const id = new URL(page.url()).pathname.split("/").pop() ?? "";
+  try {
+    const res = await page.request.get(`${BASE_URL}/api/v1/conversations/${id}`);
+    if (!res.ok()) return `wire: GET /api/v1/conversations/${id} answered ${res.status()}`;
+    const body = (await res.json()) as {
+      status?: string;
+      active_turn?: {
+        status?: string;
+        stop_reason?: string | null;
+        worker_id?: string | null;
+      } | null;
+    };
+    const t = body.active_turn;
+    return (
+      `wire: conversation ${body.status ?? "?"}, ` +
+      (t
+        ? `active turn ${t.status ?? "?"}${t.stop_reason ? ` (stop_reason ${t.stop_reason})` : ""}${t.worker_id ? ` on ${t.worker_id}` : " (no worker)"}`
+        : "no active turn")
+    );
+  } catch (err) {
+    return `wire: the conversation read failed (${String(err)})`;
+  }
+}
+
+/**
+ * Wait for an agent transcript item containing `text`, and fail FAST — with
+ * the turn's whole account — once a LIVE turn reaches a terminal status with
+ * no reply. Acceptance 42343957937 waited the full 300 s budget for a
+ * missing "pong" and printed nothing about WHY the turn stayed silent; this
+ * wait reads the page's own `turn-status` chip while it polls and, when the
+ * chip has gone terminal and stays there, throws naming the chip, the wire's
+ * `active_turn` (status / stop_reason / worker) and the last agent line. No
+ * assertion is softened: a reply that never lands still fails the journey —
+ * the terminal read is confirmed for {@link REPLY_TERMINAL_CONFIRM_MS} so a
+ * fast chip can never cut off a reply still rendering.
+ */
+async function expectLiveAgentReply(
+  page: Page,
+  reply: Locator,
+  text: string,
+  timeout: number,
+): Promise<void> {
+  const deadline = Date.now() + timeout;
+  let sawLiveTurn = false;
+  let terminalSince = 0;
+  let lastStatus = "";
+  const die = async (reason: string): Promise<never> => {
+    const status =
+      lastStatus || (await flatText(page.getByTestId("turn-status").first())) || "(no turn-status)";
+    throw new Error(
+      `no agent reply containing "${text}" on ${page.url()} ${reason} ` +
+        `(turn status chip: "${status}"; ${await readTurnWire(page)}; ` +
+        `last agent line: ${await readLastAgentLine(page)})`,
+    );
+  };
+  for (;;) {
+    if (await reply.isVisible().catch(() => false)) return;
+    lastStatus = await flatText(page.getByTestId("turn-status").first());
+    if (LIVE_TURN_STATUS.test(lastStatus)) sawLiveTurn = true;
+    if (sawLiveTurn && lastStatus && TERMINAL_TURN_STATUS.test(lastStatus)) {
+      if (terminalSince === 0) terminalSince = Date.now();
+      else if (Date.now() - terminalSince >= REPLY_TERMINAL_CONFIRM_MS) {
+        await die(`ended on "${lastStatus}" with no reply`);
+      }
+    } else {
+      terminalSince = 0;
+    }
+    if (Date.now() >= deadline) await die("within the bounded wait");
+    await page.waitForTimeout(500);
+  }
+}
+
 /**
  * The workbench draws its pinned revision on the shared Studio canvas
  * (React Flow) inside `workbench-graph-frame`. Scoped nodes carry a
@@ -133,7 +240,11 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("A7: one-off conversation from the header and the sidebar's New chat", async ({ page }) => {
-    test.setTimeout(300_000); // one real agent turn plus four axe passes, bounded
+    // One real agent turn plus four axe passes, bounded. The ceiling sits
+    // ABOVE the reply wait so that wait's own deadline can fire first and
+    // print the turn's diagnostics (a raw playwright hard-timeout aborts the
+    // helper mid-poll and prints nothing but the locator it was waiting on).
+    test.setTimeout(AGENT_TURN_TIMEOUT_MS + 90_000);
     await signIn(page, "alice");
     const projectUrl = await openProjectBySlug(page, PROJECT_SLUG);
     // The app shell is the new sidebar frame: the old top app bar's
@@ -162,7 +273,14 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
 
     // The real agent turn: a bounded wait for the "pong" reply AND a terminal
     // turn status — the page's own `turn-status` chip says the turn completed.
-    await expect(agentItem(page, "pong").first()).toBeVisible({ timeout: AGENT_TURN_TIMEOUT_MS });
+    // The reply wait fails fast on a dead turn and prints its whole account
+    // (chip, wire active_turn, last agent line) — see expectLiveAgentReply.
+    await expectLiveAgentReply(
+      page,
+      agentItem(page, "pong").first(),
+      "pong",
+      AGENT_TURN_TIMEOUT_MS,
+    );
     await expectTurnStatus(page, /completed/, AGENT_TURN_TIMEOUT_MS);
     await evidence(
       page,

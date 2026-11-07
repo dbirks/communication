@@ -1281,9 +1281,14 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     const notesUrl = `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos/${ids.ghRepoId}/notes`;
     const readNotes = async (): Promise<ServedNote[]> => {
       const res = await page.request.get(notesUrl);
+      // Assertion messages are evaluated eagerly, and a bodyless response (a
+      // 204, or one whose body the network layer has dropped) has nothing to
+      // read: only ask for the body when the status is one we would fail on,
+      // and never let that read be the thing that throws.
+      const body = res.ok() ? "" : await res.text().catch(() => "<body unavailable>");
       expect(
         res.status(),
-        `the notes read answers 200 (got ${res.status()}: ${(await res.text()).slice(0, 200)})`,
+        `the notes read answers 200 (got ${res.status()}: ${body.slice(0, 200)})`,
       ).toBe(200);
       return ((await res.json()) as { notes?: ServedNote[] }).notes ?? [];
     };
@@ -1363,9 +1368,17 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       );
       await dismissed.click();
       const receipt = await written;
+      // The dismissal's success answer is a 204 with NO body, and
+      // `Network.getResponseBody` throws "Response body is not available" for
+      // one — while the template string here is evaluated eagerly, before the
+      // assertion runs. So the body is only read for a status outside 2xx (the
+      // failure case, where it is the evidence we want) and the read is caught.
+      const receiptBody = receipt.ok()
+        ? ""
+        : await receipt.text().catch(() => "<body unavailable>");
       expect(
         receipt.status(),
-        `the dismissal answers 2xx for its owner (got ${receipt.status()}: ${(await receipt.text()).slice(0, 200)})`,
+        `the dismissal answers 2xx for its owner (got ${receipt.status()}: ${receiptBody.slice(0, 200)})`,
       ).toBeGreaterThanOrEqual(200);
       expect(
         receipt.status(),
@@ -2976,7 +2989,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
           timeout: 20_000,
         });
         const res = await patched;
-        const body = await res.text();
+        // Browser-side response: a bodyless answer (a 204, or a body the
+        // network layer dropped) throws on read, so guard it like the
+        // dismissal above.
+        const body = res.ok() ? "" : await res.text().catch(() => "<body unavailable>");
         expect(
           res.status(),
           `the settings PATCH lands (got ${res.status()}: ${body.slice(0, 200)})`,

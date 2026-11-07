@@ -540,8 +540,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     // attribution above): the per-URL budget is keysPerUrl x frame windows.
     const idleWindows = idleFrames.filter(
       (frame) =>
-        frame.t + COALESCER_FLUSH_MS + IDLE_DISPATCH_SLACK_MS >= idleStartT &&
-        frame.t <= idleEndT,
+        frame.t + COALESCER_FLUSH_MS + IDLE_DISPATCH_SLACK_MS >= idleStartT && frame.t <= idleEndT,
     ).length;
     const idleUrls = frameDriven.map((sample) => urlKey(sample.url));
     for (const url of new Set(idleUrls)) {
@@ -1397,6 +1396,23 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     const runId = await startGatedRun(request, csrf, project, pipeline.revisionId);
     const approval = await pendingApprovalForRun(request, runId);
     const tid = testidOf(approval.id);
+    // The summary route's own answer, recorded off the page's OWN POST — a
+    // diagnostic never costs a second model turn. When it lands, the card has
+    // reached (or will render) one of its honest terminal states; when the
+    // wait below dies with this still pending, the client fetch — not the
+    // model — is what hung.
+    let summaryRouteAnswer =
+      "(no response landed within the wait — the client fetch was still in flight)";
+    page.on("response", (res) => {
+      if (!/\/api\/v1\/approvals\/[^/]+\/summary$/.test(res.url())) return;
+      void res
+        .text()
+        .then((body) => {
+          const clipped = (body ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+          summaryRouteAnswer = `HTTP ${res.status()}: ${clipped || "(empty body)"}`;
+        })
+        .catch(() => {});
+    });
     await page.goto(BASE_URL + `/approvals/${approval.id}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId(`approval-detail-loading-${tid}`)).toBeHidden({
       timeout: 30_000,
@@ -1405,20 +1421,47 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     const strip = page.getByTestId(`approval-detail-strip-${tid}`);
     await expect(strip).toBeVisible();
     await expect(strip).toContainText("NEEDS YOUR DECISION");
-    // Summary: the model's summary, or the honest fallback on 503 ("from the
-    // workflow"), never a blank card.
     const summary = page.getByTestId(`approval-detail-summary-${tid}`);
     const fallback = page.getByTestId(`approval-detail-summary-fallback-${tid}`);
     const unconfigured = page.getByTestId(`approval-detail-summary-unconfigured-${tid}`);
-    await expect
-      .poll(
-        async () =>
-          (await summary.isVisible().catch(() => false)) ||
-          (await fallback.isVisible().catch(() => false)) ||
-          (await unconfigured.isVisible().catch(() => false)),
-        { message: "the summary card must render its honest state", timeout: 30_000 },
-      )
-      .toBe(true);
+    // Summary: the model's summary, or the honest fallback on 503 ("from the
+    // workflow"), never a blank card. The route is bounded by the lab's own
+    // per-completion deadline — COMMUNICATION_ASSISTANT_TIMEOUT 180s in
+    // compose.real.yml, and this very spec's test 6 watched that model take
+    // minutes per completion on acceptance 42346760514, where the old 30s
+    // window killed the journey while the card was honestly LOADING (the
+    // fourth state, `approval-detail-summary-loading-`). The wait now runs
+    // past the route's bound; every state it accepts is a terminal honest
+    // one, and a card that has still not reached one throws with the route's
+    // own answer quoted.
+    const loading = page.getByTestId(`approval-detail-summary-loading-${tid}`);
+    const summaryCardState = async (): Promise<string> =>
+      (await summary.isVisible().catch(() => false))
+        ? "the model summary"
+        : (await fallback.isVisible().catch(() => false))
+          ? "the honest fallback (the gate's own text, labelled)"
+          : (await unconfigured.isVisible().catch(() => false))
+            ? "the assistant_not_configured note"
+            : (await loading.isVisible().catch(() => false))
+              ? "the loading skeleton (the POST /summary fetch was still in flight)"
+              : "no summary card at all";
+    try {
+      await expect
+        .poll(
+          async () =>
+            (await summary.isVisible().catch(() => false)) ||
+            (await fallback.isVisible().catch(() => false)) ||
+            (await unconfigured.isVisible().catch(() => false)),
+          { message: "the summary card must render its honest state", timeout: 200_000 },
+        )
+        .toBe(true);
+    } catch (cause) {
+      throw new Error(
+        `the summary card must render its honest state — after the route's bounded wait the card showed ` +
+          `${await summaryCardState()}; the summary route answered ${summaryRouteAnswer}`,
+        { cause },
+      );
+    }
     const summaryKind = (await summary.isVisible().catch(() => false))
       ? "model summary"
       : (await fallback.isVisible().catch(() => false))
