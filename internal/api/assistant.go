@@ -135,11 +135,13 @@ func RegisterAssistant(s *Server, deps AssistantDeps) {
 	if pr, ok := deps.Profiles.(assistantProfileReader); ok {
 		h.profiles = pr
 	}
-	s.HandleAuthed("POST /api/v1/assistant/ask", http.HandlerFunc(h.ask))
+	// Per-principal throttle on every turn-generating POST (audit F2,
+	// ADR-0077): each ask/proposal is billed model work behind it.
+	s.HandleAuthed("POST /api/v1/assistant/ask", s.ThrottleAssistant(http.HandlerFunc(h.ask)))
 	// ADR-0044: one bounded drafting proposal per request, read-only on the
 	// server side (the human applies it through the normal version-checked
 	// PUT). Mounted beside ask: same session + CSRF contract, same broker.
-	s.HandleAuthed("POST /api/v1/assistant/draft-proposals", http.HandlerFunc(h.proposals))
+	s.HandleAuthed("POST /api/v1/assistant/draft-proposals", s.ThrottleAssistant(http.HandlerFunc(h.proposals)))
 }
 
 type asstHandlers struct {

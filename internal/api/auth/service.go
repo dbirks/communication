@@ -125,10 +125,13 @@ func (s *Service) Authenticate(r *http.Request) (*api.Principal, error) {
 
 // Register mounts the identity routes on s. /auth/login and /auth/callback are
 // public; everything else requires a session, and the POST additionally
-// requires the CSRF token (api.HandleAuthed installs both guards).
+// requires the CSRF token (api.HandleAuthed installs both guards). The two
+// public login routes carry the per-client-IP throttle (audit F1, ADR-0077):
+// each login writes a database row, so it must not be an unbounded write
+// amplifier.
 func (s *Service) Register(server *api.Server) {
-	server.Handle("GET /auth/login", http.HandlerFunc(s.handleLogin))
-	server.Handle("GET /auth/callback", http.HandlerFunc(s.handleCallback))
+	server.Handle("GET /auth/login", server.ThrottleAuth(http.HandlerFunc(s.handleLogin)))
+	server.Handle("GET /auth/callback", server.ThrottleAuth(http.HandlerFunc(s.handleCallback)))
 	server.HandleAuthed("POST /auth/logout", http.HandlerFunc(s.handleLogout))
 	server.HandleAuthed("GET /api/v1/me", http.HandlerFunc(s.handleMe))
 	server.HandleAuthed("GET /api/v1/users", http.HandlerFunc(s.handleUsers))

@@ -20,6 +20,26 @@ type Config struct {
 	// PublicURL is the browser-facing base URL of the deployment
 	// (COMMUNICATION_PUBLIC_URL), used for strict origin checks.
 	PublicURL string
+	// PreviewOrigin is the origin the artifact preview iframe is framed from
+	// (scheme://host[:port]); it is the one extra host the app CSP's frame-src
+	// may name (ADR-0020 D6). When empty, New reads it from
+	// COMMUNICATION_PREVIEW_BASE_URL; when that is unset too, no preview origin
+	// exists and frame-src stays at 'self'.
+	PreviewOrigin string
+	// HSTS adds `Strict-Transport-Security: max-age=31536000` to app-origin
+	// responses. Off by default (TLS terminates at the proxy); New also honours
+	// COMMUNICATION_HSTS=1 so an operator can turn it on without a rebuild.
+	HSTS bool
+	// Limits configures the per-replica request throttles (ADR-0077). The
+	// zero value disables every limit; production defaults are applied by
+	// serve's environment parsing, so tests and the lab opt in explicitly.
+	Limits RateLimits
+	// AllowFileGitURLs (audit F6) admits `file:///` repository git_url values
+	// on POST /projects/{id}/repos. Default false: a file:// URL makes the
+	// worker read an arbitrary worker-readable path, which is only safe on a
+	// single-user local development host. Sourced from
+	// COMMUNICATION_ALLOW_FILE_GIT_URLS (see AllowFileGitURLsFromEnv).
+	AllowFileGitURLs bool
 	// Logger receives access logs and panic traces; nil discards them.
 	Logger *slog.Logger
 }
@@ -46,6 +66,7 @@ type Server struct {
 	auth    Authenticator
 	ui      fs.FS
 	handler http.Handler
+	limits  limiters
 }
 
 // New builds a Server with the system routes registered. ready may be nil
@@ -59,7 +80,9 @@ func New(cfg Config, ready Readiness, auth Authenticator, ui fs.FS) *Server {
 	if cfg.Version == "" {
 		cfg.Version = "dev"
 	}
+	cfg = withSecurityEnvDefaults(cfg)
 	s := &Server{cfg: cfg, logger: log, ready: ready, auth: auth, ui: ui}
+	s.limits = newLimiters(cfg.Limits)
 	s.mux = http.NewServeMux()
 
 	// Unknown API and auth endpoints are problem+json 404s: they must never
@@ -81,7 +104,7 @@ func New(cfg Config, ready Readiness, auth Authenticator, ui fs.FS) *Server {
 	s.Handle("GET /api/v1/system/readiness", http.HandlerFunc(s.handleReadiness))
 
 	s.handler = s.recoverMiddleware(s.requestIDMiddleware(
-		s.replicaMiddleware(s.accessLogMiddleware(s.mux))))
+		s.replicaMiddleware(s.accessLogMiddleware(s.securityHeaders(s.mux)))))
 	return s
 }
 

@@ -6,9 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -34,6 +36,32 @@ func RequestIDFrom(r *http.Request) string {
 	return ""
 }
 
+// maxRequestIDLen is the longest client-supplied X-Request-ID the server will
+// adopt (audit F4). A correlator id has no business being longer than this, and
+// an unbounded one is reflected onto every response and into every access-log
+// line, which turns a free header into log and header amplification.
+const maxRequestIDLen = 64
+
+// validRequestID reports whether s is a safe correlation id to echo: 1..64
+// characters of [A-Za-z0-9._-]. Anything else (empty, too long, whitespace,
+// control characters, quotes, a header-injection payload) is discarded and a
+// fresh id is generated instead.
+func validRequestID(s string) bool {
+	if s == "" || len(s) > maxRequestIDLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // newRequestID returns 32 hex characters (16 random bytes).
 func newRequestID() string {
 	var b [16]byte
@@ -46,16 +74,173 @@ func newRequestID() string {
 }
 
 // requestIDMiddleware adopts or generates X-Request-ID and puts it in the
-// context and on the response.
+// context and on the response. A client value is adopted only when it is a sane
+// correlator (see validRequestID); otherwise it is dropped and replaced, so the
+// header can never be used to inflate responses or access logs (audit F4).
 func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSpace(r.Header.Get(HeaderRequestID))
-		if id == "" {
+		if !validRequestID(id) {
 			id = newRequestID()
 		}
 		w.Header().Set(HeaderRequestID, id)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id)))
 	})
+}
+
+// App-origin security headers (audit F5). The strong isolation headers
+// (sandboxed CSP, COOP/CORP, no-referrer) belong to the preview origin and are
+// set by artifact_preview.go, and artifact *content* responses set their own
+// delivery headers in artifacts.go; this middleware is the backstop for
+// everything else the app origin serves: the SPA shell, its hashed assets,
+// API JSON and problem+json errors.
+//
+// The response writer is shared, so ordering is what implements "never
+// override a handler": this middleware runs before the handler, and a handler
+// that sets one of these names itself (Set replaces the value; the preview
+// origin is skipped by path outright) wins.
+const (
+	// appCSPBaseTemplate is the policy with the frame-src sources left to the
+	// deployment. Every directive is justified in appCSP below.
+	appCSPBaseTemplate = "default-src 'self'; " +
+		"script-src 'self'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data: blob:; " +
+		"font-src 'self' data:; " +
+		"connect-src 'self'; " +
+		"frame-src %s; " +
+		"frame-ancestors 'none'; " +
+		"base-uri 'self'; " +
+		"form-action 'self'; " +
+		"object-src 'none'"
+
+	// hstsMaxAgeOneYear is one year of "always speak TLS to this origin".
+	hstsMaxAgeOneYear = "max-age=31536000"
+)
+
+// appCSP assembles the Content-Security-Policy for the app origin. previewOrigin
+// ("" when unset) is the artifact preview origin, which the SPA frames.
+//
+// Measured against the real build (pnpm --dir ui build, then grep over
+// ui/dist/index.html and ui/dist/assets/*.js|css):
+//
+//   - default-src 'self' — anything not named below is same-origin only.
+//   - script-src 'self' — index.html loads /assets/index-*.js as an external
+//     module and has no inline script; the bundle contains no eval( or
+//     new Function, so 'unsafe-eval' is deliberately absent.
+//   - style-src 'self' 'unsafe-inline' — Tailwind's stylesheet ships as an
+//     external /assets/*.css, but React (and react-flow in the pipeline
+//     studio) writes inline style attributes and injects <style> rules at
+//     runtime, which the browser rejects without 'unsafe-inline'. Inline CSS
+//     cannot execute script under this policy (script-src has no inline).
+//   - img-src 'self' data: blob: — icons/images are same-origin, and the
+//     bundle creates blob: object URLs for client-side downloads.
+//   - font-src 'self' data: — the fonts are self-hosted woff/woff2 emitted
+//     under /assets (@font-face URLs are all /assets/...); no CDN font faces.
+//   - connect-src 'self' — apiFetch() and every EventSource are same-origin
+//     paths (the Vite dev server proxies /api and /auth to keep it that way).
+//   - frame-src 'self' [preview origin] — the artifact preview iframe points at
+//     the preview hostname (ADR-0020 D6). Without an explicit frame-src it
+//     would fall back to default-src 'self' and previews would break, so the
+//     configured preview origin is added here and nowhere else.
+//   - frame-ancestors 'none' — nothing may frame the app (audit F5's
+//     clickjacking leg; X-Frame-Options is the legacy echo).
+//   - base-uri 'self' — a foreign <base> could otherwise rewrite every
+//     relative URL the shell requests.
+//   - form-action 'self' — the SPA's <form>s submit to same-origin handlers
+//     only.
+//   - object-src 'none' — no plugin content, full stop.
+func appCSP(previewOrigin string) string {
+	frames := "'self'"
+	if origin := normalizeOrigin(previewOrigin); origin != "" {
+		frames = "'self' " + origin
+	}
+	return fmt.Sprintf(appCSPBaseTemplate, frames)
+}
+
+// securityHeaders sets the app-origin response headers and leaves the preview
+// origin's response headers to artifact_preview.go.
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	csp := appCSP(s.cfg.PreviewOrigin)
+	hsts := ""
+	if s.cfg.HSTS {
+		hsts = hstsMaxAgeOneYear
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /preview/* is a different origin's document (same binary, different
+		// hostname). Its handler sets a sandboxed CSP with Add, so a second CSP
+		// header on the same response would intersect the two policies and
+		// silently narrow what a preview may render; the preview set is
+		// therefore left exactly as artifact_preview.go writes it (audit F5
+		// explicitly excludes it). HSTS for that origin is the proxy's job.
+		if isPreviewPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "same-origin")
+		h.Set("X-Frame-Options", "DENY")
+		// microphone=(self) is the app's dictation feature: the assistant mic
+		// drives the Web Speech API (ui/src/lib/speech.ts), which needs the
+		// top-level document to be allowed to capture audio. camera and
+		// geolocation are granted to nobody, including this origin.
+		h.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(self)")
+		if hsts != "" {
+			h.Set("Strict-Transport-Security", hsts)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Security-header configuration environment (read here rather than in
+// cmd/communication so the header set is correct wherever a Server is built;
+// both are optional and both keep the audit's defaults).
+const (
+	// EnvPreviewBaseURL is the preview origin's URL prefix — the same
+	// COMMUNICATION_PREVIEW_BASE_URL serve.go mints preview_url from. Its origin
+	// is what the SPA's artifact-preview iframe points at, so it has to appear
+	// in the app CSP's frame-src or previews stop rendering (ADR-0020 D6).
+	EnvPreviewBaseURL = "COMMUNICATION_PREVIEW_BASE_URL"
+	// EnvHSTS turns Strict-Transport-Security on ("1"). It is off by default
+	// because TLS terminates at the proxy, and an app origin ever reached over
+	// plain http must not be told to pin itself to https.
+	EnvHSTS = "COMMUNICATION_HSTS"
+)
+
+// withSecurityEnvDefaults fills the security fields Config leaves unset from the
+// environment. An explicit field always wins, so a caller that knows better
+// never has to clear an env var.
+func withSecurityEnvDefaults(cfg Config) Config {
+	if cfg.PreviewOrigin == "" {
+		cfg.PreviewOrigin = normalizeOrigin(os.Getenv(EnvPreviewBaseURL))
+	}
+	if !cfg.HSTS {
+		cfg.HSTS = strings.TrimSpace(os.Getenv(EnvHSTS)) == "1"
+	}
+	return cfg
+}
+
+// normalizeOrigin returns the lowercased scheme://host of an absolute URL, or of
+// https://<raw> when raw names only a host[:port]; "" when neither reads as an
+// origin. The scheme-less guess is https because a bare host in production is
+// TLS-terminated upstream; a lab that runs plain http sets the full URL.
+func normalizeOrigin(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return ""
+	}
+	if !strings.Contains(v, "://") {
+		v = "https://" + strings.Trim(v, "/")
+	}
+	return originOf(v)
+}
+
+// isPreviewPath reports the preview origin's path space, including the bare
+// /preview/ route that refuses unknown methods.
+func isPreviewPath(p string) bool {
+	return p == "/preview" || strings.HasPrefix(p, "/preview/")
 }
 
 // replicaMiddleware labels every response with the replica that served it.

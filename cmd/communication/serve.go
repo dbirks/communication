@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,6 +69,37 @@ environment:
                                         COMMUNICATION_PIPELINE_SCHEDULER=off
                                         also stops it. Must parse as a Go
                                         duration and be positive.
+  COMMUNICATION_SESSION_PURGE_INTERVAL  expired-session purge interval
+                                        (default "10m", audit F1). How often
+                                        this replica deletes expired sessions
+                                        and unconsumed OIDC login states —
+                                        rows the 12h session TTL and the 10m
+                                        state TTL already made dead, so the
+                                        tables stop growing forever. "0"
+                                        disables the tick (only defensible
+                                        when something else purges). Every
+                                        replica may run it: the deletes are
+                                        idempotent, see
+                                        IdentityStore.PurgeExpired. Failures
+                                        are logged, never fatal. Must parse
+                                        as a Go duration; negative or
+                                        unparseable is a startup refusal.
+  COMMUNICATION_SERVER_READ_TIMEOUT     http.Server ReadTimeout: deadline to
+                                        read one request INCLUDING its body
+                                        (default "60s", audit F3). Safe for
+                                        SSE: it never bounds the response
+                                        write side, and a stream's GET has no
+                                        body to drip. Positive Go duration;
+                                        anything else is a startup refusal.
+  COMMUNICATION_SERVER_IDLE_TIMEOUT     http.Server IdleTimeout: how long a
+                                        keep-alive connection may sit between
+                                        requests (default "120s", audit F3).
+                                        Before this knob existed it fell back
+                                        to the 10s ReadHeaderTimeout. Positive
+                                        Go duration; anything else is a
+                                        startup refusal. WriteTimeout stays
+                                        unset on purpose — it would kill SSE
+                                        streams (see newServeServer).
   COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
   COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
@@ -146,6 +178,36 @@ environment:
                                         raising this lengthens a slow turn
                                         instead of racing it. Unparseable or
                                         non-positive is a startup refusal.
+  COMMUNICATION_RATE_AUTH_PER_MIN       sustained /auth/login + /auth/callback
+                                        requests per minute per client IP
+                                        (default 10; 0 disables the limit,
+                                        ADR-0077).
+  COMMUNICATION_RATE_AUTH_BURST         burst capacity for that bucket
+                                        (default 20).
+  COMMUNICATION_RATE_ASSISTANT_PER_MIN  sustained assistant turns / messages
+                                        per minute per principal (default 30;
+                                        0 disables, ADR-0077).
+  COMMUNICATION_RATE_ASSISTANT_BURST    burst capacity for that bucket
+                                        (default 10).
+  COMMUNICATION_RATE_ISSUES_PER_MIN     sustained GitHub issue reads per
+                                        minute per principal (default 60;
+                                        0 disables, ADR-0077).
+  COMMUNICATION_RATE_ISSUES_BURST       burst capacity for that bucket
+                                        (default 30).
+  COMMUNICATION_RATE_MAX_STREAMS        max concurrent SSE streams per
+                                        principal (default 16; 0 disables,
+                                        ADR-0077).
+  COMMUNICATION_TRUSTED_PROXY_HOPS      0 (default) means the client address
+                                        is always the peer address and
+                                        X-Forwarded-For is ignored. Set to the
+                                        exact number of trusted proxies in
+                                        front (e.g. 1 behind one LB) to key
+                                        the auth throttle on the first
+                                        X-Forwarded-For hop instead — larger
+                                        than reality is forgeable, smaller
+                                        mislabels the peer (ADR-0077).
+                                        Non-negative integers only; anything
+                                        else is a startup refusal.
 
 migrations are applied separately: communication migrate up
 `
@@ -160,6 +222,79 @@ const (
 	shutdownTimeout   = 15 * time.Second
 	readHeaderTimeout = 10 * time.Second
 )
+
+// Audit F3's two additional http.Server deadlines and audit F1's purge
+// cadence, with the defaults the audit recommends.
+const (
+	envServerReadTimeout     = "COMMUNICATION_SERVER_READ_TIMEOUT"
+	envServerIdleTimeout     = "COMMUNICATION_SERVER_IDLE_TIMEOUT"
+	defaultServerReadTimeout = 60 * time.Second
+	defaultServerIdleTimeout = 120 * time.Second
+
+	envSessionPurgeInterval     = "COMMUNICATION_SESSION_PURGE_INTERVAL"
+	defaultSessionPurgeInterval = 10 * time.Minute
+)
+
+// serveServerTimeout parses one of the http.Server deadline variables with
+// the same rule as every other serve duration: unset is the default, an
+// unparseable or non-positive value is a startup refusal naming the
+// variable, never a silent fallback — an operator who typed a timeout wrong
+// means to change the timeout.
+func serveServerTimeout(getenv func(string) string, name string, def time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(name))
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration: %w", name, raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be positive, got %s", name, d)
+	}
+	return d, nil
+}
+
+// serveSessionPurgeInterval reads COMMUNICATION_SESSION_PURGE_INTERVAL
+// (audit F1). Unlike the other serve durations, 0 is legal and means
+// "disable the purge tick" — an operator who purges from cron or another
+// process must be able to turn the in-process loop off without inventing a
+// huge interval. Negative and unparseable remain startup refusals.
+func serveSessionPurgeInterval(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envSessionPurgeInterval))
+	if raw == "" {
+		return defaultSessionPurgeInterval, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration: %w", envSessionPurgeInterval, raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be positive, or 0 to disable, got %s", envSessionPurgeInterval, d)
+	}
+	return d, nil
+}
+
+// newServeServer builds the process's http.Server. ReadTimeout bounds only
+// reading a request (headers + body), which is safe for SSE: the long-lived
+// part of a stream is the response, and a stream GET finishes reading its
+// (empty) body at once. IdleTimeout now bounds keep-alive connections
+// explicitly instead of inheriting Go's ReadHeaderTimeout fallback. WriteTimeout
+// is deliberately NOT set: it applies to the whole response write, so a
+// global value would kill every SSE stream that outlives it (audit F3 names
+// http.ResponseController.SetWriteDeadline inside the streaming handlers as
+// the place for per-response write deadlines; none is set here).
+func newServeServer(handler http.Handler, onShutdown func(), readTimeout, idleTimeout time.Duration) *http.Server {
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+		// WriteTimeout intentionally absent — see above.
+	}
+	srv.RegisterOnShutdown(onShutdown)
+	return srv
+}
 
 // runServe implements the "serve" mode. Exit codes: 0 clean shutdown,
 // 2 configuration error, 1 runtime error.
@@ -215,6 +350,21 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	sessionPurge, err := serveSessionPurgeInterval(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	readTimeout, err := serveServerTimeout(os.Getenv, envServerReadTimeout, defaultServerReadTimeout)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	idleTimeout, err := serveServerTimeout(os.Getenv, envServerIdleTimeout, defaultServerIdleTimeout)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	assistantCfg, err := serveAssistantConfig(os.Getenv)
 	if err != nil {
 		// ADR-0034 gives serve a new egress site, so the endpoint it points at is
@@ -222,6 +372,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		// an unusable URL meant to configure egress, and silently running with no
 		// assistant would hide that. An unset base URL is not an error — it is the
 		// feature being absent.
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	rateLimits, err := serveRateLimits(os.Getenv)
+	if err != nil {
+		// A throttle the process cannot parse must be a startup refusal, not a
+		// silently unthrottled replica (same rule as every other serve knob).
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
@@ -274,6 +431,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		webUI = ui.Dist()
 	}
 
+	// Audit F6: file:// git URLs are a server-wide opt-in (see
+	// api.AllowFileGitURLsFromEnv); an unparseable value refuses startup.
+	allowFileGitURLs, allowFileGitErr := api.AllowFileGitURLsFromEnv(os.Getenv)
+	if allowFileGitErr != nil {
+		fmt.Fprintln(stderr, allowFileGitErr)
+		return 2
+	}
 	handler, closeStack, err := serveStack(serveStackDeps{
 		Pool:                 pool,
 		DatabaseURL:          databaseURL,
@@ -282,11 +446,14 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		PipelineSchedulerOff: pipelineSchedulerOff,
 		ScheduleTick:         scheduleTick,
 		IssueTriggerTick:     issueTriggerTick,
+		SessionPurgeInterval: sessionPurge,
 		API: api.Config{
-			ReplicaName: replica,
-			Version:     version,
-			PublicURL:   publicURL,
-			Logger:      log,
+			ReplicaName:      replica,
+			Version:          version,
+			PublicURL:        publicURL,
+			Logger:           log,
+			AllowFileGitURLs: allowFileGitURLs,
+			Limits:           rateLimits,
 		},
 		Readiness: dbReadiness{pool: pool, url: databaseURL},
 		UI:        webUI,
@@ -301,15 +468,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	defer closeStack()
 
-	srv := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: readHeaderTimeout,
-	}
+	srv := newServeServer(handler, closeStack, readTimeout, idleTimeout)
 	// A graceful shutdown must not wait on SSE streams that only end when their
 	// client leaves: closing the wake-up source ends every open stream, which is
 	// also how a restarting replica hands its browsers to another replica (they
 	// reconnect with Last-Event-ID and lose nothing).
-	srv.RegisterOnShutdown(closeStack)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -520,6 +683,19 @@ type serveStackDeps struct {
 	// m4DriverRunner, it exists so a test can observe whether the stack
 	// started the ticker at all without a database to tick against.
 	scheduleTickRunner func(ctx context.Context) error
+
+	// SessionPurgeInterval is COMMUNICATION_SESSION_PURGE_INTERVAL resolved
+	// (serveSessionPurgeInterval): how often this replica deletes expired
+	// sessions and unconsumed login states (audit F1). Unlike ScheduleTick,
+	// zero HERE means "do not start the tick": runServe resolves the 10 min
+	// default before building the stack, so the zero value that every stack
+	// test carries is an explicit off, not a surprise 10-minute timer on an
+	// unreachable pool.
+	SessionPurgeInterval time.Duration
+
+	// sessionPurgeRunner overrides the purge ticker loop; nil means
+	// production's runSessionPurger over the stack's own IdentityStore.
+	sessionPurgeRunner func(ctx context.Context) error
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -624,6 +800,52 @@ func serveIssueTriggerTick(getenv func(string) string) (time.Duration, error) {
 	return d, nil
 }
 
+// serveRateLimits resolves the ADR-0077 throttle family (audit F1/F2):
+// COMMUNICATION_RATE_* plus COMMUNICATION_TRUSTED_PROXY_HOPS. A value of 0
+// disables that specific limit (the lab sets them all to 0 so the e2e suites,
+// which drive these routes hard from one IP and one principal, never see a
+// 429). Anything unparseable or negative is a startup refusal: a limiter the
+// operator mistyped is exactly the kind of knob that must not silently fall
+// back to a different number.
+func serveRateLimits(getenv func(string) string) (api.RateLimits, error) {
+	out := api.RateLimits{
+		Auth:      api.LimitSpec{PerMinute: 10, Burst: 20},
+		Assistant: api.LimitSpec{PerMinute: 30, Burst: 10},
+		Issues:    api.LimitSpec{PerMinute: 60, Burst: 30},
+	}
+	out.MaxStreamsPerPrincipal = 16
+	read := func(name string, dst *int) error {
+		raw := strings.TrimSpace(getenv(name))
+		if raw == "" {
+			return nil
+		}
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			return fmt.Errorf("%s %q is not a non-negative integer", name, raw)
+		}
+		*dst = v
+		return nil
+	}
+	for _, target := range []struct {
+		name string
+		dst  *int
+	}{
+		{"COMMUNICATION_RATE_AUTH_PER_MIN", &out.Auth.PerMinute},
+		{"COMMUNICATION_RATE_AUTH_BURST", &out.Auth.Burst},
+		{"COMMUNICATION_RATE_ASSISTANT_PER_MIN", &out.Assistant.PerMinute},
+		{"COMMUNICATION_RATE_ASSISTANT_BURST", &out.Assistant.Burst},
+		{"COMMUNICATION_RATE_ISSUES_PER_MIN", &out.Issues.PerMinute},
+		{"COMMUNICATION_RATE_ISSUES_BURST", &out.Issues.Burst},
+		{"COMMUNICATION_RATE_MAX_STREAMS", &out.MaxStreamsPerPrincipal},
+		{"COMMUNICATION_TRUSTED_PROXY_HOPS", &out.TrustedProxyHops},
+	} {
+		if err := read(target.name, target.dst); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
 // envAssistantTimeout is the per-model-call deadline for the assistant's
 // egress (the broker's Config.Timeout, defaulting to assistant.DefaultTimeout
 // when left zero). It is per CALL, not per turn: the ADR-0050 conversation
@@ -720,6 +942,55 @@ func runScheduleTicker(ctx context.Context, st scheduleTicker, every time.Durati
 				log.InfoContext(ctx, "schedules fired",
 					slog.Int("runs_created", n), slog.String("every", every.String()))
 			}
+		}
+	}
+}
+
+// sessionPurger is the slice of the identity store the purge loop needs —
+// one method, so the loop's logging and cancellation are unit-testable
+// against a recorder instead of a database.
+type sessionPurger interface {
+	PurgeExpired(ctx context.Context) error
+}
+
+// runSessionPurger is audit F1's retention tick: every `every`, delete the
+// sessions and OIDC login states whose TTLs have already expired. A failed
+// purge is logged and retried next beat (the deletes are idempotent, so a
+// retry cannot double-delete); a panicked pass is recovered for the same
+// reason runIssueTriggerTicker recovers — a loop that dies quietly turns a
+// bounded churn into unbounded table growth, which is the exact failure the
+// tick exists to prevent. Errors are never fatal: a purge failure means the
+// database is having a day, not that this replica should stop serving.
+func runSessionPurger(ctx context.Context, p sessionPurger, every time.Duration, log *slog.Logger) error {
+	if p == nil {
+		return errors.New("serve: session purger has no store")
+	}
+	if every <= 0 {
+		every = defaultSessionPurgeInterval
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.WarnContext(ctx, "session purge panicked; retrying next tick",
+							slog.Any("panic", r),
+							slog.String("stack", string(debug.Stack())))
+					}
+				}()
+				if err := p.PurgeExpired(ctx); err != nil {
+					log.ErrorContext(ctx, "session purge failed; retrying next tick",
+						slog.String("error", err.Error()))
+				}
+			}()
 		}
 	}
 }
@@ -1196,12 +1467,43 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		log.Info("issue trigger ticker stopped")
 	}()
 
+	// Audit F1's retention tick: expired rows are dead the moment their TTL
+	// passes (sessions enforce expires_at in SQL, login states are taken with
+	// a WHERE expires_at > now()), but nothing deleted them until this loop —
+	// /auth/login inserts a row per unauthenticated hit, so a churned table
+	// was the attack. It runs on EVERY replica, unconditionally: PurgeExpired
+	// is DELETE ... WHERE expires_at <= now(), so two replicas firing the
+	// same beat is harmless — the loser either matches zero rows or waits on
+	// the winner's row locks for one statement. Unlike the schedule tick this
+	// is not gated on the pipeline scheduler: identity hygiene belongs to
+	// every serving replica. The interval itself is the gate
+	// (COMMUNICATION_SESSION_PURGE_INTERVAL=0 disables).
+	purgeCtx, stopPurge := context.WithCancel(context.Background())
+	if d.SessionPurgeInterval > 0 {
+		runPurge := d.sessionPurgeRunner
+		if runPurge == nil {
+			purger, every := identity, d.SessionPurgeInterval
+			runPurge = func(ctx context.Context) error {
+				return runSessionPurger(ctx, purger, every,
+					log.With(slog.String("component", "session-purge")))
+			}
+		}
+		go func() {
+			if err := runPurge(purgeCtx); err != nil {
+				log.Error("session purge ticker stopped", slog.String("error", err.Error()))
+				return
+			}
+			log.Info("session purge ticker stopped")
+		}()
+	}
+
 	var closeOnce sync.Once
 	closeStack := func() {
 		closeOnce.Do(func() {
 			stopReconciler()
 			stopDriver()
 			stopTick()
+			stopPurge()
 			wakes.Close()
 		})
 	}

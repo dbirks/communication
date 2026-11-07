@@ -89,6 +89,8 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
     environment:
+      # Audit F6: the M4/lab stacks clone file:// fixture remotes.
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       # pi launcher (ADR-0059/ADR-0069): the key rides the mounted file, read
       # at each launch; base URL + model go into the agent-home models.json and
       # the settings.json pin, and the base URL's host joins the egress
@@ -106,6 +108,7 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
     environment:
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
       COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
@@ -117,6 +120,8 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
     environment:
+      # Audit F6: see worker-a.
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       # ADR-0034: an unset COMMUNICATION_ASSISTANT_BASE_URL is the honest
       # absence (503 assistant_not_configured); naming it makes THIS replica
       # egress app content to the gateway, which is the operator's explicit
@@ -133,6 +138,7 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key (or drop compose.m4-llm.yml from the -f list)}:/run/comm/llm-api-key:ro
     environment:
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key

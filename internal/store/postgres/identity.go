@@ -275,7 +275,13 @@ func (s *IdentityStore) TakeLoginState(ctx context.Context, state string) (Login
 	return st, nil
 }
 
-// PurgeExpired removes expired sessions and unconsumed login states.
+// PurgeExpired removes expired sessions and unconsumed login states. It is
+// safe to run from several replicas at once (the serve loop starts it on
+// every replica, audit F1): both statements are plain
+// DELETE ... WHERE expires_at <= now() with no read-then-delete race, so a
+// concurrent second pass either matches zero rows or waits briefly on the
+// first's row locks. The caller retries failures on the next tick; a
+// partially-purged table is a latency problem, never a correctness one.
 func (s *IdentityStore) PurgeExpired(ctx context.Context) error {
 	if s == nil || s.Pool == nil {
 		return errors.New("postgres: identity store has no pool")

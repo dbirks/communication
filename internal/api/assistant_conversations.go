@@ -251,8 +251,10 @@ func RegisterAssistantConversations(s *Server, deps AssistantConversationDeps) {
 	h := &assistantConversationHandlers{store: deps.Store, runner: deps.Runner, trust: deps.TrustLevel, srv: s}
 	s.HandleAuthed("POST /api/v1/assistant/conversations", http.HandlerFunc(h.createConversation))
 	s.HandleAuthed("GET /api/v1/assistant/conversations", http.HandlerFunc(h.listConversations))
+	// Messages are assistant turns: billed model work per request, so they
+	// carry the per-principal throttle (audit F2, ADR-0077).
 	s.HandleAuthed("POST /api/v1/assistant/conversations/{conversationId}/messages",
-		http.HandlerFunc(h.postMessage))
+		s.ThrottleAssistant(http.HandlerFunc(h.postMessage)))
 	s.HandleAuthed("GET /api/v1/assistant/conversations/{conversationId}/messages",
 		http.HandlerFunc(h.listMessages))
 	s.HandleAuthed("GET /api/v1/assistant/conversations/{conversationId}/changes",

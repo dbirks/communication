@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -131,9 +133,43 @@ var (
 	prjRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 	// Accepted git remotes, verbatim from RepositoryCreate.git_url in
 	// api/openapi.yaml: https/ssh URLs, an absolute file:// path, or an scp-style
-	// git@host:path.
+	// git@host:path. The file:// arm is additionally gated by
+	// Config.AllowFileGitURLs (audit F6): a file:// clone reads an arbitrary
+	// worker-readable path, so it is off unless the operator says otherwise.
 	prjGitURLPattern = regexp.MustCompile(`^((https|ssh)://[^/\s]+/.+|file:///[^\s]+|git@[^:/\s]+:.+)$`)
 )
+
+// EnvAllowFileGitURLs is the server setting behind Config.AllowFileGitURLs
+// (audit F6). It is also the worker's own setting of the same name — one
+// variable, two independently-defaulted readers, so a lab that sets it once
+// in compose turns both halves on.
+const EnvAllowFileGitURLs = "COMMUNICATION_ALLOW_FILE_GIT_URLS"
+
+// AllowFileGitURLsFromEnv reads EnvAllowFileGitURLs for the serve/worker
+// command wiring. Unset or empty means false (file:// refused); an
+// unparseable value is a startup refusal, not a silent fallback — the
+// operator who typed it meant to change the setting (the
+// COMMUNICATION_COOKIE_SECURE convention).
+func AllowFileGitURLsFromEnv(getenv func(string) string) (bool, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	raw := strings.TrimSpace(getenv(EnvAllowFileGitURLs))
+	if raw == "" {
+		return false, nil
+	}
+	allow, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s %q is not a boolean (true/false)", EnvAllowFileGitURLs, raw)
+	}
+	return allow, nil
+}
+
+// prjGitURLIsFile reports whether an already-pattern-valid git URL uses the
+// file:// transport (the pattern only admits the absolute file:/// form).
+func prjGitURLIsFile(gitURL string) bool {
+	return strings.HasPrefix(gitURL, "file://")
+}
 
 // RegisterProjects mounts the project, repository and member routes of
 // api/openapi.yaml on s. All of them require a session; the mutations
@@ -351,6 +387,15 @@ func (h *prjHandlers) addRepository(w http.ResponseWriter, r *http.Request) {
 	}
 	if !prjGitURLPattern.MatchString(body.GitURL) {
 		prjInvalid(w, "git_url must be https://, ssh://, git@host:path or file://.")
+		return
+	}
+	if prjGitURLIsFile(body.GitURL) && !h.srv.cfg.AllowFileGitURLs {
+		// Audit F6: a file:// clone lets any project maintainer make the
+		// worker read an arbitrary worker-readable path. The shape stays in
+		// the contract (existing rows are not migrated), but writing one is
+		// a server-wide opt-in. PATCH cannot change git_url, so this gate
+		// covers every way a file:// URL enters.
+		prjInvalid(w, "file:// repository URLs are disabled on this server; set "+EnvAllowFileGitURLs+"=true for local development")
 		return
 	}
 	branch := strings.TrimSpace(body.DefaultBranch)

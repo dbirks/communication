@@ -875,7 +875,10 @@ func registerRuns(s *Server, store RunStore, assignments AssignmentStore, projec
 	s.HandleAuthed("POST /api/v1/runs/{runId}/cancel", http.HandlerFunc(h.cancelRun))
 	s.HandleAuthed("POST /api/v1/runs/{runId}/retry", http.HandlerFunc(h.retryRun))
 	s.HandleAuthed("GET /api/v1/attempts/{attemptId}", http.HandlerFunc(h.getAttempt))
-	s.HandleAuthed("GET /api/v1/runs/{runId}/events", http.HandlerFunc(h.streamRunEvents))
+	// Per-principal stream concurrency cap shared with every other SSE
+	// surface (audit F2, ADR-0077).
+	s.HandleAuthed("GET /api/v1/runs/{runId}/events",
+		s.LimitStreams(http.HandlerFunc(h.streamRunEvents)))
 }
 
 type rnHandlers struct {

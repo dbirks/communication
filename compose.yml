@@ -172,6 +172,18 @@ services:
       COMMUNICATION_LISTEN_ADDR: ":8080"
       COMMUNICATION_PUBLIC_URL: http://localhost:18080
       COMMUNICATION_REPLICA_NAME: api-a
+      # ADR-0077 rate limits are OFF in the lab: the e2e and verification
+      # suites drive /auth, assistant turns, issue reads and SSE streams hard
+      # from one browser (one IP behind the lb, one bootstrap principal),
+      # which the production defaults (10/min auth, 30/min assistant, 16
+      # streams) would throttle into 429s. A value of 0 disables that limit.
+      COMMUNICATION_RATE_AUTH_PER_MIN: "0"
+      COMMUNICATION_RATE_ASSISTANT_PER_MIN: "0"
+      COMMUNICATION_RATE_ISSUES_PER_MIN: "0"
+      COMMUNICATION_RATE_MAX_STREAMS: "0"
+      # Audit F6: the lab clones file:// fixture repos; production ships the
+      # default (false) — only these compose stacks opt in.
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_OIDC_ISSUER: http://oidc:8080/default
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18090/default
       COMMUNICATION_OIDC_CLIENT_ID: communication-dev
@@ -228,6 +240,12 @@ services:
       COMMUNICATION_LISTEN_ADDR: ":8080"
       COMMUNICATION_PUBLIC_URL: http://localhost:18080
       COMMUNICATION_REPLICA_NAME: api-b
+      # ADR-0077 rate limits off in the lab (see the api-a note).
+      COMMUNICATION_RATE_AUTH_PER_MIN: "0"
+      COMMUNICATION_RATE_ASSISTANT_PER_MIN: "0"
+      COMMUNICATION_RATE_ISSUES_PER_MIN: "0"
+      COMMUNICATION_RATE_MAX_STREAMS: "0"
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_OIDC_ISSUER: http://oidc:8080/default
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18090/default
       COMMUNICATION_OIDC_CLIENT_ID: communication-dev
@@ -300,6 +318,9 @@ services:
     environment:
       COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
       COMMUNICATION_WORKER_NAME: worker-1
+      # Audit F6: the lab's fixture repos are file:// remotes (defence in
+      # depth beside the API replica's same-named setting).
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_WORKER_HEARTBEAT: "10s"
       COMMUNICATION_WORKSPACE_ROOT: /workspaces
       # ADR-0017 D1: mirrors live *beside* workspaces, not inside them, and

@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/dbirks/communication/internal/api"
 )
 
 const devUsage = `usage: communication dev
@@ -23,6 +26,11 @@ supervision, no rolling update — explicitly NOT a high-availability runtime
 environment:
   the union of "communication serve" and "communication worker" settings;
   COMMUNICATION_DATABASE_URL is required by both
+
+  COMMUNICATION_ALLOW_FILE_GIT_URLS defaults to "true" here (audit F6):
+  local development clones file:// fixture repositories, and this mode is
+  local-only by definition (one host, one process, no supervision). Set it
+  explicitly to "false" to run dev with the production default.
 `
 
 const devBanner = "communication dev: one API + one worker in one process — dev convenience only, NOT an HA runtime"
@@ -37,6 +45,14 @@ func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
+
+	// Audit F6: dev defaults file:// git URLs ON. The justification is this
+	// file's own contract — "for local development", "dev convenience only,
+	// NOT an HA runtime", one process on one host: a dev host has no other
+	// tenants whose files a maintainer could read through the worker, and the
+	// local workflow (and every lab fixture) is built on file:// repos.
+	// An explicit setting always wins, in either direction.
+	defer devDefaultAllowFileGitURLs()()
 
 	// Two components log into the same streams; without the mutex their JSON
 	// records would interleave into garbage (and the race detector would say
@@ -66,6 +82,26 @@ func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return first
 	}
 	return second
+}
+
+// devDefaultAllowFileGitURLs turns COMMUNICATION_ALLOW_FILE_GIT_URLS on for
+// a dev run when the operator has not set it (audit F6; see runDev for why
+// dev is the one mode allowed to default this open). It returns the undo —
+// restoring the previous value, or unsetting what it set — so an embedded
+// dev run (tests) leaks nothing into what follows it.
+func devDefaultAllowFileGitURLs() func() {
+	v, ok := os.LookupEnv(api.EnvAllowFileGitURLs)
+	if ok && strings.TrimSpace(v) != "" {
+		return func() {}
+	}
+	_ = os.Setenv(api.EnvAllowFileGitURLs, "true")
+	return func() {
+		if !ok {
+			_ = os.Unsetenv(api.EnvAllowFileGitURLs)
+		} else {
+			_ = os.Setenv(api.EnvAllowFileGitURLs, v)
+		}
+	}
 }
 
 // lockedWriter serialises writes from the two dev-mode components.

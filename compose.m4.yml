@@ -63,6 +63,8 @@ services:
 
   api-a:
     environment:
+      # Audit F6: this stack's repos are file:// fixtures.
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_PUBLIC_URL: http://localhost:18091
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18095/default
       COMMUNICATION_PREVIEW_HOST: preview.localhost:18094
@@ -81,6 +83,7 @@ services:
 
   api-b:
     environment:
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_PUBLIC_URL: http://localhost:18091
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18095/default
       COMMUNICATION_PREVIEW_HOST: preview.localhost:18094
@@ -190,6 +193,8 @@ services:
       HOME: /harness/home
       COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
       COMMUNICATION_WORKER_NAME: worker-a
+      # Audit F6: file:// fixture remotes (§ 7.0's /srv/m4/fixtures).
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_WORKER_HEARTBEAT: "10s"
       # § 6.2: capacity plumbing; worker-a is the lab exit run's 3,
       # worker-b is 1 so the claim predicate's
@@ -248,6 +253,7 @@ services:
       HOME: /harness/home
       COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
       COMMUNICATION_WORKER_NAME: worker-b
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_WORKER_HEARTBEAT: "10s"
       COMMUNICATION_WORKER_CAPACITY: "1"
       COMMUNICATION_WORKSPACE_ROOT: /workspaces
@@ -285,6 +291,15 @@ services:
   # published port. It serves nothing but an access log (no files of value
   # are ever placed under its document root) and 18099 is outside every
   # block § 7.0 forbids.
+  #
+  # Audit sec-audit F9 triage: KEPT on all interfaces, not a slip. This file
+  # is the M4 lab harness overlay — it is never the compose file of an
+  # internet-facing deployment (those run compose.yml, where every published
+  # port is 127.0.0.1-bound). A tighter "172.17.0.1:18099:8080" bind would
+  # trim exposure to the docker bridge, but the runner would then depend on
+  # the default bridge subnet being 172.17.0.0/16 on that exact host address
+  # — untestable from this repo and a silent C11 breakage if wrong — so the
+  # documented behaviour wins over an unverifiable hardening.
   collector:
     image: python:3.13-alpine
     command: ["python3", "-m", "http.server", "8080"]

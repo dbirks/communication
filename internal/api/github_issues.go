@@ -114,8 +114,11 @@ type RepositoryCredentialResolver interface {
 // anonymous ones exactly as before.
 func RegisterGitHubIssues(s *Server, projects ProjectStore, lister github.IssueLister, credentials RepositoryCredentialResolver) {
 	h := &ghHandlers{projects: projects, lister: lister, credentials: credentials, srv: s}
+	// Issue reads share one upstream rate budget per egress IP: throttle per
+	// principal so one scripted user cannot starve the feature (audit F2,
+	// ADR-0077).
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/repos/{repositoryId}/issues",
-		http.HandlerFunc(h.listIssues))
+		s.ThrottleIssues(http.HandlerFunc(h.listIssues)))
 }
 
 type ghHandlers struct {

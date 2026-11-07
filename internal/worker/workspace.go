@@ -31,6 +31,22 @@ type Workspace struct {
 	// RunGit executes one git command; nil uses exec.CommandContext. It is
 	// the test seam — no git binary is required to unit-test layout logic.
 	RunGit func(ctx context.Context, dir string, args ...string) ([]byte, error)
+
+	// AllowFileGitURLs (audit F6) admits `file://` repository clones. Default
+	// false: a file:// URL makes this worker read an arbitrary path it can
+	// reach on this host, which only makes sense when the host is the single
+	// developer who owns the projects. Sourced from the worker's own
+	// COMMUNICATION_ALLOW_FILE_GIT_URLS (the same variable the API replica
+	// reads), so a deployment must say it twice on purpose.
+	AllowFileGitURLs bool
+}
+
+// refuseFileGitURL is the workspace note a disabled worker answers a file://
+// repository with. Clone failures are notes, not launch failures (this file's
+// contract: "failures are visible, not fatal"), so the refusal reads like the
+// other notes and names the exact switch that lifts it.
+func refuseFileGitURL(label, gitURL string) string {
+	return fmt.Sprintf("clone of %s from %s refused: file:// repository URLs are disabled on this worker; set COMMUNICATION_ALLOW_FILE_GIT_URLS=true for local development", label, redactURL(gitURL))
 }
 
 var (
@@ -81,6 +97,14 @@ func (w *Workspace) mirror(ctx context.Context, root string, r Repo) string {
 	label := r.Name
 	if !safeRepoName.MatchString(r.Name) {
 		return fmt.Sprintf("repository name %q is not a safe directory name; not mirrored", r.Name)
+	}
+	if !w.AllowFileGitURLs && strings.HasPrefix(r.GitURL, "file://") {
+		// Defence in depth (audit F6): even a row written while the server
+		// setting was on — or migrated in by hand — is not cloned unless this
+		// worker was told to allow it too. Checked before the stat so a
+		// previously-allowed clone is not silently re-used by a worker that
+		// turned the flag off.
+		return refuseFileGitURL(label, r.GitURL)
 	}
 	dir := filepath.Join(root, "repos", r.Name)
 	if st, err := os.Stat(filepath.Join(dir, ".git")); err == nil && st.IsDir() {

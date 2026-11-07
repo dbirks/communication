@@ -2792,7 +2792,7 @@ export interface components {
     RepositoryCreate: {
       /** @description Unique within the project; a duplicate is `409`. Filename-safe (`[A-Za-z0-9._-]`) because it names a workspace directory; anything else, including `.` and `..`, is `422`. */
       name: string;
-      /** @description One of `https://host/path`, `ssh://[user@]host[:port]/path`, `git@host:path` or `file:///absolute/path`. Anything else is `422`. */
+      /** @description One of `https://host/path`, `ssh://[user@]host[:port]/path`, `git@host:path` or `file:///absolute/path`. Anything else is `422`. A `file:///` URL is additionally refused with `422` unless the server was started with `COMMUNICATION_ALLOW_FILE_GIT_URLS=true` (audit F6: a `file://` clone lets a maintainer read arbitrary worker-readable paths, so it is local-development-only); the scheme stays in the pattern because existing rows are not migrated. */
       git_url: string;
       /** @default main */
       default_branch: string;

@@ -52,7 +52,10 @@ func registerOrgEvents(s *Server, stream OrgEventStream, timing evtTiming) {
 		timing.batch = evtProductionTiming().batch
 	}
 	h := &orgEvtHandlers{journal: stream, srv: s, timing: timing}
-	s.HandleAuthed("GET /api/v1/events", http.HandlerFunc(h.handleStream))
+	// Per-principal stream concurrency cap (audit F2, ADR-0077) — the same
+	// budget as every other SSE surface on this replica.
+	s.HandleAuthed("GET /api/v1/events",
+		s.LimitStreams(http.HandlerFunc(h.handleStream)))
 }
 
 type orgEvtHandlers struct {

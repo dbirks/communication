@@ -81,7 +81,10 @@ func registerEvents(s *Server, projects ProjectStore, stream EventStream, timing
 		timing.batch = evtProductionTiming().batch
 	}
 	h := &evtHandlers{projects: projects, journal: stream, srv: s, timing: timing}
-	s.HandleAuthed("GET /api/v1/projects/{projectId}/events", http.HandlerFunc(h.handleStream))
+	// Each SSE stream is a goroutine plus tickers and repeated authz reads:
+	// cap concurrent streams per principal (audit F2, ADR-0077).
+	s.HandleAuthed("GET /api/v1/projects/{projectId}/events",
+		s.LimitStreams(http.HandlerFunc(h.handleStream)))
 }
 
 type evtHandlers struct {

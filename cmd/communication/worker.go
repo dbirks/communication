@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/sandbox/nono"
@@ -47,6 +48,11 @@ environment:
                                  contract § 4 step 1 and § 6)
   COMMUNICATION_WORKSPACE_ROOT   per-run worktree root
                                  (default "/var/lib/communication/workspaces")
+  COMMUNICATION_ALLOW_FILE_GIT_URLS
+                                 clone file:// repository URLs (default "false",
+                                 audit F6: a file:// URL makes this worker read
+                                 any path it can reach on this host; "true" is
+                                 for local development only)
   COMMUNICATION_REPOS_ROOT       per-project mirror root, measured as its own
                                  storage volume (ADR-0017 D5; default
                                  "<workspace root's parent>/repos")
@@ -207,6 +213,12 @@ type workerOptions struct {
 	// launcher home is: it is granted rw during the test, so it must not be a tree
 	// any workspace grant also covers.
 	sandboxSelfTest string
+	// allowFileGitURLs (audit F6) admits clones of file:// repository URLs
+	// into conversation workspaces. Default false: the clone reads any path
+	// this worker can reach, so it is a single-developer-host setting only.
+	// Read from COMMUNICATION_ALLOW_FILE_GIT_URLS — the same variable the API
+	// replica gates on, parsed by the same helper.
+	allowFileGitURLs bool
 	// agentGit is the commit identity the worker seeds into each agent home and
 	// exports to the child. It is configuration rather than inferred: an agent
 	// that commits as "root@<container id>" produces history no team can attribute,
@@ -344,6 +356,14 @@ func workerOptionsFromEnv(getenv func(string) string) (workerOptions, error) {
 	if pathIsUnderRoot(o.sandboxLauncherHome, o.sandboxSelfTest) {
 		return o, errors.New("COMMUNICATION_SANDBOX_SELFTEST_DIR must not be inside nono's HOME: a grant overlapping nono's protected state root is refused permanently (probe C-H1)")
 	}
+
+	// Audit F6: the worker's own file:// gate, independent of the API's —
+	// an existing repository row is not cloned unless this process says so too.
+	allowFileGit, allowFileGitErr := api.AllowFileGitURLsFromEnv(getenv)
+	if allowFileGitErr != nil {
+		return o, allowFileGitErr
+	}
+	o.allowFileGitURLs = allowFileGit
 
 	// The commit identity. It is validated per-unit rather than here, because the
 	// axis that needs it is a profile's commit_granted flag: a worker with no
@@ -518,7 +538,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			// interface-level guarantee beats a convention about call order.
 			RequirePlan: opts.sandboxEnforcement == domain.EnforceRequired,
 		},
-		&worker.Workspace{Root: opts.workspaceRoot},
+		&worker.Workspace{Root: opts.workspaceRoot, AllowFileGitURLs: opts.allowFileGitURLs},
 		w.ID,
 		worker.WithTurnLogger(log),
 		worker.WithJournalWake(wakes.Watch),

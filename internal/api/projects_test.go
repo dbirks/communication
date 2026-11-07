@@ -955,3 +955,111 @@ func TestPatchProjectAgentMail(t *testing.T) {
 		})
 	}
 }
+
+// --- audit F6: file:// git URLs are a server-wide opt-in -----------------
+
+// prjServerAllowFileGit builds the same server as prjServer but with
+// Config.AllowFileGitURLs set explicitly (the COMMUNICATION_ALLOW_FILE_GIT_URLS
+// arm of the contract).
+func prjServerAllowFileGit(t *testing.T, store ProjectStore, auth Authenticator, allow bool) *Server {
+	t.Helper()
+	s := New(Config{ReplicaName: "replica-a", Version: "dev", PublicURL: "http://localhost:8080",
+		Logger: discardLogger(), AllowFileGitURLs: allow}, fakeReadiness{expected: 1}, auth, nil)
+	RegisterProjects(s, store)
+	return s
+}
+
+func TestAddRepositoryFileGitURLGatedBySetting(t *testing.T) {
+	const fileBody = `{"name":"fixture","git_url":"file:///srv/fixtures/app.git"}`
+	for _, tt := range []struct {
+		name   string
+		allow  bool
+		status int
+		detail string
+		saves  bool
+	}{
+		{"disabled by default", false, http.StatusUnprocessableEntity,
+			"file:// repository URLs are disabled on this server; set COMMUNICATION_ALLOW_FILE_GIT_URLS=true for local development", false},
+		{"enabled explicitly", true, http.StatusCreated, "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := prjNewFakeStore()
+			id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+			srv := prjServerAllowFileGit(t, store, prjAs("u-1", false), tt.allow)
+			rec := do(t, srv, prjPost(http.MethodPost, "/api/v1/projects/"+id+"/repos", fileBody))
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.status, rec.Body)
+			}
+			if tt.detail != "" {
+				p := decodeProblem(t, rec)
+				if p.Detail != tt.detail {
+					t.Errorf("detail = %q, want %q", p.Detail, tt.detail)
+				}
+			}
+			if got := len(store.added) > 0; got != tt.saves {
+				t.Errorf("store.added = %+v, want saved=%v", store.added, tt.saves)
+			}
+		})
+	}
+}
+
+func TestAddRepositoryNonFileURLsUnaffectedByGate(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"a","git_url":"https://github.com/example/communication.git"}`,
+		`{"name":"b","git_url":"ssh://git@github.com/example/communication.git"}`,
+		`{"name":"c","git_url":"git@github.com:example/communication.git"}`,
+	} {
+		store := prjNewFakeStore()
+		id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+		srv := prjServerAllowFileGit(t, store, prjAs("u-1", false), false)
+		rec := do(t, srv, prjPost(http.MethodPost, "/api/v1/projects/"+id+"/repos", body))
+		if rec.Code != http.StatusCreated {
+			t.Errorf("%s: status = %d, want 201 (body %s)", body, rec.Code, rec.Body)
+		}
+	}
+	if store := prjNewFakeStore(); true {
+		id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+		srv := prjServerAllowFileGit(t, store, prjAs("u-1", false), false)
+		rec := do(t, srv, prjPost(http.MethodPost, "/api/v1/projects/"+id+"/repos",
+			`{"name":"x","git_url":"file://localhost/srv/app.git"}`))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 for a non-absolute file URL (body %s)", rec.Code, rec.Body)
+		}
+		p := decodeProblem(t, rec)
+		if !strings.Contains(p.Detail, "git_url must be") {
+			t.Errorf("detail = %q, want the pattern refusal, not the gate", p.Detail)
+		}
+	}
+}
+
+func TestAllowFileGitURLsFromEnv(t *testing.T) {
+	for _, tt := range []struct {
+		name, raw string
+		want      bool
+		wantErr   bool
+	}{
+		{"unset", "", false, false},
+		{"blank", "  ", false, false},
+		{"true", "true", true, false},
+		{"TRUE padded", " TRUE ", true, false},
+		{"false", "false", false, false},
+		{"one", "1", true, false},
+		{"garbage", "yes-please", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := AllowFileGitURLsFromEnv(func(string) string { return tt.raw })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("allow = %v, want %v", got, tt.want)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), EnvAllowFileGitURLs) {
+				t.Errorf("err = %q, want it to name %s", err, EnvAllowFileGitURLs)
+			}
+		})
+	}
+	if _, err := AllowFileGitURLsFromEnv(nil); err != nil {
+		t.Errorf("nil getenv must fall back to the process env, got %v", err)
+	}
+}

@@ -61,6 +61,8 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
     environment:
+      # Audit F6: the M4/lab stacks clone file:// fixture remotes.
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       # model.chat (worker.go: parsed at startup; base URL unset means the
       # kind is not registered and its nodes fail with the honest refusal).
       COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
@@ -81,6 +83,7 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
     environment:
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the host environment (file form: COMMUNICATION_LLM_API_KEY_HOST_FILE)}"
       COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
@@ -93,6 +96,8 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
     environment:
+      # Audit F6: see worker-a.
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       # ADR-0034: unset COMMUNICATION_ASSISTANT_BASE_URL means the assistant
       # is absent (503 assistant_not_configured). Setting it makes THIS
       # replica egress app content to the gateway — which is the operator's
@@ -109,6 +114,7 @@ services:
     volumes:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
     environment:
+      COMMUNICATION_ALLOW_FILE_GIT_URLS: "true"
       COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key

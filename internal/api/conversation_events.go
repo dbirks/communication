@@ -33,7 +33,10 @@ func registerConversationEvents(s *Server, h *cnvHandlers, stream ConversationEv
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.handleConversationStream(w, r, stream, timing)
 	})
-	s.HandleAuthed("GET /api/v1/conversations/{conversationId}/events", handler)
+	// Per-principal stream concurrency cap, shared with every other SSE
+	// surface (audit F2, ADR-0077).
+	s.HandleAuthed("GET /api/v1/conversations/{conversationId}/events",
+		s.LimitStreams(handler))
 }
 
 // handleConversationStream serves one SSE connection: connect-time
