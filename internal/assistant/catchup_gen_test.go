@@ -4,7 +4,9 @@ package assistant
 // the generator PROMISES: evidence is copied by the server from the block
 // (unknown ids dropped), refs are derived from the run's outputs and never
 // from the answer, a malformed answer writes NOTHING, a per-run cooldown
-// keeps a failing model from being hammered, a decision without a thread to
+// keeps a failing model from being hammered, the per-replica model-call cap
+// keeps a fleet of page loads from spending the gateway's whole rate limit, a
+// decision without a thread to
 // answer it is dropped, and a rewrite inherits the id (and introducing
 // version) of every beat whose title survived — the stable-id hinge the
 // whole seen-state design hangs on. The store side (the race-safe append,
@@ -12,8 +14,10 @@ package assistant
 // internal/store/postgres/catch_up_test.go.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -297,6 +301,90 @@ func TestCatchUpPassCapsGenerationsPerPass(t *testing.T) {
 	}
 }
 
+// The per-replica global cap (ADR-0078 § Migration, Trigger note): the
+// sidebar badge made the list read hot on every page, so the per-run
+// cooldown alone still let a lab full of page loads spend the gateway's rate
+// limit. Generation now spends at most MaxModelCallsPerWindow model calls
+// per CatchUpGenModelCallWindow for the whole replica, a cap that refuses a
+// pass logs one line, and a cap of 0 turns generation off entirely.
+func TestCatchUpPassHonoursGlobalModelCallCap(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	model := &fakeNotesModel{answer: answer}
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(), cands: []CatchUpCandidate{
+		{RunID: "r1", ProjectID: "p1"}, {RunID: "r2", ProjectID: "p1"},
+		{RunID: "r3", ProjectID: "p1"}, {RunID: "r4", ProjectID: "p1"},
+	}}
+	writer := &fakeCatchUpTourWriter{}
+	clock := &notesClock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)}
+	var logs bytes.Buffer
+	perWindow := 2
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Now:                    clock.Now,
+		Spawn:                  func(f func()) { f() },
+		Log:                    slog.New(slog.NewTextHandler(&logs, nil)),
+		Cooldown:               2 * time.Minute, // per-run floor below the cap window
+		MaxModelCallsPerWindow: &perWindow,
+	})
+	if gen == nil {
+		t.Fatal("nil generator for fully wired deps")
+	}
+	// One pass over four eligible runs: the pass CAP would allow two, the
+	// window cap allows two — both hold at two model calls.
+	gen.Pass(context.Background(), Caller{}, nil)
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want 2 under a cap of 2", calls)
+	}
+	// A second pass inside the same window spends nothing more, however many
+	// fresh page loads (visits) schedule it.
+	gen.Pass(context.Background(), Caller{}, nil)
+	gen.Pass(context.Background(), Caller{}, nil)
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want still 2 inside the window", calls)
+	}
+	if !strings.Contains(logs.String(), "skipped by the model-call cap") {
+		t.Fatalf("cap skip logged nothing:\n%s", logs.String())
+	}
+	// Past the window the budget refills — up to the cap again, not all at once.
+	clock.Advance(CatchUpGenModelCallWindow + time.Minute)
+	gen.Pass(context.Background(), Caller{}, nil)
+	if calls := model.callCount(); calls != 4 {
+		t.Fatalf("model calls = %d, want 2 more after the window rolled", calls)
+	}
+}
+
+func TestCatchUpModelCallCapZeroDisablesGeneration(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	model := &fakeNotesModel{answer: answer}
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(),
+		cands: []CatchUpCandidate{{RunID: "r1", ProjectID: "p1"}}}
+	writer := &fakeCatchUpTourWriter{}
+	var logs bytes.Buffer
+	off := 0
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Spawn:                  func(f func()) { f() },
+		Log:                    slog.New(slog.NewTextHandler(&logs, nil)),
+		MaxModelCallsPerWindow: &off,
+	})
+	if gen == nil {
+		t.Fatal("nil generator for fully wired deps")
+	}
+	// The visit trigger must not even read candidates, let alone call the
+	// model — 0 is the deployment saying "generate nothing at all".
+	gen.CatchUpVisitRecorded(context.Background(), Caller{}, nil)
+	gen.Pass(context.Background(), Caller{}, nil)
+	if calls := model.callCount(); calls != 0 {
+		t.Fatalf("model calls = %d, want 0 with the cap at zero", calls)
+	}
+	if got := len(writer.snapshot()); got != 0 {
+		t.Fatalf("writes = %d, want 0 with the cap at zero", got)
+	}
+	if !strings.Contains(logs.String(), "skipped by the model-call cap") {
+		t.Fatalf("a disabled cap logged nothing:\n%s", logs.String())
+	}
+}
+
 func TestCatchUpDecisionSurvivesOnlyWithAThread(t *testing.T) {
 	decision := `"decision":{"prompt":"Should this have gone to stable or latest?","options":["stable","latest"],"allow_text":true}`
 	answer := catchUpAnswerJSON(fmt.Sprintf(
@@ -395,7 +483,7 @@ func TestCatchUpNilGeneratorIsTheHonestAbsence(t *testing.T) {
 	if g := NewCatchUpGenerator(deps); g == nil {
 		t.Fatal("fully wired deps returned nil")
 	} else {
-		g.CatchUpItemsListed(context.Background(), Caller{}, nil) // must not panic
+		g.CatchUpVisitRecorded(context.Background(), Caller{}, nil) // must not panic
 	}
 	deps.Model = nil
 	if g := NewCatchUpGenerator(deps); g != nil {
@@ -410,7 +498,7 @@ func TestCatchUpNilGeneratorIsTheHonestAbsence(t *testing.T) {
 		t.Fatal("no writer must mean no generator")
 	}
 	var nilGen *CatchUpGenerator
-	nilGen.CatchUpItemsListed(context.Background(), Caller{}, nil) // trigger on nil: no-op
+	nilGen.CatchUpVisitRecorded(context.Background(), Caller{}, nil) // trigger on nil: no-op
 	nilGen.Pass(context.Background(), Caller{}, nil)
 	if err := nilGen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != ErrNotConfigured {
 		t.Fatalf("nil generator GenerateRun = %v, want ErrNotConfigured", err)

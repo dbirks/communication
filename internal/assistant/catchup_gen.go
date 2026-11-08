@@ -15,13 +15,21 @@ package assistant
 // the prompt is ever built, and an answer that invents a PR number changes
 // nothing, because the answer has nowhere to put one.
 //
-// The trigger is lazy, like notes: `CatchUpItemsListed` is what the
-// `GET /catch-up/items` route calls once it has answered, and it only ever
-// schedules. A pass looks at the caller's projects, takes the runs that
-// reached a terminal status recently and have no tour (or whose run moved
-// after the item's latest tour version), and generates for AT MOST
+// The trigger is lazy, like notes — but it is the VISIT, not the list read:
+// `CatchUpVisitRecorded` is what `POST /catch-up/visits` (opening the Catch up
+// page) calls once it has answered. `GET /catch-up/items` schedules nothing;
+// since the sidebar badge reads the list on every page of the app, a list
+// trigger was a model call per page load, and the lab's rate-limited gateway
+// showed what that costs (ADR-0078 § Migration, Trigger note). The trigger
+// only ever schedules. A pass looks at the caller's projects, takes the runs
+// that reached a terminal status recently and have no tour (or whose run
+// moved after the item's latest tour version), and generates for AT MOST
 // CatchUpGenMaxPerPass of them, each behind a per-run cooldown so a failing
-// model is not hammered by every page load. A deployment with no model has no
+// model is not hammered. On top of the per-run floor sits a PER-REPLICA
+// global cap: at most `MaxModelCallsPerWindow` (default
+// CatchUpGenMaxModelCallsPerWindow) generation model calls per
+// CatchUpGenModelCallWindow, a pass the cap refuses logs one line, and a cap
+// of 0 disables generation entirely. A deployment with no model has no
 // generator at all — the same nil-when-unconfigured rule as notes: with no
 // egress the feature is absent, and the answer is never a fake narrative.
 //
@@ -71,6 +79,15 @@ const (
 	// the notes block is bounded (ADR-0063 applied to a prompt).
 	CatchUpGenMaxNodes = 20
 	CatchUpGenMaxLines = 20
+	// CatchUpGenModelCallWindow / CatchUpGenMaxModelCallsPerWindow are the
+	// per-REPLICA global cap: generation spends at most six model calls per
+	// ten minutes, wherever the visits came from. The per-run cooldown stops
+	// one run from being asked about twice; this stops a fleet of page loads
+	// (and a lab full of specs) from spending the gateway's whole budget —
+	// 429s on the assistant and the agents were the symptom. Overridable per
+	// deployment by COMMUNICATION_CATCHUP_GEN_PER_10M; 0 disables.
+	CatchUpGenModelCallWindow        = 10 * time.Minute
+	CatchUpGenMaxModelCallsPerWindow = 6
 	// The field caps mirror internal/domain/catchup.go, the contract owner.
 	CatchUpGenTitleMaxChars      = 200
 	CatchUpGenSummaryMaxChars    = 500
@@ -291,6 +308,12 @@ type CatchUpDeps struct {
 	// Spawn runs one pass off the request path; nil means a goroutine.
 	Spawn    func(func())
 	Cooldown time.Duration
+	// MaxModelCallsPerWindow is the per-replica global cap above. nil means
+	// the shipped default (CatchUpGenMaxModelCallsPerWindow); a pointer so
+	// the honest "the deployment said zero" is distinguishable from "nobody
+	// said anything" — 0 disables generation entirely, negative is the
+	// default again.
+	MaxModelCallsPerWindow *int
 }
 
 // CatchUpGenerator is the run-tour writer: trigger, per-run cooldown, one
@@ -304,9 +327,14 @@ type CatchUpGenerator struct {
 	now      func() time.Time
 	spawn    func(func())
 	cooldown time.Duration
+	// maxCallsPerWindow is CatchUpDeps.MaxModelCallsPerWindow resolved; the
+	// window is the CatchUpGenModelCallWindow constant. callTimes is the
+	// sliding-window stamp list under mu.
+	maxCallsPerWindow int
 
-	mu       sync.Mutex
-	attempts map[string]time.Time
+	mu        sync.Mutex
+	attempts  map[string]time.Time
+	callTimes []time.Time
 }
 
 // NewCatchUpGenerator returns nil (a no-op trigger) when there is no model,
@@ -329,6 +357,10 @@ func NewCatchUpGenerator(deps CatchUpDeps) *CatchUpGenerator {
 	if g.cooldown <= 0 {
 		g.cooldown = CatchUpGenCooldown
 	}
+	g.maxCallsPerWindow = CatchUpGenMaxModelCallsPerWindow
+	if deps.MaxModelCallsPerWindow != nil && *deps.MaxModelCallsPerWindow >= 0 {
+		g.maxCallsPerWindow = *deps.MaxModelCallsPerWindow
+	}
 	if g.spawn == nil {
 		g.spawn = func(f func()) { go f() }
 	}
@@ -345,14 +377,20 @@ func (g *CatchUpGenerator) logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// CatchUpItemsListed is the GET /catch-up/items hook: it schedules one pass
-// for the caller's projects and never blocks or fails the request that has
-// already been answered. projectIDs is what the caller narrowed the page to
-// ("" = all of their projects) — the pass asks the store for candidates in
-// exactly that scope, so naming a project can only narrow, never widen.
-func (g *CatchUpGenerator) CatchUpItemsListed(ctx context.Context, c Caller, projectIDs []string) {
+// CatchUpVisitRecorded is the POST /catch-up/visits hook: it schedules one
+// pass for the caller's projects and never blocks or fails the request that
+// has already been answered. projectIDs is what the caller narrowed the page
+// to ("" = all of their projects) — the pass asks the store for candidates in
+// exactly that scope, so naming a project can only narrow, never widen. The
+// list read has no hook: a badge polling every page must not spend a model
+// call (ADR-0078 § Migration, Trigger note).
+func (g *CatchUpGenerator) CatchUpVisitRecorded(ctx context.Context, c Caller, projectIDs []string) {
 	if g == nil || g.model == nil {
 		return
+	}
+	if g.maxCallsPerWindow <= 0 {
+		logCatchUpGenCapSkipped(g.logger(), "")
+		return // the deployment said no generation at all
 	}
 	// The request's context dies with the response; the pass must outlive it
 	// while keeping the caller's identity and the trace.
@@ -366,6 +404,10 @@ func (g *CatchUpGenerator) CatchUpItemsListed(ctx context.Context, c Caller, pro
 func (g *CatchUpGenerator) Pass(ctx context.Context, c Caller, projectIDs []string) {
 	if g == nil || g.model == nil {
 		return
+	}
+	if g.maxCallsPerWindow <= 0 {
+		logCatchUpGenCapSkipped(g.logger(), "")
+		return // cap 0: disabled entirely — don't even read candidates
 	}
 	cands, err := g.source.CandidateRuns(ctx, c, projectIDs)
 	if err != nil {
@@ -381,6 +423,12 @@ func (g *CatchUpGenerator) Pass(ctx context.Context, c Caller, projectIDs []stri
 		if !g.tryRun(cand.RunID, g.now()) {
 			continue // cooldown: this run was asked about moments ago
 		}
+		if !g.takeModelCall(g.now()) {
+			// The per-replica global cap is shut: log the skip and stop this
+			// pass rather than queueing the model calls the gateway refused.
+			logCatchUpGenCapSkipped(g.logger(), cand.RunID)
+			return
+		}
 		made++
 		if err := g.GenerateRun(ctx, c, cand); err != nil {
 			g.logger().Warn("catch up: generation attempt",
@@ -392,6 +440,41 @@ func (g *CatchUpGenerator) Pass(ctx context.Context, c Caller, projectIDs []stri
 		g.logger().Info("catch up: generation attempt",
 			slog.String("run_id", cand.RunID), slog.String("outcome", "wrote tour"))
 	}
+}
+
+// logCatchUpGenCapSkipped is the one line the brief demands when the cap
+// skips a pass, so the lab's log says WHY the tour did not appear rather than
+// leaving the wait unexplained.
+func logCatchUpGenCapSkipped(log *slog.Logger, runID string) {
+	log.Info("catch up: generation pass skipped by the model-call cap",
+		slog.String("run_id", runID),
+		slog.String("window", CatchUpGenModelCallWindow.String()))
+}
+
+// takeModelCall spends one generation model call against the per-replica
+// sliding-window cap, reporting whether it fits. Stamps older than the window
+// fall off; the list never exceeds the cap in length, so it stays bounded
+// without its own eviction rule. Like tryRun, the claim is written before the
+// call so two page loads cannot spend one slot.
+func (g *CatchUpGenerator) takeModelCall(now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.maxCallsPerWindow <= 0 {
+		return false
+	}
+	cutoff := now.Add(-CatchUpGenModelCallWindow)
+	kept := g.callTimes[:0]
+	for _, t := range g.callTimes {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	g.callTimes = kept
+	if len(g.callTimes) >= g.maxCallsPerWindow {
+		return false
+	}
+	g.callTimes = append(g.callTimes, now)
+	return true
 }
 
 // tryRun claims one generation for a run under the cooldown. The map is

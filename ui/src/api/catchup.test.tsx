@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ReactNode } from "react";
 import {
   useCatchUpItems,
+  CATCH_UP_BADGE_STALE_MS,
   useCatchUpRecap,
   useRegenerateRecap,
   recapFailureMessage,
@@ -160,6 +161,21 @@ describe("useCatchUpItems", () => {
     expect(url.searchParams.get("projects")).toBe(`${projectId},other`);
     expect(url.searchParams.get("since")).toBe("2026-10-13T12:00:00.000Z");
     expect(url.searchParams.get("include_seen")).toBe("true");
+  });
+
+  it("keeps the badge's answer fresh for a minute — a route change does not refetch", async () => {
+    // ADR-0078 § Migration, Trigger note: the sidebar badge reads this list on
+    // every page. The read costs no model call any more, and its 60 s
+    // staleTime keeps navigation from hammering the route at all.
+    expect(CATCH_UP_BADGE_STALE_MS).toBe(60_000);
+    const { requests, wrapper } = harness([{ path: "/api/v1/catch-up/items", body: itemList }]);
+    const badge = renderHook(() => useCatchUpItems(), { wrapper });
+    await waitFor(() => expect(badge.result.current.isSuccess).toBe(true));
+    badge.unmount();
+    const remounted = renderHook(() => useCatchUpItems(), { wrapper });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(requestsTo(requests, "/api/v1/catch-up/items").length).toBe(1);
+    expect(remounted.result.current.data?.total_unseen).toBe(1);
   });
 });
 

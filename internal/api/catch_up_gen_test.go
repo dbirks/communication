@@ -3,14 +3,17 @@ package api
 // The catch-up generator's HTTP-side pieces (ADR-0078): the deterministic
 // tour page — unseen stops collected across the caller's items, ranked by
 // the tour's shared importance and the work's recency, paged 4 at a time —
-// and the lazy generator trigger fired from the items list AFTER the answer
-// is written. Plus the pure ref-harvesting the DATA block depends on: refs
+// and the lazy generator trigger fired from the visit stamp AFTER the answer
+// is written — never from the items list, which the sidebar badge reads on
+// every page (ADR-0078 § Migration, Trigger note). Plus the pure
+// ref-harvesting the DATA block depends on: refs
 // are read off the run's own outputs, which is what makes an invented PR
 // number unrepresentable rather than merely filtered.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -228,7 +231,7 @@ type catchUpTriggerSpy struct {
 	caller   Caller
 }
 
-func (g *catchUpTriggerSpy) CatchUpItemsListed(_ context.Context, c Caller, projects []string) {
+func (g *catchUpTriggerSpy) CatchUpVisitRecorded(_ context.Context, c Caller, projects []string) {
 	g.calls++
 	g.projects = projects
 	g.caller = c
@@ -243,7 +246,11 @@ func cuServerWithGen(t *testing.T, store CatchUpStore, gen CatchUpGeneratorTrigg
 	return s
 }
 
-func TestCatchUpListRouteFiresTheGeneratorAfterAnswering(t *testing.T) {
+// The list read is PURE now (ADR-0078 § Migration, Trigger note): the sidebar
+// badge calls it on every page of the app, so a list trigger spent a model
+// call per page load and the lab's rate-limited gateway 429'd the assistant
+// and the agents. The route still answers; it just never schedules a pass.
+func TestCatchUpListRouteDoesNotFireTheGenerator(t *testing.T) {
 	t.Parallel()
 	spy := &catchUpTriggerSpy{}
 	store := &fakeCatchUp{list: CatchUpItemList{
@@ -255,11 +262,39 @@ func TestCatchUpListRouteFiresTheGeneratorAfterAnswering(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if spy.calls != 1 || len(spy.projects) != 1 || spy.projects[0] != cuProjectID {
-		t.Fatalf("trigger = %+v, want one call scoped to the named project", spy)
+	if spy.calls != 0 {
+		t.Fatalf("trigger calls = %d, want 0: the list read must not schedule generation", spy.calls)
+	}
+}
+
+// The visit stamp is the one catch-up route that schedules a pass: a visit
+// says a human opened the page and is waiting for tours.
+func TestCatchUpVisitRouteFiresTheGeneratorAfterAnswering(t *testing.T) {
+	t.Parallel()
+	spy := &catchUpTriggerSpy{}
+	store := &fakeCatchUp{}
+	srv := cuServerWithGen(t, store, spy)
+	rec := cuPost(t, srv, cuBase+"/api/v1/catch-up/visits", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (%s)", rec.Code, rec.Body)
+	}
+	if spy.calls != 1 {
+		t.Fatalf("trigger calls = %d, want 1 after a visit", spy.calls)
+	}
+	if len(spy.projects) != 0 {
+		t.Errorf("trigger projects = %v, want none: a visit carries no scope", spy.projects)
 	}
 	if spy.caller.UserID != testPrincipal().UserID {
 		t.Errorf("trigger caller = %+v, want the session principal", spy.caller)
+	}
+	// A refused visit is not a visit: the trigger fires only after the stamp.
+	store.visitErr = errors.New("the pool is on fire")
+	rec = cuPost(t, srv, cuBase+"/api/v1/catch-up/visits", nil)
+	if rec.Code == http.StatusNoContent {
+		t.Fatal("a failing visit stamp answered 204")
+	}
+	if spy.calls != 1 {
+		t.Fatalf("trigger calls = %d, want still 1: a refused visit schedules nothing", spy.calls)
 	}
 }
 

@@ -15,13 +15,16 @@
 //   COMMUNICATION_E2E_ISSUE2=1 E2E_BASE_URL=http://localhost:18091 \
 //     pnpm exec playwright test tests/catchup-lab.spec.ts
 //
-// WHY THE COOLDOWN KNOB MATTERS HERE: `GET /catch-up/items` schedules the pass
-// (ADR-0078's lazy trigger) and each run is retried no sooner than
-// COMMUNICATION_CATCHUP_GEN_COOLDOWN after the last attempt. The lab sets that
-// to 20s (compose.real.yml) so a first attempt that the model answered badly
-// is retried inside this file's bounded wait; with the shipped 10m default one
-// bad answer would block the tour past any deadline a test could carry. The
-// wait below is still bounded and still fails loudly — a generator that never
+// WHY THE COOLDOWN KNOB MATTERS HERE: `POST /catch-up/visits` schedules the
+// pass (ADR-0078 § Migration, Trigger note — the list read is pure, because
+// the sidebar badge reads it on every page) and each run is retried no sooner
+// than COMMUNICATION_CATCHUP_GEN_COOLDOWN after the last attempt. The lab sets
+// that to 20s (compose.real.yml) so a first attempt that the model answered
+// badly is retried inside this file's bounded wait; with the shipped 10m
+// default one bad answer would block the tour past any deadline a test could
+// carry. COMMUNICATION_CATCHUP_GEN_PER_10M (6) caps generation per replica per
+// 10 minutes, far above what a single tour needs. The wait below is still
+// bounded and still fails loudly — a generator that never
 // writes is a FAILURE this suite reports with the last list read in hand.
 //
 // Lab identities and the `m4-exit` project come from
@@ -318,12 +321,20 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
     }
     console.log(`catchup-lab: run ${runId} finished as ${runStatus}`);
 
-    // --- the list read IS the trigger (ADR-0078 § Migration). Poll it. ---
+    // --- the VISIT is the trigger now (ADR-0078 § Migration, Trigger note):
+    // the list read is pure, so each poll iteration stamps a visit (the same
+    // write the Catch up page makes on mount) and then reads the list.
     let found: CatchUpItemBody | null = null;
     let lastList = "";
     const inspected = new Set<string>();
     const deadline = Date.now() + TOUR_TIMEOUT_MS;
     while (found === null) {
+      await postJson<Record<string, never>>(
+        alice.request,
+        aliceCsrf,
+        "/api/v1/catch-up/visits",
+        {},
+      );
       const list = await getJson<CatchUpListBody>(
         alice.request,
         "/api/v1/catch-up/items?include_seen=true",
@@ -348,7 +359,7 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
         throw new Error(
           `the generator never wrote a catch-up item for run ${runId} within ` +
             `${TOUR_TIMEOUT_MS} ms of the run finishing as ${runStatus} — every ` +
-            `GET /catch-up/items in that window scheduled a pass and none of its ` +
+            `POST /catch-up/visits in that window scheduled a pass and none of its ` +
             `items names this run. Last list read: ${lastList}`,
         );
       }

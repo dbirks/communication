@@ -167,14 +167,22 @@ type CatchUpGenDeps struct {
 	// runs the generator against a real model in a short-lived lab may shorten
 	// it — see COMMUNICATION_CATCHUP_GEN_COOLDOWN in `serve`'s environment.
 	Cooldown time.Duration
+	// MaxModelCallsPerWindow overrides the PER-REPLICA global cap on
+	// generation model calls per assistant.CatchUpGenModelCallWindow (ten
+	// minutes). nil means the shipped default (six); 0 disables generation
+	// entirely — see COMMUNICATION_CATCHUP_GEN_PER_10M in `serve`'s
+	// environment.
+	MaxModelCallsPerWindow *int
 }
 
-// CatchUpGeneratorTrigger is the seam the list route calls once it has
+// CatchUpGeneratorTrigger is the seam the visits route calls once it has
 // answered. A notification, not a request — the caller has been served, and
 // whatever the pass does must never change that answer or make it wait
-// (ADR-0071 § Decision 6's rule, reused whole).
+// (ADR-0071 § Decision 6's rule, reused whole). The list route is not a
+// trigger: the sidebar badge reads it on every page (ADR-0078 § Migration,
+// Trigger note).
 type CatchUpGeneratorTrigger interface {
-	CatchUpItemsListed(ctx context.Context, c Caller, projectIDs []string)
+	CatchUpVisitRecorded(ctx context.Context, c Caller, projectIDs []string)
 }
 
 // BuildCatchUpGenerator returns the trigger, or nil when this deployment
@@ -194,11 +202,12 @@ func BuildCatchUpGenerator(deps CatchUpGenDeps) CatchUpGeneratorTrigger {
 		chats: deps.Chats, log: log,
 	}
 	g := assistant.NewCatchUpGenerator(assistant.CatchUpDeps{
-		Model:    deps.Broker,
-		Source:   source,
-		Writer:   &catchUpGenWriter{store: deps.CatchUp},
-		Log:      log,
-		Cooldown: deps.Cooldown,
+		Model:                  deps.Broker,
+		Source:                 source,
+		Writer:                 &catchUpGenWriter{store: deps.CatchUp},
+		Log:                    log,
+		Cooldown:               deps.Cooldown,
+		MaxModelCallsPerWindow: deps.MaxModelCallsPerWindow,
 	})
 	if g == nil {
 		return nil
@@ -210,8 +219,8 @@ type catchUpTrigger struct {
 	gen *assistant.CatchUpGenerator
 }
 
-func (t *catchUpTrigger) CatchUpItemsListed(ctx context.Context, c Caller, projectIDs []string) {
-	t.gen.CatchUpItemsListed(ctx, catchUpAsstCaller(c), projectIDs)
+func (t *catchUpTrigger) CatchUpVisitRecorded(ctx context.Context, c Caller, projectIDs []string) {
+	t.gen.CatchUpVisitRecorded(ctx, catchUpAsstCaller(c), projectIDs)
 }
 
 // --- the recap generator (POST /catch-up/recap) --------------------------

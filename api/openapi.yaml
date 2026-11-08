@@ -880,7 +880,11 @@ paths:
         not in contributes nothing and says nothing. Items whose tour has never
         been written appear in nobody's list — there is no story to have read —
         and a project with no generator behind it is an empty list, never a
-        stub. Ordering is the tour's own time, newest story first.
+        stub. Ordering is the tour's own time, newest story first. The read is
+        pure: it does not write tours and it schedules no generation pass.
+        The sidebar badge calls this route on every page of the app, so
+        generation is triggered by `POST /catch-up/visits` alone (ADR-0078 §
+        Migration, Trigger note).
       security:
         - sessionCookie: []
       parameters:
@@ -1187,7 +1191,14 @@ paths:
         what `GET /catch-up/visits/suggestion` infers a window from, so the page
         can open a daily reader on 24 hours and a weekly one on 7 days instead
         of a constant nobody chose. Nothing is bounded away: visits accumulate
-        and the read takes the recent ones.
+        and the read takes the recent ones. The stamp is also the surface's one
+        generation trigger: it records the visit and starts writing tours for
+        runs that finished since — a background pass after the answer, at most
+        two tours per pass, each run behind its own cooldown, and at most
+        `COMMUNICATION_CATCHUP_GEN_PER_10M` (default 6, 0 disables) generation
+        model calls per ten minutes per replica, so a lab full of page loads
+        cannot spend the model gateway's rate limit (ADR-0078 § Migration,
+        Trigger note).
       security:
         - sessionCookie: []
       responses:

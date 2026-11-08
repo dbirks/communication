@@ -112,6 +112,20 @@ environment:
                                         a model from a page-load storm, and a
                                         typo in it costs a slower retry, not
                                         a wrong answer.
+  COMMUNICATION_CATCHUP_GEN_PER_10M     ADR-0078 catch-up tour generator's
+                                        PER-REPLICA global cap: at most this
+                                        many generation model calls per ten
+                                        minutes (default "6"). The per-run
+                                        cooldown guards one run; this guards
+                                        the model gateway from the whole
+                                        replica — a lab full of page loads
+                                        spent its rate limit and 429'd the
+                                        assistant and the agents. "0"
+                                        disables catch-up generation
+                                        entirely. A whole number; negative
+                                        and unparseable text fall back to the
+                                        default rather than refusing startup,
+                                        the same hammer-guard rule as above.
   COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
   COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
@@ -252,6 +266,14 @@ const (
 	// the cooldown is a hammer-guard, not a correctness contract, so 0, a
 	// negative number and unparseable text all fall back to the default.
 	envCatchUpGenCooldown = "COMMUNICATION_CATCHUP_GEN_COOLDOWN"
+
+	// envCatchUpGenPer10M is the catch-up generator's PER-REPLICA global cap
+	// on generation model calls per assistant.CatchUpGenModelCallWindow
+	// (ten minutes). Same never-refuse rule as the cooldown: it is a
+	// hammer-guard. Unset, negative or unparseable fall back to the shipped
+	// default (assistant.CatchUpGenMaxModelCallsPerWindow); 0 is the one
+	// reading that means something, and it means "generate nothing".
+	envCatchUpGenPer10M = "COMMUNICATION_CATCHUP_GEN_PER_10M"
 )
 
 // serveServerTimeout parses one of the http.Server deadline variables with
@@ -311,6 +333,25 @@ func serveCatchUpGenCooldown(getenv func(string) string) time.Duration {
 		return assistant.CatchUpGenCooldown
 	}
 	return d
+}
+
+// serveCatchUpGenPer10M reads COMMUNICATION_CATCHUP_GEN_PER_10M for the
+// catch-up generator's per-replica global cap above. Unset, negative or
+// unparseable is the generator's own default (six calls per ten minutes);
+// "0" is the deliberate off switch — a deployment that wants tours from no
+// model says so with zero, not with a typo. Never a startup refusal, the
+// cooldown's own rule: the worst outcome of a mistyped hammer-guard is the
+// shipped guard, never a wrong answer.
+func serveCatchUpGenPer10M(getenv func(string) string) int {
+	raw := strings.TrimSpace(getenv(envCatchUpGenPer10M))
+	if raw == "" {
+		return assistant.CatchUpGenMaxModelCallsPerWindow
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return assistant.CatchUpGenMaxModelCallsPerWindow
+	}
+	return n
 }
 
 // newServeServer builds the process's http.Server. ReadTimeout bounds only
@@ -414,8 +455,10 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	// The catch-up generator's per-run cooldown: never a startup refusal, so
-	// there is no error to handle here (see serveCatchUpGenCooldown).
+	// there is no error to handle here (see serveCatchUpGenCooldown). Its
+	// per-replica global cap follows the same rule (see serveCatchUpGenPer10M).
 	catchUpGenCooldown := serveCatchUpGenCooldown(os.Getenv)
+	catchUpGenPer10M := serveCatchUpGenPer10M(os.Getenv)
 	rateLimits, err := serveRateLimits(os.Getenv)
 	if err != nil {
 		// A throttle the process cannot parse must be a startup refusal, not a
@@ -489,6 +532,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		IssueTriggerTick:     issueTriggerTick,
 		SessionPurgeInterval: sessionPurge,
 		CatchUpGenCooldown:   catchUpGenCooldown,
+		CatchUpGenPer10M:     &catchUpGenPer10M,
 		API: api.Config{
 			ReplicaName:      replica,
 			Version:          version,
@@ -746,6 +790,14 @@ type serveStackDeps struct {
 	// shipped cadence; the lab shortens it to retry a failed generation inside
 	// one acceptance run's bounded wait.
 	CatchUpGenCooldown time.Duration
+
+	// CatchUpGenPer10M is COMMUNICATION_CATCHUP_GEN_PER_10M resolved
+	// (serveCatchUpGenPer10M): the ADR-0078 tour generator's PER-REPLICA
+	// global cap on generation model calls per ten minutes. A pointer so the
+	// zero-value stack every existing test carries means "nobody said
+	// anything" (the generator's own default of six), while an explicit 0 —
+	// which runServe resolves — means "generate nothing at all".
+	CatchUpGenPer10M *int
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -1422,9 +1474,11 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// uses, so the controller lock, the one-active-turn rule and the thread's
 	// audit stay in one place — a reply is a sentence handed to an agent, never
 	// a gate that could move a run. What is absent on purpose is the browser-
-	// facing half that WRITES tours: `POST /catch-up/recap` does not exist,
-	// because the only writer of a shared tour is the generator below — the
-	// server's own assistant behind ADR-0034's egress, and nothing a browser
+	// facing half that WRITES tours: no route accepts a tour, because the
+	// only writer of a shared tour is the generator below — the server's own
+	// assistant behind ADR-0034's egress, scheduled by `POST
+	// /catch-up/visits` (never by a list read; ADR-0078 § Migration, Trigger
+	// note), and nothing a browser
 	// sends belongs in a shared tour.
 	api.RegisterCatchUp(handler,
 		postgres.APICatchUpStore{
@@ -1432,12 +1486,15 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			Denials: projectStore,
 		},
 		apiConversations,
-		// The generator (ADR-0078 § Migration, this task): the same broker the
-		// assistant speaks through, reading the caller's own run/node/pipeline/
+		// The generator (ADR-0078 § Migration + Trigger note): the same broker
+		// the assistant speaks through, reading the caller's own run/node/pipeline/
 		// transcript reads and writing through the store's own upsert and
-		// append. `GET /catch-up/items` schedules a pass after it answers; with
-		// no egress triple the builder returns nil and the routes stay the
-		// pure reads they were — an empty page, never a stub narrative.
+		// append. `POST /catch-up/visits` schedules a pass after it answers —
+		// the list read does not, and neither does an item read; the sidebar
+		// badge reads the list on every page and a list trigger spent a model
+		// call per page load. With no egress triple the builder returns nil
+		// and the routes stay the pure reads they were — an empty page, never
+		// a stub narrative.
 		api.WithTourGenerator(api.BuildCatchUpGenerator(api.CatchUpGenDeps{
 			Broker:    asstBroker,
 			CatchUp:   postgres.APICatchUpGenerator{S: &postgres.CatchUpStore{Pool: d.Pool}},
@@ -1446,8 +1503,9 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			Chats: api.NewAssistantChatTranscript(apiConversations,
 				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
 				apiProjects),
-			Logger:   d.API.Logger,
-			Cooldown: d.CatchUpGenCooldown,
+			Logger:                 d.API.Logger,
+			Cooldown:               d.CatchUpGenCooldown,
+			MaxModelCallsPerWindow: d.CatchUpGenPer10M,
 		})),
 		// The recap (T13b): the same broker, asked once per request, behind
 		// the assistant's own per-principal throttle. A recap is one reader's

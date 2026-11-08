@@ -498,11 +498,13 @@ type CatchUpConversationPoster interface {
 // deployment with no conversation store wired, which is not this repository's
 // shape but is the honest degradation: a reply is then stored and answered
 // 202 with a null conversation, the same dead end a work item with no thread
-// already has. The optional trailing trigger is the generator: `GET
-// /catch-up/items` answers from the store first and only then schedules a
-// background pass for the caller's projects (ADR-0078 § Migration). Without
-// one — the nil-when-unconfigured rule the notes use — the routes are the
-// pure reads they shipped as, and an empty page stays empty rather than
+// already has. The optional trailing trigger is the generator: `POST
+// /catch-up/visits` answers first and only then schedules a background pass
+// (ADR-0078 § Migration, Trigger note). The list read NEVER schedules one —
+// the sidebar badge reads it on every page, and a list trigger was a model
+// call per page load. Without
+// a trigger — the nil-when-unconfigured rule the notes use — the routes are
+// the pure reads they shipped as, and an empty page stays empty rather than
 // acquiring a story.
 func RegisterCatchUp(s *Server, store CatchUpStore, poster CatchUpConversationPoster,
 	gen ...CatchUpOption) {
@@ -542,7 +544,8 @@ type catchUpOptionFunc func(*catchUpHandlers)
 
 func (f catchUpOptionFunc) apply(h *catchUpHandlers) { f(h) }
 
-// WithTourGenerator hands the items list its background pass.
+// WithTourGenerator hands the visits route its background pass (the list
+// route no longer has one).
 func WithTourGenerator(g CatchUpGeneratorTrigger) CatchUpOption {
 	return catchUpOptionFunc(func(h *catchUpHandlers) {
 		if g != nil {
@@ -564,8 +567,8 @@ type catchUpHandlers struct {
 	store    CatchUpStore
 	messages CatchUpConversationPoster
 	srv      *Server
-	// gen is nil on a deployment with no assistant egress: the list route is
-	// then the pure read step 1 shipped.
+	// gen is nil on a deployment with no assistant egress; even when set, only
+	// POST /catch-up/visits fires it — the list and item reads are pure.
 	gen CatchUpGeneratorTrigger
 	// recapGen is nil on the same deployment, and the POST route is then 503.
 	recapGen CatchUpRecapGenerator
@@ -593,13 +596,12 @@ func (h *catchUpHandlers) listItems(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, http.StatusOK, list)
-	// The generator hook, fired exactly like the notes' NotesListed: after the
-	// answer, off the request path, never changing it. The projects the page
-	// was scoped to travel with it, so the pass asks for candidates in
-	// exactly the scope the caller is looking at.
-	if h.gen != nil {
-		h.gen.CatchUpItemsListed(r.Context(), c, f.ProjectIDs)
-	}
+	// The list read is PURE (ADR-0078 § Migration, Trigger note): it never
+	// schedules generation. The sidebar badge calls it on every page of the
+	// app, so a list trigger spent a model call per page load — and the
+	// lab's rate-limited gateway paid for that with 429s on the assistant
+	// and the agents. Tours are written by the pass POST /catch-up/visits
+	// schedules.
 }
 
 func (h *catchUpHandlers) getItem(w http.ResponseWriter, r *http.Request) {
@@ -691,6 +693,15 @@ func (h *catchUpHandlers) recordVisit(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
+	// The generator hook, fired exactly like the notes' NotesListed: after the
+	// answer, off the request path, never changing it. Opening the Catch up
+	// page is now the ONE thing that schedules a tour pass — the visit says a
+	// human is actually waiting for tours, which a badge's list read never
+	// said (ADR-0078 § Migration, Trigger note). A visit carries no project
+	// scope, so the pass runs over all of the caller's projects.
+	if h.gen != nil {
+		h.gen.CatchUpVisitRecorded(r.Context(), c, nil)
+	}
 }
 
 func (h *catchUpHandlers) visitSuggestion(w http.ResponseWriter, r *http.Request) {

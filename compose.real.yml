@@ -115,6 +115,11 @@ services:
       # longer than the wait: one failed attempt would block the retry past the
       # spec's deadline. Same parser as above; see serveCatchUpGenCooldown.
       COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
+      # The per-replica global cap on generation model calls per 10 minutes
+      # (shipped default 6; 0 disables generation). Spelled out here because
+      # the lab's gateway is rate-limited and acceptance 42452527578 watched a
+      # page-load storm spend its whole budget; see serveCatchUpGenPer10M.
+      COMMUNICATION_CATCHUP_GEN_PER_10M: "6"
 
   api-b:
     volumes:
@@ -125,5 +130,8 @@ services:
       COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
       COMMUNICATION_ASSISTANT_TIMEOUT: 180s
-      # See api-a: the tour generator's per-run cooldown, shortened for the lab.
+      # See api-a: the tour generator's per-run cooldown, shortened for the lab,
+      # and its per-replica global model-call cap, explicit for the rate-limited
+      # gateway.
       COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
+      COMMUNICATION_CATCHUP_GEN_PER_10M: "6"

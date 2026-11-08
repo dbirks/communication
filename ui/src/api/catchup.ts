@@ -10,6 +10,10 @@
  * - `GET /catch-up/tour` is still landing on the backend. The shape below is
  *   the contract the page codes against; it is a LOCAL type (commented as
  *   such) because `schema.d.ts` is generated and must not be hand-edited.
+ * - The list read is pure (ADR-0078 § Migration, Trigger note): it only ever
+ *   reads. Tour generation is scheduled by the Catch up page's mount-time
+ *   `useRecordVisit`, never by the sidebar badge's list poll — so the badge
+ *   query carries a 60 s `staleTime` and costs no model call on navigation.
  * - The rest-list checkbox is an explicit "mark this whole piece seen", so
  *   `useMarkItemSeen` reads the item first (the store demands a
  *   `{version, stop_ids}` body) and posts every beat of the newest version.
@@ -94,6 +98,11 @@ export const catchUpKeys = {
 /**
  * `GET /api/v1/catch-up/items` — the page's own read: the pieces of work the
  * assistant grouped, with how much of each story this reader still owes.
+ * The read is PURE (ADR-0078 § Migration, Trigger note): it never starts
+ * tour generation — the sidebar badge calls it on every page, and generation
+ * is scheduled only by `useRecordVisit` when the Catch up page opens. The
+ * 60 s `staleTime` is the other half of that calm: navigating between routes
+ * must not refetch a badge that just answered.
  */
 export function useCatchUpItems(filters: CatchUpFilters = {}) {
   return useQuery({
@@ -102,8 +111,12 @@ export function useCatchUpItems(filters: CatchUpFilters = {}) {
       apiFetch<CatchUpItemList>(
         `/api/v1/catch-up/items${listQuery(filters, Boolean(filters.includeSeen))}`,
       ),
+    staleTime: CATCH_UP_BADGE_STALE_MS,
   });
 }
+
+/** How long a fresh catch-up list answer stays fresh (the badge's calm). */
+export const CATCH_UP_BADGE_STALE_MS = 60_000;
 
 /** `GET /api/v1/catch-up/items/{itemId}` — one piece with its whole story. */
 export function useCatchUpItem(id: string) {

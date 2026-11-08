@@ -413,3 +413,15 @@ already applies, and each audited at the store where a refusal is the only row
 that knows which project it refused. The colour is read through
 `domain.CatchUpProjectColorOr`, so the UI never has to know the palette or the
 fallback rule; mounting the routes is outside this change's files.
+
+**Trigger** (post-acceptance fix). The generator is scheduled by `POST
+/api/v1/catch-up/visits` — opening the Catch up page — and by nothing else:
+the list read no longer triggers it. The badge the sidebar draws reads
+`GET /catch-up/items` on every page of the app, and a list trigger spent a
+model call per page load until the lab's gateway rate-limited the assistant
+and the agents with it (429). The read is still a pure read; the pass is
+still at most two generations with the per-run cooldown
+(`COMMUNICATION_CATCHUP_GEN_COOLDOWN`), and a per-replica global cap now
+bounds it too: at most `COMMUNICATION_CATCHUP_GEN_PER_10M` (default 6, 0
+disables generation entirely) generation model calls per ten minutes, a pass
+the cap refuses logged rather than left silent.
