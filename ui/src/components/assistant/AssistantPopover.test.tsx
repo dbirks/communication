@@ -304,7 +304,7 @@ describe("thread → workflow draft ask (2f)", () => {
       text: string;
       context?: { entity?: { kind: string; id: string } };
     };
-    expect(body.text).toBe("Turn the chat \u201CSearch revamp spike\u201D into a workflow");
+    expect(body.text).toBe("Turn the thread \u201CSearch revamp spike\u201D into a workflow");
     expect(body.text).not.toContain("c-42");
     expect(body.context?.entity).toEqual({ kind: "conversation", id: "c-42" });
   });

@@ -421,7 +421,7 @@ export default function Transcript({
   if (items.length === 0) {
     return (
       <p className="text-[12.5px] text-muted" data-testid="transcript-empty">
-        No transcript yet — send a prompt to start the conversation.
+        No transcript yet — send a prompt to start the thread.
       </p>
     );
   }
@@ -430,7 +430,7 @@ export default function Transcript({
     <ol
       className="space-y-[4px]"
       data-testid="transcript"
-      aria-label="Conversation transcript"
+      aria-label="Thread transcript"
       aria-live="polite"
       aria-relevant="additions"
     >

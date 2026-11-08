@@ -121,7 +121,7 @@ describe("AgentConversationPanel (dock)", () => {
     expect(open.getAttribute("href")).toBe(
       `/projects/${projectFixture.id}/conversations/${conversationId}`,
     );
-    expect(screen.getByText("Open full conversation")).toBeTruthy();
+    expect(screen.getByText("Open full thread")).toBeTruthy();
 
     const source = FakeEventSource.last();
     act(() => {
@@ -258,9 +258,7 @@ describe("AgentConversationPanel (dock)", () => {
     renderPanel(dock(), routes(controlledByOther, "viewer"));
     const take = await screen.findByTestId("take-control");
     expect(take.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByTestId("composer-explainer").textContent).toContain(
-      "watch this conversation",
-    );
+    expect(screen.getByTestId("composer-explainer").textContent).toContain("watch this thread");
     expect(screen.getByTestId("composer-input").hasAttribute("disabled")).toBe(true);
   });
 

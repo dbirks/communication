@@ -301,7 +301,7 @@ function RecentMenu({
         >
           {conversations.length === 0 ? (
             <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
-              No conversations yet — the next answer starts one.
+              No threads yet — the next answer starts one.
             </p>
           ) : (
             conversations.map((conversation, index) => {

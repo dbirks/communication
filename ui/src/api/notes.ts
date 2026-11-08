@@ -163,7 +163,7 @@ export function noteActionKind(
 export function noteActionLabel(action: AssistantNoteAction | undefined): string | null {
   switch (noteActionKind(action)) {
     case "start_chat":
-      return "Ask in a new chat";
+      return "Ask in a new thread";
     case "hand_off":
       return "Hand it off";
     case "make_workflow":

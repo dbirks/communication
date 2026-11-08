@@ -74,7 +74,7 @@ const PAGES: PaletteItem[] = [
     id: "page-threads",
     group: "Pages",
     label: "Threads",
-    secondary: "page · one-off conversations",
+    secondary: "page · one-off threads",
     to: routes.threads(),
   },
   {

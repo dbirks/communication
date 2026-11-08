@@ -387,7 +387,7 @@ export function WorksInSwitcher({
         data-testid={testId}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Switch the repository this chat works in"
+        aria-label="Switch the repository this thread works in"
         onClick={() => setOpen((value) => !value)}
         className="inline-flex h-[24px] w-full min-w-0 items-center gap-[6px] rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[12px] text-ink hover:border-ink"
       >
@@ -411,7 +411,7 @@ export function WorksInSwitcher({
         side="bottom"
         align="end"
         width={200}
-        ariaLabel="Switch the repository this chat works in"
+        ariaLabel="Switch the repository this thread works in"
         data-testid="side-panel-scope-menu"
         items={items}
       />
@@ -475,7 +475,7 @@ export function ConversationSidePanel({
     workflowChat && standingNoteShown ? (
       <AssistantNote
         testId={WORKFLOW_NOTE_TEST_ID}
-        text={`Turn “${workflowChat.title || "this chat"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
+        text={`Turn “${workflowChat.title || "this thread"}” into a repeatable workflow — the assistant drafts the steps and asks what it must decide.`}
         actions={[
           canSaveToLibrary
             ? makeWorkflowNoteAction(() =>
@@ -640,7 +640,7 @@ export function ConversationSidePanel({
       ) : null}
       {agentRows.length > 0 || askedRows.length > 0 ? (
         <section aria-labelledby="side-panel-agents-heading" data-testid="side-panel-agents">
-          <SectionTitle htmlFor="side-panel-agents-heading">Agents in this chat</SectionTitle>
+          <SectionTitle htmlFor="side-panel-agents-heading">Agents in this thread</SectionTitle>
           <ul className="mt-1 space-y-1">
             {agentRows.map((agent, index) => {
               const state = agentRunStateCopy(agent, turnRows);
@@ -719,7 +719,7 @@ export function ConversationSidePanel({
       ) : null}
       {linkRows.length > 0 ? (
         <section aria-labelledby="side-panel-links-heading" data-testid="side-panel-links">
-          <SectionTitle htmlFor="side-panel-links-heading">Linked chats</SectionTitle>
+          <SectionTitle htmlFor="side-panel-links-heading">Linked threads</SectionTitle>
           <ul className="mt-1 space-y-1">
             {linkRows.map((link, index) => {
               const state = mailLinkState(link.state);

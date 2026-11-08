@@ -200,7 +200,7 @@ describe("the chat box placeholder at phone width", () => {
   it("keeps the whole hint at 1280", () => {
     renderBox(1280);
     const input = screen.getByTestId("repo-chat-input") as HTMLInputElement;
-    expect(input.placeholder).toBe("Chat in web… ask, plan, or paste an issue");
+    expect(input.placeholder).toBe("Thread in web… ask, plan, or paste an issue");
     // One row, one line: the input takes the space the controls leave.
     expect(screen.getByTestId("repo-chat-row").className).toContain("flex-nowrap");
     expect(input.className).toContain("flex-1");
@@ -214,8 +214,8 @@ describe("the chat box placeholder at phone width", () => {
     // chat starts IN this repo (ADR-0067) is the line to keep. The phone
     // placeholder is the shortened sentence, repo cue first; the full hint
     // stays at 1280 and the accessible name always carries the repo.
-    expect(input.placeholder).toBe("Chat in web…");
-    expect(input.getAttribute("aria-label")).toBe("Chat in web");
+    expect(input.placeholder).toBe("Thread in web…");
+    expect(input.getAttribute("aria-label")).toBe("Thread in web");
   });
 
   it("gives the hint the whole first line below 640 — the controls wrap under it", () => {

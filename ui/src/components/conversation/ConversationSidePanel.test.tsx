@@ -288,7 +288,7 @@ describe("ConversationSidePanel make-a-workflow note (2f)", () => {
     // as structured context, never as visible prose — and the ask opens
     // the full panel, not the floating popover.
     const ask = (seen[0] as CustomEvent<AssistantOpenRequest>).detail;
-    expect(ask.text).toBe("Turn the chat \u201CSearch revamp spike\u201D into a workflow");
+    expect(ask.text).toBe("Turn the thread \u201CSearch revamp spike\u201D into a workflow");
     expect(ask.text).not.toContain("c-42");
     expect(ask.entity).toEqual({ kind: "conversation", id: "c-42" });
     expect(ask.expanded).toBe(true);
@@ -641,7 +641,7 @@ describe("WORKS IN switcher (ADR-0067 amendment)", () => {
     expect(trigger.textContent).toContain("▾");
     expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(trigger.getAttribute("aria-label")).toBe("Switch the repository this chat works in");
+    expect(trigger.getAttribute("aria-label")).toBe("Switch the repository this thread works in");
     // The menu is the section's one door: the standalone repository-page
     // link no longer rides beside the switcher.
     expect(screen.queryByTestId("side-panel-repo-link")).toBeNull();

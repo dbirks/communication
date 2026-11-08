@@ -308,7 +308,7 @@ export default function ConversationPage({
     );
   };
 
-  if (conversation.isPending) return <Spinner label="Loading conversation" />;
+  if (conversation.isPending) return <Spinner label="Loading thread" />;
 
   if (conversation.error instanceof ApiError && conversation.error.status === 404) {
     return (
@@ -495,7 +495,7 @@ export default function ConversationPage({
       ) : wholeProject ? (
         <span data-testid="conversation-breadcrumb-scope">Whole project</span>
       ) : (
-        <span data-testid="conversation-breadcrumb-unbound">chats</span>
+        <span data-testid="conversation-breadcrumb-unbound">threads</span>
       )}
     </p>
   );
@@ -584,8 +584,8 @@ export default function ConversationPage({
               // Pending and unreadable answers stay with the panel, which words
               // them honestly; only the recorded-nothing 200 is rewritten here.
               <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
-                No sandbox verdict recorded for this conversation — its journal holds no sandbox
-                event, so this page cannot say what the agent ran under.
+                No sandbox verdict recorded for this thread — its journal holds no sandbox event, so
+                this page cannot say what the agent ran under.
               </p>
             ) : (
               <TurnSandboxPanel turnId={latestTurnId} />
@@ -855,7 +855,7 @@ export default function ConversationPage({
                 ref={detailsToggleRef}
                 type="button"
                 data-testid="chat-details-toggle"
-                aria-label="Chat details"
+                aria-label="Thread details"
                 aria-expanded={detailsOpen}
                 onClick={() => setDetailsOpen((open) => !open)}
                 className="inline-flex shrink-0 items-center gap-[6px] rounded-[3px] px-2 py-[3px] font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent lg:hidden"

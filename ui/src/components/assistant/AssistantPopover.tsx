@@ -152,8 +152,8 @@ export function openAssistantWorkflowDraft(chat: { id: string; title?: string | 
   const title = chat.title?.trim();
   const request: AssistantOpenRequest = {
     text: title
-      ? `Turn the chat \u201C${title}\u201D into a workflow`
-      : "Turn this chat into a workflow",
+      ? `Turn the thread \u201C${title}\u201D into a workflow`
+      : "Turn this thread into a workflow",
     expanded: true,
     docked: true,
     entity: { kind: "conversation", id: chat.id },
@@ -212,7 +212,7 @@ const SUGGESTIONS: Record<string, string[]> = {
     "What needs me right now?",
   ],
   conversations: [
-    "What is open in this project's conversations?",
+    "What is open in this project's threads?",
     "Which runs are running or failed?",
     "What needs me right now?",
   ],

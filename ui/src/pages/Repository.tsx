@@ -441,7 +441,7 @@ export default function Repository() {
               onClick={() => setChatFormOpen(true)}
               data-testid="repo-new-chat"
             >
-              New chat
+              New thread
             </Button>
           ) : null}
         </div>
@@ -696,7 +696,7 @@ function ChatFormModal({
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <h2 id="repo-chat-form-title" className="min-w-0 flex-1 text-[15px] font-semibold">
-            New chat in {repositoryName}
+            New thread in {repositoryName}
           </h2>
           <span aria-hidden="true" className="font-mono text-[11px] text-faint">
             esc

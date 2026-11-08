@@ -395,10 +395,12 @@ describe("the header's breadcrumb and participants", () => {
     expect(repo.getAttribute("href")).toBe(`/p/${projectFixture.id}/storefront`);
   });
 
-  it("says chats when no read names a repository", async () => {
+  it("says threads when no read names a repository", async () => {
     renderApp({ path, routes: routes(conversationFixture) });
     const crumb = await screen.findByTestId("conversation-breadcrumb");
-    expect(within(crumb).getByTestId("conversation-breadcrumb-unbound").textContent).toBe("chats");
+    expect(within(crumb).getByTestId("conversation-breadcrumb-unbound").textContent).toBe(
+      "threads",
+    );
   });
 
   it("names every person whose prompt the journal carries", async () => {
@@ -442,7 +444,7 @@ describe("the failed turn (error-details-r6)", () => {
 
     const notice = await screen.findByTestId("turn-failed");
     expect(within(notice).getByTestId("turn-failed-plain").textContent).toBe(
-      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+      "This thread couldn't start its workspace: the repository has no default branch to start from.",
     );
     // The reading line names no uuid, no path and no ADR number.
     expect(within(notice).getByTestId("turn-failed-plain").textContent).not.toMatch(
@@ -937,7 +939,7 @@ describe("the transcript's protocol lines", () => {
       "li[title]",
     ) as HTMLElement;
     expect(line.textContent).toContain(
-      "The agent session closed — the conversation's agent was switched",
+      "The agent session closed — the thread's agent was switched",
     );
     expect(line.getAttribute("title")).toBe("reason agent_switched");
   });

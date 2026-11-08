@@ -36,7 +36,7 @@ export type ActivityFilter = "all" | "runs" | "chats" | "mine";
 const FILTERS: { id: ActivityFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "runs", label: "Runs" },
-  { id: "chats", label: "Chats" },
+  { id: "chats", label: "Threads" },
   { id: "mine", label: "Mine" },
 ];
 
@@ -271,7 +271,7 @@ export function RepoActivity({
           <div className="p-[10px]">
             <RepoLoadError
               error={chatsError}
-              sentence="Couldn't load this repository's chats."
+              sentence="Couldn't load this repository's threads."
               testid="repo-activity-chats-problem"
               retry={{
                 onClick: onRetryChats,
@@ -284,10 +284,10 @@ export function RepoActivity({
         {!runsPending && !chatsPending && !runsError && !chatsError && visible.length === 0 ? (
           <p className="p-[10px] text-[12.5px] text-muted" data-testid="repo-activity-empty">
             <span data-testid="repo-runs-empty">
-              No {filter === "chats" ? "chats" : filter === "runs" ? "runs" : "runs or chats"} in{" "}
-              {repositoryName}
-              {filter === "mine" ? " started by you" : ""} yet — say something in the chat box above
-              and this page will have a first row.
+              No {filter === "chats" ? "threads" : filter === "runs" ? "runs" : "runs or threads"}{" "}
+              in {repositoryName}
+              {filter === "mine" ? " started by you" : ""} yet — say something in the thread box
+              above and this page will have a first row.
             </span>
           </p>
         ) : null}
@@ -424,7 +424,7 @@ function ActivityRowView({
           {spec.glyph}
         </span>
         <span className="sr-only">{conversationWord(conversation, state)}</span>
-        <span className="font-mono text-[10px] font-semibold text-accent-text">CHAT</span>
+        <span className="font-mono text-[10px] font-semibold text-accent-text">THREAD</span>
         <span className="min-w-0">
           <span className="flex min-w-0 items-baseline gap-[3px] text-[12.5px] text-ink">
             <span className="min-w-0 truncate font-semibold" title={shownTitle}>

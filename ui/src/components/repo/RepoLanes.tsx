@@ -468,7 +468,7 @@ export function StartIssueMenu({
   if (items.length > 0) items.push({ separator: true });
   items.push({
     id: "chat",
-    label: "Chat about it instead",
+    label: "Ask in a thread instead",
     testId: "repo-start-issue-chat",
     disabled: busy || profileDefaultId === null,
     title:
@@ -677,7 +677,7 @@ export function RepoLanes({
         <RepoLoadError
           error={runsError}
           sentence="Couldn't load this repository's runs."
-          note="The lanes below show the chats only — the runs lanes have no data to bucket."
+          note="The lanes below show the threads only — the runs lanes have no data to bucket."
           testid="repo-lanes-runs-problem"
           retry={{ onClick: onRetryRuns, pending: retryingRuns, testid: "repo-lanes-runs-retry" }}
         />
@@ -685,8 +685,8 @@ export function RepoLanes({
       {chatsError ? (
         <RepoLoadError
           error={chatsError}
-          sentence="Couldn't load this repository's chats."
-          note="The lanes below show the runs only — the chat rows have no data to bucket."
+          sentence="Couldn't load this repository's threads."
+          note="The lanes below show the runs only — the thread rows have no data to bucket."
           testid="repo-lanes-chats-problem"
           retry={{
             onClick: onRetryChats,

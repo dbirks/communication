@@ -316,7 +316,7 @@ describe("/projects/:projectId/conversations", () => {
       expect(screen.queryByTestId("project-conversations")).toBeNull();
       expect(screen.queryByTestId("threads-list")).toBeNull();
       expect(screen.queryByTestId("conversation-new-title")).toBeNull();
-      expect(screen.queryByText(/No conversations yet/)).toBeNull();
+      expect(screen.queryByText(/No threads yet/)).toBeNull();
     },
     TEST_TIMEOUT,
   );

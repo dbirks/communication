@@ -96,14 +96,14 @@ export function AgentMailPanel({ project }: { project: Project }) {
         Agent mail
       </h2>
       <p className="mt-1 text-[12.5px] text-ink-2" data-testid="agent-mail-copy">
-        Let a chat&#39;s agent ask the agent of another repository in this project a question. Asked
-        agents answer read-only — letting one edit its repo needs a person to approve each change.
-        Off by default.
+        Let a thread&#39;s agent ask the agent of another repository in this project a question.
+        Asked agents answer read-only — letting one edit its repo needs a person to approve each
+        change. Off by default.
       </p>
       <p className="mt-1 font-mono text-[11px]" data-testid="agent-mail-state">
         {enabled ? (
           <span className="text-st-done-tag-fg">
-            <span aria-hidden="true">✓ </span>on — chats in this project may ask
+            <span aria-hidden="true">✓ </span>on — threads in this project may ask
           </span>
         ) : (
           <span className="text-muted">

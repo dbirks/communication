@@ -46,7 +46,7 @@ export function artifactCreator(artifact: Artifact, actors: ActorNames): string 
   const person = actors.lookup(artifact.created_by);
   if (person) return person;
   if (artifact.run_id) return `the run ${shortId(artifact.run_id)}`;
-  if (artifact.conversation_id) return `the conversation ${shortId(artifact.conversation_id)}`;
+  if (artifact.conversation_id) return `the thread ${shortId(artifact.conversation_id)}`;
   if (artifact.worker_id) return "a worker";
   // A person the directory cannot (yet) name: `someone (abc12345)`, and the id
   // was handed to `useActorNames` below, so that is a lookup in progress.

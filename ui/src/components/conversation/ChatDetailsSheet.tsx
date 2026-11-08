@@ -80,13 +80,13 @@ export function ChatDetailsSheet({ open, onClose, children }: ChatDetailsSheetPr
             id="chat-details-sheet-heading"
             className="font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted"
           >
-            Chat details
+            Thread details
           </h2>
           <button
             ref={closeRef}
             type="button"
             data-testid="chat-details-close"
-            aria-label="Close chat details"
+            aria-label="Close thread details"
             onClick={onClose}
             className="inline-flex min-h-[24px] items-center gap-[4px] rounded-[3px] px-2 font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
           >

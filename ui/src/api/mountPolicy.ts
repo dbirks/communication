@@ -112,7 +112,7 @@ export const ENV_FILE_POLICY_WARNINGS: readonly string[] = [
   "Written 0600, owner-only, created atomically — and refused if the target is tracked.",
   "Materialized paths are excluded from git status, diffs, checkpoints and artifacts.",
   "Removed when the unit ends; rotated and re-materialized on retry.",
-  "No generated `.env` content ever appears in conversation logs or artifacts.",
+  "No generated `.env` content ever appears in thread logs or artifacts.",
 ];
 
 /**

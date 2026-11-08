@@ -127,19 +127,19 @@ const TURN_FAILURE_COPY: {
     // (ADR-0017 D2 refuses a branch-name guess)` and its HEAD-less twin.
     test: /has no branch |neither a default branch nor a HEAD/,
     words: () =>
-      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+      "This thread couldn't start its workspace: the repository has no default branch to start from.",
   },
   {
     // `workspace: mirror <path> does not exist and repository <name> has no
     // clone URL` — the repository was never fetched to this worker.
     test: /does not exist and repository .* has no clone URL/,
     words: () =>
-      "This chat couldn't start its workspace: the repository has no clone URL to fetch it from.",
+      "This thread couldn't start its workspace: the repository has no clone URL to fetch it from.",
   },
   {
     // `workspace: clone <path> from mirror: …` — the fetch itself broke.
     test: /workspace: clone .* from mirror/,
-    words: () => "This chat couldn't start its workspace: the repository could not be fetched.",
+    words: () => "This thread couldn't start its workspace: the repository could not be fetched.",
   },
   {
     // `workspace: create mirror <path> from <git url>: git … clone --mirror
@@ -153,12 +153,12 @@ const TURN_FAILURE_COPY: {
     // repository is the round-4 lab defect.
     test: new RegExp(`${GIT_ADDRESS_FAILURE.source}|${GIT_AUTH_FAILURE.source}`, "i"),
     words: () =>
-      "This chat couldn't start its workspace: the repository's git address could not be read from this worker — check it under the project's repositories.",
+      "This thread couldn't start its workspace: the repository's git address could not be read from this worker — check it under the project's repositories.",
   },
   {
     // Anything else on the workspace path: the same honest place to point.
     test: /prepare workspace|workspace: worktree|workspace: mirror/,
-    words: () => "This chat couldn't start its workspace on this worker.",
+    words: () => "This thread couldn't start its workspace on this worker.",
   },
   {
     // `worker: sandbox <stage> refused the launch (<reason>): …` — ADR-0019

@@ -51,7 +51,7 @@ describe("turnFailureWords", () => {
   it("says 'no default branch' in one sentence, with no uuid, path or ADR number", () => {
     const words = turnFailureWords(MIRROR_NO_BRANCH);
     expect(words).toBe(
-      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+      "This thread couldn't start its workspace: the repository has no default branch to start from.",
     );
     expect(words).not.toMatch(/01a19c73|\/repos\/|ADR-0017|worker: prepare|mirror /);
   });
@@ -67,10 +67,10 @@ describe("turnFailureWords", () => {
         'workspace: mirror /repos/x/api.git does not exist and repository "api" has no clone URL',
       ),
     ).toBe(
-      "This chat couldn't start its workspace: the repository has no clone URL to fetch it from.",
+      "This thread couldn't start its workspace: the repository has no clone URL to fetch it from.",
     );
     expect(turnFailureWords("workspace: clone /work/x from mirror: fatal: not a git repo")).toBe(
-      "This chat couldn't start its workspace: the repository could not be fetched.",
+      "This thread couldn't start its workspace: the repository could not be fetched.",
     );
     // Observed in the lab, verbatim apart from the uuid: a thread bound to a
     // repository whose address no worker can read. The generic workspace
@@ -84,18 +84,18 @@ describe("turnFailureWords", () => {
           "Could not read from remote repository.",
       ),
     ).toBe(
-      "This chat couldn't start its workspace: the repository's git address could not be read " +
+      "This thread couldn't start its workspace: the repository's git address could not be read " +
         "from this worker — check it under the project's repositories.",
     );
     expect(turnFailureWords("worker: run unit: remote: Repository not found.")).toBe(
-      "This chat couldn't start its workspace: the repository's git address could not be read " +
+      "This thread couldn't start its workspace: the repository's git address could not be read " +
         "from this worker — check it under the project's repositories.",
     );
     expect(
       turnFailureWords(
         "worker: prepare workspace for project 01a19c73: workspace: worktree add: boom",
       ),
-    ).toBe("This chat couldn't start its workspace on this worker.");
+    ).toBe("This thread couldn't start its workspace on this worker.");
   });
 
   it("words a sandbox refusal in the sandbox vocabulary the verdict panel uses", () => {
@@ -185,7 +185,7 @@ describe("turnFailureWords", () => {
       "worker: prepare workspace for project 01a19d0b: git fetch origin main: " +
       "fatal: Authentication required (exit 128)";
     expect(turnFailureWords(gitAuth)).toBe(
-      "This chat couldn't start its workspace: the repository's git address could not be read " +
+      "This thread couldn't start its workspace: the repository's git address could not be read " +
         "from this worker — check it under the project's repositories.",
     );
     expect(
@@ -264,7 +264,7 @@ describe("TurnFailureNotice", () => {
     render(<TurnFailureNotice failure={{ id: "f-1", message: MIRROR_NO_BRANCH }} />);
     const notice = screen.getByTestId("turn-failed");
     expect(screen.getByTestId("turn-failed-plain").textContent).toBe(
-      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+      "This thread couldn't start its workspace: the repository has no default branch to start from.",
     );
     // The leak is the point: the reading line carries no uuid, no path and no
     // ADR number — the raw text lives only inside the closed disclosure.

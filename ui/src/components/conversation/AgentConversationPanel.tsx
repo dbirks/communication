@@ -312,7 +312,7 @@ export function AgentConversationControls({
       {cancelTurn.error ? <FormError error={cancelTurn.error} /> : null}
       {showDrivingNote && isController && takeControl.isSuccess ? (
         <p className="text-[12.5px] text-muted" role="status">
-          You are driving this conversation.
+          You are driving this thread.
         </p>
       ) : null}
     </>
@@ -696,7 +696,7 @@ export function AgentConversationComposer({
         </span>
         {agentMailOn && isController ? (
           <p className="font-mono text-[11px] text-muted" data-testid="composer-mail-hint">
-            @ another repo's agent to ask it directly — replies arrive in this chat, and the asked
+            @ another repo's agent to ask it directly — replies arrive in this thread, and the asked
             agent runs read-only.
           </p>
         ) : null}
@@ -738,7 +738,7 @@ export function AgentConversationComposer({
           data-testid={ids.composerExplainer}
         >
           {!canRequestControl
-            ? "You can watch this conversation. Prompting and taking control need a project contributor role."
+            ? "You can watch this thread. Prompting and taking control need a project contributor role."
             : control?.kind === "human"
               ? `Only the controller (${control.display_name ?? nameOf(control.user_id ?? "")}) can send prompts. Take control to drive.`
               : "Nobody is driving. Take control to send a prompt."}
@@ -928,15 +928,12 @@ function PanelInner({
   const transcriptRef = useStickyTranscript();
 
   if (conversation.isPending) {
-    return pending ?? <Spinner label="Loading conversation" />;
+    return pending ?? <Spinner label="Loading thread" />;
   }
   if (conversation.error instanceof ApiError && conversation.error.status === 404) {
     return (
       notFound ?? (
-        <ProblemBanner
-          error={conversation.error}
-          fallback="The conversation could not be loaded."
-        />
+        <ProblemBanner error={conversation.error} fallback="The thread could not be loaded." />
       )
     );
   }
@@ -944,7 +941,7 @@ function PanelInner({
     return (
       <ProblemBanner
         error={conversation.error}
-        fallback={errorFallback ?? "The conversation could not be loaded."}
+        fallback={errorFallback ?? "The thread could not be loaded."}
       />
     );
   }
@@ -1025,7 +1022,7 @@ function PanelInner({
             className="text-accent-text hover:text-ink"
             data-testid="dock-open-conversation"
           >
-            Open full conversation
+            Open full thread
           </Link>
         </div>
         <AgentConversationControls

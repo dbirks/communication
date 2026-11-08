@@ -233,7 +233,7 @@ const DISCONNECT_WORDS: Record<string, string> = {
   process_exited: "the agent process exited",
   agent_process_exited: "the agent process exited",
   acp_connection_closed: "the connection to the agent closed",
-  agent_switched: "the conversation's agent was switched",
+  agent_switched: "the thread's agent was switched",
 };
 
 const INTERRUPT_COPY: Record<string, string> = {
@@ -482,8 +482,8 @@ function systemLine(
       const who = actor ? nameOf(actor) : "Someone";
       return {
         text: to
-          ? `${who} moved this chat to ${to}`
-          : `${who} moved this chat to the whole project`,
+          ? `${who} moved this thread to ${to}`
+          : `${who} moved this thread to the whole project`,
         raw: `repository_id ${str(payload, "from_repository_id") || "null"} → ${
           str(payload, "to_repository_id") || "null"
         }`,

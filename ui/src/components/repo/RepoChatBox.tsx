@@ -145,11 +145,11 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
               start();
             }
           }}
-          aria-label={`Chat in ${repositoryName}`}
+          aria-label={`Thread in ${repositoryName}`}
           placeholder={
             phoneWidth
-              ? `Chat in ${repositoryName}…`
-              : `Chat in ${repositoryName}… ask, plan, or paste an issue`
+              ? `Thread in ${repositoryName}…`
+              : `Thread in ${repositoryName}… ask, plan, or paste an issue`
           }
           className={`min-w-0 bg-transparent px-2 text-[13px] text-ink outline-none placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
             // The wrap: a phone input asks for the whole first line (`w-full`
@@ -193,7 +193,7 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
         side="bottom"
         align="end"
         width={220}
-        caption="THE CHAT RUNS ON"
+        caption="THE THREAD RUNS ON"
         ariaLabel="Agent profile"
         data-testid="repo-chat-profile-menu"
         items={items.map((profile) => ({
@@ -209,7 +209,7 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
       />
       {profiles.data && items.length === 0 ? (
         <p className="pt-1 text-[12px] text-muted" data-testid="repo-chat-no-profiles">
-          No agent profiles yet — add one under Library › Agent profiles to start a chat.
+          No agent profiles yet — add one under Library › Agent profiles to start a thread.
         </p>
       ) : null}
       {create.isError ? (

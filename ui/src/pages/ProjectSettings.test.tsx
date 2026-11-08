@@ -454,7 +454,7 @@ describe("the agent-mail setting (ADR-0072)", () => {
     await waitFor(
       () =>
         expect(screen.getByTestId("agent-mail-state").textContent).toContain(
-          "on — chats in this project may ask",
+          "on — threads in this project may ask",
         ),
       { timeout: 2000 },
     );

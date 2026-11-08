@@ -286,7 +286,7 @@ describe("plainNoticeLines (a system note names what it is about)", () => {
     const folded = fold(events);
     const items = plainNoticeLines(folded.items, { events, repositoryName: "server" });
     expect(noticeText(items)).toBe(
-      "This chat couldn't start its workspace: the repository has no default branch to start from.",
+      "This thread couldn't start its workspace: the repository has no default branch to start from.",
     );
   });
 

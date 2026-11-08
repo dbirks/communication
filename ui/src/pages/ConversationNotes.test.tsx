@@ -3,7 +3,7 @@
  * 2e): the thread's own notes render in the rail, `Make a workflow…` opens the
  * assistant on the chat the note named, and a dismissal is this reader's only.
  *
- * The 2f standing note (the rail's own "Turn this chat into a workflow…")
+ * The 2f standing note (the rail's own "Turn this thread into a workflow…")
  * shares the slot: the panel keeps one note surface per rail, so a real note
  * takes it — and the generator's `make_workflow` note is what replaces the
  * standing one, which is why the affordance is still exactly one click deep.

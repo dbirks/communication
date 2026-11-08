@@ -548,9 +548,7 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     cleanup();
     renderPanel({ onSwitchConversation: () => {}, recentConversations: [] });
     fireEvent.click(screen.getByTestId("assistant-history"));
-    expect(screen.getByTestId("assistant-history-menu").textContent).toContain(
-      "No conversations yet",
-    );
+    expect(screen.getByTestId("assistant-history-menu").textContent).toContain("No threads yet");
   });
 
   it("the Recent menu carries the shared pointer arrow (handoff 3c)", () => {

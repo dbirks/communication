@@ -139,7 +139,7 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     // The class is the contract: below `lg` it shows, at `lg+` it is hidden
     // (the panel beside the thread is the visible rail at those widths).
     expect(toggle.className.split(/\s+/)).toContain("lg:hidden");
-    expect(toggle.getAttribute("aria-label")).toBe("Chat details");
+    expect(toggle.getAttribute("aria-label")).toBe("Thread details");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(toggle.textContent).toContain("Details");
     // The desktop shape is unchanged: the panel is the aside, no sheet.
@@ -872,9 +872,7 @@ describe("/p/:projectId/conversations/:conversationId", () => {
     await screen.findByTestId("conversation-title");
 
     expect(screen.queryByTestId("take-control")).toBeNull();
-    expect(screen.getByTestId("composer-explainer").textContent).toContain(
-      "watch this conversation",
-    );
+    expect(screen.getByTestId("composer-explainer").textContent).toContain("watch this thread");
     expect(screen.getByTestId<HTMLButtonElement>("composer-send").disabled).toBe(true);
   });
 
@@ -1142,7 +1140,7 @@ describe("the PART OF panel says which run this transcript belongs to", () => {
       );
     });
 
-    const verdict = await screen.findByText(/No sandbox verdict recorded for this conversation/);
+    const verdict = await screen.findByText(/No sandbox verdict recorded for this thread/);
     expect(verdict.getAttribute("data-testid")).toBe("sandbox-verdict");
     // The old copy asserted a finding nobody recorded.
     expect(document.body.textContent).not.toContain("WITHOUT a verified sandbox");
@@ -1554,7 +1552,7 @@ describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", 
     // 2f review: a human sentence on screen, the id as structured context,
     // and the full assistant panel (not the floating popover).
     const ask = (seen[0] as CustomEvent<AssistantOpenRequest>).detail;
-    expect(ask.text).toBe("Turn the chat \u201CRefactor billing\u201D into a workflow");
+    expect(ask.text).toBe("Turn the thread \u201CRefactor billing\u201D into a workflow");
     expect(ask.text).not.toContain(conversationId);
     expect(ask.entity).toEqual({ kind: "conversation", id: conversationId });
     expect(ask.expanded).toBe(true);

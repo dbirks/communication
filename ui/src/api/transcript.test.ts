@@ -433,10 +433,10 @@ describe("projectTranscript", () => {
     // The move names the actor and the repository the row names — the
     // journal row is the transcript's own evidence, the way the agent-switch
     // divider is.
-    expect(line({})).toBe("Ada moved this chat to server");
+    expect(line({})).toBe("Ada moved this thread to server");
     // Null is the whole project — the unbound answer, not an empty sentence.
     expect(line({ to_repository_id: null, to_repository_name: null })).toBe(
-      "Ada moved this chat to the whole project",
+      "Ada moved this thread to the whole project",
     );
     // A row without an actor falls back to the envelope's human — the
     // default directory's "someone (ef012345)" line, never a bare uuid and
@@ -454,7 +454,7 @@ describe("projectTranscript", () => {
           },
         ]),
       ).items.find((item) => item.kind === "system")?.text,
-    ).toBe("someone (ef012345) moved this chat to api");
+    ).toBe("someone (ef012345) moved this thread to api");
     expect(
       projectTranscript([
         conversationEvent(
@@ -469,7 +469,7 @@ describe("projectTranscript", () => {
           { actor: { kind: "system", id: "system" } },
         ),
       ]).items.find((item) => item.kind === "system")?.text,
-    ).toBe("Someone moved this chat to the whole project");
+    ).toBe("Someone moved this thread to the whole project");
   });
 
   it("suppresses an empty tool input rather than rendering raw braces", () => {

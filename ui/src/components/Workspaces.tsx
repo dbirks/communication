@@ -219,8 +219,7 @@ export function WorkspacesPanel({ projectId }: WorkspacesPanelProps) {
         {workspaces.data ? (
           data.length === 0 ? (
             <p className="text-[12.5px] text-muted" data-testid="workspace-list-empty">
-              No workspaces yet — one is prepared the first time a conversation or run needs a
-              checkout.
+              No workspaces yet — one is prepared the first time a thread or run needs a checkout.
             </p>
           ) : (
             <ul className="space-y-[8px]" data-testid="workspace-list">

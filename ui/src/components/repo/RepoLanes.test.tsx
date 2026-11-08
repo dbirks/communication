@@ -352,7 +352,7 @@ describe("RepoLanes — dragging an issue into Running (3b)", () => {
       menu.querySelectorAll('[data-testid^="repo-start-issue-workflow-"]'),
       "one workflow entry — the pin that really takes the issue",
     ).toHaveLength(1);
-    expect(menu.textContent).toContain("Chat about it instead");
+    expect(menu.textContent).toContain("Ask in a thread instead");
 
     // Esc closes the menu and the caught card with it.
     fireEvent.keyDown(document, { key: "Escape" });

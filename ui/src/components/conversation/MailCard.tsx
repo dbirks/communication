@@ -201,7 +201,7 @@ export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardPro
             className="ml-auto shrink-0 text-accent-text hover:text-ink"
             data-testid={`${testId}-open-chat`}
           >
-            {"open chat \u203a"}
+            {"open thread \u203a"}
           </Link>
         ) : null}
       </div>
@@ -258,7 +258,7 @@ export function MailCard({ card, testId = "mail-card", agentLabel }: MailCardPro
           {/* The bar above already pairs the glyph with the state word
               (`● asked`), so this line adds only what the state cannot say:
               where the answer will appear. */}
-          the answer arrives in this chat
+          the answer arrives in this thread
         </p>
       )}
     </li>
