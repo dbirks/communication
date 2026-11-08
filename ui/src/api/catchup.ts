@@ -17,7 +17,7 @@
  *   ids its caller names, so leaving one stop pays only that stop's debt.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, ApiError } from "./client";
+import { apiFetch, ApiError, assistantTransientErrorLine } from "./client";
 import type { components } from "./schema";
 
 export type CatchUpItemList = components["schemas"]["CatchUpItemList"];
@@ -191,6 +191,67 @@ export function useCatchUpRecap(filters: CatchUpFilters = {}) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
       }
+    },
+  });
+}
+
+/**
+ * The reader's own words when a recap request came back wrong. Each line is
+ * the server's own refusal translated once, here, so the block and its tests
+ * read as the reader's experience rather than as status codes:
+ *
+ * - `429` — the assistant throttle (ADR-0077). The header carries the seconds;
+ *   `ApiError` does not expose response headers, so the line names them only
+ *   when the body does and otherwise says "a moment".
+ * - `503` — no assistant on this deployment (`assistant_not_configured`).
+ * - `502` — the model answered and the answer did not validate, so nothing was
+ *   stored and the recap on screen is still the last one that was.
+ */
+export function recapFailureMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) return "The recap could not be written. Try again.";
+  if (error.status === 429) {
+    const secs = /\b(\d+)\s*s\b/.exec(error.detail)?.[1];
+    return secs
+      ? `You've asked for a lot of recaps — try again in ${secs}s.`
+      : "You've asked for a lot of recaps — try again in a moment.";
+  }
+  if (error.status === 503) {
+    return "The assistant isn't set up on this server. Ask an admin to configure it.";
+  }
+  if (error.status === 502) {
+    return "The assistant's answer didn't check out, so nothing was saved. Try again.";
+  }
+  const model = assistantTransientErrorLine(error);
+  return model ?? "The recap could not be written. Try again.";
+}
+
+/** What a regenerate asks for: the same scope the page is showing. */
+export interface RegenerateRecapInput {
+  /** Projects the sentence will claim to cover; empty = every project I belong to. */
+  projects?: string[];
+  /** The window chip the page is reading. */
+  window?: CatchUpWindow;
+}
+
+/**
+ * `POST /api/v1/catch-up/recap` — ask the server's own assistant for a NEW
+ * recap of these projects in this window. It is per-reader by construction
+ * (ADR-0078 § Decision 1), which is why a browser may ask for it at all where
+ * it may never ask for a shared tour. It is the one catch-up mutation that
+ * waits on a model, so it carries the assistant's `429`/`502`/`503` — see
+ * `recapFailureMessage` — and on success it replaces the reader's newest recap,
+ * which is the only recap query this invalidates.
+ */
+export function useRegenerateRecap() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projects = [], window = "unseen" }: RegenerateRecapInput) =>
+      apiFetch<CatchUpRecap>("/api/v1/catch-up/recap", {
+        method: "POST",
+        json: { projects, window },
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [...catchUpKeys.all, "recap"] });
     },
   });
 }

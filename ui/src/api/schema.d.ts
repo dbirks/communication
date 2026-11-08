@@ -2906,7 +2906,8 @@ export interface components {
      *       "description": "Widget incubator",
      *       "created_at": "2026-10-14T18:00:00Z",
      *       "version": 1,
-     *       "my_role": "maintainer"
+     *       "my_role": "maintainer",
+     *       "color": "#1f8077"
      *     }
      */
     Project: {
@@ -2927,6 +2928,19 @@ export interface components {
       my_role: "maintainer" | "contributor" | "viewer";
       /** @description ADR-0072: the project's opt-in switch for agent mail across repos (a chat's agent asking the agent of another repository in the same project). Default `false`; only `patchProject` moves it. */
       agent_mail_enabled?: boolean;
+      /**
+       * @description ADR-0078: the project's chip colour, one of the eight hues the catch-up design picked because none of them is a resolution state colour. `projects.color` is NULLable — "nobody chose" is a real state a backfill would erase — so a NULL is served as the deterministic pick BY PROJECT ID (the same rule `CatchUpProjectChip.color` states): a running server cannot omit this member or send null. Like `agent_mail_enabled` it is not `required` of a body, so a response from an older replica still validates; a client that sees no colour falls back to its own quiet chip. Nothing here can change it: no `patchProject` field writes a colour yet.
+       * @enum {string}
+       */
+      color?:
+        | "#6a4bc4"
+        | "#1f8077"
+        | "#4a5a78"
+        | "#a0527a"
+        | "#7a6a2a"
+        | "#2f6f9a"
+        | "#8a4b2a"
+        | "#5a7a3a";
     };
     /**
      * ProjectCreate
@@ -6335,14 +6349,39 @@ export interface components {
     /**
      * CatchUpRefs
      * @description ADR-0078 § Decision 6: what the work touched, as the assistant claimed at the time it wrote the story. There is NO GitHub sync in this design — nothing here is reconciled against the remote, so a PR closed upstream after the tour was written does not make the tour a lie about this database; it makes it a dated account, which a version history with `created_at` already is. These are labels, not join keys.
+     *     The `url` beside a number or a sha is the ONE member of this object the server owns: it is computed at read time from the git remote of the repository the work's run was attached to, never from model output. A remote that is not a `github.com` `owner/repo` — GitLab, a GitHub Enterprise host, a `file://` path — or work whose run named no repository answers no `url`, and the ref stays the label it always was.
      */
     CatchUpRefs: {
-      /** @description GitHub issue numbers the assistant saw. */
-      issue_numbers?: number[];
-      /** @description GitHub pull-request numbers the assistant saw. */
-      pr_numbers?: number[];
-      /** @description Commit ids, as this platform's own repositories recorded them. */
-      commit_shas?: string[];
+      /** @description GitHub issues the assistant saw. */
+      issues?: {
+        /** @description The issue number the assistant saw. */
+        number: number;
+        /**
+         * Format: uri
+         * @description `https://github.com/{owner}/{repo}/issues/{number}`, server computed; absent when the work's repository is not on GitHub.
+         */
+        url?: string;
+      }[];
+      /** @description GitHub pull requests the assistant saw. */
+      pull_requests?: {
+        /** @description The pull-request number the assistant saw. */
+        number: number;
+        /**
+         * Format: uri
+         * @description `https://github.com/{owner}/{repo}/pull/{number}`, server computed; absent when the work's repository is not on GitHub.
+         */
+        url?: string;
+      }[];
+      /** @description Commits the assistant saw. */
+      commits?: {
+        /** @description The commit id, as this platform's own repositories recorded it. */
+        sha: string;
+        /**
+         * Format: uri
+         * @description `https://github.com/{owner}/{repo}/commit/{sha}`, server computed; absent when the work's repository is not on GitHub.
+         */
+        url?: string;
+      }[];
       /** @description Runs that produced the work. Retention may have pruned them. */
       run_ids?: string[];
     };

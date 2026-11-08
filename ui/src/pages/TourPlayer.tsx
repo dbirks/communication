@@ -31,7 +31,12 @@ import { ProblemBanner } from "../components/Feedback";
 import { Evidence } from "../components/catchup/Evidence";
 import { RefChips } from "../components/catchup/RefChips";
 import { StopDecision } from "../components/catchup/StopDecision";
-import { IMPORTANCE, projectColor, projectSquareClasses } from "../components/catchup/importance";
+import {
+  IMPORTANCE,
+  primaryRefUrl,
+  projectColor,
+  projectSquareClasses,
+} from "../components/catchup/importance";
 import { STATES, type StateName } from "../components/ds/states";
 import { routes } from "../lib/routes";
 import {
@@ -328,19 +333,25 @@ export default function TourPlayer() {
 
   const steps = current ? deriveSteps(current.stop, siblingStops) : null;
   // The item read names refs the tour page's copy may omit; either set's
-  // pr/commit claims license "Open the fix" — the link itself goes to the
-  // run, because refs are labels with no navigable url (ADR-0078 § Decision 6).
+  // pr/commit claims license "Open the fix". Where the server could name a
+  // repository, the PR url is the fix and the commit url is next; only when
+  // neither exists does the link fall back to this platform's own run page
+  // (ADR-0078 § Decision 6 — a ref url is the server's computation from
+  // `repositories.git_url`, never the model's prose).
   const currentRefs =
     current && piece.data?.id === current.work_item_id
       ? (piece.data.refs ?? current.refs)
       : current?.refs;
   const hasCodeRef =
-    (currentRefs?.pr_numbers?.length ?? 0) + (currentRefs?.commit_shas?.length ?? 0) > 0;
+    (currentRefs?.pull_requests?.length ?? 0) + (currentRefs?.commits?.length ?? 0) > 0;
   const fixHref =
-    hasCodeRef && piece.data?.source_run_id ? routes.run(piece.data.source_run_id) : null;
-  // "Open {follow-up}" would need a navigable issue url; CatchUpRefs carries
-  // numbers as labels only (ADR-0078 § Decision 6), so the player names the
-  // follow-up inside its step and never fabricates a link.
+    primaryRefUrl(currentRefs) ??
+    (hasCodeRef && piece.data?.source_run_id ? routes.run(piece.data.source_run_id) : null);
+  const fixIsRemote = Boolean(fixHref && /^https?:\/\//.test(fixHref));
+  // "Open {follow-up}" stays absent: an issue ref may now be a LINK, but the
+  // refs model carries no role that would tell this stop's follow-up issue from
+  // the one it fixed. The player names the follow-up inside its step and never
+  // guesses which number to open.
 
   /* --- render ----------------------------------------------------------- */
   const segCount = entries.length + (moreAvailable ? 1 : 0);
@@ -521,9 +532,21 @@ export default function TourPlayer() {
       ) : null}
       <div className="flex flex-wrap items-center gap-[8px] border-t border-line pt-[14px]">
         {fixHref ? (
-          <Link to={fixHref} data-testid="tour-open-fix" className="ds-btn ds-btn--secondary">
-            Open the fix
-          </Link>
+          fixIsRemote ? (
+            <a
+              href={fixHref}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="tour-open-fix"
+              className="ds-btn ds-btn--secondary"
+            >
+              Open the fix
+            </a>
+          ) : (
+            <Link to={fixHref} data-testid="tour-open-fix" className="ds-btn ds-btn--secondary">
+              Open the fix
+            </Link>
+          )
         ) : null}
         <Button data-testid="tour-ask" onClick={ask}>
           Ask about this

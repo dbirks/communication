@@ -8,8 +8,15 @@ import type { StateName } from "../ds/states";
 
 import type { CatchUpImportance, CatchUpListItem, CatchUpRefs } from "../../api/catchup";
 
-export type ProjectChip = Pick<CatchUpListItem["project"], "id" | "name" | "color">;
-
+/** A project as the filter row and the item rows both draw it. Both sources —
+ * the catch-up item's project chip and the reader's own `Project` — promise a
+ * colour, and `color?: string` is the union of the two schemas' spellings of
+ * that promise; `projectColor` owns what an absent one looks like. */
+export interface ProjectChip {
+  id: string;
+  name: string;
+  color?: string;
+}
 /** The API promises a colour, but the enum carries `""` for "nobody chose";
  * the design's quiet grey is the fallback the token owns. */
 export function projectColor(color: string | undefined | null): string {
@@ -78,13 +85,25 @@ export const RESOLUTION_WORD: Record<CatchUpListItem["resolution"], string> = {
 
 /** The ref label a row/card shows: issue number, else PR, else commits. */
 export function refLabel(refs: CatchUpRefs): string | null {
-  const issue = refs.issue_numbers?.[0];
-  if (issue != null) return `#${issue}`;
-  const pr = refs.pr_numbers?.[0];
-  if (pr != null) return `PR #${pr}`;
-  const commits = refs.commit_shas?.length ?? 0;
+  const issue = refs.issues?.[0];
+  if (issue) return `#${issue.number}`;
+  const pr = refs.pull_requests?.[0];
+  if (pr) return `PR #${pr.number}`;
+  const commits = refs.commits?.length ?? 0;
   if (commits > 0) return commits === 1 ? "1 commit" : `${commits} commits`;
   return null;
+}
+
+/** The first link this ref set can honestly offer — the PR the work landed
+ * through, else a commit, else nothing. These are the server's own urls (see
+ * `RefChips`); a number with no url is a claim, not a destination. */
+export function primaryRefUrl(refs: CatchUpRefs | undefined): string | null {
+  if (!refs) return null;
+  return (
+    refs.pull_requests?.find((pr) => pr.url)?.url ??
+    refs.commits?.find((commit) => commit.url)?.url ??
+    null
+  );
 }
 
 /** `14:00` from an RFC 3339 stamp — the "WRITTEN {HH:MM}" clock. */

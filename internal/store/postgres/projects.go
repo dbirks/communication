@@ -13,6 +13,7 @@ import (
 
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/authz"
+	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 )
 
@@ -54,6 +55,11 @@ type Project struct {
 	// AgentMailEnabled is the ADR-0072 project setting: chats in this
 	// project may ask the agent of another repo in the project. Default off.
 	AgentMailEnabled bool
+	// Color is `projects.color` as stored: "" means nobody chose one yet
+	// (ADR-0078 — the column is NULLable precisely so an invented default is
+	// never mistaken for a maintainer's pick). The wire view renders that
+	// absence through the deterministic palette fallback.
+	Color string
 }
 
 // Repository is a git remote attached to a project.
@@ -100,7 +106,8 @@ type prjQuerier interface {
 const prjProjectSelect = `
 	SELECT p.id, p.organization_id, p.slug, p.name, p.description, p.created_at, p.version,
 	       p.agent_mail_enabled,
-	       COALESCE(m.role, 'maintainer')
+	       COALESCE(m.role, 'maintainer'),
+	       COALESCE(p.color, '')
 	FROM projects p
 	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
 	WHERE p.organization_id = $2::uuid
@@ -232,7 +239,7 @@ func prjGetProject(ctx context.Context, q prjQuerier, c Caller, projectID string
 	err := q.QueryRow(ctx, prjProjectSelectOne,
 		c.UserID, c.OrganizationID, c.IsOrgAdmin, projectID).
 		Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.Name, &p.Description,
-			&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole)
+			&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole, &p.Color)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrProjectNotFound
 	}
@@ -536,7 +543,7 @@ func prjBumpProject(ctx context.Context, tx pgx.Tx, projectID string) error {
 func prjScanProject(rows interface{ Scan(dest ...any) error }) (Project, error) {
 	var p Project
 	if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.Name, &p.Description,
-		&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole); err != nil {
+		&p.CreatedAt, &p.Version, &p.AgentMailEnabled, &p.MyRole, &p.Color); err != nil {
 		return Project{}, fmt.Errorf("postgres: scan project: %w", err)
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
@@ -796,6 +803,9 @@ func prjAPIProject(p Project) api.ProjectView {
 		Version:          p.Version,
 		MyRole:           p.MyRole,
 		AgentMailEnabled: p.AgentMailEnabled,
+		// NULL is "nobody chose", and the fallback is by project id: every
+		// replica, and every re-read after a rename, answers the same chip.
+		Color: domain.CatchUpProjectColorOr(p.ID, p.Color),
 	}
 }
 

@@ -59,6 +59,12 @@ type ProjectView struct {
 	// AgentMailEnabled is the ADR-0072 project setting (default false): chats
 	// in this project may ask the agent of another repo in the project.
 	AgentMailEnabled bool `json:"agent_mail_enabled"`
+	// Color is the project's chip colour (ADR-0078): one of the eight palette
+	// hues, never empty. `projects.color` is NULL until a maintainer picks, and
+	// a NULL is served as the deterministic pick BY PROJECT ID
+	// (domain.CatchUpProjectColorOr) — so the field is not a pointer and cannot
+	// shuffle between replicas or after a rename.
+	Color string `json:"color"`
 }
 
 // RepositoryView is the Repository schema of api/openapi.yaml. Credential is

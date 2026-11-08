@@ -34,7 +34,7 @@ function stop(id: string, title: string, over: Record<string, unknown> = {}) {
 }
 
 function tourEntry(workId: string, s: ReturnType<typeof stop>, project = payments, minutes = 2) {
-  return { work_item_id: workId, stop: s, project, refs: { issue_numbers: [215] }, minutes };
+  return { work_item_id: workId, stop: s, project, refs: { issues: [{ number: 215 }] }, minutes };
 }
 
 const page0 = {
@@ -84,7 +84,16 @@ function itemDetail(workId: string, stops: ReturnType<typeof stop>[], over = {})
     title: "Refund webhook sent duplicates",
     summary: "Fixed on main, no review.",
     resolution: "merged",
-    refs: { issue_numbers: [215], pr_numbers: [417], commit_shas: ["a1f9c2e0deadbeef"] },
+    refs: {
+      issues: [{ number: 215 }],
+      pull_requests: [{ number: 417, url: "https://github.com/octo/widgets/pull/417" }],
+      commits: [
+        {
+          sha: "a1f9c2e0deadbeef",
+          url: "https://github.com/octo/widgets/commit/a1f9c2e0deadbeef",
+        },
+      ],
+    },
     source_run_id: "run-1",
     conversation_id: "c1",
     latest: { version: 2, reason: "Fix landed", created_at: "2026-10-14T12:40:00Z", stops },
@@ -222,7 +231,7 @@ describe("TourPlayer — the catch-up tour", () => {
     expect(await screen.findByText("catch-up home")).toBeTruthy();
   });
 
-  it("⌘J and the footer button open Ask with this stop named, and the fix links the source run", async () => {
+  it("⌘J and the footer button open Ask with this stop named, and the fix links the PR", async () => {
     const asked: unknown[] = [];
     const listener = (event: Event) => asked.push((event as CustomEvent).detail);
     window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
@@ -237,13 +246,53 @@ describe("TourPlayer — the catch-up tour", () => {
       asked.length = 0;
       fireEvent.click(screen.getByTestId("tour-ask"));
       expect(asked[0]).toContain("Refund duplicates");
-      // refs carry no url; "Open the fix" goes to the run that produced the
-      // work — once the item read backing it has landed.
+      // The fix is the PR the SERVER could link (ADR-0078 § Decision 6): the
+      // url beside the ref is computed from the repository's remote, and the
+      // player prefers it over its own run page.
       const fix = await screen.findByTestId("tour-open-fix");
-      expect(fix.getAttribute("href")).toBe("/runs/run-1");
+      expect(fix.getAttribute("href")).toBe("https://github.com/octo/widgets/pull/417");
+      expect(fix.getAttribute("target")).toBe("_blank");
     } finally {
       window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
     }
+  });
+
+  it("with no server-computed ref url, the fix falls back to the run that made the work", async () => {
+    mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      {
+        path: itemPath(w1),
+        body: itemDetail(w1, bugStops(), {
+          // A repository on a host that is not GitHub answers no url at all.
+          refs: { pull_requests: [{ number: 417 }] },
+        }),
+      },
+    ]);
+    const fix = await screen.findByTestId("tour-open-fix");
+    expect(fix.getAttribute("href")).toBe("/runs/run-1");
+  });
+
+  it("a commit url is the fix when there is no pull request to open", async () => {
+    mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      {
+        path: itemPath(w1),
+        body: itemDetail(w1, bugStops(), {
+          refs: {
+            commits: [
+              {
+                sha: "a1f9c2e0deadbeef",
+                url: "https://github.com/octo/widgets/commit/a1f9c2e0deadbeef",
+              },
+            ],
+          },
+        }),
+      },
+    ]);
+    const fix = await screen.findByTestId("tour-open-fix");
+    expect(fix.getAttribute("href")).toBe(
+      "https://github.com/octo/widgets/commit/a1f9c2e0deadbeef",
+    );
   });
 
   it("renders bug steps only when the item's sibling stops back them", async () => {

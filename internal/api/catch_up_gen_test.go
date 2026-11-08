@@ -46,7 +46,10 @@ func cuItemView(id string, stops ...CatchUpStopView) CatchUpItemView {
 	return CatchUpItemView{
 		ID: id, Project: cuChip(), Shape: "pr", Title: "Item " + id,
 		Summary: "s", Resolution: "open",
-		Refs: CatchUpRefsView{PRNumbers: []int{7}, RunIDs: []string{cuItemID}},
+		Refs: CatchUpRefsView{
+			PullRequests: []CatchUpNumberedRef{{Number: 7}},
+			RunIDs:       []string{cuItemID},
+		},
 		Latest: &CatchUpTourView{Version: 1, Reason: "first",
 			CreatedAt: time.Now().UTC(), Stops: stops},
 		History: []CatchUpTourHeaderView{{Version: 1, StopCount: len(stops)}},

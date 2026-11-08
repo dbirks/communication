@@ -347,7 +347,10 @@ func TestCatchUpItemShape(t *testing.T) {
 	store := &fakeCatchUp{item: CatchUpItemView{
 		ID: cuItemID, Project: cuChip(), Shape: "issue", Title: "Retry storms",
 		Summary: "Backoff is now jittered.", Resolution: "branch_ready",
-		Refs:           CatchUpRefsView{IssueNumbers: []int{41}, PRNumbers: []int{7}},
+		Refs: CatchUpRefsView{
+			Issues:       []CatchUpNumberedRef{{Number: 41, URL: "https://github.com/o/r/issues/41"}},
+			PullRequests: []CatchUpNumberedRef{{Number: 7}},
+		},
 		ConversationID: cuStr(cuConvID),
 		Latest: &CatchUpTourView{Version: 2, Reason: "Fix landed, stop 3 added", Stops: []CatchUpStopView{
 			{ID: "s1", Title: "The bug", Narrative: "It retried immediately.", Importance: "must_know",
@@ -387,6 +390,21 @@ func TestCatchUpItemShape(t *testing.T) {
 	}
 	if history := body["history"].([]any); len(history) != 1 {
 		t.Errorf("history = %v, want the one older header", body["history"])
+	}
+	// Refs are objects with the SERVER's url, not the model's: a number the
+	// assistant claimed becomes a link only when this layer computed it (here,
+	// when the store attached one), and a ref with no repository behind it stays
+	// the bare label it always was.
+	refs := body["refs"].(map[string]any)
+	issues := refs["issues"].([]any)
+	issue := issues[0].(map[string]any)
+	prjEqual(t, issue["number"], float64(41), "issue number")
+	prjEqual(t, issue["url"], "https://github.com/o/r/issues/41", "server-computed issue url")
+	pulls := refs["pull_requests"].([]any)
+	pull := pulls[0].(map[string]any)
+	prjEqual(t, pull["number"], float64(7), "pull request number")
+	if _, ok := pull["url"]; ok {
+		t.Errorf("a ref the store attached no repository to carries a url: %v", pull)
 	}
 }
 

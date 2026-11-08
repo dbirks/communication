@@ -1107,6 +1107,14 @@ func (a APICatchUpStore) ListCatchUpItems(ctx context.Context, c api.Caller,
 	if err != nil {
 		return api.CatchUpItemList{}, err
 	}
+	listedIDs := make([]string, 0, len(items))
+	for _, it := range items {
+		listedIDs = append(listedIDs, it.ID)
+	}
+	repoURLs, err := catchUpAPIRepoURLs(ctx, s, sc, listedIDs)
+	if err != nil {
+		return api.CatchUpItemList{}, err
+	}
 	for _, it := range items {
 		chip, ok := chips[it.ProjectID]
 		if !ok {
@@ -1128,8 +1136,9 @@ func (a APICatchUpStore) ListCatchUpItems(ctx context.Context, c api.Caller,
 		out.Items = append(out.Items, api.CatchUpListItemView{
 			ID: it.ID, Project: chip,
 			Shape: string(it.Shape), Title: it.Title, Summary: it.Summary,
-			Resolution: string(it.Resolution), Refs: catchUpAPIRefs(it.Refs),
-			Updated: it.Updated, UnseenStops: it.UnseenStops,
+			Resolution: string(it.Resolution),
+			Refs:       catchUpAPIRefs(it.Refs).WithRepository(repoURLs[it.ID]),
+			Updated:    it.Updated, UnseenStops: it.UnseenStops,
 			TotalStops: shape.totalStops, Importance: shape.topImportance,
 			UpdatedAt: it.UpdatedAt.UTC(), CreatedAt: it.CreatedAt.UTC(),
 		})
@@ -1268,6 +1277,10 @@ func (a APICatchUpStore) GetCatchUpItem(ctx context.Context, c api.Caller,
 	if err != nil {
 		return api.CatchUpItemView{}, err
 	}
+	repoURLs, err := catchUpAPIRepoURLs(ctx, s, sc, []string{itemID})
+	if err != nil {
+		return api.CatchUpItemView{}, err
+	}
 	readers, err := s.SeenBy(ctx, sc, itemID)
 	if err != nil {
 		return api.CatchUpItemView{}, catchUpAPIErr(err)
@@ -1275,7 +1288,8 @@ func (a APICatchUpStore) GetCatchUpItem(ctx context.Context, c api.Caller,
 	out := api.CatchUpItemView{
 		ID: view.ID, Project: chip,
 		Shape: string(view.Shape), Title: view.Title, Summary: view.Summary,
-		Resolution: string(view.Resolution), Refs: catchUpAPIRefs(view.Refs),
+		Resolution:  string(view.Resolution),
+		Refs:        catchUpAPIRefs(view.Refs).WithRepository(repoURLs[itemID]),
 		SourceRunID: view.SourceRunID, ConversationID: view.ConversationID,
 		History:       catchUpAPIHistory(view.History),
 		SeenBy:        catchUpAPISeenBy(readers),
@@ -1422,10 +1436,70 @@ func catchUpAPISeenBy(r []domain.CatchUpSeenBy) []api.CatchUpSeenByView {
 }
 
 func catchUpAPIRefs(r domain.CatchUpRefs) api.CatchUpRefsView {
-	return api.CatchUpRefsView{
-		IssueNumbers: r.IssueNumbers, PRNumbers: r.PRNumbers,
-		CommitSHAs: r.CommitSHAs, RunIDs: r.RunIDs,
+	out := api.CatchUpRefsView{RunIDs: r.RunIDs}
+	for _, n := range r.IssueNumbers {
+		out.Issues = append(out.Issues, api.CatchUpNumberedRef{Number: n})
 	}
+	for _, n := range r.PRNumbers {
+		out.PullRequests = append(out.PullRequests, api.CatchUpNumberedRef{Number: n})
+	}
+	for _, sha := range r.CommitSHAs {
+		out.Commits = append(out.Commits, api.CatchUpCommitRef{SHA: sha})
+	}
+	return out
+}
+
+// --- the repository a work item's refs point into -----------------------
+
+// catchUpAPIRepoURLSQL answers, per work item, the git remote of the repository
+// the work's RUN was attached to. The item's own project must be one the caller
+// may see (the same predicate every other read here carries), and the
+// repository is pinned to that project rather than to the bare foreign key:
+// `runs_repository_fk` only references `repositories (id)`, so without the
+// extra `project_id` clause a run that named another project's repository could
+// leak that remote's url into a chip this reader should not have seen.
+// A work item with no run, a run with no repository, or a repository whose
+// remote is not GitHub answers an empty url — which is the honest absence, not
+// a fallback to guess at.
+const catchUpAPIRepoURLSQL = `
+	WITH ` + catchUpVisibleHead + `
+		  AND p.id IN (SELECT project_id FROM catchup_work_items
+			           WHERE id = ANY ($4::uuid[]))
+	)
+	SELECT w.id::text, COALESCE (repo.git_url, '')
+	FROM catchup_work_items w
+	JOIN visible v ON v.id = w.project_id
+	LEFT JOIN runs ru ON ru.id = w.source_run_id
+	LEFT JOIN repositories repo
+	       ON repo.id = ru.repository_id AND repo.project_id = w.project_id
+	WHERE w.id = ANY ($4::uuid[])`
+
+// catchUpAPIRepoURLs maps work item id -> the git remote to render its refs
+// against ("" = none). It is bounded by the page that asked, and the ids it
+// takes came out of an authorized read rather than off the wire.
+func catchUpAPIRepoURLs(ctx context.Context, s *CatchUpStore, sc Caller,
+	itemIDs []string) (map[string]string, error) {
+	if len(itemIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	rows, err := s.Pool.Query(ctx, catchUpAPIRepoURLSQL, sc.UserID, sc.OrganizationID,
+		sc.IsOrgAdmin, itemIDs)
+	if err != nil {
+		return nil, catchUpQueryErr(err, "read catchup repository urls")
+	}
+	defer rows.Close()
+	out := make(map[string]string, len(itemIDs))
+	for rows.Next() {
+		var id, gitURL string
+		if err := rows.Scan(&id, &gitURL); err != nil {
+			return nil, catchUpQueryErr(err, "scan catchup repository urls")
+		}
+		out[id] = gitURL
+	}
+	if err := rows.Err(); err != nil {
+		return nil, catchUpQueryErr(err, "read catchup repository urls")
+	}
+	return out, nil
 }
 
 // catchUpAPIEvidence flattens each piece of proof through its own marshal,

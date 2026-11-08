@@ -1,9 +1,11 @@
 /**
- * The catch-up page (design 8a) over the mocked API: the filter chips drive
- * the list query, the big-backlog banner appears only past the threshold and
- * dismisses for the session, a recap-less reader gets the honest empty, the
- * tour cards render in order with the first one focused, "See more" pages
- * the tour, and the rest panel's writes reach the seen endpoints.
+ * The catch-up page (design 8a) over the mocked API: the filter chips are the
+ * reader's whole project list (all on by default) and drive the list query,
+ * the big-backlog banner appears only past the threshold and dismisses for the
+ * session, a recap-less reader gets the honest empty, the recap's ask posts the
+ * page's scope, the tour cards render in order with the first one focused,
+ * "See more" pages the tour, and the rest panel's writes reach the seen
+ * endpoints.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,6 +25,30 @@ function chip(id: string, name: string, color: string) {
   return { id, name, color };
 }
 
+/** The reader's own project list: the filter row is drawn from THIS, not from
+ * whichever projects one page of items happens to mention. */
+function project(id: string, name: string, color: string) {
+  return {
+    id,
+    slug: name,
+    name,
+    description: "",
+    created_at: "2026-10-13T09:00:00Z",
+    version: 1,
+    my_role: "maintainer",
+    agent_mail_enabled: false,
+    color,
+  };
+}
+
+const myProjects = {
+  items: [
+    project(paymentsId, "payments", "#6a4bc4"),
+    project(webId, "web-console", "#1f8077"),
+    project(platformId, "platform", "#4a5a78"),
+  ],
+};
+
 function item(
   id: string,
   projectId: string,
@@ -37,7 +63,7 @@ function item(
     title: `Work ${id.slice(-4)}`,
     summary: "One line under the title",
     resolution: "merged",
-    refs: { issue_numbers: [215] },
+    refs: { issues: [{ number: 215 }] },
     updated: false,
     unseen_stops: 2,
     total_stops: 2,
@@ -53,7 +79,7 @@ const twoItems = {
     item(itemA, paymentsId, "payments", "#6a4bc4", { updated: true, resolution: "run_failed" }),
     item(itemB, webId, "web-console", "#1f8077", {
       resolution: "no_code",
-      refs: { pr_numbers: [425] },
+      refs: { pull_requests: [{ number: 425 }] },
     }),
   ],
   total_unseen: 2,
@@ -96,7 +122,7 @@ const tourPage = {
         ],
       },
       project: chip(paymentsId, "payments", "#6a4bc4"),
-      refs: { issue_numbers: [215] },
+      refs: { issues: [{ number: 215 }] },
       minutes: 2,
     },
     {
@@ -112,7 +138,7 @@ const tourPage = {
         evidence: [{ type: "files", files: ["Checkout.tsx", "Totals.tsx"] }],
       },
       project: chip(webId, "web-console", "#1f8077"),
-      refs: { pr_numbers: [425] },
+      refs: { pull_requests: [{ number: 425 }] },
       minutes: 1,
     },
   ],
@@ -137,7 +163,7 @@ const tourMorePage = {
         evidence: [{ type: "log", text: "lock held 40.2s" }],
       },
       project: chip(platformId, "platform", "#4a5a78"),
-      refs: { issue_numbers: [198] },
+      refs: { issues: [{ number: 198 }] },
       minutes: 1,
     },
   ],
@@ -160,6 +186,7 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
   return [
     ...extra,
     { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/projects", body: myProjects },
     {
       path: "/api/v1/approvals",
       body: { approvals: [{ id: "a1" }, { id: "a2" }] },
@@ -201,6 +228,12 @@ function urlsFor(fetchMock: ReturnType<typeof mockFetch>["fetchMock"], prefix: s
     .filter((url) => url.startsWith(prefix));
 }
 
+/** The `projects` a recorded items read carried, as the page wrote them. */
+function projectsParam(url: string): string[] {
+  const raw = new URL(url.replace(/^\//, "http://x/")).searchParams.get("projects");
+  return raw === null ? [] : raw.split(",");
+}
+
 describe("/catch-up", () => {
   it("opens on the unseen window with no since, and the window chips refetch", async () => {
     const { fetchMock } = mount();
@@ -216,23 +249,67 @@ describe("/catch-up", () => {
     });
   });
 
-  it("project chips filter the list query by project id", async () => {
+  it("draws every one of the reader's projects, all on by default, and a click narrows the read", async () => {
     const { fetchMock } = mount();
     await screen.findByTestId("catchup-row-" + itemA);
+    // The projects on screen: the two the items name AND platform, which has
+    // nothing unseen and is still a project the reader can filter to.
+    for (const id of [paymentsId, webId, platformId]) {
+      const chipButton = await screen.findByTestId(`catchup-project-chip-${id}`);
+      expect(chipButton.getAttribute("aria-pressed")).toBe("true");
+    }
+    // "Everything" is the API's empty scope, so the first read names nothing.
+    expect(projectsParam(urlsFor(fetchMock, "/api/v1/catch-up/items")[0]!)).toEqual([]);
+
     fireEvent.click(screen.getByTestId(`catchup-project-chip-${paymentsId}`));
     await waitFor(() => {
-      expect(
-        urlsFor(fetchMock, "/api/v1/catch-up/items").some((url) =>
-          url.includes(`projects=${paymentsId}`),
-        ),
-      ).toBe(true);
+      expect(projectsParam(urlsFor(fetchMock, "/api/v1/catch-up/items").at(-1)!)).toEqual([
+        webId,
+        platformId,
+      ]);
     });
-    // Deselecting returns to the unfiltered read.
+    expect(
+      screen.getByTestId(`catchup-project-chip-${paymentsId}`).getAttribute("aria-pressed"),
+    ).toBe("false");
+
+    // Choosing it back is the same answer as choosing nothing: no scope at all.
     fireEvent.click(screen.getByTestId(`catchup-project-chip-${paymentsId}`));
     await waitFor(() => {
-      const last = urlsFor(fetchMock, "/api/v1/catch-up/items").at(-1)!;
-      expect(last).not.toContain("projects=");
+      expect(projectsParam(urlsFor(fetchMock, "/api/v1/catch-up/items").at(-1)!)).toEqual([]);
     });
+  });
+
+  it("the recap ask posts the page's scope and the refusal line is the reader's, not the status", async () => {
+    const { requests } = mount([
+      {
+        path: "/api/v1/catch-up/recap",
+        method: "POST",
+        status: 503,
+        body: {
+          type: "about:blank",
+          title: "Service Unavailable",
+          status: 503,
+          detail: "assistant_not_configured",
+          degraded: "assistant_not_configured",
+        },
+      },
+    ]);
+    const block = await screen.findByTestId("catchup-recap");
+    expect(block.textContent).toContain("ASSISTANT RECAP · WRITTEN");
+    fireEvent.click(screen.getByTestId("catchup-recap-regenerate"));
+    await waitFor(() => {
+      const post = requests.find(
+        (request) => request.url === "/api/v1/catch-up/recap" && request.method === "POST",
+      );
+      expect(post).toBeTruthy();
+      expect(JSON.parse(post!.body!)).toEqual({ projects: [], window: "unseen" });
+    });
+    const error = await screen.findByTestId("catchup-recap-error");
+    expect(error.textContent).toBe(
+      "The assistant isn't set up on this server. Ask an admin to configure it.",
+    );
+    // The recap that was there is still shown: a refusal stored nothing.
+    expect(block.textContent).toContain("Start with the refund bug");
   });
 
   it("states the unseen tally and the waiting-on-you count in the subline", async () => {
@@ -256,11 +333,12 @@ describe("/catch-up", () => {
     await waitFor(() => expect(screen.queryByTestId("catchup-banner")).toBeNull());
   });
 
-  it("answers a missing recap with the honest line, not an error", async () => {
+  it("answers a missing recap with the honest line, and offers to write one", async () => {
     mount([{ path: "/api/v1/catch-up/recap", status: 404, body: notFound }]);
     const block = await screen.findByTestId("catchup-recap");
     await waitFor(() => expect(block.textContent).toContain("No recap yet."));
     expect(block.textContent).not.toContain("Not found");
+    expect(screen.getByTestId("catchup-recap-regenerate").textContent).toBe("Write one");
   });
 
   it("renders the tour cards in order, the first one focused, and starts the tour", async () => {

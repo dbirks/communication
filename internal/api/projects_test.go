@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dbirks/communication/internal/authz"
+	"github.com/dbirks/communication/internal/domain"
 )
 
 // --- fake store ---------------------------------------------------------
@@ -116,6 +117,10 @@ func (f *prjFakeStore) CreateProject(ctx context.Context, c Caller, name, slug, 
 		Version:     1,
 		MyRole:      string(authz.RoleMaintainer),
 	}
+	// The real store renders a NULL `projects.color` through the deterministic
+	// pick (ADR-0078), so the double does too: a created project has no CHOSEN
+	// colour, and the wire still never carries an empty one.
+	p.Color = domain.CatchUpProjectColorOr(p.ID, p.Color)
 	f.nextID++
 	f.byID[p.ID] = p
 	f.members[p.ID] = []MemberView{{UserID: c.UserID, DisplayName: "David", Role: "maintainer"}}
@@ -382,9 +387,12 @@ func TestCreateProjectReturns201WithContractShape(t *testing.T) {
 		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
 	}
 	prjWantFields(t, rec.Body.Bytes(),
-		"id", "slug", "name", "description", "created_at", "version", "my_role", "agent_mail_enabled")
+		"id", "slug", "name", "description", "created_at", "version", "my_role", "agent_mail_enabled",
+		"color")
 	body := decodeBody(t, rec)
 	prjEqual(t, body["agent_mail_enabled"], false, "agent mail is off by default (ADR-0072)")
+	prjEqual(t, body["color"], domain.CatchUpProjectColor(body["id"].(string)),
+		"a project with no chosen colour is served the deterministic pick, never null")
 	prjEqual(t, body["slug"], "widgets", "derived slug")
 	prjEqual(t, body["name"], "Widgets", "name")
 	prjEqual(t, body["description"], "Widget incubator", "description")
@@ -503,6 +511,56 @@ func TestListProjectsAlwaysReturnsAnItemsArray(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
 	}
 	prjEqual(t, strings.TrimSpace(rec.Body.String()), `{"items":[]}`, "empty list is an array, not null")
+}
+
+// TestProjectColorRidesTheWire is the ADR-0078 chip contract on the Project
+// schema: `color` is a member of every project the API serves, and a colour a
+// maintainer chose is served verbatim rather than re-picked. (The "never empty
+// when the column is NULL" half is the store's rule —
+// postgres.prjAPIProject applies domain.CatchUpProjectColorOr, and
+// internal/domain/catchup_test.go pins the pick itself.)
+func TestProjectColorRidesTheWire(t *testing.T) {
+	store := prjNewFakeStore()
+	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets",
+		MyRole: "maintainer", Color: "#1f8077"})
+	store.addProject(ProjectView{Slug: "quiet", Name: "Quiet", MyRole: "maintainer"})
+	srv := prjServer(t, store, prjAs("u-1", false))
+
+	rec := do(t, srv, request(http.MethodGet, "http://localhost:8080/api/v1/projects", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(list.Items))
+	}
+	bySlug := map[string]any{}
+	for _, item := range list.Items {
+		if _, ok := item["color"]; !ok {
+			t.Fatalf("project %v carries no colour member at all", item["slug"])
+		}
+		bySlug[item["slug"].(string)] = item["color"]
+	}
+	if bySlug["widgets"] != "#1f8077" {
+		t.Errorf("chosen colour = %v, want #1f8077", bySlug["widgets"])
+	}
+	// `quiet` is the fake's "nobody chose": this layer does not invent a colour
+	// (that is postgres.prjAPIProject's fallback over the stored column), it only
+	// refuses to drop the member.
+	prjEqual(t, bySlug["quiet"], "", "an unset colour is this layer's empty string, never a missing member")
+	rec = do(t, srv, request(http.MethodGet, "http://localhost:8080/api/v1/projects/"+id, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET project: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	prjEqual(t, decodeBody(t, rec)["color"], "#1f8077", "one project's colour")
+	prjWantFields(t, rec.Body.Bytes(),
+		"id", "slug", "name", "description", "created_at", "version", "my_role",
+		"agent_mail_enabled", "color")
 }
 
 func TestGetProjectNonMemberIs404AndAudits(t *testing.T) {

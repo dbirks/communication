@@ -1,9 +1,9 @@
 /**
  * The catch-up reads and writes (ADR-0078) against the fake fetch: the wire
- * URLs, the window→`since` translation, the recap's honest 404-as-null, and
- * the seen-writes' bodies. The tour hook codes against the local
- * `CatchUpTourPage` type — these tests pin the query string the backend is
- * being built to answer.
+ * URLs, the window→`since` translation, the recap's honest 404-as-null, the
+ * recap ask and its refusals, and the seen-writes' bodies. The tour hook codes
+ * against the local `CatchUpTourPage` type — these tests pin the query string
+ * the backend is being built to answer.
  */
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,6 +12,8 @@ import type { ReactNode } from "react";
 import {
   useCatchUpItems,
   useCatchUpRecap,
+  useRegenerateRecap,
+  recapFailureMessage,
   useCatchUpTour,
   useVisitSuggestion,
   useMarkItemSeen,
@@ -23,7 +25,7 @@ import {
   firstSentence,
 } from "./catchup";
 import { mockFetch, requestsTo, type RouteStub } from "../test/fakes";
-import { setCsrfToken } from "./client";
+import { ApiError, setCsrfToken } from "./client";
 
 const projectId = "01987a90-0000-7000-8000-111111111111";
 const itemId = "01987a90-0000-7000-8000-222222222222";
@@ -37,7 +39,7 @@ const itemList = {
       title: "Refund webhook sent duplicates",
       summary: "Fixed on main, no review.",
       resolution: "merged",
-      refs: { issue_numbers: [215] },
+      refs: { issues: [{ number: 215 }] },
       updated: false,
       unseen_stops: 2,
       total_stops: 2,
@@ -57,7 +59,7 @@ const itemDetail = {
   title: "Refund webhook sent duplicates",
   summary: "Fixed on main, no review.",
   resolution: "merged",
-  refs: { issue_numbers: [215] },
+  refs: { issues: [{ number: 215, url: "https://github.com/octo/widgets/issues/215" }] },
   source_run_id: null,
   conversation_id: null,
   latest: {
@@ -187,6 +189,91 @@ describe("useCatchUpRecap", () => {
     const read = renderHook(() => useCatchUpRecap(), { wrapper });
     await waitFor(() => expect(read.result.current.isSuccess).toBe(true));
     expect(read.result.current.data).toEqual(recap);
+  });
+});
+
+describe("useRegenerateRecap", () => {
+  const saved = {
+    text: "Two bugs landed while you were away.",
+    written_at: "2026-10-14T14:30:00Z",
+    window: "24h",
+    project_ids: [projectId],
+  };
+
+  it("POSTs the page's scope and refetches the recap the ask replaced", async () => {
+    const { requests, wrapper } = harness([
+      {
+        path: "/api/v1/catch-up/recap",
+        method: "GET",
+        body: {
+          text: "Nothing much happened.",
+          written_at: "2026-10-14T09:00:00Z",
+          window: "24h",
+          project_ids: [projectId],
+        },
+      },
+      { path: "/api/v1/catch-up/recap", method: "POST", status: 201, body: saved },
+    ]);
+    const page = renderHook(
+      () => ({
+        recap: useCatchUpRecap({ projects: [projectId], window: "24h" }),
+        ask: useRegenerateRecap(),
+      }),
+      { wrapper },
+    );
+    await waitFor(() => expect(page.result.current.recap.isSuccess).toBe(true));
+    page.result.current.ask.mutate({ projects: [projectId], window: "24h" });
+    await waitFor(() => expect(page.result.current.ask.isSuccess).toBe(true));
+
+    const post = requestsTo(requests, "/api/v1/catch-up/recap", "POST")[0]!;
+    expect(JSON.parse(post.body!)).toEqual({ projects: [projectId], window: "24h" });
+    expect(page.result.current.ask.data).toEqual(saved);
+    // The stored row changed, so the read that drew the block runs again.
+    await waitFor(() =>
+      expect(requestsTo(requests, "/api/v1/catch-up/recap", "GET").length).toBe(2),
+    );
+  });
+
+  it("sends the whole page when nothing is scoped", async () => {
+    const { requests, wrapper } = harness([
+      { path: "/api/v1/catch-up/recap", method: "POST", status: 201, body: saved },
+    ]);
+    const ask = renderHook(() => useRegenerateRecap(), { wrapper });
+    ask.result.current.mutate({});
+    await waitFor(() => expect(ask.result.current.isSuccess).toBe(true));
+    expect(JSON.parse(requestsTo(requests, "/api/v1/catch-up/recap", "POST")[0]!.body!)).toEqual({
+      projects: [],
+      window: "unseen",
+    });
+  });
+});
+
+describe("recapFailureMessage", () => {
+  const problem = (status: number, detail: string, degraded: string | null = null) =>
+    new ApiError({ type: "about:blank", title: "Problem", status, detail, degraded }, { status });
+
+  it("names the throttle, the missing assistant, and the answer that did not check out", () => {
+    expect(
+      recapFailureMessage(problem(429, "Too many assistant requests; retry in 45s.", null)),
+    ).toBe("You've asked for a lot of recaps — try again in 45s.");
+    expect(
+      recapFailureMessage(problem(429, "Too many assistant requests; retry later.", null)),
+    ).toBe("You've asked for a lot of recaps — try again in a moment.");
+    expect(
+      recapFailureMessage(problem(503, "assistant_not_configured", "assistant_not_configured")),
+    ).toBe("The assistant isn't set up on this server. Ask an admin to configure it.");
+    expect(recapFailureMessage(problem(502, "model_unreachable", "model_malformed"))).toBe(
+      "The assistant's answer didn't check out, so nothing was saved. Try again.",
+    );
+  });
+
+  it("is one honest line for anything else", () => {
+    expect(recapFailureMessage(problem(500, "boom"))).toBe(
+      "The recap could not be written. Try again.",
+    );
+    expect(recapFailureMessage(new Error("offline"))).toBe(
+      "The recap could not be written. Try again.",
+    );
   });
 });
 

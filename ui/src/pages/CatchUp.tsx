@@ -25,6 +25,8 @@ import {
   useCatchUpItems,
   useCatchUpTour,
   useCatchUpRecap,
+  useRegenerateRecap,
+  recapFailureMessage,
   useVisitSuggestion,
   useMarkItemSeen,
   useMarkAllSeen,
@@ -34,6 +36,7 @@ import {
   type CatchUpTourEntry,
   type CatchUpWindow,
 } from "../api/catchup";
+import { useProjects } from "../api/queries";
 import { useHomeApprovals } from "../api/home";
 
 export default function CatchUp() {
@@ -42,7 +45,6 @@ export default function CatchUp() {
   const [showSeen, setShowSeen] = useState(false);
   const [keepAll, setKeepAll] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [knownProjects, setKnownProjects] = useState<Record<string, ProjectChip>>({});
   const [stops, setStops] = useState<CatchUpTourEntry[]>([]);
 
   const baseFilters: CatchUpFilters = useMemo(
@@ -51,9 +53,28 @@ export default function CatchUp() {
   );
   const items = useCatchUpItems(baseFilters);
   const restItems = useCatchUpItems({ ...baseFilters, includeSeen: showSeen });
+  // The filter row shows the reader's PROJECTS, not the projects one page of
+  // items happens to mention: an engineer with three projects and unseen work
+  // in one of them still filters by the other two.
+  const projectsQuery = useProjects();
+  const allProjects = useMemo<ProjectChip[]>(
+    () =>
+      (projectsQuery.data?.items ?? []).map((project) => ({
+        id: project.id,
+        name: project.name,
+        color: project.color,
+      })),
+    [projectsQuery.data],
+  );
+  const allProjectIds = allProjects.map((project) => project.id);
+  // Empty selection is the API's "every project I belong to", so the chips draw
+  // it as everything selected — the row never shows a filter nobody chose.
+  const selectedIds =
+    selectedProjects.length === 0 ? allProjectIds : selectedProjects.filter((id) => id.length > 0);
   const totalUnseen = items.data?.total_unseen ?? 0;
   const tour = useCatchUpTour(baseFilters, offset, totalUnseen > 0);
   const recap = useCatchUpRecap(baseFilters);
+  const regenerateRecap = useRegenerateRecap();
   const suggestion = useVisitSuggestion();
   const approvals = useHomeApprovals();
   // The rest-list checkbox is an explicit "mark this whole piece seen" —
@@ -71,23 +92,9 @@ export default function CatchUp() {
     recordVisit.mutateAsync().catch(() => undefined);
   }, [recordVisit]);
 
-  /* The chip list accumulates the projects this reader's items carry: the
-   * API's project chips (id, name, colour) are the only place the colours
-   * live, and a filter must never erase the chip that set it. */
-  useEffect(() => {
-    const rows = [...(items.data?.items ?? []), ...(restItems.data?.items ?? [])];
-    if (rows.length === 0) return;
-    setKnownProjects((prev) => {
-      let next = prev;
-      for (const row of rows) {
-        if (!next[row.project.id]) {
-          if (next === prev) next = { ...prev };
-          next[row.project.id] = row.project;
-        }
-      }
-      return next;
-    });
-  }, [items.data, restItems.data]);
+  /* The chip list is the reader's own project list; a filter must never erase
+   * the chip that set it, and a project with nothing unseen is still a project
+   * they can ask about. */
 
   /* Filter changes restart the tour paging from the top. */
   useEffect(() => {
@@ -114,9 +121,15 @@ export default function CatchUp() {
   }, [tour.data, offset]);
 
   const toggleProject = (id: string) =>
-    setSelectedProjects((prev) =>
-      prev.includes(id) ? prev.filter((candidate) => candidate !== id) : [...prev, id],
-    );
+    setSelectedProjects((prev) => {
+      // "Nothing chosen" already means "everything": the first click leaves it
+      // by naming every project EXCEPT the one the reader turned off, so the
+      // chip they clicked is the only visible change.
+      if (prev.length === 0) return allProjectIds.filter((known) => known !== id);
+      const next = prev.includes(id) ? prev.filter((known) => known !== id) : [...prev, id];
+      // Everything chosen again is the same answer as nothing chosen.
+      return next.length === allProjectIds.length ? [] : next;
+    });
 
   const subline = (
     <>
@@ -155,12 +168,8 @@ export default function CatchUp() {
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-[12px] border-b border-line-strong pb-[12px]">
-            <ProjectChips
-              projects={Object.values(knownProjects)}
-              selected={selectedProjects}
-              onToggle={toggleProject}
-            />
-            {Object.keys(knownProjects).length > 0 ? (
+            <ProjectChips projects={allProjects} selected={selectedIds} onToggle={toggleProject} />
+            {allProjects.length > 0 ? (
               <span className="h-[20px] w-px bg-line-strong" aria-hidden />
             ) : null}
             <WindowChips value={windowChip} onChange={setWindowChip} />
@@ -207,6 +216,11 @@ export default function CatchUp() {
                 stops={stops.length}
                 minutes={tour.data?.minutes_total ?? 0}
                 builtFrom={tour.data?.built_from ?? 0}
+                onRegenerate={() =>
+                  regenerateRecap.mutate({ projects: selectedProjects, window: windowChip })
+                }
+                writing={regenerateRecap.isPending}
+                error={regenerateRecap.isError ? recapFailureMessage(regenerateRecap.error) : null}
               />
               {stops.length > 0 ? (
                 <TourCards

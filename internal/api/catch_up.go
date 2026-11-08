@@ -4,11 +4,13 @@ package api
 // over the store an engineer reads when they come back — "what did the agents
 // do while I was away?".
 //
-// Seven routes, and every one of them is scoped by project membership inside
+// Ten routes, and every one of them is scoped by project membership inside
 // the store's own statement:
 //
 //   - `GET  /api/v1/catch-up/items`: the caller's work items, unseen by
 //     default, across the projects they name (default: all of them).
+//   - `GET  /api/v1/catch-up/tour`: the deterministic page of beats THIS reader
+//     still owes — assembled from the shared tours, never by asking a model.
 //   - `GET  /api/v1/catch-up/items/{itemId}`: one item, its latest tour with a
 //     per-stop `seen` flag for THIS reader, the headers of every version, the
 //     seen roster and the version this reader last recorded.
@@ -17,15 +19,19 @@ package api
 //   - `POST /api/v1/catch-up/visits` / `GET .../visits/suggestion`: the visit
 //     stamp, and the window inferred from the stamps.
 //   - `GET  /api/v1/catch-up/recap`: the latest saved narrative, if any.
+//   - `POST /api/v1/catch-up/recap`: ask the server's own assistant for a new
+//     one, for THIS reader only. It carries the assistant throttle (ADR-0077)
+//     and writes one `catchup_recaps` row keyed on the principal, which is why
+//     a browser may ask for it at all (ADR-0078 § Decision 1).
 //   - `POST /api/v1/catch-up/items/{itemId}/stops/{stopId}/reply`: an answer to
 //     a beat's question, stored and posted as an ordinary message.
 //
-// What is deliberately absent is the half that WRITES tours and recaps. The
-// generator (ADR-0078 § Migration, the next task) is the server's own assistant
-// behind ADR-0034's egress, so there is no `POST /catch-up/recap` here for a
-// browser to ask for a model call, and no route at all that could put words
-// into a shared tour. A `GET` of a page with no generator behind it is an empty
-// list, not a stub narrative.
+// What is still deliberately absent is any route that WRITES A SHARED TOUR.
+// The tour is the project's story, read by everybody in it in one order, so the
+// only writer of a tour is the server's own assistant behind ADR-0034's egress
+// (the generator in `catch_up_gen.go`), never a request a browser makes. A
+// `GET` of a page with no generator behind it is an empty list, not a stub
+// narrative.
 //
 // Two rules this layer keeps for itself, because they are contract rather than
 // data:
@@ -51,6 +57,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dbirks/communication/internal/assistant"
+	"github.com/dbirks/communication/internal/integrations/github"
 )
 
 // Limits this layer enforces before a store is asked. Each number is the same
@@ -111,14 +118,70 @@ type CatchUpProjectChip struct {
 	Color string `json:"color"`
 }
 
+// CatchUpNumberedRef is one issue or pull request the work touched: the number
+// the assistant claimed, plus — when the work's repository is a GitHub remote —
+// the url the SERVER computed for that number. The url is never model output:
+// it is assembled from `repositories.git_url` at read time by
+// CatchUpRefsView.WithRepository, so a model cannot put a link on the wire.
+type CatchUpNumberedRef struct {
+	Number int    `json:"number"`
+	URL    string `json:"url,omitempty"`
+}
+
+// CatchUpCommitRef is one commit the work touched, with the same server-computed
+// `url` rule as CatchUpNumberedRef.
+type CatchUpCommitRef struct {
+	SHA string `json:"sha"`
+	URL string `json:"url,omitempty"`
+}
+
 // CatchUpRefsView is what the work touched. These are the assistant's own
 // claims about the repository, and this deployment does not sync with GitHub
 // (ADR-0078 § Decision 6): nothing here promises the PR is still open.
 type CatchUpRefsView struct {
-	IssueNumbers []int    `json:"issue_numbers,omitempty"`
-	PRNumbers    []int    `json:"pr_numbers,omitempty"`
-	CommitSHAs   []string `json:"commit_shas,omitempty"`
-	RunIDs       []string `json:"run_ids,omitempty"`
+	Issues       []CatchUpNumberedRef `json:"issues,omitempty"`
+	PullRequests []CatchUpNumberedRef `json:"pull_requests,omitempty"`
+	Commits      []CatchUpCommitRef   `json:"commits,omitempty"`
+	RunIDs       []string             `json:"run_ids,omitempty"`
+}
+
+// WithRepository attaches a url to every ref this repository can name one for.
+// `gitURL` is the registered remote of the repository the work's run belonged
+// to; anything that is not a github.com owner/repo remote (a GitLab url, a
+// GitHub Enterprise host, a `file://` path, a repository the work never named)
+// leaves the refs as the labels they shipped as — a link the server could not
+// verify is worse than no link, because it is one the reader will trust.
+func (r CatchUpRefsView) WithRepository(gitURL string) CatchUpRefsView {
+	repo, err := github.ParseRepository(gitURL)
+	if err != nil || repo.Owner == "" || repo.Name == "" {
+		return r
+	}
+	// The segments are what `github.ParseRepository` accepted, and it accepts
+	// only `[A-Za-z0-9._-]` — the url is a rendering of them, not a guess.
+	base := "https://github.com/" + repo.String()
+	out := CatchUpRefsView{RunIDs: r.RunIDs}
+	if len(r.Issues) > 0 {
+		out.Issues = make([]CatchUpNumberedRef, 0, len(r.Issues))
+		for _, ref := range r.Issues {
+			ref.URL = fmt.Sprintf("%s/issues/%d", base, ref.Number)
+			out.Issues = append(out.Issues, ref)
+		}
+	}
+	if len(r.PullRequests) > 0 {
+		out.PullRequests = make([]CatchUpNumberedRef, 0, len(r.PullRequests))
+		for _, ref := range r.PullRequests {
+			ref.URL = fmt.Sprintf("%s/pull/%d", base, ref.Number)
+			out.PullRequests = append(out.PullRequests, ref)
+		}
+	}
+	if len(r.Commits) > 0 {
+		out.Commits = make([]CatchUpCommitRef, 0, len(r.Commits))
+		for _, ref := range r.Commits {
+			ref.URL = base + "/commit/" + ref.SHA
+			out.Commits = append(out.Commits, ref)
+		}
+	}
+	return out
 }
 
 // CatchUpListItemView is one row of the list. `updated` is the badge that means

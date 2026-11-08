@@ -43,7 +43,11 @@ function itemDetail(over: Record<string, unknown> = {}) {
     title: "Refund webhook sent duplicates",
     summary: "Fixed on main, no review.",
     resolution: "merged",
-    refs: { issue_numbers: [215], pr_numbers: [417], commit_shas: ["a1f9c2e0deadbeef"] },
+    refs: {
+      issues: [{ number: 215 }],
+      pull_requests: [{ number: 417 }],
+      commits: [{ sha: "a1f9c2e0deadbeef" }],
+    },
     source_run_id: null,
     conversation_id: "c1",
     latest: {
@@ -94,7 +98,7 @@ const tourPage = {
       work_item_id: workId,
       stop: stop("s3", "Fix and follow-up", { seen: false }),
       project,
-      refs: { issue_numbers: [215] },
+      refs: { issues: [{ number: 215 }] },
       minutes: 2,
     },
     {

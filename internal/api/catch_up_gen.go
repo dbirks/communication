@@ -56,6 +56,18 @@ type CatchUpCandidateView struct {
 	HeadStops      []CatchUpHeadStopView
 }
 
+// CatchUpRefsWrite is the generator's claim set: the numbers and SHAs the
+// assistant saw, with no urls beside them. It is deliberately NOT the wire's
+// CatchUpRefsView — a url on the write path would be a link this layer had to
+// trust the model for, and the read path is the only place one is computed
+// (CatchUpRefsView.WithRepository).
+type CatchUpRefsWrite struct {
+	IssueNumbers []int
+	PRNumbers    []int
+	CommitSHAs   []string
+	RunIDs       []string
+}
+
 // CatchUpWorkItemWrite is the generator's work-item upsert. ID names an
 // existing item to revise ("" = key on project + source run).
 type CatchUpWorkItemWrite struct {
@@ -65,7 +77,7 @@ type CatchUpWorkItemWrite struct {
 	Title          string
 	Summary        string
 	Resolution     string
-	Refs           CatchUpRefsView
+	Refs           CatchUpRefsWrite
 	SourceRunID    string
 	ConversationID string
 }
@@ -472,7 +484,7 @@ func (w *catchUpGenWriter) WriteCatchUpTour(ctx context.Context, c assistant.Cal
 	itemID, err := w.store.UpsertCatchUpWorkItem(ctx, caller, CatchUpWorkItemWrite{
 		ID: a.ExistingID, ProjectID: a.ProjectID, Shape: a.Shape,
 		Title: a.Title, Summary: a.Summary, Resolution: a.Resolution,
-		Refs: CatchUpRefsView{
+		Refs: CatchUpRefsWrite{
 			IssueNumbers: a.Refs.IssueNumbers, PRNumbers: a.Refs.PRNumbers,
 			CommitSHAs: a.Refs.CommitSHAs, RunIDs: a.Refs.RunIDs,
 		},

@@ -17,8 +17,8 @@ import { IMPORTANCE, projectColor, projectSquareClasses, refLabel } from "./impo
 /** The tour card's ref icon follows whichever ref the label was drawn from. */
 function RefGlyph({ entry }: { entry: CatchUpTourEntry }) {
   const size = 12;
-  if (entry.refs.issue_numbers?.length) return <CircleDot size={size} aria-hidden />;
-  if (entry.refs.pr_numbers?.length) return <GitPullRequest size={size} aria-hidden />;
+  if (entry.refs.issues?.length) return <CircleDot size={size} aria-hidden />;
+  if (entry.refs.pull_requests?.length) return <GitPullRequest size={size} aria-hidden />;
   return <GitCommitHorizontal size={size} aria-hidden />;
 }
 
