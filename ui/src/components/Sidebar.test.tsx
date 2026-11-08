@@ -603,6 +603,35 @@ describe("the collapsed rail (redesign 3a/4a)", () => {
     expect(screen.getByTestId("rail-item-agents").getAttribute("href")).toBe("/profiles");
   });
 
+  // Final design review: the expanded column's Threads row prints the live
+  // count; the collapsed rail must carry the SAME number on the same tile —
+  // `flags.threads`, one read, on the running tint (never colour alone: the
+  // tile's aria-label says it in words).
+  it("badges the Threads tile with the expanded row's live count", async () => {
+    const three = [1, 2, 3].map((n) => ({
+      ...conversationSummaryFixture,
+      id: `01987a90-0000-7000-8000-00000000000${n}`,
+      title: `Thread ${n}`,
+    }));
+    renderApp({
+      path: "/",
+      routes: railRoutes().map((stub) =>
+        stub.path === `/api/v1/projects/${P}/conversations`
+          ? { ...stub, body: { items: three } }
+          : stub,
+      ),
+    });
+    const badge = await screen.findByTestId("rail-badge-threads", undefined, {
+      timeout: READ_MS,
+    });
+    expect(badge.textContent).toBe("3");
+    expect(badge.className).toContain("bg-st-running-tag");
+    expect(badge.className).toContain("text-st-running-tag-fg");
+    expect(screen.getByTestId("rail-item-threads").getAttribute("aria-label")).toBe(
+      "Threads · 3 live",
+    );
+  });
+
   // 3a: the Projects tile is the one tile with children, and it carries the
   // projects' own state badge — the same flag the expanded project rows print,
   // glyph and count together.

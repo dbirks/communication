@@ -375,8 +375,12 @@ test.describe("shell p2 — Home briefing (counts, callouts, run cards, decision
     );
     await callout.getByTestId("decision-undo").click();
     await expect(callout.getByTestId("decision-approve")).toBeVisible();
-    // A short settle window: a decided gate would POST in the hold's own tick.
-    await page.waitForTimeout(1_000);
+    // T10's whole point is the DEAD TIMER: the hold is 5 s (DecisionBar.tsx's
+    // DECISION_HOLD_SECONDS), so undoing and seeing no POST one second later
+    // only proves the timer had not fired yet. Wait a full hold PLUS a two-
+    // second margin — past the instant a not-really-cancelled hold would post
+    // the decision — and only then read the count.
+    await page.waitForTimeout(7_000);
     page.off("request", onRequest);
     expect(approvalPosts, "no approval was POSTed").toBe(0);
     const stillPending = await apiPendingApprovals(page.request);

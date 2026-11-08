@@ -133,9 +133,9 @@ export default function CatchUp() {
       return next.length === allProjectIds.length ? [] : next;
     });
 
-  /* The rest excludes what the cards already show (mock 8a): a piece whose
-   * unseen stops are ALL in the shown tour page is not repeated below; a
-   * piece with only some stops featured stays. */
+  /* The rest excludes what the cards already show (mock 8a): a piece with
+   * ANY stop in the shown tour cards is not repeated below — its remaining
+   * stops are reachable through "See more" and on its piece page. */
   const tourStopsByItem = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const entry of stops) counts[entry.work_item_id] = (counts[entry.work_item_id] ?? 0) + 1;

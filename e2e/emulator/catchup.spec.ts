@@ -43,6 +43,7 @@
 // the worker after a serial-group failure, and the fresh process must reuse
 // the dead one's rows, never double-seed them.
 import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
+import { signIn } from "../tests/helpers.js";
 import { expect, test } from "./fixtures.js";
 import type { Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
@@ -200,8 +201,10 @@ function tourVersionSql(title: string, stops: unknown[]): string {
   return (
     `INSERT INTO catchup_tour_versions (work_item_id, version, reason, stops) ` +
     `SELECT w.id, 1, ` +
-    `${sqlQuote("Seeded fixture tour for the emulator's Catch up screens " +
-      "(e2e/emulator/catchup.spec.ts) — no product route writes tours.")}, ` +
+    `${sqlQuote(
+      "Seeded fixture tour for the emulator's Catch up screens " +
+        "(e2e/emulator/catchup.spec.ts) — no product route writes tours.",
+    )}, ` +
     `${sqlQuote(JSON.stringify(stops))}::jsonb ` +
     `FROM catchup_work_items w WHERE w.title = ${sqlQuote(title)} ` +
     `AND NOT EXISTS (SELECT 1 FROM catchup_tour_versions v ` +
@@ -216,34 +219,38 @@ function tourVersionSql(title: string, stops: unknown[]): string {
  * alice is the reader this journey plays.
  */
 function seedCatchUpFixture(): Record<string, string> {
-  const recapText = `${RECAP_PREFIX}: one bug story was found, explained, fixed ` +
+  const recapText =
+    `${RECAP_PREFIX}: one bug story was found, explained, fixed ` +
     `and left a follow-up; one UI change waits on your call; one routine lockfile ` +
     `push went in on its own. Play the tour or read the pieces below.`;
   const alice =
     `(SELECT u.id FROM users u JOIN oidc_identities oi ON oi.user_id = u.id ` +
     `WHERE oi.subject = 'alice' LIMIT 1)`;
   const sql = [
-    upsertItemSql(BUG_TITLE, "issue", "merged", { issue_numbers: [ISSUE_NUMBER], pr_numbers: [PR_NUMBER] }),
+    upsertItemSql(BUG_TITLE, "issue", "merged", {
+      issue_numbers: [ISSUE_NUMBER],
+      pr_numbers: [PR_NUMBER],
+    }),
     tourVersionSql(BUG_TITLE, BUG_STOPS),
     upsertItemSql(PR_TITLE, "pr", "branch_ready", { pr_numbers: [PR_NUMBER] }),
     tourVersionSql(PR_TITLE, PR_STOPS),
     upsertItemSql(PUSH_TITLE, "push", "merged", { commit_shas: [COMMIT_SHA] }),
     tourVersionSql(PUSH_TITLE, PUSH_STOPS),
     `INSERT INTO catchup_recaps (user_id, "text", "window", project_ids) ` +
-    `SELECT ${alice}, ${sqlQuote(recapText)}, 'unseen', ` +
-    `ARRAY[(SELECT id FROM projects WHERE slug = ${sqlQuote(PROJECT_SLUG)})]::uuid[] ` +
-    `WHERE ${alice} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM catchup_recaps r ` +
-    `WHERE r.user_id = ${alice} AND r."text" LIKE ${sqlQuote(`${RECAP_PREFIX}%`)});`,
+      `SELECT ${alice}, ${sqlQuote(recapText)}, 'unseen', ` +
+      `ARRAY[(SELECT id FROM projects WHERE slug = ${sqlQuote(PROJECT_SLUG)})]::uuid[] ` +
+      `WHERE ${alice} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM catchup_recaps r ` +
+      `WHERE r.user_id = ${alice} AND r."text" LIKE ${sqlQuote(`${RECAP_PREFIX}%`)});`,
     `SELECT 'bug|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(BUG_TITLE)} ` +
-    `UNION ALL SELECT 'pr|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(PR_TITLE)} ` +
-    `UNION ALL SELECT 'push|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(PUSH_TITLE)} ` +
-    // Newest-first read of the recap, NOT `MAX(id)`: postgres has no `max()`
-    // for uuid (acceptance 42460068894 — `function max(uuid) does not exist`),
-    // so the id comes back through the table's own newest-recap ordering
-    // (catchup_recaps_user_written_idx: written_at DESC, id DESC).
-    `UNION ALL SELECT 'recap|' || COALESCE((SELECT r.id::text FROM catchup_recaps r ` +
-    `WHERE r."text" LIKE ${sqlQuote(`${RECAP_PREFIX}%`)} ` +
-    `ORDER BY r.written_at DESC, r.id DESC LIMIT 1), 'MISSING');`,
+      `UNION ALL SELECT 'pr|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(PR_TITLE)} ` +
+      `UNION ALL SELECT 'push|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(PUSH_TITLE)} ` +
+      // Newest-first read of the recap, NOT `MAX(id)`: postgres has no `max()`
+      // for uuid (acceptance 42460068894 — `function max(uuid) does not exist`),
+      // so the id comes back through the table's own newest-recap ordering
+      // (catchup_recaps_user_written_idx: written_at DESC, id DESC).
+      `UNION ALL SELECT 'recap|' || COALESCE((SELECT r.id::text FROM catchup_recaps r ` +
+      `WHERE r."text" LIKE ${sqlQuote(`${RECAP_PREFIX}%`)} ` +
+      `ORDER BY r.written_at DESC, r.id DESC LIMIT 1), 'MISSING');`,
   ].join(" ");
   const out = labSql(sql);
   const ids: Record<string, string> = {};
@@ -316,22 +323,22 @@ async function getTour(page: Page): Promise<TourWire> {
 }
 
 /* ------------------------------------------- the surface a piece shows in
- * Design 8a: "the rest" LEAVES OUT a piece whose unseen beats are all in the
- * tour cards above it — the rest is what the cards do not show, and a piece
- * with only some beats featured stays (ui/src/components/catchup/
- * RestList.tsx's `tourStopsByItem` filter; page 1 of the tour is 4 beats).
+ * Design 8a: "the rest" LEAVES OUT any piece with a stop in the tour cards
+ * above it — the rest holds only the pieces the cards do not touch at all
+ * (ui/src/components/catchup/RestList.tsx's `tourStopsByItem` filter; page 1
+ * of the tour is 4 beats). A carded piece's remaining stops are reachable
+ * through "See more" and on its piece page, so it is never repeated below.
  * The tour page is the design's OPINIONATED SUMMARY — `GET /catch-up/tour`
  * gives every unseen piece its single best beat before any piece gets a
  * second one — so with this pass's three seeds page 1 is one stop from the bug
  * story, the PR that waits on your call and the routine push, plus the bug's
- * NEXT stop. That splits the fixture the other way round from a rank-everything-
- * first tour: the four-beat bug story is only PARTLY carded and keeps its row,
- * while the two one-beat pieces are fully carded and leave the rest.
+ * NEXT stop. All three seeds are therefore carded and the rest stands EMPTY —
+ * with its honest line, not a silent panel.
  * `readPieceSurface` states the contract rather than a lucky ranking: the piece
  * is on the page in the surface its own unseen beats belong to, and it is NAMED
- * there — the work-item title in the row, every beat title among the cards, each
- * card reached by its own "Start here ›" (ui/src/components/catchup/TourCards.tsx
- * links a card to `/catch-up/<work-item-id>?stop=…`). */
+ * there — the work-item title in the row, every carded beat's title among the
+ * cards, each card reached by its own "Start here ›" (ui/src/components/catchup/
+ * TourCards.tsx links a card to `/catch-up/<work-item-id>?stop=…`). */
 
 /** Collapse whitespace the way the browser reads it, so a title with a newline
  * in the store still matches the text a card or a row renders. */
@@ -350,7 +357,7 @@ function pieceCards(page: Page, pieceId: string): Locator {
 interface PieceSurface {
   surface: "cards" | "row" | "both" | "missing";
   /** The piece named in the surface that owes it, and 8a's exclusion honoured: a
-   * fully carded piece is not repeated in the rest. */
+   * piece with ANY carded stop is not repeated in the rest. */
   titled: boolean;
   why: string;
 }
@@ -366,26 +373,32 @@ async function readPieceSurface(
   const rows = await row.count();
   const featured = await cards.count();
   const wanted = beats.map(normText).filter((text) => text !== "");
-  if (wanted.length > 0 && featured >= wanted.length) {
+  if (featured > 0) {
+    // Carded — in the whole or in part. 8a: the piece is NOT in the rest
+    // either way; its uncarded stops live behind "See more" and on its piece
+    // page. Every card names one of the piece's owed beats and answers to its
+    // own "Start here ›".
     const texts = (await cards.allInnerTexts().catch(() => [])).map(normText);
     const links = await cards
       .locator("a")
       .allInnerTexts()
       .catch(() => []);
+    const fullyCarded = wanted.length > 0 && featured >= wanted.length;
     const titled =
       rows === 0 &&
       featured === texts.length &&
       links.length === featured &&
       links.every((link) => /start here/i.test(link)) &&
-      wanted.every((beat) => texts.some((text) => text.includes(beat)));
+      texts.every((text) => wanted.some((beat) => text.includes(beat))) &&
+      (!fullyCarded || wanted.every((beat) => texts.some((text) => text.includes(beat))));
     return {
       surface: rows > 0 ? "both" : "cards",
       titled,
       why:
         `${featured} tour card(s) whose "Start here ›" link targets /catch-up/${pieceId} ` +
-        `carrying its beat titles (${wanted.join(" / ")})` +
+        `carrying their beat titles (${wanted.join(" / ")})` +
         (rows > 0
-          ? `, repeated in the rest as catchup-row-${pieceId} — 8a says a fully carded piece is not`
+          ? `, repeated in the rest as catchup-row-${pieceId} — 8a says a piece with any carded stop is not`
           : ""),
     };
   }
@@ -417,9 +430,12 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
 
   test("the reader's pile, one piece of work, the player, the rail, the Ask", async ({
     page,
+    browser,
     emu,
   }) => {
     let ids: Record<string, string> = {};
+    // The keyboard leg's piece (seeded by its own step below, used by two).
+    let keysId = "";
 
     await test.step("seed the pass's catch-up fixture (SEEDED FIXTURE — see the header)", async () => {
       ids = seedCatchUpFixture();
@@ -451,10 +467,10 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         page.getByTestId("catchup-see-more"),
         "design 8a: more stops (See more) must follow the cards",
       ).toBeVisible();
-      // Design 8a with the summary tour: the rest shows only what the cards do
-      // not. The four-beat bug story is carded ONCE (plus its next stop after
-      // every other piece has had its one), so it keeps its row; the PR (worth_a_look,
-      // one beat) and the routine push are fully carded and leave the rest. Each
+      // Design 8a with the summary tour: the rest shows only the pieces the
+      // cards do not touch. This pass's page 1 carries one stop from each seed
+      // plus the bug's NEXT stop, so all three are carded and the rest stands
+      // EMPTY — every piece named on the cards, none repeated below. Each
       // piece is checked in the surface its own unseen beats belong to, and named
       // there — and the ordering itself is checked on the wire below, because a
       // four-beat story that filled page 1 is exactly what the summary rule forbids.
@@ -471,27 +487,29 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       ).toEqual([...new Set(order.slice(0, pieces))]);
       const surfaces: string[] = [];
       for (const piece of [
-        { key: "bug", id: ids["bug"], title: BUG_TITLE, owed: ["row"] },
-        { key: "pr", id: ids["pr"], title: PR_TITLE, owed: ["cards", "both", "row"] },
-        { key: "push", id: ids["push"], title: PUSH_TITLE, owed: ["cards", "both", "row"] },
+        { key: "bug", id: ids["bug"], title: BUG_TITLE, owed: ["cards"] },
+        { key: "pr", id: ids["pr"], title: PR_TITLE, owed: ["cards"] },
+        { key: "push", id: ids["push"], title: PUSH_TITLE, owed: ["cards"] },
       ]) {
         const beats = await unseenBeatTitles(page, piece.id);
         await expect
-          .poll(
-            async () => (await readPieceSurface(page, piece.id, piece.title, beats)).titled,
-            {
-              message: `design 8a: ${piece.title} is not named in the surface its ${beats.length} unseen beat(s) belong to`,
-              timeout: 30_000,
-            },
-          )
+          .poll(async () => (await readPieceSurface(page, piece.id, piece.title, beats)).titled, {
+            message: `design 8a: ${piece.title} is not named in the surface its ${beats.length} unseen beat(s) belong to`,
+            timeout: 30_000,
+          })
           .toBe(true);
         const shown = await readPieceSurface(page, piece.id, piece.title, beats);
-        expect(
-          piece.owed,
-          `design 8a: ${piece.title} shows as ${shown.why}`,
-        ).toContain(shown.surface);
+        expect(piece.owed, `design 8a: ${piece.title} shows as ${shown.why}`).toContain(
+          shown.surface,
+        );
         surfaces.push(`${piece.key}=${shown.surface}`);
       }
+      // Every carded piece leaves the rest — with all three seeds on page 1
+      // there is nothing the cards do not touch, and the empty panel says so.
+      await expect(
+        page.getByTestId("catchup-rest"),
+        "design 8a: the rest lists only pieces with no stop in the tour cards",
+      ).toContainText("Everything unseen is in the tour above.");
       console.log(`catch-up 8a surfaces (pass ${EMU_PASS_ID}): ${surfaces.join(" ")}`);
       await emu.screen("cu-8a", "catch-up");
     });
@@ -522,7 +540,9 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       await expect(decision, "design 8b: the worth_a_look piece asks its question").toBeVisible({
         timeout: 30_000,
       });
-      await expect(decision).toContainText("Ship the roomier rows, or trim back to the current density?");
+      await expect(decision).toContainText(
+        "Ship the roomier rows, or trim back to the current density?",
+      );
       await expect(page.getByTestId("catchup-decision-option-1")).toContainText(
         "Ship the roomier rows",
       );
@@ -538,9 +558,9 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       const replied = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          response.url().includes(
-            `/api/v1/catch-up/items/${ids["pr"]}/stops/${STOP_ID("ui-call")}/reply`,
-          ),
+          response
+            .url()
+            .includes(`/api/v1/catch-up/items/${ids["pr"]}/stops/${STOP_ID("ui-call")}/reply`),
         { timeout: 30_000 },
       );
       await page.getByTestId("catchup-decision-option-1").click({ timeout: 15_000 });
@@ -550,7 +570,10 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         "the decision reply answered with the 202 the route promises",
       ).toBe(202);
       const replyBody = (await replyResponse.json()) as { conversation_id: string | null };
-      expect(replyBody.conversation_id, "the seeded piece has no conversation to answer").toBeNull();
+      expect(
+        replyBody.conversation_id,
+        "the seeded piece has no conversation to answer",
+      ).toBeNull();
       await expect(page.getByTestId("catchup-decision-status")).toContainText(
         /nobody was notified/,
         { timeout: 30_000 },
@@ -559,13 +582,18 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
 
     await test.step("7b — /catch-up/tour?item={bug}: the player, and Next marks the stop you LEAVE seen", async () => {
       await page.goto(`/catch-up/tour?item=${ids["bug"]}`);
-      await expect(page.getByTestId("tour-player"), "design 7b: the player fills the screen").toBeVisible({
+      await expect(
+        page.getByTestId("tour-player"),
+        "design 7b: the player fills the screen",
+      ).toBeVisible({
         timeout: 30_000,
       });
       await expect(page.getByTestId("tour-progress")).toBeVisible();
       await expect(page.getByTestId("tour-current")).toBeVisible();
       // The player is the one page OUTSIDE the shell: no sidebar at all.
-      await expect(page.getByTestId("sidebar"), "design 7b: the player is full screen").toHaveCount(0);
+      await expect(page.getByTestId("sidebar"), "design 7b: the player is full screen").toHaveCount(
+        0,
+      );
       await expect(page.getByTestId("tour-current")).toContainText(
         "Bug found: the cart timer never ran on an empty cart",
       );
@@ -594,7 +622,10 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       // proven on the piece page; this proves the render at 390 as well).
       await page.goto(`/catch-up/tour?item=${ids["pr"]}`);
       await expect(page.getByTestId("tour-player")).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByTestId("catchup-decision"), "design 7b: the player renders the ask").toBeVisible({
+      await expect(
+        page.getByTestId("catchup-decision"),
+        "design 7b: the player renders the ask",
+      ).toBeVisible({
         timeout: 30_000,
       });
       await emu.screen("cu-7b", "decision");
@@ -650,7 +681,10 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       });
       // Collapse through the UI's own button (never the pref API).
       await collapse.click();
-      await expect(page.getByTestId("sidebar-rail"), "design 3a: the rail replaces the column").toBeVisible({
+      await expect(
+        page.getByTestId("sidebar-rail"),
+        "design 3a: the rail replaces the column",
+      ).toBeVisible({
         timeout: 10_000,
       });
       await emu.screen("rail-3a", "rail");
@@ -659,7 +693,9 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       // Playwright's hover is a mouse hover, which is the design's trigger).
       await page.getByTestId("rail-item-threads").hover();
       const tip = page.getByTestId("rail-tooltip");
-      await expect(tip, "design 3a: the hover label names the item").toBeVisible({ timeout: 5_000 });
+      await expect(tip, "design 3a: the hover label names the item").toBeVisible({
+        timeout: 5_000,
+      });
       await expect(tip).toContainText(/threads/i);
       await page.mouse.move(600, 400);
 
@@ -667,7 +703,9 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       // Esc closes it.
       await page.getByTestId("rail-item-projects").click({ timeout: 10_000 });
       const popover = page.getByTestId("rail-projects-popover");
-      await expect(popover, "design 3a: Projects opens the popover").toBeVisible({ timeout: 5_000 });
+      await expect(popover, "design 3a: Projects opens the popover").toBeVisible({
+        timeout: 5_000,
+      });
       await page.keyboard.press("Escape");
       await expect(popover, "design 3a: Esc closes the popover").toBeHidden({ timeout: 5_000 });
 
@@ -704,7 +742,9 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         const right = await page.evaluate(() => window.innerWidth);
         const bottom = await page.evaluate(() => window.innerHeight);
         expect(box.x + box.width, `${label}: pinned to the right edge`).toBeGreaterThan(right - 80);
-        expect(box.y + box.height, `${label}: pinned to the bottom edge`).toBeGreaterThan(bottom - 80);
+        expect(box.y + box.height, `${label}: pinned to the bottom edge`).toBeGreaterThan(
+          bottom - 80,
+        );
       };
       await expectBottomRight("1280");
       await page.setViewportSize({ width: 390, height: 844 });
@@ -732,6 +772,229 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       await expect(paletteInput, "the palette takes the caret").toBeFocused();
       await page.keyboard.press("Escape");
       await expect(paletteInput, "Esc closes the palette").toBeHidden({ timeout: 10_000 });
+    });
+
+    await test.step("shell — ⌘J opens Ask from /threads too (the chord answers every shell page)", async () => {
+      // T5's second page: the popover lives in the Shell (Shell.tsx mounts it
+      // once), so the chord must open it wherever the Shell stands — Today is
+      // already proven above, this is /threads (the shell spec adds the
+      // Workflow page press alongside the sidebar-search palette proof).
+      await page.goto("/threads");
+      await expect(page.getByTestId("threads-page"), "the threads screen renders").toBeVisible({
+        timeout: 30_000,
+      });
+      await page.keyboard.press("ControlOrMeta+j");
+      const threadsAsk = page.getByTestId("assistant-popover");
+      await expect(threadsAsk, "⌘J opens Ask from /threads too").toBeVisible({ timeout: 10_000 });
+      await page.keyboard.press("Escape");
+      await expect(threadsAsk).toBeHidden({ timeout: 10_000 });
+    });
+
+    await test.step("seed the keyboard leg's two-beat piece (fresh unseen stops — SEEDED FIXTURE)", async () => {
+      // The pass's three seeded pieces are already seen by now (mark-all-seen),
+      // so the player's key contract gets its OWN two-stop piece through the
+      // same door: fresh stop ids the reader has never paid, which is what `S
+      // marks the current stop seen` needs to be a real claim and not a
+      // re-read of old ink — and what keeps the rest list (and its `show
+      // seen` checkbox) on screen for the wire-dial step that follows.
+      const keysTitle = `Emu catch-up keys ${EMU_PASS_ID}: the arrows walked the beats`;
+      const keysStop = (key: string, title: string, narrative: string, importance: string) =>
+        stop(key, { kind: "ROUTINE", title, narrative, importance });
+      const seedOut = labSql(
+        upsertItemSql(keysTitle, "issue", "merged", { issue_numbers: [911] }) +
+          " " +
+          tourVersionSql(keysTitle, [
+            keysStop(
+              "keys-a",
+              "Keyboard beat one: S pays the beat you sit on",
+              "The first seeded keyboard beat. Nothing asks anything here; the stop exists so the S key has a debt to pay while the player sits on it.",
+              "must_know",
+            ),
+            keysStop(
+              "keys-b",
+              "Keyboard beat two: the arrows walk between beats",
+              "The second seeded keyboard beat. The player's → lands here and ← walks back, and the reader never leaves the keyboard.",
+              "worth_a_look",
+            ),
+          ]) +
+          ` SELECT 'keys|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(keysTitle)};`,
+      );
+      keysId = /keys\|([0-9a-fA-F-]{36})/.exec(seedOut)?.[1] ?? "";
+      expect(
+        keysId,
+        `the keyboard fixture piece did not come back with a uuid (psql printed [${seedOut}])`,
+      ).toMatch(UUID_RE);
+      const fresh = await getItem(page, keysId);
+      expect(
+        (fresh.latest?.stops ?? []).filter((one) => !one.seen).length,
+        "both keyboard beats are unseen when the leg opens (a replay after a mid-leg failure owes this leg a fresh read)",
+      ).toBe(2);
+    });
+
+    await test.step("8a — the 24h window chip sends `since`; show-seen sends `include_seen`", async () => {
+      // Design 8a's two wire dials. The window chips are the page's own state
+      // ("unseen" sends no `since` at all — api/catchup.ts's windowSince), and
+      // the rest list's `show seen` checkbox is what asks the list for
+      // `include_seen=true`. The claim is about the REQUEST the click sends,
+      // so it is read off the network, not off a re-rendered count.
+      await page.goto("/catch-up");
+      await expect(page.getByTestId("catchup-page")).toBeVisible({ timeout: 30_000 });
+      // The keyboard piece just seeded is unseen, so the page is not in its
+      // caught-up state and the rest list — the checkbox's home — draws.
+      const chip = page.getByTestId("catchup-window-24h");
+      await expect(chip, "design 8a: the window chips name their widths").toBeVisible();
+      const sinceRequest = page.waitForRequest(
+        (req) =>
+          req.method() === "GET" &&
+          req.url().includes("/api/v1/catch-up/items") &&
+          new URL(req.url()).searchParams.has("since"),
+        { timeout: 30_000 },
+      );
+      await chip.click({ timeout: 15_000 });
+      const sent = await sinceRequest;
+      const since = new Date(new URL(sent.url()).searchParams.get("since")!);
+      const expected = Date.now() - 24 * 3_600_000;
+      expect(
+        Math.abs(since.getTime() - expected),
+        `the 24h chip sent since=${since.toISOString()}, which is not 24 h back (±15 min)`,
+      ).toBeLessThan(15 * 60_000);
+      await expect(chip, "the clicked chip reads pressed").toHaveAttribute("aria-pressed", "true");
+      // `show seen` toggles the rest read onto include_seen=true.
+      const seenRequest = page.waitForRequest(
+        (req) =>
+          req.method() === "GET" &&
+          req.url().includes("/api/v1/catch-up/items") &&
+          new URL(req.url()).searchParams.get("include_seen") === "true",
+        { timeout: 30_000 },
+      );
+      await expect(
+        page.getByTestId("catchup-show-seen"),
+        "the rest list carries the show-seen checkbox",
+      ).toBeVisible({ timeout: 15_000 });
+      await page.getByTestId("catchup-show-seen").click({ timeout: 15_000 });
+      await seenRequest;
+      // The big-backlog banner (> 12 unseen, mock 8a) is NOT proven here: the
+      // pass seeds three pieces, and manufacturing a real 13-piece unseen pile
+      // would write generator-triggering visits against the shared lab. It is
+      // unit-proven in ui/src/pages/CatchUp.test.tsx ("shows the big-backlog
+      // banner past 12 unseen").
+    });
+
+    await test.step("7b — the player's keys: S pays the stop, → and ← walk, Esc closes, ⌘J asks about the stop", async () => {
+      // Design 7b's keyboard contract (TourPlayer.tsx), played on the
+      // keyboard piece the step above seeded (two unseen beats, the player
+      // entered by `?item=` so the beat order is this piece's own).
+      // Enter the player from the pile, so Esc's way back has a pile to be.
+      await page.goto("/catch-up");
+      await expect(page.getByTestId("catchup-page")).toBeVisible({ timeout: 30_000 });
+      await page.goto(`/catch-up/tour?item=${keysId}`);
+      await expect(page.getByTestId("tour-player"), "design 7b: the player opens").toBeVisible({
+        timeout: 30_000,
+      });
+      const current = page.getByTestId("tour-current");
+      await expect(current, "the item tour sits on its first beat").toContainText(
+        "The first seeded keyboard beat",
+        { timeout: 15_000 },
+      );
+
+      // S pays the CURRENT stop — proven on the store's read, not the label.
+      await page.keyboard.press("s");
+      await expect
+        .poll(
+          async () =>
+            (await getItem(page, keysId)).latest?.stops.find((one) => one.id === STOP_ID("keys-a"))
+              ?.seen === true,
+          {
+            message: "S did not mark the current stop seen (GET /catch-up/items/{id})",
+            timeout: 30_000,
+          },
+        )
+        .toBe(true);
+      // …and it did NOT move the reader: the same beat is still on screen.
+      await expect(current).toContainText("The first seeded keyboard beat");
+
+      // ArrowRight walks to the next beat (and pays the one it leaves, which
+      // is already paid here), ArrowLeft walks back.
+      await page.keyboard.press("ArrowRight");
+      await expect(current, "→ moved to the next stop").toContainText(
+        "The second seeded keyboard beat",
+        { timeout: 15_000 },
+      );
+      await expect(current, "→ left the first stop's narrative behind").not.toContainText(
+        "The first seeded keyboard beat",
+      );
+      await page.keyboard.press("ArrowLeft");
+      await expect(current, "← moved back to the previous stop").toContainText(
+        "The first seeded keyboard beat",
+        { timeout: 15_000 },
+      );
+
+      // ⌘J names the stop the reader sits on: the player hands the assistant
+      // the current beat as the ask's context (TourPlayer.tsx's openAskAbout).
+      await page.keyboard.press("ControlOrMeta+j");
+      const ask = page.getByTestId("assistant-popover");
+      await expect(
+        ask,
+        "⌘J opens Ask from inside the player, with the stop as its context",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.getByTestId("assistant-messages"),
+        "the ask carries the stop the reader sat on",
+      ).toContainText("Keyboard beat one", { timeout: 15_000 });
+      await page.keyboard.press("Escape");
+      await expect(ask, "Esc takes the Ask away").toBeHidden({ timeout: 10_000 });
+
+      // And Esc from the player itself walks out of the full screen.
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("tour-player"), "Esc closes the player").toBeHidden({
+        timeout: 15_000,
+      });
+      await expect(
+        page.getByTestId("catchup-page"),
+        "Esc lands back on the Catch up pile (design 7b: the player is a room you leave)",
+      ).toBeVisible({ timeout: 15_000 });
+    });
+
+    await test.step("today — the empty briefing's Start run opens the run form (a lab state with no runs)", async () => {
+      // Finding 03 / T3: when Today has nothing running, nothing waiting and
+      // no threads, it says so and its ONE verb — `Start run` — opens the run
+      // form IN PLACE (`home-start-run-dialog`). The lab's seeded readers all
+      // have projects and runs, so the reachable no-runs state is the one the
+      // cross-project reads themselves define (ADR-0047: those routes return
+      // only rows of projects the caller is a member of): a fresh mock-IdP
+      // subject (helpers.signIn's documented use — a readable profile, no
+      // membership anywhere) sees an honest empty Today. Its own throwaway
+      // context; alice's state and the shared lab data are untouched.
+      const context = await browser.newContext({ baseURL: EMU_BASE_URL });
+      try {
+        const nobody = await context.newPage();
+        await signIn(nobody, `emu-t3-nobody-${EMU_PASS_ID}`);
+        await nobody.goto("/");
+        await expect(nobody.getByTestId("home-page"), "Today renders").toBeVisible({
+          timeout: 30_000,
+        });
+        const empty = nobody.getByTestId("home-empty");
+        await expect(
+          empty,
+          "a reader with no projects has nothing running and nothing waiting — the empty briefing",
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(empty).toContainText(/Nothing is running and nothing is waiting on you/i);
+        await nobody.getByTestId("home-start-run").click({ timeout: 15_000 });
+        const dialog = nobody.getByTestId("home-start-run-dialog");
+        await expect(
+          dialog,
+          "design finding 03: Start run opens the run form in place, not a route",
+        ).toBeVisible({ timeout: 15_000 });
+        // For THIS reader the form honestly says why there is nothing to pick
+        // (StartRunDialog's no-projects line) — the dialog opened, and it is
+        // the run form's own chrome rather than a silent no-op.
+        await expect(
+          dialog.getByTestId("home-start-run-no-projects"),
+          "the run form names the reader's own state: no project to start against",
+        ).toBeVisible({ timeout: 15_000 });
+      } finally {
+        await context.close();
+      }
     });
   });
 });

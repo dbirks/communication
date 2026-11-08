@@ -1,10 +1,11 @@
 /**
- * Rest-list contract (acceptance 42474636182): the panel lists the unseen
- * pieces the tour cards do NOT already show; a piece with only some of its
- * unseen stops in the cards stays; an all-featured pile says so honestly.
- * Below 768px rows stack into two lines and the checkbox carries a 44px hit
- * area without moving the desktop grid. Acceptance 42482110455 adds the
- * overlap rule: the title/summary cell owns its width (it truncates inside
+ * Rest-list contract (acceptance 42474636182, condensed-tour follow-up): the
+ * panel lists only the unseen pieces the tour cards do NOT touch at all — a
+ * piece with ANY stop in the cards is excluded (its remaining stops are
+ * behind "See more" and on its piece page); an all-carded pile says so
+ * honestly. Below 768px rows stack into two lines and the checkbox carries a
+ * 44px hit area without moving the desktop grid. Acceptance 42482110455 adds
+ * the overlap rule: the title/summary cell owns its width (it truncates inside
  * its own cell and sits in the grid's first row), so its summary line can
  * never print under the resolution chip.
  */
@@ -53,16 +54,20 @@ function mount(items: CatchUpListItem[], tourStopsByItem: Record<string, number>
 afterEach(() => cleanup());
 
 describe("RestList", () => {
-  it("excludes pieces whose unseen stops are all in the tour cards and counts the rest", () => {
+  it("excludes every piece with any stop in the tour cards and counts the rest", () => {
     mount([item("a", 2), item("b", 1), item("c", 2)], { a: 1, b: 1 });
-    // b is fully featured; a has only one of two stops shown and stays.
-    expect(screen.getByTestId("catchup-row-a")).toBeTruthy();
+    // b is fully carded; a has only one of two stops shown AND STILL leaves
+    // the rest — its other stop is behind "See more" and on its piece page.
+    expect(screen.queryByTestId("catchup-row-a")).toBeNull();
     expect(screen.queryByTestId("catchup-row-b")).toBeNull();
-    expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 2 UNSEEN");
+    expect(screen.getByTestId("catchup-row-c")).toBeTruthy();
+    expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 1 UNSEEN");
   });
 
   it("says so honestly when the cards show everything unseen", () => {
-    mount([item("a", 1), item("b", 2)], { a: 1, b: 2 });
+    // b is only PARTLY carded (one of two stops) — under the rule it is not
+    // repeated below either, and the rest stands empty with its honest line.
+    mount([item("a", 1), item("b", 2)], { a: 1, b: 1 });
     expect(screen.getByTestId("catchup-rest").textContent).toContain(
       "Everything unseen is in the tour above.",
     );

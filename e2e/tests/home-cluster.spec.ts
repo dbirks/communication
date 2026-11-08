@@ -1291,8 +1291,14 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         // A failed run's ONE primary action is `run-retry` ("Retry step") —
         // the redesigned header (finding 11) keeps it inline; every other
         // verb rides the ⋯ menu, so the click goes through clickRunAction.
+        // Acceptance T8 pins the WORDING too, on the inline primary:
+        // RunHeader labels the failed run's retry verb "Retry step".
         await expect(retryButton).toBeVisible({ timeout: UI_TIMEOUT_MS });
         await expect(retryButton).toBeEnabled({ timeout: UI_TIMEOUT_MS });
+        await expect(
+          retryButton,
+          "finding 11: a failed run's primary verb is run-retry, worded 'Retry step'",
+        ).toHaveText("Retry step");
         await clickRunAction(page, "run-retry");
         // The advancer re-schedules the failed node; the run leaves the
         // failed state. If it failed again before the next leg read, the loop

@@ -90,15 +90,17 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
 }
 
 /* ------------------------------------------------ the surfaces a piece shows in
- * Design 8a: "the rest" carries one row per piece still owed, BUT leaves out a
- * piece whose unseen beats are ALL in the tour cards above it
+ * Design 8a: "the rest" carries one row per piece still owed, BUT leaves out
+ * any piece with a stop in the tour cards above it
  * (`ui/src/components/catchup/RestList.tsx`'s `tourStopsByItem` filter — the
- * rest is what the cards do not show; a piece with only some beats featured
- * stays). The tour page is the design's OPINIONATED SUMMARY: `GET
+ * rest is only the pieces the cards do not touch at all; a carded piece's
+ * remaining stops are behind "See more" and on its piece page). The tour page
+ * is the design's OPINIONATED SUMMARY: `GET
  * /catch-up/tour` gives every unseen piece its single best beat before any
- * piece gets a second one, so a piece is partly carded — and keeps its row —
- * whenever it owes more beats than the one it leads with, whether or not a
- * whole page (limit 4) would have held them. "This piece is owed on /catch-up"
+ * piece gets a second one, so a piece the page reaches is carded — and never
+ * repeated below — even when it owes more beats than the one it leads with.
+ * A piece the page does not reach (more unseen pieces than the page holds)
+ * keeps its row. "This piece is owed on /catch-up"
  * is therefore a claim about TWO surfaces, which the helpers below read together. */
 
 /** Collapse whitespace the way the browser's own text reads it, so a title with
@@ -116,12 +118,12 @@ function pieceCards(page: Page, pieceId: string): Locator {
     .filter({ has: page.locator(`a[href*="/catch-up/${pieceId}"]`) });
 }
 
-/** What /catch-up shows for one piece right now: its rest row, its tour cards,
- * both (a partly carded piece keeps its row) or neither. `titled` is the piece
+/** What /catch-up shows for one piece right now: its tour cards, its rest row,
+ * both (a violation) or neither. `titled` is the piece
  * named in the surface that owes it — the work-item title in the row, every
- * unseen beat's title among the cards, each card reached by its own
- * "Start here ›" — and it carries 8a's exclusion too: a fully carded piece must
- * NOT be repeated in the rest. */
+ * carded beat's title among the cards, each card reached by its own
+ * "Start here ›" — and it carries 8a's exclusion too: a piece with ANY carded
+ * stop must NOT be repeated in the rest. */
 async function readPieceSurface(
   page: Page,
   pieceId: string,
@@ -133,26 +135,30 @@ async function readPieceSurface(
   const rows = await row.count();
   const featured = await cards.count();
   const wanted = beats.map(normText).filter((text) => text !== "");
-  if (wanted.length > 0 && featured >= wanted.length) {
+  if (featured > 0) {
+    // Carded — wholly or partly. 8a: the piece is not in the rest either
+    // way; its uncarded stops live behind "See more" and on its piece page.
     const texts = (await cards.allInnerTexts().catch(() => [])).map(normText);
     const links = await cards
       .locator("a")
       .allInnerTexts()
       .catch(() => []);
+    const fullyCarded = wanted.length > 0 && featured >= wanted.length;
     const titled =
       rows === 0 &&
       featured === texts.length &&
       links.length === featured &&
       links.every((link) => /start here/i.test(link)) &&
-      wanted.every((beat) => texts.some((text) => text.includes(beat)));
+      texts.every((text) => wanted.some((beat) => text.includes(beat))) &&
+      (!fullyCarded || wanted.every((beat) => texts.some((text) => text.includes(beat))));
     return {
       surface: rows > 0 ? "both" : "cards",
       titled,
       why:
         `${featured} tour card(s) whose "Start here ›" link targets /catch-up/${pieceId}, ` +
-        `carrying its beat titles (${wanted.join(" / ")})` +
+        `carrying their beat titles (${wanted.join(" / ")})` +
         (rows > 0
-          ? `, repeated in the rest as catchup-row-${pieceId} — 8a says a fully carded piece is not`
+          ? `, repeated in the rest as catchup-row-${pieceId} — 8a says a piece with any carded stop is not`
           : ""),
     };
   }
@@ -526,9 +532,7 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
           );
           const owed = await getJson<CatchUpListBody>(alice.request, "/api/v1/catch-up/items");
           return (
-            shown >= 1 &&
-            shown <= owed.total_unseen &&
-            owed.items.some((row) => row.id === itemId)
+            shown >= 1 && shown <= owed.total_unseen && owed.items.some((row) => row.id === itemId)
           );
         },
         {
@@ -539,11 +543,11 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
       .toBe(true);
 
     // Where the piece shows. It used to be one claim — a row keyed on the item
-    // id inside THE REST — and since 5da1b79 it is 8a's split: a piece whose
-    // unseen beats all fit into the tour cards is shown THERE and leaves the
-    // rest; one that owes more than the single beat its summary slot carries
-    // (the tour page leads with ONE condensed stop per piece, then comes back
-    // for the rest) keeps its row. Either way the piece is on this page and named
+    // id inside THE REST — and since 5da1b79 it is 8a's split: a piece with ANY
+    // stop in the tour cards is shown THERE and never repeated below (its
+    // other stops live behind "See more" and on its piece page); only a piece
+    // the condensed page does not reach — the tour leads with ONE stop per
+    // piece, and a page holds four — keeps its row. Either way the piece is on this page and named
     // in the surface that owes it, so `readPieceSurface` checks the title there
     // and the exclusion in the other direction.
     const rest = alice.getByTestId("catchup-rest");
@@ -587,7 +591,7 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
             `item ${itemId} is not shown unseen on /catch-up: neither catchup-row-${itemId} ` +
             `carrying "${item.title}" nor tour cards whose "Start here ›" link targets ` +
             `/catch-up/${itemId} carrying its unseen beat titles — and the rest never repeats ` +
-            `a fully carded piece`,
+            `a piece with any carded stop`,
           timeout: 45_000,
         },
       )
@@ -664,13 +668,10 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
       message: "the page still shows the row with show-seen off",
     }).toHaveCount(0);
     await expect
-      .poll(
-        async () => (await owedRow.count()) + (await pieceCards(alice, itemId).count()),
-        {
-          message: `the page still shows ${itemId} as a rest row or a tour card after every stop read seen`,
-          timeout: 30_000,
-        },
-      )
+      .poll(async () => (await owedRow.count()) + (await pieceCards(alice, itemId).count()), {
+        message: `the page still shows ${itemId} as a rest row or a tour card after every stop read seen`,
+        timeout: 30_000,
+      })
       .toBe(0);
     await evidence(
       alice,

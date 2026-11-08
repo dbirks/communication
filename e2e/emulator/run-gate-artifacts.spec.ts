@@ -238,6 +238,24 @@ test.describe("run-gate-artifacts (alice)", () => {
           },
         )
         .toBe("waiting_human");
+      // Finding 11 / acceptance T8: a WAITING run's header carries ONE primary
+      // action — `run-review-plan` ("Review plan"), the verb that selects the
+      // gate node so the dock serves the approval card. Pause is not the
+      // waiting run's inline verb at all (it rides the ⋯ menu). Reload first:
+      // the poll read the API, and the header must show this state, not the
+      // one the page last saw.
+      await page.reload();
+      const reviewPlan = page.getByTestId("run-header-actions").getByTestId("run-review-plan");
+      await expect(
+        reviewPlan,
+        "design finding 11: the waiting run's ONE primary action is Review plan",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(reviewPlan).toHaveText("Review plan");
+      await expect(reviewPlan).toHaveAttribute("data-primary", "true");
+      await expect(
+        page.getByTestId("run-header-actions").getByTestId("run-pause"),
+        "a run parked at a gate does not get Pause inline",
+      ).toHaveCount(0);
       await emu.screen("run-gate", "waiting");
     });
 
@@ -342,6 +360,32 @@ test.describe("run-gate-artifacts (alice)", () => {
         page.getByTestId("approval-decided"),
         "the gate reads as decided after the approval",
       ).toBeVisible({ timeout: 60_000 });
+    });
+
+    await test.step("the resumed run's header offers Pause as its one primary verb", async () => {
+      // Finding 11 / acceptance T8, the running half: the moment the decided
+      // gate releases the run, its header's ONE primary action is `run-pause`
+      // ("Pause"). Asserted, never CLICKED — this journey needs the run to
+      // finish. A run that somehow reached a terminal state without a running
+      // sample is the honest red the poll below reports.
+      await expect
+        .poll(runStatus, {
+          message: "the decided run runs again (the implement leg) before it completes",
+          timeout: 120_000,
+          intervals: [1_000],
+        })
+        .toBe("running");
+      const pause = page.getByTestId("run-header-actions").getByTestId("run-pause");
+      await expect(
+        pause,
+        "design finding 11: the running run's ONE primary action is Pause",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(pause).toHaveText("Pause");
+      await expect(pause).toHaveAttribute("data-primary", "true");
+      await expect(
+        page.getByTestId("run-header-actions").getByTestId("run-review-plan"),
+        "a running run with no gate to review draws no Review plan",
+      ).toHaveCount(0);
     });
 
     await test.step("wait for the run to complete (≤ 10 min)", async () => {

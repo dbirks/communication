@@ -117,7 +117,7 @@ export function TourCards({
           <span className="text-[12px] leading-[1.4] text-ink-2">
             {loadingMore
               ? "Asking the assistant…"
-              : `The assistant picks up to 4 more from the remaining ${remaining}.`}
+              : `The assistant picks up to 4 more from the remaining ${remaining} unseen stops.`}
           </span>
         </button>
       ) : null}

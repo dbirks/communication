@@ -5,9 +5,10 @@
  * the title with the UPDATED badge when the story moved after this reader
  * last saw it, a one-line summary, the resolution chip and a "Tour ›" link.
  * The row checkbox marks that item's beats seen; "mark all seen" clears the
- * whole filtered pile. Pieces whose unseen stops are ALL in the tour cards
- * above are excluded — the rest is what the cards do not show (mock 8a);
- * a piece with only some stops featured stays. Below 768px each row stacks
+ * whole filtered pile. A piece with ANY stop in the tour cards above is
+ * excluded — its remaining stops are reachable through "See more" and its
+ * piece page, so the rest lists only the pieces the cards do not touch at
+ * all (mock 8a). Below 768px each row stacks
  * into two lines (landing + project + resolution + Tour ›, then title +
  * summary) and the checkbox grows a 44px hit area (coarse pointers too)
  * without shifting the desktop grid.
@@ -66,15 +67,17 @@ export function RestList({
   onMarkSeen: (item: CatchUpListItem) => void;
   markingIds: string[];
   /** Unseen stops of each piece already shown in the tour cards above, by
-   * work-item id. A piece fully covered there is not repeated in the rest. */
+   * work-item id. A piece with ANY stop there is not repeated in the rest —
+   * its other stops sit behind "See more" and on its piece page. */
   tourStopsByItem?: Record<string, number>;
 }) {
   const unseen = items.filter((item) => item.unseen_stops > 0);
-  // A piece stays in the rest while any of its unseen stops is missing from
-  // the cards; only a fully featured piece is excluded.
-  const restUnseen = unseen.filter((item) => (tourStopsByItem[item.id] ?? 0) < item.unseen_stops);
+  // A piece with even one stop in the cards is carded — the rest holds only
+  // the pieces the cards never touch (their other stops are behind "See
+  // more" and on the piece page).
+  const restUnseen = unseen.filter((item) => (tourStopsByItem[item.id] ?? 0) === 0);
   const rows = showSeen ? items : restUnseen;
-  const allFeatured = unseen.length > 0 && restUnseen.length === 0;
+  const allCarded = unseen.length > 0 && restUnseen.length === 0;
   return (
     <section
       data-testid="catchup-rest"
@@ -105,7 +108,7 @@ export function RestList({
       </header>
       {rows.length === 0 ? (
         <p className="px-[12px] py-[10px] text-[12.5px] text-faint">
-          {allFeatured && !showSeen ? "Everything unseen is in the tour above." : "Nothing here."}
+          {allCarded && !showSeen ? "Everything unseen is in the tour above." : "Nothing here."}
         </p>
       ) : null}
       {rows.map((item) => {

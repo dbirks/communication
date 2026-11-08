@@ -180,6 +180,16 @@ const recap = {
   project_ids: [],
 };
 
+/** A tour that builds nothing: every piece stays in the rest, so row-level
+ * writes can be driven without the cards pulling their pieces out of it. */
+const emptyTourPage = {
+  stops: [],
+  total_unseen_stops: 0,
+  more_available: false,
+  built_from: 0,
+  minutes_total: 0,
+};
+
 const notFound = { type: "about:blank", title: "Not found", status: 404, detail: "" };
 
 function routes(extra: RouteStub[] = []): RouteStub[] {
@@ -246,7 +256,7 @@ function projectsParam(url: string): string[] {
 describe("/catch-up", () => {
   it("opens on the unseen window with no since, and the window chips refetch", async () => {
     const { fetchMock } = mount();
-    await screen.findByTestId("catchup-row-" + itemA);
+    await screen.findByTestId("catchup-card-1");
     const first = urlsFor(fetchMock, "/api/v1/catch-up/items")[0]!;
     expect(first).not.toContain("since=");
     expect(screen.getByTestId("catchup-window-unseen").getAttribute("aria-pressed")).toBe("true");
@@ -260,7 +270,7 @@ describe("/catch-up", () => {
 
   it("draws every one of the reader's projects, all on by default, and a click narrows the read", async () => {
     const { fetchMock } = mount();
-    await screen.findByTestId("catchup-row-" + itemA);
+    await screen.findByTestId("catchup-card-1");
     // The projects on screen: the two the items name AND platform, which has
     // nothing unseen and is still a project the reader can filter to.
     for (const id of [paymentsId, webId, platformId]) {
@@ -384,7 +394,8 @@ describe("/catch-up", () => {
   });
 
   it("the rest rows carry the UPDATED tag, mark all seen writes, show seen refetches", async () => {
-    const { requests, fetchMock } = mount();
+    // With no tour the cards touch nothing, so both pieces keep their rows.
+    const { requests, fetchMock } = mount([{ path: "/api/v1/catch-up/tour", body: emptyTourPage }]);
     const row = await screen.findByTestId(`catchup-row-${itemA}`);
     expect(row.textContent).toContain("UPDATED");
     expect(row.textContent).toContain("run failed");
@@ -408,18 +419,28 @@ describe("/catch-up", () => {
     });
   });
 
-  it("the rest drops pieces the tour cards already fully show (mock 8a)", async () => {
-    // itemB has a single unseen stop and the tour cards show it; itemA has
-    // two unseen stops and only one card — itemA stays in the rest.
-    const oneStopB = {
-      ...twoItems,
-      items: [{ ...twoItems.items[0] }, { ...twoItems.items[1], unseen_stops: 1 }],
-    };
-    mount([{ path: "/api/v1/catch-up/items", body: oneStopB }]);
+  it("the rest drops EVERY piece a tour card touches (mock 8a)", async () => {
+    // The condensed tour cards show one stop of itemB (its only unseen stop)
+    // and ONE of itemA's two unseen stops. Under 8a neither is in the rest:
+    // itemA's remaining stop is reachable through "See more" and on its piece
+    // page, so the rest holds only pieces the cards never touch — here, none.
+    mount();
     await screen.findByTestId("catchup-card-2");
-    expect(screen.getByTestId(`catchup-row-${itemA}`)).toBeTruthy();
+    expect(screen.queryByTestId(`catchup-row-${itemA}`)).toBeNull();
     expect(screen.queryByTestId(`catchup-row-${itemB}`)).toBeNull();
-    expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 1 UNSEEN");
+    expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 0 UNSEEN");
+    expect(screen.getByTestId("catchup-rest").textContent).toContain(
+      "Everything unseen is in the tour above.",
+    );
+    // With no tour, both pieces (untouched by cards) hold their rows again.
+    cleanup();
+    mount([
+      { path: "/api/v1/catch-up/tour", body: emptyTourPage },
+      { path: "/api/v1/catch-up/items", body: twoItems },
+    ]);
+    await screen.findByTestId(`catchup-row-${itemA}`);
+    expect(screen.getByTestId(`catchup-row-${itemB}`)).toBeTruthy();
+    expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 2 UNSEEN");
   });
 
   it("cards without evidence draw no empty box and keep the footer aligned", async () => {

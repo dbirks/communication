@@ -20,6 +20,7 @@ import { expectNoLegacyAppBar, signIn } from "./helpers.js";
 import {
   SHELL_ENABLED,
   SHELL_GATE,
+  apiPipelines,
   apiPreferences,
   apiProjects,
   apiRuns,
@@ -564,6 +565,226 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     } finally {
       await restoreColumnState(page, found);
     }
+  });
+
+  // Acceptance T4: the design canvas is 1440×900, and the acceptance line is
+  // the ruler one reads there — the page band's H1 sits at ONE left edge and
+  // ONE baseline across routes, measured as `x` and `y + height` (the typographic
+  // baseline of a single-line 22px/28px title is its bottom box edge). The band
+  // is `ds/Page`'s shared `page-band`; emulator/projects.spec.ts holds the same
+  // ruler at 1280 across four layout kinds — this is its 1440 sibling over the
+  // five routes the checklist names (Today, Projects, Threads, a real Workflow
+  // page, Settings).
+  test("at 1440x900 the band title's left edge and baseline do not move between routes", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const pipelines = await apiPipelines(page.request);
+    expect(pipelines.length, "the lab seeds at least one workflow").toBeGreaterThan(0);
+    const stopWatching = watchPageErrors(page);
+    const measured: { route: string; x: number; baseline: number }[] = [];
+    for (const route of [
+      "/",
+      "/projects",
+      "/threads",
+      `/workflows/${pipelines[0].id}`,
+      "/settings/layout",
+    ]) {
+      await page.goto(BASE_URL + route, { waitUntil: "domcontentloaded" });
+      const band = page.getByTestId("page-band");
+      await expect(
+        band,
+        `${route}: the shared header band (page-band) carries the page's title`,
+      ).toBeVisible({ timeout: 30_000 });
+      const title = band.getByRole("heading", { level: 1 });
+      await expect(title, `${route}: the band owns the page's one H1`).toHaveCount(1);
+      const box = await title.boundingBox();
+      expect(box, `${route}: the band's H1 is laid out`).not.toBeNull();
+      measured.push({ route, x: box!.x, baseline: box!.y + box!.height });
+    }
+    const [first, ...rest] = measured;
+    for (const row of rest) {
+      expect(
+        Math.abs(row.x - first.x),
+        `${first.route} title x=${first.x} vs ${row.route} title x=${row.x}: one title left edge at 1440 (±1px)`,
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(row.baseline - first.baseline),
+        `${first.route} title baseline=${first.baseline} vs ${row.route} baseline=${row.baseline}: one title baseline (y + height) at 1440 (±1px)`,
+      ).toBeLessThanOrEqual(1);
+    }
+    await checkShellScreen(page, "the five routes measured at 1440x900", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-title-ruler-1440",
+      `the page-band H1's x and baseline (y + height) agree within 1px across /, /projects, /threads, /workflows/<id> and /settings/layout at 1440x900 (${measured.map((m) => `${m.route}@${m.x}/${m.baseline}`).join(" ")})`,
+    );
+  });
+
+  // Acceptance T5's second half: ⌘J answers from more than Today. The shell
+  // mounts the popover once (Shell.tsx), so the chord must open it on every
+  // shell page; the Today chord and the sidebar's Search field (sidebar-search
+  // → palette) are proven by the ⌘K/⌘J test above — these are the Threads and
+  // Workflow-page presses the checklist asks for.
+  test("⌘J opens Ask from the Threads and Workflow pages, not just Today", async ({ page }) => {
+    await signIn(page, "admin");
+    const pipelines = await apiPipelines(page.request);
+    expect(pipelines.length, "the lab seeds at least one workflow").toBeGreaterThan(0);
+    const stopWatching = watchPageErrors(page);
+    for (const route of ["/threads", `/workflows/${pipelines[0].id}`]) {
+      await page.goto(BASE_URL + route, { waitUntil: "domcontentloaded" });
+      await expect(
+        page.getByTestId("ask-fab"),
+        `the floating Ask sits on ${route} too (finding 08)`,
+      ).toBeVisible({ timeout: 30_000 });
+      await pressChord(page, "j", async () => {
+        return (await page.getByTestId("assistant-popover").count()) > 0;
+      });
+      await expect(
+        page.getByTestId("assistant-popover"),
+        `⌘J opens Ask from ${route}`,
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("assistant-popover")).toBeHidden();
+    }
+    stopWatching();
+    await evidence(
+      page,
+      "shell-p1-ask-two-pages",
+      "⌘J (Meta/Ctrl+j in this lab) opens the assistant popover from /threads and a Workflow page as well as Today, and Escape closes it on both",
+    );
+  });
+
+  // Acceptance T11: the THIRD door to the column is the edge drag —
+  // `sidebar-resize-handle` (Sidebar.tsx's EdgeResizeHandle, RAIL_EDGE_SNAP_PX
+  // = 120). The pointer travels a ghost and the column SNAPS: dragging the
+  // rail's edge right past ~120px opens the column; dragging the expanded
+  // column's edge left back below it snaps the rail shut. Like the ⌘\ test
+  // above it, this writes the saved preference, so it runs at a ≥1024px width
+  // and restores what it found in a `finally`.
+  test("dragging the edge handle past ~120px snaps the column open, back below snaps the rail shut", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+    const stopWatching = watchPageErrors(page);
+    const found = await settleDesktopColumn(page);
+    try {
+      // The item's starting state: the preference COLLAPSED at ≥1024px.
+      if (found === "column") {
+        await page.getByTestId("sidebar-collapse").click({ timeout: 10_000 });
+      }
+      await expect(
+        page.getByTestId("sidebar-rail"),
+        "the drag journey starts from the chosen rail (1500px honours the collapsed pref)",
+      ).toBeVisible({ timeout: 15_000 });
+      const railHandle = page.getByTestId("sidebar-resize-handle");
+      await expect(railHandle, "the rail's right edge carries the drag handle").toBeVisible({
+        timeout: 10_000,
+      });
+      const railBox = await railHandle.boundingBox();
+      expect(railBox, "the rail's edge handle is laid out").not.toBeNull();
+      await page.mouse.move(railBox!.x + railBox!.width / 2, railBox!.y + 300);
+      await page.mouse.down();
+      // Past the 120px threshold — the snap fires on the pointermove, mid-drag.
+      await page.mouse.move(400, railBox!.y + 300, { steps: 16 });
+      await expect(
+        page.getByTestId("sidebar-collapse"),
+        "dragging the rail's edge past ~120px snapped the column open",
+      ).toBeVisible({ timeout: 15_000 });
+      await page.mouse.up();
+
+      // The mirror half: the expanded column's edge, dragged back below the
+      // threshold, snaps the rail closed.
+      const colHandle = page.getByTestId("sidebar-resize-handle");
+      await expect(
+        colHandle,
+        "the expanded column's right edge carries the same handle",
+      ).toBeVisible({ timeout: 10_000 });
+      const colBox = await colHandle.boundingBox();
+      expect(colBox, "the expanded column's edge handle is laid out").not.toBeNull();
+      await page.mouse.move(colBox!.x + colBox!.width / 2, colBox!.y + 300);
+      await page.mouse.down();
+      await page.mouse.move(40, colBox!.y + 300, { steps: 16 });
+      await expect(
+        page.getByTestId("sidebar-expand"),
+        "dragging the expanded column's edge back below ~120px snapped the rail closed",
+      ).toBeVisible({ timeout: 15_000 });
+      await page.mouse.up();
+      await expect(
+        page.getByTestId("sidebar-rail"),
+        "the rail is what stands at the end of the drag",
+      ).toBeVisible();
+      await checkShellScreen(page, "edge-handle snaps both ways", stopWatching);
+      await evidence(
+        page,
+        "shell-p1-edge-drag",
+        "dragging sidebar-resize-handle right past the 120px snap point opened the column and dragging the expanded column's edge left back below it snapped the rail shut (RAIL_EDGE_SNAP_PX, redesign T11); the rail's hover label is proven by the rail-label test and the Projects popover's Esc by the emulator's rail step",
+      );
+    } finally {
+      await restoreColumnState(page, found);
+    }
+  });
+
+  // Acceptance T11's keyboard half: the rail's Projects popover is a real
+  // keyboard surface — ds/Popover parks the caret on the first item, ↑/↓ rove
+  // and Enter activates. Esc-closing the same popover is already proven
+  // (e2e/emulator/catchup.spec.ts' rail step); ↓-moves and Enter-navigates are
+  // what was missing. The forced rail at 900px mounts the tiles without the
+  // test ever touching the saved preference.
+  test("the rail's Projects popover walks on ↓ and navigates on Enter", async ({ page }) => {
+    await signIn(page, "admin");
+    const projects = await apiProjects(page.request);
+    const project = projects.find((p) => p.slug === "m4-exit") ?? projects[0];
+    expect(project, "the lab seeds at least one project").toBeTruthy();
+    await page.setViewportSize({ width: 900, height: 800 });
+    await page.goto(BASE_URL + `/p/${project.id}`, { waitUntil: "domcontentloaded" });
+    const stopWatching = watchPageErrors(page);
+    await expect(page.getByTestId("sidebar-rail"), "900px forces the rail").toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByTestId("rail-item-projects").click({ timeout: 10_000 });
+    const popover = page.getByTestId("rail-projects-popover");
+    await expect(popover, "the Projects tile opens the popover").toBeVisible({ timeout: 10_000 });
+    const firstRow = popover.locator('[data-testid^="rail-project-"]').first();
+    await expect(firstRow, "on open the caret parks on the popover's first item").toBeFocused({
+      timeout: 10_000,
+    });
+    // The active project's repositories ride below its row (design 4a), so the
+    // roving caret has somewhere to go even in a single-project lab.
+    const repoHref = `/p/${project.id}/app`;
+    await expect(
+      popover.locator(`a[href="${repoHref}"]`),
+      "the popover lists the active project's `app` repository beside its row",
+    ).toBeVisible({ timeout: 15_000 });
+    // Walk the caret down until it lands on the repository link — the same ↓ a
+    // keyboard reader presses.
+    let hops = 0;
+    for (;;) {
+      const active = await page.evaluate(() => document.activeElement?.getAttribute("href") ?? "");
+      if (active === repoHref) break;
+      expect(
+        hops++ < 12,
+        `the roving caret reached the repository link within the popover's items (stopped on [${active}], ${hops} presses in)`,
+      ).toBe(true);
+      await page.keyboard.press("ArrowDown");
+    }
+    await expect(
+      popover.locator(`a[href="${repoHref}"]`),
+      "↓ moved the caret between the popover's items",
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(
+      page,
+      `Enter activates the focused item — the popover's app row must open ${repoHref}`,
+    ).toHaveURL(new URL(repoHref, BASE_URL).href, { timeout: 15_000 });
+    stopWatching();
+    await evidence(
+      page,
+      "shell-p1-rail-popover-keys",
+      "in the rail's Projects popover ArrowDown moves the caret between items and Enter activates the focused one (the caret walked from the project row to its app repository and the route changed); Esc closing the popover is proven in e2e/emulator/catchup.spec.ts' rail step (redesign T11)",
+    );
   });
 
   test.describe("narrow 390x844", () => {
