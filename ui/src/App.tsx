@@ -36,6 +36,7 @@ const Home = lazy(() => import("./pages/Home"));
 const ArtifactPage = lazy(() => import("./pages/Artifact"));
 const Artifacts = lazy(() => import("./pages/Artifacts"));
 const ApprovalPage = lazy(() => import("./pages/Approval"));
+const CatchUpPage = lazy(() => import("./pages/CatchUp"));
 const ConversationPage = lazy(() => import("./pages/Conversation"));
 const ProjectConversations = lazy(() => import("./pages/ProjectConversations"));
 const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default: m.LibraryPage })));
@@ -189,6 +190,17 @@ export default function App() {
             repository Lanes view, and the pages are unmounted. */}
           <Route path="/inbox" element={<Navigate to="/" replace />} />
           <Route path="/board" element={<Navigate to="/" replace />} />
+          {/* Catch up (design 8a, ADR-0078): the reader's own pile of pieces of
+            work. The piece page and the tour player are built separately; only
+            this route is mounted here. */}
+          <Route
+            path="/catch-up"
+            element={
+              <RequireAuth>
+                <CatchUpPage />
+              </RequireAuth>
+            }
+          />
           {/* gh-69: one optional-param route serves `/threads` and
               `/threads/:conversationId` on ONE mounted screen
               (`pages/Threads.tsx` → `ThreadScreen`). It used to be two routes

@@ -11,12 +11,10 @@
  *   `used in <project>` — one chip per project whose assignments fan
  *   actually pins an indexed workflow; real data only, so the chips wait
  *   for the fan to settle.
- * - Folder groups (ADR-0049 § 8): each folder a panel whose header holds an
- *   SVG chevron, the name in mono caps and the group's own count; the rows
- *   keep the name-free-width grid (`WorkflowRow`). Unfiled is a group like
- *   any other, so it gets the same panel header (`UNFILED · n`) — the design
- *   has no unfiled group to copy, and a headerless pile of rows read as rows
- *   that had fallen out of the folders.
+ * - Folders (ADR-0049 § 8, filter since redesign finding 10): the wire's own
+ *   `folder` values narrow the list through the toolbar's `All folders` select,
+ *   which writes `?folder=`; the rows are one flat list (`WorkflowRow`), never
+ *   grouped panels. A library with no folders carries no select.
  *
  * The 1a inline `NEW PIPELINE` form and the bottom `STARTER WORKFLOWS`
  * panel are gone: creation lives in `NewWorkflowDialog` (1c), which runs
@@ -42,7 +40,7 @@ import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Button } from "../components/ds/Button";
-import { Input } from "../components/ds/Field";
+import { Input, Select } from "../components/ds/Field";
 import Page from "../components/ds/Page";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { apiFetch } from "../api/client";
@@ -62,7 +60,6 @@ import {
 import type { AssignmentList, Draft, PipelineSummary } from "../api/types";
 import { isDefinitionDocument } from "../lib/pipeline/definition";
 import { routes } from "../lib/routes";
-import { useLayoutPrefs } from "../lib/prefs";
 import { WorkflowRow, MoveToFolderDialog } from "../components/workflows/WorkflowRow";
 import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
 import { NewWorkflowDialog } from "../components/workflows/NewWorkflowDialog";
@@ -138,81 +135,16 @@ function FilterChip({
   );
 }
 
-/**
- * One folder group: a panel whose header holds the SVG chevron (the
- * handoff's `M3 4.5l3 3 3-3` path — it rotates to point right when the
- * group is collapsed), the folder name in mono caps, and the group's own
- * count. The header is the collapse toggle. `Unfiled` is a group too, so it
- * renders through this component with the same header.
- */
-function FolderGroup({
-  name,
-  count,
-  open,
-  onToggle,
-  testid,
-  children,
-}: {
-  name: string;
-  count: number;
-  open: boolean;
-  onToggle: () => void;
-  /** The rows' own list id, kept so verification can name the group it checks. */
-  testid?: string;
-  children: ReactNode;
-}) {
-  const slug =
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "folder";
-  return (
-    <section className="overflow-hidden rounded-[3px] border border-line-strong bg-surface">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={onToggle}
-        className="flex w-full items-center gap-[6px] border-b border-line-strong bg-fill px-[10px] py-[7px] font-mono text-[10px] font-semibold tracking-[.04em] uppercase text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring"
-        data-testid={`workflow-folder-header-${slug}`}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 12 12"
-          aria-hidden="true"
-          className={`shrink-0 ${open ? "" : "-rotate-90"}`}
-        >
-          <path
-            d="M3 4.5l3 3 3-3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span className="min-w-0 truncate">{name}</span>
-        <span className="ml-auto shrink-0 font-normal text-faint">{count}</span>
-      </button>
-      {open ? (
-        <ul className="px-3" data-testid={testid}>
-          {children}
-        </ul>
-      ) : null}
-    </section>
-  );
-}
-
 export function LibraryPage() {
   const navigate = useNavigate();
   const me = useMe();
   const pipelines = usePipelines();
   const projects = useProjects();
   const canAuthor = hasLibraryRole(me.data);
-  const { prefs } = useLayoutPrefs();
-  // ADR-0049 § 8: grouping is a display preference; the `?folder=` param the
-  // sidebar's folder links set is the page's source of truth for the filter.
-  const showFolders = prefs.showWorkflowFolders;
+  // Finding 10: folders are no longer a sidebar layout or a saved preference —
+  // they are a filter on this page. The `?folder=` param stays the page's own
+  // source of truth (an old bookmark still lands filtered), and the toolbar
+  // select writes it.
   const [searchParams, setSearchParams] = useSearchParams();
   const folderFilter = searchParams.get("folder") ?? "";
   const [search, setSearch] = useState("");
@@ -224,7 +156,6 @@ export function LibraryPage() {
     preset: null,
   });
   const [moveTarget, setMoveTarget] = useState<PipelineSummary | null>(null);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const items = pipelines.data?.pipelines ?? [];
   const ids = items.map((pipeline) => pipeline.id);
@@ -358,7 +289,7 @@ export function LibraryPage() {
     // A `?folder=` value the list no longer carries (its last row moved away)
     // filters nothing: the chip clears itself rather than hiding rows behind
     // a stale param.
-    if (showFolders && effectiveFolderFilter) {
+    if (effectiveFolderFilter) {
       if (folderLabel(row.pipeline.folder) !== effectiveFolderFilter) return false;
     }
     if (filter === "has-draft" && !row.drafts.some((draft) => draft.status !== "published")) {
@@ -385,18 +316,8 @@ export function LibraryPage() {
     }
   }
 
-  // The grouped view (ADR-0049 § 8): one panel per folder, Unfiled last —
-  // with the same panel header the folder groups carry, because it is a group
-  // of rows like any other (design 1b review).
-  const groups = realFolderNames
-    .map((name) => ({
-      name,
-      rows: visible.filter((row) => row.pipeline.folder === name),
-    }))
-    .filter((group) => group.rows.length > 0);
-  const unfiledRows = visible.filter(
-    (row) => !row.pipeline.folder || row.pipeline.folder.length === 0,
-  );
+  // Finding 10: no grouped view any more — the folders are the toolbar's filter
+  // above, and `visible` is one flat list of rows.
 
   const rowNode = (row: (typeof rows)[number]) => (
     <WorkflowRow
@@ -565,6 +486,35 @@ export function LibraryPage() {
               className="min-[600px]:w-auto min-[600px]:min-w-[240px] min-[600px]:flex-1"
               data-testid="workflows-search"
             />
+            {/* Finding 10: folders are a filter on this page, not a sidebar
+              layout. Default `All folders`; the pick writes the same `?folder=`
+              param the page already reads, so a filtered list is a shareable
+              address. It only appears when the list actually carries folders —
+              an all-unfiled library has nothing to filter by. */}
+            {realFolderNames.length > 0 ? (
+              <label className="flex items-center gap-[6px]">
+                <span className="sr-only">Filter by folder</span>
+                <Select
+                  aria-label="Filter by folder"
+                  value={effectiveFolderFilter}
+                  onChange={(event) => {
+                    const next = new URLSearchParams(searchParams);
+                    if (event.target.value) next.set("folder", event.target.value);
+                    else next.delete("folder");
+                    setSearchParams(next, { replace: true });
+                  }}
+                  className="h-[30px] w-auto font-mono text-[11px]"
+                  data-testid="workflows-folder-filter"
+                >
+                  <option value="">All folders</option>
+                  {folderNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+            ) : null}
             <FilterChip
               active={filter === "all" && usedInProject === "" && search === ""}
               onClick={() => {
@@ -640,49 +590,12 @@ export function LibraryPage() {
           </div>
         ) : null}
         {pipelines.data && visible.length > 0 ? (
-          showFolders ? (
-            <div className="space-y-2" data-testid="workflows-list">
-              {groups.map((group) => (
-                <FolderGroup
-                  key={group.name}
-                  name={group.name}
-                  count={group.rows.length}
-                  open={collapsed[group.name] !== true}
-                  onToggle={() =>
-                    setCollapsed((current) => ({
-                      ...current,
-                      [group.name]: current[group.name] !== true,
-                    }))
-                  }
-                >
-                  {group.rows.map(rowNode)}
-                </FolderGroup>
-              ))}
-              {unfiledRows.length > 0 ? (
-                <FolderGroup
-                  name={UNFILED_FOLDER}
-                  count={unfiledRows.length}
-                  open={collapsed[UNFILED_FOLDER] !== true}
-                  onToggle={() =>
-                    setCollapsed((current) => ({
-                      ...current,
-                      [UNFILED_FOLDER]: current[UNFILED_FOLDER] !== true,
-                    }))
-                  }
-                  testid="workflow-unfiled-group"
-                >
-                  {unfiledRows.map(rowNode)}
-                </FolderGroup>
-              ) : null}
-            </div>
-          ) : (
-            <ul
-              className="rounded-[3px] border border-line-strong bg-surface px-3"
-              data-testid="workflows-list"
-            >
-              {visible.map(rowNode)}
-            </ul>
-          )
+          <ul
+            className="rounded-[3px] border border-line-strong bg-surface px-3"
+            data-testid="workflows-list"
+          >
+            {visible.map(rowNode)}
+          </ul>
         ) : null}
         <ImportYamlDialog open={importOpen} onClose={() => setImportOpen(false)} />
         <NewWorkflowDialog

@@ -7,11 +7,12 @@
  * a page change never loses the transcript), the transcript and change-log
  * reads, and every mutation round-trip (send, answer, confirm/dismiss, undo).
  *
- * The ask surface opens three ways: ⌘K (this component's window listener),
- * the sidebar's `Ask ⌘K` row and the floating button (both press ⌘K), and
- * the command palette's Ask row (`openAssistantPopover` below, which also
- * carries the question it was typed with). While open, ⌘K opens the jump
- * palette instead — the assistant is already on screen.
+ * The ask surface opens three ways (redesign finding 08, which supersedes
+ * ADR-0050's ⌘K toggle): the floating `Ask` button and the ⌘J chord — both
+ * through `askControl.ts`'s explicit `openAsk()` — and the command palette's Ask
+ * row (`openAssistantPopover` below, which also carries the question it was
+ * typed with). ⌘K is no longer listened for here at all: it belongs to the jump
+ * palette (`components/CommandPalette.tsx`), and `Ask` has its own chord.
  *
  * Failures are honest lines, not modals: a 503 `assistant_not_configured`
  * says so in one sentence, and nothing the server did not answer is shown.
@@ -33,6 +34,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import AssistantPanel from "./AssistantPanel";
+import { openAsk, useAskOpen } from "./askControl";
 import { sectionOf } from "../Shell";
 import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
@@ -95,9 +97,8 @@ const DOCK_RESERVATION_CSS = `@media (min-width: 1024px) {
 }
 `;
 
-/** The jump palette's open event; ⌘K while the assistant is up dispatches it. */
-const PALETTE_OPEN_EVENT = "communication:palette-open";
-
+/** The jump palette's open event; a page that owns the Ask chord claims it
+ * through `askControl`, not by dispatching this. */
 /** One menu open at a time (issue #62): whenever the assistant opens over a
  * chord or the palette's Ask row, the shell's other menus (New) close now —
  * the keyboard paths have no outside pointerdown to close them. */
@@ -521,29 +522,34 @@ export default function AssistantPopover() {
     [conversationId],
   );
 
-  // ⌘K: closed opens the popover; open (either size) hands the chord to the
-  // jump palette — the assistant is already on screen. The listener runs in
-  // the CAPTURE phase on purpose: the Studio draft footer (design 1g) listens
-  // for the same chord with `stopImmediatePropagation`, and after one open→
-  // close cycle this effect re-registers LAST, so in the bubble phase that
-  // hijack would swallow every further ⌘K and the ask surface could never
-  // reopen on the draft page (observed live: second ⌘K after Escape opened
-  // neither popover nor palette). Capture makes the global chord order-invariant.
+  // ⌘J is Ask (finding 08, which supersedes ADR-0050's ⌘K toggle: ⌘K belongs to
+  // the jump palette and nothing opens the assistant from it). The listener runs
+  // in the CAPTURE phase on purpose: the chord must be order-invariant, so a
+  // page that mounts a keyboard handler later (the Studio, whose own ⌘S/⌘Z
+  // handlers run in the bubble phase) cannot swallow it — the bug the old ⌘K
+  // toggle had to be worked around with `stopImmediatePropagation`. It calls
+  // `openAsk()` rather than touching its own state, so the button, the chord and
+  // any later claimant all travel the same path.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
         event.preventDefault();
-        if (!open) {
-          closeOtherMenus();
-          setOpen(true);
-        } else {
-          window.dispatchEvent(new CustomEvent(PALETTE_OPEN_EVENT));
-        }
+        openAsk();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open]);
+  }, []);
+
+  // This component is the Ask surface `openAsk()` reaches — unless a page claims
+  // the chord while it is on screen (the Studio draft footer, whose ⌘J opens its
+  // own ask row instead of this floating box).
+  useAskOpen(({ text }) => {
+    closeOtherMenus();
+    setOpen(true);
+    const question = text?.trim() ?? "";
+    if (question.length > 0) void send(question, true);
+  });
 
   // The palette's Ask row (a bare string) and the structured 2f draft ask
   // both open the surface here: the string opens the popover, an

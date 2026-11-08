@@ -184,55 +184,48 @@ describe("Settings tabs navigate client-side", () => {
 });
 
 describe("Settings → Layout", () => {
-  it("checks the documented defaults when nothing is saved (404) and shows the honest note", async () => {
+  // Finding 10 cut the three layout radio groups (projects mode, ask
+  // placement, workflow folders): each was a second sidebar layout, and the
+  // decisions fixed the answers. What the page keeps is the shortcut line,
+  // the one-line statement of what the sidebar is, and the honest 404 note.
+  const CUT_GROUPS = [
+    "settings-layout-projects-mode-group",
+    "settings-layout-ask-placement-group",
+    "settings-layout-workflow-folders-group",
+  ];
+
+  it("shows the shortcut line and the honest note when nothing is saved (404)", async () => {
     mount("/settings/layout"); // no stub for the endpoint → 404
     await waitFor(() => expect(screen.queryByTestId("settings-layout-not-saved")).toBeTruthy());
-    expect(checked(/All projects as a tree/)).toBe(true);
-    expect(checked(/Top of the sidebar/)).toBe(true);
-    expect(checked(/Show folders/)).toBe(true);
-    expect(screen.getByTestId("settings-layout-chord-k").textContent).toContain(
-      "⌘K always opens the assistant",
+    // Finding 08: one shortcut each, named on the page.
+    expect(screen.getByTestId("settings-layout-chord-k").textContent).toContain("⌘K opens Search");
+    expect(screen.getByTestId("settings-layout-chord-k").textContent).toContain("⌘J opens Ask");
+    expect(screen.getByTestId("settings-layout-sidebar-note").textContent).toContain(
+      "always the project tree",
+    );
+    for (const testid of CUT_GROUPS) expect(screen.queryByTestId(testid)).toBeNull();
+    // Nothing left to choose means nothing left to write from this page.
+    expect(screen.queryByRole("radio", { name: /All projects as a tree/ })).toBeNull();
+  });
+
+  it("drops the honest note over a stored document and renders no removed control", async () => {
+    mount("/settings/layout", [{ path: PREFERENCES_PATH, method: "GET", body: SAVED_DOCUMENT }]);
+    // A stored document — one that still carries the three keys no client
+    // reads any more — means no not-saved note and no second UI.
+    await waitFor(() => expect(screen.getByTestId("settings-layout")).toBeTruthy());
+    expect(screen.queryByTestId("settings-layout-not-saved")).toBeNull();
+    for (const testid of CUT_GROUPS) expect(screen.queryByTestId(testid)).toBeNull();
+    expect(screen.queryAllByRole("radio", { name: /sidebar|folders|switcher|tree/i })).toHaveLength(
+      0,
     );
   });
 
-  it("applies a radio change immediately, PATCHes snake_case with the CSRF header, and clears the note", async () => {
-    const { requests } = mount("/settings/layout", [
-      { path: PREFERENCES_PATH, method: "GET", body: SAVED_DOCUMENT },
-      {
-        path: PREFERENCES_PATH,
-        method: "PATCH",
-        body: { ...SAVED_DOCUMENT, layout: { ...SAVED_DOCUMENT.layout, projects_mode: "tree" } },
-      },
-    ]);
-    setCsrfToken(CSRF);
-    await waitFor(() => expect(checked(/Project switcher/)).toBe(true));
-    // A stored document: no honest-not-saved note.
-    expect(screen.queryByTestId("settings-layout-not-saved")).toBeNull();
-
-    fireEvent.click(screen.getByRole("radio", { name: /All projects as a tree/ }));
-    await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "PATCH")).toHaveLength(1));
-    const [patch] = requestsTo(requests, PREFERENCES_PATH, "PATCH");
-    expect(JSON.parse(patch.body ?? "{}")).toEqual({
-      layout: {
-        projects_mode: "tree",
-        ask_placement: "floating",
-        show_workflow_folders: false,
-        expanded: {},
-      },
-    });
-    expect(patch.headers.get("x-csrf-token")).toBe(CSRF);
-  });
-
-  it("keeps the change in memory for the session when the endpoint is a 404", async () => {
-    mount("/settings/layout"); // no stub → 404
-    await waitFor(() => expect(screen.queryByTestId("settings-layout-not-saved")).toBeTruthy());
-
-    fireEvent.click(screen.getByRole("radio", { name: /Project switcher/ }));
-    await waitFor(() => expect(checked(/Project switcher/)).toBe(true));
-    // The change sticks and the honest note stays.
-    const treeOption = screen.getByTestId("settings-layout-projects-mode-option-tree");
-    expect(treeOption.className).toContain("border-transparent");
-    expect(screen.queryByTestId("settings-layout-not-saved")).toBeTruthy();
+  it("leaves the Assistant tab's trust-level group as the page's only radio group", async () => {
+    mount("/settings/assistant");
+    await waitFor(() => expect(screen.getByTestId("settings-assistant")).toBeTruthy());
+    // `PrefRadioGroup` is not dead code: the trust level still uses it, and
+    // finding 10 only removed the layout instances.
+    expect(screen.getByTestId("settings-assistant-trust-level-group")).toBeTruthy();
   });
 });
 

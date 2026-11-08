@@ -1,7 +1,14 @@
 /**
- * Settings → Layout (3g): how the sidebar looks. Three radio groups —
- * projects mode, ask placement, workflow folders — plus the ⌘K line.
- * Changes apply optimistically through the preferences client (contract C2).
+ * Settings → Layout (3g, redesigned by finding 10).
+ *
+ * The three radio groups this page used to hold — projects mode, ask
+ * placement, workflow folders — are gone: each one was a second sidebar layout,
+ * and the 08/10 decisions fixed the answers (always the tree, Ask is the
+ * floating ⌘J button, folders are a filter on the Workflows page). The sidebar
+ * collapse lives in the sidebar itself (its own chevron), so there is no
+ * control left to put here; the page keeps the shortcut line and the honest
+ * "this server does not store preferences" note, and `PrefRadioGroup` stays
+ * exported because Settings → Assistant uses it.
  */
 import type { ReactNode } from "react";
 import { Alert } from "../../components/ds/Alert";
@@ -91,75 +98,16 @@ export function PrefRadioGroup<T extends string>({
 }
 
 export default function LayoutSettings() {
-  const { prefs, update, saved } = useLayoutPrefs();
+  const { saved } = useLayoutPrefs();
 
   return (
     <div className="space-y-4" data-testid="settings-layout">
-      <PrefRadioGroup
-        legend="Projects in the sidebar"
-        name="projects-mode"
-        testid="settings-layout-projects-mode"
-        value={prefs.projectsMode}
-        onChange={(projectsMode) => update({ projectsMode })}
-        options={[
-          {
-            value: "tree",
-            label: "All projects as a tree",
-            isDefault: true,
-            note: "Every project and repo at once, each with its status flag.",
-          },
-          {
-            value: "switcher",
-            label: "Project switcher",
-            note: "One project at a time. The sidebar shows only its repos, runs and threads.",
-          },
-        ]}
-      />
-      <div className="space-y-1">
-        <PrefRadioGroup
-          legend="Ask button"
-          name="ask-placement"
-          testid="settings-layout-ask-placement"
-          value={prefs.askPlacement}
-          onChange={(askPlacement) => update({ askPlacement })}
-          options={[
-            {
-              value: "sidebar",
-              label: "Top of the sidebar",
-              isDefault: true,
-              note: "Next to New. The popover opens from the left.",
-            },
-            {
-              value: "floating",
-              label: "Floating, bottom right",
-              note: "Always in the same corner, over any page.",
-            },
-          ]}
-        />
-        <p data-testid="settings-layout-chord-k" className="px-2 font-mono text-[11px] text-muted">
-          ⌘K always opens the assistant.
-        </p>
-      </div>
-      <PrefRadioGroup
-        legend="Workflows in the sidebar"
-        name="workflow-folders"
-        testid="settings-layout-workflow-folders"
-        value={prefs.showWorkflowFolders ? "folders" : "link"}
-        onChange={(choice) => update({ showWorkflowFolders: choice === "folders" })}
-        options={[
-          {
-            value: "folders",
-            label: "Show folders",
-            isDefault: true,
-            note: "The workflow folders nest under the Workflows link.",
-          },
-          {
-            value: "link",
-            label: "Just the Workflows link",
-            note: "One link; the folders live on the Workflows page.",
-          },
-        ]}
-      />
+      <p data-testid="settings-layout-chord-k" className="px-2 font-mono text-[11px] text-muted">
+        ⌘K opens Search · ⌘J opens Ask
+      </p>
+      <p data-testid="settings-layout-sidebar-note" className="px-2 text-[12px] text-muted">
+        The sidebar is always the project tree, and its collapse lives on the sidebar’s own chevron.
+      </p>
       {saved ? null : (
         <Alert state="info" label="NOT SAVED" testid="settings-layout-not-saved" role="status">
           Not saved: this server doesn&apos;t store preferences yet. The choice applies for this

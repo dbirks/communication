@@ -20,6 +20,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { meFixture, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
+import { sectionOf } from "./Shell";
 
 /** Wait budget for the `/me` round trip the shell waits on. */
 const READ_MS = 5_000;
@@ -137,29 +138,52 @@ describe("the sidebar is the whole desktop chrome (2c/3c)", () => {
     expect(screen.queryByTestId("replica-badge")).toBeNull();
   });
 
-  it("moves the Ask button to the corner when the placement is floating", async () => {
+  // Finding 10 (with finding 08): Ask is ALWAYS the floating bottom-right
+  // button — there is no `askPlacement` preference any more, and the sidebar
+  // carries the `Search ⌘K` field instead. The button names its own chord.
+  it("draws the floating Ask button on every page and no Ask row in the sidebar", async () => {
     stubViewport(1280);
-    renderApp({
-      path: "/",
-      routes: [
-        ...signedIn,
-        {
-          path: "/api/v1/me/preferences",
-          body: {
-            layout: {
-              projects_mode: "tree",
-              ask_placement: "floating",
-              show_workflow_folders: true,
-              expanded: {},
-            },
-            assistant: { trust_level: "ask_risky" },
-            updated_at: "2026-01-01T00:00:00Z",
-          },
-        },
-      ],
-    });
-    expect(await screen.findByTestId("ask-float", undefined, { timeout: READ_MS })).toBeTruthy();
+    renderApp({ path: "/", routes: signedIn });
+    const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
+    expect(fab.textContent).toContain("Ask");
+    expect(fab.textContent).toContain("⌘J");
+    expect(fab.getAttribute("aria-label")).toBe("Ask the assistant (⌘J)");
+    // The primary treatment: accent fill + the 2px offset shadow (`ds-btn`).
+    expect(fab.className).toContain("ds-btn--primary");
+    expect(screen.queryByTestId("ask-float")).toBeNull();
     expect(screen.queryByTestId("ask-sidebar")).toBeNull();
+    // The sidebar's own second entry is Search.
+    expect(screen.getByTestId("sidebar-search")).toBeTruthy();
+  });
+
+  // Finding 08: ⌘J opens Ask; the old first-⌘K-opens-the-assistant toggle
+  // (ADR-0050) is gone — ⌘K opens the jump palette and never the assistant.
+  it("⌘J opens Ask and ⌘K opens the jump palette", async () => {
+    stubViewport(1280);
+    renderApp({ path: "/", routes: signedIn });
+    await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    expect(
+      await screen.findByTestId("assistant-popover", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
+
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    expect(
+      await screen.findByTestId("palette-input", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+  });
+
+  // Finding 8a: the Catch up row is nav, so the section the Ask box names
+  // follows it.
+  it("names the catch-up section for the Ask box's context chip", () => {
+    expect(sectionOf("/catch-up")).toBe("catch up");
+    expect(sectionOf("/")).toBe("today");
   });
 });
 

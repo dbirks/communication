@@ -6,9 +6,10 @@
  * Propose with a visible reason; a live preview shows the caption and
  * Apply/Discard wired back to the page.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
+import { openAsk, useAskOpen } from "../assistant/askControl";
 import type { components } from "../../api/schema";
 import { findNode, parseGraph } from "../../lib/pipeline/graphDoc";
 import {
@@ -132,6 +133,13 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
+/** Stands in for the Shell's floating Ask surface: a claim that records the
+ * presses it receives, so a test can see who the Ask control reached. */
+function AskProbe({ reached }: { reached: string[] }) {
+  useAskOpen(() => reached.push("probe"));
+  return null;
+}
 
 function renderBox(overrides: Partial<AssistantProposalBoxProps> = {}) {
   const onPreview = vi.fn();
@@ -317,19 +325,43 @@ describe("AssistantProposalBox", () => {
     expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
   });
 
-  it("design 1g: footer mode starts collapsed and ⌘K / ⌃K open the box", () => {
-    renderBox({ footer: true });
-    expect(screen.getByTestId("assistant-proposal-footer")).toBeTruthy();
+  // Finding 08: the footer no longer hijacks ⌘K (that chord belongs to the
+  // search/jump palette everywhere, Studio included). While it stands collapsed
+  // it CLAIMS the Ask chord through `assistant/askControl`, which is what the
+  // floating button and ⌘J drive; opening the row releases the claim.
+  it("footer mode starts collapsed, claims Ask, and the Ask control opens the box", () => {
+    const reached: string[] = [];
+    render(
+      <>
+        {/* The probe stands in for the Shell's floating Ask surface: it holds
+            the claim underneath the footer row's own. */}
+        <AskProbe reached={reached} />
+        <AssistantProposalBox
+          draftId="d1"
+          version={4}
+          text={DRAFT}
+          readOnly={false}
+          dirty={false}
+          previewing={false}
+          onPreview={vi.fn()}
+          onApply={vi.fn()}
+          onDiscard={vi.fn()}
+          footer
+        />
+      </>,
+    );
+    expect(screen.getByTestId("assistant-proposal-footer").textContent).toContain("⌘J");
     expect(screen.queryByTestId("assistant-proposal-input")).toBeNull();
-    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    // Collapsed, the row owns Ask: the press lands here, not on the probe.
+    act(() => openAsk());
     expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
     expect(screen.queryByTestId("assistant-proposal-footer")).toBeNull();
-    // A second mount: the control-key variant opens it too.
-    cleanup();
-    renderBox({ footer: true });
-    expect(screen.queryByTestId("assistant-proposal-input")).toBeNull();
-    fireEvent.keyDown(window, { key: "K", ctrlKey: true });
-    expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
+    expect(reached).toEqual([]);
+
+    // Open, the claim is gone: the next press reaches whoever held it before.
+    act(() => openAsk());
+    expect(reached).toEqual(["probe"]);
   });
 
   it("design 1g: the footer row opens the box on click", () => {

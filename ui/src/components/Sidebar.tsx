@@ -33,15 +33,7 @@
  * 220px/52px column is `overflow-y-auto`, and a flyout that leaves it sideways
  * would be cut off at the column's edge by the scroll container.
  */
-import {
-  useEffect,
-  useMemo,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router";
 import {
   BookOpen,
@@ -55,22 +47,16 @@ import {
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import type { Project } from "../api/types";
 import { usePipelines } from "../api/pipelines";
+import { useCatchUpItems } from "../api/catchup";
 import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { useSidebarFlags } from "../lib/sidebarFlags";
 import { Mark } from "./ds/Mark";
-import { Menu, MenuArrow, Popover, type MenuEntry } from "./ds/Menu";
+import { Menu, Popover, type MenuEntry } from "./ds/Menu";
 import NewConversationDialog from "./NewConversationDialog";
 import UserMenu from "./UserMenu";
-
-/**
- * The command palette owns its open state and its global ⌘K listener; the
- * Ask buttons in the shell have no other handle, so they press ⌘K.
- */
-export function openAsk(): void {
-  window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
-}
+import { CATCH_UP_PATH, openPalette } from "./CommandPalette";
 
 const FLAG_STYLE: Record<
   Exclude<Flag["kind"], "none">,
@@ -195,17 +181,6 @@ export function railInitials(names: readonly string[]): string[] {
     // keep the shared base initials; the flyout names each one in full.
   }
   return out;
-}
-
-function InitialsTile({ name, className = "" }: { name: string; className?: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={`grid place-items-center rounded-[3px] border border-ink bg-surface font-mono text-ink ${className}`}
-    >
-      {initialsOf(name) || "?"}
-    </span>
-  );
 }
 
 /** The row rhythm: the active row is an ink border on the 4px blueprint grid. */
@@ -448,156 +423,6 @@ function ProjectTree({
 }
 
 /**
- * The switcher mode (a saved preference): a 36px button for the current
- * project and a listbox of the rest, ending in "All projects". The
- * selection lives in this render — the preference store carries layout
- * settings, not a "current project" cursor.
- */
-function ProjectSwitcher() {
-  const navigate = useNavigate();
-  const projects = useProjects();
-  const flags = useSidebarFlags();
-  const items = projects.data?.items ?? [];
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const list = useRef<HTMLDivElement>(null);
-
-  const selected = items.find((project) => project.id === selectedId) ?? items[0] ?? null;
-
-  const choose = (index: number) => {
-    const project = items[index];
-    setOpen(false);
-    trigger.current?.focus();
-    if (!project) {
-      navigate(routes.projects());
-      return;
-    }
-    setSelectedId(project.id);
-    navigate(routes.project(project.id));
-  };
-
-  const onKeyDown = (event: ReactKeyboardEvent) => {
-    if (!open) {
-      if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        setActive(0);
-        setOpen(true);
-      }
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActive((current) => (current + 1) % items.length);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActive((current) => (current - 1 + items.length) % items.length);
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      choose(active);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setOpen(false);
-      trigger.current?.focus();
-    }
-  };
-
-  if (projects.isPending) return null;
-  if (items.length === 0) {
-    return <p className="px-2 font-mono text-[11px] text-faint">no projects yet</p>;
-  }
-
-  return (
-    <div className="relative flex flex-col gap-1">
-      <button
-        ref={trigger}
-        type="button"
-        data-testid="project-switcher"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={selected ? `Switch project — current: ${selected.name}` : "Switch project"}
-        onKeyDown={onKeyDown}
-        onClick={() => {
-          if (open) {
-            setOpen(false);
-            trigger.current?.focus();
-          } else {
-            setActive(0);
-            setOpen(true);
-          }
-        }}
-        className={`flex h-9 w-full items-center gap-2 rounded-[4px] border border-fill-edge bg-fill px-2 text-[13px] font-semibold text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
-      >
-        {selected ? (
-          <>
-            <InitialsTile name={selected.name} className="h-[22px] w-[22px] text-[9.5px]" />
-            <span className="min-w-0 flex-1 truncate text-left">{selected.name}</span>
-            <FlagBadge flag={flags.projects[selected.id] ?? { kind: "none", count: 0 }} />
-            <Chevron open={open} size={14} className="text-ink" />
-          </>
-        ) : null}
-      </button>
-      {open ? (
-        <div
-          ref={list}
-          role="listbox"
-          aria-label="Projects"
-          data-testid="project-switcher-list"
-          tabIndex={-1}
-          className="absolute left-0 top-[calc(100%+4px)] z-30 max-h-64 w-full overflow-y-auto rounded-[4px] border border-ink bg-surface p-1 shadow-raised"
-        >
-          {items.map((project, index) => (
-            <button
-              key={project.id}
-              type="button"
-              role="option"
-              aria-selected={project.id === selected?.id}
-              onClick={() => choose(index)}
-              onMouseEnter={() => setActive(index)}
-              className={`flex w-full items-center gap-2 rounded-[3px] px-2 py-1 text-left text-[12.5px] text-ink ${
-                index === active ? "bg-fill" : ""
-              } ${FOCUS_RING}`}
-            >
-              <InitialsTile
-                name={project.name}
-                className="h-[18px] w-[18px] text-[8.5px] border-fill-edge"
-              />
-              <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              <FlagBadge flag={flags.projects[project.id] ?? { kind: "none", count: 0 }} />
-            </button>
-          ))}
-          <button
-            type="button"
-            role="option"
-            aria-selected={false}
-            data-testid="project-switcher-all"
-            onClick={() => choose(items.length)}
-            onMouseEnter={() => setActive(items.length)}
-            className={`flex w-full items-center rounded-[3px] px-2 py-1 text-left text-[12.5px] text-ink ${
-              active === items.length ? "bg-fill" : ""
-            } ${FOCUS_RING}`}
-          >
-            All projects
-          </button>
-        </div>
-      ) : null}
-      {/* Handoff 3c's rule in the shell's own surface: every anchored surface
-          gets the pointer arrow. The switcher's list is the box its trigger
-          opens, and it scrolls inside that box — an arrow riding inside it
-          would be clipped — so the arrow mounts on the same wrapper the box is
-          measured against. The trigger spans that wrapper and the box is
-          positioned against it, so `centerOnTrigger` lands the shared 9px
-          square on the trigger's centre, on the box's own top border line. */}
-      {open ? <MenuArrow centerOnTrigger /> : null}
-      {selected ? (
-        <RepoList projectHref={routes.project(selected.id)} projectId={selected.id} />
-      ) : null}
-    </div>
-  );
-}
-
-/**
  * The footer the app bar used to carry: the signed-in user as the menu
  * trigger (`user-badge`) over the account menu (`user-menu-list`: Settings,
  * Operations, Sign out), plus the honest "not signed in" state. The replica
@@ -628,18 +453,16 @@ function Footer({ rail = false }: { rail?: boolean }) {
   );
 }
 
-/** The `New thread` row: one thread-starting button (the shared conversation
- * dialog, with its project picker) and the `⌘K` box the Ask preference puts
- * beside it. Signed-in affordance only — "start something" needs a member. */
-function NewChatRow({
-  signedIn,
-  onNewChat,
-  askInSidebar,
-}: {
-  signedIn: boolean;
-  onNewChat: () => void;
-  askInSidebar: boolean;
-}) {
+/**
+ * The row at the top of the column: `New thread` and the `Search ⌘K` field
+ * (redesign finding 08: two labelled entries, one shortcut each — the search
+ * field opens the jump/command palette, and `Ask` is a floating button over the
+ * page with its own ⌘J). The field is drawn like a field (a bordered box, the
+ * verb left, the mono chord right) because it is the row people look for; it
+ * opens the palette rather than typing here. Signed-in affordance only for
+ * `New thread` — "start something" needs a member; search is never gated.
+ */
+function NewChatRow({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: () => void }) {
   return (
     <div className="flex gap-[6px]">
       {signedIn ? (
@@ -652,17 +475,16 @@ function NewChatRow({
           New thread
         </button>
       ) : null}
-      {askInSidebar ? (
-        <button
-          type="button"
-          data-testid="ask-sidebar"
-          onClick={openAsk}
-          aria-label="Ask the assistant (⌘K)"
-          className={`h-[30px] shrink-0 rounded-[4px] border border-fill-edge bg-surface px-[9px] font-mono text-[11px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill ${FOCUS_RING}`}
-        >
-          ⌘K
-        </button>
-      ) : null}
+      <button
+        type="button"
+        data-testid="sidebar-search"
+        onClick={openPalette}
+        aria-label="Search or jump (⌘K)"
+        className={`flex h-[30px] min-w-0 flex-1 items-center gap-[6px] rounded-[4px] border border-line-strong bg-surface px-[8px] text-left text-[12.5px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:border-ink ${FOCUS_RING}`}
+      >
+        <span className="min-w-0 flex-1 truncate">Search</span>
+        <span className="shrink-0 font-mono text-[10.5px] tracking-[.04em] text-faint">⌘K</span>
+      </button>
     </div>
   );
 }
@@ -959,6 +781,11 @@ export default function Sidebar({
   // reads the pages use (see the nav block in the expanded column).
   const pipelines = usePipelines();
   const profiles = useAgentProfiles();
+  // Finding 8a: the Catch up row's badge is the reader's own unseen count —
+  // one cheap read of the page's own endpoint, on the app's usual refetch and
+  // nothing more. A read that has not answered, or failed, prints no number.
+  const catchUp = useCatchUpItems();
+  const unseenCatchUp = catchUp.data?.total_unseen ?? 0;
   const closeRef = useRef<HTMLButtonElement>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
@@ -1001,6 +828,18 @@ export default function Sidebar({
             className="ml-auto shrink-0 font-mono text-[10.5px] font-semibold text-st-waiting-tag-fg"
           >
             ! {flags.inbox.needsYou}
+          </span>
+        ) : null,
+    },
+    {
+      // Finding 8a: what the agents did that this reader has not seen yet.
+      to: CATCH_UP_PATH,
+      label: "Catch up",
+      testid: "sidebar-link-catch-up",
+      flag:
+        unseenCatchUp > 0 ? (
+          <span className="ml-auto shrink-0 font-mono text-[10.5px] font-semibold text-accent-edge">
+            {unseenCatchUp} unseen
           </span>
         ) : null,
     },
@@ -1074,11 +913,7 @@ export default function Sidebar({
             )}
           </div>
 
-          <NewChatRow
-            signedIn={Boolean(me.data)}
-            onNewChat={() => setChatOpen(true)}
-            askInSidebar={prefs.askPlacement === "sidebar"}
-          />
+          <NewChatRow signedIn={Boolean(me.data)} onNewChat={() => setChatOpen(true)} />
 
           <nav aria-label="Cross-project" className="flex flex-col gap-[2px]">
             {mainNav.map((item) => (
@@ -1097,19 +932,15 @@ export default function Sidebar({
 
           <div className="h-px bg-line" aria-hidden="true" />
 
+          {/* Finding 10: projects are always the tree — the switcher mode and
+              its preference are gone. */}
           <div className="flex flex-col gap-1">
-            <span className={SECTION_LABEL}>
-              {prefs.projectsMode === "switcher" ? "PROJECT" : "PROJECTS"}
-            </span>
-            {prefs.projectsMode === "switcher" ? (
-              <ProjectSwitcher />
-            ) : (
-              <ProjectTree
-                openMenuId={menuProjectId}
-                onOpenMenu={openProjectMenu}
-                onCloseMenu={closeProjectMenu}
-              />
-            )}
+            <span className={SECTION_LABEL}>PROJECTS</span>
+            <ProjectTree
+              openMenuId={menuProjectId}
+              onOpenMenu={openProjectMenu}
+              onCloseMenu={closeProjectMenu}
+            />
           </div>
 
           {/* Finding 02: the LIBRARY block is gone. Workflows and Agents are

@@ -20,6 +20,8 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/$`),
 	regexp.MustCompile(`^/threads$`),
 	regexp.MustCompile(`^/threads/[A-Za-z0-9_-]{1,64}$`),
+	// Catch up (design 8a, ADR-0078): the reader's own pile of pieces of work.
+	regexp.MustCompile(`^/catch-up$`),
 	regexp.MustCompile(`^/projects$`),
 	// Project pages (canonical /p/… form).
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}$`),
@@ -104,6 +106,7 @@ var staticPalettePages = []struct {
 	to        string
 }{
 	{"Today", "page · home · overview · dashboard · inbox · board · attention · approvals · decisions", "/"},
+	{"Catch up", "page · what agents did · unseen work · tours", "/catch-up"},
 	{"Threads", "page · one-off threads · conversations", "/threads"},
 	{"Workflows", "page · pipelines · workflow library", "/workflows"},
 	{"Steps", "page · node templates · saved steps", "/workflows/steps"},

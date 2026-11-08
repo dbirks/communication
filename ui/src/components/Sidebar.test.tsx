@@ -1,11 +1,17 @@
 /**
- * The sidebar column (`components/Sidebar.tsx`): the tree mode shows every
- * project with its repository list hidden until the chevron opens it, and
- * opening writes the `expanded` preference (`project:<id>` key) through the
- * same `PATCH /api/v1/me/preferences` the settings page uses — the switcher
- * mode, the library rows, the "⋯" menu and the worst-state flags are all read
- * off the same real endpoints Inbox reads, so the column cannot disagree with
- * it. The pure flag rules themselves are covered by `lib/sidebarFlags.test.ts`.
+ * The sidebar column (`components/Sidebar.tsx`): projects are ALWAYS the tree
+ * (redesign finding 10 removed the switcher mode and its preference), with the
+ * repository list hidden until the chevron opens it; opening writes the
+ * `expanded` preference (`project:<id>` key) through the same
+ * `PATCH /api/v1/me/preferences` the settings page uses — the library rows, the
+ * "⋯" menu and the worst-state flags are all read off the same real endpoints
+ * Inbox reads, so the column cannot disagree with it. The pure flag rules
+ * themselves are covered by `lib/sidebarFlags.test.ts`.
+ *
+ * Finding 08: the row above the nav holds `New thread` and the `Search ⌘K`
+ * field (`sidebar-search`), which opens the jump palette; `Ask` is no longer a
+ * sidebar row at all (it is the floating ⌘J button `Shell` draws). Finding 8a:
+ * the `Catch up` row sits right after Today and badges the unseen count.
  *
  * The column's two widths are the same contract: `sidebarCollapsed` is the
  * saved preference that trades the 220px column for the 52px rail, and the
@@ -35,15 +41,21 @@ const repoFixture: Repository = {
   created_at: "2026-07-01T10:00:00Z",
 };
 
+/**
+ * A stored layout document. It still carries the three settings finding 10 cut
+ * (`projects_mode`, `ask_placement`, `show_workflow_folders`): the server owns
+ * that shape and the client reads and ignores them, so every test here runs
+ * over a document an install would really answer with.
+ */
 function prefsDoc(
   expanded: Record<string, boolean> = {},
-  projectsMode: "tree" | "switcher" = "tree",
+  cut?: { projects_mode?: string; ask_placement?: string; show_workflow_folders?: boolean },
 ): unknown {
   return {
     layout: {
-      projects_mode: projectsMode,
-      ask_placement: "sidebar",
-      show_workflow_folders: true,
+      projects_mode: cut?.projects_mode ?? "tree",
+      ask_placement: cut?.ask_placement ?? "sidebar",
+      show_workflow_folders: cut?.show_workflow_folders ?? true,
       expanded,
     },
     assistant: { trust_level: "ask_risky" },
@@ -139,8 +151,54 @@ describe("the sidebar tree (the default placement)", () => {
     expect(scope.getByTestId("sidebar-link-profiles").textContent).toContain("Agents");
     expect(scope.getByTestId("sidebar-link-profiles").textContent).toContain("0");
 
-    // The sidebar placement of the Ask button is the default.
-    expect(screen.getByTestId("ask-sidebar")).toBeTruthy();
+    // Finding 8a: the Catch up row sits directly after Today.
+    expect(scope.getByTestId("sidebar-link-catch-up").getAttribute("href")).toBe("/catch-up");
+    const rows = Array.from(sidebar.querySelectorAll('[data-testid^="sidebar-link-"]'));
+    expect(rows.map((row) => row.getAttribute("data-testid")).slice(0, 2)).toEqual([
+      "sidebar-link-home",
+      "sidebar-link-catch-up",
+    ]);
+
+    // Finding 08: the sidebar's second entry is the labelled SEARCH field, not
+    // a bare chord button and not Ask (Ask is `Shell`'s floating ⌘J button).
+    const search = scope.getByTestId("sidebar-search");
+    expect(search.textContent).toContain("Search");
+    expect(search.textContent).toContain("⌘K");
+    expect(search.getAttribute("aria-label")).toBe("Search or jump (⌘K)");
+    expect(scope.queryByTestId("ask-sidebar")).toBeNull();
+    fireEvent.click(search);
+    expect(
+      await screen.findByTestId("palette-input", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
+  });
+
+  // Finding 8a: the badge is the reader's own unseen count, in accent ink.
+  it("badges the Catch up row with the unseen count from the catch-up read", async () => {
+    renderApp({
+      path: "/",
+      routes: [
+        ...baseRoutes(),
+        {
+          path: "/api/v1/catch-up/items",
+          body: { items: [], total_unseen: 3, oldest_unseen_at: "2026-01-01T00:00:00Z" },
+        },
+      ],
+    });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const badge = await within(sidebar).findByText("3 unseen", undefined, { timeout: READ_MS });
+    expect(badge.className).toContain("text-accent-edge");
+  });
+
+  it("prints no Catch up number while the read has not answered or has failed", async () => {
+    renderApp({
+      path: "/",
+      routes: baseRoutes().map((stub) =>
+        stub.path === "/api/v1/catch-up/items" ? { ...stub, status: 500 } : stub,
+      ),
+    });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    await within(sidebar).findByTestId("sidebar-link-workflows", undefined, { timeout: READ_MS });
+    expect(within(sidebar).queryByText(/unseen/)).toBeNull();
   });
 
   // 2c/3c: the row labels the design names — Home became Today (same `/`),
@@ -283,39 +341,34 @@ describe("the route opens its project and marks its repository (Projects Review 
   });
 });
 
-describe("the sidebar switcher (a saved layout preference)", () => {
-  it("shows a 36px project button whose listbox ends in 'All projects'", async () => {
+// Finding 10: `projectsMode` is gone — the switcher component does not exist,
+// and a document saved while the setting did (including `projects_mode:
+// "switcher"`) still renders the tree with no error and no second navigator.
+describe("projects are always the tree (finding 10)", () => {
+  it("ignores a stored projects_mode and renders the tree, not a switcher", async () => {
     renderApp({
       path: "/",
-      routes: baseRoutes({ prefs: prefsDoc({}, "switcher") }),
+      routes: baseRoutes({ prefs: prefsDoc({}, { projects_mode: "switcher" }) }),
     });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
     const scope = within(sidebar);
-    const trigger = await screen.findByTestId("project-switcher", undefined, { timeout: READ_MS });
-    expect(scope.getByText("PROJECT")).toBeTruthy();
-    expect(scope.queryByText("PROJECTS")).toBeNull();
-    expect(within(trigger).getByText("Widgets")).toBeTruthy();
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.click(trigger);
-    const listbox = screen.getByRole("listbox", { name: "Projects" });
-    expect(within(listbox).getByText("Widgets")).toBeTruthy();
-    expect(within(listbox).getByTestId("project-switcher-all")).toBeTruthy();
-    expect(within(listbox).getByText("All projects")).toBeTruthy();
-    // Handoff 3c's rule — every anchored surface carries the shared pointer
-    // arrow (`ds/Menu`'s `menu-arrow`). It mounts as the list's sibling rather
-    // than inside it: the listbox owns the scroll (`overflow-y-auto`), and the
-    // half of the square that rides above the border line would be clipped.
-    const arrow = sidebar.querySelector('[data-testid="menu-arrow"]');
-    expect(arrow, "the switcher's list carries the shared pointer arrow").toBeTruthy();
-    expect(listbox.contains(arrow as Element)).toBe(false);
-    expect(arrow?.getAttribute("aria-hidden")).toBe("true");
-    // 9px square, rotated 45°, centred on the wrapper the trigger spans.
-    expect((arrow as HTMLElement).style.width).toBe("9px");
-    expect((arrow as HTMLElement).style.transform).toContain("rotate(45deg)");
-    expect((arrow as HTMLElement).style.left).toBe("50%");
-    // Closed surface, no arrow — it belongs to the open list, not the column.
-    fireEvent.click(trigger);
+    await screen.findByText("Widgets", undefined, { timeout: READ_MS });
+    expect(scope.getByText("PROJECTS")).toBeTruthy();
+    expect(scope.queryByText("PROJECT")).toBeNull();
+    // The switcher's own surface is gone from the column entirely.
+    expect(scope.queryByTestId("project-switcher")).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Projects" })).toBeNull();
+    // And the tree behaves as the tree always did: one closed chevron.
+    expect(scope.getByTestId(`sidebar-project-toggle-${P}`).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+  });
+
+  it("the tree's ⋯ menu is the only anchored surface with a pointer arrow", async () => {
+    renderApp({ path: "/", routes: baseRoutes() });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    // Closed: no arrow anywhere (the arrow belongs to an open anchored list).
     expect(sidebar.querySelector('[data-testid="menu-arrow"]')).toBeNull();
   });
 });

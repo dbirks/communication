@@ -15,6 +15,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CommandPalette, { openPalette } from "./CommandPalette";
 import AssistantPopover from "./assistant/AssistantPopover";
+import { openAsk } from "./assistant/askControl";
 import { shortId } from "../api/names";
 import {
   claudeProfile,
@@ -146,16 +147,21 @@ function pressChord(meta = false) {
 afterEach(cleanup);
 
 describe("CommandPalette", () => {
-  it("opens the assistant popover on Ctrl+K, and the jump palette on the chord over it", async () => {
+  // Finding 08 (which supersedes ADR-0050's ⌘K toggle): ⌘K opens the jump
+  // palette on the FIRST press and never the assistant; Ask has its own chord.
+  it("opens the jump palette on Ctrl+K, never the assistant, with the assistant on screen too", async () => {
     mountPalette();
     expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    expect(screen.queryByTestId("palette-root")).toBeNull();
 
-    pressChord();
-    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
-
-    // The assistant is already on screen, so the chord lands on the jumps.
     pressChord();
     const dialog = await screen.findByRole("dialog");
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+
+    // The chord keeps belonging to the palette even while the assistant is up.
+    openAsk();
+    await screen.findByTestId("assistant-popover");
+    pressChord();
     expect(screen.getByTestId("palette-footer").textContent).toContain(
       "The Ask row opens the assistant popover",
     );
@@ -166,6 +172,8 @@ describe("CommandPalette", () => {
     expect(within(dialog).queryByText("Inbox")).toBeNull();
     expect(within(dialog).queryByText("Board")).toBeNull();
     expect(within(dialog).queryByText("Library")).toBeNull();
+    // Finding 8a: Catch up jumps too, right after Today.
+    expect(within(dialog).getByText("Catch up")).toBeTruthy();
     // The input drives the list it filters (combobox pattern).
     const input = screen.getByTestId("palette-input");
     expect(input.getAttribute("aria-controls")).toBe("palette-listbox");
@@ -200,9 +208,10 @@ describe("CommandPalette", () => {
       expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0"),
     );
 
-    // Projects is the third page (after Today and Threads) at "/projects".
-    for (let i = 0; i < 2; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-2");
+    // Projects is the fourth page (after Today, Catch up and Threads —
+    // finding 8a inserted the Catch up row) at "/projects".
+    for (let i = 0; i < 3; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-3");
     expect(screen.getByRole("option", { selected: true }).textContent).toContain("Projects");
 
     fireEvent.keyDown(input, { key: "Enter" });

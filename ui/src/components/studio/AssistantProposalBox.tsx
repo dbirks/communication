@@ -19,13 +19,14 @@
  * The page owns all state that outlives this box (`text`, `previewing`,
  * the pre-proposal text); this box owns only the instruction and errors.
  */
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import {
   draftProposalErrorOf,
   useDraftProposal,
   type DraftProposalResponse,
 } from "../../api/draftProposals";
 import { applyProposal, type ProposalOp } from "../../lib/pipeline/proposalOps";
+import { useAskOpen } from "../assistant/askControl";
 import { Button } from "../ds/Button";
 import { Textarea } from "../ds/Field";
 
@@ -79,19 +80,13 @@ export function AssistantProposalBox({
   const [previewSummary, setPreviewSummary] = useState<string | null>(null);
   const proposal = useDraftProposal();
 
-  // Design 1g: in the studio the box collapses to the footer row; ⌘K opens it.
-  useEffect(() => {
-    if (!footer) return;
-    const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        setOpen(true);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [footer]);
+  // Finding 08: the studio draft footer owns the Ask chord while it is collapsed
+  // — its ⌘J expands this row instead of raising the floating popover, which is
+  // what the old `stopImmediatePropagation` hijack on ⌘K was for. The claim is
+  // the explicit handle (`askControl`): no synthetic keydown, and ⌘K itself now
+  // belongs to the search/jump palette on this page like any other. Once the row
+  // is open the claim drops, so ⌘J reaches the assistant from there.
+  useAskOpen(() => setOpen(true), { enabled: footer && !open });
 
   const blockedReason = readOnly
     ? "This draft is read-only, so the assistant can't be asked to change it."
@@ -145,7 +140,7 @@ export function AssistantProposalBox({
           className="flex w-full items-center gap-[8px] px-[14px] py-[10px] text-left text-body hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
         >
           Ask to change this draft…
-          <span className="ml-auto font-mono text-[10.5px] tracking-[.04em] text-faint">⌘K</span>
+          <span className="ml-auto font-mono text-[10.5px] tracking-[.04em] text-faint">⌘J</span>
         </button>
       ) : (
         <>

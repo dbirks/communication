@@ -13,6 +13,7 @@ import AssistantPopover, {
   openAssistantPopover,
   openAssistantWorkflowDraft,
 } from "./AssistantPopover";
+import { openAsk } from "./askControl";
 
 const CONV = "conv-1";
 const OLD_CONV = "conv-old";
@@ -508,31 +509,34 @@ describe("conversation continuity across turns (ui-convfix)", () => {
   });
 });
 
-describe("the ⌘K chord survives the studio footer hijack (p789-t5)", () => {
+describe("the ⌘J chord is order-invariant (finding 08; was p789-t5 for ⌘K)", () => {
   it("reopens after a close even when a bubble-phase listener stops the chord", async () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     renderPopover();
 
-    // The Studio draft footer (AssistantProposalBox, design 1g) answers ⌘K
-    // with stopImmediatePropagation(). Once the popover's chord effect has
-    // cycled (open → close), its reopened listener is registered LAST, so a
-    // bubble-phase hijack would swallow every later ⌘K and the ask surface
-    // could never reopen on the draft page — observed live on the M4 lab.
+    // Finding 08 moved Ask onto ⌘J (⌘K belongs to the jump palette now) and
+    // replaced the Studio's `stopImmediatePropagation` hijack with an explicit
+    // claim — but the chord itself still has to survive any page that stops it
+    // in the bubble phase: once this popover's chord effect has cycled (open →
+    // close) it re-registers LAST, so a bubble-phase hijack would swallow every
+    // later ⌘J and the ask surface could never reopen — the failure that was
+    // observed live on the M4 lab with ⌘K. Capture registration is what fixes
+    // it, and the test pins that it stayed.
     const hijack = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
         event.preventDefault();
         event.stopImmediatePropagation();
       }
     };
     window.addEventListener("keydown", hijack);
     try {
-      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+      fireEvent.keyDown(document.body, { key: "j", metaKey: true });
       await screen.findByTestId("assistant-popover");
       // esc closes the panel — the chord effect re-runs and re-registers last.
       fireEvent.keyDown(document.body, { key: "Escape" });
       await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
-      // ADR-0050: ⌘K always re-opens the ask surface, chord order be damned.
-      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+      // ⌘J always re-opens the ask surface, chord order be damned.
+      fireEvent.keyDown(document.body, { key: "j", metaKey: true });
       await screen.findByTestId("assistant-popover");
     } finally {
       window.removeEventListener("keydown", hijack);
@@ -719,18 +723,19 @@ describe("menu-close coordination (issue #62)", () => {
     expect(closed).toHaveLength(1);
 
     act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true })));
-    // Already open: the chord hands over to the jump palette (NewMenu
-    // listens for palette-open too) — no second broadcast, and no popover
-    // re-open churn.
+    // Finding 08: ⌘K is the JUMP chord — it opens no ask surface, so there is
+    // no second broadcast and no popover re-open churn.
     expect(closed).toHaveLength(1);
+    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
   });
 
-  it("broadcasts close-other-menus when Ask opens over the ⌘K chord (the sidebar Ask press)", () => {
+  it("broadcasts close-other-menus when Ask opens over the ⌘J chord (the floating Ask press)", () => {
     stubFetch(() => json({ messages: [], next_cursor: null }));
     window.addEventListener("communication:close-other-menus", listener);
     renderPopover();
-    // Sidebar's openAsk(): a synthetic ⌘K keydown on the window.
-    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true })));
+    // Shell's floating button calls the same explicit handle (finding 08 —
+    // no synthetic keydown any more).
+    act(() => openAsk());
     expect(closed).toHaveLength(1);
     expect(screen.getByTestId("assistant-popover")).toBeTruthy();
   });

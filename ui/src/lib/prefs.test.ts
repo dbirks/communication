@@ -2,6 +2,12 @@
  * Preferences client (contract C2): snake ⇄ camel mapping, optimistic
  * updates, the 404 degradation (`saved: false` + in-memory for the session)
  * and the exact PATCH bodies the server expects.
+ *
+ * Redesign finding 10 cut `projectsMode`, `askPlacement` and
+ * `showWorkflowFolders`; the tests that drove them now drive the one layout
+ * preference that survived (`sidebarCollapsed`) plus `expanded`, and one test
+ * pins that a document SAVED before the cut — with all three removed keys in
+ * it — still reads back clean.
  */
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -21,7 +27,9 @@ import {
 
 const PREFERENCES_PATH = "/api/v1/me/preferences";
 
-const SAVED_DOCUMENT = {
+/** A document as the server stored it BEFORE finding 10 cut three settings:
+ * every read below must ignore the removed keys rather than trip on them. */
+const OLD_DOCUMENT = {
   layout: {
     projects_mode: "switcher",
     ask_placement: "floating",
@@ -31,6 +39,8 @@ const SAVED_DOCUMENT = {
   assistant: { trust_level: "ask_all" },
   updated_at: "2026-02-12T10:00:00Z",
 };
+
+const SAVED_DOCUMENT = OLD_DOCUMENT;
 
 afterEach(() => {
   cleanup();
@@ -54,12 +64,12 @@ describe("useLayoutPrefs", () => {
   it("maps a saved document from snake_case to camelCase", async () => {
     const { wrapper } = harness([{ path: PREFERENCES_PATH, method: "GET", body: SAVED_DOCUMENT }]);
     const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
-    await waitFor(() => expect(result.current.prefs.projectsMode).toBe("switcher"));
+    await waitFor(() => expect(result.current.prefs.expanded.p1).toBe(true));
     expect(result.current.saved).toBe(true);
+    // Finding 10: the document still carries `projects_mode`, `ask_placement`
+    // and `show_workflow_folders`, and the read IGNORES them — the client's
+    // layout is exactly the two things the app still has a say about.
     expect(result.current.prefs).toEqual({
-      projectsMode: "switcher",
-      askPlacement: "floating",
-      showWorkflowFolders: false,
       sidebarCollapsed: false,
       expanded: { p1: true, p2: false },
     });
@@ -102,7 +112,7 @@ describe("useLayoutPrefs", () => {
       },
     ]);
     const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
-    await waitFor(() => expect(result.current.prefs.projectsMode).toBe("switcher"));
+    await waitFor(() => expect(result.current.prefs.expanded.p1).toBe(true));
 
     act(() => {
       result.current.update({ sidebarCollapsed: true });
@@ -140,35 +150,33 @@ describe("useLayoutPrefs", () => {
     expect(requestsTo(requests, PREFERENCES_PATH, "GET")).toHaveLength(1);
   });
 
-  it("updates optimistically and PATCHes the full layout section in snake_case", async () => {
+  it("updates optimistically and PATCHes the layout section in snake_case", async () => {
     const { requests, wrapper } = harness([
       { path: PREFERENCES_PATH, method: "GET", body: SAVED_DOCUMENT },
       {
         path: PREFERENCES_PATH,
         method: "PATCH",
-        body: { ...SAVED_DOCUMENT, layout: { ...SAVED_DOCUMENT.layout, projects_mode: "tree" } },
+        body: { ...SAVED_DOCUMENT, layout: { ...SAVED_DOCUMENT.layout, expanded: { p1: false } } },
       },
     ]);
     const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
-    await waitFor(() => expect(result.current.prefs.projectsMode).toBe("switcher"));
+    await waitFor(() => expect(result.current.prefs.expanded.p1).toBe(true));
     setCsrfToken(meFixture.csrf_token);
 
     act(() => {
-      result.current.update({ projectsMode: "tree" });
+      result.current.update({ expanded: { p1: false } });
     });
     // Optimistic: the change is visible as soon as the cache lands.
-    await waitFor(() => expect(result.current.prefs.projectsMode).toBe("tree"));
+    await waitFor(() => expect(result.current.prefs.expanded.p1).toBe(false));
 
     await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "PATCH")).toHaveLength(1));
     const [patch] = requestsTo(requests, PREFERENCES_PATH, "PATCH");
+    // Finding 10: a layout write carries `expanded` and nothing else. The
+    // server deep-merges per member, so the three stored values no client
+    // reads stay exactly as they were — no new wire fields, no server change.
     expect(JSON.parse(patch.body ?? "{}")).toEqual({
       layout: {
-        projects_mode: "tree",
-        ask_placement: "floating",
-        show_workflow_folders: false,
-        // The rail's key is only carried while the rail is collapsed; a write
-        // that never touched it leaves `expanded` as the caller handed it over.
-        expanded: { p1: true, p2: false },
+        expanded: { p1: false },
       },
     });
     expect(patch.headers.get("x-csrf-token")).toBe(meFixture.csrf_token);
@@ -180,15 +188,15 @@ describe("useLayoutPrefs", () => {
     await waitFor(() => expect(result.current.saved).toBe(false));
 
     act(() => {
-      result.current.update({ askPlacement: "floating" });
+      result.current.update({ sidebarCollapsed: true });
     });
-    await waitFor(() => expect(result.current.prefs.askPlacement).toBe("floating"));
+    await waitFor(() => expect(result.current.prefs.sidebarCollapsed).toBe(true));
 
     // A stale re-fetch hits the same 404 and must not wipe the change.
     queryClient.invalidateQueries({ queryKey: preferencesQueryKey });
     await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "GET")).toHaveLength(2));
     expect(result.current.saved).toBe(false);
-    expect(result.current.prefs.askPlacement).toBe("floating");
+    expect(result.current.prefs.sidebarCollapsed).toBe(true);
   });
 
   // The sidebar auto-expands the project the route is inside without being
@@ -297,7 +305,7 @@ describe("useAssistantPrefs", () => {
 });
 
 describe("parsePreferences", () => {
-  it("falls back to the defaults for unknown enum values", () => {
+  it("falls back to the defaults for unknown values", () => {
     const state = parsePreferences({
       layout: {
         projects_mode: "bogus",
@@ -308,12 +316,24 @@ describe("parsePreferences", () => {
       assistant: { trust_level: "sometimes" },
       updated_at: 42,
     });
-    expect(state.layout.projectsMode).toBe(DEFAULT_LAYOUT_PREFS.projectsMode);
-    expect(state.layout.askPlacement).toBe(DEFAULT_LAYOUT_PREFS.askPlacement);
-    expect(state.layout.showWorkflowFolders).toBe(DEFAULT_LAYOUT_PREFS.showWorkflowFolders);
     expect(state.layout.sidebarCollapsed).toBe(DEFAULT_LAYOUT_PREFS.sidebarCollapsed);
     expect(state.layout.expanded).toEqual({ a: true });
     expect(state.trustLevel).toBe(DEFAULT_TRUST_LEVEL);
     expect(state.updatedAt).toBeNull();
+  });
+
+  // Finding 10: the settings were cut client-side, not on the wire — the
+  // server still answers with them (they are part of its closed `layout`
+  // object, and dropping them is an API change needing its own ADR). Reading
+  // an old document, from the server copy or a cached blob, must not error and
+  // must not put a removed key back into what callers see.
+  it("reads a document saved before the three settings were cut", () => {
+    const state = parsePreferences(OLD_DOCUMENT);
+    expect(state.layout).toEqual({
+      sidebarCollapsed: false,
+      expanded: { p1: true, p2: false },
+    });
+    expect(state.trustLevel).toBe("ask_all");
+    expect(state.updatedAt).toBe("2026-02-12T10:00:00Z");
   });
 });

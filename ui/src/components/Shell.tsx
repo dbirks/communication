@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
-import { useLayoutPrefs } from "../lib/prefs";
 import { Mark } from "./ds/Mark";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
-import Sidebar, { SIDEBAR_RAIL_WIDTH_PX, SIDEBAR_WIDTH_PX, openAsk } from "./Sidebar";
-import CommandPalette from "./CommandPalette";
+import Sidebar from "./Sidebar";
+import CommandPalette, { CATCH_UP_PATH } from "./CommandPalette";
 import AssistantPopover from "./assistant/AssistantPopover";
+import { openAsk } from "./assistant/askControl";
 
 /**
  * The sections the Ask box's context chip names, in the order the sidebar
@@ -14,15 +14,17 @@ import AssistantPopover from "./assistant/AssistantPopover";
  * first segment (`/p/proj-1` is `p`, `/login` is `login`) rather than guessed
  * at.
  *
- * Handoff 2c/3c: the nav is Today (`/`, what the page called Home) and My
- * chats, plus — since finding 02 — the Workflows and Agents rows that sit
- * under the projects. Board and Inbox are not nav rows any more — the Board's
- * behavior lives in the repository page's Lanes view and the Inbox folds into
- * Today — and (finding 03) `/board` and `/inbox` now redirect to `/` the way
- * `/ops` redirects to Settings.
+ * Handoff 2c/3c: the nav is Today (`/`, what the page called Home), Catch up
+ * (finding 8a: `/catch-up`, what the agents did) and Threads, plus — since
+ * finding 02 — the Workflows and Agents rows that sit under the projects.
+ * Board and Inbox are not nav rows any more — the Board's behavior lives in the
+ * repository page's Lanes view and the Inbox folds into Today — and (finding
+ * 03) `/board` and `/inbox` now redirect to `/` the way `/ops` redirects to
+ * Settings.
  */
 const NAV_ITEMS = [
   { to: "/", label: "Today", end: true },
+  { to: CATCH_UP_PATH, label: "Catch up" },
   { to: "/threads", label: "Threads" },
   { to: "/workflows", label: "Workflows" },
   { to: "/profiles", label: "Agents" },
@@ -95,8 +97,8 @@ export function useIsRailWidth(): boolean {
 /**
  * App shell — handoff 2c/3c: one left column and no top bar on desktop. The
  * 220px white column (collapsible to a 52px rail — see `Sidebar.tsx`) carries
- * the mark, New thread + `⌘K`, Today/Threads, the project tree, the library and
- * the identity footer. Between `PHONE_MAX_WIDTH_PX` and `RAIL_MAX_WIDTH_PX`
+ * the mark, New thread + `Search ⌘K` (finding 08), Today, Catch up, Threads,
+ * the project tree and the identity footer. Between `PHONE_MAX_WIDTH_PX` and `RAIL_MAX_WIDTH_PX`
  * (768–1023px) the rail is FORCED — a window that narrow cannot also carry
  * 220px of labels, and the rail exists already. Below `PHONE_MAX_WIDTH_PX` the
  * column is an off-canvas drawer opened from a slim top strip (the phone keeps
@@ -106,18 +108,11 @@ export function useIsRailWidth(): boolean {
  * do, through `ds/Page`.
  */
 export default function Shell({ children }: ShellProps) {
-  const { prefs } = useLayoutPrefs();
   const location = useLocation();
   const narrow = useIsNarrow();
   const railWidth = useIsRailWidth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
-
-  // The column's width is a saved preference — except between the phone cut
-  // and 1024px, where the rail is forced without touching the preference.
-  // The floating Ask box parks beside whichever one is showing.
-  const railShown = railWidth || prefs.sidebarCollapsed;
-  const columnWidth = railShown ? SIDEBAR_RAIL_WIDTH_PX : SIDEBAR_WIDTH_PX;
 
   // Content changed = the phone drawer has delivered its link.
   useEffect(() => {
@@ -171,8 +166,8 @@ export default function Shell({ children }: ShellProps) {
             review caught the same box parked on a fixed bottom-right anchor,
             drawing over the run page's gate card and the Workflows tab's YAML.
             At desktop widths this strip does not mount at all, and the
-            sidebar's `⌘K` row is the trigger — which is why the panel portals
-            to the body. */}
+            sidebar's `Search ⌘K` field is the trigger — which is why the panel
+            portals to the body. */}
         {narrow ? (
           <header
             data-testid="phone-top-strip"
@@ -213,11 +208,10 @@ export default function Shell({ children }: ShellProps) {
           </header>
         ) : (
           /* Desktop: the strip — the box's only DRAWN home — does not mount,
-             but the palette engine still must: the assistant popover hands
-             the second ⌘K to the jump palette (ADR-0050) through a window
-             event this component listens for, and a shell that never mounts
-             it silently swallows the chord (lab-e2e: `palette-input` never
-             appeared). `hidden` hides the wrapper and the `Ask… Ctrl K` box
+             but the palette engine still must: it owns the ⌘K chord (finding
+             08) and listens for the sidebar field's `palette-open` event, and
+             a shell that never mounts it silently swallows both (lab-e2e:
+             `palette-input` never appeared). `hidden` hides the wrapper and the `Ask… Ctrl K` box
              inside it; the open panel is portalled to the body, so it paints
              exactly where the phone one does. */
           <CommandPalette context={sectionOf(location.pathname)} className="hidden" />
@@ -254,25 +248,27 @@ export default function Shell({ children }: ShellProps) {
         </div>
       ) : null}
 
-      {/* The assistant popover's engine (ADR-0050): it owns ⌘K, the sidebar's
-          `Ask ⌘K` row and the floating button all press it, and its state
-          lives here so a page change never loses the transcript. */}
+      {/* The assistant popover's engine (finding 08): the floating `Ask` button
+          and the ⌘J chord both open it through `assistant/askControl`, and its
+          state lives here so a page change never loses the transcript. */}
       <AssistantPopover />
 
-      {/* Ask placement: a saved preference. `floating` parks the button at
-          the content's bottom-right, above the palette engine — clear of
-          whichever column width the sidebar is saving. */}
-      {prefs.askPlacement === "floating" ? (
-        <Button
-          variant="secondary"
-          data-testid="ask-float"
-          onClick={openAsk}
-          style={{ right: (narrow ? 0 : columnWidth) + 16 }}
-          className="fixed bottom-4 z-30 font-mono text-[11px]"
-        >
-          Ask ⌘K
-        </Button>
-      ) : null}
+      {/* Finding 10 option B: Ask is a floating button over the page, on every
+          page, in its own corner — never a sidebar row (the sidebar carries the
+          `Search ⌘K` field instead). It stands clear of the column that is
+          actually showing, and on the phone frame it lifts above the safe
+          area. Finding 08: one shortcut, ⌘J, and the button says so. */}
+      <Button
+        variant="primary"
+        data-testid="ask-fab"
+        aria-label="Ask the assistant (⌘J)"
+        onClick={() => openAsk()}
+        style={{ right: 16, bottom: narrow ? "max(16px, env(safe-area-inset-bottom))" : 16 }}
+        className="fixed z-30 flex items-center gap-[6px]"
+      >
+        Ask
+        <span className="font-mono text-[10.5px] tracking-[.04em] opacity-80">⌘J</span>
+      </Button>
     </div>
   );
 }

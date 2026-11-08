@@ -30,25 +30,34 @@ export type TrustLevel = "ask_all" | "ask_risky" | "no_ask";
  */
 export const SIDEBAR_COLLAPSED_KEY = "sidebar:collapsed";
 
-/** Display preferences for the app shell's layout (contract C2). */
+/**
+ * Display preferences for the app shell's layout (contract C2).
+ *
+ * Redesign finding 10 cut three of the four settings this section used to
+ * carry (`projectsMode`, `askPlacement`, `showWorkflowFolders`): each one was a
+ * second sidebar layout to build and test, and the 08/10 decisions fixed the
+ * answers — projects are always the tree, Ask is always the floating ⌘J button,
+ * workflow folders are a filter on the Workflows page. Only the collapse
+ * survives, so the sidebar has two layouts instead of sixteen.
+ *
+ * The server's `layout` section still stores the three removed fields (its
+ * schema is unchanged — that would be an API change needing an ADR). A stored
+ * document that still carries them is READ AND IGNORED: `parseLayout` names
+ * only what the client uses, so an old row costs nothing. Writes send the
+ * fields the client actually owns, and the server's stored values for the
+ * others stay untouched (absent patch members mean "unchanged").
+ */
 export interface LayoutPrefs {
-  projectsMode: ProjectsMode;
-  askPlacement: AskPlacement;
-  showWorkflowFolders: boolean;
-  /** `true` = the 52px rail instead of the 220px column (handoff 2c/3c). */
+  /** `true` = the 52px rail instead of the 220px column (handoff 2c/3c).
+   * The default is the expanded column. */
   sidebarCollapsed: boolean;
   expanded: Record<string, boolean>;
 }
 
-const PROJECTS_MODES: readonly ProjectsMode[] = ["tree", "switcher"];
-const ASK_PLACEMENTS: readonly AskPlacement[] = ["sidebar", "floating"];
 export const TRUST_LEVELS: readonly TrustLevel[] = ["ask_all", "ask_risky", "no_ask"];
 
-/** Defaults when the server has never saved a document (README decision; tree wins over 3g). */
+/** Defaults when the server has never saved a document: the expanded column. */
 export const DEFAULT_LAYOUT_PREFS: LayoutPrefs = {
-  projectsMode: "tree",
-  askPlacement: "sidebar",
-  showWorkflowFolders: true,
   sidebarCollapsed: false,
   expanded: {},
 };
@@ -58,6 +67,9 @@ export const DEFAULT_TRUST_LEVEL: TrustLevel = "ask_risky";
 /** Wire shape of `GET /api/v1/me/preferences` (contract C2). */
 interface PreferencesWire {
   layout?: {
+    /** Read and ignored (finding 10): the three removed settings still ride
+     * documents the server saved before the cut, and the decoder refuses
+     * unknown members, so the shape names them and `parseLayout` drops them. */
     projects_mode?: unknown;
     ask_placement?: unknown;
     show_workflow_folders?: unknown;
@@ -70,9 +82,6 @@ interface PreferencesWire {
 /** One section of a `PATCH` body; the server deep-merges per section. */
 export interface PreferencesPatch {
   layout?: {
-    projects_mode?: ProjectsMode;
-    ask_placement?: AskPlacement;
-    show_workflow_folders?: boolean;
     expanded?: Record<string, boolean>;
   };
   assistant?: { trust_level?: TrustLevel };
@@ -116,18 +125,6 @@ function parseLayout(raw: PreferencesWire["layout"] | undefined): LayoutPrefs {
     // The rail's state is one key of the map the server already stores; the
     // camelCase field is what callers read, so the key stays out of `expanded`.
     sidebarCollapsed: all[SIDEBAR_COLLAPSED_KEY] === true,
-    projectsMode:
-      isString(raw?.projects_mode) && PROJECTS_MODES.includes(raw.projects_mode as ProjectsMode)
-        ? (raw.projects_mode as ProjectsMode)
-        : DEFAULT_LAYOUT_PREFS.projectsMode,
-    askPlacement:
-      isString(raw?.ask_placement) && ASK_PLACEMENTS.includes(raw.ask_placement as AskPlacement)
-        ? (raw.ask_placement as AskPlacement)
-        : DEFAULT_LAYOUT_PREFS.askPlacement,
-    showWorkflowFolders:
-      typeof raw?.show_workflow_folders === "boolean"
-        ? raw.show_workflow_folders
-        : DEFAULT_LAYOUT_PREFS.showWorkflowFolders,
     expanded,
   };
 }
@@ -178,12 +175,11 @@ function isStaleFetch(prev: PreferencesState, fetched: PreferencesState): boolea
 }
 
 function toLayoutWire(layout: LayoutPrefs): NonNullable<PreferencesPatch["layout"]> {
-  return {
-    projects_mode: layout.projectsMode,
-    ask_placement: layout.askPlacement,
-    show_workflow_folders: layout.showWorkflowFolders,
-    expanded: layout.expanded,
-  };
+  // Only the survivor is written. The server deep-merges per member, so the
+  // stored `projects_mode` / `ask_placement` / `show_workflow_folders` values
+  // (which no client reads any more) are left exactly as they were — no new
+  // wire fields, no server change, no 400 from the closed `layout` object.
+  return { expanded: layout.expanded };
 }
 
 /**

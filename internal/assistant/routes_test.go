@@ -146,7 +146,7 @@ func joinDiff(what string, items []string) string {
 // mirrors them.
 func TestStaticPalettePagesAreRealRoutes(t *testing.T) {
 	want := map[string]bool{
-		"/": true, "/threads": true, "/workflows": true, "/workflows/steps": true,
+		"/": true, "/catch-up": true, "/threads": true, "/workflows": true, "/workflows/steps": true,
 		"/profiles": true, "/ops": true, "/settings/layout": true,
 	}
 	have := map[string]bool{}

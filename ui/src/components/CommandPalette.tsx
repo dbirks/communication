@@ -9,14 +9,18 @@
  * entries any more (redesign finding 03): both addresses redirect to Today, so
  * a jump would land on a bounce. The Ask
  * row no longer posts to the v1 broker: it hands the question to the assistant
- * popover (which carries it over and sends it) and gets out of the way. ⌘K
- * belongs to the popover; the palette opens from `openPalette()` — the popover's
- * ⌘K-while-open path and, on the phone, the sidebar.
+ * popover (which carries it over and sends it) and gets out of the way.
+ *
+ * **⌘K belongs to this component and nowhere else** (redesign finding 08, which
+ * supersedes ADR-0050's ⌘K toggle): the window chord opens the jump palette,
+ * never the assistant. `Ask` has its own chord (⌘J) and its own floating button
+ * (`Shell.tsx`, `assistant/askControl.ts`). The palette also opens from
+ * `openPalette()` — the sidebar's `Search ⌘K` field.
  *
  * **Where the trigger lives** (design review pass 2): the `Ask… Ctrl K` box is a
  * header control. The shell mounts the palette inside its top strip, so the box
- * can only ever sit in that strip; the shell's sidebar row (`Ask ⌘K`) and the
- * saved `ask-float` preference are the other ways in. It used to ride a fixed
+ * can only ever sit in that strip; the sidebar's `Search` field and the chord
+ * are the other ways in. It used to ride a fixed
  * bottom-right anchor, which drew it as a chip over the run page's gate card and
  * over the Workflows tab's YAML — a trigger is not allowed to cover the thing
  * the reader is reading. The panel itself is portalled to the body and anchored
@@ -50,6 +54,11 @@ export interface PaletteItem {
   to: string;
 }
 
+/** The Catch up page (`/catch-up`, design 8a). `lib/routes.ts` is outside this
+ * brief's boundaries, so the one literal is named here and shared by the
+ * sidebar row and the shell's nav (it must be the same string). */
+export const CATCH_UP_PATH = "/catch-up";
+
 /** The app-shell pages and sections, in the sidebar's own order (finding 02:
  * Workflows and Agents are top-level rows, Steps is the Workflows page's tab at
  * `/workflows/steps`; finding 03: no Inbox and no Board — they redirect to
@@ -61,6 +70,13 @@ const PAGES: PaletteItem[] = [
     label: "Today",
     secondary: "page · home · overview · approvals",
     to: routes.home(),
+  },
+  {
+    id: "page-catch-up",
+    group: "Pages",
+    label: "Catch up",
+    secondary: "page · what agents did · unseen work · tours",
+    to: CATCH_UP_PATH,
   },
   {
     id: "page-threads",
@@ -231,7 +247,7 @@ export interface CommandPaletteProps {
   className?: string;
 }
 
-/** The popover's ⌘K-while-open path opens the jump palette this way. */
+/** The sidebar's `Search ⌘K` field opens the jump palette this way. */
 export const PALETTE_OPEN_EVENT = "communication:palette-open";
 
 export function openPalette(): void {
@@ -262,6 +278,23 @@ export default function CommandPalette({ context, className = "" }: CommandPalet
     const onOpen = () => setOpen(true);
     window.addEventListener(PALETTE_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(PALETTE_OPEN_EVENT, onOpen);
+  }, []);
+
+  // Finding 08: ⌘K is the search/jump chord, on every page and whatever else
+  // is on screen. A page that owns the chord itself (the Studio draft footer)
+  // says so by calling `preventDefault()` on the way through — the global
+  // handler stands down for a claim it saw, and nothing else ever does.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k")) return;
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      setOpen(true);
+    };
+    // Capture, so the chord is order-invariant: a listener registered later
+    // (a page mounted after the shell) must not be able to swallow it.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   // A press outside the box and the panel closes it. The panel is portalled out

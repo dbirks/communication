@@ -812,50 +812,52 @@ const folderedList = {
   ],
 };
 
-describe("/workflows — folders (ADR-0049 § 8)", () => {
-  it("groups rows under collapsible folder headers; the unfiled group is a panel with its own header and count", async () => {
+// Finding 10: folders are no longer a saved sidebar layout or a grouped view —
+// the list is ONE flat list, and the folders are a filter in the page's toolbar
+// (ADR-0049 § 8's `folder` values, still the wire's own).
+describe("/workflows — folders are a filter (ADR-0049 § 8, finding 10)", () => {
+  it("lists every row flat, with an `All folders` select naming each folder", async () => {
     mount("/workflows", [{ path: "/api/v1/pipelines", body: folderedList }]);
     const list = await screen.findByTestId("workflows-list");
-    const headers = within(list).getAllByTestId(/^workflow-folder-header-/);
-    // 1b review: `Unfiled` is a group like any other, so it gets the same
-    // panel header (`UNFILED · n`) rather than a headerless pile of rows.
-    expect(headers.map((header) => header.getAttribute("data-testid"))).toEqual([
-      "workflow-folder-header-delivery",
-      "workflow-folder-header-unfiled",
-    ]);
-    // Each header carries its group's own count — nothing invented.
-    expect(headers[0].textContent).toContain("Delivery");
-    expect(headers[0].textContent).toContain("1");
-    expect(headers[1].textContent).toContain("Unfiled");
-    expect(headers[1].textContent).toContain("1");
-    // The unfiled row lives in that group.
-    expect(within(list).getByTestId("workflow-unfiled-group")).toBeTruthy();
-    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+    // Both rows show, ungrouped: no folder panel header exists any more.
+    expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
+    expect(within(list).queryAllByTestId(/^workflow-folder-header-/)).toHaveLength(0);
+    expect(screen.queryByTestId("workflow-unfiled-group")).toBeNull();
 
-    // The collapse is real for both groups: the rows disappear and the button
-    // says so.
-    fireEvent.click(headers[0]);
-    expect(headers[0].getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByTestId("workflow-row-feature-development")).toBeNull();
-    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
-    fireEvent.click(headers[1]);
-    expect(headers[1].getAttribute("aria-expanded")).toBe("false");
+    // The filter select: default `All folders`, one option per folder the list
+    // actually carries, `Unfiled` included because unfiled IS a choice.
+    const filter = (await screen.findByTestId("workflows-folder-filter")) as HTMLSelectElement;
+    expect(filter.value).toBe("");
+    expect(Array.from(filter.options).map((option) => option.text)).toEqual([
+      "All folders",
+      "Delivery",
+      "Unfiled",
+    ]);
+
+    // Picking a folder narrows the same list — the page's own rows, no reads.
+    fireEvent.change(filter, { target: { value: "Delivery" } });
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
+    expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
     expect(screen.queryByTestId("workflow-row-module-check")).toBeNull();
-    fireEvent.click(headers[0]);
-    fireEvent.click(headers[1]);
-    await waitFor(() => {
-      expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
-      expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
-    });
+    // The active pick is stated as a chip too, and clearing it widens the list.
+    fireEvent.click(screen.getByTestId("workflows-filter-folder"));
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2));
+    expect((screen.getByTestId("workflows-folder-filter") as HTMLSelectElement).value).toBe("");
   });
 
-  it("honours `?folder=` — Delivery and Unfiled — and the chip clears back to all folders", async () => {
+  it("reads `?folder=` as the pick, filters Unfiled too, and drops a stale folder", async () => {
     mount("/workflows?folder=Delivery", [{ path: "/api/v1/pipelines", body: folderedList }]);
     const list = await screen.findByTestId("workflows-list");
     expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1);
     expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
-    // The active folder filter is visible as a chip, and clicking it clears.
-    fireEvent.click(screen.getByTestId("workflows-filter-folder"));
+    // The select shows the address it arrived with.
+    await waitFor(() =>
+      expect((screen.getByTestId("workflows-folder-filter") as HTMLSelectElement).value).toBe(
+        "Delivery",
+      ),
+    );
+    // And the select is the way back to all folders.
+    fireEvent.change(screen.getByTestId("workflows-folder-filter"), { target: { value: "" } });
     await waitFor(() =>
       expect(
         within(screen.getByTestId("workflows-list")).getAllByTestId(/^workflow-row-/),
@@ -863,18 +865,31 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
     );
     cleanup();
 
-    // The Unfiled group is a panel of its own — header, count, rows.
+    // `Unfiled` filters the rows whose `folder` is null.
     mount("/workflows?folder=Unfiled", [{ path: "/api/v1/pipelines", body: folderedList }]);
-    const unfiled = await screen.findByTestId("workflow-unfiled-group");
-    expect(within(unfiled).getAllByTestId(/^workflow-row-/)).toHaveLength(1);
-    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
-    expect(screen.getByTestId("workflow-folder-header-unfiled").textContent).toContain("1");
-    // A folder the list no longer carries filters nothing (the chip clears
-    // itself), so no empty Unfiled panel is drawn for it.
-    cleanup();
-    mount("/workflows?folder=Delivery", [{ path: "/api/v1/pipelines", body: folderedList }]);
     await screen.findByTestId("workflows-list");
-    expect(screen.queryByTestId("workflow-folder-header-unfiled")).toBeNull();
+    expect(
+      within(screen.getByTestId("workflows-list")).getAllByTestId(/^workflow-row-/),
+    ).toHaveLength(1);
+    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+    cleanup();
+
+    // A folder the list no longer carries filters nothing (the pick clears
+    // itself) rather than hiding rows behind a stale address.
+    mount("/workflows?folder=Vanished", [{ path: "/api/v1/pipelines", body: folderedList }]);
+    await screen.findByTestId("workflows-list");
+    expect(
+      within(screen.getByTestId("workflows-list")).getAllByTestId(/^workflow-row-/),
+    ).toHaveLength(2);
+    expect((screen.getByTestId("workflows-folder-filter") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("carries no folder filter at all when nothing is filed", async () => {
+    mount("/workflows", [{ path: "/api/v1/pipelines", body: wirePipelineList }]);
+    await screen.findByTestId("workflows-list");
+    // An all-unfiled library has nothing to filter: `Unfiled` alone is not a
+    // choice worth a control.
+    expect(screen.queryByTestId("workflows-folder-filter")).toBeNull();
   });
 
   it("Move to folder…: one PATCH of the row's folder, then the dialog closes", async () => {
