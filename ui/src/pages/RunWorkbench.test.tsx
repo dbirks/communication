@@ -450,42 +450,53 @@ describe("the Run Workbench", () => {
 
 /* -------------------------------------------------- the header stays honest */
 
-describe("the run header's meta line", () => {
+describe("the run header's facts row", () => {
   it("names the workflow, the pinned revision and the started age; the run's handle rides the title", async () => {
     mount();
 
-    const meta = await screen.findByTestId("run-header-meta");
-    // `feature-development · revision r<n> <digest> (pinned) · started <age> ago`.
-    // Round-2 review item 3 (hide internal ids where a name exists): this run
-    // serves a `goal` input, which IS its title, so the short id is not printed
-    // in the copy — it rides the line's `title` and the URL in the address bar.
-    expect(meta.textContent).toContain("feature-development");
-    expect(meta.textContent).not.toContain("#");
-    expect(meta.getAttribute("title")).toBe(`run ${shortId(WIRE_RUN_ID)}`);
+    // Finding 11 split the old one-line mono sentence into labeled facts:
+    // `Workflow · rev {n}`, `Repository`, `Started`, `Pinned digest`.
+    // Round-2 review item 3 (hide internal ids where a name exists) still
+    // holds: this run serves a `goal` input, which IS its title, so the short
+    // id is not printed in the copy — it rides the facts row's `title` and the
+    // URL in the address bar.
+    const facts = await screen.findByTestId("run-header-meta");
+    expect(facts.textContent).toContain("feature-development");
+    expect(facts.textContent).not.toContain("#");
+    expect(facts.getAttribute("title")).toBe(`run ${shortId(WIRE_RUN_ID)}`);
     // The H1 says the same thing the meta used to spell with the handle.
     expect(screen.getByTestId("run-title").textContent).toBe("ship M4");
-    expect(meta.textContent).toContain("(pinned) · started ");
-    // The age rides an "ago": a bare "started 14s by the system" reads as a
-    // truncation; the sentence is "started 14s ago by the system" (and the
-    // no-timestamp case stays the whole word "started unknown", no "ago").
-    expect(meta.textContent).toMatch(/\(pinned\) · started (\S+ ago|unknown)/);
-    // § 7.2 W4: the page names the pin with its number AND the pinned digest — the
-    // full 12 hex chars `shortDigest` prints everywhere else in the app (the runs
-    // list, the newer-revision notice, the diagnostics pin). Six chars printed
-    // without an ellipsis is a truncated fact wearing a whole one: the reader
-    // cannot compare it against the library's digests, which is the point of 12
-    // case 11 made visible.
+    // The labels are the facts row's own vocabulary, printed uppercase. The
+    // Repository fact is absent here because this project's data cannot name
+    // the one repository the run ran in — the fact is left out, not guessed.
+    expect(Array.from(facts.querySelectorAll("dt")).map((label) => label.textContent)).toEqual([
+      "Workflow",
+      "Started",
+      "Pinned digest",
+    ]);
+    expect(screen.queryByTestId("run-fact-repository")).toBeNull();
+    // The age rides an "ago": a bare "14s by the system" reads as a
+    // truncation; the fact is "14s ago by the system" (and the no-timestamp
+    // case stays the whole word "unknown", no "ago").
+    expect(screen.getByTestId("run-fact-started").textContent).toMatch(
+      /^Started(\S+ ago|unknown)$/,
+    );
+    // § 7.2 W4: the page names the pin with its number AND the pinned digest —
+    // the number on the Workflow fact, the full 12 hex chars `shortDigest`
+    // prints everywhere else in the app (the runs list, the newer-revision
+    // notice, the diagnostics pin) on its own fact. Six chars printed without
+    // an ellipsis is a truncated fact wearing a whole one: the reader cannot
+    // compare it against the library's digests, which is the point of 12 case
+    // 11 made visible.
     const pin = screen.getByTestId("run-pinned-revision");
     // The digest is on the run row and paints with the header; the NUMBER rides the
     // separate revision read, so the pin line is awaited rather than asserted blind.
-    await waitFor(() => expect(pin.textContent).toBe("r7 3f2f3f2f3f2f"));
-    expect(screen.getByTestId("run-header-meta").textContent).toContain(
-      "revision r7 3f2f3f2f3f2f (pinned)",
-    );
+    await waitFor(() => expect(pin.textContent).toBe("rev 7"));
+    expect(screen.getByTestId("run-fact-digest").textContent).toBe("Pinned digest3f2f3f2f3f2f");
     // No actor frame in the journal buffer yet — the "by" half is absent,
     // not invented. The header keeps no worker name anywhere (ADR-0016 § 8).
-    expect(meta.textContent).not.toContain(" by ");
-    expect(meta.textContent).not.toContain("worker");
+    expect(facts.textContent).not.toContain(" by ");
+    expect(facts.textContent).not.toContain("worker");
   });
 
   it("wraps the H1 at EVERY width — the run title is never the thing that gives way (pass-1 390 + acceptance 46 1280)", async () => {
@@ -512,13 +523,13 @@ describe("the run header's meta line", () => {
 
   it("still prints the pinned digest when the revision read cannot name its number", async () => {
     // The run row always carries the pinned digest; the NUMBER arrives with the
-    // separate revision read. When that read fails the honest header is the
-    // digest alone — never a guessed `r1`, never nothing.
+    // separate revision read. When that read fails the honest header prints the
+    // digest fact alone and drops the `rev` link — never a guessed `r1`.
     mount("", [{ path: `/api/v1/revisions/${WIRE_REVISION_ID}`, status: 500, body: {} }]);
 
-    const pin = await screen.findByTestId("run-pinned-revision");
-    expect(pin.textContent).toBe("3f2f3f2f3f2f");
-    expect(pin.textContent).not.toMatch(/\br\d/);
+    const digest = await screen.findByTestId("run-fact-digest");
+    expect(digest.textContent).toBe("Pinned digest3f2f3f2f3f2f");
+    await waitFor(() => expect(screen.queryByTestId("run-pinned-revision")).toBeNull());
   });
 
   it("adds the started-by actor only when a run.created frame names it", async () => {
@@ -544,6 +555,9 @@ describe("the run header's meta line", () => {
   it("renames the draft verb to Fix the workflow… and keeps its testid", async () => {
     mount("", [{ path: "/api/v1/me", body: { ...meFixture, is_org_admin: true } }]);
 
+    // Finding 11: the draft verb is not a header button any more — the header
+    // holds ONE primary action and the `⋯` menu holds every other one.
+    fireEvent.click(await screen.findByTestId("run-more-actions"));
     const button = await screen.findByTestId("run-new-draft");
     expect(button.textContent).toBe("Fix the workflow…");
   });
@@ -553,38 +567,40 @@ describe("the run header's meta line", () => {
 
 /**
  * The width contract, read off the structure (jsdom performs no layout, so the
- * classes *are* the layout here). The title/meta column used to be `flex-1`,
- * whose zero flex-basis makes its width whatever the actions column leaves:
- * a completed run at 1280 whose `Retry` reason sentence is showing measures
- * 930px of actions out of 1008px, which squeezed the breadcrumb, the title and
- * the whole meta line into a 66px column. The column now carries a 20rem basis
- * floor and the header wraps its lines at the right edge, so the actions drop
- * below the meta rather than eating it — and a header that already fits is
- * untouched, which is why the same classes are asserted for a normal run.
+ * classes *are* the layout here). The title column used to be `flex-1`, whose
+ * zero flex-basis makes its width whatever the actions column leaves: a
+ * completed run at 1280 whose `Retry` reason sentence is showing measures 930px
+ * of actions out of 1008px, which squeezed the breadcrumb, the title and the
+ * whole meta line into a 66px column. Finding 11 stacked the header into three
+ * rows; the rule that fixed the squeeze rides on inside row 2: the title column
+ * keeps a 20rem basis floor, its row wraps at the right edge, and the facts row
+ * is a block of the full width, so no fact's width is ever a button's slack.
  */
 function headerWidthContract() {
-  const meta = screen.getByTestId("run-header-meta");
-  const column = meta.parentElement as HTMLElement;
-  const header = column.parentElement as HTMLElement;
-  const actions = header.children[1] as HTMLElement;
-  expect(column.getAttribute("data-testid")).toBe("run-header-title");
+  const facts = screen.getByTestId("run-header-meta");
+  const header = facts.parentElement as HTMLElement;
+  const row = header.children[1] as HTMLElement;
+  const column = screen.getByTestId("run-header-title");
+  const actions = screen.getByTestId("run-header-actions");
   // The floor, not the zero basis that made the meta's width the buttons' slack.
   expect(column.className).not.toContain("flex-1");
   expect(column.className).toContain("basis-[20rem]");
   expect(column.className).toContain("grow");
   expect(column.className).toContain("min-w-0");
-  // The actions column leaves the line when it cannot fit beside the floor,
+  // The action column leaves the line when it cannot fit beside the floor,
   // and lands against the right edge of its own line where it already sat.
-  expect(header.className).toContain("flex-wrap");
-  expect(header.className).toContain("justify-end");
+  expect(row.className).toContain("flex-wrap");
+  expect(row.className).toContain("justify-end");
   expect(actions.className).not.toContain("flex-1");
-  // The meta is a block in that column: it spans the column's whole width.
-  expect(meta.tagName).toBe("P");
-  return { meta, column, header, actions };
+  // The facts row spans the header's whole width, under a hairline.
+  expect(facts.tagName).toBe("DL");
+  expect(facts.className).toContain("flex-wrap");
+  expect(facts.className).toContain("border-t");
+  return { facts, column, row, actions };
 }
 
 describe("the run header's width", () => {
-  it("puts the meta line on a flex-basis floor so a wide action column wraps below it", async () => {
+  it("puts the title on a flex-basis floor so a wide action column wraps below it", async () => {
     mount();
     await screen.findByTestId("run-header-meta");
     headerWidthContract();
@@ -597,9 +613,12 @@ describe("the run header's width", () => {
 
     await screen.findByTestId("run-header-meta");
     headerWidthContract();
-    // The workflow name and the pin are still the meta line's, not the title's:
-    // an unnamed run loses nothing but the sentence nobody wrote.
-    expect(screen.getByTestId("run-header-meta").textContent).toContain("feature-development #");
+    // The workflow name and the pin are the facts row's, not the title's: an
+    // unnamed run loses nothing but the sentence nobody wrote, and the handle
+    // the fallback title carries stays out of the facts.
+    expect(screen.getByTestId("run-header-meta").textContent).toContain("feature-development");
+    expect(screen.getByTestId("run-header-meta").textContent).not.toContain("#");
+    expect(screen.getByTestId("run-title").textContent).toContain(`Run #`);
   });
 
   it("titles an empty-goal run with the title the server serves", async () => {

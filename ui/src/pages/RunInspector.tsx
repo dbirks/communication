@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert } from "../components/ds/Alert";
-import { Button } from "../components/ds/Button";
+import { Button, type ButtonVariant } from "../components/ds/Button";
 import { ApprovalCard } from "../components/m4/ApprovalCard";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { AttemptDetail, AttemptAgentWork } from "../components/m4/AttemptDetail";
@@ -759,16 +759,47 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
  * a 20rem flex-basis floor, and anything wider than that floor makes the header
  * wrap, which is correct, but a sentence inside this column was previously
  * measured *before* the wrap decision, so it set the title's width. The rule the
- * tests pin: `run-actions` holds buttons and a refusal error, never prose. */
-export function RunActions({
-  runId,
-  status,
-  nodes,
-}: {
-  runId: string;
-  status: string;
-  nodes: readonly NodeExecutionSummary[];
-}) {
+ * tests pin: `run-actions` holds buttons and a refusal error, never prose.
+ *
+ * Which surface draws the verbs is a layout question, so it is not decided here.
+ * `useRunActionsModel` owns the four writes, their refusals and the retriability
+ * rule; `RunActions` draws them as the inspector header's button row, and the
+ * workbench header (finding 11) draws the same verbs as ONE state-chosen primary
+ * plus the `⋯` menu. Neither surface re-implements a write, and both keep the
+ * verbs' stable test ids, which are the suite's handles, not a layout's. */
+
+/** One verb the run can be moved with, already armed and worded. */
+export interface RunActionVerb {
+  id: "pause" | "resume" | "cancel" | "retry";
+  /** The stable hook the suites press — never renamed for a layout. */
+  testid: "run-pause" | "run-resume" | "run-cancel" | "run-retry";
+  label: string;
+  variant: ButtonVariant;
+  /** The sentence the verb owes the reader (route 31's target, or the honesty
+   * note about an in-flight pause). */
+  title?: string;
+  disabled: boolean;
+  onSelect: () => void;
+}
+
+export interface RunActionsModel {
+  /** The verbs that apply to this run right now, in the order they have always
+   * been drawn: the run's own verb, then Cancel, then Retry. */
+  verbs: RunActionVerb[];
+  /** The finished run's short "nothing to retry" fact, for when a verb was
+   * refused rather than drawn. */
+  note: { short: string; reason: string } | null;
+  /** The last refusal this surface posted, in words. */
+  conflict: string | null;
+}
+
+/** The run's verbs and their refusals: the one place the four run writes are
+ * issued. See `RunActions` for what a reader gets, and why. */
+export function useRunActionsModel(
+  runId: string,
+  status: string,
+  nodes: readonly NodeExecutionSummary[],
+): RunActionsModel {
   const pause = usePauseRun(runId);
   const resume = useResumeRun(runId);
   const cancel = useCancelRun(runId);
@@ -788,6 +819,75 @@ export function RunActions({
     cancel.mutate(undefined, { onSuccess: () => setConflict(""), onError: report });
   const retryRun = () => retry.mutate({}, { onSuccess: () => setConflict(""), onError: report });
 
+  // A finished run gets neither Pause nor Cancel (both routes refuse it) and no
+  // grey Retry beside a sentence saying the same thing: `verbs` is the list of
+  // the controls that can actually answer 2xx.
+  const verbs: RunActionVerb[] = [];
+  if (terminal) {
+    /* no run's-own verb */
+  } else if (status === "paused") {
+    verbs.push({
+      id: "resume",
+      testid: "run-resume",
+      label: "Resume",
+      variant: "primary",
+      disabled: resume.isPending,
+      onSelect: resumeRun,
+    });
+  } else {
+    verbs.push({
+      id: "pause",
+      testid: "run-pause",
+      label: "Pause",
+      variant: "secondary",
+      title: "In-flight attempts finish honestly — this is a request, not a stop",
+      disabled: pause.isPending,
+      onSelect: pauseRun,
+    });
+  }
+  if (!terminal) {
+    verbs.push({
+      id: "cancel",
+      testid: "run-cancel",
+      label: "Cancel",
+      variant: "danger",
+      disabled: cancel.isPending,
+      onSelect: cancelRun,
+    });
+  }
+  if (verdict.show && verdict.available) {
+    verbs.push({
+      id: "retry",
+      testid: "run-retry",
+      label: retry.isPending ? "Retrying…" : "Retry",
+      variant: "secondary",
+      title: verdict.reason,
+      disabled: retry.isPending,
+      onSelect: retryRun,
+    });
+  }
+
+  return {
+    verbs,
+    note:
+      verdict.show && !verdict.available && verdict.short !== ""
+        ? { short: verdict.short, reason: verdict.reason }
+        : null,
+    conflict,
+  };
+}
+
+export function RunActions({
+  runId,
+  status,
+  nodes,
+}: {
+  runId: string;
+  status: string;
+  nodes: readonly NodeExecutionSummary[];
+}) {
+  const model = useRunActionsModel(runId, status, nodes);
+
   return (
     <div className="flex min-w-0 flex-col items-end gap-2" data-testid="run-actions">
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -796,49 +896,20 @@ export function RunActions({
             says it properly (round-2 review item 3). `available` is the same
             rule applied to the last verb: pass-1 review item 3, and the H1 the
             disabled button's explanation cost. */}
-        {terminal ? null : status === "paused" ? (
+        {model.verbs.map((verb) => (
           <Button
-            variant="primary"
-            disabled={resume.isPending}
-            data-testid="run-resume"
-            onClick={resumeRun}
+            key={verb.id}
+            variant={verb.variant}
+            disabled={verb.disabled}
+            title={verb.title}
+            data-testid={verb.testid}
+            onClick={verb.onSelect}
           >
-            Resume
+            {verb.label}
           </Button>
-        ) : (
-          <Button
-            variant="secondary"
-            disabled={pause.isPending}
-            title="In-flight attempts finish honestly — this is a request, not a stop"
-            data-testid="run-pause"
-            onClick={pauseRun}
-          >
-            Pause
-          </Button>
-        )}
-        {terminal ? null : (
-          <Button
-            variant="danger"
-            disabled={cancel.isPending}
-            data-testid="run-cancel"
-            onClick={cancelRun}
-          >
-            Cancel
-          </Button>
-        )}
-        {verdict.show && verdict.available ? (
-          <Button
-            variant="secondary"
-            disabled={retry.isPending}
-            title={verdict.reason}
-            data-testid="run-retry"
-            onClick={retryRun}
-          >
-            {retry.isPending ? "Retrying…" : "Retry"}
-          </Button>
-        ) : null}
+        ))}
       </div>
-      {verdict.show && !verdict.available && verdict.short !== "" ? (
+      {model.note ? (
         /* The finished run's one note, and it is short on purpose: this column
          * sits beside the title, so whatever is widest in here is what the title
          * column is left with after it. The full sentence is the `title` (the
@@ -850,15 +921,15 @@ export function RunActions({
          * here, something failed” about a page where nothing did. */
         <p
           className="max-w-full font-mono text-[10.5px] text-faint"
-          title={verdict.reason}
+          title={model.note.reason}
           data-testid="run-retry-reason"
         >
-          — {verdict.short}
+          — {model.note.short}
         </p>
       ) : null}
-      {conflict ? (
+      {model.conflict ? (
         <p className="max-w-full font-mono text-[11px] text-failed" data-testid="run-action-error">
-          {conflict}
+          {model.conflict}
         </p>
       ) : null}
     </div>

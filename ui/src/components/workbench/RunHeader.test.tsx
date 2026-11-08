@@ -6,11 +6,30 @@
  * the text span carries a 20rem flex-basis floor inside a wrapping row, so
  * below floor + chip the chip drops to its own line and the text keeps the
  * full width, while any host wide enough still seats them side by side.
+ *
+ * The header itself is finding 11's contract: three rows — breadcrumb, the
+ * run's sentence with ONE state-chosen primary action and a `⋯` menu holding
+ * every other verb, and a labeled facts row. The primary is the whole point of
+ * the finding, so each run state gets its own case, and the stream status is a
+ * fact the header keeps to itself only when the stream is NOT live.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { NewRevisionNotice } from "./RunHeader";
+import { viewNodeExecution, viewRun } from "../../api/m4view";
+import { meFixture, mockFetch, projectFixture, type RouteStub } from "../../test/fakes";
+import {
+  WIRE_NODE_PLAN,
+  WIRE_RUN_ID,
+  wireNodeList,
+  wireProjectId,
+  wireRun,
+  wireRevision,
+} from "../../test/fixtures/m4/wire";
+import { routes } from "../../lib/routes";
+import type { NodeExecutionSummary } from "../../lib/pipeline/contract";
+import { NewRevisionNotice, RunHeader, type RunHeaderProps } from "./RunHeader";
 
 afterEach(cleanup);
 
@@ -69,5 +88,234 @@ describe("NewRevisionNotice", () => {
     // the text keeps the full width. Any ≥ floor + gap + chip host still seats
     // them side by side, pixel-identical to the old layout at 1280.
     expect(FLOOR_REM * 16 + GAP + MIN_CHIP).toBeGreaterThan(PHONES_BODY);
+  });
+});
+
+/* ------------------------------------------------------- the run header */
+
+const NODES: readonly NodeExecutionSummary[] = wireNodeList.node_executions.map(viewNodeExecution);
+
+/** The same run parked at its gate: the approval row is the one waiting. */
+const waitingNodes: readonly NodeExecutionSummary[] = NODES.map((node) =>
+  node.id === WIRE_NODE_PLAN
+    ? {
+        ...node,
+        kind: "human.approval",
+        node_id: "approve",
+        node_instance_key: "/approve",
+        status: "waiting" as const,
+        waiting_reason: "approval" as const,
+        finished_at: null,
+      }
+    : { ...node, status: "succeeded" as const },
+);
+
+/** The same run with a failed step: route 31 has a target. */
+const failedNodes: readonly NodeExecutionSummary[] = NODES.map((node) =>
+  node.id === WIRE_NODE_PLAN
+    ? { ...node, status: "failed" as const, error_class: "agent_error" as const }
+    : node,
+);
+
+function mountHeader(
+  over: Partial<RunHeaderProps> = {},
+  extra: RouteStub[] = [],
+  initialEntries: string[] = [routes.run(WIRE_RUN_ID)],
+) {
+  mockFetch([
+    ...extra,
+    { path: "/api/v1/me", body: { ...meFixture, is_org_admin: true } },
+    { path: `/api/v1/projects/${wireProjectId}`, body: projectFixture },
+  ]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <RunHeader
+          projectId={wireProjectId}
+          run={viewRun(wireRun)}
+          goal="ship M4"
+          runTitle={null}
+          slug="feature-development"
+          streamStatus="live"
+          revision={{
+            revision_number: wireRevision.revision_number,
+            revision_digest: wireRevision.revision_digest,
+          }}
+          nodes={NODES}
+          repoName="payments-api"
+          startedBy="Priya Natarajan"
+          {...over}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+/** The header's primary verb — the one button the row shows outside the menu. */
+const primary = () =>
+  screen.getByTestId("run-header-actions").querySelector('[data-primary="true"]');
+
+describe("RunHeader row 2 — one primary action, chosen by the run's state", () => {
+  it("a waiting run leads with Review plan, pointing at its gate", () => {
+    mountHeader({
+      run: viewRun({ ...wireRun, status: "waiting_human" }),
+      nodes: waitingNodes,
+    });
+
+    const review = screen.getByTestId("run-review-plan");
+    expect(review.textContent).toBe("Review plan");
+    // Where the review affordance already lived: the workbench URL's node
+    // selection, which is what opens the dock's gate card.
+    const href = review.getAttribute("href") ?? "";
+    expect(href).toContain("/runs/");
+    expect(href).toContain("node=approve");
+    expect(primary()).toBe(review);
+    // The run's own state still rides the chip, in the app's word.
+    expect(screen.getByTestId("run-header-status").textContent).toBe("need you");
+  });
+
+  it("a failed run leads with Retry step — the existing retry verb, renamed for the header", async () => {
+    mountHeader({ run: viewRun({ ...wireRun, status: "failed" }), nodes: failedNodes });
+
+    const retry = screen.getByTestId("run-retry");
+    expect(retry.textContent).toBe("Retry step");
+    expect(retry.getAttribute("title")).toContain("/plan");
+    expect(primary()).toBe(retry);
+    // The menu keeps the rest, and never repeats the primary verb.
+    fireEvent.click(screen.getByTestId("run-more-actions"));
+    const menu = screen.getByTestId("run-more-menu");
+    expect(menu.textContent).toContain("Open pinned workflow");
+    // The draft verb arrives with the caller's own role read.
+    expect((await screen.findByTestId("run-new-draft")).textContent).toBe("Fix the workflow…");
+    expect(menu.textContent).not.toContain("Retry");
+  });
+
+  it("a running run leads with Pause, and leaves Cancel to the menu", () => {
+    mountHeader();
+
+    const pause = screen.getByTestId("run-pause");
+    expect(pause.textContent).toBe("Pause");
+    expect(primary()).toBe(pause);
+
+    expect(screen.queryByTestId("run-cancel")).toBeNull();
+    fireEvent.click(screen.getByTestId("run-more-actions"));
+    const menu = screen.getByTestId("run-more-menu");
+    expect(menu.textContent).toContain("Cancel");
+    expect(menu.textContent).not.toContain("Pause");
+    expect(screen.getByTestId("run-cancel")).toBeTruthy();
+  });
+
+  it("a finished run has no primary at all — everything rides the menu", () => {
+    mountHeader({ run: viewRun({ ...wireRun, status: "completed" }), nodes: NODES });
+
+    expect(primary()).toBeNull();
+    expect(screen.queryByTestId("run-pause")).toBeNull();
+    expect(screen.queryByTestId("run-cancel")).toBeNull();
+    fireEvent.click(screen.getByTestId("run-more-actions"));
+    expect(screen.getByTestId("run-more-menu").textContent).toContain("Open pinned workflow");
+  });
+});
+
+describe("RunHeader row 2 — the ⋯ menu", () => {
+  it("opens on a button the reader can find by name, and Esc closes it", () => {
+    mountHeader();
+    const trigger = screen.getByTestId("run-more-actions");
+    expect(trigger.getAttribute("aria-label")).toBe("More run actions");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("run-more-menu")).toBeNull();
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // The ds Menu box: ink border, 2px offset shadow, pointer arrow.
+    const menu = screen.getByTestId("run-more-menu");
+    expect(menu.className).toContain("border-ink");
+    expect(menu.className).toContain("shadow-raised");
+    expect(screen.getByTestId("menu-arrow")).toBeTruthy();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByTestId("run-more-menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("closes on a click outside the box", () => {
+    mountHeader();
+    fireEvent.click(screen.getByTestId("run-more-actions"));
+    expect(screen.getByTestId("run-more-menu")).toBeTruthy();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByTestId("run-more-menu")).toBeNull();
+  });
+});
+
+describe("RunHeader rows 1 and 3", () => {
+  it("row 1 is the way back: the project and its Runs tab", async () => {
+    mountHeader();
+    const crumb = screen.getByTestId("run-breadcrumb");
+    // The name arrives with the project read; until it does the crumb carries
+    // the id rather than nothing.
+    expect(await screen.findByText("Widgets")).toBeTruthy();
+    expect(crumb.textContent).toContain("›");
+    expect(crumb.textContent).not.toContain("run");
+    const links = Array.from(crumb.querySelectorAll("a"));
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      routes.project(wireProjectId),
+      routes.projectTab(wireProjectId, "runs"),
+    ]);
+  });
+
+  it("row 3 prints the facts as labels over values", () => {
+    mountHeader();
+    const facts = screen.getByTestId("run-header-meta");
+    expect(Array.from(facts.querySelectorAll("dt")).map((label) => label.textContent)).toEqual([
+      "Workflow",
+      "Repository",
+      "Started",
+      "Pinned digest",
+    ]);
+    // The label is mono uppercase; the value is the fact, not a sentence.
+    expect(facts.querySelector("dt")?.className).toContain("uppercase");
+    const values = Array.from(facts.querySelectorAll("dd"));
+    expect(values[0].textContent).toBe("feature-development · rev 7");
+    expect(values[1].textContent).toBe("payments-api");
+    expect(values[1].className).toContain("font-mono");
+    expect(values[2].textContent).toMatch(/ago by Priya Natarajan$/);
+    // § 7.2 W4: the whole 12 hex chars, mono, so the reader can compare it
+    // against the library's digests.
+    expect(values[3].textContent).toBe("3f2f3f2f3f2f");
+    expect(values[3].className).toContain("font-mono");
+  });
+
+  it("the rev fact links to the pinned revision, and says nothing the read cannot", () => {
+    mountHeader();
+    const pin = screen.getByTestId("run-pinned-revision");
+    expect(pin.textContent).toBe("rev 7");
+    expect(pin.getAttribute("href")).toBe(routes.workflow(wireRun.pipeline_id));
+
+    // No revision read, no number: the digest fact still carries the pin.
+    cleanup();
+    mountHeader({ revision: null });
+    expect(screen.queryByTestId("run-pinned-revision")).toBeNull();
+    expect(screen.getByTestId("run-fact-digest").textContent).toBe("Pinned digest3f2f3f2f3f2f");
+  });
+
+  it("leaves out the facts the run's data cannot name", () => {
+    mountHeader({ repoName: null, startedBy: null });
+    expect(screen.queryByTestId("run-fact-repository")).toBeNull();
+    expect(screen.getByTestId("run-fact-started").textContent).toMatch(/^Started\S+ ago$/);
+  });
+});
+
+describe("RunHeader stream status", () => {
+  it("says nothing while the stream is live", () => {
+    mountHeader({ streamStatus: "live" });
+    expect(screen.queryByTestId("run-stream-status")).toBeNull();
+  });
+
+  it("speaks with the retrying glyph the moment it is not", () => {
+    mountHeader({ streamStatus: "reconnecting" });
+    const status = screen.getByTestId("run-stream-status");
+    expect(status.textContent).toBe("↻ reconnecting");
   });
 });
