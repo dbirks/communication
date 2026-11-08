@@ -104,6 +104,27 @@ export function useIsNarrow(): boolean {
   return useMediaQuery(NARROW_QUERY);
 }
 
+/** The floating Ask button's own measurements: a 30px button 16px off the
+ * bottom edge on the wide frames, a 26px `compact` one on the phone. */
+export const ASK_FAB_OFFSET_PX = 16;
+export const ASK_FAB_HEIGHT_PX = 30;
+export const ASK_FAB_HEIGHT_PHONE_PX = 26;
+
+/**
+ * The band the phone frame reserves at the bottom of `<main>`: the compact
+ * button's height plus its offset, with the safe area added on top. Without
+ * it the button draws over whatever the page puts last — the review caught it
+ * on the `/catch-up` See-more card, over a piece of work's Tour box and over
+ * the second decision card's Reject button at 390px. Reserved on the phone
+ * only: at ≥768px the content column has room beside the button.
+ */
+export const PHONE_ASK_RESERVE_PX = ASK_FAB_HEIGHT_PHONE_PX + ASK_FAB_OFFSET_PX;
+
+/** The reserved padding as a CSS value — the safe area is part of the ask. */
+export function phoneAskReserveCss(): string {
+  return `calc(${PHONE_ASK_RESERVE_PX}px + env(safe-area-inset-bottom))`;
+}
+
 /** Rail-only width (768–1023px): the collapsed rail shows regardless of the
  * saved preference — the preference itself is never overwritten. */
 export function useIsRailWidth(): boolean {
@@ -292,9 +313,15 @@ export default function Shell({ children }: ShellProps) {
           <CommandPalette context={sectionOf(location.pathname)} className="hidden" />
         )}
 
-        {/* Finding 07: the shell never caps or pads the content column —
-            every page declares its layout through `ds/Page`. */}
-        <main className="w-full flex-1">
+        {/* Finding 07: the shell never caps the content column — every page
+            declares its layout through `ds/Page`. The one thing it does own is
+            the phone frame's bottom band: the floating Ask button is an
+            overlay, so the content area stops short of it (see
+            `PHONE_ASK_RESERVE_PX`). */}
+        <main
+          className="w-full flex-1"
+          style={narrow ? { paddingBottom: phoneAskReserveCss() } : undefined}
+        >
           {/* gh-69: navigation clears a caught render error through `resetKey`
               instead of a `key={location.pathname}` remount — keying the
               subtree threw away every already-painted page (skeleton flash on
@@ -355,14 +382,25 @@ export default function Shell({ children }: ShellProps) {
           area. Finding 08: one shortcut, ⌘J, and the button says so. */}
       <Button
         variant="primary"
+        compact={narrow}
         data-testid="ask-fab"
         aria-label="Ask the assistant (⌘J)"
         onClick={() => openAsk()}
-        style={{ right: 16, bottom: narrow ? "max(16px, env(safe-area-inset-bottom))" : 16 }}
+        style={{
+          right: ASK_FAB_OFFSET_PX,
+          bottom: narrow
+            ? `max(${ASK_FAB_OFFSET_PX}px, env(safe-area-inset-bottom))`
+            : ASK_FAB_OFFSET_PX,
+        }}
         className="fixed z-30 flex items-center gap-[6px]"
       >
         Ask
-        <span className="font-mono text-[10.5px] tracking-[.04em] opacity-80">⌘J</span>
+        {/* At phone width the button goes compact: the word stays, the chord
+            goes (the label is `Ask`, the accessible name keeps `⌘J`), and the
+            shell reserves the band underneath it so no card hides below. */}
+        {narrow ? null : (
+          <span className="font-mono text-[10.5px] tracking-[.04em] opacity-80">⌘J</span>
+        )}
       </Button>
     </div>
   );

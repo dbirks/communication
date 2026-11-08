@@ -20,7 +20,13 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { meFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
-import { sectionOf } from "./Shell";
+import {
+  PHONE_ASK_RESERVE_PX,
+  phoneAskReserveCss,
+  sectionOf,
+  ASK_FAB_HEIGHT_PHONE_PX,
+  ASK_FAB_OFFSET_PX,
+} from "./Shell";
 
 /** Wait budget for the `/me` round trip the shell waits on. */
 const READ_MS = 5_000;
@@ -559,6 +565,38 @@ describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
     expect(screen.queryByTestId("sidebar")).toBeNull();
     expect(open.getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(open);
+  });
+
+  // Review finding (phone): the floating Ask button drew over the page's last
+  // card — the `/catch-up` See more card, a piece of work's Tour box, the
+  // second decision card's Reject button. Below 768px the shell reserves the
+  // button's own band as bottom padding on `<main>`, and the button goes
+  // compact: the word `Ask` stays, the chord moves into the accessible name.
+  it("reserves the Ask button's band under the content at 390px", async () => {
+    stubViewport(390);
+    renderApp({ path: "/", routes: signedIn });
+    const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
+    // The reserve is the compact button's height plus its offset, and the
+    // safe area rides on top of it.
+    expect(PHONE_ASK_RESERVE_PX).toBe(ASK_FAB_HEIGHT_PHONE_PX + ASK_FAB_OFFSET_PX);
+    const main = screen.getByRole("main");
+    expect(main.getAttribute("style")).toContain(`padding-bottom: ${phoneAskReserveCss()}`);
+    expect(fab.className).toContain("ds-btn--compact");
+    expect(fab.textContent).toBe("Ask");
+    expect(fab.getAttribute("aria-label")).toBe("Ask the assistant (⌘J)");
+    restoreViewport();
+  });
+
+  it("leaves the desktop content column unpadded and the Ask button full", async () => {
+    stubViewport(1280);
+    renderApp({ path: "/", routes: signedIn });
+    const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
+    const main = screen.getByRole("main");
+    expect(main.getAttribute("style")).toBe(null);
+    expect(fab.className).not.toContain("ds-btn--compact");
+    expect(fab.textContent).toContain("Ask");
+    expect(fab.textContent).toContain("⌘J");
+    restoreViewport();
   });
 
   it("wraps the strip's brand in a non-selectable, non-draggable link (issue #61)", async () => {

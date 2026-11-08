@@ -4,6 +4,11 @@
  * link, and the shared `DecisionBar` — Approve / Request changes / Reject,
  * fixed verbs, no confirm step, a 5s undo hold on the decision.
  *
+ * The title gets the same cut Today's decision card makes: when a gate's
+ * summary is really a prose plan, its first line (or first sentence) is the
+ * bold title and the rest is regular body text under it — never one bold
+ * block running on for ten lines.
+ *
  * The model no longer chooses button labels: model-written text belongs in
  * the summary above the bar, never on a verb. The `actions` prop is kept for
  * wire compatibility with hosts that still pass the model's suggestions —
@@ -19,6 +24,7 @@ import { useState } from "react";
 import { Button } from "../ds/Button";
 import DecisionBar from "../ds/DecisionBar";
 import { StatusChip } from "../ds/Row";
+import { splitGateSummary } from "../home/DecisionCallout";
 import { formatAge, testidOf } from "../../lib/format";
 import type { SuggestedAction } from "./riskStyle";
 
@@ -77,6 +83,10 @@ export default function InboxCard({
 }: InboxCardProps) {
   const testid = testidOf(id);
   const [expanded, setExpanded] = useState(false);
+  // The same cut Today's decision card makes (see `home/DecisionCallout`): a
+  // gate summary that is really a prose plan leads with its first line or
+  // sentence, not with a block of bold text.
+  const { title: titleLead, body: titleRest } = splitGateSummary(title);
 
   return (
     <article
@@ -93,8 +103,16 @@ export default function InboxCard({
         title={title}
         data-testid={`inbox-card-title-${testid}`}
       >
-        {title}
+        {titleLead}
       </h3>
+      {titleRest !== "" ? (
+        <p
+          className="px-3 pt-1 text-[12.5px] leading-[1.45] text-muted line-clamp-3"
+          data-testid={`inbox-card-title-body-${testid}`}
+        >
+          {titleRest}
+        </p>
+      ) : null}
       {summary ? (
         <p className="px-3 pt-1 text-[12.5px] leading-[1.45] text-muted">
           <span className={expanded ? "" : "line-clamp-2"}>{summary}</span>{" "}

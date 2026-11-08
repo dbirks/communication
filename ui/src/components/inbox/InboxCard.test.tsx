@@ -66,6 +66,24 @@ describe("InboxCard", () => {
     expect(more.getAttribute("aria-expanded")).toBe("true");
   });
 
+  // The same cut Today's decision card makes: a gate summary that is really a
+  // prose plan leads with its first line, not with a block of bold text.
+  it("keeps the plan text under a bold first line when the title runs on", () => {
+    const whole =
+      "Document and fix add() so the tests pass\n1. Give add() a floor for negative input.\n2. Run pytest in app/ with both tests green.";
+    render(<InboxCard {...BASE} title={whole} onDecide={vi.fn()} />, { wrapper: wrapper() });
+    const title = screen.getByTestId(`inbox-card-title-${T}`);
+    expect(textOf(title)).toBe("Document and fix add() so the tests pass");
+    // The whole gate text is never lost: the tooltip carries it, `Read` opens
+    // the gate.
+    expect(title.getAttribute("title")).toBe(whole);
+    const body = screen.getByTestId(`inbox-card-title-body-${T}`);
+    expect(textOf(body)).toContain("1. Give add() a floor for negative input.");
+    expect(body.className).toContain("text-[12.5px]");
+    expect(body.className).toContain("text-muted");
+    expect(body.className).toContain("line-clamp-3");
+  });
+
   it("renders the fixed verbs and ignores model-written labels", () => {
     const onDecide = vi.fn();
     render(

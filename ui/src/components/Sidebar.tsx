@@ -72,7 +72,7 @@ import { useCatchUpItems } from "../api/catchup";
 import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
-import { useSidebarFlags } from "../lib/sidebarFlags";
+import { FLAG_RANK, useSidebarFlags } from "../lib/sidebarFlags";
 import { Mark } from "./ds/Mark";
 import { Popover, POPOVER_WIDTH_PX } from "./ds/Popover";
 import NewConversationDialog from "./NewConversationDialog";
@@ -377,9 +377,10 @@ const RAIL_TILE_INACTIVE = "border-transparent hover:border-fill-edge hover:bg-f
 
 /** Badge tones: the state tint as background, the state ink as text; Catch up
  * carries the accent pair the handoff names for the unseen count. */
-const RAIL_BADGE_TONE: Record<"waiting" | "running" | "accent", string> = {
+const RAIL_BADGE_TONE: Record<"waiting" | "running" | "failed" | "accent", string> = {
   waiting: "bg-st-waiting-tag text-st-waiting-tag-fg",
   running: "bg-st-running-tag text-st-running-tag-fg",
+  failed: "bg-st-failed-tag text-st-failed-tag-fg",
   accent: "bg-accent-tint text-accent-edge",
 };
 
@@ -388,16 +389,20 @@ const RAIL_BADGE_TONE: Record<"waiting" | "running" | "accent", string> = {
  * −4/−5px, mono 9px/600 on the state tint with a 1px white outline. The
  * tile\u2019s `aria-label` states the same number in words (`Today · 2
  * waiting`), so the tint is never the only carrier — and the count is the
- * very number the expanded row prints.
+ * very number the expanded row prints. `glyph` is the state mark the expanded
+ * rows print beside their count (`! 2`, `× 1`); the count-only tiles (Today,
+ * Catch up, Threads) leave it off.
  */
 function RailBadge({
   name,
   count,
   tone,
+  glyph,
 }: {
   name: string;
   count: number;
   tone: keyof typeof RAIL_BADGE_TONE;
+  glyph?: string;
 }) {
   if (count <= 0) return null;
   return (
@@ -406,9 +411,30 @@ function RailBadge({
       data-testid={`rail-badge-${name}`}
       className={`absolute -top-[4px] -right-[5px] flex h-[14px] min-w-[15px] items-center justify-center rounded-[3px] border border-surface px-[3px] font-mono text-[9px] font-semibold leading-none ${RAIL_BADGE_TONE[tone]}`}
     >
+      {glyph ? `${glyph} ` : ""}
       {count > 99 ? "99+" : count}
     </span>
   );
+}
+
+/**
+ * The Projects tile's own badge (3a): the worst state any project is in,
+ * read off the very flags the expanded project rows print. Running is not
+ * attention — the tile only speaks when a project waits for a person or has
+ * failed — and two projects in the same state add up rather than fighting
+ * over the one corner.
+ */
+export function projectTileFlag(flags: Record<string, Flag>): Flag {
+  let worst: Flag = { kind: "none", count: 0 };
+  for (const flag of Object.values(flags)) {
+    if (flag.kind === "none" || flag.kind === "running" || flag.count === 0) continue;
+    if (worst.kind === "none" || FLAG_RANK[flag.kind] > FLAG_RANK[worst.kind]) {
+      worst = flag;
+    } else if (flag.kind === worst.kind) {
+      worst = { kind: worst.kind, count: worst.count + flag.count };
+    }
+  }
+  return worst;
 }
 
 /** The one tooltip element the rail draws; tiles point at it while it shows. */
@@ -564,6 +590,9 @@ function EdgeResizeHandle({
  * The badges are the same counts the expanded rows carry: waiting on Today,
  * unseen on Catch up, live threads. No initials any more \u2014 every tile is
  * an icon, and the words live in the label, the `aria-label` and the popover.
+ * Every badge is the expanded column's own number: waiting on Today, unseen
+ * on Catch up, live threads on Threads, and the projects' worst state (glyph
+ * and count, `! 2` / `× 1`) on Projects.
  */
 function Rail({
   signedIn,
@@ -662,6 +691,10 @@ function Rail({
 
   const waiting = flags.inbox.needsYou;
   const live = flags.threads ?? 0;
+  // The Projects tile carries the projects' own worst state — the same flags
+  // the expanded rows (and the popover) print.
+  const projectsFlag = projectTileFlag(flags.projects);
+  const projectsWord = projectsFlag.kind === "none" ? "" : FLAG_STYLE[projectsFlag.kind].word;
 
   const toggleProjects = (el: HTMLElement) => {
     setTip(null);
@@ -754,9 +787,23 @@ function Rail({
               repositories \u2014 what the labels used to say. */}
           <RailTile
             testid="rail-item-projects"
-            ariaLabel="Projects"
+            ariaLabel={
+              projectsFlag.count > 0
+                ? `Projects · ${projectsFlag.count} ${projectsWord}`
+                : "Projects"
+            }
             icon={<Folder size={18} strokeWidth={1.6} aria-hidden="true" />}
             active={activeProjectId !== null}
+            badge={
+              <RailBadge
+                name="projects"
+                count={projectsFlag.count}
+                tone={projectsFlag.kind === "failed" ? "failed" : "waiting"}
+                glyph={
+                  projectsFlag.kind === "none" ? undefined : FLAG_STYLE[projectsFlag.kind].glyph
+                }
+              />
+            }
             hasPopup
             expanded={projectsOpen}
             controls="rail-projects-panel"

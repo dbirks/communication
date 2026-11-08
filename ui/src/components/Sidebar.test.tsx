@@ -31,7 +31,7 @@ import {
   requestsTo,
   type RouteStub,
 } from "../test/fakes";
-import { wirePipelineList, wireRun } from "../test/fixtures/m4/wire";
+import { wireApproval, wirePipelineList, wireRun } from "../test/fixtures/m4/wire";
 import type { Repository } from "../api/types";
 
 /** Wait budget for the first round trips the sidebar waits on. */
@@ -579,6 +579,17 @@ describe("the collapsed rail (redesign 3a/4a)", () => {
     });
     expect(threads.textContent).toBe("1");
     expect(threads.className).toContain("bg-st-running-tag");
+    // 3a: the Projects tile carries the projects' own worst state — the very
+    // flag the expanded project rows print. A failed run is `× 1` in the
+    // failed tint, never colour alone.
+    const projects = await screen.findByTestId("rail-badge-projects", undefined, {
+      timeout: READ_MS,
+    });
+    expect(projects.textContent).toBe("× 1");
+    expect(projects.className).toContain("bg-st-failed-tag");
+    expect(screen.getByTestId("rail-item-projects").getAttribute("aria-label")).toBe(
+      "Projects · 1 failed",
+    );
     // The number is never ink-only: the tile's accessible name says it in words.
     expect(screen.getByTestId("rail-item-today").getAttribute("aria-label")).toBe(
       "Today · 1 waiting",
@@ -590,6 +601,57 @@ describe("the collapsed rail (redesign 3a/4a)", () => {
     expect(screen.getByTestId("rail-item-catch-up").getAttribute("href")).toBe("/catch-up");
     expect(screen.getByTestId("rail-item-workflows").getAttribute("href")).toBe("/workflows");
     expect(screen.getByTestId("rail-item-agents").getAttribute("href")).toBe("/profiles");
+  });
+
+  // 3a: the Projects tile is the one tile with children, and it carries the
+  // projects' own state badge — the same flag the expanded project rows print,
+  // glyph and count together.
+  it("badges the Projects tile with the waiting state the project rows carry", async () => {
+    renderApp({
+      path: "/",
+      routes: railRoutes().map((stub) =>
+        stub.path === `/api/v1/projects/${P}/approvals`
+          ? { ...stub, body: { approvals: [wireApproval] } }
+          : stub,
+      ),
+    });
+    const badge = await screen.findByTestId("rail-badge-projects", undefined, {
+      timeout: READ_MS,
+    });
+    expect(badge.textContent).toBe("! 1");
+    expect(badge.className).toContain("bg-st-waiting-tag");
+    expect(screen.getByTestId("rail-item-projects").getAttribute("aria-label")).toBe(
+      "Projects · 1 waiting",
+    );
+  });
+
+  // Running is not attention: a project whose only state is a live run keeps
+  // the tile quiet (the Threads badge already says "something is moving").
+  it("keeps the Projects tile quiet when nothing waits and nothing has failed", async () => {
+    renderApp({
+      path: "/",
+      routes: railRoutes().map((stub) =>
+        stub.path === `/api/v1/projects/${P}/runs` ? { ...stub, body: { runs: [wireRun] } } : stub,
+      ),
+    });
+    const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
+    await within(rail).findByTestId("rail-item-threads", undefined, { timeout: READ_MS });
+    expect(screen.queryByTestId("rail-badge-projects")).toBeNull();
+    expect(screen.getByTestId("rail-item-projects").getAttribute("aria-label")).toBe("Projects");
+  });
+
+  // 3a: the active tile is the sidebar row's own mark — a 1px INK border on
+  // the blue grid-paper fill, never a blue-grey border.
+  it("marks the active rail tile with the ink border on the blue grid", async () => {
+    renderApp({ path: "/", routes: railRoutes() });
+    const today = await screen.findByTestId("rail-item-today", undefined, { timeout: READ_MS });
+    expect(today.className).toContain("border-ink");
+    expect(today.className).toContain("ds-texture-accent");
+    expect(today.className).not.toMatch(/border-(accent|line|st-)/);
+    // The inactive tiles keep their transparent border (no shift on hover).
+    const workflows = screen.getByTestId("rail-item-workflows");
+    expect(workflows.className).toContain("border-transparent");
+    expect(workflows.className).not.toContain("ds-texture-accent");
   });
 
   it("prints no badge for a count that is zero or still unread", async () => {

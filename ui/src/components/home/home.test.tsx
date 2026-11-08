@@ -12,7 +12,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ReactNode } from "react";
 import { RunningNow } from "./RunningNow";
-import { DecisionCallouts } from "./DecisionCallout";
+import { DecisionCallouts, splitGateSummary } from "./DecisionCallout";
 import { RecentThreads } from "./RecentThreads";
 import type { CrossProjectRunSummary } from "../../api/home";
 import {
@@ -210,6 +210,59 @@ describe("DecisionCallouts", () => {
     expect(
       requestsTo(requests, `/api/v1/approvals/${approvalFixture.id}/decide`, "POST"),
     ).toHaveLength(0);
+  });
+
+  // The review caught the gate summary running title and body together as one
+  // bold block ("…so the tests pass 1. Give add()…"). The first line (or,
+  // when the summary is one line, its first sentence) is the card's title; the
+  // plan under it is body text, clamped, with the whole text behind `Read plan`.
+  it("prints the summary's first line as the title and the plan as body text", () => {
+    const planGate: Approval = {
+      ...approvalFixture,
+      summary:
+        "Document and fix add() so the tests pass\n1. Give add() a floor for negative input.\n2. Run pytest in app/ with both tests green.",
+    };
+    const { wrapper } = harness([]);
+    render(<DecisionCallouts approvals={[planGate]} runs={[]} />, { wrapper });
+    const title = screen.getByTestId(`home-callout-summary-${testidOf(planGate.id)}`);
+    expect(title.textContent).toBe("Document and fix add() so the tests pass");
+    expect(title.className).toContain("font-semibold");
+    expect(title.className).toContain("text-[13.5px]");
+
+    const body = screen.getByTestId(`home-callout-body-${testidOf(planGate.id)}`);
+    expect(body.textContent).toContain("1. Give add() a floor for negative input.");
+    expect(body.className).toContain("text-[12.5px]");
+    expect(body.className).toContain("text-muted");
+    expect(body.className).toContain("line-clamp-3");
+    // Three lines is a clamp, not a cut: the full text rides on the title
+    // attribute and `Read plan` opens the gate's own page.
+    expect(title.getAttribute("title")).toBe(planGate.summary);
+    expect(screen.getByTestId(`home-read-plan-${testidOf(planGate.id)}`)).toBeTruthy();
+  });
+
+  it("keeps a one-sentence summary whole as the title, with no body", () => {
+    const { wrapper } = harness([]);
+    render(<DecisionCallouts approvals={[approvalFixture]} runs={[]} />, { wrapper });
+    expect(
+      screen.getByTestId(`home-callout-summary-${testidOf(approvalFixture.id)}`).textContent,
+    ).toBe(approvalFixture.summary.trim());
+    expect(screen.queryByTestId(`home-callout-body-${testidOf(approvalFixture.id)}`)).toBeNull();
+  });
+
+  it("cuts a single-line summary at its first sentence", () => {
+    expect(
+      splitGateSummary("Make the parser honest. First: keep the units; then trim the tail."),
+    ).toEqual({
+      title: "Make the parser honest.",
+      body: "First: keep the units; then trim the tail.",
+    });
+    // A version number, an ellipsis-free abbreviation and a trailing period are
+    // not sentence ends with a body behind them: the text stays whole.
+    expect(splitGateSummary("Ship 1.2 of the parser")).toEqual({
+      title: "Ship 1.2 of the parser",
+      body: "",
+    });
+    expect(splitGateSummary("  ")).toEqual({ title: "", body: "" });
   });
 
   it("the Read plan link leaves for the gate's own detail page (ADR-0052)", () => {
