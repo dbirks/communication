@@ -94,7 +94,11 @@ spec:
     #    invalid_output is retriable (run 42452527578: the pi session died
     #    mid-answer and the truncated reply failed extraction, killing the run
     #    with no second attempt) and the prompt below pins the final message to
-    #    the JSON object alone, as /implement's does.
+    #    the JSON object alone, as /implement's does. The prompt also STATES the
+    #    schema's limits to the agent: run 42495774259 died at /plan three times
+    #    — summary at 806 then 675 characters, then a reply with no top-level
+    #    `plan` object — because the limits this node's `outputs` schema enforces
+    #    were never written down where the model could read them.
     - id: plan
       kind: agent.acp
       timeoutSeconds: 900
@@ -125,21 +129,33 @@ spec:
 
           Repository checkout (read-only): ${{ inputs.repository }}
           Read the repository — layout, the files the goal touches, how it is
-          tested — and plan the change. Reply with JSON of exactly this shape:
+          tested — and plan the change. Your reply is machine-checked against the
+          JSON schema below, so reply with JSON of exactly this shape:
           {"plan": {"goal": "<one-sentence objective>",
                     "summary": "<the plan as a human reads it>",
                     "steps": [{"file": "<repo path>", "action": "<the change to make>"}],
                     "test_plan": "<what the implementer must run to prove it>"}}
-          goal is a non-empty string. summary is REQUIRED and is the ONLY plan text
-          a human sees at the approval gate: 2-6 short lines, plain text or simple
-          "- " bullets, one planned change per line in order, no JSON, no braces or
-          quotes, nothing that only makes sense next to the full steps array — and
-          at most 450 characters, written well under the 600-character limit the
-          reply is machine-checked against. steps holds at least one step; every step's
-          file is a repository path and its action is a non-empty string. test_plan
-          is a non-empty string naming the test command(s) the implementer must get
-          green. Never wrap plan in a string. Your FINAL
-          message must be ONLY the JSON object — no tool-call markup, no
+          Field meanings and EVERY limit that schema enforces — breaking one fails
+          the node even when the plan is good:
+            plan — REQUIRED object, and the only top-level property. `goal` /
+              `summary` at the top level, or plan sent as a string, fails as
+              "missing property 'plan'". Never wrap plan in a string.
+            plan.goal — string, non-empty (minLength 1): the objective in one
+              sentence.
+            plan.summary — string, non-empty and AT MOST 600 CHARACTERS
+              (maxLength: 600 is a hard ceiling, not a target). This is the ONLY
+              plan text a human sees at the approval gate: 2-6 short lines, plain
+              text or simple "- " bullets, one planned change per line in order,
+              no JSON, no braces or quotes, nothing that only makes sense next to
+              the full steps array — aim for ~450 characters so there is margin
+              under the 600 the reply is checked against.
+            plan.steps — array with AT LEAST 1 item (minItems: 1; no upper limit).
+              Each item is an object carrying BOTH `file` (a repository path,
+              non-empty string) and `action` (the change to make, non-empty
+              string).
+            plan.test_plan — string, non-empty (minLength 1): names the test
+              command(s) the implementer must get green.
+          Your FINAL message must be ONLY the JSON object — no tool-call markup, no
           narration, no markdown fence; a final message that is not the object
           fails the node even when the work is done.
       outputs:
@@ -277,19 +293,30 @@ spec:
              summary, then the tail of the final test output, then a line
              Closes #<issue_number> when the issue number is > 0>". Use the
              GH_TOKEN environment for authentication.
-          7. Reply with JSON of exactly this shape:
+          7. Reply with JSON of exactly this shape — your reply is machine-checked
+             against the JSON schema below:
           {"summary": "<what you changed and why, in prose>",
            "branch": "<the branch you pushed, exactly as pushed>",
            "pr_url": "<the draft PR URL gh reported>",
            "tests_passed": true,
            "files_changed": ["<repo path>"]}
-          summary is ONE non-empty plain-text string. branch is the exact ref you
-          pushed. pr_url is the exact URL gh printed,
-          https://github.com/<owner>/<repo>/pull/<n>. tests_passed is a JSON
-          boolean, true only if the last full test run was green. files_changed
-          is an ARRAY of repository path strings, one per element, [] when
-          nothing changed. Write nothing outside this object. Your FINAL
-          message must be ONLY the JSON object — no tool-call markup, no
+          Field meanings and EVERY limit that schema enforces — breaking one fails
+          the node even when the draft PR is already open:
+            summary — REQUIRED string, non-empty (minLength 1): ONE plain-text
+              string, what you changed and why.
+            branch — REQUIRED string, non-empty (minLength 1): the exact ref you
+              pushed.
+            pr_url — REQUIRED string that must match the pattern
+              ^https://github.com/.+/pull/[0-9]+$ — the exact URL gh printed, so
+              https://github.com/<owner>/<repo>/pull/<number>: no trailing slash,
+              no query string, no surrounding words, not a compare or tree URL.
+            tests_passed — REQUIRED JSON boolean (true/false, never "true"), true
+              only if the last full test run was green.
+            files_changed — OPTIONAL array of repository path strings, one path
+              per element, [] when nothing changed; no maximum length.
+          There is no wrapper object: these fields are the whole top-level object.
+          Write nothing outside this object. Your FINAL message must be ONLY the
+          JSON object — no tool-call markup, no
           narration, no markdown fence; a final message that is not the object
           fails the node even when the work is done.
       outputs:
