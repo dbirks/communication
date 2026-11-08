@@ -335,9 +335,13 @@ type CatchUpTourStopView struct {
 
 // CatchUpTourPage is the deterministic (no model, ever) assembly of what this
 // reader has not seen: page 1 is offset 0 / limit 4 — the design's "Start the
-// tour · 4 stops" — and "See more" asks for the next offset. Ranking is
-// importance first (must_know, worth_a_look, routine), then the recency of
-// the work item that carries the beat; the tour is shared, so the rank is
+// tour · 4 stops" — and "See more" asks for the next offset. Ranking is the
+// design's per-piece summary first: every unseen piece contributes its single
+// best stop (highest importance, ties going to a stop that asks a decision and
+// then to the earliest in that piece's tour) before any piece contributes a
+// second, the rounds ordered by that stop's importance (must_know,
+// worth_a_look, routine) and then the recency of the piece carrying it; the
+// tour is shared, so the rank is
 // everybody's, and only the collection of beats and the seen flags are this
 // reader's. `total_unseen_stops` counts across every unseen item, `more_available`
 // says whether another page exists beyond this one, `built_from` is how many
@@ -995,8 +999,8 @@ func (h *catchUpHandlers) recapItems(ctx context.Context, c Caller,
 // reads reused, not a new privilege: the unseen item list (which carries the
 // project chip, the refs and the unseen count), then one item read per
 // collected item to get the latest tour's stops with this reader's seen
-// flags. Ranking is the tour's own importance, then the work's recency —
-// shared rank is what makes "2 of 4 have seen this" a true sentence.
+// flags. Ranking is one condensed stop per piece first, then the rounds after
+// it — shared rank is what makes "2 of 4 have seen this" a true sentence.
 func (h *catchUpHandlers) tour(w http.ResponseWriter, r *http.Request) {
 	const action = "catchup.tour.read"
 	c, ok := h.caller(w, r, action)
@@ -1060,7 +1064,7 @@ func (h *catchUpHandlers) buildTourPage(ctx context.Context, c Caller,
 	type owed struct {
 		item  CatchUpListItemView
 		rank  int
-		stops []CatchUpStopView
+		stops []CatchUpTourStopView // this piece's own beats, best first
 	}
 	items := make([]owed, 0, len(list.Items))
 	total := 0
@@ -1071,9 +1075,9 @@ func (h *catchUpHandlers) buildTourPage(ctx context.Context, c Caller,
 		total += it.UnseenStops
 		items = append(items, owed{item: it, rank: catchUpImportanceRank(it.Importance)})
 	}
-	// Most important first, then newest work: the order the walk consumes,
-	// and the reason it can stop early (everything unread further down the
-	// list is lower-ranked or older than the beat that just filled the page).
+	// Most important first, then newest work: the order the READS are spent
+	// in, which is what the bound below gives up when a backlog runs deeper
+	// than the walk may read.
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].rank != items[j].rank {
 			return items[i].rank > items[j].rank
@@ -1083,24 +1087,16 @@ func (h *catchUpHandlers) buildTourPage(ctx context.Context, c Caller,
 		}
 		return items[i].item.ID < items[j].item.ID
 	})
-	need := offset + limit
-	var collected []CatchUpTourStopView
 	truncated := false
 	for i := 0; i < len(items); i++ {
 		if i >= catchUpTourMaxItemReads {
-			// Bound the work even when the rank rule says keep going: a reader
+			// Bound the work even when the backlog says keep going: a reader
 			// whose whole backlog is must_know gets the newest capped number
-			// of items searched, and `more_available` tells the truth about
-			// what the walk did not reach.
+			// of pieces searched, and `more_available` tells the truth about
+			// what the walk did not reach. The summary rule needs EVERY piece's
+			// first beat, so there is no early break any more — one four-beat
+			// bug story may not fill a page by itself.
 			truncated = true
-			break
-		}
-		if len(collected) >= need &&
-			items[i].rank <= catchUpImportanceRank(collected[need-1].Stop.Importance) {
-			// Everything left in the list ranks no higher than the beat that
-			// filled the page, and its work is older — its beats can only
-			// land after the ones this page already has. Safe to stop; the
-			// totals still speak for the whole backlog.
 			break
 		}
 		view, err := h.store.GetCatchUpItem(ctx, c, items[i].item.ID)
@@ -1117,17 +1113,71 @@ func (h *catchUpHandlers) buildTourPage(ctx context.Context, c Caller,
 			if st.Seen {
 				continue // this reader has had this beat; the tour is what is owed
 			}
-			collected = append(collected, CatchUpTourStopView{
+			items[i].stops = append(items[i].stops, CatchUpTourStopView{
 				WorkItemID: view.ID, Stop: st, Project: view.Project,
 				Refs: view.Refs, Minutes: catchUpStopMinutes(st),
 			})
 		}
+		// This piece's own best beat first: importance, then a beat that asks
+		// something of this reader, then the order the story tells them in —
+		// which the stable sort keeps without needing a tour-index field.
+		sort.SliceStable(items[i].stops, func(a, b int) bool {
+			ra := catchUpImportanceRank(items[i].stops[a].Stop.Importance)
+			rb := catchUpImportanceRank(items[i].stops[b].Stop.Importance)
+			if ra != rb {
+				return ra > rb
+			}
+			asks := items[i].stops[a].Stop.Decision != nil &&
+				items[i].stops[b].Stop.Decision == nil
+			return asks
+		})
 	}
-	// Stop ids are already server-assigned; the page just orders them.
-	sort.SliceStable(collected, func(i, j int) bool {
-		return catchUpImportanceRank(collected[i].Stop.Importance) >
-			catchUpImportanceRank(collected[j].Stop.Importance)
-	})
+	// Round-robin over the pieces: round 0 is every piece's best beat — the
+	// design's "opinionated summary of the per-piece tours you have missed" —
+	// and a piece only gets a second stop once every piece has had its first.
+	// Within a round the shared rank rules still order the picks: the beat's
+	// importance, then the recency of the piece it belongs to.
+	need := offset + limit
+	var collected []CatchUpTourStopView
+	order := make([]int, len(items))
+	for i := range order {
+		order[i] = i
+	}
+	for round := 0; len(collected) < need; round++ {
+		owes := func(k int) bool { return round < len(items[k].stops) }
+		sort.SliceStable(order, func(a, b int) bool {
+			ia, ib := order[a], order[b]
+			ha, hb := owes(ia), owes(ib)
+			if ha != hb {
+				return ha // a spent piece cannot jump the ones still contributing
+			}
+			if !ha {
+				return false // both spent this round: their order decides nothing
+			}
+			ra := catchUpImportanceRank(items[ia].stops[round].Stop.Importance)
+			rb := catchUpImportanceRank(items[ib].stops[round].Stop.Importance)
+			if ra != rb {
+				return ra > rb
+			}
+			if !items[ia].item.UpdatedAt.Equal(items[ib].item.UpdatedAt) {
+				return items[ia].item.UpdatedAt.After(items[ib].item.UpdatedAt)
+			}
+			return items[ia].item.ID < items[ib].item.ID
+		})
+		picked := false
+		for _, k := range order {
+			if !owes(k) {
+				continue
+			}
+			collected, picked = append(collected, items[k].stops[round]), true
+			if len(collected) >= need {
+				break
+			}
+		}
+		if !picked {
+			break // every piece is spent
+		}
+	}
 	page := CatchUpTourPage{Stops: []CatchUpTourStopView{}, TotalUnseenStops: total}
 	if offset < len(collected) {
 		served := collected[offset:]

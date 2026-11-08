@@ -133,6 +133,89 @@ func TestCatchUpTourPagesFourByRankAndReadsMinutes(t *testing.T) {
 	}
 }
 
+// The design's catch-up tour is a SUMMARY: one condensed stop per piece of
+// work before any piece gets a second one. A four-beat bug story may not fill
+// page 1 and push the piece that waits on your call down the list.
+func TestCatchUpTourTakesOneStopPerPieceBeforeAnySecond(t *testing.T) {
+	t.Parallel()
+	bug := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	pr := bug.Add(-20 * time.Minute)
+	push := bug.Add(-90 * time.Minute)
+	asks := func(id, importance string) CatchUpStopView {
+		st := cuStop(id, importance, false)
+		st.Decision = &CatchUpDecisionView{Prompt: "Ship it?", Options: []string{"yes", "no"}}
+		return st
+	}
+	store := &tourStore{fakeCatchUp: &fakeCatchUp{list: CatchUpItemList{
+		Items: []CatchUpListItemView{
+			cuItem("i-bug", "must_know", 4, bug),
+			cuItem("i-pr", "worth_a_look", 2, pr),
+			cuItem("i-push", "routine", 1, push),
+		},
+		TotalUnseen: 3,
+	}}, byID: map[string]CatchUpItemView{
+		// The bug piece's beats come back in the order the tour tells them.
+		"i-bug": cuItemView("i-bug",
+			cuStop("b1", "must_know", false), cuStop("b2", "must_know", false),
+			cuStop("b3", "worth_a_look", false), cuStop("b4", "routine", false)),
+		// Ties inside one piece go to the beat that asks a decision.
+		"i-pr": cuItemView("i-pr",
+			cuStop("p-old", "worth_a_look", false), asks("p-ask", "worth_a_look")),
+		"i-push": cuItemView("i-push", cuStop("u1", "routine", false)),
+	}}
+	srv := cuServer(t, store, nil)
+
+	ids := func(want int, query string) []string {
+		t.Helper()
+		body := decodeBody(t, cuGet(t, srv, cuBase+"/api/v1/catch-up/tour?"+query))
+		stops, _ := body["stops"].([]any)
+		out := make([]string, 0, len(stops))
+		for _, s := range stops {
+			out = append(out, s.(map[string]any)["stop"].(map[string]any)["id"].(string))
+		}
+		if len(out) != want {
+			t.Fatalf("%s: stops = %v, want %d", query, out, want)
+		}
+		return out
+	}
+	// One stop from each piece first (bug, pr, push), then the bug's next beat.
+	page1 := decodeBody(t, cuGet(t, srv, cuBase+"/api/v1/catch-up/tour?offset=0&limit=4"))
+	stops1, _ := page1["stops"].([]any)
+	got1 := make([]string, 0, len(stops1))
+	for _, s := range stops1 {
+		got1 = append(got1, s.(map[string]any)["stop"].(map[string]any)["id"].(string))
+	}
+	want1 := []string{"b1", "p-ask", "u1", "b2"}
+	if !equalCatchUpStopIDs(got1, want1) {
+		t.Fatalf("page 1 = %v, want %v", got1, want1)
+	}
+	if page1["built_from"] != float64(3) {
+		t.Errorf("built_from = %v, want the 3 pieces this page condensed", page1["built_from"])
+	}
+	if page1["total_unseen_stops"] != float64(7) {
+		t.Errorf("total_unseen_stops = %v, want all 7 owed beats", page1["total_unseen_stops"])
+	}
+	// The rest keeps going round-robin: pr's second beat, then the bug's third.
+	if got, want := ids(3, "offset=4&limit=4"), []string{"p-old", "b3", "b4"}; !equalCatchUpStopIDs(got, want) {
+		t.Fatalf("page 2 = %v, want %v", got, want)
+	}
+	if rest := decodeBody(t, cuGet(t, srv, cuBase+"/api/v1/catch-up/tour?offset=4&limit=4")); rest["built_from"] != float64(2) {
+		t.Errorf("page 2 built_from = %v, want 2 pieces", rest["built_from"])
+	}
+}
+
+func equalCatchUpStopIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCatchUpTourOffsetIsSeeMore(t *testing.T) {
 	t.Parallel()
 	newer := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)

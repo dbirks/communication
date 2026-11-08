@@ -90,13 +90,16 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
 }
 
 /* ------------------------------------------------ the surfaces a piece shows in
- * Design 8a since 5da1b79: "the rest" carries one row per piece still owed,
- * BUT leaves out a piece whose unseen beats are ALL in the tour cards above it
+ * Design 8a: "the rest" carries one row per piece still owed, BUT leaves out a
+ * piece whose unseen beats are ALL in the tour cards above it
  * (`ui/src/components/catchup/RestList.tsx`'s `tourStopsByItem` filter — the
  * rest is what the cards do not show; a piece with only some beats featured
- * stays). A piece with more unseen beats than one tour page (limit 4) is only
- * partly carded, so it keeps its row too. "This piece is owed on /catch-up" is
- * therefore a claim about TWO surfaces, which the helpers below read together. */
+ * stays). The tour page is the design's OPINIONATED SUMMARY: `GET
+ * /catch-up/tour` gives every unseen piece its single best beat before any
+ * piece gets a second one, so a piece is partly carded — and keeps its row —
+ * whenever it owes more beats than the one it leads with, whether or not a
+ * whole page (limit 4) would have held them. "This piece is owed on /catch-up"
+ * is therefore a claim about TWO surfaces, which the helpers below read together. */
 
 /** Collapse whitespace the way the browser's own text reads it, so a title with
  * a newline in the store still matches the text a row or a card renders. */
@@ -538,11 +541,11 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
     // Where the piece shows. It used to be one claim — a row keyed on the item
     // id inside THE REST — and since 5da1b79 it is 8a's split: a piece whose
     // unseen beats all fit into the tour cards is shown THERE and leaves the
-    // rest (the lab's single fresh piece is exactly that case); one whose beats
-    // overflow a page (limit 4), or that the tour did not reach at all, keeps
-    // its row. Either way the piece is on this page and named in the surface
-    // that owes it, so `readPieceSurface` checks the title there and the
-    // exclusion in the other direction.
+    // rest; one that owes more than the single beat its summary slot carries
+    // (the tour page leads with ONE condensed stop per piece, then comes back
+    // for the rest) keeps its row. Either way the piece is on this page and named
+    // in the surface that owes it, so `readPieceSurface` checks the title there
+    // and the exclusion in the other direction.
     const rest = alice.getByTestId("catchup-rest");
     await expect(rest, "the rest panel never appeared").toBeVisible({ timeout: 30_000 });
     // The cards are an async read of their own (GET /catch-up/tour): give that

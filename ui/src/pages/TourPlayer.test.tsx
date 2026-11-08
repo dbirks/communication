@@ -231,6 +231,25 @@ describe("TourPlayer — the catch-up tour", () => {
     expect(await screen.findByText("catch-up home")).toBeTruthy();
   });
 
+  it("a tour that answers no stops at all is the caught-up panel", async () => {
+    mount([
+      {
+        path: "/api/v1/catch-up/tour",
+        body: {
+          stops: [],
+          total_unseen_stops: 0,
+          more_available: false,
+          built_from: 0,
+          minutes_total: 0,
+        },
+      },
+    ]);
+    const end = await screen.findByTestId("tour-caught-up");
+    expect(end.textContent).toContain("You're caught up");
+    fireEvent.click(screen.getByText("Back to Catch up"));
+    expect(await screen.findByText("catch-up home")).toBeTruthy();
+  });
+
   it("⌘J and the footer button open Ask with this stop named, and the fix links the PR", async () => {
     const asked: unknown[] = [];
     const listener = (event: Event) => asked.push((event as CustomEvent).detail);
@@ -332,6 +351,10 @@ describe("TourPlayer — the catch-up tour", () => {
       "Narrative for Checkout summary redesign.",
     );
     expect(current.textContent).toContain("Second paragraph.");
+    // The reading measure: narrative is capped at the mock's ~700px column,
+    // while the title and the tag row may use the wider pane (mock 7b).
+    expect(screen.getByTestId("tour-lead").className).toContain("max-w-[700px]");
+    expect(current.querySelector("h2")?.className).not.toContain("max-w-[700px]");
   });
 
   it("the stop-list column runs the full height with the hint at its bottom, and its see-more entry counts what is left", async () => {

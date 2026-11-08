@@ -249,6 +249,31 @@ describe("/catch-up/:workId", () => {
     );
   });
 
+  it("the last stop's Next is Done ›: it pays that beat and links back to Catch up", async () => {
+    // A reader on the newest version: no UPDATED split, so the tour is walked
+    // in its own order and the unseen s3 is the LAST stop of it.
+    const { requests } = mount(detail({ you_saw_version: null, unseen_stops: 3 }));
+    const current = await screen.findByTestId("catchup-item-current");
+    expect(current.textContent).toContain("Fix and follow-up");
+    const next = screen.getByTestId("catchup-item-next");
+    expect(next.textContent).toContain("Done ›");
+    expect(next.getAttribute("href")).toBe("/catch-up");
+    expect(next.getAttribute("disabled")).toBeNull();
+    fireEvent.click(next);
+    // It marks the beat seen exactly the way moving on does…
+    await waitFor(() =>
+      expect(
+        requests.filter((request) => request.url === seenPath && request.method === "POST"),
+      ).toHaveLength(1),
+    );
+    expect(JSON.parse(requests.filter((r) => r.url === seenPath).at(-1)!.body!)).toEqual({
+      version: 2,
+      stop_ids: ["s3"],
+    });
+    // …and leaves the piece: the page behind it is the Catch up list.
+    await waitFor(() => expect(screen.queryByTestId("catchup-item")).toBeNull());
+  });
+
   it("?stop= selects the beat and clicking another stop marks the previous seen", async () => {
     const { requests } = mount(detail(), `/catch-up/${workId}?stop=s2`);
     const current = await screen.findByTestId("catchup-item-current");

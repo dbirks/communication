@@ -37,7 +37,7 @@ import {
   type CatchUpWindow,
 } from "../api/catchup";
 import { useProjects } from "../api/queries";
-import { useHomeApprovals } from "../api/home";
+import { useSidebarFlags } from "../lib/sidebarFlags";
 
 export default function CatchUp() {
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
@@ -76,7 +76,9 @@ export default function CatchUp() {
   const recap = useCatchUpRecap(baseFilters);
   const regenerateRecap = useRegenerateRecap();
   const suggestion = useVisitSuggestion();
-  const approvals = useHomeApprovals();
+  // "Waiting on you" is the SIDEBAR'S number, from the same hook that draws
+  // the Today flag: two counts of the same fact would disagree on one screen.
+  const flags = useSidebarFlags();
   // The rest-list checkbox is an explicit "mark this whole piece seen" —
   // stop navigation uses useMarkStopsSeen, never this.
   const markItemSeen = useMarkItemSeen();
@@ -146,7 +148,7 @@ export default function CatchUp() {
       {items.data?.oldest_unseen_at
         ? ` · oldest from ${clockOf(items.data.oldest_unseen_at) ?? "—"}`
         : ""}{" "}
-      · {approvals.data?.approvals.length ?? 0} waiting on you on{" "}
+      · {flags.inbox.needsYou} waiting on you on{" "}
       <Link to="/" className="text-st-waiting-tag-fg underline">
         Today
       </Link>

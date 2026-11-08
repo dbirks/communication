@@ -188,9 +188,18 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
     { path: "/api/v1/me", body: meFixture },
     { path: "/api/v1/projects", body: myProjects },
     {
+      // The subline's "waiting on you" IS the sidebar's count, so the two
+      // reads the sidebar flags are built from are stubbed here: two pending
+      // gates and no runs of any sidebar status.
       path: "/api/v1/approvals",
-      body: { approvals: [{ id: "a1" }, { id: "a2" }] },
+      body: {
+        approvals: [
+          { id: "a1", run_id: "run-1", project_id: paymentsId, state: "pending" },
+          { id: "a2", run_id: "run-2", project_id: platformId, state: "pending" },
+        ],
+      },
     },
+    { path: "/api/v1/runs", body: { runs: [], next_cursor: null } },
     { path: "/api/v1/catch-up/items", body: twoItems },
     { path: "/api/v1/catch-up/tour", body: (n: number) => (n === 1 ? tourPage : tourMorePage) },
     { path: "/api/v1/catch-up/recap", body: recap },
@@ -313,10 +322,14 @@ describe("/catch-up", () => {
   });
 
   it("states the unseen tally and the waiting-on-you count in the subline", async () => {
-    mount();
+    const { fetchMock } = mount();
     const page = await screen.findByTestId("catchup-page");
     expect(page.textContent).toContain("2 unseen");
     expect(page.textContent).toContain("2 waiting on you on Today");
+    // The number is the sidebar's, from the sidebar's own pair of reads — not
+    // a second approvals count the page could drift away from.
+    expect(urlsFor(fetchMock, "/api/v1/approvals?status=pending").length).toBeGreaterThan(0);
+    expect(urlsFor(fetchMock, "/api/v1/runs?status=").length).toBeGreaterThan(0);
   });
 
   it("shows the big-backlog banner past 12 unseen, not at 12, and Keep all dismisses it", async () => {

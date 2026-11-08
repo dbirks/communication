@@ -503,11 +503,11 @@ export default function TourPlayer() {
         <span className="font-mono text-[10.5px] text-muted">{current.project.name}</span>
         <RefChips refs={current.refs} />
       </div>
-      <h2 className="max-w-[760px] text-[24px] leading-[1.25] font-semibold">
+      <h2 className="max-w-[980px] text-[24px] leading-[1.25] font-semibold">
         {current.stop.title}
       </h2>
       {leadShown ? (
-        <p className="max-w-[760px] text-[15px] leading-[1.55]" data-testid="tour-lead">
+        <p className="max-w-[700px] text-[15px] leading-[1.55]" data-testid="tour-lead">
           {lead}
         </p>
       ) : null}
@@ -523,7 +523,7 @@ export default function TourPlayer() {
               className="grid grid-cols-1 gap-[6px] md:grid-cols-[110px_minmax(0,1fr)] md:gap-[14px]"
             >
               <StepLabel def={def} />
-              <div className="flex min-w-0 flex-col gap-[8px]">
+              <div className="flex min-w-0 max-w-[700px] flex-col gap-[8px]">
                 {paragraphs(stop.narrative).map((paragraph, position) => (
                   <p key={position} className="text-[14px] leading-[1.55]">
                     {paragraph}
@@ -548,7 +548,7 @@ export default function TourPlayer() {
             </div>
           ))
         : bodyAfterLead(paras, lead).map((paragraph, position) => (
-            <p key={position} className="max-w-[760px] text-[15px] leading-[1.55] text-ink-2">
+            <p key={position} className="max-w-[700px] text-[15px] leading-[1.55] text-ink-2">
               {paragraph}
             </p>
           ))}

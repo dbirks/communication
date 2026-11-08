@@ -290,6 +290,12 @@ interface ListWire {
   items: { id: string; unseen_stops: number }[];
   total_unseen: number;
 }
+interface TourWire {
+  stops: { work_item_id: string; stop: { id: string; importance: string } }[];
+  total_unseen_stops: number;
+  more_available: boolean;
+  built_from: number;
+}
 
 async function getItem(page: Page, itemId: string): Promise<ItemWire> {
   const res = await page.request.get(`${EMU_BASE_URL}/api/v1/catch-up/items/${itemId}`);
@@ -303,14 +309,24 @@ async function getList(page: Page): Promise<ListWire> {
   return (await res.json()) as ListWire;
 }
 
+async function getTour(page: Page): Promise<TourWire> {
+  const res = await page.request.get(`${EMU_BASE_URL}/api/v1/catch-up/tour`);
+  expect(res.status(), "GET /catch-up/tour").toBe(200);
+  return (await res.json()) as TourWire;
+}
+
 /* ------------------------------------------- the surface a piece shows in
- * Design 8a since 5da1b79: "the rest" LEAVES OUT a piece whose unseen beats are
- * all in the tour cards above it — the rest is what the cards do not show, and
- * a piece with only some beats featured stays (ui/src/components/catchup/
- * RestList.tsx's `tourStopsByItem` filter; page 1 of the tour is 4 beats). For
- * this pass's fixture that splits the three seeds cleanly: the bug story's four
- * must_know beats fill the cards, so it is shown THERE and leaves the rest,
- * while the worth_a_look PR and the routine push stay as rows.
+ * Design 8a: "the rest" LEAVES OUT a piece whose unseen beats are all in the
+ * tour cards above it — the rest is what the cards do not show, and a piece
+ * with only some beats featured stays (ui/src/components/catchup/
+ * RestList.tsx's `tourStopsByItem` filter; page 1 of the tour is 4 beats).
+ * The tour page is the design's OPINIONATED SUMMARY — `GET /catch-up/tour`
+ * gives every unseen piece its single best beat before any piece gets a
+ * second one — so with this pass's three seeds page 1 is one stop from the bug
+ * story, the PR that waits on your call and the routine push, plus the bug's
+ * NEXT stop. That splits the fixture the other way round from a rank-everything-
+ * first tour: the four-beat bug story is only PARTLY carded and keeps its row,
+ * while the two one-beat pieces are fully carded and leave the rest.
  * `readPieceSurface` states the contract rather than a lucky ranking: the piece
  * is on the page in the surface its own unseen beats belong to, and it is NAMED
  * there — the work-item title in the row, every beat title among the cards, each
@@ -435,16 +451,29 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         page.getByTestId("catchup-see-more"),
         "design 8a: more stops (See more) must follow the cards",
       ).toBeVisible();
-      // Design 8a as of 5da1b79: the rest shows only what the cards do not. The
-      // bug story's four must_know beats ARE the tour's first page, so the bug
-      // piece is shown as cards and leaves the rest; the PR (worth_a_look) and
-      // the routine push are not carded and keep their rows. Each is checked in
-      // the surface its own unseen beats belong to, and named there.
+      // Design 8a with the summary tour: the rest shows only what the cards do
+      // not. The four-beat bug story is carded ONCE (plus its next stop after
+      // every other piece has had its one), so it keeps its row; the PR (worth_a_look,
+      // one beat) and the routine push are fully carded and leave the rest. Each
+      // piece is checked in the surface its own unseen beats belong to, and named
+      // there — and the ordering itself is checked on the wire below, because a
+      // four-beat story that filled page 1 is exactly what the summary rule forbids.
+      const tourWire = await getTour(page);
+      const order = tourWire.stops.map((entry) => entry.work_item_id);
+      const pieces = new Set(order).size;
+      expect(
+        pieces,
+        `the tour's page 1 came from ${pieces} piece(s): ${order.join(", ")}`,
+      ).toBeGreaterThanOrEqual(3);
+      expect(
+        order.slice(0, pieces),
+        "the tour's page 1 repeated a piece before every piece had one beat",
+      ).toEqual([...new Set(order.slice(0, pieces))]);
       const surfaces: string[] = [];
       for (const piece of [
-        { key: "bug", id: ids["bug"], title: BUG_TITLE, owed: "cards" as const },
-        { key: "pr", id: ids["pr"], title: PR_TITLE, owed: "row" as const },
-        { key: "push", id: ids["push"], title: PUSH_TITLE, owed: "row" as const },
+        { key: "bug", id: ids["bug"], title: BUG_TITLE, owed: ["row"] },
+        { key: "pr", id: ids["pr"], title: PR_TITLE, owed: ["cards", "both", "row"] },
+        { key: "push", id: ids["push"], title: PUSH_TITLE, owed: ["cards", "both", "row"] },
       ]) {
         const beats = await unseenBeatTitles(page, piece.id);
         await expect
@@ -458,9 +487,9 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
           .toBe(true);
         const shown = await readPieceSurface(page, piece.id, piece.title, beats);
         expect(
-          shown.surface,
-          `design 8a: ${piece.title} shows as ${shown.why}, expected ${piece.owed}`,
-        ).toBe(piece.owed);
+          piece.owed,
+          `design 8a: ${piece.title} shows as ${shown.why}`,
+        ).toContain(shown.surface);
         surfaces.push(`${piece.key}=${shown.surface}`);
       }
       console.log(`catch-up 8a surfaces (pass ${EMU_PASS_ID}): ${surfaces.join(" ")}`);

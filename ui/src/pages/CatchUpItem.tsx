@@ -227,18 +227,25 @@ export default function CatchUpItem() {
     return clockOf(header?.created_at ?? data.latest?.created_at);
   };
 
+  /** Pay THIS reader's debt for the stop being left behind — the one rule the
+   * "Marked seen when you move on" line states. `openStop` and `Done ›` (the
+   * last stop) both go through here, so finishing a tour pays the last beat
+   * exactly the way moving off it does. */
+  const payCurrentStop = () => {
+    if (!data || !current || current.seen) return;
+    markStopsSeen.mutate({
+      itemId: data.id,
+      version: latestVersion,
+      stopIds: [current.id],
+    });
+  };
+
   const openStop = (stop: CatchUpStop | null) => {
     if (!stop || !data || (current && stop.id === current.id)) return;
     // Moving off a stop pays THIS reader's debt for the stop left behind —
     // and only that stop (design: "viewing a stop marks it seen when you
     // move on"; the whole-item mark is the rest list's checkbox).
-    if (current && !current.seen) {
-      markStopsSeen.mutate({
-        itemId: data.id,
-        version: latestVersion,
-        stopIds: [current.id],
-      });
-    }
+    payCurrentStop();
     setPickedId(stop.id);
     setParams({ stop: stop.id }, { replace: true });
   };
@@ -554,14 +561,24 @@ export default function CatchUpItem() {
                   >
                     ‹ Back
                   </Button>
-                  <Button
-                    data-testid="catchup-item-next"
-                    variant="primary"
-                    onClick={goNext}
-                    disabled={currentIndex >= navStops.length - 1}
-                  >
-                    Next stop ›
-                  </Button>
+                  {currentIndex >= navStops.length - 1 ? (
+                    /* The last stop: "Next stop ›" would promise a beat that
+                     * is not there, so it is "Done ›" — a link back to Catch
+                     * up that pays this beat like any other move does
+                     * (review 8b). */
+                    <Link
+                      data-testid="catchup-item-next"
+                      to="/catch-up"
+                      className="ds-btn ds-btn--primary"
+                      onClick={payCurrentStop}
+                    >
+                      Done ›
+                    </Link>
+                  ) : (
+                    <Button data-testid="catchup-item-next" variant="primary" onClick={goNext}>
+                      Next stop ›
+                    </Button>
+                  )}
                   <span className="ml-auto font-mono text-[10.5px] text-faint">
                     Marked seen when you move on
                   </span>
