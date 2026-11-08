@@ -375,7 +375,8 @@ export function SecretsPanel({ project, profiles, onSelect, selectedId }: Secret
                 label="Delivery"
                 hint={
                   <p className="font-mono text-[10.5px] text-faint">
-                    integration_broker is not available yet — the server refuses it
+                    Brokered delivery isn&apos;t available on this server version — ask an admin to
+                    enable it
                   </p>
                 }
               >

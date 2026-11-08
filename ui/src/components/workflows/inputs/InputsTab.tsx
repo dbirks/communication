@@ -622,7 +622,7 @@ function RowEditor({
             className="ml-auto text-st-failed-tag-fg"
             onClick={onRemove}
             data-testid={`input-remove-${id}`}
-            title="removes the input from the draft — the server's validate then names any step still reading it"
+            title="removes the input from the draft — validation then names any step still reading it"
           >
             Remove
           </Button>

@@ -406,7 +406,7 @@ function RawPayload({ raw }: { raw: string }) {
         data-testid="artifact-raw-toggle"
       >
         <span aria-hidden>{open ? "\u25be" : "\u25b8"}</span>
-        {open ? "hide raw payload" : "show raw payload"}
+        {open ? "hide the raw file" : "show the raw file"}
       </button>
       <pre
         id={contentId}

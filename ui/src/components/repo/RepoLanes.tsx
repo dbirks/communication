@@ -503,7 +503,7 @@ export function StartIssueMenu({
   const refusal =
     createRun.isError || createChat.isError
       ? problemOf(createRun.error ?? createChat.error).detail ||
-        "The server refused the start — nothing was created."
+        "The run couldn't start — nothing was created."
       : null;
   if (refusal) {
     items.push({ separator: true });

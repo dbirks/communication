@@ -676,6 +676,7 @@ export default function RunWorkbench({ projectId: projectIdProp }: { projectId?:
       nodesError={nodesQuery.error ?? null}
       pending={runQuery.isPending || !projection.run}
       runId={runId}
+      projectId={projectId}
     />
   );
   if (runQuery.error || nodesQuery.error || runQuery.isPending || !projection.run) return loading;

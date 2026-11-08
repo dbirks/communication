@@ -117,7 +117,7 @@ function LivePipelineLibrary() {
   const emptyCopy = pipelines.isError
     ? problemCopy(pipelines.error)
     : ids.length === 0
-      ? "reading the organization's pipeline library from the control plane…"
+      ? "reading the organization's pipeline library…"
       : `reading definitions and drafts for ${ids.length} pipeline${ids.length === 1 ? "" : "s"}…`;
 
   return (
@@ -336,9 +336,7 @@ function LiveGates({ projectId, runId }: { projectId: string; runId: string | nu
       <div className="space-y-[10px] p-[10px]">
         {approvals.length === 0 ? (
           <p className="font-mono text-[11.5px] text-muted" data-testid="m4-live-gates-none">
-            {approvalsQuery.isPending
-              ? "reading the project's gates…"
-              : "no open gate on this run — the list is the server's, not a guess."}
+            {approvalsQuery.isPending ? "reading the project's gates…" : "no open gate on this run"}
           </p>
         ) : (
           approvals.map((approval) => (

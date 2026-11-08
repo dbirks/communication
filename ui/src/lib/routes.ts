@@ -49,6 +49,8 @@ export const routes = {
   /** A project tab: `/p/:projectId/{runs|workflows|artifacts|threads|settings}`
    * (finding 02: the tab is `workflows`; the old `pipelines` segment redirects). */
   projectTab: (id: string, tab: ProjectTab): string => `/p/${encode(id)}/${tab}`,
+  /** A project's members page: `/p/:projectId/members` — who to ask for access. */
+  projectMembers: (id: string): string => `/p/${encode(id)}/members`,
   /** A thread inside a project's URL space: `/p/:projectId/threads/:threadId`
    * (finding 01 renamed the segment; the resource is still a conversation). */
   projectThread: (projectId: string, threadId: string): string =>

@@ -59,6 +59,7 @@ import { Alert } from "../ds/Alert";
 import { Button, VARIANT_CLASS } from "../ds/Button";
 import { Menu, MENU_ITEM_CLASS } from "../ds/Menu";
 import { ProblemBanner, Spinner } from "../Feedback";
+import { RunNotFound } from "./RunNotFound";
 import { useMe, useProject } from "../../api/queries";
 import { useCreateDraft } from "../../api/pipelines";
 import { problemOf } from "../../api/client";
@@ -508,24 +509,19 @@ export function RunHeaderLoading({
   nodesError,
   pending,
   runId,
+  projectId,
 }: {
   runError: unknown;
   nodesError: unknown;
   pending: boolean;
   runId: string;
+  /** A project-scoped run page knows where its runs tab and members page are;
+   * the project-less deep link cannot — a 404 means no project resolved. */
+  projectId?: string;
 }) {
   if (runError) {
     const problem = problemOf(runError);
-    if (problem.status === 404) {
-      return (
-        <div className="px-4 py-6" data-testid="run-not-found">
-          <Alert state="info" label="NOT FOUND" barTone="neutral" role="status">
-            Run <code className="font-mono">{runId}</code> is not visible to you, or does not exist.
-            The control plane answered 404 — this page shows no scaffold for a run it cannot see.
-          </Alert>
-        </div>
-      );
-    }
+    if (problem.status === 404) return <RunNotFound runId={runId} projectId={projectId} />;
     return (
       <div className="px-4 py-6">
         <ProblemBanner error={runError} fallback="This run could not be loaded." />

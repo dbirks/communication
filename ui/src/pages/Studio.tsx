@@ -412,11 +412,11 @@ export function StudioPage() {
   } else if (!canAuthor) {
     publishReason = LIBRARY_READ_ONLY_NOTE;
   } else if (studio.dirty) {
-    publishReason = "save first — publish posts the bytes the server holds, not the local edit";
+    publishReason = "save first — publishing uses what you last saved, not your current edit";
   } else if (status !== "valid") {
-    publishReason = `the server's last verdict is ${
+    publishReason = `this draft is ${
       status === "draft" ? "not validated" : status
-    } — publish accepts only a draft that validation marked valid`;
+    } — run validation first; only a validated draft can be published`;
   } else {
     publishReason = null;
   }

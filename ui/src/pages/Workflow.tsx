@@ -956,7 +956,7 @@ function YamlValidateDisclosure({
         onClick={() => setOpen((value) => !value)}
         className="flex w-full items-center gap-[6px] rounded-[3px] border border-line bg-surface px-[10px] py-[6px] text-left font-mono text-[11px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         data-testid="yaml-validate-disclosure"
-        title="paste YAML, get the server's verdict through a scratch draft of this workflow"
+        title="paste YAML, check it against this workflow before publishing"
       >
         <span aria-hidden="true">{open ? "▾" : "▸"}</span>
         Validate a YAML document

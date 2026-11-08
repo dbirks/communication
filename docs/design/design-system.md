@@ -281,6 +281,25 @@ Plain, declarative, no hype; failures are ordered *what happened → what is saf
   (`claude`, `codex`) is always shown with its profile name.
 - Nothing promises tenant isolation or sandbox certainty (`05` Trust caveat, D-025 **Open**).
 
+## On-screen copy (finding 12 rulebook)
+
+Every visible string — empty states, errors, conflicts, `aria-label`s, `title`s, toast and
+`fallback=` copy — follows these five rules. The why belongs in the code comment above it, never on
+the screen.
+
+1. Every empty, error and conflict string answers three questions: **what happened**, **is my work
+   safe**, **what do I do next**.
+2. No API, component, ADR or status-code names in visible text. Repo, branch and step names are
+   fine — the user chose those.
+3. Name the person and the time when the data has them.
+4. End every error with an action: a link, a button, or who to ask.
+5. The why goes in code comments.
+
+The honesty rule is unchanged and outranks the rest: the app never invents data, and when something
+could not load it says so in the reader's words. A status code may stay in a collapsed technical
+`Details` disclosure where one already exists (`ProblemBanner`'s `subject` rendering); no new
+disclosure UI is built for it.
+
 ## Open items handed back to the identity pass (slots, not inventions)
 
 The v0.1 handoff's own "STILL OPEN" list; M5 needs four of them, so the requirement is stated without

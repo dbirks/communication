@@ -1031,7 +1031,7 @@ export function RunCreateError({
     <div className="space-y-1" data-testid="new-run-error">
       <ProblemBanner
         error={error}
-        fallback={`The control plane answered ${problem.status}.`}
+        fallback="The run could not be started."
         testid="new-run-error-problem"
       />
       {ceiling !== null && (projectId ?? "") !== "" ? (

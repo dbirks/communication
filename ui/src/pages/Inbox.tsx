@@ -283,7 +283,11 @@ function InboxDecisionCard({ project, approval }: { project: Project; approval: 
     } catch (err) {
       if (approvalConflictOf(err)) {
         adoptApprovalConflict(queryClient, err);
-        setError("someone decided this gate first — what you see now is the winner's");
+        // Finding 12: the old line called it a race the reader lost ("the
+        // winner's") and named no person. The 409 body carries only a user id, so
+        // the bar above owns the named sentence (`decision-conflict`); this line
+        // states the same fact without the race metaphor.
+        setError("Someone already decided this gate. Your decision wasn't recorded.");
       } else {
         setError(problemOf(err).detail || problemOf(err).title);
       }
@@ -326,6 +330,7 @@ function InboxDecisionCard({ project, approval }: { project: Project; approval: 
         <InboxCard
           kind="approval"
           id={approval.id}
+          runId={approval.run_id}
           projectName={project.name}
           createdAt={approval.created_at}
           title={attentionTitle(approval.summary)}

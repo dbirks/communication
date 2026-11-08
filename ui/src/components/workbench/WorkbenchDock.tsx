@@ -491,7 +491,7 @@ function AgentDock({
           watching
           empty={{
             testid: "dock-work-empty",
-            copy: "No journal frames yet — the agent has not answered.",
+            copy: "Nothing here yet — the agent has not answered.",
           }}
           errorFallback="The agent's conversation for this attempt could not be read."
           composer={{
@@ -533,7 +533,7 @@ function AgentDock({
         watching
         empty={{
           testid: "dock-work-empty",
-          copy: "No journal frames yet — the agent has not answered.",
+          copy: "Nothing here yet — the agent has not answered.",
         }}
         errorFallback="The agent's conversation for this attempt could not be read."
         composer={{

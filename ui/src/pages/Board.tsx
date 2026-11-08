@@ -287,7 +287,7 @@ export default function Board() {
         <div className="max-w-[560px] text-[12px] text-muted">
           <p data-testid="board-error">
             {problemOf(runs.error).status === 404
-              ? "This server doesn't serve the cross-project run list yet, so the board is empty — it will fill as soon as the API build that carries it is running."
+              ? "Runs from other projects can't load on this server version. Nothing you started is affected. Start a run below, or ask an admin to update."
               : `The run list could not be loaded: ${problemOf(runs.error).title ?? runs.error.message}`}
           </p>
           <Link

@@ -114,9 +114,7 @@ describe("InterruptedCallout", () => {
 
     const lease = await screen.findByTestId("ops-interrupted-leases");
     await waitFor(() =>
-      expect(lease.textContent).toContain(
-        "the cross-project run list is not served by this server",
-      ),
+      expect(lease.textContent).toContain("this server version can't list runs from every project"),
     );
     expect(screen.queryByTestId("ops-interrupted-error")).toBeNull();
   });

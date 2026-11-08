@@ -101,7 +101,7 @@ export function InterruptedCallout({ leaseExpirations }: InterruptedCalloutProps
       : runs.isPending
         ? " — checking the interrupted runs"
         : runs.data === null
-          ? " — the cross-project run list is not served by this server, so no run names them"
+          ? " — this server version can't list runs from every project, so no run names them"
           : runs.error
             ? " — the interrupted-run list could not be read"
             : " — no run is left in the interrupted state, so no run names them";

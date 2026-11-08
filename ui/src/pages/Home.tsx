@@ -11,7 +11,7 @@
  * board's columns at the same moment), one pending-approval list and one
  * conversation list; live updates ride the org journal stream (ADR-0048),
  * never a poll. The lab image predating the C3 reads renders an honest
- * "not available yet" note instead of faking counts.
+ * "approvals from other projects can't load" note instead of faking counts.
  */
 import { useState } from "react";
 import { DecisionCallouts } from "../components/home/DecisionCallout";
@@ -97,14 +97,19 @@ export default function Home() {
       title={<span data-testid="home-greeting">{greeting(new Date(), me.data?.display_name)}</span>}
       subtitle={<CountLine counts={counts} settled={settled} />}
     >
+      {/* Finding 12: the honest "this server cannot answer that read" note, in the
+          reader's words — what broke, what is still fine, who to ask. The old line
+          named the API (`cross-project reads`) and the build, which is a note to the
+          reviewer, not an answer to the reader. There is no admin-facing page to link,
+          so the ask stays plain text. */}
       {notYet.length > 0 ? (
         <p
           className="mt-3 border border-st-waiting-strong bg-st-waiting-pale-body px-3 py-2 font-mono text-[11px] text-st-waiting-pale-fg"
           data-testid="home-not-available"
           role="note"
         >
-          ! not available yet — this server build predates the cross-project reads the briefing
-          uses; the sections it can read still update live.
+          Approvals from other projects can&apos;t load on this server version. The rest of Today is
+          up to date. Ask an admin to update
         </p>
       ) : null}
       {broken.length > 0 ? (

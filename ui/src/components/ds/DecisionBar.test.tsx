@@ -150,6 +150,35 @@ describe("DecisionBar", () => {
     expect(screen.queryByTestId("decision-approve")).toBeNull();
   });
 
+  it("a 409 offers See the run when the gate's row carries a run id", async () => {
+    // Finding 12: every error ends in an action. The conflict names who decided;
+    // with the gate's `run_id` the line also links to the run they decided on.
+    const conflictBody = {
+      type: "https://communication.dev/problems/approval-already-decided",
+      title: "already decided",
+      status: 409,
+      approval_id: approval.id,
+      approval: { state: "decided", decision: "approved", decided_by: "u-1", version: 4 },
+    };
+    const { wrapper } = harness([
+      { path: decidePath, method: "POST", status: 409, body: conflictBody },
+    ]);
+    render(
+      <DecisionBar approval={{ ...approval, run_id: "01987b00-2222-7000-8000-bbbbbbbbbbbb" }} />,
+      {
+        wrapper,
+      },
+    );
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    await vi.advanceTimersByTimeAsync(5000);
+    const link = screen.getByTestId("decision-conflict-run");
+    expect(link.textContent).toBe("See the run");
+    expect(link.getAttribute("href")).toBe("/runs/01987b00-2222-7000-8000-bbbbbbbbbbbb");
+    // A row with no run id keeps the sentence and gets no link (the test above
+    // asserts that shape by absence: `decision-conflict-run` is not rendered).
+  });
+
   it("a 409 names the person the directory knows, with the age the body serves", async () => {
     // T10b: the conflict body carries `decided_by` — a user id — and the bar's
     // sentence is a name. The directory the app already reads (`/api/v1/users`,

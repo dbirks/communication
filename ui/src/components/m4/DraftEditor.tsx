@@ -332,7 +332,7 @@ function Verdict({ verdict }: { verdict: ValidateBody }) {
         </p>
       ))}
       <p className="font-mono text-[10.5px] text-faint" data-testid="draft-editor-notes">
-        {verdict.notes.length > 0 ? verdict.notes.join(" · ") : "no notes from the server"}
+        {verdict.notes.length > 0 ? verdict.notes.join(" · ") : "no further notes"}
       </p>
     </div>
   );

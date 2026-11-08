@@ -792,7 +792,7 @@ function AttemptConversationWork({
             watching
             empty={{
               testid: "attempt-work-empty",
-              copy: "No journal frames for this turn yet — the agent has not answered.",
+              copy: "Nothing here yet for this turn — the agent has not answered.",
             }}
             errorFallback="The agent's conversation for this attempt could not be read."
             composer={{

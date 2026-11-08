@@ -297,7 +297,7 @@ export function ValidatePanel({
         ) : null}
         {result ? (
           <p className="font-mono text-[10.5px] text-muted" data-testid="validate-panel-notes">
-            {result.notes.length > 0 ? result.notes.join(" · ") : "no notes from the server"}
+            {result.notes.length > 0 ? result.notes.join(" · ") : "no further notes"}
           </p>
         ) : null}
       </div>

@@ -328,7 +328,7 @@ describe("/ops 4h surfaces", () => {
     });
 
     const lease = await screen.findByTestId("ops-interrupted-leases");
-    expect(lease.textContent).toContain("the cross-project run list is not served by this server");
+    expect(lease.textContent).toContain("this server version can't list runs from every project");
   });
 
   it("renders the capability matrix straight from the launcher registry", async () => {

@@ -243,7 +243,7 @@ export function IssueRunExpansion({
             data-testid={`repo-issue-start-error-${issue.number}`}
           >
             <span aria-hidden="true">×</span>{" "}
-            {problemOf(createRun.error).detail || "The server refused the run."}
+            {problemOf(createRun.error).detail || "The run couldn't start — nothing was created."}
           </p>
         ) : null}
       </form>

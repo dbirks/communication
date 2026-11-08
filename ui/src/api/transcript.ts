@@ -237,7 +237,7 @@ const DISCONNECT_WORDS: Record<string, string> = {
 };
 
 const INTERRUPT_COPY: Record<string, string> = {
-  lease_expired: "the worker's lease expired",
+  lease_expired: "the worker stopped checking in mid-turn",
   worker_gone: "the worker disappeared",
   shutdown: "the worker shut down",
 };

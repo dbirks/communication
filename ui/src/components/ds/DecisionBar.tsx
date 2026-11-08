@@ -46,6 +46,7 @@ import { nameLookup } from "../../api/names";
 import type { NameHint, NameLookup } from "../../api/names";
 import type { ApprovalDecide, MemberList, Me, UserList } from "../../api/types";
 import { formatAge } from "../../lib/format";
+import { routes } from "../../lib/routes";
 import { Button } from "./Button";
 
 /** How long the Undo window stays open before the decision is posted. */
@@ -63,6 +64,11 @@ export interface DecisionBarApproval {
   id: string;
   version?: number;
   project_id?: string;
+  /** The run this gate is waiting on. With it the conflict line can offer
+   * `See the run` (finding 12: every error ends in an action); a host whose row
+   * carries no run id gets the sentence with no link rather than a dead end.
+   * The conflict body itself carries none — the 409 summary is the gate row. */
+  run_id?: string;
 }
 
 /** The decide body as the bar builds it; the version rides along when known. */
@@ -422,6 +428,19 @@ export default function DecisionBar({
           × {conflictSubject(phase.deciderId, lookup)} {phase.verb} this{" "}
           {phase.decidedAt ? `${formatAge(phase.decidedAt)} ago` : "a moment ago"}. Your decision
           wasn&apos;t recorded.
+          {approval.run_id ? (
+            /* Finding 12: the sentence says the click did not land; this is the way
+               to the decision that did. A plain anchor, not a router `Link`: this bar
+               renders on fixture surfaces that mount no router, and a full document
+               load from a conflict line is cheaper than a crash. */
+            <a
+              href={routes.run(approval.run_id)}
+              className="ml-[4px] font-medium text-accent-text underline decoration-accent-mid"
+              data-testid="decision-conflict-run"
+            >
+              See the run
+            </a>
+          ) : null}
         </p>
       )}
     </div>

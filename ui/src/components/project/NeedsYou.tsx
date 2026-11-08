@@ -199,7 +199,9 @@ function DecisionCallout({
         onError: (err) => {
           if (approvalConflictOf(err)) {
             adoptApprovalConflict(queryClient, err);
-            setError("someone decided this gate first — what you see now is the winner's");
+            // Finding 12: no race metaphor, and the card keeps its `Read plan`
+            // link as the way to the decision that did land.
+            setError("Someone already decided this gate. Your decision wasn't recorded.");
           } else {
             setError(problemOf(err).detail || problemOf(err).title);
           }

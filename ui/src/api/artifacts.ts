@@ -18,7 +18,7 @@ export function previewBlockReason(artifact: Artifact): string | null {
     return "restricted artifacts can't be previewed — only their details are shown, and downloading one needs a project maintainer";
   }
   if (artifact.sensitivity === "secret") {
-    return "a `secret` artifact can't be previewed and has no download path";
+    return "a secret artifact can't be previewed and has no download path";
   }
   if (artifact.state !== "ready") {
     return `this artifact is ${artifact.state}, and only a ready one is served`;
@@ -27,7 +27,7 @@ export function previewBlockReason(artifact: Artifact): string | null {
     return null;
   }
   if (!artifact.preview_url) {
-    return "the API offered no preview_url for this artifact, so no frame is rendered";
+    return "there's nothing to preview for this artifact yet — its details are still shown";
   }
   return null;
 }

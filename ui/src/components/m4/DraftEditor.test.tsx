@@ -296,7 +296,9 @@ describe("DraftEditor with an unvalidated draft", () => {
     await seeded();
     expect(screen.getByTestId("draft-editor-findings")).toBeDefined();
     expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("0 findings");
-    expect(screen.getByTestId("draft-editor-notes").textContent).toContain("no notes");
+    // Finding 12 copy: the empty-notes line is the reader's words, not "from the
+    // server".
+    expect(screen.getByTestId("draft-editor-notes").textContent).toContain("no further notes");
   });
 
   it("shows the findings a validated draft does serve", async () => {

@@ -23,10 +23,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Alert } from "../components/ds/Alert";
 import { Button, type ButtonVariant } from "../components/ds/Button";
 import { ApprovalCard } from "../components/m4/ApprovalCard";
 import { ProblemBanner, Spinner } from "../components/Feedback";
+import { RunNotFound } from "../components/workbench/RunNotFound";
 import { AttemptDetail, AttemptAgentWork } from "../components/m4/AttemptDetail";
 import { BranchGrid } from "../components/m4/BranchGrid";
 import { branchPlaceOf, branchesOf, findBranch } from "../lib/pipeline/branches";
@@ -412,16 +412,7 @@ export default function RunInspector({
 
   if (runQuery.isError) {
     const problem = problemOf(runQuery.error);
-    if (problem.status === 404) {
-      return (
-        <div className="px-4 py-6" data-testid="run-not-found">
-          <Alert state="info" label="NOT FOUND" barTone="neutral" role="status">
-            Run <code className="font-mono">{runId}</code> is not visible to you, or does not exist.
-            The control plane answered 404 — this page shows no scaffold for a run it cannot see.
-          </Alert>
-        </div>
-      );
-    }
+    if (problem.status === 404) return <RunNotFound runId={runId} projectId={projectId} />;
     return (
       <div className="px-4 py-6">
         <ProblemBanner error={runQuery.error} fallback="This run could not be loaded." />

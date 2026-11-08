@@ -36,6 +36,8 @@ export interface InboxCardProps {
   kind: "approval" | "permission" | "failed";
   /** The resource id (the approval id for `approval` cards). */
   id: string;
+  /** The run the gate waits on; with it a lost decision offers `See the run`. */
+  runId?: string;
   projectName: string;
   /** The row's `created_at`, rendered as an age. */
   createdAt: string;
@@ -65,6 +67,7 @@ const KIND_STATE = {
 export default function InboxCard({
   kind,
   id,
+  runId,
   projectName,
   createdAt,
   title,
@@ -109,7 +112,7 @@ export default function InboxCard({
 
       <div className="p-3">
         <DecisionBar
-          approval={{ id }}
+          approval={{ id, ...(runId ? { run_id: runId } : {}) }}
           compact
           submit={(body) => onDecide(id, body.decision, body.comments)}
         />

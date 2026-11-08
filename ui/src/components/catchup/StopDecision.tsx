@@ -129,7 +129,7 @@ export function StopDecision({ itemId, stopId, decision }: StopDecisionProps) {
         ) : null}
         {!sending && error != null && !busy && sentText === null ? (
           <span className="text-st-failed-pale-fg">
-            Your answer wasn't sent — the server refused it.{" "}
+            Your answer wasn't sent — nothing was recorded.{" "}
             <button
               type="button"
               data-testid="catchup-decision-retry"
