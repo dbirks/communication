@@ -846,8 +846,9 @@ func TestCatchUpRoutesAreDocumented(t *testing.T) {
 			continue
 		}
 	}
-	if len(registered) != 8 {
-		t.Fatalf("catch_up.go registers %d routes, want the 8 ADR-0078 mounts: %v",
+	if len(registered) != 9 {
+		// ADR-0078 step 1 mounted eight; T13a adds the per-reader tour page.
+		t.Fatalf("catch_up.go registers %d routes, want the 9 ADR-0078 mounts: %v",
 			len(registered), registered)
 	}
 	m4SetEqual(t, "openapi.yaml's catch-up paths vs the registered patterns", documented, registered)

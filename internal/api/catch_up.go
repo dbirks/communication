@@ -70,6 +70,17 @@ const (
 	// request-shape bound, not a permission: naming a project the caller is not
 	// in narrows the result and can never widen it (ADR-0078 § Decision 8).
 	CatchUpProjectsMax = 50
+	// CatchUpTourLimitMax is the design's page shape doubled: "Start the tour
+	// · 4 stops", and "See more" never takes more than another 4. The bound
+	// is on the page, not on the backlog.
+	CatchUpTourLimitMax = 8
+	// CatchUpTourOffsetMax bounds how deep paging may reach — past it a
+	// reader is reading the backlog, and the list is the surface for that.
+	CatchUpTourOffsetMax = 200
+	// catchUpTourMaxItemReads bounds the walk: one per-stop-seen read per
+	// work item, and the tour stops collecting once the page can be cut
+	// (ADR-0063's bounded-work rule applied to a composed read).
+	catchUpTourMaxItemReads = 40
 )
 
 // The sentinels this layer maps. They mirror internal/domain's so the postgres
@@ -240,6 +251,41 @@ type CatchUpVisitSuggestion struct {
 	VisitsPerWeek float64 `json:"visits_per_week"`
 }
 
+// CatchUpTourStopView is one beat of the shared tour as it enters THIS
+// reader's page: the stop exactly as the work item read serves it (id, kind,
+// importance, server-copied evidence, and the reader's own seen flag — which
+// inside a tour page is always false, because the tour collects only what is
+// owed), beside the item it belongs to, that item's project chip and its
+// refs. Nothing here navigates: refs are claims rendered by the client, and a
+// `decision` is a question whose options are strings.
+type CatchUpTourStopView struct {
+	WorkItemID string             `json:"work_item_id"`
+	Stop       CatchUpStopView    `json:"stop"`
+	Project    CatchUpProjectChip `json:"project"`
+	Refs       CatchUpRefsView    `json:"refs"`
+	// Minutes is the design's read-time estimate: one minute per beat, plus
+	// one more when the beat carries log or diff evidence to look at.
+	Minutes int `json:"minutes"`
+}
+
+// CatchUpTourPage is the deterministic (no model, ever) assembly of what this
+// reader has not seen: page 1 is offset 0 / limit 4 — the design's "Start the
+// tour · 4 stops" — and "See more" asks for the next offset. Ranking is
+// importance first (must_know, worth_a_look, routine), then the recency of
+// the work item that carries the beat; the tour is shared, so the rank is
+// everybody's, and only the collection of beats and the seen flags are this
+// reader's. `total_unseen_stops` counts across every unseen item, `more_available`
+// says whether another page exists beyond this one, `built_from` is how many
+// work items this page's beats came out of, and `minutes_total` sums the
+// per-beat estimates.
+type CatchUpTourPage struct {
+	Stops            []CatchUpTourStopView `json:"stops"`
+	TotalUnseenStops int                   `json:"total_unseen_stops"`
+	MoreAvailable    bool                  `json:"more_available"`
+	BuiltFrom        int                   `json:"built_from"`
+	MinutesTotal     int                   `json:"minutes_total"`
+}
+
 // CatchUpSeenBody is the `seen` request: which tour version the reader was
 // looking at, and which beats of it they actually looked at. The store reads
 // the ids out of that version rather than trusting this list, so an id that is
@@ -349,10 +395,23 @@ type CatchUpConversationPoster interface {
 // deployment with no conversation store wired, which is not this repository's
 // shape but is the honest degradation: a reply is then stored and answered
 // 202 with a null conversation, the same dead end a work item with no thread
-// already has.
-func RegisterCatchUp(s *Server, store CatchUpStore, poster CatchUpConversationPoster) {
+// already has. The optional trailing trigger is the generator: `GET
+// /catch-up/items` answers from the store first and only then schedules a
+// background pass for the caller's projects (ADR-0078 § Migration). Without
+// one — the nil-when-unconfigured rule the notes use — the routes are the
+// pure reads they shipped as, and an empty page stays empty rather than
+// acquiring a story.
+func RegisterCatchUp(s *Server, store CatchUpStore, poster CatchUpConversationPoster,
+	gen ...CatchUpGeneratorTrigger) {
 	h := &catchUpHandlers{store: store, messages: poster, srv: s}
+	for _, g := range gen {
+		if g != nil {
+			h.gen = g
+			break
+		}
+	}
 	s.HandleAuthed("GET /api/v1/catch-up/items", http.HandlerFunc(h.listItems))
+	s.HandleAuthed("GET /api/v1/catch-up/tour", http.HandlerFunc(h.tour))
 	s.HandleAuthed("GET /api/v1/catch-up/items/{itemId}", http.HandlerFunc(h.getItem))
 	s.HandleAuthed("POST /api/v1/catch-up/items/{itemId}/seen", http.HandlerFunc(h.markSeen))
 	s.HandleAuthed("POST /api/v1/catch-up/seen-all", http.HandlerFunc(h.markAllSeen))
@@ -367,6 +426,9 @@ type catchUpHandlers struct {
 	store    CatchUpStore
 	messages CatchUpConversationPoster
 	srv      *Server
+	// gen is nil on a deployment with no assistant egress: the list route is
+	// then the pure read step 1 shipped.
+	gen CatchUpGeneratorTrigger
 }
 
 // --- handlers ---------------------------------------------------------
@@ -391,6 +453,13 @@ func (h *catchUpHandlers) listItems(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, http.StatusOK, list)
+	// The generator hook, fired exactly like the notes' NotesListed: after the
+	// answer, off the request path, never changing it. The projects the page
+	// was scoped to travel with it, so the pass asks for candidates in
+	// exactly the scope the caller is looking at.
+	if h.gen != nil {
+		h.gen.CatchUpItemsListed(r.Context(), c, f.ProjectIDs)
+	}
 }
 
 func (h *catchUpHandlers) getItem(w http.ResponseWriter, r *http.Request) {
@@ -609,6 +678,198 @@ func (h *catchUpHandlers) postReply(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, http.StatusAccepted, out)
+}
+
+// tour assembles the per-reader page (ADR-0078, the design's "Start the
+// tour · 4 stops"). It is DETERMINISTIC — no model is asked anything on the
+// read path; the narratives were written by the generator, this route only
+// collects the beats this reader still owes. The assembly is two authorized
+// reads reused, not a new privilege: the unseen item list (which carries the
+// project chip, the refs and the unseen count), then one item read per
+// collected item to get the latest tour's stops with this reader's seen
+// flags. Ranking is the tour's own importance, then the work's recency —
+// shared rank is what makes "2 of 4 have seen this" a true sentence.
+func (h *catchUpHandlers) tour(w http.ResponseWriter, r *http.Request) {
+	const action = "catchup.tour.read"
+	c, ok := h.caller(w, r, action)
+	if !ok {
+		return
+	}
+	projects, ok := h.parseProjectIDs(w, r.URL.Query()["projects"], "projects")
+	if !ok {
+		return
+	}
+	offset, limit, ok := h.parseTourPage(w, r)
+	if !ok {
+		return
+	}
+	list, err := h.store.ListCatchUpItems(r.Context(), c, CatchUpListFilter{ProjectIDs: projects})
+	if err != nil {
+		h.fail(w, r, action, err)
+		return
+	}
+	page, err := h.buildTourPage(r.Context(), c, list, offset, limit)
+	if err != nil {
+		h.fail(w, r, action, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	WriteJSON(w, http.StatusOK, page)
+}
+
+// parseTourPage reads offset/limit. Both are strict: a non-integer, a
+// negative, an offset past the depth bound and a limit wider than two
+// "See more"s are all 422s naming the field, because a tour that silently
+// re-reads your defaults would be indistinguishable from one that honored
+// what you asked for.
+func (h *catchUpHandlers) parseTourPage(w http.ResponseWriter, r *http.Request) (int, int, bool) {
+	q := r.URL.Query()
+	offset := 0
+	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n > CatchUpTourOffsetMax {
+			catchUpInvalid(w, fmt.Sprintf("offset must be an integer between 0 and %d.",
+				CatchUpTourOffsetMax))
+			return 0, 0, false
+		}
+		offset = n
+	}
+	limit := 4 // the design's page
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > CatchUpTourLimitMax {
+			catchUpInvalid(w, fmt.Sprintf("limit must be an integer between 1 and %d.",
+				CatchUpTourLimitMax))
+			return 0, 0, false
+		}
+		limit = n
+	}
+	return offset, limit, true
+}
+
+func (h *catchUpHandlers) buildTourPage(ctx context.Context, c Caller,
+	list CatchUpItemList, offset, limit int) (CatchUpTourPage, error) {
+	type owed struct {
+		item  CatchUpListItemView
+		rank  int
+		stops []CatchUpStopView
+	}
+	items := make([]owed, 0, len(list.Items))
+	total := 0
+	for _, it := range list.Items {
+		if it.UnseenStops <= 0 {
+			continue // include_seen answers ride the list with nothing owed
+		}
+		total += it.UnseenStops
+		items = append(items, owed{item: it, rank: catchUpImportanceRank(it.Importance)})
+	}
+	// Most important first, then newest work: the order the walk consumes,
+	// and the reason it can stop early (everything unread further down the
+	// list is lower-ranked or older than the beat that just filled the page).
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].rank != items[j].rank {
+			return items[i].rank > items[j].rank
+		}
+		if !items[i].item.UpdatedAt.Equal(items[j].item.UpdatedAt) {
+			return items[i].item.UpdatedAt.After(items[j].item.UpdatedAt)
+		}
+		return items[i].item.ID < items[j].item.ID
+	})
+	need := offset + limit
+	var collected []CatchUpTourStopView
+	truncated := false
+	for i := 0; i < len(items); i++ {
+		if i >= catchUpTourMaxItemReads {
+			// Bound the work even when the rank rule says keep going: a reader
+			// whose whole backlog is must_know gets the newest capped number
+			// of items searched, and `more_available` tells the truth about
+			// what the walk did not reach.
+			truncated = true
+			break
+		}
+		if len(collected) >= need &&
+			items[i].rank <= catchUpImportanceRank(collected[need-1].Stop.Importance) {
+			// Everything left in the list ranks no higher than the beat that
+			// filled the page, and its work is older — its beats can only
+			// land after the ones this page already has. Safe to stop; the
+			// totals still speak for the whole backlog.
+			break
+		}
+		view, err := h.store.GetCatchUpItem(ctx, c, items[i].item.ID)
+		if err != nil {
+			if errors.Is(err, ErrCatchUpNotFound) {
+				continue // the story moved between the two authorized reads
+			}
+			return CatchUpTourPage{}, err
+		}
+		if view.Latest == nil {
+			continue // no story to read: the item is owed nothing
+		}
+		for _, st := range view.Latest.Stops {
+			if st.Seen {
+				continue // this reader has had this beat; the tour is what is owed
+			}
+			collected = append(collected, CatchUpTourStopView{
+				WorkItemID: view.ID, Stop: st, Project: view.Project,
+				Refs: view.Refs, Minutes: catchUpStopMinutes(st),
+			})
+		}
+	}
+	// Stop ids are already server-assigned; the page just orders them.
+	sort.SliceStable(collected, func(i, j int) bool {
+		return catchUpImportanceRank(collected[i].Stop.Importance) >
+			catchUpImportanceRank(collected[j].Stop.Importance)
+	})
+	page := CatchUpTourPage{Stops: []CatchUpTourStopView{}, TotalUnseenStops: total}
+	if offset < len(collected) {
+		served := collected[offset:]
+		if len(served) > limit {
+			served = served[:limit]
+		}
+		page.Stops = append(page.Stops, served...)
+	}
+	seenItems := map[string]bool{}
+	for _, st := range page.Stops {
+		if !seenItems[st.WorkItemID] {
+			seenItems[st.WorkItemID] = true
+			page.BuiltFrom++
+		}
+		page.MinutesTotal += st.Minutes
+	}
+	page.MoreAvailable = truncated ||
+		(len(page.Stops) > 0 && offset+len(page.Stops) < total) ||
+		(len(page.Stops) == 0 && total > offset)
+	return page, nil
+}
+
+// catchUpImportanceRank maps the closed vocabulary onto the order the tour
+// and the list both rank by. An importance outside it is corruption (the
+// write path refused it) — and it ranks last, where a corrupt beat sinks
+// below the story instead of jumping it.
+func catchUpImportanceRank(importance string) int {
+	switch importance {
+	case "must_know":
+		return 3
+	case "worth_a_look":
+		return 2
+	case "routine":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// catchUpStopMinutes is the design's read-time estimate: one minute for the
+// beat, plus one more when it carries log or diff evidence to look at. Other
+// evidence kinds (a screenshot, a file list) are glanced at, not read.
+func catchUpStopMinutes(st CatchUpStopView) int {
+	for _, ev := range st.Evidence {
+		switch ev["type"] {
+		case "log", "diff":
+			return 2
+		}
+	}
+	return 1
 }
 
 // --- parsing ----------------------------------------------------------

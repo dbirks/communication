@@ -1371,16 +1371,33 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// half of a decision reply: the SAME conversation store the messages route
 	// uses, so the controller lock, the one-active-turn rule and the thread's
 	// audit stay in one place — a reply is a sentence handed to an agent, never
-	// a gate that could move a run. What is absent on purpose is the half that
-	// WRITES tours and recaps: `POST /catch-up/recap` does not exist, because
-	// generation is the server's own assistant behind ADR-0034's egress (the
-	// next task), and nothing a browser sends belongs in a shared tour.
+	// a gate that could move a run. What is absent on purpose is the browser-
+	// facing half that WRITES tours: `POST /catch-up/recap` does not exist,
+	// because the only writer of a shared tour is the generator below — the
+	// server's own assistant behind ADR-0034's egress, and nothing a browser
+	// sends belongs in a shared tour.
 	api.RegisterCatchUp(handler,
 		postgres.APICatchUpStore{
 			S:       &postgres.CatchUpStore{Pool: d.Pool},
 			Denials: projectStore,
 		},
-		apiConversations)
+		apiConversations,
+		// The generator (ADR-0078 § Migration, this task): the same broker the
+		// assistant speaks through, reading the caller's own run/node/pipeline/
+		// transcript reads and writing through the store's own upsert and
+		// append. `GET /catch-up/items` schedules a pass after it answers; with
+		// no egress triple the builder returns nil and the routes stay the
+		// pure reads they were — an empty page, never a stub narrative.
+		api.BuildCatchUpGenerator(api.CatchUpGenDeps{
+			Broker:    asstBroker,
+			CatchUp:   postgres.APICatchUpGenerator{S: &postgres.CatchUpStore{Pool: d.Pool}},
+			Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
+			Pipelines: postgres.APIPipelineStore{S: pipelineStore},
+			Chats: api.NewAssistantChatTranscript(apiConversations,
+				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
+				apiProjects),
+			Logger: d.API.Logger,
+		}))
 
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
 	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled

@@ -19,11 +19,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/domain"
 )
 
@@ -998,4 +1000,160 @@ func TestCatchUpSeenStateCascades(t *testing.T) {
 			t.Errorf("%d rows outlived their reader (%s)", left, q)
 		}
 	}
+}
+
+// --- the generator's candidate read (T13a) --------------------------------
+
+// TestCatchUpGeneratorCandidates proves the one statement that decides which
+// runs are owed a story: terminal + recent + no tour that already covers the
+// run's newest move. A running run, a run older than the window, and an item
+// whose newest tour was written AFTER the run finished are all absent; a run
+// that moved again after its tour comes back WITH the head stops a rewrite
+// must inherit ids from; and a named project can only narrow the answer.
+func TestCatchUpGeneratorCandidates(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	gen := APICatchUpGenerator{S: &CatchUpStore{Pool: f.pool}}
+	caller := api.Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}
+	storeCaller := Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}
+
+	insertRun := func(status string, finishedAgo time.Duration, runProject string) string {
+		var id string
+		var err error
+		if status == "completed" || status == "failed" || status == "cancelled" {
+			err = f.pool.QueryRow(ctx, `
+				INSERT INTO runs (organization_id, project_id, pipeline_id, pipeline_revision_id,
+				                  revision_digest, plan_digest, plan_snapshot, policies_snapshot,
+				                  status, failed_cause, finished_at)
+				VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, '{}'::jsonb, '{}'::jsonb,
+				        $7, CASE WHEN $7 = 'failed' THEN 'agent_error' ELSE NULL END,
+				        now() - $8::interval)
+				RETURNING id`, f.orgID, runProject, f.pipelineID, f.revisionID, f.digest,
+				f.planDigest, status, fmt.Sprintf("%d seconds", int(finishedAgo.Seconds()))).Scan(&id)
+		} else {
+			err = f.pool.QueryRow(ctx, `
+				INSERT INTO runs (organization_id, project_id, pipeline_id, pipeline_revision_id,
+				                  revision_digest, plan_digest, plan_snapshot, policies_snapshot,
+				                  status)
+				VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, '{}'::jsonb, '{}'::jsonb, $7)
+				RETURNING id`, f.orgID, runProject, f.pipelineID, f.revisionID, f.digest,
+				f.planDigest, status).Scan(&id)
+		}
+		if err != nil {
+			t.Fatalf("insert %s run: %v", status, err)
+		}
+		return id
+	}
+	owned := func(ids []string, id string) bool {
+		for _, got := range ids {
+			if got == id {
+				return true
+			}
+		}
+		return false
+	}
+	candRuns := func(cands []api.CatchUpCandidateView) []string {
+		out := make([]string, 0, len(cands))
+		for _, c := range cands {
+			out = append(out, c.RunID)
+		}
+		return out
+	}
+
+	fresh := insertRun("completed", time.Hour, f.projectID)
+	stale := insertRun("failed", 8*24*time.Hour, f.projectID) // outside the 7d window
+	live := insertRun("running", 0, f.projectID)              // not terminal
+
+	cands, err := gen.CatchUpCandidates(ctx, caller, nil, 7*24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	if runs := candRuns(cands); !owned(runs, fresh) || owned(runs, stale) || owned(runs, live) {
+		t.Fatalf("candidates = %v, want only the fresh terminal run (stale=%s live=%s)", runs, stale, live)
+	}
+
+	// The work item lands: same run, keyed by (project, source_run_id). The
+	// candidate remains until a tour covers the run — no tour is no story.
+	runID := fresh
+	item, err := (&CatchUpStore{Pool: f.pool}).UpsertWorkItem(ctx, storeCaller, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapePR, Title: "Fresh work",
+		Summary: "Told soon.", Resolution: domain.CatchUpResolutionOpen,
+		SourceRunID: &runID,
+	})
+	if err != nil {
+		t.Fatalf("upsert the work item: %v", err)
+	}
+	if cands, err = gen.CatchUpCandidates(ctx, caller, nil, 7*24*time.Hour, 10); err != nil {
+		t.Fatalf("candidates again: %v", err)
+	} else if runs := candRuns(cands); !owned(runs, fresh) {
+		t.Fatalf("an untoured item dropped its candidate run: %v", runs)
+	}
+
+	// A tour written now (>= finished_at) means the run's newest move IS
+	// told: the candidate is gone.
+	if _, err := (&CatchUpStore{Pool: f.pool}).AppendTourVersion(ctx, storeCaller, item.ID,
+		"Told once", []domain.CatchUpStop{cuStop("s1", "UI CHANGE", domain.CatchUpImportanceMustKnow, 0)}); err != nil {
+		t.Fatalf("append the tour: %v", err)
+	}
+	if cands, err = gen.CatchUpCandidates(ctx, caller, nil, 7*24*time.Hour, 10); err != nil {
+		t.Fatalf("post-tour candidates: %v", err)
+	} else if runs := candRuns(cands); owned(runs, fresh) {
+		t.Fatalf("a tour that covers the run did not clear the candidate: %v", runs)
+	}
+
+	// The run moves again (a new terminal attempt pushes finished_at): the
+	// item is owed a rewrite, and the candidate carries the head stops whose
+	// ids and introducing versions the rewrite must be able to inherit.
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE runs SET finished_at = now() WHERE id = $1::uuid`, fresh); err != nil {
+		t.Fatalf("move the run: %v", err)
+	}
+	cands, err = gen.CatchUpCandidates(ctx, caller, nil, 7*24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("moved-run candidates: %v", err)
+	}
+	var found *api.CatchUpCandidateView
+	for i := range cands {
+		if cands[i].RunID == fresh {
+			found = &cands[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("a run that moved after its tour did not re-arm: %v", candRuns(cands))
+	}
+	if found.ItemID != item.ID || found.TourHead != 1 || len(found.HeadStops) != 1 ||
+		found.HeadStops[0].ID != "s1" || found.HeadStops[0].AddedInVersion != 1 {
+		t.Fatalf("candidate carries no rewritable head: %+v", *found)
+	}
+
+	// A named project can only narrow, and a stranger's list is empty.
+	other := cuForeignProjectM4(t, f)
+	if cands, err = gen.CatchUpCandidates(ctx, caller, []string{other}, 7*24*time.Hour, 10); err != nil {
+		t.Fatalf("narrowed candidates: %v", err)
+	} else if len(cands) != 0 {
+		t.Fatalf("naming a project widened the answer: %v", candRuns(cands))
+	}
+	if cands, err = gen.CatchUpCandidates(ctx, caller, []string{f.projectID}, 7*24*time.Hour, 10); err != nil {
+		t.Fatalf("project-named candidates: %v", err)
+	} else if !owned(candRuns(cands), fresh) {
+		t.Fatalf("naming the caller's own project dropped its candidate: %v", candRuns(cands))
+	}
+	if cands, err := gen.CatchUpCandidates(ctx, api.Caller{UserID: f.userID,
+		OrganizationID: "00000000-0000-4000-8000-000000000000"}, nil, 7*24*time.Hour, 10); err != nil {
+		t.Fatalf("foreign-org candidates: %v", err)
+	} else if len(cands) != 0 {
+		t.Fatalf("another organization saw candidates: %v", candRuns(cands))
+	}
+}
+
+func cuForeignProjectM4(t *testing.T, f *m4Fixture) string {
+	t.Helper()
+	var id string
+	if err := f.pool.QueryRow(testCtx(t), `
+		INSERT INTO projects (organization_id, slug, name, created_by)
+		VALUES ($1, 'cu-foreign-' || substr(md5(random()::text), 1, 10), 'CU foreign', $2)
+		RETURNING id`, f.orgID, f.userID).Scan(&id); err != nil {
+		t.Fatalf("insert foreign project: %v", err)
+	}
+	return id
 }

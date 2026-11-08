@@ -384,6 +384,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/catch-up/tour": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The reader's next tour stops — unseen beats, ranked (ADR-0078, T13a)
+     * @description Deterministic, no model: the caller's UNSEEN stops (the latest version of each unseen or UPDATED work item in the selected projects), ranked by importance (must_know, then worth_a_look, then routine) and then by the recency of the work item that carries the beat. Page 1 is `offset=0&limit=4` — the design's "Start the tour · 4 stops" — and "See more" asks for the next offset (never more than 4 more beats, `limit` ≤ 8). `minutes` is the design's read-time estimate: one minute per beat, plus one when it carries log or diff evidence. `total_unseen_stops` counts the whole backlog; `more_available` says whether another page exists beyond this one; `built_from` is how many work items this page's beats came out of. Each `stop` is exactly the beat the work-item read serves (server-copied evidence, this reader's `seen` flag — always false here, because the tour collects only what is owed). Ranking is the tour's, shared by the project; only the collection is the reader's.
+     */
+    get: operations["getCatchUpTour"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/catch-up/items/{itemId}": {
     parameters: {
       query?: never;
@@ -6455,6 +6475,34 @@ export interface components {
       visits_per_week: number;
     };
     /**
+     * CatchUpTourPage
+     * @description ADR-0078 T13a: the deterministic per-reader tour page. No model is asked on this read — the narratives were written by the generator; this document only collects the beats the reader still owes, ranked by the tour's shared importance and the work's recency.
+     */
+    CatchUpTourPage: {
+      stops: components["schemas"]["CatchUpTourStop"][];
+      /** @description Beats owed across every unseen item, not just those this page reached — the badge the tour button counts down from. */
+      total_unseen_stops: number;
+      /** @description Whether a further offset exists beyond this page (the backlog reaches past what was served, or the bounded walk did not reach the end of it). */
+      more_available: boolean;
+      /** @description How many work items this page's beats came out of. */
+      built_from: number;
+      /** @description The sum of this page's per-beat read-time estimates. */
+      minutes_total: number;
+    };
+    /**
+     * CatchUpTourStop
+     * @description One beat of the tour beside the work it belongs to. The beat is exactly the CatchUpStop the item read serves; refs are the item's claims about the repository, never navigated to by this layer.
+     */
+    CatchUpTourStop: {
+      /** Format: uuid */
+      work_item_id: string;
+      stop: components["schemas"]["CatchUpStop"];
+      project: components["schemas"]["CatchUpProjectChip"];
+      refs: components["schemas"]["CatchUpRefs"];
+      /** @description One minute for the beat, plus one when it carries log or diff evidence to look at. */
+      minutes: number;
+    };
+    /**
      * CatchUpSeenRequest
      * @description Which beats of which tour version this reader actually looked at. The store reads the ids out of that version rather than trusting this list, so an id that is not in it marks nothing.
      */
@@ -7538,6 +7586,36 @@ export interface operations {
           "application/problem+json": components["schemas"]["Problem"];
         };
       };
+    };
+  };
+  getCatchUpTour: {
+    parameters: {
+      query?: {
+        /** @description Project ids — the comma form or the repeated form. Absent is "every project I belong to"; naming a project can only narrow. */
+        projects?: string;
+        /** @description Beats to skip (0..200). Anything else is `422`. */
+        offset?: number;
+        /** @description Beats to serve (1..8, default 4). */
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The tour page (`no-store`); `stops` is always an array. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpTourPage"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      422: components["responses"]["UnprocessableEntity"];
     };
   };
   getCatchUpItem: {

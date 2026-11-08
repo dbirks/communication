@@ -1580,6 +1580,222 @@ func (a APICatchUpStore) InsertCatchUpDecisionReply(ctx context.Context, c api.C
 	}, nil
 }
 
+// --- the generator's arm (ADR-0078 § Migration: what WRITES the tours) ----
+
+// APICatchUpGenerator exposes the store to internal/api's catch-up generator.
+// It is a separate type from APICatchUpStore on purpose: nothing a browser
+// route can reach gains a generation verb by accident, and the candidate
+// read — the one statement that decides which runs are owed a story — is
+// read-only here. The two writes are plain delegations to the store's own
+// UpsertWorkItem and AppendTourVersion: every rule those carry (membership
+// guard, race-safe versioning, document validation, COALESCE'd provenance)
+// applies to the generator exactly as to any other caller, because the
+// generator borrows no side door.
+type APICatchUpGenerator struct {
+	S *CatchUpStore
+}
+
+var _ api.CatchUpGenStore = APICatchUpGenerator{}
+
+// catchUpCandidateRunsMax bounds the candidate read; the generator caps its
+// own pass at two generations, and a longer list is the NEXT page load's
+// work, not this one's (ADR-0063).
+const catchUpCandidateRunsMax = 10
+
+// catchUpCandidatesSQL finds the runs still owed a story:
+//
+//   - terminal and recent (the window is a parameter, so the generator owns
+//     the number and the statement keeps the bound — `finished_at` is the
+//     instant a CHECK guarantees every terminal run carries);
+//   - in a project the caller belongs to (the same `visible` CTE every other
+//     read here carries — naming a project can only narrow);
+//   - whose work item does not exist, has no tour at all, or whose newest
+//     tour was written BEFORE the run last moved (`finished_at` past the
+//     tour's `created_at` — a new terminal attempt moves finished_at, which
+//     is the "the run changed after the tour" signal the generator acts on).
+//
+// The newest tour's stops come back for the id-carry-over rule: a rewrite
+// must know the beats it is rewriting to keep their ids.
+const catchUpCandidatesSQL = `
+	WITH ` + catchUpVisibleSome + `,
+	cands AS (
+		SELECT r.id, r.project_id, w.id AS item_id, w.conversation_id, r.finished_at
+		FROM runs r
+		JOIN visible v ON v.id = r.project_id
+		LEFT JOIN catchup_work_items w
+			ON w.project_id = r.project_id AND w.source_run_id = r.id
+		WHERE r.status IN ('completed','failed','cancelled','interrupted')
+		  AND r.finished_at >= now() - $5::interval
+		  AND (w.id IS NULL OR NOT EXISTS (
+			      SELECT 1 FROM catchup_tour_versions tv
+			      WHERE tv.work_item_id = w.id
+			        AND tv.created_at >= r.finished_at))
+		ORDER BY r.finished_at DESC, r.id DESC
+		LIMIT $6::int
+	)
+	SELECT c.id::text, c.project_id::text, c.item_id::text, c.conversation_id::text,
+	       COALESCE (h.version, 0)::integer,
+	       COALESCE (h.stops, '[]'::jsonb)
+	FROM cands c
+	LEFT JOIN LATERAL (
+		SELECT tv.version, tv.stops
+		FROM catchup_tour_versions tv
+		WHERE tv.work_item_id = c.item_id
+		ORDER BY tv.version DESC
+		LIMIT 1
+	) AS h ON TRUE
+	ORDER BY c.finished_at DESC, c.id DESC`
+
+func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller,
+	projectIDs []string, window time.Duration, limit int) ([]api.CatchUpCandidateView, error) {
+	s, err := g.store()
+	if err != nil {
+		return nil, err
+	}
+	if window <= 0 {
+		window = 7 * 24 * time.Hour
+	}
+	if limit < 1 || limit > catchUpCandidateRunsMax {
+		limit = catchUpCandidateRunsMax
+	}
+	var wanted any
+	if len(projectIDs) > 0 {
+		wanted = projectIDs
+	}
+	// The interval travels as its literal text: a bounded, parameterized
+	// string the cast resolves the same way on every replica.
+	iv := fmt.Sprintf("%d seconds", int64(window.Seconds()))
+	rows, err := s.Pool.Query(ctx, catchUpCandidatesSQL, c.UserID, c.OrganizationID,
+		c.IsOrgAdmin, wanted, iv, limit)
+	if err != nil {
+		return nil, catchUpQueryErr(err, "read catchup candidates")
+	}
+	defer rows.Close()
+	out := []api.CatchUpCandidateView{}
+	for rows.Next() {
+		var (
+			view     api.CatchUpCandidateView
+			itemID   *string
+			convID   *string
+			stopsRaw []byte
+		)
+		if err := rows.Scan(&view.RunID, &view.ProjectID, &itemID, &convID,
+			&view.TourHead, &stopsRaw); err != nil {
+			return nil, catchUpQueryErr(err, "scan catchup candidate")
+		}
+		if itemID != nil {
+			view.ItemID = *itemID
+		}
+		if convID != nil {
+			view.ConversationID = *convID
+		}
+		// The head stops are read through the same decoder the GET path uses,
+		// so a corrupt tour document fails the candidate read rather than
+		// silently rewriting over garbage (ADR-0078 § Decision 7).
+		stops, derr := decodeCatchUpStops(stopsRaw)
+		if derr != nil && len(stopsRaw) > 2 {
+			return nil, derr
+		}
+		for _, st := range stops {
+			view.HeadStops = append(view.HeadStops, api.CatchUpHeadStopView{
+				ID: st.ID, Title: st.Title, AddedInVersion: st.AddedInVersion,
+			})
+		}
+		out = append(out, view)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, catchUpQueryErr(err, "read catchup candidates")
+	}
+	return out, nil
+}
+
+// UpsertCatchUpWorkItem delegates to the store's keyed upsert: with an
+// explicit id it revises that item, and without one the (project,
+// source_run_id) index is the conflict target — the generator re-grouping
+// the same run updates its item rather than writing a twin. The domain
+// validation and the membership guard are the store's, not restated here.
+func (g APICatchUpGenerator) UpsertCatchUpWorkItem(ctx context.Context, c api.Caller,
+	in api.CatchUpWorkItemWrite) (string, error) {
+	s, err := g.store()
+	if err != nil {
+		return "", err
+	}
+	item := domain.CatchUpWorkItem{
+		ID: in.ID, ProjectID: in.ProjectID,
+		Shape: domain.CatchUpShape(in.Shape),
+		Title: in.Title, Summary: in.Summary,
+		Resolution: domain.CatchUpResolution(in.Resolution),
+		Refs: domain.CatchUpRefs{
+			IssueNumbers: in.Refs.IssueNumbers, PRNumbers: in.Refs.PRNumbers,
+			CommitSHAs: in.Refs.CommitSHAs, RunIDs: in.Refs.RunIDs,
+		},
+		SourceRunID: catchUpOptStr(in.SourceRunID), ConversationID: catchUpOptStr(in.ConversationID),
+	}
+	out, err := s.UpsertWorkItem(ctx, prjAPICaller(c), item)
+	if err != nil {
+		return "", catchUpAPIErr(err)
+	}
+	return out.ID, nil
+}
+
+// AppendCatchUpTour converts the generator's stop drafts back into the
+// domain document and hands them to the store's race-safe append. The ids
+// and added_in_version were assigned by the generator's server code (the
+// stable-id rule); the store is still the last word on what it will admit.
+func (g APICatchUpGenerator) AppendCatchUpTour(ctx context.Context, c api.Caller,
+	itemID, reason string, stops []api.CatchUpStopWrite) error {
+	s, err := g.store()
+	if err != nil {
+		return err
+	}
+	doc := make([]domain.CatchUpStop, 0, len(stops))
+	for _, st := range stops {
+		d := domain.CatchUpStop{
+			ID: st.ID, Title: st.Title, Narrative: st.Narrative, Kind: st.Kind,
+			Importance:     domain.CatchUpImportance(st.Importance),
+			AddedInVersion: st.AddedInVersion,
+		}
+		for _, ev := range st.Evidence {
+			raw, merr := json.Marshal(ev)
+			if merr != nil {
+				continue // an unencodable proof is no proof; the stop stands
+			}
+			var e domain.CatchUpEvidence
+			if uerr := json.Unmarshal(raw, &e); uerr != nil {
+				continue
+			}
+			d.Evidence = append(d.Evidence, e)
+		}
+		if st.Decision != nil {
+			d.Decision = &domain.CatchUpDecision{
+				Prompt: st.Decision.Prompt, Options: st.Decision.Options,
+				AllowText: st.Decision.AllowText,
+			}
+		}
+		doc = append(doc, d)
+	}
+	if _, err := s.AppendTourVersion(ctx, prjAPICaller(c), itemID, reason, doc); err != nil {
+		return catchUpAPIErr(err)
+	}
+	return nil
+}
+
+func (g APICatchUpGenerator) store() (*CatchUpStore, error) {
+	if g.S == nil || g.S.Pool == nil {
+		return nil, errors.New("postgres: APICatchUpGenerator has no pool")
+	}
+	return g.S, nil
+}
+
+// catchUpOptStr turns an empty optional id into NULL for the domain pointer.
+func catchUpOptStr(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	v := s
+	return &v
+}
+
 // deniedItem records one refusal against the project the refused work item
 // lived in. It runs only after the store answered "not yours to see", and it
 // writes nothing at all for an id that was never a work item: there is no
