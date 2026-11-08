@@ -42,6 +42,16 @@
 // Seeds resolve-or-create on their pass-stamped titles: Playwright restarts
 // the worker after a serial-group failure, and the fresh process must reuse
 // the dead one's rows, never double-seed them.
+//
+// The screen journey is ONE big test; the proofs that do not need its live
+// screens (the 8a wire dials, the player's key contract, Today's empty-state
+// briefing) run as their OWN serial tests in this file's describe, each on its
+// own timeout. Appended to the journey they starved the screen captures:
+// acceptance 42506795206 saw the 480 s budget expire mid-empty-state, cutting
+// the leg off with `Test ended` / `Failed to find context` at its context
+// close. The serial order keeps each test's server-side precondition (the
+// journey's mark-all-seen still runs before the dials; the keyboard piece's
+// seed is resolve-or-create and every test that needs it re-reads it).
 import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
 import { signIn } from "../tests/helpers.js";
 import { expect, test } from "./fixtures.js";
@@ -422,20 +432,69 @@ async function unseenBeatTitles(page: Page, pieceId: string): Promise<string[]> 
   return titles;
 }
 
+/**
+ * Resolve-or-create the keyboard piece through the SAME seed door as the tour
+ * pieces, and return its id. It exists for the two proofs that no longer share
+ * the screen journey's timeout: the wire dials need a piece this pass has NOT
+ * marked seen (the journey's mark-all-seen has paid its three main pieces by
+ * then), so the page is not in its caught-up state and the rest list — the
+ * `show seen` checkbox's home — draws; and the player's key contract needs
+ * fresh stop ids the reader never paid, which is what makes `S marks the
+ * current stop seen` a real claim and not a re-read of old ink.
+ *
+ * Idempotent on purpose: both callers run the same guarded upsert, so the
+ * second test and a fresh process after a worker restart reuse the dead one's
+ * rows, never double-seed them.
+ */
+async function seedKeyboardPiece(page: Page): Promise<string> {
+  const keysTitle = `Emu catch-up keys ${EMU_PASS_ID}: the arrows walked the beats`;
+  const keysStop = (key: string, title: string, narrative: string, importance: string) =>
+    stop(key, { kind: "ROUTINE", title, narrative, importance });
+  const seedOut = labSql(
+    upsertItemSql(keysTitle, "issue", "merged", { issue_numbers: [911] }) +
+      " " +
+      tourVersionSql(keysTitle, [
+        keysStop(
+          "keys-a",
+          "Keyboard beat one: S pays the beat you sit on",
+          "The first seeded keyboard beat. Nothing asks anything here; the stop exists so the S key has a debt to pay while the player sits on it.",
+          "must_know",
+        ),
+        keysStop(
+          "keys-b",
+          "Keyboard beat two: the arrows walk between beats",
+          "The second seeded keyboard beat. The player's → lands here and ← walks back, and the reader never leaves the keyboard.",
+          "worth_a_look",
+        ),
+      ]) +
+      ` SELECT 'keys|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(keysTitle)};`,
+  );
+  const keysId = /keys\|([0-9a-fA-F-]{36})/.exec(seedOut)?.[1] ?? "";
+  expect(
+    keysId,
+    `the keyboard fixture piece did not come back with a uuid (psql printed [${seedOut}])`,
+  ).toMatch(UUID_RE);
+  const fresh = await getItem(page, keysId);
+  expect(
+    (fresh.latest?.stops ?? []).filter((one) => !one.seen).length,
+    "both keyboard beats are unseen when the leg opens (a replay after a mid-leg failure owes this leg a fresh read)",
+  ).toBe(2);
+  return keysId;
+}
+
 test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, the rail, Today's Ask)", () => {
   test.describe.configure({ mode: "serial" });
   test.use({ storageState: EMU_ALICE_STATE });
 
-  test.setTimeout(480_000);
-
   test("the reader's pile, one piece of work, the player, the rail, the Ask", async ({
     page,
-    browser,
     emu,
   }) => {
+    // The screen journey keeps the 480 s budget it has always had; the proofs
+    // appended after it (this file's other tests) pay their OWN timeouts, so
+    // no slow leg can starve these captures (acceptance 42506795206).
+    test.setTimeout(480_000);
     let ids: Record<string, string> = {};
-    // The keyboard leg's piece (seeded by its own step below, used by two).
-    let keysId = "";
 
     await test.step("seed the pass's catch-up fixture (SEEDED FIXTURE — see the header)", async () => {
       ids = seedCatchUpFixture();
@@ -790,45 +849,29 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       await expect(threadsAsk).toBeHidden({ timeout: 10_000 });
     });
 
-    await test.step("seed the keyboard leg's two-beat piece (fresh unseen stops — SEEDED FIXTURE)", async () => {
-      // The pass's three seeded pieces are already seen by now (mark-all-seen),
-      // so the player's key contract gets its OWN two-stop piece through the
-      // same door: fresh stop ids the reader has never paid, which is what `S
-      // marks the current stop seen` needs to be a real claim and not a
-      // re-read of old ink — and what keeps the rest list (and its `show
-      // seen` checkbox) on screen for the wire-dial step that follows.
-      const keysTitle = `Emu catch-up keys ${EMU_PASS_ID}: the arrows walked the beats`;
-      const keysStop = (key: string, title: string, narrative: string, importance: string) =>
-        stop(key, { kind: "ROUTINE", title, narrative, importance });
-      const seedOut = labSql(
-        upsertItemSql(keysTitle, "issue", "merged", { issue_numbers: [911] }) +
-          " " +
-          tourVersionSql(keysTitle, [
-            keysStop(
-              "keys-a",
-              "Keyboard beat one: S pays the beat you sit on",
-              "The first seeded keyboard beat. Nothing asks anything here; the stop exists so the S key has a debt to pay while the player sits on it.",
-              "must_know",
-            ),
-            keysStop(
-              "keys-b",
-              "Keyboard beat two: the arrows walk between beats",
-              "The second seeded keyboard beat. The player's → lands here and ← walks back, and the reader never leaves the keyboard.",
-              "worth_a_look",
-            ),
-          ]) +
-          ` SELECT 'keys|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(keysTitle)};`,
-      );
-      keysId = /keys\|([0-9a-fA-F-]{36})/.exec(seedOut)?.[1] ?? "";
-      expect(
-        keysId,
-        `the keyboard fixture piece did not come back with a uuid (psql printed [${seedOut}])`,
-      ).toMatch(UUID_RE);
-      const fresh = await getItem(page, keysId);
-      expect(
-        (fresh.latest?.stops ?? []).filter((one) => !one.seen).length,
-        "both keyboard beats are unseen when the leg opens (a replay after a mid-leg failure owes this leg a fresh read)",
-      ).toBe(2);
+  });
+
+  /* ------------------------------------------------------ the appended proofs
+   * run as their own tests since acceptance 42506795206: same serial
+   * describe, same acting identities, but each proof pays its OWN timeout.
+   * They used to be steps at the END of the screen journey, where one slow
+   * leg (the empty-state's second browser context) ran the 480 s budget out
+   * and every capture's journey died with it. `emu` is requested (never
+   * called) so the recorder still files page/api defects from these tests.
+   */
+
+  test("8a on the wire — the 24h chip sends `since`, show-seen sends `include_seen`", async ({
+    page,
+    emu,
+  }) => {
+    test.setTimeout(240_000);
+    void emu;
+
+    await test.step("seed the keyboard piece (fresh unseen stops — SEEDED FIXTURE)", async () => {
+      // The screen journey's mark-all-seen has already paid the pass's three
+      // main pieces, so this fresh two-beat piece is what keeps the page out
+      // of its caught-up state and the rest list on screen for the dials.
+      await seedKeyboardPiece(page);
     });
 
     await test.step("8a — the 24h window chip sends `since`; show-seen sends `include_seen`", async () => {
@@ -880,9 +923,23 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       // banner past 12 unseen").
     });
 
+  });
+
+  test("7b on the keyboard — S pays the stop, → and ← walk, Esc closes, ⌘J asks", async ({
+    page,
+    emu,
+  }) => {
+    test.setTimeout(240_000);
+    void emu;
+
+    // The same resolve-or-create seed the dial test ran, re-read here so this
+    // test stands on its own rows: the dial test only watches the wire, it
+    // never pays a stop, so both beats must still be unseen on a fresh pass.
+    const keysId = await seedKeyboardPiece(page);
+
     await test.step("7b — the player's keys: S pays the stop, → and ← walk, Esc closes, ⌘J asks about the stop", async () => {
       // Design 7b's keyboard contract (TourPlayer.tsx), played on the
-      // keyboard piece the step above seeded (two unseen beats, the player
+      // keyboard piece this test seeded (two unseen beats, the player
       // entered by `?item=` so the beat order is this piece's own).
       // Enter the player from the pile, so Esc's way back has a pile to be.
       await page.goto("/catch-up");
@@ -955,6 +1012,20 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       ).toBeVisible({ timeout: 15_000 });
     });
 
+  });
+
+  test("today empty — a member-less reader's empty briefing opens the run form from its one verb", async ({
+    browser,
+  }) => {
+    // Its own test AND its own 240 s budget (acceptance 42506795206): this
+    // leg ran LAST inside the screen journey, where the budget expired
+    // mid-flight — the trace's `Failed to find context` / `Test ended` at the
+    // context close was the 480 s ceiling ending the test, not the empty
+    // state being wrong. Every wait below is bounded explicitly and the
+    // throwaway context closes under a catch, so this test fails with its own
+    // first real error or passes.
+    test.setTimeout(240_000);
+
     await test.step("today — the empty briefing's Start run opens the run form (a lab state with no runs)", async () => {
       // Finding 03 / T3: when Today has nothing running, nothing waiting and
       // no threads, it says so and its ONE verb — `Start run` — opens the run
@@ -968,8 +1039,13 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       const context = await browser.newContext({ baseURL: EMU_BASE_URL });
       try {
         const nobody = await context.newPage();
+        // The lab's shared sign-in helper (e2e/tests/helpers.ts — the same
+        // door setup.spec.ts uses for its storage states): the mock IdP mints
+        // any subject typed into its form, so a brand-new member-less reader
+        // is the documented path, not a hand-rolled login. signIn bounds its
+        // own waits; the test budget above is the outer bound.
         await signIn(nobody, `emu-t3-nobody-${EMU_PASS_ID}`);
-        await nobody.goto("/");
+        await nobody.goto("/", { timeout: 30_000 });
         await expect(nobody.getByTestId("home-page"), "Today renders").toBeVisible({
           timeout: 30_000,
         });
@@ -993,7 +1069,10 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
           "the run form names the reader's own state: no project to start against",
         ).toBeVisible({ timeout: 15_000 });
       } finally {
-        await context.close();
+        // Guarded close: if the leg died mid-page the close must not add a
+        // `Failed to find context` red on top of the real failure (1.64's
+        // context close takes no timeout — the test budget is the bound).
+        await context.close().catch(() => undefined);
       }
     });
   });

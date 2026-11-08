@@ -21,6 +21,11 @@ const SCHED_NAME = `Emu sched ${EMU_PASS_ID}`;
 
 type Json = Record<string, unknown>;
 
+/** Reads that mean "not running YET" for the planner-leg sample loop (still
+ * queued / a transiently unreadable response). Anything else that is not
+ * `running`/`preparing` ended the leg's sampling window honestly. */
+const RUNNING_SAMPLE_MISS_READS = ["queued", "unknown"];
+
 /** `lib/format.ts`'s `testidOf`: the run rows on the repo page are keyed on the
  * compacted uuid's first 13 characters, which is a test id and NOT a run id. */
 function testidOf(id: string): string {
@@ -43,6 +48,50 @@ async function expectRunActionAbsent(page: Page, testid: string, timeout = 30_00
   await expect(page.getByTestId("run-more-menu")).toBeVisible({ timeout });
   await expect(page.getByTestId(testid), `${testid} is not in the ⋯ menu either`).toHaveCount(0);
   await page.keyboard.press("Escape");
+}
+
+/**
+ * Take the RUNNING header sample on a tick where the caller has just observed
+ * the run running on the API: reload so the header mounts from the API's own
+ * current state (the run view's reads refetch only every 15 s — waiting a
+ * live DOM for a leg that may be seconds long is the race that red-passed 3
+ * of 6 runs, acceptance 42506795206), then prove `run-pause` is the header's
+ * ONE primary verb (`data-primary="true"`, no Review plan inline). Asserted,
+ * never CLICKED — this journey needs the run to finish.
+ *
+ * Returns whether the sample LANDED. A run that leaves the running state
+ * before the header converges is a miss the caller records as a note — never
+ * a pass; a run STILL running whose header contradicts the contract is a real
+ * defect and re-throws.
+ */
+async function sampleRunningHeader(
+  page: Page,
+  runStatus: () => Promise<string>,
+): Promise<boolean> {
+  await page.reload().catch(() => undefined);
+  const actions = page.getByTestId("run-header-actions");
+  const pause = actions.getByTestId("run-pause");
+  try {
+    await expect(
+      pause,
+      "design finding 11: the running run's ONE primary action is Pause",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(pause).toHaveText("Pause");
+    await expect(pause).toHaveAttribute("data-primary", "true");
+    await expect(
+      actions.getByTestId("run-review-plan"),
+      "a running run with no gate to review draws no Review plan",
+    ).toHaveCount(0);
+    return true;
+  } catch (error) {
+    const status = await runStatus();
+    if (status === "running" || status === "preparing") throw error;
+    console.log(
+      `run-gate note: the run read '${status}' before the running header sample could land — ` +
+        "this sample is recorded as a miss, not a pass",
+    );
+    return false;
+  }
 }
 
 test.describe("run-gate-artifacts (alice)", () => {
@@ -196,6 +245,47 @@ test.describe("run-gate-artifacts (alice)", () => {
       const run = (await res.json()) as Json;
       return typeof run.status === "string" ? run.status : "unknown";
     };
+
+    // Finding 11 / acceptance T8, the running half — taken from the leg that
+    // is DETERMINISTICALLY running: this run's planner leg is a real
+    // model.chat that takes minutes (the step below gives it up to 10), so a
+    // tight poll catches it running while the run is observed running, and
+    // the header sample lands inside that same observation. The post-gate
+    // implement leg cannot promise this (3 of 6 passes lost the old shape,
+    // acceptance 42506795206); `runningSamples` is what pins that at least
+    // ONE running sample — with `run-pause` as the ONE primary verb — landed
+    // somewhere in the journey.
+    let runningSamples = 0;
+
+    await test.step("the started run runs — its header offers Pause as its one primary verb", async () => {
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        const status = await runStatus();
+        if (status === "running" || status === "preparing") {
+          if (await sampleRunningHeader(page, runStatus)) runningSamples += 1;
+          return;
+        }
+        if (!RUNNING_SAMPLE_MISS_READS.includes(status) && !status.startsWith("http-")) {
+          // waiting_human or a terminal state before a running tick (a very
+          // fast planner, or a run that died in the worker): the wait step
+          // below owns the retry flow and the honest red for those states;
+          // the guard after the approval is what still demands a sample.
+          console.log(
+            `run-gate note: no planner-leg running sample — the run read '${status}' ` +
+              "before it was observed running",
+          );
+          return;
+        }
+        if (Date.now() >= deadline) {
+          console.log(
+            "run-gate note: no planner-leg running sample within 90 s — the run has not left " +
+              "the queue; the gate wait owns the honest red from here",
+          );
+          return;
+        }
+        await page.waitForTimeout(500);
+      }
+    });
 
     await test.step("wait for the approval gate to wait for a decision (≤ 10 min)", async () => {
       // The real model endpoint can blow a leg transiently (home-cluster saw
@@ -362,30 +452,55 @@ test.describe("run-gate-artifacts (alice)", () => {
       ).toBeVisible({ timeout: 60_000 });
     });
 
-    await test.step("the resumed run's header offers Pause as its one primary verb", async () => {
-      // Finding 11 / acceptance T8, the running half: the moment the decided
-      // gate releases the run, its header's ONE primary action is `run-pause`
-      // ("Pause"). Asserted, never CLICKED — this journey needs the run to
-      // finish. A run that somehow reached a terminal state without a running
-      // sample is the honest red the poll below reports.
-      await expect
-        .poll(runStatus, {
-          message: "the decided run runs again (the implement leg) before it completes",
-          timeout: 120_000,
-          intervals: [1_000],
-        })
-        .toBe("running");
-      const pause = page.getByTestId("run-header-actions").getByTestId("run-pause");
-      await expect(
-        pause,
-        "design finding 11: the running run's ONE primary action is Pause",
-      ).toBeVisible({ timeout: 30_000 });
-      await expect(pause).toHaveText("Pause");
-      await expect(pause).toHaveAttribute("data-primary", "true");
-      await expect(
-        page.getByTestId("run-header-actions").getByTestId("run-review-plan"),
-        "a running run with no gate to review draws no Review plan",
-      ).toHaveCount(0);
+    await test.step("the decided run runs again — Pause sampled while it runs (≤ 8 min)", async () => {
+      // Finding 11 / acceptance T8, the resumed half. The old shape polled the
+      // API for "running" (1 s ticks, 120 s) and only THEN looked at the
+      // header — it lost 3 of 6 passes: a gate release slower than 120 s
+      // never let the poll resolve, and an implement leg that finished
+      // between the tick that saw "running" and the header check left the
+      // DOM proof staring at a finished run. Now: watch the status over the
+      // window a resumption actually gets, and when a tick observes it
+      // running, take the header sample INSIDE that observation. A resumed
+      // sample that lands is a second proof; a run that finished before one
+      // could land is recorded as a note, never as a pass (the deterministic
+      // proof is the planner-leg sample above); a run still parked at the
+      // decided gate after 8 min, and a journey with NO running sample at
+      // all, are the honest reds.
+      const resumedOrFinished = [
+        "running",
+        "preparing",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+      ];
+      let lastStatus = "";
+      const deadline = Date.now() + 8 * 60_000;
+      for (;;) {
+        lastStatus = await runStatus();
+        if (lastStatus === "running" || lastStatus === "preparing") {
+          if (await sampleRunningHeader(page, runStatus)) runningSamples += 1;
+          break;
+        }
+        if (["completed", "failed", "cancelled", "interrupted"].includes(lastStatus)) {
+          console.log(
+            `run-gate note: the decided run read '${lastStatus}' before a resumed running ` +
+              "sample could be taken — the running-state proof stands on the sample(s) that landed",
+          );
+          break;
+        }
+        if (Date.now() >= deadline) break;
+        await page.waitForTimeout(1_000);
+      }
+      expect(
+        resumedOrFinished.includes(lastStatus),
+        `the decided run runs again (the implement leg) before it completes — 8 min after the approval it still reads '${lastStatus}'`,
+      ).toBe(true);
+      expect(
+        runningSamples,
+        "the running-state header proof (run-pause as the ONE primary verb) was never observed " +
+          "while the API observed a run running — no sample landed on either leg",
+      ).toBeGreaterThan(0);
     });
 
     await test.step("wait for the run to complete (≤ 10 min)", async () => {
