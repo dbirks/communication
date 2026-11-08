@@ -210,6 +210,17 @@ export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
       "the edge + word is a desktop hover/focus label; touch has no hover and the + carries the same words as its accessible name",
     reach: "edge-add-*",
   },
+  // The catch-up piece page (8b, ui/src/pages/CatchUpItem.tsx): the shared
+  // tour's stop rows are the left pane at `md` and up and the SAME list as
+  // the 'This work's tour' SELECT below it — the documented phone reflow, one
+  // tap away by the select itself. The pattern excuses a row only while the
+  // select renders at 390; a phone that grew neither the pane nor the select
+  // still files.
+  "catchup-item-stop-*": {
+    reason:
+      "phone reflow of the piece page's tour list: the stop rows become the 'This work's tour' select below md (CatchUpItem.tsx)",
+    reach: "catchup-item-stop-select",
+  },
 };
 
 /**

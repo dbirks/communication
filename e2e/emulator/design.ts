@@ -1863,6 +1863,162 @@ const RCN_RUN_ISSUE_LIST: Landmark = {
   ],
 };
 
+/* ------------------------------------- Catch up (redesign 8a/8b/7b), the rail (3a/4a) and Today's Ask
+ * The redesign's Catch up screens have NO png renders yet (they are the board
+ * numbers 8a/8b/7b and the rail 3a/4a of the sidebar handoff), so the coverage
+ * rule that forces a landmark list per RENDER does not fire here — but the
+ * structure the boards own is claimed anyway, and `emu.screen` asserts it at
+ * both widths like every other screen.
+ */
+/** 8a — the reader's pile: heading, the two chip rows, the recap with its
+ * primary verb, the tour cards (the first one focused), and the rest list. */
+const CU_HEADING: Landmark = {
+  id: "cu-heading",
+  desc: "the 'Catch up' page heading",
+  any: [{ testid: "catchup-page" }, { role: "heading", level: 1, name: /^Catch up$/ }],
+};
+const CU_PROJECT_CHIPS: Landmark = {
+  id: "cu-project-chips",
+  desc: "the project filter chips (one per project you belong to)",
+  any: [{ testid: "catchup-project-chip-*" }],
+};
+const CU_WINDOW_CHIPS: Landmark = {
+  id: "cu-window-chips",
+  desc: "the window chips (unseen by default, then 6h / 24h / 2d / 7d)",
+  any: [{ testid: "catchup-window-*" }, { role: "group", name: /time window/i }],
+};
+const CU_RECAP: Landmark = {
+  id: "cu-recap",
+  desc: "the ASSISTANT RECAP block",
+  any: [{ testid: "catchup-recap" }, { text: /assistant recap/i }],
+};
+const CU_START_TOUR: Landmark = {
+  id: "cu-start-tour",
+  desc: "the recap's 'Start the tour' primary action",
+  any: [{ testid: "catchup-start-tour" }, { role: "link", name: /start the tour/i }],
+};
+const CU_CARD_ONE: Landmark = {
+  id: "cu-card-one",
+  desc: "the first tour card (the focused one)",
+  any: [{ testid: "catchup-card-1" }],
+};
+/** The 'See more' card exists only while the tour has more stops than its
+ * page; the row it gives way to is the rest list, so one landmark carries
+ * both states — the 390 rule read as a landmark (the content, or the tap). */
+const CU_SEE_MORE_OR_REST: Landmark = {
+  id: "cu-see-more-or-rest",
+  desc: "the 'See more' card where the tour pages, or 'the rest' below it",
+  any: [{ testid: "catchup-see-more" }, { testid: "catchup-rest" }],
+};
+const CU_REST: Landmark = {
+  id: "cu-rest",
+  desc: "'the rest' — every piece of work still owed",
+  any: [{ testid: "catchup-rest" }, { text: /the rest ·/i }],
+};
+/** 8b — one piece of work: the shared tour's stop list on the left, the
+ * current stop in the middle, the version history on the right. At 390 the
+ * left list becomes the 'This work's tour' select — one landmark, both forms. */
+const CU_ITEM: Landmark = {
+  id: "cu-item",
+  desc: "the piece-of-work page",
+  any: [{ testid: "catchup-item" }],
+};
+const CU_STOP_LIST: Landmark = {
+  id: "cu-stop-list",
+  desc: "the work's tour stop list (at 390, the 'This work's tour' select)",
+  any: [
+    { testid: "catchup-item-stop-*", except: ["catchup-item-stop-select"] },
+    { testid: "catchup-item-stop-select" },
+    { text: /this work's tour/i },
+  ],
+};
+const CU_CURRENT_STOP: Landmark = {
+  id: "cu-current-stop",
+  desc: "the current stop",
+  any: [{ testid: "catchup-item-current" }],
+};
+const CU_HISTORY: Landmark = {
+  id: "cu-history",
+  desc: "the TOUR HISTORY panel — how the story was rewritten",
+  any: [{ testid: "catchup-item-history" }, { text: /tour history/i }],
+};
+const CU_DECISION: Landmark = {
+  id: "cu-decision",
+  desc: "the decision a stop asks (prompt + options; a question, never a gate)",
+  any: [{ testid: "catchup-decision" }],
+};
+/** 7b — the tour player, the one page OUTSIDE the shell: no sidebar at all,
+ * the header carries progress, the stop list is the phone strip below 768. */
+const TOUR_PLAYER: Landmark = {
+  id: "tour-player",
+  desc: "the full-screen tour player",
+  host: "page",
+  any: [{ testid: "tour-player" }],
+};
+const TOUR_PROGRESS: Landmark = {
+  id: "tour-progress",
+  desc: "the tour's progress in the player header (at 390 the same progress is the unlabelled strip above the stop)",
+  host: "page",
+  only: 1280,
+  any: [{ testid: "tour-progress" }],
+};
+const TOUR_STOP_LIST: Landmark = {
+  id: "tour-stop-list",
+  desc: "the tour's stop list (at 390, the horizontal stop strip)",
+  host: "page",
+  any: [{ testid: "tour-stop-*" }, { testid: "tour-stop-strip-*" }],
+};
+const TOUR_CURRENT: Landmark = {
+  id: "tour-current",
+  desc: "the stop on screen",
+  any: [{ testid: "tour-current" }],
+};
+/** 3a/4a — the rail: the 52px column, its tiles and its expand control. The
+ * shell lives OUTSIDE <main>, so these read the whole page; at 390 the
+ * documented reflow replaces the column with the phone strip's menu button. */
+const RAIL_COLUMN: Landmark = {
+  id: "rail-column",
+  desc: "the 52px rail column (at 390, the phone strip's menu button that reaches it)",
+  host: "page",
+  any: [{ testid: "sidebar-rail" }, { testid: "sidebar-open" }],
+};
+const RAIL_TILES: Landmark = {
+  id: "rail-tiles",
+  desc: "the rail's icon tiles (Today, Catch up, Threads, Projects, Workflows, Agents)",
+  host: "page",
+  any: [{ testid: "rail-item-*" }, { testid: "sidebar-open" }],
+};
+const RAIL_EXPAND: Landmark = {
+  id: "rail-expand",
+  desc: "the rail's expand control (at 390, the phone strip's menu button)",
+  host: "page",
+  any: [{ testid: "sidebar-expand" }, { testid: "sidebar-open" }],
+};
+const RAIL_BRAND: Landmark = {
+  id: "rail-brand",
+  desc: "the mark at the rail's head (at 390, the phone strip carries it)",
+  host: "page",
+  any: [{ testid: "brand-home" }, { testid: "phone-top-strip" }],
+};
+/** Today with the floating Ask (finding 08/10): the page, its greeting, and
+ * the Ask button fixed over the content in its own corner at BOTH widths. */
+const TODAY_PAGE: Landmark = {
+  id: "today-page",
+  desc: "the Today page",
+  any: [{ testid: "home-page" }],
+};
+const TODAY_GREETING: Landmark = {
+  id: "today-greeting",
+  desc: "Today's greeting as the page H1 (the name is data; the greeting is not)",
+  any: [{ testid: "home-greeting" }, { role: "heading", level: 1, name: /^good /i }],
+};
+const TODAY_ASK_FAB: Landmark = {
+  id: "today-ask-fab",
+  desc: "the floating 'Ask ⌘J' button",
+  host: "page",
+  any: [{ testid: "ask-fab" }],
+};
+
 /* ------------------------------------------------------------- the screens */
 
 /**
@@ -2595,6 +2751,26 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   // that the run page is not an editor lives in the specs: no `edge-add-*` /
   // `add-after-*` affordance renders on /runs/:id (StudioCanvas renders the
   // `+` affordances only on an editable canvas).
+
+  /* ---------------------------- the redesign: Catch up (8a/8b/7b), the rail (3a/4a), Today's Ask */
+  "cu-8a catch-up": [
+    CU_HEADING,
+    CU_PROJECT_CHIPS,
+    CU_WINDOW_CHIPS,
+    CU_RECAP,
+    CU_START_TOUR,
+    CU_CARD_ONE,
+    CU_SEE_MORE_OR_REST,
+    CU_REST,
+  ],
+  "cu-8b piece": [CU_ITEM, CU_STOP_LIST, CU_CURRENT_STOP, CU_HISTORY],
+  "cu-8b decision": [CU_ITEM, CU_STOP_LIST, CU_CURRENT_STOP, CU_DECISION],
+  "cu-7b tour": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT],
+  // The same player on the piece whose beat ASKS: the decision block is what
+  // this capture exists to prove renders here too (journeys/catchup.spec.ts).
+  "cu-7b decision": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT, CU_DECISION],
+  "rail-3a rail": [RAIL_COLUMN, RAIL_TILES, RAIL_EXPAND, RAIL_BRAND],
+  "today-ask today": [TODAY_PAGE, TODAY_GREETING, TODAY_ASK_FAB],
 };
 
 /**
