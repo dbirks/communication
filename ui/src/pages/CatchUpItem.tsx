@@ -24,6 +24,7 @@ import Page, { PAGE_BAND_PAD } from "../components/ds/Page";
 import { Button } from "../components/ds/Button";
 import { ProblemBanner } from "../components/Feedback";
 import { Evidence } from "../components/catchup/Evidence";
+import { useIsNarrow } from "../components/Shell";
 import { RefChips } from "../components/catchup/RefChips";
 import { StopDecision } from "../components/catchup/StopDecision";
 import {
@@ -40,6 +41,12 @@ import {
   type CatchUpImportance,
   type CatchUpStop,
 } from "../api/catchup";
+
+/** The mock's explainer for the shared tour. It prints inside the tour column
+ * at every width — under the stop list on the wide frames, above the picker on
+ * the phone — so a reader who arrives at 390 still learns what the tour is. */
+const TOUR_EXPLAINER =
+  "One tour per piece of work. It is rewritten as the work moves, and everyone on the project sees the same one.";
 
 /** must_know outranks worth_a_look outranks routine; the tag shows the worst
  * importance any beat of the story carries. */
@@ -179,6 +186,12 @@ export default function CatchUpItem() {
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [showEarlier, setShowEarlier] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Below the phone cut the tour column keeps its heading, its note and its
+  // explainer, but the stop rows give way to the select the full title fits
+  // into. Same question the CSS breakpoint asks, one source of truth for what
+  // MOUNTS (see Shell's `useIsNarrow` rationale) — the picker never exists
+  // twice in the tree.
+  const narrow = useIsNarrow();
 
   const data = item.data;
   const stops = useMemo(() => data?.latest?.stops ?? [], [data]);
@@ -363,10 +376,13 @@ export default function CatchUpItem() {
         {/* Three columns the full height of the content area with hairline
          * dividers (mock 8b): the work's tour, the story, the rail. */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-[14px] px-[22px] pb-[24px] md:grid-cols-[260px_minmax(0,1fr)_260px] md:gap-0 md:px-0 md:pb-0">
-          {/* Left: this work's shared tour, edge to edge. */}
+          {/* Left: this work's shared tour, edge to edge. ONE container at
+           * every width (cu-8b parity): below the phone cut only the PICK
+           * changes — the stop rows become the select — while the heading, the
+           * note and the explainer still print inside it. */}
           <aside
             data-testid="catchup-item-tour-column"
-            className="hidden min-w-0 flex-col border-r border-line-strong bg-surface md:flex"
+            className="flex min-w-0 flex-col border-line-strong bg-surface md:border-r"
           >
             <div className="flex flex-wrap items-center gap-x-[8px] border-b border-line-strong bg-fill px-[10px] py-[4px] font-mono text-[10px] leading-[1.4] font-semibold tracking-[.04em] text-ink-2 uppercase">
               <span data-testid="catchup-item-tour-heading">This work&apos;s tour</span>
@@ -374,95 +390,107 @@ export default function CatchUpItem() {
                 shared with the project
               </span>
             </div>
-            {stops.length === 0 ? (
-              <p className="px-[10px] py-[10px] text-[12.5px] text-faint">
-                This work has no tour yet — the assistant writes one when a run finishes.
-              </p>
+            {narrow ? (
+              <>
+                {/* Phone: the column still prints the heading, the note and the
+                 * explainer ABOVE the pick, so the reader learns what the tour
+                 * is; only the stop list reduces to the select the full title
+                 * fits into (the documented 8b phone reflow). */}
+                <p
+                  data-testid="catchup-item-tour-explainer"
+                  className="px-[10px] py-[8px] text-[12px] leading-[1.45] text-muted"
+                >
+                  {TOUR_EXPLAINER}
+                </p>
+                <div className="min-w-0 px-[10px] pb-[10px]">
+                  <label htmlFor="catchup-item-stop-select" className="sr-only">
+                    This work&apos;s tour
+                  </label>
+                  <select
+                    id="catchup-item-stop-select"
+                    data-testid="catchup-item-stop-select"
+                    title={current?.title ?? ""}
+                    value={current?.id ?? ""}
+                    onChange={(event) => {
+                      const stop = stops.find((candidate) => candidate.id === event.target.value);
+                      openStop(stop ?? null);
+                    }}
+                    className="min-h-[32px] w-full truncate rounded-panel border border-line-strong bg-surface px-[8px] py-[6px] font-ui text-[13px] text-ink"
+                  >
+                    {stops.map((stop, index) => (
+                      <option key={stop.id} value={stop.id}>
+                        {index + 1}. {stop.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
             ) : (
               <>
-                {updated ? (
-                  <p className="border-b border-line px-[10px] py-[6px] font-mono text-[10px] font-semibold tracking-[.03em]">
-                    <span className="rounded-tag bg-imp-look-tag-bg px-[5px] py-[1px] text-imp-look-tag-fg">
-                      UPDATED
-                    </span>{" "}
-                    <span className="text-muted">
-                      {newStops.length} new {newStops.length === 1 ? "stop" : "stops"} since v
-                      {youSaw}
-                    </span>
+                {/* The wide frames' pick: the stop list itself. */}
+                {stops.length === 0 ? (
+                  <p className="px-[10px] py-[10px] text-[12.5px] text-faint">
+                    This work has no tour yet — the assistant writes one when a run finishes.
                   </p>
-                ) : null}
-                {newStops.map((stop) => (
-                  <StopRow
-                    key={stop.id}
-                    stop={stop}
-                    number={stops.indexOf(stop) + 1}
-                    selected={current?.id === stop.id}
-                    addedAt={addedClock(stop)}
-                    onSelect={() => openStop(stop)}
-                  />
-                ))}
-                {earlierStops.length > 0 ? (
+                ) : (
                   <>
-                    <button
-                      type="button"
-                      data-testid="catchup-item-earlier-toggle"
-                      onClick={() => setShowEarlier((prev) => !prev)}
-                      className="flex w-full items-center gap-[6px] border-b border-line bg-fill px-[10px] py-[5px] font-mono text-[9.5px] font-semibold tracking-[.04em] text-ink-2 uppercase"
-                    >
-                      {earlierExpanded ? "▾" : "▸"} Earlier stops ({earlierStops.length})
-                    </button>
-                    {earlierExpanded
-                      ? earlierStops.map((stop) => (
-                          <StopRow
-                            key={stop.id}
-                            stop={stop}
-                            number={stops.indexOf(stop) + 1}
-                            selected={current?.id === stop.id}
-                            addedAt={addedClock(stop)}
-                            onSelect={() => openStop(stop)}
-                          />
-                        ))
-                      : null}
+                    {updated ? (
+                      <p className="border-b border-line px-[10px] py-[6px] font-mono text-[10px] font-semibold tracking-[.03em]">
+                        <span className="rounded-tag bg-imp-look-tag-bg px-[5px] py-[1px] text-imp-look-tag-fg">
+                          UPDATED
+                        </span>{" "}
+                        <span className="text-muted">
+                          {newStops.length} new {newStops.length === 1 ? "stop" : "stops"} since v
+                          {youSaw}
+                        </span>
+                      </p>
+                    ) : null}
+                    {newStops.map((stop) => (
+                      <StopRow
+                        key={stop.id}
+                        stop={stop}
+                        number={stops.indexOf(stop) + 1}
+                        selected={current?.id === stop.id}
+                        addedAt={addedClock(stop)}
+                        onSelect={() => openStop(stop)}
+                      />
+                    ))}
+                    {earlierStops.length > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          data-testid="catchup-item-earlier-toggle"
+                          onClick={() => setShowEarlier((prev) => !prev)}
+                          className="flex w-full items-center gap-[6px] border-b border-line bg-fill px-[10px] py-[5px] font-mono text-[9.5px] font-semibold tracking-[.04em] text-ink-2 uppercase"
+                        >
+                          {earlierExpanded ? "▾" : "▸"} Earlier stops ({earlierStops.length})
+                        </button>
+                        {earlierExpanded
+                          ? earlierStops.map((stop) => (
+                              <StopRow
+                                key={stop.id}
+                                stop={stop}
+                                number={stops.indexOf(stop) + 1}
+                                selected={current?.id === stop.id}
+                                addedAt={addedClock(stop)}
+                                onSelect={() => openStop(stop)}
+                              />
+                            ))
+                          : null}
+                      </>
+                    ) : null}
                   </>
-                ) : null}
+                )}
+                {/* The mock's explainer sits under the list, inside the column. */}
+                <p
+                  data-testid="catchup-item-tour-explainer"
+                  className="px-[12px] py-[12px] text-[12px] leading-[1.45] text-muted"
+                >
+                  {TOUR_EXPLAINER}
+                </p>
               </>
             )}
-            {/* The mock's explainer sits under the list, inside the column. */}
-            <p
-              data-testid="catchup-item-tour-explainer"
-              className="px-[12px] py-[12px] text-[12px] leading-[1.45] text-muted"
-            >
-              One tour per piece of work. It is rewritten as the work moves, and everyone on the
-              project sees the same one.
-            </p>
           </aside>
-
-          {/* Mobile: the same pick as a select the full title fits into. */}
-          <div className="min-w-0 md:hidden">
-            <label
-              htmlFor="catchup-item-stop-select"
-              className="mb-[4px] block font-mono text-[9.5px] font-semibold tracking-[.04em] text-muted uppercase"
-            >
-              This work&apos;s tour
-            </label>
-            <select
-              id="catchup-item-stop-select"
-              data-testid="catchup-item-stop-select"
-              title={current?.title ?? ""}
-              value={current?.id ?? ""}
-              onChange={(event) => {
-                const stop = stops.find((candidate) => candidate.id === event.target.value);
-                openStop(stop ?? null);
-              }}
-              className="min-h-[32px] w-full truncate rounded-panel border border-line-strong bg-surface px-[8px] py-[6px] font-ui text-[13px] text-ink"
-            >
-              {stops.map((stop, index) => (
-                <option key={stop.id} value={stop.id}>
-                  {index + 1}. {stop.title}
-                </option>
-              ))}
-            </select>
-          </div>
 
           {/* Center: the current stop. */}
           <div data-testid="catchup-item-current" className="min-w-0 md:px-[28px] md:pt-[22px]">

@@ -2,8 +2,11 @@
  * The piece-of-work page (design 8b) over the mocked API: the header's
  * seen-by line for each reader state, the ADDED / UPDATED treatment when the
  * shared tour moved after this reader looked, moving off a stop paying that
- * stop's debt, the copy-link and play-tour actions, and the stop pick the
- * `?stop=` parameter makes.
+ * stop's debt, the copy-link and play-tour actions, the stop pick the
+ * `?stop=` parameter makes, and the tour column's words at both frames — the
+ * phone's select replaces the stop list but stays inside the column, so 390
+ * still prints the heading, the note and the explainer the width sweep reads
+ * at 1280.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,6 +14,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setCsrfToken } from "../api/client";
 import { mockFetch, type RouteStub } from "../test/fakes";
+import { PHONE_MAX_WIDTH_PX } from "../components/Shell";
 import { clockOf } from "../components/catchup/importance";
 import CatchUpItem from "./CatchUpItem";
 
@@ -147,6 +151,38 @@ function detail(routes: Record<string, unknown> = {}): RouteStub[] {
   return [{ path: itemPath, body: itemDetail(routes) }];
 }
 
+/** Answer the page's frame query (the phone cut is `PHONE_MAX_WIDTH_PX`, the
+ * shell's rule) as a `width` px viewport would. The stop list and the select
+ * are a `matchMedia` question, not a stylesheet one, so this is what decides
+ * which of them mounts. */
+function stubViewport(width: number): void {
+  vi.stubGlobal("matchMedia", (query: string) => {
+    const max = /\(max-width: ([\d.]+)px\)/.exec(query);
+    const min = /\(min-width: ([\d.]+)px\)/.exec(query);
+    let matches = true;
+    if (min) matches = matches && width >= Number(min[1]);
+    if (max) matches = matches && width <= Number(max[1]);
+    return {
+      matches,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    };
+  });
+}
+
+/** Restore jsdom's real `matchMedia` after a `stubViewport` test — NOT
+ * `vi.unstubAllGlobals()`, which would also drop the session-wide stubs while
+ * a rendered app is still mounted. */
+const nativeMatchMedia = window.matchMedia;
+function restoreViewport(): void {
+  vi.stubGlobal("matchMedia", nativeMatchMedia);
+}
+
 describe("/catch-up/:workId", () => {
   it("names the update the reader has not seen when their version is older", async () => {
     mount(detail());
@@ -263,6 +299,46 @@ describe("/catch-up/:workId", () => {
     );
     expect(column.contains(screen.getByTestId("catchup-item-stop-s3"))).toBe(true);
   });
+
+  it.each([390, 1280])(
+    "keeps the tour column's words and the pick in one container at %i",
+    async (width) => {
+      stubViewport(width);
+      try {
+        mount(detail());
+        const column = await screen.findByTestId("catchup-item-tour-column");
+        // The acceptance sweep (42487889463) reads these three ids per width:
+        // the phone's select replaced the list AND took the column's heading,
+        // note and explainer with it, so 390 lost words 1280 has.
+        expect(screen.getByTestId("catchup-item-tour-heading").textContent).toBe(
+          "This work's tour",
+        );
+        expect(column.contains(screen.getByTestId("catchup-item-tour-heading"))).toBe(true);
+        expect(column.textContent).toContain("shared with the project");
+        expect(screen.getByTestId("catchup-item-tour-explainer").textContent).toBe(
+          "One tour per piece of work. It is rewritten as the work moves, and everyone on the " +
+            "project sees the same one.",
+        );
+        expect(column.contains(screen.getByTestId("catchup-item-tour-explainer"))).toBe(true);
+        // Only the PICK follows the frame: the rows wide, the select on the
+        // phone — and it always lives inside that same column.
+        const select = screen.queryByTestId("catchup-item-stop-select");
+        const rows = screen.queryAllByTestId(/^catchup-item-stop-s\d$/);
+        if (width <= PHONE_MAX_WIDTH_PX) {
+          expect(select).toBeTruthy();
+          expect(column.contains(select)).toBe(true);
+          expect(rows).toHaveLength(0);
+        } else {
+          expect(select).toBeNull();
+          expect(rows.length).toBeGreaterThan(0);
+          expect(column.contains(screen.getByTestId("catchup-item-stop-s3"))).toBe(true);
+        }
+        cleanup();
+      } finally {
+        restoreViewport();
+      }
+    },
+  );
 
   it("says nobody has seen this with no stray space in front of it", async () => {
     mount(detail({ seen_by: [], you_saw_version: null, unseen_stops: 3 }));
