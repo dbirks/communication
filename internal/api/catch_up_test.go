@@ -37,9 +37,9 @@ type fakeCatchUp struct {
 	visits   []time.Time
 	reply    CatchUpReplyRecord
 
-	listErr, itemErr, questionErr, seenErr, allErr   error
-	visitErr, visitsErr, recapErr, replyErr, postErr error
-	postConv                                         string
+	listErr, itemErr, questionErr, seenErr, allErr                  error
+	visitErr, visitsErr, recapErr, replyErr, postErr, recapWriteErr error
+	postConv                                                        string
 
 	gotFilter      CatchUpListFilter
 	gotSeenItem    string
@@ -50,6 +50,9 @@ type fakeCatchUp struct {
 	gotReplyItem   string
 	gotReplyStop   string
 	gotReplyText   string
+	gotRecapWrite  CatchUpRecapWrite
+	recapWrites    int
+	recapWrittenAt time.Time
 	posted         []string
 	lastCaller     Caller
 }
@@ -105,6 +108,21 @@ func (f *fakeCatchUp) LatestCatchUpRecap(_ context.Context, _ Caller,
 		return CatchUpRecapView{}, f.recapErr
 	}
 	return f.recap, nil
+}
+
+func (f *fakeCatchUp) SaveCatchUpRecap(_ context.Context, _ Caller,
+	in CatchUpRecapWrite) (CatchUpRecapView, error) {
+	f.gotRecapWrite = in
+	f.recapWrites++
+	if f.recapWriteErr != nil {
+		return CatchUpRecapView{}, f.recapWriteErr
+	}
+	ids := in.ProjectIDs
+	if ids == nil {
+		ids = []string{}
+	}
+	return CatchUpRecapView{Text: in.Text, WrittenAt: f.recapWrittenAt,
+		Window: in.Window, ProjectIDs: ids}, nil
 }
 
 func (f *fakeCatchUp) InsertCatchUpDecisionReply(_ context.Context, _ Caller,
@@ -800,15 +818,21 @@ func TestCatchUpAnonymousIsUnauthorized(t *testing.T) {
 	}
 }
 
-// TestCatchUpNoRecapGenerationRoute: ADR-0078 ships the stored narrative and
-// not the call that writes it, so there is no POST on the recap route to mount.
-func TestCatchUpNoRecapGenerationRoute(t *testing.T) {
+// TestCatchUpRecapUnconfiguredIs503: a deployment with no assistant egress has
+// no recap generator, and the POST says so with the ask route's own problem —
+// it never stores a sentence no model wrote, and it never 404s a client into
+// thinking the endpoint is missing. (ADR-0078 § Migration shipped the read
+// half first; T13b adds the browser-askable recap, which is allowed precisely
+// because a recap is one reader's row, not a shared tour.)
+func TestCatchUpRecapUnconfiguredIs503(t *testing.T) {
 	t.Parallel()
 	srv := cuServer(t, &fakeCatchUp{}, nil)
 	rec := cuPost(t, srv, cuBase+"/api/v1/catch-up/recap", map[string]string{"window": "24h"})
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("POST /catch-up/recap = %d, want 404: generation is not a route a browser can ask for",
-			rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /catch-up/recap = %d, want 503 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "assistant_not_configured") {
+		t.Errorf("problem = %s, want degraded assistant_not_configured", rec.Body)
 	}
 }
 
@@ -846,9 +870,10 @@ func TestCatchUpRoutesAreDocumented(t *testing.T) {
 			continue
 		}
 	}
-	if len(registered) != 9 {
-		// ADR-0078 step 1 mounted eight; T13a adds the per-reader tour page.
-		t.Fatalf("catch_up.go registers %d routes, want the 9 ADR-0078 mounts: %v",
+	if len(registered) != 10 {
+		// ADR-0078 step 1 mounted eight; T13a adds the per-reader tour page
+		// and T13b the browser-askable recap.
+		t.Fatalf("catch_up.go registers %d routes, want the 10 ADR-0078 mounts: %v",
 			len(registered), registered)
 	}
 	m4SetEqual(t, "openapi.yaml's catch-up paths vs the registered patterns", documented, registered)

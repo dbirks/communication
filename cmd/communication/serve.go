@@ -1388,7 +1388,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		// append. `GET /catch-up/items` schedules a pass after it answers; with
 		// no egress triple the builder returns nil and the routes stay the
 		// pure reads they were — an empty page, never a stub narrative.
-		api.BuildCatchUpGenerator(api.CatchUpGenDeps{
+		api.WithTourGenerator(api.BuildCatchUpGenerator(api.CatchUpGenDeps{
 			Broker:    asstBroker,
 			CatchUp:   postgres.APICatchUpGenerator{S: &postgres.CatchUpStore{Pool: d.Pool}},
 			Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
@@ -1397,7 +1397,15 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
 				apiProjects),
 			Logger: d.API.Logger,
-		}))
+		})),
+		// The recap (T13b): the same broker, asked once per request, behind
+		// the assistant's own per-principal throttle. A recap is one reader's
+		// own row, so a browser may ask for it; a tour is shared, so no
+		// browser route may write one.
+		api.WithRecapGenerator(api.BuildCatchUpRecapGenerator(api.CatchUpRecapDeps{
+			Broker: asstBroker,
+			Logger: d.API.Logger,
+		})))
 
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
 	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled

@@ -1155,5 +1155,17 @@ func cuForeignProjectM4(t *testing.T, f *m4Fixture) string {
 		RETURNING id`, f.orgID, f.userID).Scan(&id); err != nil {
 		t.Fatalf("insert foreign project: %v", err)
 	}
+	// `created_by` is an FK to THIS user, and the shared m4Fixture cleanup
+	// deletes only its own project before deleting the user — so a project
+	// made here outlives the row that may drop it (CI run 42442085565:
+	// projects_created_by_fkey). t.Cleanup is LIFO, and the fixture registered
+	// its own cleanup first, so registering one here deletes this project
+	// BEFORE the fixture gets to the user.
+	t.Cleanup(func() {
+		if _, err := f.pool.Exec(context.Background(),
+			`DELETE FROM projects WHERE id = $1::uuid`, id); err != nil {
+			t.Errorf("cleanup foreign project %s: %v", id, err)
+		}
+	})
 	return id
 }

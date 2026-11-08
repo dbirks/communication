@@ -49,6 +49,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/dbirks/communication/internal/assistant"
 )
 
 // Limits this layer enforces before a store is asked. Each number is the same
@@ -286,6 +288,23 @@ type CatchUpTourPage struct {
 	MinutesTotal     int                   `json:"minutes_total"`
 }
 
+// CatchUpRecapWrite is the recap a validated generation stores: the narrative,
+// the window the reader named, and the projects the sentence claims to cover.
+// WrittenAt is the store's clock, never this layer's.
+type CatchUpRecapWrite struct {
+	Text       string
+	Window     string
+	ProjectIDs []string
+}
+
+// CatchUpRecapBody is POST /catch-up/recap's request. An absent body is "every
+// project I belong to, everything I have not seen" — the page's own default; a
+// `window` narrows the read that feeds the sentence.
+type CatchUpRecapBody struct {
+	Projects []string `json:"projects,omitempty"`
+	Window   string   `json:"window,omitempty"`
+}
+
 // CatchUpSeenBody is the `seen` request: which tour version the reader was
 // looking at, and which beats of it they actually looked at. The store reads
 // the ids out of that version rather than trusting this list, so an id that is
@@ -376,6 +395,27 @@ type CatchUpStore interface {
 	// InsertCatchUpDecisionReply stores the text on a stop that asked, and hands
 	// back the conversation it belongs to. It does NOT post it.
 	InsertCatchUpDecisionReply(ctx context.Context, c Caller, itemID, stopID, text string) (CatchUpReplyRecord, error)
+	// SaveCatchUpRecap writes one recap row for THIS reader (ADR-0078 §
+	// Decision 1: a recap is a fact about a reader, not a shared document) and
+	// hands back the stored row, written_at included. The text is never the
+	// browser's: the only caller that reaches it is the generator behind
+	// POST /catch-up/recap.
+	SaveCatchUpRecap(ctx context.Context, c Caller, in CatchUpRecapWrite) (CatchUpRecapView, error)
+}
+
+// CatchUpRecapGenerator is the seam the recap route asks for one narrative:
+// the caller's unseen items go in, a validated sentence comes out, and every
+// failure is the assistant's own typed refusal carrying the status the ask
+// route already answers with. It is deliberately NOT the tour trigger — that
+// one is a background pass a page load schedules; this one is a request a
+// person makes and waits on.
+type CatchUpRecapGenerator interface {
+	// Configured reports whether this deployment can generate at all. Unset
+	// is the honest absence: the route answers 503 assistant_not_configured
+	// rather than storing a sentence no model wrote.
+	Configured() bool
+	GenerateCatchUpRecap(ctx context.Context,
+		items []assistant.CatchUpRecapItem) (string, *assistant.Failure)
 }
 
 // CatchUpConversationPoster is the half of a decision reply that reaches the
@@ -402,12 +442,11 @@ type CatchUpConversationPoster interface {
 // pure reads they shipped as, and an empty page stays empty rather than
 // acquiring a story.
 func RegisterCatchUp(s *Server, store CatchUpStore, poster CatchUpConversationPoster,
-	gen ...CatchUpGeneratorTrigger) {
+	gen ...CatchUpOption) {
 	h := &catchUpHandlers{store: store, messages: poster, srv: s}
-	for _, g := range gen {
-		if g != nil {
-			h.gen = g
-			break
+	for _, o := range gen {
+		if o != nil {
+			o.apply(h)
 		}
 	}
 	s.HandleAuthed("GET /api/v1/catch-up/items", http.HandlerFunc(h.listItems))
@@ -418,8 +457,44 @@ func RegisterCatchUp(s *Server, store CatchUpStore, poster CatchUpConversationPo
 	s.HandleAuthed("POST /api/v1/catch-up/visits", http.HandlerFunc(h.recordVisit))
 	s.HandleAuthed("GET /api/v1/catch-up/visits/suggestion", http.HandlerFunc(h.visitSuggestion))
 	s.HandleAuthed("GET /api/v1/catch-up/recap", http.HandlerFunc(h.recap))
+	// The one POST on this surface that buys a completion: mounted with the
+	// ASSISTANT throttle (ADR-0077), the same limiter instance the assistant
+	// routes wrap, keyed on the principal. Recap prose is per-reader, so a
+	// person may ask for one — but not on every page load, and not for free.
+	s.HandleAuthed("POST /api/v1/catch-up/recap",
+		s.ThrottleAssistant(http.HandlerFunc(h.generateRecap)))
 	s.HandleAuthed("POST /api/v1/catch-up/items/{itemId}/stops/{stopId}/reply",
 		http.HandlerFunc(h.postReply))
+}
+
+// CatchUpOption is how an optional generator is handed to the surface: a
+// functional option rather than a second positional argument, because the two
+// generators are independent (a deployment may have the tour pass and not the
+// recap, though serve wires both from one broker).
+type CatchUpOption interface {
+	apply(*catchUpHandlers)
+}
+
+type catchUpOptionFunc func(*catchUpHandlers)
+
+func (f catchUpOptionFunc) apply(h *catchUpHandlers) { f(h) }
+
+// WithTourGenerator hands the items list its background pass.
+func WithTourGenerator(g CatchUpGeneratorTrigger) CatchUpOption {
+	return catchUpOptionFunc(func(h *catchUpHandlers) {
+		if g != nil {
+			h.gen = g
+		}
+	})
+}
+
+// WithRecapGenerator hands POST /catch-up/recap its model.
+func WithRecapGenerator(g CatchUpRecapGenerator) CatchUpOption {
+	return catchUpOptionFunc(func(h *catchUpHandlers) {
+		if g != nil {
+			h.recapGen = g
+		}
+	})
 }
 
 type catchUpHandlers struct {
@@ -429,6 +504,8 @@ type catchUpHandlers struct {
 	// gen is nil on a deployment with no assistant egress: the list route is
 	// then the pure read step 1 shipped.
 	gen CatchUpGeneratorTrigger
+	// recapGen is nil on the same deployment, and the POST route is then 503.
+	recapGen CatchUpRecapGenerator
 }
 
 // --- handlers ---------------------------------------------------------
@@ -678,6 +755,163 @@ func (h *catchUpHandlers) postReply(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	WriteJSON(w, http.StatusAccepted, out)
+}
+
+// --- the recap generation ------------------------------------------------
+
+// The windows a recap may be asked for. `unseen` is the page's own question
+// ("everything I have not seen", no clock at all); the rest are the design's
+// time windows, and the same names the visit suggestion infers.
+const (
+	// CatchUpWindowUnseen is "everything I have not seen", the page's own
+	// question with no clock in it at all.
+	CatchUpWindowUnseen = "unseen"
+	// catchUpRecapReadsMax / catchUpRecapBeatsMax bound the composed read the
+	// same way the tour walk is bounded (ADR-0063's bounded-work rule).
+	catchUpRecapReadsMax  = 40
+	catchUpRecapBeatsMax  = 4
+	catchUpRecapWindowMax = 64
+)
+
+// catchUpRecapWindows is the closed request vocabulary. A negative entry is
+// the window with no lower bound, not a duration.
+var catchUpRecapWindows = map[string]time.Duration{
+	CatchUpWindowUnseen:  -1,
+	CatchUpWindowSixHour: 6 * time.Hour,
+	CatchUpWindowDaily:   24 * time.Hour,
+	CatchUpWindowTwoDay:  2 * 24 * time.Hour,
+	CatchUpWindowWeekly:  7 * time.Hour * 24,
+}
+
+// generateRecap answers POST /catch-up/recap: the reader's own summary, asked
+// for. It is the one route on this surface that buys a completion, so it
+// carries the assistant's throttle (ADR-0077) and the assistant's honest 503;
+// what it writes is one row in `catchup_recaps` for THIS reader, which is why
+// it may exist at all where a tour-writing route may not (ADR-0078 § Decision
+// 1 — the tour is shared, the recap is not).
+func (h *catchUpHandlers) generateRecap(w http.ResponseWriter, r *http.Request) {
+	const action = "catchup.recap.generate"
+	c, ok := h.caller(w, r, action)
+	if !ok {
+		return
+	}
+	var body CatchUpRecapBody
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, ErrBodyEmpty) {
+		h.badRequest(w, r, err)
+		return
+	}
+	projects, ok := h.parseProjectIDs(w, body.Projects, "projects")
+	if !ok {
+		return
+	}
+	window := strings.TrimSpace(body.Window)
+	if window == "" {
+		window = CatchUpWindowUnseen
+	}
+	since, known := catchUpRecapWindows[window]
+	if !known {
+		catchUpInvalid(w, "window must be one of unseen, 6h, 24h, 2d, 7d.")
+		return
+	}
+	if h.recapGen == nil || !h.recapGen.Configured() {
+		// The feature is off: the same honest 503 the ask route answers, so
+		// the page keeps whatever recap is stored rather than showing a blank.
+		writeAssistantProblem(w, http.StatusServiceUnavailable, "assistant_not_configured",
+			"the assistant is not enabled on this deployment (COMMUNICATION_ASSISTANT_BASE_URL is unset)")
+		return
+	}
+
+	// The read is the list route's read — the same statement, the same
+	// membership predicate, the caller's own identity — narrowed to the window
+	// the reader asked about. A generator that could see more than the browser
+	// would be a hole, not a feature.
+	var sincePtr *time.Time
+	if since >= 0 {
+		cut := time.Now().UTC().Add(-since)
+		sincePtr = &cut
+	}
+	list, err := h.store.ListCatchUpItems(r.Context(), c, CatchUpListFilter{
+		ProjectIDs: projects, Since: sincePtr})
+	if err != nil {
+		h.fail(w, r, action, err)
+		return
+	}
+	items, err := h.recapItems(r.Context(), c, list)
+	if err != nil {
+		h.fail(w, r, action, err)
+		return
+	}
+
+	text, fail := h.recapGen.GenerateCatchUpRecap(r.Context(), items)
+	if fail != nil {
+		// 503 unreachable, 504 timeout, 502 malformed — the ask route's own
+		// mapping, and nothing is stored on any of them.
+		writeAssistantProblem(w, fail.Status, fail.Code, fail.Detail)
+		return
+	}
+	saved, err := h.store.SaveCatchUpRecap(r.Context(), c, CatchUpRecapWrite{
+		Text: text, Window: window, ProjectIDs: projects})
+	if err != nil {
+		h.fail(w, r, action, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	WriteJSON(w, http.StatusCreated, saved)
+}
+
+// recapItems turns the served list into the generator's block material: the
+// same rank the tour page uses (importance first, then the work's recency), so
+// the sentence leads with what the page will lead with. The beats come from one
+// item read per collected work item, bounded the way the tour walk is bounded
+// (ADR-0063): a reader with a hundred unseen items is told about the most
+// important few, and the bound is the reason the call stays one completion.
+func (h *catchUpHandlers) recapItems(ctx context.Context, c Caller,
+	list CatchUpItemList) ([]assistant.CatchUpRecapItem, error) {
+	items := append([]CatchUpListItemView(nil), list.Items...)
+	sort.SliceStable(items, func(i, j int) bool {
+		if a, b := catchUpImportanceRank(items[i].Importance), catchUpImportanceRank(items[j].Importance); a != b {
+			return a > b
+		}
+		if !items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		}
+		return items[i].ID < items[j].ID
+	})
+	out := make([]assistant.CatchUpRecapItem, 0, len(items))
+	for i, it := range items {
+		if len(out) >= assistant.CatchUpRecapItemsMax {
+			break
+		}
+		if i >= catchUpRecapReadsMax {
+			break // bound the item reads even when the rank rule says keep going
+		}
+		row := assistant.CatchUpRecapItem{
+			Title: it.Title, Kind: it.Shape, Importance: it.Importance,
+			Project: it.Project.Name,
+		}
+		if it.UnseenStops > 0 {
+			view, err := h.store.GetCatchUpItem(ctx, c, it.ID)
+			if err != nil {
+				if errors.Is(err, ErrCatchUpNotFound) {
+					continue // the story moved between the two authorized reads
+				}
+				return nil, err
+			}
+			if view.Latest != nil {
+				for _, st := range view.Latest.Stops {
+					if st.Seen || len(row.Beats) >= catchUpRecapBeatsMax {
+						continue
+					}
+					row.Beats = append(row.Beats, assistant.CatchUpRecapBeat{
+						Title: st.Title, Kind: st.Kind, Importance: st.Importance,
+						Asks: st.Decision != nil,
+					})
+				}
+			}
+		}
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 // tour assembles the per-reader page (ADR-0078, the design's "Start the
@@ -969,9 +1203,10 @@ func (h *catchUpHandlers) parseStopIDs(w http.ResponseWriter, ids []string) ([]s
 // inference below is deliberately coarse: it is choosing a default, not
 // reporting a measurement.
 const (
-	CatchUpWindowDaily  = "24h"
-	CatchUpWindowTwoDay = "2d"
-	CatchUpWindowWeekly = "7d"
+	CatchUpWindowDaily   = "24h"
+	CatchUpWindowTwoDay  = "2d"
+	CatchUpWindowWeekly  = "7d"
+	CatchUpWindowSixHour = "6h"
 )
 
 // catchUpSuggestion infers the window from the reader's own visit

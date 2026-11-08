@@ -1301,6 +1301,147 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+    post:
+      operationId: generateCatchUpRecap
+      tags: [catchUp]
+      summary: Ask for a recap of what this reader has not seen (ADR-0078)
+      description: >
+        The one POST on this surface that buys a completion, and the only one
+        that may: a recap is one reader's row (`catchup_recaps` cascades from
+        `users`, not from a project), so the sentence it writes is advice to
+        the person who asked — never words a browser put into a shared tour,
+        which is why no such tour route exists. T13b.
+
+
+        One bounded completion over ADR-0034's secret-scanned egress, given ONE
+        factual DATA block assembled from the reads this route's caller can
+        already make: the unseen work items (the same statement
+        `GET /catch-up/items` runs, narrowed by `window`) and each item's own
+        newest tour's unseen beats. The block numbers the items; the titles in
+        it are the only proper names the answer may use, in double quotes — a
+        quoted name the block never showed is refused and NOTHING is stored.
+        The answer is exactly one JSON object, `{"text": "..."}`, 1..600
+        characters trimmed, the row's own bound.
+
+
+        With nothing unseen the model is never called and the deterministic
+        `"Nothing new since you last looked."` is stored instead: paying a
+        gateway for a sentence the read already established is how a
+        hallucination gets a job. Both answers are 201 with the stored row.
+
+
+        Throttled per principal by the ASSISTANT limiter (ADR-0077), the same
+        bucket the assistant turns spend: over the limit is `429` with
+        `Retry-After`. No `COMMUNICATION_ASSISTANT_BASE_URL` is `503`
+        `assistant_not_configured`, the ask route's own answer — the honest
+        absence, not a fake summary.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                projects:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: uuid
+                    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                  description: >
+                    Project ids to scope the read to. Absent or empty is every
+                    project the caller belongs to; naming one can only narrow,
+                    never widen (the store intersects its own membership).
+                window:
+                  type: string
+                  enum: [unseen, 6h, 24h, 2d, 7d]
+                  default: unseen
+                  description: >
+                    How far back the recap looks. `unseen` is the page's own
+                    question with no clock in it; the rest are the design's
+                    windows, applied as the item list's `since` bound. Anything
+                    else is `422`.
+      responses:
+        "201":
+          description: >
+            The recap, stored (`no-store`). 201 even when the text is the
+            deterministic one: a row was written either way.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatchUpRecap"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/BodyTooLarge"
+        "422":
+          description: >
+            `window` is outside the closed set, or `projects` holds a value
+            that is not a uuid.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "429":
+          description: >
+            The caller's assistant budget is spent (ADR-0077); `Retry-After`
+            says when to come back. No completion was made and nothing stored.
+          headers:
+            Retry-After:
+              description: Whole seconds until a token refills.
+              schema:
+                type: integer
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "502":
+          description: >
+            The model answered with something this surface refuses to store:
+            not one JSON object, no `text`, over 600 characters, secret-shaped,
+            or a quoted work-item title the DATA block never showed
+            (`degraded: malformed_completion`). Nothing was written.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: >
+            No assistant egress on this deployment
+            (`degraded: assistant_not_configured`). The stored recap, if any,
+            is untouched.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "504":
+          description: >
+            The endpoint stopped before it answered (`degraded: model_timeout`).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/catch-up/items/{itemId}/stops/{stopId}/reply:
     post:
       operationId: postCatchUpDecisionReply

@@ -1557,6 +1557,35 @@ func (a APICatchUpStore) LatestCatchUpRecap(ctx context.Context, c api.Caller,
 	return out, nil
 }
 
+// SaveCatchUpRecap is the write behind `POST /catch-up/recap`: one new row
+// for THIS reader (ADR-0078 § Decision 1 — a recap is a fact about a reader,
+// never a shared document), delegating to the store's own SaveRecap so the
+// row's bounds, the trim CHECK and the keep-the-earlier-row-on-regeneration
+// rule stay the store's. No new SQL here: the statement is the one the
+// generator path already used, and the window/project coverage is what the
+// reader's own request named.
+func (a APICatchUpStore) SaveCatchUpRecap(ctx context.Context, c api.Caller,
+	in api.CatchUpRecapWrite) (api.CatchUpRecapView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.CatchUpRecapView{}, err
+	}
+	saved, err := s.SaveRecap(ctx, prjAPICaller(c), domain.CatchUpRecap{
+		Text: in.Text, Window: in.Window, ProjectIDs: in.ProjectIDs,
+	})
+	if err != nil {
+		return api.CatchUpRecapView{}, catchUpAPIErr(err)
+	}
+	ids := saved.ProjectIDs
+	if ids == nil {
+		ids = []string{}
+	}
+	return api.CatchUpRecapView{
+		Text: saved.Text, WrittenAt: saved.WrittenAt.UTC(),
+		Window: saved.Window, ProjectIDs: ids,
+	}, nil
+}
+
 func (a APICatchUpStore) InsertCatchUpDecisionReply(ctx context.Context, c api.Caller,
 	itemID, stopID, text string) (api.CatchUpReplyRecord, error) {
 	s, err := a.store()

@@ -166,6 +166,36 @@ func (t *catchUpTrigger) CatchUpItemsListed(ctx context.Context, c Caller, proje
 	t.gen.CatchUpItemsListed(ctx, catchUpAsstCaller(c), projectIDs)
 }
 
+// --- the recap generator (POST /catch-up/recap) --------------------------
+
+// CatchUpRecapDeps is the recap route's wiring. Broker is the SAME egress the
+// tour generator and the assistant speak through — one deployment, one model,
+// one cost site (ADR-0034) — and it is the only member the builder needs:
+// unlike the tour pass, the recap performs no store reads of its own. The
+// route hands it the caller's own items, read through the caller's own routes
+// before the completion is asked for.
+type CatchUpRecapDeps struct {
+	Broker *assistant.Broker
+	Logger *slog.Logger
+}
+
+// BuildCatchUpRecapGenerator returns the recap's model arm, or nil when this
+// deployment has no egress. A nil generator is the honest absence: the route
+// answers 503 assistant_not_configured and the page keeps the recap it
+// already has, exactly the rule the tour builder states for the pass.
+func BuildCatchUpRecapGenerator(deps CatchUpRecapDeps) CatchUpRecapGenerator {
+	if deps.Broker == nil {
+		return nil
+	}
+	g := assistant.NewCatchUpRecapGenerator(assistant.CatchUpRecapDeps{
+		Model: deps.Broker, Log: deps.Logger,
+	})
+	if g == nil || !g.Configured() {
+		return nil
+	}
+	return g
+}
+
 // --- the reader ----------------------------------------------------------
 
 type catchUpGenReader struct {

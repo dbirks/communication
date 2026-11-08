@@ -232,7 +232,7 @@ func cuServerWithGen(t *testing.T, store CatchUpStore, gen CatchUpGeneratorTrigg
 	s := newTestServerWith(t,
 		Config{ReplicaName: "replica-a", Version: "1.2.3", PublicURL: cuBase},
 		nil, fakeReadiness{expected: 1}, principalAuth(testPrincipal(), nil))
-	RegisterCatchUp(s, store, nil, gen)
+	RegisterCatchUp(s, store, nil, WithTourGenerator(gen))
 	return s
 }
 
