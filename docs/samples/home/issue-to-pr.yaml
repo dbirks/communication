@@ -91,6 +91,10 @@ spec:
     #    expression language has no join /
     #    format function (ADR-0022 § 5) and it is the only plan text a human sees
     #    at the approval gate; steps and test_plan stay in the node outputs.
+    #    invalid_output is retriable (run 42452527578: the pi session died
+    #    mid-answer and the truncated reply failed extraction, killing the run
+    #    with no second attempt) and the prompt below pins the final message to
+    #    the JSON object alone, as /implement's does.
     - id: plan
       kind: agent.acp
       timeoutSeconds: 900
@@ -134,7 +138,10 @@ spec:
           reply is machine-checked against. steps holds at least one step; every step's
           file is a repository path and its action is a non-empty string. test_plan
           is a non-empty string naming the test command(s) the implementer must get
-          green. Never wrap plan in a string.
+          green. Never wrap plan in a string. Your FINAL
+          message must be ONLY the JSON object — no tool-call markup, no
+          narration, no markdown fence; a final message that is not the object
+          fails the node even when the work is done.
       outputs:
         type: object
         required:
