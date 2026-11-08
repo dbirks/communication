@@ -18,6 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { PipelinePage } from "./Workflow";
+import { PAGE_BAND_PAD } from "../components/ds/Page";
 import type { Draft, Me, PipelineRevision, PipelineRevisionSummary } from "../api/types";
 import type { Assignment, Repository } from "../api/types";
 import type { Schedule } from "../api/pipelines";
@@ -276,6 +277,14 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
   it("carries the breadcrumb, H1 + revision chip, the library line and exactly two actions", async () => {
     mount(detail);
     const header = await screen.findByTestId("pipeline-page");
+    // Finding 07: the header IS the shared band — the `page-band` handle, the
+    // band's own inset, and the H1 as the first thing in the title column, so
+    // the title's left edge and baseline are the ones every other route
+    // measures at 1440. The breadcrumb reads under the title for the same
+    // reason (it is the band's mono subline).
+    const band = screen.getByTestId("page-band");
+    expect(band.className).toContain(PAGE_BAND_PAD);
+    expect(within(band).getAllByRole("heading", { level: 1 })).toHaveLength(1);
     // Breadcrumb `Workflows / Delivery /` — the folder comes from the pipeline
     // read, so wait for a control that arrives WITH that read (the revision
     // chip; `pipeline-header-meta` rides the H1 and is drawn from the first
@@ -312,6 +321,11 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     // 390px: the header stacks (breadcrumb, title + chip, description, then
     // the actions in their own row) and only goes beside the title from `md`.
     expect(within(header).getByTestId("workflow-header-top").className).toContain("md:flex-row");
+    // …and the trail rides below the title, in the band's mono subline slot.
+    const crumbInBand = within(band)
+      .getByTestId("workflow-breadcrumb")
+      .compareDocumentPosition(within(band).getByRole("heading", { level: 1 }));
+    expect(crumbInBand & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
   it("with no description anywhere the header carries the library sentence instead", async () => {

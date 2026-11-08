@@ -20,7 +20,7 @@ import { Suspense, lazy } from "react";
 import { useParams } from "react-router";
 import { useConversation } from "../api/queries";
 import { Spinner } from "../components/Feedback";
-import Page from "../components/ds/Page";
+import Page, { PageBand } from "../components/ds/Page";
 import { ThreadListPane, useThreadList } from "../components/threads/ThreadListPane";
 
 /**
@@ -114,7 +114,7 @@ export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
   const list = useThreadList(projectId, null);
   return (
     <div
-      className="flex h-[calc(100vh-44px)] min-w-0 flex-col overflow-hidden md:h-screen lg:flex-row"
+      className="flex h-[calc(100vh-44px-48px)] min-w-0 flex-col overflow-hidden lg:flex-row md:h-[calc(100vh-48px)]"
       data-testid="threads-view"
     >
       <div className="flex min-h-0 w-full flex-1 border-b border-line-strong bg-surface lg:w-[320px] lg:flex-none lg:border-b-0 lg:border-r">
@@ -170,10 +170,18 @@ export function ThreadScreen() {
   const { conversationId = "" } = useParams();
   const conversation = useConversation(conversationId);
   // Finding 07: the threads screen is a `canvas` page — the 320px list pane
-  // and the open thread own the whole content column at full height.
+  // and the open thread own the whole content column at full height. The
+  // LIST carries the shared `PageBand` title (`Threads`), so its H1 sits at
+  // the same left edge and baseline as Today, Projects and Settings at 1440;
+  // the two panes fill the column under the band, which is why `ThreadsView`
+  // takes `PAGE_BAND_HEIGHT_PX` off the viewport height it used to claim
+  // whole. An opened thread (`/threads/:id`) keeps the full-bleed detail
+  // frame: the thread's own header is its title there, and the list pane next
+  // to it is the same 320px column.
   if (conversationId.length === 0)
     return (
       <Page layout="canvas">
+        <PageBand title="Threads" />
         <ThreadsView />
       </Page>
     );

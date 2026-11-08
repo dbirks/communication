@@ -10,8 +10,8 @@
  * did not also raise the popover — and left a bare `⌘K` button that said
  * nothing about what it opened. This module is the explicit handle instead:
  *
- * - `openAsk(question?)` opens the mounted Ask surface, asking `question` when
- *   the caller has one;
+ * - `openAsk(context?)` opens the mounted Ask surface, asking `context`'s
+ *   question when the caller has one and naming its subject in the chip;
  * - `useAskOpen(handler)` registers that surface (the Shell mounts exactly one);
  * - `⌘K` is NOT handled here at all: it belongs to the jump/search palette
  *   (`components/CommandPalette.tsx`) and nothing else. ADR-0050's
@@ -30,20 +30,37 @@
  */
 import { useEffect, useRef } from "react";
 
-/** What `openAsk` hands the Ask surface. `text`, when given, is asked as soon
- * as the surface is up. */
-export interface AskOpenRequest {
+/**
+ * What an `openAsk` caller hands the Ask surface. `text`, when given, is asked
+ * as soon as the surface is up; `subject` names what the ask is ABOUT (the
+ * thing the caller has on screen) and is what the surface's context chip
+ * reads, in place of the page section.
+ */
+export interface AskOpenContext {
   text?: string;
+  /** The subject of the ask, in words — the tour player passes the piece the
+   * current stop belongs to. A caller with no subject leaves the chip on the
+   * page section (`Shell`) or the chat the panel was drafted from. */
+  subject?: string;
 }
+
+/** An `openAsk` request is the page's context plus the caller's own words. */
+export type AskOpenRequest = AskOpenContext;
 
 type AskOpenListener = (request: AskOpenRequest) => void;
 
 /** The mounted Ask surfaces, oldest claim first; the top answers `openAsk`. */
 const claims: AskOpenListener[] = [];
 
-/** Open the Ask surface; `question`, when given, is asked straight away. */
-export function openAsk(question?: string): void {
-  claims[claims.length - 1]?.({ text: question });
+/**
+ * Open the Ask surface. A bare string is the simple ask (`Shell`'s button,
+ * the ⌘J chord with nothing in hand); a caller that already holds the
+ * context — the tour player, whose ⌘J asks about the CURRENT stop — passes
+ * `{ text, subject }` so the question and what it is about travel apart.
+ */
+export function openAsk(context?: string | AskOpenRequest): void {
+  const request = typeof context === "string" ? { text: context } : (context ?? {});
+  claims[claims.length - 1]?.(request);
 }
 
 /**

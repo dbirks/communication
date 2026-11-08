@@ -794,7 +794,12 @@ export function AssistantPanel({
           borderTop: "1px solid var(--color-line)",
         }}
       >
-        {popover && contextLabel ? <ContextChip label={contextLabel} /> : null}
+        {/* The composer's context chip names what the ask is ABOUT: the thing
+            the surface was opened from when a caller has one (the tour
+            player's current stop, the 2f chat), else the page section. */}
+        {popover && (chatContext ?? contextLabel) ? (
+          <ContextChip label={chatContext ?? contextLabel} />
+        ) : null}
         <input
           ref={inputRef}
           type="text"

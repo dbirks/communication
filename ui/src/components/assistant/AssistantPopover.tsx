@@ -34,7 +34,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import AssistantPanel from "./AssistantPanel";
-import { openAsk, useAskOpen } from "./askControl";
+import { openAsk, useAskOpen, type AskOpenContext } from "./askControl";
 import { sectionOf } from "../Shell";
 import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
@@ -318,10 +318,30 @@ function writeChoice(choice: SessionChoice): void {
   }
 }
 
-export default function AssistantPopover() {
+export interface AssistantPopoverProps {
+  /**
+   * What an ask opened on this surface is ABOUT, for a page that mounts the
+   * surface itself because it stands outside the Shell (the tour player,
+   * design 7b: full screen, no sidebar, no floating `Ask`). The ⌘J chord and
+   * any `openAsk()` with no question of its own ask THIS — so the chord names
+   * the thing on screen instead of opening an empty box. A plain `Shell`
+   * mount passes nothing and the chord stays a bare ask.
+   *
+   * It is read at open time (a callback, not a value), so the page never has
+   * to re-mount the surface as its selection moves.
+   */
+  askContext?: () => AskOpenContext | null;
+}
+
+export default function AssistantPopover({ askContext }: AssistantPopoverProps = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   const { trustLevel, setTrustLevel } = useAssistantPrefs();
+  // The page's ask context, read when the chord lands — never a dependency of
+  // the claim effect below, so moving between stops re-reads it without
+  // re-registering the surface.
+  const askContextRef = useRef(askContext);
+  askContextRef.current = askContext;
 
   // ui-convfix: the persisted choice seeds the session state — a fresh
   // mount resumes the conversation (or the pending New) instead of
@@ -336,9 +356,11 @@ export default function AssistantPopover() {
    */
   const [mode, setMode] = useState<"popover" | "expanded" | "docked">("popover");
   /**
-   * The chat title the panel was opened FROM (the 2f thread → workflow ask).
-   * When set, the header chip reads `from “<title>”` instead of the bare
-   * section name `threads` (rcn-6 review). Cleared on any other open.
+   * What the surface was opened ABOUT, in words: the chat the 2f draft ask was
+   * drafted from, or the thing a page that mounts the surface itself has on
+   * screen (the tour player names the current stop's piece). The header chip
+   * reads `from “<this>”`; every other open carries nothing and the chip falls
+   * back to the page section.
    */
   const [dockedChatTitle, setDockedChatTitle] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(
@@ -543,11 +565,16 @@ export default function AssistantPopover() {
 
   // This component is the Ask surface `openAsk()` reaches — unless a page claims
   // the chord while it is on screen (the Studio draft footer, whose ⌘J opens its
-  // own ask row instead of this floating box).
-  useAskOpen(({ text }) => {
+  // own ask row instead of this floating box). A request with no question of its
+  // own takes the page's `askContext` (the tour player's current stop), so the
+  // chord and the floating button answer with what the reader is looking at.
+  useAskOpen((request) => {
+    const context = askContextRef.current?.() ?? {};
+    const question = (request.text?.trim() ? request.text : (context.text ?? "")).trim();
+    const subject = (request.subject ?? context.subject ?? "").trim();
     closeOtherMenus();
+    setDockedChatTitle(subject.length > 0 ? subject : null);
     setOpen(true);
-    const question = text?.trim() ?? "";
     if (question.length > 0) void send(question, true);
   });
 

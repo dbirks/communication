@@ -30,6 +30,55 @@ import type { ReactNode } from "react";
 /** The band's (and every page body's) shared inset. */
 export const PAGE_BAND_PAD = "px-[22px] pt-[20px] md:px-[28px]";
 
+/**
+ * The band's own height at the shared geometry: `pt-[20px]` plus the single
+ * 28px title line. A `canvas` page that fills the viewport under its band
+ * subtracts this from the 100vh it already took off for the app strip.
+ */
+export const PAGE_BAND_HEIGHT_PX = 48;
+
+export interface PageBandProps {
+  /** Band title — the page's one H1 (22px/600, `leading-[28px]`). */
+  title: ReactNode;
+  /** Mono subline under the title. */
+  subtitle?: ReactNode;
+  /** Right side of the title row. */
+  actions?: ReactNode;
+  /** Tab strip under the title row, inside the band. */
+  band?: ReactNode;
+  /** Extra classes on the band element (a `canvas` page's own rule/ground). */
+  className?: string;
+}
+
+/**
+ * The shared title band on its own (finding 07). `<Page title=…>` mounts it;
+ * a `canvas` page that owns the whole column mounts THIS instead of drawing a
+ * header of its own, so its title keeps the ONE left edge and the ONE baseline
+ * every other route measures at (`page-band`, H1 22px/600 under
+ * `PAGE_BAND_PAD`). Pages that need a richer band than the four slots (the
+ * workflow page, with its breadcrumb and tab strip) still use `PAGE_BAND_PAD`
+ * and keep the H1 first in the column — the ruler is the contract, not the
+ * prop list.
+ */
+export function PageBand({ title, subtitle, actions, band, className = "" }: PageBandProps) {
+  return (
+    <header className={`${PAGE_BAND_PAD} ${className}`.trim()} data-testid="page-band">
+      <div className="flex flex-wrap items-start justify-between gap-x-[14px] gap-y-2">
+        <div className="min-w-0 space-y-1">
+          <h1 className="text-[22px] leading-[28px] font-semibold">{title}</h1>
+          {subtitle != null ? (
+            <div className="font-mono text-[11px] text-muted">{subtitle}</div>
+          ) : null}
+        </div>
+        {actions != null ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-[10px]">{actions}</div>
+        ) : null}
+      </div>
+      {band != null ? <div className="pt-[12px]">{band}</div> : null}
+    </header>
+  );
+}
+
 export type PageLayout = "reading" | "wide" | "canvas";
 
 export interface PageProps {
@@ -79,20 +128,7 @@ export function Page({
   return (
     <div className={root} data-page-layout={layout} data-testid={testid}>
       {title == null ? null : (
-        <header className={PAGE_BAND_PAD} data-testid="page-band">
-          <div className="flex flex-wrap items-start justify-between gap-x-[14px] gap-y-2">
-            <div className="min-w-0 space-y-1">
-              <h1 className="text-[22px] leading-[28px] font-semibold">{title}</h1>
-              {subtitle != null ? (
-                <div className="font-mono text-[11px] text-muted">{subtitle}</div>
-              ) : null}
-            </div>
-            {actions != null ? (
-              <div className="flex shrink-0 flex-wrap items-center gap-[10px]">{actions}</div>
-            ) : null}
-          </div>
-          {band != null ? <div className="pt-[12px]">{band}</div> : null}
-        </header>
+        <PageBand title={title} subtitle={subtitle} actions={actions} band={band} />
       )}
       <div className={`flex flex-1 flex-col ${bodyPad}`}>
         {layout === "reading" && title != null ? (

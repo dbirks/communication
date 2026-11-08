@@ -6,7 +6,7 @@
  * FOUND/CAUSE/FIXED/FOLLOW-UP steps rendering only when sibling stops back
  * them.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
@@ -72,9 +72,47 @@ const page4 = {
 
 const seenPath = (workId: string) => `/api/v1/catch-up/items/${workId}/seen`;
 const itemPath = (workId: string) => `/api/v1/catch-up/items/${workId}`;
-/** The same open event AssistantPopover listens for (mirrored as a literal so
- * this suite does not import the Shell module graph). */
-const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
+
+/* The Ask surface the player mounts for itself (finding 08 / T16): the ⌘J
+ * chord and `Ask about this` create a conversation and post the stop's ask to
+ * it, so the suite stubs the three assistant routes that round-trip touches. */
+const assistantCreatePath = "/api/v1/assistant/conversations";
+const assistantMessagesPath = "/api/v1/assistant/conversations/conv-tour/messages";
+const assistantStubs: RouteStub[] = [
+  { method: "GET", path: "/api/v1/me/preferences", body: {} },
+  {
+    method: "GET",
+    path: assistantCreatePath,
+    body: { conversations: [], next_cursor: null },
+  },
+  {
+    method: "POST",
+    path: assistantCreatePath,
+    body: {
+      id: "conv-tour",
+      title: null,
+      created_at: "2026-10-14T12:41:00Z",
+      updated_at: "2026-10-14T12:41:00Z",
+      last_message_at: null,
+    },
+  },
+  { method: "GET", path: assistantMessagesPath, body: { messages: [], next_cursor: null } },
+  {
+    method: "POST",
+    path: assistantMessagesPath,
+    body: {
+      messages: [
+        {
+          id: "msg-user-ask",
+          kind: "user",
+          payload: { kind: "user", text: "asked", context: null },
+          created_at: "2026-10-14T12:41:01Z",
+        },
+      ],
+      next_cursor: null,
+    },
+  },
+];
 
 function itemDetail(workId: string, stops: ReturnType<typeof stop>[], over = {}) {
   return {
@@ -128,6 +166,7 @@ function mount(routes: RouteStub[], entry = "/catch-up/tour") {
   const { requests } = mockFetch([
     { path: seenPath(w1), method: "POST", status: 204 },
     { path: seenPath(w2), method: "POST", status: 204 },
+    ...assistantStubs,
     ...routes,
   ]);
   const queryClient = new QueryClient({
@@ -250,30 +289,55 @@ describe("TourPlayer — the catch-up tour", () => {
     expect(await screen.findByText("catch-up home")).toBeTruthy();
   });
 
-  it("⌘J and the footer button open Ask with this stop named, and the fix links the PR", async () => {
-    const asked: unknown[] = [];
-    const listener = (event: Event) => asked.push((event as CustomEvent).detail);
-    window.addEventListener(ASSISTANT_OPEN_EVENT, listener);
-    try {
-      mount([
-        { path: "/api/v1/catch-up/tour", body: page0 },
-        { path: itemPath(w1), body: itemDetail(w1, bugStops()) },
-      ]);
-      await screen.findByTestId("tour-stop-1");
-      fireEvent.keyDown(window, { key: "j", metaKey: true });
-      expect(asked[0]).toContain("Refund duplicates: found, cause, fix");
-      asked.length = 0;
-      fireEvent.click(screen.getByTestId("tour-ask"));
-      expect(asked[0]).toContain("Refund duplicates");
-      // The fix is the PR the SERVER could link (ADR-0078 § Decision 6): the
-      // url beside the ref is computed from the repository's remote, and the
-      // player prefers it over its own run page.
-      const fix = await screen.findByTestId("tour-open-fix");
-      expect(fix.getAttribute("href")).toBe("https://github.com/octo/widgets/pull/417");
-      expect(fix.getAttribute("target")).toBe("_blank");
-    } finally {
-      window.removeEventListener(ASSISTANT_OPEN_EVENT, listener);
-    }
+  it("⌘J and the footer button open the Ask surface with THIS stop as its context", async () => {
+    const { requests } = mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      { path: itemPath(w1), body: itemDetail(w1, bugStops()) },
+    ]);
+    await screen.findByTestId("tour-stop-1");
+    // The piece's own read is what names the title and the linked PR; wait for
+    // it (its fix link) before asking, so the ask carries the whole stop.
+    const fix = await screen.findByTestId("tour-open-fix");
+    // T16: the player stands OUTSIDE the Shell, so it mounts the Ask surface
+    // itself — and until the chord is pressed there is no surface on screen.
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+    const asks = () =>
+      requests.filter(
+        (request) =>
+          request.method === "POST" &&
+          request.url === assistantMessagesPath &&
+          (request.body ?? "").includes("catch-up stop"),
+      );
+
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    const popover = await screen.findByTestId("assistant-popover");
+    await waitFor(() => expect(asks()).toHaveLength(1));
+    // The whole stop travels: its title, the PIECE it belongs to, and the refs
+    // the server named — not a bare title the assistant cannot act on.
+    const asked = JSON.parse(asks()[0]!.body!) as { text: string; context: { route: string } };
+    expect(asked.text).toContain("Refund duplicates: found, cause, fix");
+    expect(asked.text).toContain("Refund webhook sent duplicates");
+    expect(asked.text).toContain("#215");
+    expect(asked.text).toContain("PR #417");
+    expect(asked.context.route).toBe("/catch-up/tour");
+    // The surface says what it was opened from: the piece, not `catch-up`.
+    expect(within(popover).getByTestId("assistant-context-chip").textContent).toBe(
+      "Refund webhook sent duplicates",
+    );
+
+    // The footer verb is the same ask (one handle, two paths).
+    fireEvent.keyDown(popover, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
+    fireEvent.click(screen.getByTestId("tour-ask"));
+    await screen.findByTestId("assistant-popover");
+    await waitFor(() => expect(asks()).toHaveLength(2));
+    expect(asks()[1]!.body).toContain("Refund duplicates: found, cause, fix");
+
+    // The fix is the PR the SERVER could link (ADR-0078 § Decision 6): the
+    // url beside the ref is computed from the repository's remote, and the
+    // player prefers it over its own run page.
+    expect(fix.getAttribute("href")).toBe("https://github.com/octo/widgets/pull/417");
+    expect(fix.getAttribute("target")).toBe("_blank");
   });
 
   it("with no server-computed ref url, the fix falls back to the run that made the work", async () => {

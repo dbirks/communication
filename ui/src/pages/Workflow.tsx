@@ -32,7 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
-import Page from "../components/ds/Page";
+import Page, { PAGE_BAND_PAD } from "../components/ds/Page";
 import { REVISION_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
@@ -570,7 +570,17 @@ export function PipelinePage() {
     <Page layout="canvas" testid="pipeline-page">
       <div className="flex min-h-[calc(100dvh-44px)] flex-col bg-paper md:min-h-dvh">
         {/* ------------------------------------------------------- header band */}
-        <header className="flex flex-col gap-[12px] border-b border-line-strong bg-surface px-[28px] pt-[20px]">
+        {/* Finding 07: this band IS the shared band — `PAGE_BAND_PAD` for the
+          inset, `page-band` for the handle, and the H1 as the first thing in
+          the title column, so its x and its baseline (y + height) are the
+          ones Today, Projects, Threads and Settings measure at. The
+          breadcrumb therefore reads UNDER the title (it is the mono subline
+          every other band carries), the revision chip rides the title row, and
+          the tabs stay the band's last row. */}
+        <header
+          className={`${PAGE_BAND_PAD} flex flex-col gap-[12px] border-b border-line-strong bg-surface`}
+          data-testid="page-band"
+        >
           {/* Header rows stack on phones (390px): breadcrumb, title + chip,
             description, then the actions in their own row — never beside the
             title, which squeezed the description into a 100px column. */}
@@ -579,6 +589,31 @@ export function PipelinePage() {
             data-testid="workflow-header-top"
           >
             <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
+              <div className="flex flex-wrap items-center gap-[10px]">
+                <h1
+                  className="text-[22px] leading-[28px] font-semibold"
+                  id="pipeline-heading"
+                  data-testid="pipeline-header-meta"
+                >
+                  {summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
+                </h1>
+                {revisionRows[0] ? (
+                  <StatusChip
+                    state={stateOf(REVISION_STATE[revisionRows[0].status])}
+                    label={`${revisionRows[0].status} r${revisionRows[0].revision_number}`}
+                    labelProps={{ "data-testid": "workflow-revision-chip" }}
+                  />
+                ) : (
+                  <span
+                    className="font-mono text-[10.5px] text-muted"
+                    data-testid="workflow-revision-chip"
+                  >
+                    · draft · not published
+                  </span>
+                )}
+              </div>
+              {/* The trail under the title (finding 07: the title keeps the
+                band's baseline): the same mono 11px line every band carries. */}
               <nav
                 aria-label="Breadcrumb"
                 className="font-mono text-[11px] text-muted"
@@ -603,29 +638,6 @@ export function PipelinePage() {
                 ) : null}
                 {" /"}
               </nav>
-              <div className="flex flex-wrap items-center gap-[10px]">
-                <h1
-                  className="text-[22px] leading-[28px] font-semibold"
-                  id="pipeline-heading"
-                  data-testid="pipeline-header-meta"
-                >
-                  {summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
-                </h1>
-                {revisionRows[0] ? (
-                  <StatusChip
-                    state={stateOf(REVISION_STATE[revisionRows[0].status])}
-                    label={`${revisionRows[0].status} r${revisionRows[0].revision_number}`}
-                    labelProps={{ "data-testid": "workflow-revision-chip" }}
-                  />
-                ) : (
-                  <span
-                    className="font-mono text-[10.5px] text-muted"
-                    data-testid="workflow-revision-chip"
-                  >
-                    · draft · not published
-                  </span>
-                )}
-              </div>
               {/* One subtitle, two sources (2a/1e): the workflow's own
                 description when it has one (the design shows the description
                 in full — it caps nothing), the library sentence only when it

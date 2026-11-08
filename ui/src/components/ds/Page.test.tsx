@@ -9,7 +9,7 @@
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import Page, { PAGE_BAND_PAD } from "./Page";
+import Page, { PAGE_BAND_HEIGHT_PX, PAGE_BAND_PAD, PageBand } from "./Page";
 
 afterEach(cleanup);
 
@@ -118,5 +118,44 @@ describe("Page — a wide/reading page that draws its own band", () => {
     expect(screen.queryByTestId("page-band")).toBeNull();
     expect(body.className).toContain("px-[22px]");
     expect(body.className).toContain("md:px-[28px]");
+  });
+});
+
+/**
+ * `PageBand` is the same band on its own, for the `canvas` pages that own the
+ * whole column (Threads, the workflow page): the ruler the acceptance reads —
+ * `page-band`, one H1 at 22px/600 under `PAGE_BAND_PAD` — has to hold there
+ * too, or the title jumps when the route changes.
+ */
+describe("PageBand — the shared band outside <Page>", () => {
+  it("is the band <Page> draws, with the page's own classes added", () => {
+    render(
+      <Page layout="canvas" testid="canvas-page">
+        <PageBand
+          title="Threads"
+          subtitle="mono"
+          actions={<button type="button">New</button>}
+          band={<div data-testid="tabs">tabs</div>}
+          className="border-b border-line-strong bg-surface"
+        />
+        <div>panes</div>
+      </Page>,
+    );
+    const band = screen.getByTestId("page-band");
+    expect(band.tagName).toBe("HEADER");
+    for (const cls of PAGE_BAND_PAD.split(/ +/)) expect(band.className).toContain(cls);
+    expect(band.className).toContain("border-b");
+    expect(band.className).toContain("bg-surface");
+    const h1 = band.querySelector("h1") as HTMLElement;
+    expect(h1.textContent).toBe("Threads");
+    expect(h1.className).toContain("text-[22px]");
+    expect(h1.className).toContain("leading-[28px]");
+    expect(h1.className).toContain("font-semibold");
+    // The canvas page keeps its own body: the band adds no padding around it.
+    expect(screen.getByTestId("canvas-page").className).toContain("flex-col");
+    expect(screen.getByText("panes").parentElement).toBe(screen.getByTestId("canvas-page"));
+    // The height a full-height canvas page takes off the viewport under the
+    // band: the 20px above the title plus the 28px title line.
+    expect(PAGE_BAND_HEIGHT_PX).toBe(20 + 28);
   });
 });

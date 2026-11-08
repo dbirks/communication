@@ -23,6 +23,12 @@
  * without sibling support the stop is plain narrative paragraphs.
  *
  * Keys: ←/→ move, S marks seen now, Esc closes, ⌘J asks about this stop.
+ *
+ * ⌘J is the shared Ask chord (`components/assistant/askControl`), and the Ask
+ * surface mounts HERE: the player stands outside the `Shell` that usually owns
+ * it, so it brings its own popover and tells it what the current stop is
+ * (`askContext`) — the chord and the `Ask about this` button ask the same
+ * question about the same thing.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams, Link } from "react-router";
@@ -39,6 +45,8 @@ import {
   projectSquareClasses,
 } from "../components/catchup/importance";
 import { STATES, type StateName } from "../components/ds/states";
+import AssistantPopover from "../components/assistant/AssistantPopover";
+import { openAsk } from "../components/assistant/askControl";
 import { routes } from "../lib/routes";
 import {
   CATCH_UP_TOUR_LIMIT,
@@ -48,28 +56,43 @@ import {
   useCatchUpTour,
   useMarkStopsSeen,
   type CatchUpFilters,
+  type CatchUpRefs,
   type CatchUpTourEntry,
   type CatchUpStop,
   type CatchUpWindow,
 } from "../api/catchup";
 
 /**
- * TODO(T-tour): switch to the explicit `openAsk(context)` from
- * `ui/src/components/assistant/askControl.ts` when it lands, carrying this
- * stop as structured context. Until then this dispatches the same open event
- * `openAssistantPopover` does (`ASSISTANT_OPEN_EVENT` in
- * `components/assistant/AssistantPopover.tsx`) — the event name is repeated
- * as a literal on purpose so this full-screen page does not import the
- * Shell/panel module just to knock on its door.
+ * The ask for one stop (finding 08 / T16): what the reader is looking at, in
+ * the reader's own terms — the STOP's title, the PIECE it belongs to, and the
+ * refs the server named. `subject` is what the surface's context chip reads
+ * (the piece); `text` carries the rest, so the assistant hears the whole
+ * thing rather than a bare title. The refs are only what the wire served
+ * (ADR-0078 § Decision 6) — this layer invents none.
  */
-const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
+function askContextForStop(
+  stopTitle: string,
+  pieceTitle: string,
+  refs: CatchUpRefs | undefined,
+): { text: string; subject: string } {
+  const refWords = refLabels(refs);
+  const onPiece = pieceTitle.length > 0 ? ` on “${pieceTitle}”` : "";
+  const withRefs = refWords.length > 0 ? ` — ${refWords.join(", ")}` : "";
+  return {
+    text: `About the catch-up stop “${stopTitle}”${onPiece}${withRefs}: what should I look at first?`,
+    subject: pieceTitle.length > 0 ? pieceTitle : stopTitle,
+  };
+}
 
-function openAskAbout(stopTitle: string): void {
-  window.dispatchEvent(
-    new CustomEvent(ASSISTANT_OPEN_EVENT, {
-      detail: `About the catch-up stop “${stopTitle}” — what should I look at first?`,
-    }),
-  );
+/** The refs a stop was reported against, as the short labels the page itself
+ * prints (`#215`, `PR #417`, `a1f9c2e`). */
+function refLabels(refs: CatchUpRefs | undefined): string[] {
+  if (!refs) return [];
+  return [
+    ...(refs.issues ?? []).map((issue) => `#${issue.number}`),
+    ...(refs.pull_requests ?? []).map((pr) => `PR #${pr.number}`),
+    ...(refs.commits ?? []).map((commit) => commit.sha.slice(0, 7)),
+  ];
 }
 
 /** The lead paragraph: everything up to the first blank line. */
@@ -293,10 +316,38 @@ export default function TourPlayer() {
     else navigate("/catch-up");
   }, [location.key, navigate]);
 
-  const ask = useCallback(() => {
-    if (!current) return;
-    openAskAbout(current.stop.title);
-  }, [current]);
+  /** The refs a stop carries: the item read names refs the tour page's copy
+   * may omit, so the read wins for its own item (also what `Open the fix`
+   * links, below). */
+  const refsOf = useCallback(
+    (entry: CatchUpTourEntry): CatchUpRefs | undefined =>
+      piece.data?.id === entry.work_item_id ? (piece.data.refs ?? entry.refs) : entry.refs,
+    [piece.data],
+  );
+
+  /** The `Ask about this` verb: `openAsk` with THIS stop as the context. */
+  const askAbout = useCallback(
+    (entry: CatchUpTourEntry | undefined) => {
+      if (!entry) return;
+      openAsk(askContextForStop(entry.stop.title, piece.data?.title ?? "", refsOf(entry)));
+    },
+    [piece.data, refsOf],
+  );
+
+  const ask = useCallback(() => askAbout(current), [askAbout, current]);
+
+  /** What the ⌘J chord asks. The Ask surface is mounted HERE (the player
+   * stands outside the `Shell` that usually owns it, finding 08/T16) and reads
+   * this at open time, so the chord names the stop on screen rather than
+   * opening an empty box — and the player never has to listen for the chord
+   * itself, which is `askControl`'s job. */
+  const askContext = useCallback(
+    () =>
+      current
+        ? askContextForStop(current.stop.title, piece.data?.title ?? "", refsOf(current))
+        : null,
+    [current, piece.data, refsOf],
+  );
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -311,13 +362,10 @@ export default function TourPlayer() {
       ) {
         return;
       }
-      const withMeta = event.metaKey || event.ctrlKey;
-      if (withMeta && (event.key === "j" || event.key === "J")) {
-        event.preventDefault();
-        ask();
-        return;
-      }
-      if (withMeta || event.altKey) return;
+      // ⌘J is NOT handled here: the chord belongs to the Ask surface mounted
+      // below (askControl's one path), which asks about the CURRENT stop
+      // through `askContext` — see the note on that callback.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === "ArrowRight") {
         event.preventDefault();
         goNext();
@@ -325,6 +373,9 @@ export default function TourPlayer() {
         event.preventDefault();
         goTo(currentIndex - 1);
       } else if (event.key === "Escape") {
+        // With the Ask surface standing open, esc is ITS key (it closes the
+        // surface); the player does not also leave the tour.
+        if (document.querySelector('[data-testid="assistant-popover"]')) return;
         close();
       } else if (event.key === "s" || event.key === "S") {
         event.preventDefault();
@@ -333,7 +384,7 @@ export default function TourPlayer() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [ask, close, current, goNext, goTo, payStop]);
+  }, [close, current, goNext, goTo, payStop]);
 
   /* --- center content: bug-story steps or plain paragraphs. ------------ */
   const siblingStops = useMemo<CatchUpStop[]>(() => {
@@ -360,10 +411,7 @@ export default function TourPlayer() {
   // neither exists does the link fall back to this platform's own run page
   // (ADR-0078 § Decision 6 — a ref url is the server's computation from
   // `repositories.git_url`, never the model's prose).
-  const currentRefs =
-    current && piece.data?.id === current.work_item_id
-      ? (piece.data.refs ?? current.refs)
-      : current?.refs;
+  const currentRefs = current ? refsOf(current) : undefined;
   const hasCodeRef =
     (currentRefs?.pull_requests?.length ?? 0) + (currentRefs?.commits?.length ?? 0) > 0;
   const fixHref =
@@ -767,6 +815,13 @@ export default function TourPlayer() {
           </div>
         </main>
       </div>
+
+      {/* The assistant surface, mounted HERE (finding 08 / T16): the player is
+        the one page outside the `Shell` that owns it, so without this the ⌘J
+        chord and `Ask about this` had nothing to open. Same component, same
+        state lives while the tour moves — no sidebar, no floating `Ask`
+        button, and the stop on screen travels with every ask. */}
+      <AssistantPopover askContext={askContext} />
     </div>
   );
 }

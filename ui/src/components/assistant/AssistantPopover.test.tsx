@@ -9,11 +9,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
 import AssistantPopover, {
   openAssistantPopover,
   openAssistantWorkflowDraft,
 } from "./AssistantPopover";
 import { openAsk } from "./askControl";
+import { sectionOf } from "../Shell";
 
 const CONV = "conv-1";
 const OLD_CONV = "conv-old";
@@ -149,14 +151,14 @@ function stubFetch(
   return stub;
 }
 
-function renderPopover() {
+function renderPopover(props: ComponentProps<typeof AssistantPopover> = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <AssistantPopover />
+        <AssistantPopover {...props} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -883,5 +885,49 @@ describe("a clicked suggestion becomes the person's message (issue #63)", () => 
     // conversation shows none).
     expect(screen.queryAllByTestId("assistant-suggest")).toHaveLength(0);
     expect(text).not.toBe("");
+  });
+});
+
+/**
+ * T16 (finding 08): the tour player is the one page OUTSIDE the Shell, so it
+ * mounts this surface itself and says what an ask there is about. The ⌘J chord
+ * and any bare `openAsk()` then carry the page's context — the stop on screen —
+ * instead of opening an empty box, while a caller that brings its own question
+ * still wins.
+ */
+describe("a mount that names its own ask context (T16)", () => {
+  const stopAsk = () => ({
+    text: "About the catch-up stop \u201CDuplicates found\u201D on \u201CRefund webhook\u201D: what first?",
+    subject: "Refund webhook sent duplicates",
+  });
+
+  it("the ⌘J chord asks the page's context and the chip names it", async () => {
+    const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover({ askContext: stopAsk });
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", metaKey: true })));
+    await screen.findByTestId("assistant-popover");
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    expect(JSON.parse(stub.posted[0].body).text).toBe(stopAsk().text);
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe(stopAsk().subject);
+  });
+
+  it("a caller's own question and subject win over the page's", async () => {
+    const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover({ askContext: stopAsk });
+    act(() => openAsk({ text: "What failed here?", subject: "the run" }));
+    await screen.findByTestId("assistant-popover");
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    expect(JSON.parse(stub.posted[0].body).text).toBe("What failed here?");
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe("the run");
+  });
+
+  it("with no context the chord stays the bare ask it was", async () => {
+    const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => openAsk());
+    await screen.findByTestId("assistant-popover");
+    expect(stub.posted).toHaveLength(0);
+    // With nothing named, the chip stays what it always was: the page section.
+    expect(screen.getByTestId("assistant-context-chip").textContent).toBe(sectionOf("/"));
   });
 });

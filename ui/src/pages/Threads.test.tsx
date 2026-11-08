@@ -13,6 +13,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest";
 import type { Conversation, ConversationSummary, Project } from "../api/types";
 import { renderApp } from "../test/render";
+import { PAGE_BAND_PAD } from "../components/ds/Page";
 import {
   claudeProfile,
   conversationEvent,
@@ -85,6 +86,23 @@ function routes(items: ConversationSummary[], extra: RouteStub[] = []): RouteStu
 }
 
 describe("/threads (design 1g: list pane beside the thread)", () => {
+  it("carries the page title in the shared band, at the band's own inset (finding 07)", async () => {
+    // The acceptance ruler measures the H1's left edge and baseline, so the
+    // threads LIST may not draw a header of its own: it mounts the same
+    // `page-band` every other route does, above the two panes.
+    renderApp({ path: "/threads", routes: routes([liveManual]) });
+    await screen.findByTestId("threads-view");
+    const band = screen.getByTestId("page-band");
+    expect(band.className).toContain(PAGE_BAND_PAD);
+    expect(within(band).getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(within(band).getByRole("heading", { level: 1 }).textContent).toBe("Threads");
+    expect(band.className).toContain("pt-[20px]");
+    // The band sits ABOVE the panes, which still own the row under it.
+    const view = screen.getByTestId("threads-view");
+    expect(band.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(view.className).toContain("overflow-hidden");
+  });
+
   it("lists every thread grouped LIVE / EARLIER with project and profile names", async () => {
     renderApp({ path: "/threads", routes: routes([liveManual, earlierRun, disconnectedRow]) });
 
