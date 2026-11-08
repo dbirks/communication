@@ -4,8 +4,9 @@
 // reads (contract C3: GET /api/v1/runs + GET /api/v1/approvals) — no invented
 // numbers. The callouts are the same list under the briefing's designed cap:
 // at most three, in the API's order (ui/src/components/home/DecisionCallout.tsx
-// CALLOUT_MAX, `api/home.ts` — "The Home callout shows at most three; the rest
-// wait in the Inbox"), the rest named by the "N more in Inbox ›" line. The
+// CALLOUT_PREVIEW); while more gates are pending a `Show n more` button
+// (testid `home-show-more`) expands the panel IN PLACE to EVERY pending gate,
+// still in the API's order — nothing on Today links to the Inbox any more. The
 // spec seeds scratch gates through the API when the lab holds ≤ 3 pending so
 // the cap path is proven whether 1 or 12 gates were pending at entry.
 // The Board's five columns carry the same per-status counts, the
@@ -39,9 +40,10 @@ import {
   watchPageErrors,
 } from "./shell-helpers.js";
 
-/** The briefing's callout cap (ui/src/components/home/DecisionCallout.tsx:
- * `CALLOUT_MAX`) — the first gates of GET /approvals?status=pending get a
- * callout, the rest are named by the overflow line pointing at the Inbox. */
+/** How many callouts the briefing previews before offering the rest
+ * (ui/src/components/home/DecisionCallout.tsx: `CALLOUT_PREVIEW`) — the first
+ * gates of GET /approvals?status=pending get a callout; the rest appear only
+ * after the `Show n more` expansion, in place. */
 const CALLOUT_MAX = 3;
 
 /**
@@ -157,7 +159,7 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(10 * 60_000);
 
-  test("Home: count line, callouts for the first three pending approvals, the rest named by the Inbox line", async ({
+  test("Home: count line, callouts for the first three pending approvals, the rest expanded in place by Show n more", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -203,7 +205,7 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
 
     // The briefing renders the SAME list the API returns, under the designed
     // cap: a callout for each of the first CALLOUT_MAX gates in the API's
-    // order, none for the rest, and an overflow line naming their count.
+    // order, none for the rest, and a `Show n more` button naming their count.
     // Polled so the page's own SSE-driven refetch (≤1 s coalescing) settles
     // against the API read it is being compared to; exact once settled —
     // every id, in order, plus the absence of every overflow id.
@@ -232,25 +234,60 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
       if (JSON.stringify(rendered) !== JSON.stringify(want)) {
         problems.push(`callout rows are [${rendered.join(", ")}], want [${want.join(", ")}]`);
       }
-      // The overflow line names the rest — present exactly when there is a rest.
-      const more = page.getByTestId("home-more-inbox");
+      // The overflow button names the rest — present exactly when there is a
+      // rest, with the exact `Show n more` text.
+      const more = page.getByTestId("home-show-more");
       if (rest.length > 0) {
         if (!(await more.isVisible())) {
-          problems.push("the 'more in Inbox' line is missing while gates overflow");
+          problems.push("the 'Show n more' button is missing while gates overflow");
         } else {
           const text = (await more.innerText()).trim();
-          const wantText = `${rest.length} more in Inbox ›`;
-          if (text !== wantText) problems.push(`overflow line says "${text}", want "${wantText}"`);
+          const wantText = `Show ${rest.length} more`;
+          if (text !== wantText) {
+            problems.push(`overflow button says "${text}", want "${wantText}"`);
+          }
         }
       } else if ((await more.count()) > 0) {
-        problems.push("the overflow line rendered although every pending gate has a callout");
+        problems.push(
+          "the 'Show n more' button rendered although every pending gate has a callout",
+        );
       }
       return problems;
     };
     await expect
       .poll(calloutProblems, {
         message:
-          "home renders the first three gates of GET /api/v1/approvals?status=pending as callouts and names the rest in the Inbox line",
+          "home renders the first three gates of GET /api/v1/approvals?status=pending as callouts and offers the rest behind a Show n more button",
+        timeout: 30_000,
+      })
+      .toEqual([]);
+
+    // Clicking the button expands the panel IN PLACE: every pending gate now
+    // renders a callout, still in the API's order (so the DOM-equals-API check
+    // below covers both presence and order), and the button is gone.
+    const showMore = page.getByTestId("home-show-more");
+    if ((await showMore.count()) > 0) {
+      await showMore.click();
+    }
+    const expandedProblems = async (): Promise<string[]> => {
+      const list = await apiPendingApprovals(page.request);
+      const problems: string[] = [];
+      const rendered = await page
+        .locator('[data-testid="home-callouts"] > div[data-testid^="home-callout-"]')
+        .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-testid") ?? ""));
+      const want = list.map((approval) => `home-callout-${testidOf(approval.id)}`);
+      if (JSON.stringify(rendered) !== JSON.stringify(want)) {
+        problems.push(`expanded callout rows are [${rendered.join(", ")}], want [${want.join(", ")}]`);
+      }
+      if ((await page.getByTestId("home-show-more").count()) > 0) {
+        problems.push("the 'Show n more' button is still offered after expanding");
+      }
+      return problems;
+    };
+    await expect
+      .poll(expandedProblems, {
+        message:
+          "after clicking Show n more, home renders EVERY pending approval of GET /api/v1/approvals?status=pending as a callout, in API order",
         timeout: 30_000,
       })
       .toEqual([]);
@@ -259,7 +296,7 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
     await evidence(
       page,
       "shell-p2-home-callouts",
-      `home renders a callout for the first ${Math.min(CALLOUT_MAX, finalList.length)} of the ${finalList.length} pending approvals from GET /api/v1/approvals?status=pending (the briefing's designed cap of ${CALLOUT_MAX}) and the overflow line names the other ${Math.max(finalList.length - CALLOUT_MAX, 0)}`,
+      `home renders a callout for the first ${Math.min(CALLOUT_MAX, finalList.length)} of the ${finalList.length} pending approvals from GET /api/v1/approvals?status=pending (the briefing's preview cap of ${CALLOUT_MAX}); the other ${Math.max(finalList.length - CALLOUT_MAX, 0)} appear only after clicking 'Show n more', which expands the panel in place to every pending gate in API order`,
     );
   });
 
