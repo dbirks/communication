@@ -9,8 +9,9 @@
  */
 import { Link } from "react-router";
 import { CircleDot, GitCommitHorizontal, GitPullRequest, Plus } from "lucide-react";
-import type { CatchUpEvidence, CatchUpTourEntry } from "../../api/catchup";
+import type { CatchUpTourEntry } from "../../api/catchup";
 import { firstSentence } from "../../api/catchup";
+import { Evidence, EvidenceFrame } from "./Evidence";
 import { IMPORTANCE, projectColor, projectSquareClasses, refLabel } from "./importance";
 
 /** The tour card's ref icon follows whichever ref the label was drawn from. */
@@ -19,125 +20,6 @@ function RefGlyph({ entry }: { entry: CatchUpTourEntry }) {
   if (entry.refs.issue_numbers?.length) return <CircleDot size={size} aria-hidden />;
   if (entry.refs.pr_numbers?.length) return <GitPullRequest size={size} aria-hidden />;
   return <GitCommitHorizontal size={size} aria-hidden />;
-}
-
-function headLine(evidence: CatchUpEvidence): string | null {
-  for (const key of ["path", "file", "header", "label"] as const) {
-    const value = evidence[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return null;
-}
-
-function textPayload(evidence: CatchUpEvidence): string | null {
-  for (const key of ["text", "excerpt", "log", "patch", "hunk", "content", "body"] as const) {
-    const value = evidence[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return null;
-}
-
-function listPayload(evidence: CatchUpEvidence): string[] | null {
-  for (const key of ["files", "paths", "list"] as const) {
-    const value = evidence[key];
-    if (Array.isArray(value)) {
-      const lines = value
-        .map((entry) =>
-          typeof entry === "string"
-            ? entry
-            : entry &&
-                typeof entry === "object" &&
-                "path" in entry &&
-                typeof entry.path === "string"
-              ? entry.path
-              : null,
-        )
-        .filter((line): line is string => line != null && line.length > 0);
-      if (lines.length > 0) return lines;
-    }
-  }
-  return null;
-}
-
-function EvidenceBody({ evidence }: { evidence: CatchUpEvidence | undefined }) {
-  if (!evidence) {
-    return (
-      <div className="h-full rounded-panel border border-dashed border-line-strong" aria-hidden />
-    );
-  }
-  const head = headLine(evidence);
-  if (evidence.type === "log") {
-    return (
-      <div className="h-full overflow-hidden rounded-panel border border-line bg-ink font-mono text-[10.5px]/[1.55] break-words whitespace-pre-wrap text-line">
-        {head ? (
-          <div className="border-b border-[#3a3833] bg-[#2a2823] px-[8px] py-[2px] font-mono text-[9.5px] font-semibold tracking-[.04em]">
-            {head}
-          </div>
-        ) : null}
-        <div className="px-[8px] py-[4px]">{textPayload(evidence) ?? ""}</div>
-      </div>
-    );
-  }
-  if (evidence.type === "diff") {
-    const lines = (textPayload(evidence) ?? "").split("\n");
-    return (
-      <div className="h-full overflow-hidden rounded-panel border border-line-strong bg-surface font-mono text-[10.5px]/[1.55]">
-        {head ? (
-          <div className="border-b border-line bg-fill px-[8px] py-[2px] text-[9.5px] font-semibold tracking-[.04em] text-ink-2">
-            {head}
-          </div>
-        ) : null}
-        {lines.map((line, index) => {
-          const added = line.startsWith("+");
-          const removed = line.startsWith("-");
-          return (
-            <div
-              key={index}
-              className={`grid grid-cols-[16px_minmax(0,1fr)] px-[8px] ${
-                added ? "bg-st-done-pale-body" : removed ? "bg-st-failed-pale-body" : ""
-              }`}
-            >
-              <span
-                className={
-                  added ? "text-st-done-tag-fg" : removed ? "text-st-failed-tag-fg" : "text-faint"
-                }
-              >
-                {added || removed ? line[0] : ""}
-              </span>
-              <span className="break-words whitespace-pre-wrap text-ink">
-                {added || removed ? line.slice(1) : line}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-  if (evidence.type === "files") {
-    const lines =
-      listPayload(evidence) ?? (textPayload(evidence) ?? "").split("\n").filter(Boolean);
-    return (
-      <div className="h-full overflow-hidden rounded-panel border border-line-strong bg-surface font-mono text-[10.5px]/[1.55]">
-        {head ? (
-          <div className="border-b border-line bg-fill px-[8px] py-[2px] text-[9.5px] font-semibold tracking-[.04em] text-ink-2">
-            {head}
-          </div>
-        ) : null}
-        {lines.map((line, index) => (
-          <div key={index} className="px-[8px] break-words whitespace-pre-wrap text-ink-2">
-            {line}
-          </div>
-        ))}
-      </div>
-    );
-  }
-  // Screenshots (and any evidence this build cannot draw) keep an honest
-  // placeholder — the payload is model output and nothing here follows a url.
-  return (
-    <div className="grid h-full place-items-center rounded-panel border border-dashed border-line-strong bg-st-queued-pale-body font-mono text-[10px] text-muted">
-      {head ?? evidence.type}
-    </div>
-  );
 }
 
 export function TourCards({
@@ -198,7 +80,11 @@ export function TourCards({
               {firstSentence(entry.stop.narrative)}
             </p>
             <div className="h-[124px] overflow-hidden">
-              <EvidenceBody evidence={entry.stop.evidence?.[0]} />
+              {entry.stop.evidence?.[0] ? (
+                <Evidence evidence={entry.stop.evidence[0]} />
+              ) : (
+                <EvidenceFrame />
+              )}
             </div>
             <Link
               to={`/catch-up/${entry.work_item_id}?stop=${encodeURIComponent(entry.stop.id)}`}

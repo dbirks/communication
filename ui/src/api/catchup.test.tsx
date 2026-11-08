@@ -16,6 +16,7 @@ import {
   useVisitSuggestion,
   useMarkSeen,
   useMarkAllSeen,
+  useReplyToStop,
   useRecordVisit,
   windowSince,
   firstSentence,
@@ -261,5 +262,59 @@ describe("seen writes", () => {
     write.result.current.mutate();
     await waitFor(() => expect(write.result.current.isSuccess).toBe(true));
     expect(requestsTo(requests, "/api/v1/catch-up/visits", "POST")).toHaveLength(1);
+  });
+});
+
+describe("useReplyToStop", () => {
+  const replyPath = `/api/v1/catch-up/items/${itemId}/stops/s2/reply`;
+
+  it("posts the answer as plain text and returns where it landed", async () => {
+    const { requests, wrapper } = harness([
+      {
+        path: replyPath,
+        method: "POST",
+        status: 202,
+        body: {
+          reply_id: "r1",
+          conversation_id: "c1",
+          turn_id: "t1",
+        },
+      },
+    ]);
+    const write = renderHook(() => useReplyToStop(), { wrapper });
+    write.result.current.mutate({ itemId, stopId: "s2", text: "Keep 24h" });
+    await waitFor(() => expect(write.result.current.isSuccess).toBe(true));
+    const sent = requestsTo(requests, replyPath, "POST")[0]!;
+    expect(JSON.parse(sent.body!)).toEqual({ text: "Keep 24h" });
+    expect(write.result.current.data?.conversation_id).toBe("c1");
+  });
+
+  it("surfaces the busy-agent 409 as an error the caller can branch on", async () => {
+    const { wrapper } = harness([
+      {
+        path: replyPath,
+        method: "POST",
+        status: 409,
+        body: { type: "about:blank", title: "Busy", status: 409, detail: "turn in progress" },
+      },
+    ]);
+    const busy = renderHook(() => useReplyToStop(), { wrapper });
+    busy.result.current.mutate({ itemId, stopId: "s2", text: "Keep 24h" });
+    await waitFor(() => expect(busy.result.current.isError).toBe(true));
+  });
+
+  it("answers with a null conversation for a work item with no thread", async () => {
+    const { wrapper } = harness([
+      {
+        path: replyPath,
+        method: "POST",
+        status: 202,
+        body: { reply_id: "r1", conversation_id: null, turn_id: null },
+      },
+    ]);
+    const write = renderHook(() => useReplyToStop(), { wrapper });
+    write.result.current.mutate({ itemId, stopId: "s2", text: "12h" });
+    await waitFor(() => expect(write.result.current.isSuccess).toBe(true));
+    expect(write.result.current.data?.conversation_id).toBeNull();
   });
 });

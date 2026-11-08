@@ -28,6 +28,8 @@ export type CatchUpVisitSuggestion = components["schemas"]["CatchUpVisitSuggesti
 export type CatchUpStop = components["schemas"]["CatchUpStop"];
 export type CatchUpImportance = CatchUpStop["importance"];
 export type CatchUpEvidence = NonNullable<CatchUpStop["evidence"]>[number];
+export type CatchUpDecision = components["schemas"]["CatchUpDecision"];
+export type CatchUpReplyResult = components["schemas"]["CatchUpReplyResult"];
 
 /** The window chips the page owns; "unseen" sends no `since` at all. */
 export type CatchUpWindow = "unseen" | "6h" | "24h" | "2d" | "7d";
@@ -240,6 +242,33 @@ export function useMarkSeen() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: catchUpKeys.all });
     },
+  });
+}
+
+/** One answer to one beat's question. It is text, and it authorizes nothing
+ * (ADR-0078 § Decision 4) — this route is NOT the workflow-gate decide path. */
+export interface ReplyToStopInput {
+  itemId: string;
+  stopId: string;
+  text: string;
+}
+
+/**
+ * `POST /api/v1/catch-up/items/{itemId}/stops/{stopId}/reply` — answer a
+ * stop's `YOUR CALL` question. The server stores the text verbatim and posts
+ * it, unchanged, into the conversation the WORK ITEM names. A busy agent is
+ * the conversation's own `409` (the reply stays stored, the send did not go
+ * out); a work item with no conversation answers with
+ * `conversation_id: null` — a stored answer that goes nowhere, which the
+ * surface must show as a dead end rather than as a send.
+ */
+export function useReplyToStop() {
+  return useMutation({
+    mutationFn: ({ itemId, stopId, text }: ReplyToStopInput) =>
+      apiFetch<CatchUpReplyResult>(`/api/v1/catch-up/items/${itemId}/stops/${stopId}/reply`, {
+        method: "POST",
+        json: { text } satisfies components["schemas"]["CatchUpReplyRequest"],
+      }),
   });
 }
 
