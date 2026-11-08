@@ -770,7 +770,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     ).toBe(false);
 
     // Design 1g: the Studio's assistant row is a pinned footer that starts
-    // collapsed behind its "Ask to change this draft… ⌘K" strip — wait for
+    // collapsed behind its "Ask to change this draft… ⌘J" strip — wait for
     // the dock to mount, open it, then ask.
     const footer = page.getByTestId("assistant-proposal-footer");
     const assistantInput = page.getByTestId("assistant-proposal-input");

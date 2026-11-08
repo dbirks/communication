@@ -13,43 +13,16 @@
 // under docs/design/handoff-projects/png/.
 import { expect, test } from "./fixtures.js";
 import { EMU_ALICE_STATE, EMU_ADMIN_STATE, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
-import type { Locator, Page } from "@playwright/test";
 import path from "node:path";
 
 /** Escape a pass-scoped value before matching it as page text. */
 const reEscape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** `FolderGroup`'s slug rule, mirrored for the header's testid. */
-const slugFolder = (name: string): string =>
-  name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "folder";
-
-/**
- * The folder panel header for ONE named folder, addressed by its exact testid.
- *
- * `Unfiled` renders through the same group (design 1b, ADR-0049 § 8), so
- * `[data-testid^="workflow-folder-header-"]` now matches TWO things whenever
- * anything is unfiled — and the unfiled header is the one that survives every
- * cleanup step. Prefix-matching a journey therefore risks asserting on the
- * wrong panel; the slug is the UI's own (`FolderGroup` in
- * ui/src/pages/Workflows.tsx: lowercase, non-alphanumerics collapse to `-`,
- * no leading/trailing `-`), and the name is still matched as text so a slug
- * that drifted fails loudly instead of quietly picking the unfiled group.
- */
-const folderHeaderFor = (page: Page, folderName: string): Locator =>
-  page
-    // A CSS attribute selector, not `getByTestId`: the id is exact here, and
-    // the selector shape is the one design.ts's landmark matcher uses.
-    .locator(`[data-testid="workflow-folder-header-${slugFolder(folderName)}"]`)
-    .filter({ hasText: new RegExp(`^${reEscape(folderName)}`, "i") });
-
 /**
  * 1b — the /workflows index: H1 "Workflows", the starter cards, the list.
- * 1b folders — the same index with a workflow filed in a folder (ADR-0049
- *      § 8): one panel per folder, the header carries the folder name and the
- *      group's own count. Driven through the row's `⋯` menu → `Move to
+ * 1b folders — the same index with a workflow filed in a folder (finding
+ *      10, 43b8d28): ONE flat list narrowed by the toolbar's `All folders`
+ *      filter select. Driven through the row's `⋯` menu → `Move to
  *      folder…`, exactly as a user files a workflow; the workflow is filed
  *      back to Unfiled at the end of the step.
  * 1c — the New workflow dialog: name field, START FROM cards, Cancel +
@@ -125,12 +98,14 @@ test.describe("workflows-index", () => {
       await emu.screen("1g", "studio");
     });
 
-    // Design 1b groups workflows into folder panels and offers `Move to
-    // folder…` in each row's menu (ADR-0049 § 8). Nothing else in the suite
-    // ever files a workflow, so without this step the folder view is
-    // unproven. The workflow moved here is the one THIS pass just created,
-    // and it is filed back to Unfiled before the step ends: the folder dies
-    // with the pass and no later screen (or journey) sees it.
+    // Finding 10 (43b8d28) turned design 1b's folder panels into a filter:
+    // the list stays flat, `Move to folder…` in each row's menu still files
+    // the workflow, and the toolbar's `All folders` select narrows the list.
+    // Nothing else in the suite ever files a workflow, so without this step
+    // the folder filter is unproven. The workflow moved here is the one THIS
+    // pass just created, and it is filed back to Unfiled before the step
+    // ends: the folder dies with the pass and no later screen (or journey)
+    // sees it.
     await test.step("1b folders — file it in a folder through the row menu", async () => {
       await page.goto("/workflows");
       const row = page
@@ -161,43 +136,44 @@ test.describe("workflows-index", () => {
         timeout: 30_000,
       });
 
-      // The folder is a panel of its own, headed by its name and its count,
-      // and the moved row is inside it — not in the unfiled list beside it.
-      // `Unfiled` is a group too, so its header shares the prefix; address this
-      // pass's own folder by its exact testid (`folderHeaderFor`), never by the
-      // prefix alone.
-      const folderHeader = folderHeaderFor(page, folderName);
+      // Finding 10: folders are a FILTER, not panels. Once the library
+      // carries a folder, the toolbar gains the `All folders` select; the
+      // pick writes `?folder=`, so a filtered list is a shareable address —
+      // and the filtered flat list holds exactly the filed workflow.
+      const filter = page.getByTestId("workflows-folder-filter");
       await expect(
-        folderHeader,
-        "design 1b: the folder renders as a panel whose header names it",
+        filter,
+        "finding 10: filing a workflow adds the 'All folders' filter select to the toolbar",
       ).toBeVisible({ timeout: 30_000 });
       await expect(
-        folderHeader,
-        "design 1b: the header is the group's collapse toggle, and this group is open",
-      ).toHaveAttribute("aria-expanded", "true");
+        filter.locator('option[value=""]'),
+        "the filter's default shows the whole flat list",
+      ).toHaveText("All folders");
+      await filter.selectOption(folderName);
       await expect(
-        folderHeader,
-        `design 1b: the folder header counts its own workflows (one: ${folderName})`,
-      ).toHaveText(new RegExp(`^${reEscape(folderName)}\\D*1$`, "i"));
-
-      const folderPanel = page.locator("section").filter({ has: folderHeader });
+        page,
+        "the folder pick writes ?folder= — the filtered list is shareable",
+      ).toHaveURL(/[?&]folder=/);
       await expect(
-        folderPanel.locator('[data-testid^="workflow-row-"]'),
-        "the folder panel holds exactly the one workflow filed in it",
+        page.getByTestId("workflows-filter-folder"),
+        `the filter names its own pick (${folderName})`,
+      ).toContainText(new RegExp(`in ${reEscape(folderName)}`, "i"));
+      await expect(
+        page.getByTestId(`workflow-row-${slug}`),
+        `the filtered list holds the workflow filed into ${folderName}`,
+      ).toBeVisible();
+      await expect(
+        page.locator('[data-testid^="workflow-row-"]'),
+        "the folder filter leaves exactly the one filed workflow in the flat list",
       ).toHaveCount(1);
-      await expect(
-        folderPanel,
-        `the moved workflow sits inside its folder panel (${folderName})`,
-      ).toContainText(workflowName);
-      await expect(
-        page.getByTestId("workflow-unfiled-group").getByTestId(`workflow-row-${slug}`),
-        "the moved row is gone from the unfiled list below the panels",
-      ).toHaveCount(0);
 
       await emu.screen("1b", "folders");
     });
 
     await test.step("1b folders — file it back so the pass leaves the index as it found it", async () => {
+      // Back to the unfiltered flat list — the pick from the previous step
+      // left `?folder=` on the address.
+      await page.goto("/workflows");
       const row = page
         .locator('[data-testid^="workflow-row-"]')
         .filter({ hasText: workflowName })
@@ -209,15 +185,13 @@ test.describe("workflows-index", () => {
       await expect(dialog, "the dialog opens again to unfile").toBeVisible();
 
       // The dialog's way back is its `Unfiled` quick-pick, and one chip per
-      // folder is the contract. The index hands the dialog a folder list that
-      // already ends in `Unfiled` (`folderNames` in ui/src/pages/Workflows.tsx,
-      // line 578) while the dialog always renders its own `Unfiled` chip after
-      // the list (WorkflowRow.tsx) — so the chip is drawn twice, same label and
-      // same data-testid. Not cosmetic: the LEFT one is an ordinary folder chip,
-      // so clicking it types the word "Unfiled" into the folder field and files
-      // the row in a folder literally named Unfiled; only the dialog's own chip
-      // (rendered last) clears. Soft, because the blocking defect is a few lines
-      // below and the pass should record both.
+      // folder is the contract. (2026-10 pass-2 defect, since fixed: the
+      // index once handed the dialog a folder list that already ended in
+      // `Unfiled` while the dialog added its own chip — the LEFT one was an
+      // ordinary folder chip that typed the word "Unfiled" into the field
+      // and filed the row in a folder literally named Unfiled. The pickers
+      // now take `realFolderNames` — never the sentinel — and the soft
+      // check below keeps that from lapsing silently.)
       const unfiledChips = page.getByTestId("move-folder-option-unfiled");
       const chipCount = await unfiledChips.count();
       const chipRow = (
@@ -258,12 +232,12 @@ test.describe("workflows-index", () => {
           "rejected (see the api defect: PATCH /api/v1/pipelines/{id} -> 4xx)",
       ).toBeHidden({ timeout: 30_000 });
       await expect(
-        folderHeaderFor(page, folderName),
-        `the empty folder is gone — no panel, no stale group (${folderName})`,
+        page.getByTestId("workflows-folder-filter").locator(`option[value="${folderName}"]`),
+        `the empty folder is gone — no filter choice left for it (${folderName}; the select itself disappears once no folder remains)`,
       ).toHaveCount(0);
       await expect(
-        page.getByTestId("workflow-unfiled-group").getByTestId(`workflow-row-${slug}`),
-        "the workflow is back in the unfiled list, where the rest of the suite finds it",
+        page.getByTestId(`workflow-row-${slug}`),
+        "the workflow is back in the flat list, where the rest of the suite finds it",
       ).toBeVisible({ timeout: 30_000 });
     });
   });

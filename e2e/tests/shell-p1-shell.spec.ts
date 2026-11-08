@@ -2,9 +2,11 @@
 //
 // The sidebar replaces the top app bar, the nav rows point at the canonical
 // routes (contract C1), every legacy URL redirects, the tree expansion is a
-// persisted preference (contract C2), the Settings → Layout controls change
-// the shell, ⌘K opens the command palette, and at phone width (below 768px,
-// finding 07) the sidebar is a drawer that Escape closes. Between 768px and
+// persisted preference (contract C2), the Settings → Layout page states the
+// shell's fixed behaviour (finding 10: the sidebar is always the project
+// tree), the first ⌘K opens the jump palette and ⌘J opens Ask (finding 08,
+// superseding ADR-0050's first-press-opens-Ask toggle), and at phone width
+// (below 768px, finding 07) the sidebar is a drawer that Escape closes. Between 768px and
 // 1024px the shell forces the collapsed rail — no drawer, no labels — without
 // touching the stored `sidebar:collapsed` preference.
 //
@@ -29,33 +31,17 @@ import {
 } from "./shell-helpers.js";
 
 /**
- * Click a Settings → Layout radio option and wait until the choice is
- * durably applied before the caller may navigate. Two races this closes:
- * the page renders the defaults until `GET /me/preferences` lands, so the
- * pre-click DOM cannot be trusted — the click may or may not fire a PATCH
- * (none fires when the option turns out to be the loaded value, and that is
- * success too); and navigating over the click's PATCH tears it down, so the
- * caller only proceeds once the write was answered 2xx (0 here means the
- * PATCH was requested but never answered — the failure this waits for).
+ * Press a ⌘-chord the way this lab's keyboard allows. The app binds
+ * `metaKey || ctrlKey` for ⌘K/⌘J (CommandPalette.tsx, AssistantPopover.tsx);
+ * `Meta+k`/`Meta+j` carry no browser default on the lab's Linux Chromium, so
+ * they are tried first and `Control+…` is the documented fallback (the idiom
+ * shell-journey.spec.ts already uses).
  */
-async function setLayoutOption(page: Page, testid: string): Promise<void> {
-  const patch = page.waitForRequest(
-    (req) => req.url().includes("/api/v1/me/preferences") && req.method() === "PATCH",
-    { timeout: 10_000 },
-  ).catch(() => null);
-  await page.getByTestId(testid).click();
-  const request = await patch;
-  if (request) {
-    const status = (await request.response())?.status() ?? 0;
-    expect(
-      status,
-      `${testid}: the preference PATCH answers 2xx (0 = cancelled before answering)`,
-    ).toBeGreaterThanOrEqual(200);
-    expect(status, `${testid}: the preference PATCH answers 2xx`).toBeLessThan(300);
+async function pressChord(page: Page, key: "k" | "j", opened: () => Promise<boolean>) {
+  await page.keyboard.press(`Meta+${key}`);
+  if (!(await opened())) {
+    await page.keyboard.press(`Control+${key}`);
   }
-  // Whichever path brought it — the write landed, or the option already
-  // carried the stored value — the choice must now show as selected.
-  await expect(page.getByTestId(testid).locator("input[type=radio]")).toBeChecked();
 }
 
 /** The sidebar's nav rows and the canonical route each must point at.
@@ -211,75 +197,112 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     );
   });
 
-  test("Settings → Layout: switcher mode swaps the sidebar; floating ask shows ask-float", async ({
+  test("Settings → Layout: the sidebar is always the tree; Ask is the ⌘J float on every page", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/settings/layout", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("settings-layout")).toBeVisible();
+    // Finding 10: the three layout preferences are gone — the page states the
+    // shell's fixed behaviour instead of offering choices.
+    await expect(page.getByTestId("settings-layout-sidebar-note")).toContainText(
+      /always the project tree/i,
+    );
+    await expect(page.getByTestId("settings-layout-chord-k")).toContainText(
+      "⌘K opens Search · ⌘J opens Ask",
+    );
+    for (const gone of [
+      "settings-layout-projects-mode",
+      "settings-layout-ask-placement",
+      "settings-layout-workflow-folders",
+    ]) {
+      await expect(
+        page.getByTestId(gone),
+        `finding 10 removed the ${gone} control`,
+      ).toHaveCount(0);
+    }
     await checkShellScreen(page, "settings layout", stopWatching);
     await evidence(
       page,
       "shell-p1-settings-layout",
-      "the Settings → Layout tab renders the projects-mode, ask-placement and workflow-folder groups",
+      "the Settings → Layout tab shows the sidebar note and the ⌘K/⌘J chord line; the projects-mode, ask-placement and workflow-folders groups are gone",
     );
-    // Projects mode: tree → switcher changes the shell's project block —
-    // after the write is proven saved (see setLayoutOption).
-    await setLayoutOption(page, "settings-layout-projects-mode-option-switcher");
+    // The sidebar is always the project tree: a real project's expansion
+    // chevron renders, and the deleted switcher does not.
+    const project = (await apiProjects(page.request))[0];
+    expect(project, "the lab seeds at least one project").toBeTruthy();
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("project-switcher")).toBeVisible();
-    await evidence(
-      page,
-      "shell-p1-switcher-mode",
-      "choosing the switcher projects mode re-renders the sidebar's project block as the project switcher",
-    );
-    // Ask placement: sidebar → floating moves the assistant to the float.
-    await page.goto(BASE_URL + "/settings/layout", { waitUntil: "domcontentloaded" });
-    await setLayoutOption(page, "settings-layout-ask-placement-option-floating");
-    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("ask-float")).toBeVisible();
-    await checkShellScreen(page, "home with floating ask", stopWatching);
+    await expect(page.getByTestId(`sidebar-project-toggle-${project.id}`)).toBeVisible();
+    await expect(page.getByTestId("project-switcher")).toHaveCount(0);
+    // Finding 08/10: Ask is one floating button on every page — the
+    // placement setting is gone, so the float is here whatever was stored.
+    await expect(page.getByTestId("ask-fab")).toBeVisible();
+    await checkShellScreen(page, "home with the ask float", stopWatching);
     await evidence(
       page,
       "shell-p1-ask-floating",
-      "choosing the floating ask placement renders the ask-float control on the home page",
+      "the sidebar shows the project tree and the floating Ask button (ask-fab) renders on the home page with no preference to set",
     );
-    // Restore the defaults (each write proven 2xx) so later suites see the
-    // shell's default state.
-    await page.goto(BASE_URL + "/settings/layout", { waitUntil: "domcontentloaded" });
-    await setLayoutOption(page, "settings-layout-projects-mode-option-tree");
-    await setLayoutOption(page, "settings-layout-ask-placement-option-sidebar");
   });
 
-  test("⌘K opens the ask surface (ADR-0050); ⌘K again opens the palette; esc closes", async ({
+  test("⌘K opens the palette; ⌘J and the Ask button open the assistant; esc closes both", async ({
     page,
   }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-page")).toBeVisible();
-    // The journey's chord: ⌘K opens the global ask surface. ADR-0050 made
-    // that surface the assistant popover (it owns ⌘K); ⌘K while it is open
-    // opens the jump palette instead — the palette assertion rides press two.
-    await page.keyboard.press("Control+k");
-    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    // Finding 08 supersedes ADR-0050's first-press-opens-Ask toggle: the
+    // FIRST ⌘K opens the jump palette, and the assistant never answers ⌘K.
+    await pressChord(page, "k", async () => {
+      return (await page.getByTestId("palette-input").count()) > 0;
+    });
+    await expect(page.getByTestId("palette-input")).toBeVisible();
+    await expect(page.getByTestId("assistant-popover")).toHaveCount(0);
     await evidence(
       page,
       "shell-p1-palette-open",
-      "⌘K (Ctrl+K in this lab) opens the global ask surface (the ADR-0050 assistant popover)",
-    );
-    await page.keyboard.press("Control+k");
-    await expect(page.getByTestId("palette-input")).toBeVisible();
-    await evidence(
-      page,
-      "shell-p1-palette-second-press",
-      "a second ⌘K while the assistant is open opens the jump palette",
+      "the first ⌘K (Meta/Ctrl+K in this lab) opens the jump palette, not the assistant",
     );
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("palette-input")).toBeHidden();
-    stopWatching();
     await evidence(page, "shell-p1-palette-esc", "Escape closes the command palette");
+    // ⌘J opens the assistant popover — and only the popover.
+    await pressChord(page, "j", async () => {
+      return (await page.getByTestId("assistant-popover").count()) > 0;
+    });
+    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    await expect(page.getByTestId("palette-input")).toHaveCount(0);
+    await evidence(
+      page,
+      "shell-p1-ask-chord",
+      "⌘J opens the assistant popover (finding 08: Ask has its own chord)",
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("assistant-popover")).toBeHidden();
+    await evidence(page, "shell-p1-ask-esc", "Escape closes the assistant popover");
+    // The floating Ask button opens the same surface as the chord.
+    await page.getByTestId("ask-fab").click();
+    await expect(page.getByTestId("assistant-popover")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("assistant-popover")).toBeHidden();
+    await evidence(
+      page,
+      "shell-p1-ask-fab",
+      "the floating Ask button (ask-fab) opens and Escape closes the assistant popover",
+    );
+    // The sidebar's Search field is the palette's other door.
+    await page.getByTestId("sidebar-search").click();
+    await expect(page.getByTestId("palette-input")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("palette-input")).toBeHidden();
+    stopWatching();
+    await evidence(
+      page,
+      "shell-p1-sidebar-search",
+      "the sidebar's Search ⌘K field (sidebar-search) opens the jump palette and Escape closes it",
+    );
   });
 
   test("at 1500x950 the sidebar is always visible (no drawer control)", async ({ page }) => {

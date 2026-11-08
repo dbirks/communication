@@ -34,12 +34,10 @@ export type LandmarkSpec =
   /** `[data-testid=…]`; `current` additionally requires `aria-current="page"`,
    * which is how this app marks the active tab (tabs are routes, not widgets).
    * A trailing `*` matches any testid that STARTS with the rest — the ids the
-   * server names (`workflow-folder-header-delivery`, `workflow-row-<slug>`),
-   * whose tail is data. Same selector shape the journeys use
-   * (`[data-testid^="workflow-folder-header-"]`). `except` drops named exact
-   * ids from that prefix, for the case where one sibling of the family is NOT
-   * the thing the design claims (a prefix that matches it too would let the
-   * landmark pass on that element alone). */
+   * server names (`workflow-row-<slug>`, `rail-project-<id>`), whose tail is
+   * data. `except` drops named exact ids from that prefix, for the case where
+   * one sibling of the family is NOT the thing the design claims (a prefix
+   * that matches it too would let the landmark pass on that element alone). */
   | { testid: string; current?: boolean; except?: string[] }
   /** An accessible role, optionally with a name regex (or an exact string) and
    * a heading level. */
@@ -145,31 +143,25 @@ const INDEX_ROW_MENU: Landmark = {
   desc: "a workflow row's '…' row-menu button",
   any: [{ role: "button", name: /^⋯$/ }, { text: /^⋯$/ }],
 };
-/** Design 1b: a folder is a PANEL, headed by its own collapse toggle — the
- * SVG chevron, the group's name in mono caps, and the group's own count on the
- * right. The header's testid carries the folder's slug (`workflow-folder-
- * header-delivery`), so the id's tail is data and only its head is asserted;
- * the header's text (name + count) is what the `1b folders` journey step
- * asserts, on the folder this pass just filed a workflow into.
- *
- * `Unfiled` is a group like any other (design 1b), so its header —
- * `workflow-folder-header-unfiled` — shares this prefix. `except` cuts it out:
- * the claim is about a FOLDER the server named, and a screen whose only group
- * was Unfiled must not satisfy it. The pass's own folder is named in the
- * journey step (`folderHeaderFor` in journeys.spec.ts), which addresses that
- * header by its exact testid. */
-const INDEX_FOLDER_HEADER: Landmark = {
-  id: "index-folder-header",
-  desc: "a named folder panel's header — the group's name in caps and its count on the collapse toggle",
-  any: [{ testid: "workflow-folder-header-*", except: ["workflow-folder-header-unfiled"] }],
+/** Finding 10 (43b8d28) retired design 1b's folder PANELS: the index is ONE
+ * flat list and a folder narrows it through the toolbar's `All folders`
+ * select (`workflows-folder-filter`, which writes `?folder=`). The select
+ * only appears once the library actually carries a folder — which is exactly
+ * the `1b folders` screen: the journey step files one workflow and asserts
+ * the pick leaves exactly that row in the list. */
+const INDEX_FOLDER_FILTER: Landmark = {
+  id: "index-folder-filter",
+  desc: "the folder filter select (finding 10: folders narrow the flat list; design 1b's folder panels are gone)",
+  any: [{ testid: "workflows-folder-filter" }, { role: "option" }],
 };
-/** A workflow row drawn under a folder. The landmark matcher asks only whether
- * something renders (fixtures.ts `missingLandmarks` has no notion of
- * containment), so this proves the row is on the folder view; the journey step
- * proves it sits INSIDE that folder's panel and not in the unfiled list. */
+/** A workflow row while the folder filter is picked. The landmark matcher asks
+ * only whether something renders (fixtures.ts `missingLandmarks` has no notion
+ * of containment), so this proves a row is on the filtered list; the journey
+ * step proves the filtered list holds exactly the workflow filed into that
+ * folder. */
 const INDEX_FOLDER_ROW: Landmark = {
   id: "index-folder-row",
-  desc: "a workflow row on the folder-panel view (design 1b files rows inside their folder)",
+  desc: "a workflow row on the folder-filtered flat list (finding 10 replaces 1b's folder panels)",
   any: [{ testid: "workflow-row-*" }],
 };
 const INDEX_NO_MATCH: Landmark = {
@@ -806,12 +798,13 @@ const REPO_RUNS_PANEL: Landmark = {
 };
 /** The repository page's failed reads. `repo-1e not-found` says so inside the
  * `repo-page` frame, and since issue #24 so does the failed repositories read:
- * `repo-error-page` keeps the project breadcrumb and the page's own H1
+ * `repo-error-page` keeps the project breadcrumb and the page's H1
  * (`Repository` — the repository's name is exactly what the failed read cannot
- * answer) above the ProblemBanner and its Retry. Any of the H1, the not-found
- * frame, or the loaded page's `repo-header` is a heading standing over the
- * banner, which is the claim; the failure screen's own `repo-error-header` is not
- * named here because the H1 spec already matches it. */
+ * answer) above the ProblemBanner and its Retry. Since finding 07 both failure
+ * branches render through `ds/Page` (the emulator files a bare section outside
+ * the page frame as a band-inset gap), so the H1 rides the shared `page-band`;
+ * any of the H1, the not-found frame, or the loaded page's `repo-header` is a
+ * heading standing over the banner, which is the claim. */
 const REPO_FAILED_HEADING: Landmark = {
   id: "repo-failed-heading",
   desc: "the page heading that stands over a failed repository read",
@@ -1255,7 +1248,6 @@ const RCN_PROJECTS_SECTION: Landmark = {
   any: [
     { text: /^PROJECTS$/ },
     { testid: "sidebar-project-toggle-*" },
-    { testid: "project-switcher" },
     { testid: "sidebar-open" },
   ],
 };
@@ -1270,7 +1262,7 @@ const RCN_WORKFLOWS_AGENTS_ROWS: Landmark = {
   host: "page",
   any: [
     { testid: "sidebar-link-workflows" },
-    { testid: "sidebar-rail-library" },
+    { testid: "rail-item-workflows" },
     { testid: "sidebar-open" },
   ],
 };
@@ -1885,9 +1877,9 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     INDEX_ROW_MENU,
   ],
   "1b no-match": [INDEX_HEADING, INDEX_NEW, INDEX_SEARCH, INDEX_NO_MATCH],
-  // The same index with a workflow filed into a folder (ADR-0049 § 8): every
-  // landmark the plain index claims, plus the panel structure design 1b draws
-  // — a header per folder (name in caps + its count) and the row inside it.
+  // The same index with a workflow filed into a folder: every landmark the
+  // plain index claims, plus finding 10's folder treatment — the `All
+  // folders` filter select and the row on the filtered flat list.
   "1b folders": [
     INDEX_HEADING,
     INDEX_IMPORT,
@@ -1898,7 +1890,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     INDEX_CHIP_ALL,
     INDEX_CHIP_DRAFT,
     INDEX_LIST,
-    INDEX_FOLDER_HEADER,
+    INDEX_FOLDER_FILTER,
     INDEX_FOLDER_ROW,
     INDEX_ROW_EDIT,
     INDEX_ROW_MENU,

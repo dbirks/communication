@@ -254,12 +254,12 @@ export default function Repository() {
 
   if (project.isPending) return <Spinner label="Loading project" />;
   if (project.error || !project.data) {
+    // Finding 07: even a failed read is a page — the shared band owns the H1
+    // and the column keeps the band's inset (the emulator files a bare
+    // section outside `<Page>` as a title-edge gap).
     return (
-      <section aria-labelledby="repo-error-heading">
-        <h1 id="repo-error-heading" className="text-title-l font-bold">
-          Repository
-        </h1>
-        <div className="mt-2 max-w-[70ch]">
+      <Page layout="wide" title={<span id="repo-error-heading">Repository</span>}>
+        <div className="max-w-[70ch]">
           <ProblemBanner
             error={project.error}
             fallback="The project could not be loaded."
@@ -273,7 +273,7 @@ export default function Repository() {
             back={{ to: routes.projects(), label: "← Projects", testid: "repo-back-to-projects" }}
           />
         </div>
-      </section>
+      </Page>
     );
   }
   const projectData = project.data;
@@ -286,54 +286,57 @@ export default function Repository() {
   // name is NOT said here: the read that would answer it is the one that failed.
   if (repos.error) {
     return (
-      <div className="min-w-0 space-y-4" data-testid="repo-error-page">
-        <header className="min-w-0 space-y-1" data-testid="repo-error-header">
-          <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
-            <Link to={routes.project(id)} data-testid="repo-breadcrumb">
-              {projectData.name}
-            </Link>
-            <span aria-hidden="true" className="px-1.5">
-              /
-            </span>
-          </nav>
-          <h1 id="repo-load-error-heading" className="text-[22px] leading-[28px] font-semibold">
-            Repository
-          </h1>
-        </header>
-        <section aria-labelledby="repo-load-error-heading" className="min-w-0 space-y-3">
-          <div className="max-w-[70ch]">
-            <ProblemBanner
-              error={repos.error}
-              fallback="Repositories could not be loaded."
-              subject={`the repositories of ${projectData.name}`}
-              hint="The list of repositories could not be read, so this page cannot show one."
-              retry={{
-                onClick: () => void repos.refetch(),
-                pending: repos.isFetching,
-                testid: "repo-load-retry",
-              }}
-              back={{
-                to: routes.project(id),
-                label: `← ${projectData.name}`,
-                testid: "repo-load-back-to-project",
-              }}
-            />
-          </div>
-        </section>
-      </div>
+      // Finding 07: the failure keeps the page's own header treatment —
+      // `ds/Page`'s shared band owns the H1 at the band inset, and the
+      // project breadcrumb rides the body's first line. The repository's
+      // name is NOT the band title: the read that would answer it is the
+      // one that failed.
+      <Page
+        layout="wide"
+        testid="repo-error-page"
+        title={<span id="repo-load-error-heading">Repository</span>}
+      >
+        <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+          <Link to={routes.project(id)} data-testid="repo-breadcrumb">
+            {projectData.name}
+          </Link>
+          <span aria-hidden="true" className="px-1.5">
+            /
+          </span>
+        </nav>
+        <div className="mt-3 max-w-[70ch]">
+          <ProblemBanner
+            error={repos.error}
+            fallback="Repositories could not be loaded."
+            subject={`the repositories of ${projectData.name}`}
+            hint="The list of repositories could not be read, so this page cannot show one."
+            retry={{
+              onClick: () => void repos.refetch(),
+              pending: repos.isFetching,
+              testid: "repo-load-retry",
+            }}
+            back={{
+              to: routes.project(id),
+              label: `← ${projectData.name}`,
+              testid: "repo-load-back-to-project",
+            }}
+          />
+        </div>
+      </Page>
     );
   }
 
   if (!repositoryData) {
     return (
-      <div data-testid="repo-page">
+      // Finding 07 + 1e: the refusal is a page too — the band title is the
+      // H1 the page showed all along (`Repository not found`), and
+      // `ProjectUnavailable` keeps the sentence, the hint and the way back
+      // under it without drawing a second heading.
+      <Page layout="wide" testid="repo-page" title="Repository not found">
         <ProjectUnavailable
-          heading="Repository"
-          headingId="repo-not-found-heading"
           label="Repository not found"
           testid="repo-not-found"
           copy="Repository not found or you do not have access"
-          missing="Repository"
           hint="Check the name in the link, or go back to the project and pick a repository it does have."
           back={{
             to: routes.project(id),
@@ -345,7 +348,7 @@ export default function Repository() {
             testid: "repo-back-to-project",
           }}
         />
-      </div>
+      </Page>
     );
   }
 

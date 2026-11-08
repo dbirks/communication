@@ -10,7 +10,7 @@
 //   e. the Run Workbench: a live agent step, Take control (confirm card with
 //      its truthful copy, ADR-0043), one prompt, hand back — a new attempt of
 //      the step is queued (ADR-0043/ADR-0055 semantics, asserted via API);
-//   f. the assistant via ⌘K: add a human approval step to a draft of
+//   f. the assistant via ⌘J: add a human approval step to a draft of
 //      feature-development, then undo all.
 //
 // EXECUTION ORDER: e runs before d. journey_step's deterministic long turn
@@ -1319,7 +1319,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.setViewportSize({ width: 1500, height: 950 });
   });
 
-  test("f — assistant via ⌘K: add a step to the draft, then undo all", async ({ page }) => {
+  test("f — assistant via ⌘J: add a step to the draft, then undo all", async ({ page }) => {
     await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
     await gotoApp(page, `/workflows/${state.pipeline.id}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
@@ -1333,7 +1333,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     // published revision (the History tab's clone control — step b made
     // step a's draft a revision, so it is no longer open), so the anchor
     // node computed below exists in the draft the assistant finds, then go
-    // back to the workflow page for the ⌘K popover.
+    // back to the workflow page for the ⌘J popover.
     await openFreshDraft(page, state.pipeline.id);
     const freshDraftId = new URL(page.url()).pathname.split("/").pop() as string;
     console.log(`journey f: this run's fresh draft of r${state.revisionBefore + 1} is open`);
@@ -1343,11 +1343,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await gotoApp(page, `/workflows/${state.pipeline.id}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
 
-    // ⌘K opens the assistant popover (the app's own shortcut; Ctrl-K on a
-    // headless browser where Meta is not delivered).
-    await page.keyboard.press("Meta+k");
+    // ⌘J opens the assistant popover (finding 08 gave Ask its own chord;
+    // Ctrl-J on a headless browser where Meta is not delivered).
+    await page.keyboard.press("Meta+j");
     const popover = page.getByTestId("assistant-popover");
-    if (!(await popover.isVisible().catch(() => false))) await page.keyboard.press("Control+k");
+    if (!(await popover.isVisible().catch(() => false))) await page.keyboard.press("Control+j");
     await expect(popover).toBeVisible({ timeout: 10_000 });
 
     // Fresh context: the popover auto-loads the user's LATEST conversation —

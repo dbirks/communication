@@ -3,7 +3,7 @@
 // stream (ADR-0048) with NO timer poll (row: "live flags … NOT COVERED"),
 // a Studio
 // agent node saved "as a reusable step" appears in `GET /node-templates`
-// and on /workflows/steps (row: 3349840), the ⌘K mic drives a fake SpeechRecognition
+// and on /workflows/steps (row: 3349840), the ⌘J mic drives a fake SpeechRecognition
 // into an editable composer with nothing sent until Send (row: mic), the
 // per-person trust level is enforced in the assistant loop (row: trust),
 // follow-up questions round-trip as the option's plain-text label (row:
@@ -777,7 +777,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
         assistantPosts.push(`${r.method()} ${r.url()}`);
       }
     });
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
     const mic = page.getByTestId("mic-button");
     await expect(mic, "the fake SpeechRecognition must make the mic render").toBeVisible();
@@ -901,7 +901,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       waitUntil: "domcontentloaded",
     });
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
     // Under ask_all a DRAFT EDIT is a gated tool call (trust.go:
     // ClassDraftEdit), so the turn stops without executing and lands as a
@@ -950,7 +950,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       const failedTurn = (await page.getByTestId("assistant-error").count()) > 0;
       if (!failedTurn) break; // the deterministic wait was exhausted — fail loudly below
       await page.keyboard.press("Escape");
-      await page.keyboard.press("Meta+k");
+      await page.keyboard.press("Meta+j");
       await expect(page.getByTestId("assistant-popover")).toBeVisible();
       await askForEdit();
     }
@@ -1048,7 +1048,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     // the ui.navigate tool or wrote a link, and whether the page moved.
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("sidebar")).toBeVisible();
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
     const navComposer = page.getByTestId("assistant-composer-input");
     const rowsBeforeNav = (await assistantRows(request)).length;
@@ -1103,7 +1103,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("sidebar")).toBeVisible();
-    await page.keyboard.press("Meta+k");
+    await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
     const cards = page.getByTestId("assistant-question");
     // The popover adopts the caller's NEWEST conversation, so older
@@ -1131,7 +1131,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       // composer + Send stay disabled while any turn is in flight.
       await page.keyboard.press("Escape");
       await expect(page.getByTestId("assistant-popover")).toBeHidden();
-      await page.keyboard.press("Meta+k");
+      await page.keyboard.press("Meta+j");
       await expect(page.getByTestId("assistant-popover")).toBeVisible();
       const composer = page.getByTestId("assistant-composer-input");
       await expect(composer, "the composer is enabled once no turn is in flight").toBeEnabled({

@@ -449,6 +449,16 @@ describe("/p/:projectId/:repo — 3a header", () => {
     });
     expect(await screen.findByTestId("repo-error-page")).toBeTruthy();
     expect(screen.getByTestId("repo-load-retry")).toBeTruthy();
+    // Finding 07: the failed read is still a `<Page>` — the page root
+    // declares the layout and the SHARED band owns the one H1, so the band
+    // inset is not lost on the failure screen.
+    expect(screen.getByTestId("repo-error-page").getAttribute("data-page-layout")).toBe("wide");
+    const band = screen.getByTestId("page-band");
+    expect(band.querySelector("h1")?.textContent).toBe("Repository");
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    // Issue #24's rule survives the frame change: the breadcrumb still names
+    // the project the failed repository belongs to.
+    expect(screen.getByTestId("repo-breadcrumb").textContent).toBe(projectFixture.name);
   });
 
   it("shows the not-found empty state for an unknown repository", async () => {
@@ -461,6 +471,15 @@ describe("/p/:projectId/:repo — 3a header", () => {
       ],
     });
     expect(await screen.findByTestId("repo-not-found")).toBeTruthy();
+    // Finding 07: the refusal stands inside the page frame — the band's H1
+    // names what was missing (the emulator asserts the same heading), the
+    // root declares its layout, and the page never carries two H1s.
+    expect(screen.getByTestId("repo-page").getAttribute("data-page-layout")).toBe("wide");
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe("Repository not found");
+    expect(screen.getByTestId("page-band").contains(heading)).toBe(true);
+    // The way back is still the project's own name, as button and trail.
+    expect(screen.getByTestId("repo-back-to-project").textContent).toMatch(/^← /);
   });
 });
 

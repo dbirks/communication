@@ -349,7 +349,7 @@ export function collectStateFingerprint(): string {
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
     ) !== null;
   // The status chips whose WORD flips a control set (ui/src/pages/ProjectRuns.tsx
   // `RunStateChip` as `run-header-status` in RunHeader.tsx/RunInspector.tsx;
@@ -446,7 +446,7 @@ export function collectReflowItems(): ReflowItem[] {
   // Belt-and-braces shell exclusion (the landmarks from Shell.tsx/Sidebar.tsx).
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
     ) !== null;
   const items: ReflowItem[] = [];
   const seen = new Set<string>();
@@ -527,7 +527,7 @@ export function findClippedText(): ClipHit[] {
   };
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
     ) !== null;
   // Visually-hidden text (the `.sr-only` convention: a 1×1 overflow-hidden,
   // clip-path'd box) is screen-reader copy, not visible text the reflow can
@@ -633,7 +633,7 @@ export function findOverlaps(): OverlapHit[] {
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
     ) !== null;
   const isSvg = (el: Element): boolean =>
     el.tagName.toLowerCase() === "svg" || el.closest("svg") !== null;
@@ -898,7 +898,7 @@ export function findSmallTargets(): TargetHit[] {
     (value ?? "").replace(/\s+/g, " ").trim();
   const inShell = (el: Element): boolean =>
     el.closest(
-      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid="ask-fab"]',
     ) !== null;
   /**
    * The modal open RIGHT NOW, if one is: an `aria-modal` dialog/alertdialog or

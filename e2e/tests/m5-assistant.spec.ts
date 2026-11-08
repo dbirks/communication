@@ -1,7 +1,6 @@
-// M5 assistant arm, re-pointed at Assistant v2 (ADR-0050, "Six Directions"
-// 2a/2c): ⌘K opens the read-only assistant popover (not the command palette —
-// the palette's Ask row hands off to the popover, and the palette itself is
-// the jump-only half reached from the popover's open state). One question
+// M5 assistant arm, re-pointed at Assistant v2 (ADR-0050 + its finding-08
+// ⌘K/⌘J addendum): ⌘J opens the read-only assistant popover (⌘K belongs to
+// the jump palette; the palette's Ask row hands off to the popover). One question
 // posted from the popover's composer, an answer rendered in the caller's
 // assistant conversation transcript with the tools it looked at, and every
 // link the answer carries landing on a real page rather than "Not found".
@@ -201,7 +200,7 @@ function servedLabelWithoutIds(label: string): string {
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
-test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
+test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
   test.describe.configure({ mode: "serial", timeout: ANSWER_TIMEOUT_MS + 90_000 });
   test.skip(
     !M5_ENABLED,
@@ -298,10 +297,10 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
         }
       })();
     };
-    await test.step("Ctrl K opens the assistant popover and the question is sent", async () => {
+    await test.step("Ctrl J opens the assistant popover and the question is sent", async () => {
       await gotoApp(alice, "/");
       alice.on("response", onMessageResponse);
-      await alice.keyboard.press("Control+K");
+      await alice.keyboard.press("Control+J");
       await expect(alice.getByTestId("assistant-popover")).toBeVisible();
       const input = alice.getByTestId("assistant-composer-input");
       await expect(input).toBeVisible();
