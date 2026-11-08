@@ -89,15 +89,22 @@ ARG GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
+# Every release fetch below carries the retry flag set because GitHub's
+# release-asset CDN returns 504 Gateway Time-outs intermittently (observed on
+# the nono v0.80.0 tarball: the same URL alternating 200/504, three image
+# builds failed on it). `--retry-all-errors` is what makes `-f` retries work at
+# all — plain `--retry` only covers transient errors, and a 504 turned into a
+# curl exit 22 by `-f` is not one. The digests below are unchanged and still
+# verified with `sha256sum -c`: retries affect fetching, never verification.
 RUN set -eu; \
     mkdir -p /out; \
     cd /tmp; \
-    curl -fsSL -o nono.tgz \
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o nono.tgz \
       "https://github.com/nolabs-ai/nono/releases/download/v${NONO_VERSION}/nono-v${NONO_VERSION}-x86_64-unknown-linux-gnu.tar.gz"; \
     printf '%s  nono.tgz\n' "${NONO_SHA256}" | sha256sum -c -; \
     tar -xzf nono.tgz; \
     install -m 0755 "$(find . -type f -name nono | head -n1)" /out/nono; \
-    curl -fsSL -o apm.tgz \
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o apm.tgz \
       "https://github.com/microsoft/apm/releases/download/v${APM_VERSION}/apm-linux-x86_64.tar.gz"; \
     printf '%s  apm.tgz\n' "${APM_SHA256}" | sha256sum -c -; \
     # The apm tarball carries a top-level directory (apm-linux-x86_64/), so it is
@@ -107,7 +114,7 @@ RUN set -eu; \
     # nested copy would look for templates one level too deep.
     mkdir -p /out/apm && tar -xzf apm.tgz -C /out/apm --strip-components=1; \
     test -x /out/apm/apm; test -d /out/apm/_internal; \
-    curl -fsSL -o gh.tgz \
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o gh.tgz \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
     printf '%s  gh.tgz\n' "${GH_SHA256}" | sha256sum -c -; \
     # The gh release tarball carries a top-level directory (gh_2.103.0_linux_amd64/),
