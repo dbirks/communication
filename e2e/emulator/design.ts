@@ -1227,6 +1227,7 @@ const RCN_TODAY: Landmark = {
   host: "page",
   any: [
     { testid: "sidebar-link-home" },
+    { testid: "rail-item-today" },
     { role: "link", name: /^today$/i },
     { testid: "sidebar-open" },
   ],
@@ -1279,25 +1280,34 @@ const RCN_RAIL_EXPAND: Landmark = {
   host: "page",
   any: [{ testid: "sidebar-expand" }, { testid: "sidebar-open" }],
 };
+/** Redesign 4a: the rail carries no initials tiles any more — every tile is
+ * an icon (`rail-item-today/catch-up/threads/projects/workflows/agents/
+ * search`) and the words live in the hover label, the `aria-label` and the
+ * Projects popover. */
 const RCN_RAIL_TILES: Landmark = {
   id: "rcn-rail-project-tiles",
-  desc: "the rail's project initials tiles",
+  desc: "the rail's icon nav tiles (4a: no initials tiles any more)",
   host: "page",
-  any: [{ testid: "sidebar-rail-project-*" }, { testid: "sidebar-open" }],
+  any: [{ testid: "rail-item-*" }, { testid: "sidebar-open" }],
 };
 /** Review round 2's two 3c states were the ⋯ menu open on a project row and a
  * rail tile's flyout open. Finding 09 deleted the first: the sidebar's project
  * row is a tree toggle again and carries no hover-only menu, so its
  * `sidebar-project-menu` / `project-menu-*` testids and the arrow claim that
- * rode that surface are retired here (the rail flyout keeps its own —
- * `RCN_RAIL_FLYOUT` / `RCN_RAIL_FLYOUT_ARROW`). The configuration verbs the ⋯
- * menu held are now page content (`PROJECT_ADD_REPO`, `PROJECT_SETTINGS_LINK`,
+ * rode that surface are retired here (the rail's projects surface keeps its
+ * own — `RCN_RAIL_FLYOUT` / `RCN_RAIL_FLYOUT_ARROW`). Redesign 4a redraw the
+ * second: nothing opens on hover any more — a CLICK on the Projects tile
+ * (`rail-item-projects`) opens the one project popover (`rail-projects-
+ * popover`), whose rows (`rail-project-<id>`, a `*` prefix the design rules
+ * already spell) carry the projects, their state badges and the active
+ * project's repositories. The configuration verbs the ⋯ menu held are now page
+ * content (`PROJECT_ADD_REPO`, `PROJECT_SETTINGS_LINK`,
  * `PROJECT_SETTINGS_TABS`), and the project-header screens below claim them. */
 const RCN_RAIL_FLYOUT: Landmark = {
   id: "rcn-rail-flyout",
-  desc: "the hovered rail tile's flyout with the project's repositories (at 390, the phone strip's menu button)",
+  desc: "the Projects tile's click-opened popover with the project rows and the active project's repositories (at 390, the phone strip's menu button)",
   host: "page",
-  any: [{ testid: "sidebar-rail-flyout-*" }, { testid: "sidebar-open" }],
+  any: [{ testid: "rail-projects-popover" }, { testid: "sidebar-open" }],
 };
 /* Every anchored surface carries the shared pointer arrow (handoff 3c:
  * "all popovers/menus get a pointer arrow"), so each open-surface capture
@@ -2287,7 +2297,8 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_RAIL_EXPAND,
   ],
   // Review round 2 drew two 3c states with arrows: the project row's ⋯ menu
-  // and a hovered tile's flyout. Finding 09 deleted the ⋯ menu, so this badge's
+  // and a tile's open projects surface (4a: the click-opened Projects
+  // popover). Finding 09 deleted the ⋯ menu, so this badge's
   // three captures are now the header's own configure surface: the two actions
   // the menu used to hold, the dialog `+ Repository` opens in place, and the
   // settings page's Settings | Members tab strip (Members is the old menu's

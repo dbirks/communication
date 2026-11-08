@@ -6,11 +6,14 @@
 // handoff-repo-chat-nav/png/3a.png without touching anyone's files.
 //
 // What the journeys play (the handoff's final picks):
-//   rcn-3c — the one left sidebar: collapse to the rail, hover a rail project
-//            tile for its flyout, and the collapsed state surviving a reload (a
-//            saved layout pref). Plus the project's own configure surface the
-//            sidebar's ⋯ menu used to hold — finding 09 moved it to the project
-//            header (`+ Repository` opening its dialog in place, `Settings`) and
+//   rcn-3c — the one left sidebar: collapse to the rail, click the rail's
+//            Projects tile for its popover (the projects' rows, their state
+//            badges, the active project's repositories — redesign 4a retired
+//            the hovered initials-tile flyout), and the collapsed state
+//            surviving a reload (a saved layout pref). Plus the project's own
+//            configure surface the sidebar's ⋯ menu used to hold — finding 09
+//            moved it to the project header (`+ Repository` opening its dialog
+//            in place, `Settings`) and
 //            to the settings page's Settings | Members tab strip. Ends
 //            EXPANDED so the next journey of any pass starts from the default.
 //   rcn-3a — the repo List view: the chat box (type + Start lands in the new
@@ -96,7 +99,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { expect, test, apiMutate } from "./fixtures.js";
 import {
   attachGitHubReadCredential,
@@ -633,6 +636,110 @@ spec:
  * answer both. */
 function issuesReadOf(projectId: string): RegExp {
   return new RegExp(`/api/v1/projects/${projectId}/repos/[^/]+/issues([?]|$)`);
+}
+
+/** The two cross-project reads the sidebar's flags project (contract C3) —
+ * the SAME paths `ui/src/lib/sidebarFlags.ts` fetches. */
+const SIDEBAR_FLAG_RUNS_URL = `${EMU_BASE_URL}/api/v1/runs?status=queued,running,waiting_human,failed&limit=200`;
+const SIDEBAR_FLAG_APPROVALS_URL = `${EMU_BASE_URL}/api/v1/approvals?status=pending`;
+
+/** The glyph the app prints for each state (the badge is glyph + count, never
+ * colour alone — `Sidebar.tsx`'s `FLAG_STYLE`). */
+const SIDEBAR_FLAG_GLYPH: Record<"failed" | "waiting" | "running", string> = {
+  failed: "×",
+  waiting: "!",
+  running: "●",
+};
+
+/**
+ * The worst-state flag per project that the rail's Projects popover rows must
+ * print, derived independently of the app from the two cross-project reads the
+ * flags ride: root runs bucketed by status (a `waiting_human` run whose gate
+ * is NOT open is stalled → failed), pending gates counted per project as
+ * waiting, and the worst kind present wins with its own count
+ * (failed > waiting > running). A project with nothing in the window maps to
+ * no entry (= no badge). Reading the API here rather than importing the app's
+ * own projection is the point: the popover's badges are asserted against the
+ * server's state, not against the same code that draws them.
+ */
+async function expectedSidebarFlags(
+  request: APIRequestContext,
+): Promise<Map<string, { kind: "failed" | "waiting" | "running"; count: number }>> {
+  const [runsRes, approvalsRes] = await Promise.all([
+    request.get(SIDEBAR_FLAG_RUNS_URL),
+    request.get(SIDEBAR_FLAG_APPROVALS_URL),
+  ]);
+  expect(runsRes.status(), "GET /api/v1/runs answers for the flags").toBe(200);
+  expect(approvalsRes.status(), "GET /api/v1/approvals answers for the flags").toBe(200);
+  const runs = (
+    (await runsRes.json()) as {
+      runs?: { id: string; project_id: string; status: string; depth: number }[];
+    }
+  ).runs ?? [];
+  const approvals = (
+    (await approvalsRes.json()) as {
+      approvals?: { run_id: string; project_id: string; state: string }[];
+    }
+  ).approvals ?? [];
+  const openGates = new Set<string>();
+  const gatesByProject = new Map<string, number>();
+  for (const approval of approvals) {
+    if (approval.state !== "pending") continue;
+    openGates.add(approval.run_id);
+    gatesByProject.set(approval.project_id, (gatesByProject.get(approval.project_id) ?? 0) + 1);
+  }
+  const counts = new Map<string, { failed: number; waiting: number; running: number }>();
+  const bucket = (projectId: string) => {
+    let entry = counts.get(projectId);
+    if (!entry) {
+      entry = { failed: 0, waiting: 0, running: 0 };
+      counts.set(projectId, entry);
+    }
+    return entry;
+  };
+  for (const run of runs) {
+    if (run.depth !== 0) continue; // children belong to their parent's tree
+    const entry = bucket(run.project_id);
+    if (run.status === "failed") entry.failed += 1;
+    else if (run.status === "waiting_human") {
+      // A gate that IS open is the decision behind it, counted as waiting
+      // below; one that is not and never moved on is stalled → failed.
+      if (!openGates.has(run.id)) entry.failed += 1;
+    } else entry.running += 1; // the read fetches only queued/running besides
+  }
+  for (const [projectId, gates] of gatesByProject) bucket(projectId).waiting = gates;
+  const flags = new Map<string, { kind: "failed" | "waiting" | "running"; count: number }>();
+  for (const [projectId, entry] of counts) {
+    if (entry.failed > 0) flags.set(projectId, { kind: "failed", count: entry.failed });
+    else if (entry.waiting > 0) flags.set(projectId, { kind: "waiting", count: entry.waiting });
+    else if (entry.running > 0) flags.set(projectId, { kind: "running", count: entry.running });
+  }
+  return flags;
+}
+
+/** Every project row's badge as drawn (glyph + count, the count also spelled
+ * in the `aria-label`), or its absence, matching the server-derived flag. */
+async function popoverBadgesMatchServer(page: Page, popover: Locator): Promise<boolean> {
+  const flags = await expectedSidebarFlags(page.request);
+  const rows = popover.locator('[data-testid^="rail-project-"]');
+  const n = await rows.count();
+  for (let i = 0; i < n; i++) {
+    const row = rows.nth(i);
+    const testid = await row.getAttribute("data-testid");
+    const projectId = (testid ?? "").replace("rail-project-", "");
+    const flag = flags.get(projectId);
+    const badge = row.locator("span[aria-label]");
+    const badges = await badge.count();
+    if (!flag) {
+      if (badges !== 0) return false;
+      continue;
+    }
+    if (badges !== 1) return false;
+    if ((await badge.getAttribute("aria-label")) !== `${flag.count} ${flag.kind}`) return false;
+    const text = (await badge.textContent()) ?? "";
+    if (text.trim() !== `${SIDEBAR_FLAG_GLYPH[flag.kind]} ${flag.count}`) return false;
+  }
+  return true;
 }
 
 /**
@@ -1594,7 +1701,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toHaveAttribute("aria-current", "page");
     });
 
-    await test.step("collapse to the rail (3c)", async () => {
+    await test.step("collapse to the rail (3c/4a)", async () => {
       await page.getByTestId("sidebar-collapse").click();
       await expect(
         page.getByTestId("sidebar-expand"),
@@ -1602,39 +1709,93 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toBeVisible({ timeout: 10_000 });
       await expect(page.getByTestId("new-chat-rail"), "design 3c: the rail's +").toBeVisible();
       await expect(
-        page.getByTestId(`sidebar-rail-project-${ids.projectId}`),
-        "design 3c: one initials tile per project",
+        page.getByTestId("rail-item-workflows"),
+        "design 3c/finding 02/4a: the rail tile is labelled Workflows",
       ).toBeVisible();
       await expect(
-        page.getByTestId("sidebar-rail-library"),
-        "design 3c/finding 02: the rail tile is labelled Workflows",
+        page.getByTestId("rail-item-agents"),
+        "design 4a: the split library keeps its Agents tile too",
       ).toBeVisible();
+      await expect(
+        page.locator('[data-testid^="rail-project-"]'),
+        "design 4a: no initials tiles any more — projects live in the Projects popover, not on the rail itself",
+      ).toHaveCount(0);
       await emu.screen("rcn-3c", "rail");
     });
 
-    await test.step("hovering a tile opens its flyout with the repos", async () => {
-      await page.getByTestId(`sidebar-rail-project-${ids.projectId}`).hover();
-      const flyout = page.getByTestId(`sidebar-rail-flyout-${ids.projectId}`);
+    await test.step("the Projects tile opens the popover — one row per project, its state badge, the active project's repos", async () => {
+      // Redesign 4a retired the hovered initials-tile flyout: the one tile
+      // with children (Projects) opens a click-surface popover on a CLICK.
+      await page.getByTestId("rail-item-projects").click();
+      const popover = page.getByTestId("rail-projects-popover");
       await expect(
-        flyout,
-        "design 3c: hovering (or focusing) a tile opens the project flyout",
+        popover,
+        "design 4a: a click on the Projects tile opens the project popover",
       ).toBeVisible({ timeout: 10_000 });
+      const projects = (
+        (
+          await (
+            await page.request.get(`${EMU_BASE_URL}/api/v1/projects`)
+          ).json()
+        ) as { items?: { id: string; name: string }[] }
+      ).items ?? [];
+      expect(projects.length, "the lab serves the sidebar at least one project").toBeGreaterThan(
+        0,
+      );
       await expect(
-        flyout,
-        `design 3c: the flyout lists the project's repositories (${FILE_REPO})`,
+        popover.locator('[data-testid^="rail-project-"]'),
+        `design 4a: one popover row per project (${projects.length})`,
+      ).toHaveCount(projects.length);
+      for (const project of projects) {
+        await expect(
+          popover.getByTestId(`rail-project-${project.id}`),
+          `design 4a: ${project.name} has its row in the popover`,
+        ).toBeVisible();
+      }
+      // The state badges are the same counts the expanded rows carry — each
+      // row's badge (or its absence) read off the two cross-project reads the
+      // flags project. Polled because a run of this pass may still be moving
+      // while the app's own event-driven refetch catches up.
+      await expect
+        .poll(() => popoverBadgesMatchServer(page, popover), {
+          timeout: 60_000,
+          message:
+            "design 4a: every popover row carries its project's worst-state badge (glyph + count), matching GET /api/v1/runs + GET /api/v1/approvals",
+        })
+        .toBe(true);
+      // The active project's repositories ride the popover (what the old
+      // flyout listed): this journey stands on its own project page.
+      await expect(
+        popover,
+        `design 4a: the popover lists the active project's repositories (${FILE_REPO})`,
       ).toContainText(FILE_REPO, { timeout: 15_000 });
-      // Goal item 2: the flyout is a ds Popover — the same shared arrow, in
+      // Goal item 2: the popover is a ds Popover — the same shared arrow, in
       // the same box, claimed the same way.
       await expect(
-        flyout.getByTestId("menu-arrow"),
+        popover.getByTestId("menu-arrow"),
         "design: every anchored surface has a pointer arrow",
       ).toBeVisible();
-      // Review round 2: design 3c's RIGHT panel is this exact state — a tile
-      // hovered, the flyout OPEN with its pointer arrow crossing the 4px
-      // gap — captured at both widths (the phone documents the rail away;
-      // see the `rcn-3c flyout` landmarks). Nothing moves the mouse while
-      // the two widths are shot, so the hover-driven flyout survives both.
+      // Review round 2: design 3c's RIGHT panel is this exact state — the
+      // popover OPEN with its pointer arrow crossing the gap — captured at
+      // both widths (the phone documents the rail away; see the `rcn-3c
+      // flyout` landmarks).
       await emu.screen("rcn-3c", "flyout");
+
+      // The two-width capture remounts the rail, so reopen to prove the
+      // popover's keyboard contract the same ds Popover spells everywhere:
+      // Esc closes and returns the keyboard to the tile that opened it.
+      await page.getByTestId("rail-item-projects").click();
+      await expect(popover, "the popover reopens after the capture").toBeVisible({
+        timeout: 10_000,
+      });
+      await page.keyboard.press("Escape");
+      await expect(popover, "design 4a: Escape closes the Projects popover").toBeHidden({
+        timeout: 10_000,
+      });
+      await expect(
+        page.getByTestId("rail-item-projects"),
+        "design 4a: Escape returns focus to the Projects tile",
+      ).toBeFocused();
     });
 
     await test.step("reload — the collapsed state persists, then restore expanded", async () => {

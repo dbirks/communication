@@ -37,11 +37,30 @@ import {
  * they are tried first and `Control+…` is the documented fallback (the idiom
  * shell-journey.spec.ts already uses).
  */
-async function pressChord(page: Page, key: "k" | "j", opened: () => Promise<boolean>) {
+async function pressChord(page: Page, key: string, opened: () => Promise<boolean>) {
   await page.keyboard.press(`Meta+${key}`);
   if (!(await opened())) {
     await page.keyboard.press(`Control+${key}`);
   }
+}
+
+/**
+ * Press the ⌘\\ (⌃\\ here) COLUMN TOGGLE and wait for its effect. Unlike
+ * opening the palette, a chord press is a toggle: firing the fallback while
+ * the first press is still landing would toggle straight back, so the first
+ * press gets a settle window before the fallback is tried, and the fallback
+ * gets the full window. `settled` is the observable end state the toggle must
+ * reach (e.g. "the rail is mounted").
+ */
+async function pressToggleChord(page: Page, settled: () => Promise<boolean>) {
+  await page.keyboard.press("Meta+\\");
+  await expect
+    .poll(settled, { timeout: 3_000 })
+    .toBe(true)
+    .catch(async () => {
+      await page.keyboard.press("Control+\\");
+      await expect.poll(settled, { timeout: 30_000 }).toBe(true);
+    });
 }
 
 /** The sidebar's nav rows and the canonical route each must point at.
@@ -351,14 +370,23 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       ).toHaveCount(0);
     }
     await expect(
-      page.getByTestId("sidebar-rail-library"),
-      "the rail's Workflows tile",
+      page.getByTestId("rail-item-workflows"),
+      "the rail's Workflows tile (redesign 4a: `rail-item-*`, the old `sidebar-rail-library` is gone)",
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("rail-item-agents"),
+      "the rail's Agents tile",
     ).toBeVisible();
     // And it is not the phone: no drawer, no top strip, at a width the phone
-    // frame used to own.
+    // frame used to own. The rail's own OVERLAY (4a: expand at a rail width)
+    // is not open either.
     await expect(page.getByTestId("sidebar-open")).toHaveCount(0);
     await expect(page.getByTestId("phone-top-strip")).toHaveCount(0);
     await expect(page.getByTestId("sidebar-backdrop")).toHaveCount(0);
+    await expect(
+      page.getByTestId("rail-overlay-backdrop"),
+      "the forced rail stands alone — no overlay over the content",
+    ).toHaveCount(0);
 
     // The forced rail wrote nothing: the stored preference still says expanded.
     const storedAfter = (await apiPreferences(page.request)).layout.expanded;
@@ -407,6 +435,65 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       page,
       "shell-p1-frame-cut-768",
       "the phone frame stops below 768px: 767 mounts the top strip and drawer, 768 mounts the forced rail with no drawer control (finding 07)",
+    );
+  });
+
+  // Redesign 4a redrew the collapsed rail: no words and no initials on the
+  // tiles any more — hover or keyboard focus on a tile prints the one dark
+  // label (`rail-tooltip`) 8px off the rail's edge, and the third door to the
+  // column is the ⌘\ chord (⌃\ on this lab's keyboard) next to the expand
+  // button and the edge handle. The chord toggles the SAVED preference at
+  // ≥1024px (inside the forced-rail zone it opens an overlay instead), so the
+  // toggle runs at 1500px and ends EXPANDED — the preference as it was found.
+  test("the rail's hover label, and ⌘\\ collapses and re-expands the column at 1500px", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+    const stopWatching = watchPageErrors(page);
+
+    // The hover label, read at the FORCED rail (900px): the tiles mount there
+    // without the test writing the stored preference at all.
+    await page.setViewportSize({ width: 900, height: 800 });
+    const today = page.getByTestId("rail-item-today");
+    await expect(today, "900px forces the rail with the Today tile").toBeVisible();
+    const tip = page.getByTestId("rail-tooltip");
+    await expect(tip, "no label before the pointer arrives").toHaveCount(0);
+    await today.hover();
+    await expect(tip, "hover on the rail's Today tile prints the label").toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(tip).toHaveRole("tooltip");
+    await expect(tip, "the label carries the tile's word").toContainText("Today");
+    await page.mouse.move(600, 400); // leave the rail entirely
+    await expect(tip, "leaving the rail takes the label with it").toBeHidden({ timeout: 5_000 });
+
+    // The chord at a width where it owns the preference (≥1024px). Start
+    // EXPANDED whatever the saved pref says, and restore it at the end.
+    await page.setViewportSize({ width: 1500, height: 950 });
+    if (await page.getByTestId("sidebar-expand").isVisible()) {
+      await page.getByTestId("sidebar-expand").click();
+    }
+    await expect(
+      page.getByTestId("sidebar-collapse"),
+      "1500px starts from the expanded column",
+    ).toBeVisible();
+    await pressToggleChord(page, () => page.getByTestId("sidebar-expand").isVisible());
+    await expect(
+      page.getByTestId("sidebar-expand"),
+      "⌘\\ collapsed the column to the rail",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("sidebar-collapse")).toHaveCount(0);
+    await pressToggleChord(page, () => page.getByTestId("sidebar-collapse").isVisible());
+    await expect(
+      page.getByTestId("sidebar-collapse"),
+      "⌘\\ expanded the column again",
+    ).toBeVisible({ timeout: 30_000 });
+    await checkShellScreen(page, "rail label + ⌘\\ toggle", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-rail-label-chord",
+      "hovering the rail's Today tile prints the rail-tooltip label 'Today' (and leaving takes it), and the ⌘\\ chord (Control+\\ on this lab) collapses the column to the rail and re-expands it at 1500px, restoring the saved preference (redesign 4a)",
     );
   });
 
