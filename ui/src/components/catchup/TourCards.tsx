@@ -1,0 +1,233 @@
+/**
+ * The catch-up tour cards (mock 8a): one card per stop of this reader's
+ * tour, priority first. Each card wears a 3px top border in its importance
+ * colour, a number square, the project square, its ref and minutes, the
+ * model's kind label, the title, the first sentence of the narrative as the
+ * "why", and a 124px evidence preview. The first card is focused (ink border
+ * + offset shadow). A 150px dashed "See more" card ends the row and asks the
+ * tour for up to 4 more stops.
+ */
+import { Link } from "react-router";
+import { CircleDot, GitCommitHorizontal, GitPullRequest, Plus } from "lucide-react";
+import type { CatchUpEvidence, CatchUpTourEntry } from "../../api/catchup";
+import { firstSentence } from "../../api/catchup";
+import { IMPORTANCE, projectColor, projectSquareClasses, refLabel } from "./importance";
+
+/** The tour card's ref icon follows whichever ref the label was drawn from. */
+function RefGlyph({ entry }: { entry: CatchUpTourEntry }) {
+  const size = 12;
+  if (entry.refs.issue_numbers?.length) return <CircleDot size={size} aria-hidden />;
+  if (entry.refs.pr_numbers?.length) return <GitPullRequest size={size} aria-hidden />;
+  return <GitCommitHorizontal size={size} aria-hidden />;
+}
+
+function headLine(evidence: CatchUpEvidence): string | null {
+  for (const key of ["path", "file", "header", "label"] as const) {
+    const value = evidence[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function textPayload(evidence: CatchUpEvidence): string | null {
+  for (const key of ["text", "excerpt", "log", "patch", "hunk", "content", "body"] as const) {
+    const value = evidence[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function listPayload(evidence: CatchUpEvidence): string[] | null {
+  for (const key of ["files", "paths", "list"] as const) {
+    const value = evidence[key];
+    if (Array.isArray(value)) {
+      const lines = value
+        .map((entry) =>
+          typeof entry === "string"
+            ? entry
+            : entry &&
+                typeof entry === "object" &&
+                "path" in entry &&
+                typeof entry.path === "string"
+              ? entry.path
+              : null,
+        )
+        .filter((line): line is string => line != null && line.length > 0);
+      if (lines.length > 0) return lines;
+    }
+  }
+  return null;
+}
+
+function EvidenceBody({ evidence }: { evidence: CatchUpEvidence | undefined }) {
+  if (!evidence) {
+    return (
+      <div className="h-full rounded-panel border border-dashed border-line-strong" aria-hidden />
+    );
+  }
+  const head = headLine(evidence);
+  if (evidence.type === "log") {
+    return (
+      <div className="h-full overflow-hidden rounded-panel border border-line bg-ink font-mono text-[10.5px]/[1.55] break-words whitespace-pre-wrap text-line">
+        {head ? (
+          <div className="border-b border-[#3a3833] bg-[#2a2823] px-[8px] py-[2px] font-mono text-[9.5px] font-semibold tracking-[.04em]">
+            {head}
+          </div>
+        ) : null}
+        <div className="px-[8px] py-[4px]">{textPayload(evidence) ?? ""}</div>
+      </div>
+    );
+  }
+  if (evidence.type === "diff") {
+    const lines = (textPayload(evidence) ?? "").split("\n");
+    return (
+      <div className="h-full overflow-hidden rounded-panel border border-line-strong bg-surface font-mono text-[10.5px]/[1.55]">
+        {head ? (
+          <div className="border-b border-line bg-fill px-[8px] py-[2px] text-[9.5px] font-semibold tracking-[.04em] text-ink-2">
+            {head}
+          </div>
+        ) : null}
+        {lines.map((line, index) => {
+          const added = line.startsWith("+");
+          const removed = line.startsWith("-");
+          return (
+            <div
+              key={index}
+              className={`grid grid-cols-[16px_minmax(0,1fr)] px-[8px] ${
+                added ? "bg-st-done-pale-body" : removed ? "bg-st-failed-pale-body" : ""
+              }`}
+            >
+              <span
+                className={
+                  added ? "text-st-done-tag-fg" : removed ? "text-st-failed-tag-fg" : "text-faint"
+                }
+              >
+                {added || removed ? line[0] : ""}
+              </span>
+              <span className="break-words whitespace-pre-wrap text-ink">
+                {added || removed ? line.slice(1) : line}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  if (evidence.type === "files") {
+    const lines =
+      listPayload(evidence) ?? (textPayload(evidence) ?? "").split("\n").filter(Boolean);
+    return (
+      <div className="h-full overflow-hidden rounded-panel border border-line-strong bg-surface font-mono text-[10.5px]/[1.55]">
+        {head ? (
+          <div className="border-b border-line bg-fill px-[8px] py-[2px] text-[9.5px] font-semibold tracking-[.04em] text-ink-2">
+            {head}
+          </div>
+        ) : null}
+        {lines.map((line, index) => (
+          <div key={index} className="px-[8px] break-words whitespace-pre-wrap text-ink-2">
+            {line}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  // Screenshots (and any evidence this build cannot draw) keep an honest
+  // placeholder — the payload is model output and nothing here follows a url.
+  return (
+    <div className="grid h-full place-items-center rounded-panel border border-dashed border-line-strong bg-st-queued-pale-body font-mono text-[10px] text-muted">
+      {head ?? evidence.type}
+    </div>
+  );
+}
+
+export function TourCards({
+  stops,
+  remaining,
+  moreAvailable,
+  loadingMore,
+  onSeeMore,
+}: {
+  stops: CatchUpTourEntry[];
+  remaining: number;
+  moreAvailable: boolean;
+  loadingMore: boolean;
+  onSeeMore: () => void;
+}) {
+  return (
+    <div className="flex gap-[10px]">
+      {stops.map((entry, index) => {
+        const importance = IMPORTANCE[entry.stop.importance] ?? IMPORTANCE.routine;
+        const ref = refLabel(entry.refs);
+        const focused = index === 0;
+        return (
+          <article
+            key={`${entry.work_item_id}:${entry.stop.id}`}
+            data-testid={`catchup-card-${index + 1}`}
+            className={`flex min-w-0 flex-1 flex-col gap-[7px] rounded-panel border border-t-[3px] bg-surface p-[12px] ${importance.topBorder} ${
+              focused ? "border-ink shadow-[2px_2px_0_var(--color-ink)]" : "border-line-strong"
+            }`}
+          >
+            <div className="flex items-center gap-[6px]">
+              <span
+                className={`grid h-[20px] w-[20px] shrink-0 place-items-center rounded-[2px] font-mono text-[10.5px] font-semibold ${importance.tagBg} ${importance.tagFg}`}
+              >
+                {index + 1}
+              </span>
+              <span
+                className={projectSquareClasses()}
+                style={{ background: projectColor(entry.project.color) }}
+                aria-hidden
+              />
+              {ref ? (
+                <span className="flex items-center gap-[4px] font-mono text-[11px] text-ink-2 whitespace-nowrap">
+                  <RefGlyph entry={entry} />
+                  {ref}
+                </span>
+              ) : null}
+              <span className="ml-auto font-mono text-[10.5px] text-muted whitespace-nowrap">
+                {entry.minutes} min
+              </span>
+            </div>
+            {entry.stop.kind ? (
+              <span className="inline-flex h-[18px] shrink-0 items-center self-start rounded-panel border border-ink px-[6px] font-mono text-[9.5px] font-semibold tracking-[.03em] uppercase">
+                {entry.stop.kind}
+              </span>
+            ) : null}
+            <h3 className="text-[14.5px] leading-[1.3] font-semibold">{entry.stop.title}</h3>
+            <p className="text-[12.5px] leading-[1.45] text-ink-2">
+              {firstSentence(entry.stop.narrative)}
+            </p>
+            <div className="h-[124px] overflow-hidden">
+              <EvidenceBody evidence={entry.stop.evidence?.[0]} />
+            </div>
+            <Link
+              to={`/catch-up/${entry.work_item_id}?stop=${encodeURIComponent(entry.stop.id)}`}
+              className="font-ui text-[12px] font-semibold text-accent-text"
+            >
+              Start here ›
+            </Link>
+          </article>
+        );
+      })}
+      {moreAvailable ? (
+        <button
+          type="button"
+          onClick={onSeeMore}
+          disabled={loadingMore}
+          data-testid="catchup-see-more"
+          className="flex w-[150px] shrink-0 flex-col items-start justify-center gap-[8px] rounded-panel border border-dashed border-project-quiet bg-st-queued-pale-body p-[12px] text-left disabled:opacity-60"
+        >
+          <span className="grid h-[28px] w-[28px] place-items-center rounded-panel border border-ink bg-surface">
+            <Plus size={14} aria-hidden />
+          </span>
+          <span className="text-[13.5px] font-semibold">See more</span>
+          <span className="text-[12px] leading-[1.4] text-ink-2">
+            {loadingMore
+              ? "Asking the assistant…"
+              : `The assistant picks up to 4 more from the remaining ${remaining}.`}
+          </span>
+        </button>
+      ) : null}
+    </div>
+  );
+}

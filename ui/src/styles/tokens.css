@@ -142,6 +142,27 @@
   --color-st-info-pale-edge: #cfe3f2;
   --color-st-info-pale-fg: #0f4c78;
 
+  /* Catch up (8a) — importance levels. A tour stop's 3px top border is the
+     FILL, its card ring the BORDER, and the level tag pairs TAG-BG with
+     TAG-FG (design handoff README-catchup, "Importance colors"). Routine's
+     fill is surface-white; the border and quiet tag carry the grey. */
+  --color-imp-must-fill: #2f4bd6;
+  --color-imp-must-border: #2f4bd6;
+  --color-imp-must-tag-bg: #2f4bd6;
+  --color-imp-must-tag-fg: #ffffff;
+  --color-imp-look-fill: #8fa0ea;
+  --color-imp-look-border: #5b6fd6;
+  --color-imp-look-tag-bg: #dfe4fa;
+  --color-imp-look-tag-fg: #2238a8;
+  --color-imp-routine-fill: #ffffff;
+  --color-imp-routine-border: #9a958a;
+  --color-imp-routine-tag-bg: #eeece6;
+  --color-imp-routine-tag-fg: #5e5a52;
+
+  /* Catch up: the project-chip fallback — a project with no stored colour,
+     and the "quiet" square the README names. */
+  --color-project-quiet: #9a958a;
+
   /* Progress segments (PROGRESS-J/K): flat colors, no texture. "done" counts
      are neutral dark ink-grey, not green — green would shout on every bar. */
   --color-seg-done: #4a4740;
