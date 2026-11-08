@@ -30,13 +30,26 @@
 //   `RunningNow` prints), instead of pretending a fresh lab has a busy project.
 import { randomUUID } from "node:crypto";
 import { expect, test, apiMutate } from "./fixtures.js";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
 /** The pass's own empty project (a name no other journey takes: `empty-and-error`
  * owns `emu-proj-*`, `repo-triggers` owns `emu-gh-*`). */
 const BARE_SLUG = `emu-bare-${EMU_PASS_ID}`.toLowerCase();
 const BARE_NAME = `Emu bare ${EMU_PASS_ID}`;
+
+/**
+ * Where a page's own content starts at 1280, measured from the window's left
+ * edge (finding 07). `<main>` no longer pads, caps or centres anything — the
+ * shell gives every route the bare column and `ds/Page` puts the shared band
+ * inset on the page (`PAGE_BAND_PAD` = `px-[22px] pt-[20px] md:px-[28px]`, the
+ * value `PROJECT_PAGE_PAD` aliases). With the expanded 220px sidebar
+ * (`SIDEBAR_WIDTH_PX`) and the `md:` 28px inset, a padded page's first line
+ * sits at x=248; the threshold below leaves 8px of slack for subpixel layout
+ * and still refuses the unpadded case (x=220, y=0) a page gets when it renders
+ * a branch outside `Page`.
+ */
+const PAGE_CONTENT_MIN_X = 240;
 
 /** GET /api/v1/projects → the id of the seeded m4-exit project. */
 async function m4ExitId(page: Page): Promise<string> {
@@ -312,17 +325,25 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
         page.getByTestId("project-tabs"),
         "the refusal mounts no shell around a project the reader cannot open",
       ).toHaveCount(0);
-      // The refusal is a page, not a strip of text welded to the sidebar: on
-      // this full-bleed route the shell hands the column over unpadded, so the
-      // branch carries the header band's padding itself (the loop's 2026-10-27
-      // report saw this line at x=240, y=0). Handoff 2c/3c narrowed the column
-      // to 220px, so the padded start is the band's own 28px past that.
+      // The refusal is a page, not a strip of text welded to the sidebar.
+      // Finding 07 moved that padding off the shell and onto the page: `<main>`
+      // is now `w-full flex-1` with no cap, no centring and no padding of its
+      // own, and every page carries the shared band inset itself
+      // (`ds/Page`'s `PAGE_BAND_PAD` = `px-[22px] pt-[20px] md:px-[28px]`, which
+      // `PROJECT_PAGE_PAD` aliases for the 1b frame's branches). So at 1280 the
+      // padded start is the band's own 28px past the 220px column, and a page
+      // that forgot to pad itself lands at x=220, y=0 — the failure this line
+      // has caught every time it was loosened (the loop's 2026-10-27 report saw
+      // it at x=240, y=0).
       const box = await refusal.boundingBox();
       expect(box, "the not-found line is laid out").not.toBeNull();
       expect(
-        (box?.x ?? 0) > 240 && (box?.y ?? 0) > 0,
+        (box?.x ?? 0) > PAGE_CONTENT_MIN_X && (box?.y ?? 0) > 0,
         `the not-found page is padded off the sidebar (got x=${box?.x}, y=${box?.y}; ` +
-          "the sidebar ends at x=220, so a padded page starts past 240)",
+          `the sidebar ends at x=220 and the shared band's md inset is 28px, so a padded ` +
+          "page starts past " +
+          PAGE_CONTENT_MIN_X +
+          ")",
       ).toBe(true);
       await emu.screen("project-1b", "not-found");
     });
@@ -421,6 +442,98 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
       await emu.screen("repo-1e", "repo");
     });
 
+    await test.step("finding 07 — one title left edge across the layout kinds", async () => {
+      // The whole point of the single `layout` prop: the title's left edge and
+      // the band's baseline stop moving between routes. Four routes, four ways
+      // of drawing a band — a `wide` page that draws its own header band (this
+      // repository page), a `wide` page whose band is `ds/Page`'s (`page-band`,
+      // /projects), a `reading` page (Today) and a `canvas` page that draws its
+      // own band inside `PAGE_BAND_PAD` (the 1b project frame) — and one left
+      // edge for all of them at 1280.
+      const titleLeftEdge = async (locator: Locator): Promise<number> => {
+        const box = await locator.boundingBox();
+        expect(
+          box,
+          `the title at ${await locator.count()} node(s) is never laid out`,
+        ).not.toBeNull();
+        return box?.x ?? -1;
+      };
+      // Finding 07's contract in one line: every page root carries
+      // `data-page-layout`, and no page gets its width from the shell any more.
+      const declaredLayout = async (): Promise<string | null> =>
+        await page.locator("main [data-page-layout]").first().getAttribute("data-page-layout");
+
+      await page.goto(`/p/${projectId}/app`);
+      await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
+      // Finding 07: `repo-page` is the `Page` ROOT now (its content moved to
+      // `repo-page-body`), and the repository's own header is the band.
+      expect(
+        await page.getByTestId("repo-page").getAttribute("data-page-layout"),
+        "the repository page declares its layout on the root that carries its testid",
+      ).toBe("wide");
+      expect(
+        await declaredLayout(),
+        "the repository page's declared layout is the one its root carries",
+      ).toBe("wide");
+      const repoTitle = await titleLeftEdge(page.getByTestId("repo-name"));
+      const repoHeader = await titleLeftEdge(page.getByTestId("repo-header"));
+      expect(
+        repoHeader,
+        `the repo band stands at the page's own inset (band x=${repoHeader}, title x=${repoTitle})`,
+      ).toBeLessThanOrEqual(repoTitle + 1);
+
+      await page.goto("/projects");
+      await expect(page.getByTestId("projects-heading")).toBeVisible({ timeout: 30_000 });
+      expect(
+        await declaredLayout(),
+        "the project list declares its layout through the same root attribute",
+      ).toBe("wide");
+      const band = page.getByTestId("page-band");
+      await expect(band, "the shared header band is the page's title home").toBeVisible();
+      await expect(
+        band.getByRole("heading", { level: 1 }),
+        "the band owns the page's one H1",
+      ).toContainText("Your projects");
+      const projectsTitle = await titleLeftEdge(page.getByTestId("projects-heading"));
+
+      await page.goto("/");
+      await expect(page.getByTestId("home-greeting")).toBeVisible({ timeout: 30_000 });
+      // Today is a `reading` page: its body column is capped at 960px and LEFT-
+      // ALIGNED at the band's edge (never centred), so its title shares the
+      // repo page's left edge instead of stepping sideways by the cap.
+      expect(
+        await declaredLayout(),
+        "Today declares its layout through the same root attribute",
+      ).toBe("reading");
+      const todayTitle = await titleLeftEdge(page.getByTestId("home-greeting"));
+
+      await page.goto(`/p/${projectId}`);
+      await expect(page.getByTestId("project-name")).toBeVisible({ timeout: 30_000 });
+      // The 1b frame is a `canvas` page: it draws its own band with the shared
+      // inset, which is exactly the claim this step exists to keep.
+      expect(
+        await declaredLayout(),
+        "the project overview declares its layout through the same root attribute",
+      ).toBe("canvas");
+      const overviewTitle = await titleLeftEdge(page.getByTestId("project-name"));
+      // Four routes, four layout kinds, one left edge and one title baseline.
+      for (const [where, x] of [
+        ["the repository page's band title", repoTitle],
+        ["/projects band title", projectsTitle],
+        ["Today's band title", todayTitle],
+        ["the project overview's band title", overviewTitle],
+      ] as const) {
+        expect(
+          x,
+          `${where} sits at the shared band inset (220px sidebar + the band's 28px md inset = 248 at 1280); got x=${x}`,
+        ).toBeGreaterThanOrEqual(PAGE_CONTENT_MIN_X);
+        expect(
+          Math.abs(x - repoTitle),
+          `${where} x=${x} disagrees with the repository page's title x=${repoTitle} — finding 07: one left edge for every page`,
+        ).toBeLessThanOrEqual(1);
+      }
+    });
+
     await test.step("repo-1e — a repository the project does not have", async () => {
       // No 404 is declared here on purpose: the repository list is the page's
       // own read and it answers 200, so the not-found is a client-side absence.
@@ -449,15 +562,21 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
         page.getByTestId("repo-workflows"),
         "the refusal mounts no repository panels around a repository that is not there",
       ).toHaveCount(0);
-      // Not a full-bleed route: the shell's own column pads it. Handoff 2c/3c
-      // narrowed the column to 220px (and the page is capped and centred), so
-      // a padded start clears 236.
+      // The page pads itself now (finding 07): `<main>` stopped capping and
+      // padding the column, so the shared band inset is what keeps this refusal
+      // off the sidebar and off the top of the viewport. Same measure as the
+      // project refusal above, and it files the same defect when a page renders
+      // its failure branch outside `ds/Page` (x=220, y=0).
       const box = await refusal.boundingBox();
       expect(box, "the missing-repository line is laid out").not.toBeNull();
       expect(
-        (box?.x ?? 0) > 236 && (box?.y ?? 0) > 0,
+        (box?.x ?? 0) > PAGE_CONTENT_MIN_X && (box?.y ?? 0) > 0,
         `the missing-repository page is padded off the sidebar (got x=${box?.x}, y=${box?.y}; ` +
-          "the sidebar ends at x=220, so a padded page starts past 236)",
+          `the sidebar ends at x=220 and the shared band's md inset is 28px, so a padded ` +
+          "page starts past " +
+          PAGE_CONTENT_MIN_X +
+          " — a refusal rendered outside <Page>/PROJECT_PAGE_PAD sits flush at x=220, y=0" +
+          ")",
       ).toBe(true);
       await emu.screen("repo-1e", "not-found");
     });

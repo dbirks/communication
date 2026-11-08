@@ -28,10 +28,12 @@
 // expected `display_name`/`email`, and the URL is still the path that was asked
 // for rather than an `/auth/…` redirect. The sidebar-footer name
 // (`user-badge`) is NOT that proof at phone width: the badge lives in the
-// sidebar footer, and below the `md:` breakpoint the sidebar is the drawer
-// behind the phone top strip's menu button, so a hidden badge there means
-// "narrow screen", not "signed out". The badge is therefore only asserted at
-// desktop width, where the sidebar rail is designed to be visible.
+// sidebar footer, and below 768px (finding 07 — `Shell.PHONE_MAX_WIDTH_PX`, the
+// width the phone frame stops owning) the sidebar is the drawer behind the
+// phone top strip's menu button, so a hidden badge there means "narrow screen",
+// not "signed out". The badge is therefore only asserted at 768px and up, where
+// the sidebar always mounts — the forced rail (768–1023px) carries the same
+// footer, so the badge is visible there too.
 //
 // ONE TEST PER SCREEN × VIEWPORT, no serial mode and no shared page: a failing
 // screen reports itself and stops nothing, so the run says which screens are
@@ -80,8 +82,11 @@ const TEST_TIMEOUT_MS = Number(
   process.env.E2E_M5_LAYOUT_TEST_TIMEOUT_MS ?? LOADED_TIMEOUT_MS + 60_000,
 );
 
-/** The Tailwind `md:` width from which the sidebar (and its footer's
- * signed-in name) is rendered as the fixed rail instead of the drawer. */
+/** The Tailwind `md:` width that is also the shell's phone cut
+ * (`Shell.PHONE_MAX_WIDTH_PX = 767.98`, finding 07): from here up the sidebar
+ * column mounts — the forced rail to 1023px, the saved column above it — and
+ * its footer carries the signed-in name either way. Below it the column is the
+ * unmounted drawer. */
 const BADGE_MIN_WIDTH = 768;
 
 const VIEWPORTS = [
@@ -347,6 +352,47 @@ async function checkScreen(
   await expect(page.getByTestId(screen.anchor), `${where}: never rendered`).toBeVisible({
     timeout: 30_000,
   });
+  // Finding 07: `<main>` no longer caps, pads or decides anything — every
+  // routed page renders through `ds/Page`, which stamps its root with
+  // `data-page-layout="reading|wide|canvas"`. A screen without that root is a
+  // page the shell is still dressing by hand (the class of bug that made title
+  // left edges and body widths move between routes), so this is asserted for
+  // every screen at every width, not just the ones with a band.
+  const pageRoot = page.locator("main [data-page-layout]").first();
+  await expect(pageRoot, `${where}: no <Page> root inside <main>`).toBeVisible({
+    timeout: 30_000,
+  });
+  const declaredLayout = await pageRoot.getAttribute("data-page-layout");
+  expect(
+    ["reading", "wide", "canvas"],
+    `${where}: data-page-layout=${JSON.stringify(declaredLayout)} is not one of the three layouts`,
+  ).toContain(declaredLayout);
+  // A page that draws the shared band has its title at the band's own left
+  // edge — the finding-07 invariant, measured on the live page rather than
+  // assumed from a stylesheet: the band and the page's body column start
+  // together, so the title does not step sideways between routes. A canvas
+  // page draws no `page-band` (its header is its own, inside the same inset),
+  // so the claim only applies where the band exists.
+  const bands = page.getByTestId("page-band");
+  expect(
+    await bands.count(),
+    `${where}: a page draws at most one shared header band (page-band)`,
+  ).toBeLessThanOrEqual(1);
+  const band = bands.first();
+  if (await band.isVisible().catch(() => false)) {
+    const bandBox = await band.boundingBox();
+    const anchorBox = await page.getByTestId(screen.anchor).boundingBox();
+    if (bandBox && anchorBox) {
+      expect(
+        anchorBox.x >= bandBox.x - 1,
+        `${where}: ${screen.anchor} starts at x=${anchorBox.x}, left of the shared page band's x=${bandBox.x} — the body escaped the band's inset`,
+      ).toBe(true);
+    }
+    await expect(
+      band.locator("h1"),
+      `${where}: the shared band owns the page's one H1`,
+    ).toHaveCount(1);
+  }
 
   await expect
     .poll(() => pendingSpinners(page), { timeout: LOADED_TIMEOUT_MS, intervals: [500] })

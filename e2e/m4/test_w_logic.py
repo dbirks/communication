@@ -889,9 +889,17 @@ def test_w9_outsider_verdicts():
                "console clean") is True, w9_console_verdict(onlynoise)
     assert w9_console_verdict("", rc=1)[1] is None, "an unreadable console read is a GAP"
     assert w9_console_verdict("playwright-cli: no such command")[1] is None
-    assert w9_not_found("Run 01a1 is not visible to you, or does not exist.") is True
+    assert w9_not_found(
+        "NOT FOUND This run doesn't exist or you don't have access to it. run 01a1 "
+        "Back to Runs Ask for access") is True
     assert w9_not_found("Not found — that page does not exist.") is True
     assert w9_not_found("No such run.") is True
+    # Finding 12 retired the implementation-voiced line: it named the control
+    # plane, quoted the status code and said the run was "not visible". "not
+    # visible" is no longer a needle — a page whose only not-found word is the
+    # old phrasing does not satisfy this read (the status code itself still
+    # does, which is why the retired sentence is quoted here without it).
+    assert w9_not_found("Run 01a1 is not visible to you, or does not exist.") is False
     assert w9_not_found("Runs · plan · implement · review") is False
     assert w9_not_found("   ") is None
 
@@ -1774,11 +1782,12 @@ def test_w2_transcript_arm_is_located_in_the_run_that_journalled_it():
 def test_w2_transcript_arm_verdicts_grade_the_attempt_pane():
     """The arm's truth table: no run found is a GAP naming every read; a journal
     that spoke and a pane that drew transcript rows is the PASS the row was
-    waiting for; the pane answering 'No journal frames' against a speaking
-    journal is a FAIL; a pane that never answered at all is a GAP — unmeasured,
-    never clean. The chain verdict and the inline verdict both consume the
-    evidence, and the order claim keeps measuring only what the twin's own
-    timeline drew."""
+    waiting for; the pane answering its empty line ('Nothing here yet — the agent
+    has not answered.', finding 12's wording of the old 'No journal frames')
+    against a speaking journal is a FAIL; a pane that never answered at all is a
+    GAP — unmeasured, never clean. The chain verdict and the inline verdict both
+    consume the evidence, and the order claim keeps measuring only what the twin's
+    own timeline drew."""
     run = {"run_id": "01a18990-agent-run", "node_execution_id": "ne1",
            "node_instance_key": "/build_until_verified[1]/implement",
            "attempt_number": "1", "turn_id": "t1", "project_id": "p1",
@@ -1791,7 +1800,7 @@ def test_w2_transcript_arm_verdicts_grade_the_attempt_pane():
     assert drawn[0] is True and "01a18990-agent-run" in drawn[1] and "transcript-item" in drawn[1], drawn
     quiet = w2_transcript_arm_verdict(run, {"read": True, "surface": 1, "items": 0,
                                             "stream": 1, "empty": 1, "shot": "s.png"}, [])
-    assert quiet[0] is False and "No journal frames" in quiet[1], quiet
+    assert quiet[0] is False and "Nothing here yet" in quiet[1], quiet
     assert w2_transcript_arm_verdict(run, None, ["x"])[0] is None
     assert w2_transcript_arm_verdict(run, {"read": True, "surface": 0, "items": 0,
                                            "stream": 0, "empty": 0, "shot": ""}, [])[0] is None

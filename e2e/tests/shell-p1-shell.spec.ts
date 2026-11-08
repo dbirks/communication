@@ -3,8 +3,10 @@
 // The sidebar replaces the top app bar, the nav rows point at the canonical
 // routes (contract C1), every legacy URL redirects, the tree expansion is a
 // persisted preference (contract C2), the Settings → Layout controls change
-// the shell, ⌘K opens the command palette, and at phone width the sidebar is
-// a drawer that Escape closes.
+// the shell, ⌘K opens the command palette, and at phone width (below 768px,
+// finding 07) the sidebar is a drawer that Escape closes. Between 768px and
+// 1024px the shell forces the collapsed rail — no drawer, no labels — without
+// touching the stored `sidebar:collapsed` preference.
 //
 // Runs ONLY when COMMUNICATION_E2E_SHELL=1 (skipped everywhere else — the
 // issue2 suites' env-gate idiom). Every page runs checkShellScreen (axe
@@ -285,6 +287,104 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("sidebar")).toBeVisible();
     await expect(page.getByTestId("sidebar-open")).toBeHidden();
+  });
+
+  // Finding 07 redrew the responsive contract: 768–1023px is a tablet, not a
+  // phone. The phone frame (drawer + `phone-top-strip`) only mounts below 768px
+  // (it stopped at 1024px), and in this zone the 52px RAIL is FORCED whatever
+  // the saved `sidebar:collapsed` preference says — `Shell`'s `RAIL_QUERY`, not
+  // a stylesheet, so the labelled column, its `New thread` and its nav rows do
+  // not merely hide, they do not mount. The preference itself is never
+  // rewritten (it rides `layout.expanded["sidebar:collapsed"]` on the wire), and
+  // widening brings the saved state back on its own.
+  test("at 900x800 the rail is forced and the stored preference is untouched", async ({ page }) => {
+    await signIn(page, "admin");
+    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
+    // The starting point is the EXPANDED column at desktop width: this is the
+    // preference the forced rail must not overwrite.
+    await expect(
+      page.getByTestId("sidebar-collapse"),
+      "1500px honours the expanded pref",
+    ).toBeVisible();
+    const storedBefore = (await apiPreferences(page.request)).layout.expanded;
+    expect(
+      storedBefore["sidebar:collapsed"],
+      `the session starts with the expanded column (stored expanded map: ${JSON.stringify(storedBefore)})`,
+    ).not.toBe(true);
+
+    await page.setViewportSize({ width: 900, height: 800 });
+    const stopWatching = watchPageErrors(page);
+    // The rail is what mounts: its expand control is there, the expanded
+    // column's controls are not.
+    await expect(page.getByTestId("sidebar")).toBeVisible();
+    await expect(page.getByTestId("sidebar-expand")).toBeVisible();
+    await expect(page.getByTestId("sidebar-collapse")).toHaveCount(0);
+    await expect(page.getByTestId("new-chat")).toHaveCount(0);
+    await expect(page.getByTestId("new-chat-rail"), "the rail's + is the same verb").toBeVisible();
+    for (const row of NAV) {
+      await expect(
+        page.getByTestId(row.testid),
+        `${row.testid} does not mount at 900px`,
+      ).toHaveCount(0);
+    }
+    await expect(
+      page.getByTestId("sidebar-rail-library"),
+      "the rail's Workflows tile",
+    ).toBeVisible();
+    // And it is not the phone: no drawer, no top strip, at a width the phone
+    // frame used to own.
+    await expect(page.getByTestId("sidebar-open")).toHaveCount(0);
+    await expect(page.getByTestId("phone-top-strip")).toHaveCount(0);
+    await expect(page.getByTestId("sidebar-backdrop")).toHaveCount(0);
+
+    // The forced rail wrote nothing: the stored preference still says expanded.
+    const storedAfter = (await apiPreferences(page.request)).layout.expanded;
+    expect(
+      storedAfter["sidebar:collapsed"],
+      `the rail-only width left the stored preference alone (before ${JSON.stringify(
+        storedBefore["sidebar:collapsed"],
+      )}, after ${JSON.stringify(storedAfter["sidebar:collapsed"])})`,
+    ).not.toBe(true);
+
+    // Widen, and the saved column comes back by itself — the proof that the
+    // rail was forced by width, not by a rewritten preference.
+    await page.setViewportSize({ width: 1500, height: 950 });
+    await expect(
+      page.getByTestId("sidebar-collapse"),
+      "1500px honours the pref again",
+    ).toBeVisible();
+    await expect(page.getByTestId("new-chat")).toBeVisible();
+    await checkShellScreen(page, "/workflows with the rail forced at 900px", stopWatching);
+    await evidence(
+      page,
+      "shell-p1-rail-900",
+      "at 900x800 the shell forces the 52px rail (no drawer, no top strip, no nav labels), the stored sidebar:collapsed preference is unchanged, and widening restores the saved column (finding 07)",
+    );
+  });
+
+  // The frame's exact edge: `Shell`'s NARROW_QUERY is `(max-width:
+  // 767.98px)` (finding 07 — it was 1023.98px), so 767 is the last phone width
+  // and 768 is the first rail width. Pinning both sides is what keeps the
+  // cutoff from drifting back a breakpoint by accident.
+  test("the phone frame ends at 768px: 767 is the drawer, 768 is the rail", async ({ page }) => {
+    await signIn(page, "admin");
+    await page.setViewportSize({ width: 767, height: 900 });
+    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
+    const strip = watchPageErrors(page);
+    await expect(page.getByTestId("phone-top-strip"), "767 is a phone").toBeVisible();
+    await expect(page.getByTestId("sidebar-open"), "767 opens the drawer").toBeVisible();
+    await expect(page.getByTestId("sidebar"), "a closed drawer is unmounted").toHaveCount(0);
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await expect(page.getByTestId("phone-top-strip"), "768 is not a phone").toHaveCount(0);
+    await expect(page.getByTestId("sidebar-open"), "768 has no drawer control").toHaveCount(0);
+    await expect(page.getByTestId("sidebar-expand"), "768 shows the forced rail").toBeVisible();
+    await checkShellScreen(page, "/workflows at the 768px frame cut", strip);
+    await evidence(
+      page,
+      "shell-p1-frame-cut-768",
+      "the phone frame stops below 768px: 767 mounts the top strip and drawer, 768 mounts the forced rail with no drawer control (finding 07)",
+    );
   });
 
   test.describe("narrow 390x844", () => {

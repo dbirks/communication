@@ -57,12 +57,17 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
 }
 
 /**
- * The pipeline page bleeds to the window's left edge (it measures its
- * centred column and offsets out of it), so under the new shell its 300px
- * left rail starts at x≈0, mostly beneath the 240px sticky sidebar: the
- * "New draft" button's centre (measured x≈231) and the revision rows are
- * partially covered (the reported shell defect). A human clicks the part
- * they can see — aim a few px inside the right edge, never the centre.
+ * Click a control without trusting its centre point.
+ *
+ * This started as a workaround for a real shell defect: the pipeline page used
+ * to measure the shell's centred `max-w-5xl` column and offset itself out of it
+ * to the window's left edge, so its 300px rail started at x≈0 and the
+ * "New draft" button's centre (measured x≈231) sat under the sidebar.
+ * Finding 07 removed that bleed machinery (`data-full-width` and all): `<main>`
+ * is now the bare content column and the page declares `layout="canvas"`, so the
+ * rail sits beside the sidebar instead of under it and the centre is clickable.
+ * The right-of-centre aim stays — it is where a partially covered control is
+ * still hittable, and a page that ever regrows a bleed cannot hide it from us.
  */
 async function clickVisiblePart(page: Page, testId: string): Promise<void> {
   const locator = page.getByTestId(testId);

@@ -24741,15 +24741,21 @@ def w9_console_verdict(text, rc=0, benign=()):
 
 
 def w9_not_found(dom_text):
-    """The row's "404/not-found states" read as copy the outsider can see: the
-    inspector's own "is not visible to you, or does not exist" (ui/src/pages/
-    RunInspector.tsx), the app's Not-found page, or the problem document the API
-    answers an unauthorised deep link with ("No such run.")."""
+    """The row's "404/not-found states" read as copy the outsider can see.
+    Finding 12 rewrote that copy in the reader's words (`components/workbench/
+    RunNotFound.tsx`: "This run doesn't exist or you don't have access to it.",
+    with `Back to Runs` and `Ask for access` under it; `pages/Approval.tsx` says
+    the same shape for a gate), so the needles are that sentence, the alert's own
+    NOT FOUND label, the app's Not-found page, and the problem document the API
+    answers an unauthorised deep link with ("No such run."). The old needles —
+    "is not visible to you", "does not exist", "the control plane answered 404" —
+    are gone with the line that said them; a page that quotes a status code and
+    names the control plane is no longer a not-found state this row accepts."""
     body = " ".join((dom_text or "").split()).lower()
     if not body:
         return None
-    return any(k in body for k in ("not found", "does not exist", "not visible", "no such",
-                                   "404"))
+    return any(k in body for k in ("not found", "doesn't exist", "don't have access",
+                                   "no such", "404"))
 
 
 def w9_membership_read(project_id, user_id, label=""):
@@ -25319,7 +25325,7 @@ def w2_transcript_arm_verdict(turn_run, pane, searched):
     if items >= 1:
         return (True, head + f"the pane drew {items} transcript row(s) inline — " + tail)
     if empty:
-        return (False, head + "the pane says 'No journal frames' while the journal speaks — "
+        return (False, head + "the pane says 'Nothing here yet' while the journal speaks — "
                               + tail)
     return (None, head + "the pane mounted no conversation surface at all — " + tail)
 

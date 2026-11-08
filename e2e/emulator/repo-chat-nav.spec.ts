@@ -7,8 +7,11 @@
 //
 // What the journeys play (the handoff's final picks):
 //   rcn-3c — the one left sidebar: collapse to the rail, hover a rail project
-//            tile for its flyout, the tree row's ⋯ project menu, and the
-//            collapsed state surviving a reload (a saved layout pref). Ends
+//            tile for its flyout, and the collapsed state surviving a reload (a
+//            saved layout pref). Plus the project's own configure surface the
+//            sidebar's ⋯ menu used to hold — finding 09 moved it to the project
+//            header (`+ Repository` opening its dialog in place, `Settings`) and
+//            to the settings page's Settings | Members tab strip. Ends
 //            EXPANDED so the next journey of any pass starts from the default.
 //   rcn-3a — the repo List view: the chat box (type + Start lands in the new
 //            repo-scoped chat), the All/Runs/Chats/Mine chips, the WORKFLOWS
@@ -1446,7 +1449,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     });
   });
 
-  test("shell — one sidebar, the rail, the flyout, the ⋯ menu, persisted collapse", async ({
+  test("shell — one sidebar, the rail, the flyout, the project header's actions, persisted collapse", async ({
     page,
     emu,
   }) => {
@@ -1478,47 +1481,117 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await emu.screen("rcn-3c", "expanded");
     });
 
-    await test.step("the tree row's ⋯ opens the project menu", async () => {
-      const row = page.getByTestId(`sidebar-project-toggle-${ids.projectId}`);
-      await row.hover();
-      const menuButton = page.getByTestId(`sidebar-project-menu-${ids.projectId}`);
+    await test.step("the project header's configure actions (finding 09: the sidebar ⋯ is gone)", async () => {
+      // Finding 09 retired the hover-only ⋯ project menu: `+ Repository`,
+      // `Settings` and the members page are the project's own actions now, in
+      // the header and behind the settings page's tab strip. The sidebar row is
+      // a tree toggle again — it carries no menu at all.
+      await page.goto(`/p/${ids.projectId}`);
       await expect(
-        menuButton,
-        "design 2c: the ⋯ appears on hover/focus of a project row",
-      ).toBeVisible();
-      await menuButton.click();
-      const menu = page.getByTestId("sidebar-project-menu");
-      await expect(menu, "design 2c: the ⋯ menu opens").toBeVisible({ timeout: 10_000 });
-      // The menu took the tree's configuration rows out of the tree (DECISIONS).
-      for (const testid of [
-        "project-menu-settings",
-        "project-menu-members",
-        "project-menu-add-repository",
-        "project-menu-workflows",
-      ]) {
-        await expect(
-          menu.getByTestId(testid),
-          `design 2c: the ⋯ menu carries its ${testid.replace("project-menu-", "")} entry`,
-        ).toBeVisible();
-      }
-      // Goal item 2 — every anchored surface has a pointer arrow. The ⋯ menu
-      // is a ds Menu: its arrow is the shared element INSIDE the box, so the
-      // assertion is scoped to the surface (one open menu's arrow can never
-      // answer for another's).
+        page.getByTestId("project-name"),
+        "finding 09: the project page answers",
+      ).toBeVisible({ timeout: 30_000 });
       await expect(
-        menu.getByTestId("menu-arrow"),
-        "design: every anchored surface has a pointer arrow",
+        page.getByTestId("sidebar-project-menu"),
+        "finding 09: the sidebar's ⋯ project menu is gone, not merely hidden",
+      ).toHaveCount(0);
+      await expect(
+        page.getByTestId(`sidebar-project-menu-${ids.projectId}`),
+        `finding 09: no ⋯ trigger on the ${ids.projectId.slice(0, 8)} row either`,
+      ).toHaveCount(0);
+      const addRepository = page.getByTestId("project-add-repository");
+      await expect(
+        addRepository,
+        "finding 09: '+ Repository' is a project-header action (this project's viewer maintains it)",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(addRepository, "finding 09: the verb says '+ Repository'").toHaveText(
+        /\+\s*Repository/,
+      );
+      const settingsLink = page.getByTestId("project-settings-link");
+      await expect(
+        settingsLink,
+        "finding 09: 'Settings' is the header's way to the project's configuration",
       ).toBeVisible();
-      // Review round 2: design 3c's LEFT panel is this exact state — the ⋯
-      // menu OPEN, its pointer arrow aimed at the project row — captured at
-      // both widths (the phone's documented reflow replaces the column with
-      // its strip, exactly as for `expanded`/`rail`; see the `rcn-3c menu`
-      // landmarks). screen() resizes through 390 on its way back to 1280,
-      // which unmounts the column and its menu with it, so the Esc step
-      // below reads a menu that is closed — the honest answer either way.
-      await emu.screen("rcn-3c", "menu");
-      await page.keyboard.press("Escape");
-      await expect(menu, "design 2c: Esc closes the menu").toBeHidden();
+      await expect(settingsLink).toHaveAttribute(
+        "href",
+        new RegExp(`^/p/${ids.projectId}/settings$`),
+      );
+      await emu.screen("rcn-3c", "header-actions");
+
+      // `+ Repository` opens the dialog IN PLACE, on this page — the menu's old
+      // route through the settings page is gone. The dialog is then CANCELLED:
+      // the configured git URL is the file repo's own, so submitting would
+      // collide, and this journey has no business adding repositories.
+      await addRepository.click();
+      const dialog = page.getByTestId("add-repository-dialog");
+      await expect(
+        dialog,
+        "finding 09: '+ Repository' opens the add-repository dialog in place",
+      ).toBeVisible({ timeout: 10_000 });
+      expect(
+        new URL(page.url()).pathname,
+        "the dialog is a dialog, not a navigation away from the project page",
+      ).toBe(`/p/${ids.projectId}`);
+      await expect(
+        dialog.getByTestId("repo-name"),
+        "the dialog names the repository it adds",
+      ).toBeVisible();
+      await expect(
+        dialog.getByTestId("repo-git-url"),
+        "the dialog asks for the git URL",
+      ).toBeVisible();
+      await expect(
+        dialog.getByTestId("repo-default-branch"),
+        "the dialog asks for the default branch",
+      ).toBeVisible();
+      await dialog.getByTestId("repo-name").fill(`emu-scratch-${EMU_PASS_ID}`);
+      await dialog.getByTestId("repo-git-url").fill("file:///srv/m4/fixtures/app.git");
+      await emu.screen("rcn-3c", "add-repository");
+      await dialog.getByTestId("repo-add-cancel").click();
+      await expect(dialog, "Cancel closes the dialog").toBeHidden({ timeout: 10_000 });
+      const repos = await page.request.get(
+        `${EMU_BASE_URL}/api/v1/projects/${ids.projectId}/repos`,
+      );
+      expect(repos.status(), "the cancelled dialog read the repositories").toBe(200);
+      const rows = (await repos.json()) as { items?: { name: string }[] };
+      expect(
+        (rows.items ?? []).map((row) => row.name),
+        "cancelling wrote no repository",
+      ).not.toContain(`emu-scratch-${EMU_PASS_ID}`);
+
+      // The settings page carries the section's tabs — the menu's `Settings`
+      // and `Members` rows are a tab strip over two routes.
+      await settingsLink.click();
+      await expect(page).toHaveURL(new RegExp(`/p/${ids.projectId}/settings$`), {
+        timeout: 30_000,
+      });
+      const tabs = page.getByTestId("project-settings-tabs");
+      await expect(
+        tabs,
+        "finding 09: the settings page owns the Settings | Members tab strip",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        tabs.getByTestId("project-settings-tab-settings"),
+        "the Settings tab is the page you are on",
+      ).toHaveAttribute("aria-current", "page");
+      const membersTab = tabs.getByTestId("project-settings-tab-members");
+      await expect(membersTab, "the Members tab is its own route").toHaveAttribute(
+        "href",
+        new RegExp(`^/p/${ids.projectId}/members$`),
+      );
+      await emu.screen("rcn-3c", "settings-tabs");
+      await membersTab.click();
+      await expect(page).toHaveURL(new RegExp(`/p/${ids.projectId}/members$`), {
+        timeout: 30_000,
+      });
+      await expect(
+        page.getByTestId("project-members-page"),
+        "the Members tab lands on the project's members page",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByTestId("project-settings-tab-members"),
+        "the strip stays on the members page with Members current (one section, two pages)",
+      ).toHaveAttribute("aria-current", "page");
     });
 
     await test.step("collapse to the rail (3c)", async () => {

@@ -905,6 +905,46 @@ const PROJECT_TAB_SETTINGS: Landmark = {
   desc: "the Settings tab",
   any: [{ testid: "project-tab-settings" }],
 };
+/**
+ * Finding 09 moved the project's configuration OUT of the sidebar: the
+ * hover-only ⋯ project menu (`sidebar-project-menu`, `project-menu-settings`,
+ * `project-menu-members`, `project-menu-add-repository`,
+ * `project-menu-workflows`) is gone, and its verbs live on the project header
+ * — `+ Repository` (a maintainer's, opening the add-repository dialog in place)
+ * and `Settings`, whose page carries the Settings | Members tab strip (Members
+ * stays its own route `/p/:id/members`). The header is page content, so these
+ * need no `host: "page"` the way the sidebar landmarks do.
+ */
+const PROJECT_ADD_REPO: Landmark = {
+  id: "project-add-repository",
+  desc: "the header's '+ Repository' action (a maintainer's) — finding 09's move off the sidebar ⋯",
+  any: [{ testid: "project-add-repository" }, { role: "button", name: /^\+ repository$/i }],
+};
+const PROJECT_SETTINGS_LINK: Landmark = {
+  id: "project-settings-link",
+  desc: "the header's Settings link — the configuration's way in at every role",
+  any: [{ testid: "project-settings-link" }, { role: "link", name: /^settings$/i }],
+};
+const ADD_REPO_DIALOG: Landmark = {
+  id: "add-repository-dialog",
+  desc: "the dialog '+ Repository' opens in place, on the project page itself",
+  any: [{ testid: "add-repository-dialog" }, { role: "dialog", name: /add a repositor/i }],
+};
+const PROJECT_SETTINGS_TABS: Landmark = {
+  id: "project-settings-tabs",
+  desc: "the settings section's Settings | Members tab strip (what the ⋯ menu's rows became)",
+  any: [{ testid: "project-settings-tabs" }, { role: "navigation", name: /^settings sections$/i }],
+};
+const PROJECT_SETTINGS_TAB_SETTINGS: Landmark = {
+  id: "project-settings-tab-settings",
+  desc: "the Settings tab shown as the page you are on",
+  any: [{ testid: "project-settings-tab-settings", current: true }],
+};
+const PROJECT_SETTINGS_TAB_MEMBERS: Landmark = {
+  id: "project-settings-tab-members",
+  desc: "the Members tab — the people page the ⋯ menu used to open",
+  any: [{ testid: "project-settings-tab-members" }, { role: "link", name: /^members$/i }],
+};
 const PROJECT_PANEL_RUNNING: Landmark = {
   id: "project-panel-running-now",
   desc: "the RUNNING NOW panel",
@@ -1172,7 +1212,9 @@ const THREADS_LIST_ERROR: Landmark = {
 
 /** The one left column, at either width; at 390 the documented reflow is the
  * phone top strip whose menu button is the one tap that reaches the drawer
- * (Shell.tsx — the rail is a desktop affordance). Host: the shell lives
+ * (Shell.tsx — the phone frame starts below 768px, finding 07; from 768px the
+ * column owns the left edge, and between 768 and 1024px it is FORCED to the
+ * 52px rail whatever the saved preference says). Host: the shell lives
  * outside `<main`, so these landmarks read the whole page. */
 const RCN_COLUMN: Landmark = {
   id: "rcn-sidebar-column",
@@ -1251,23 +1293,14 @@ const RCN_RAIL_TILES: Landmark = {
   host: "page",
   any: [{ testid: "sidebar-rail-project-*" }, { testid: "sidebar-open" }],
 };
-/** Review round 2 captures (the two 3c states the design draws WITH the
- * arrows): the ⋯ menu open on a project row, and a rail tile's flyout open.
- * Both live in the desktop column; at 390 the documented reflow replaces
- * the column (and the rail) with the phone strip, so the strip's one tap is
- * each landmark's alternate — the same shape `expanded`/`rail` use. */
-const RCN_PROJECT_MENU: Landmark = {
-  id: "rcn-project-menu",
-  desc: "the project row's ⋯ menu open (at 390, the phone strip's menu button that reaches it)",
-  host: "page",
-  any: [{ testid: "sidebar-project-menu" }, { testid: "sidebar-open" }],
-};
-const RCN_PROJECT_MENU_ITEMS: Landmark = {
-  id: "rcn-project-menu-items",
-  desc: "the ⋯ menu's 'Project settings' entry (at 390, the one tap)",
-  host: "page",
-  any: [{ testid: "project-menu-settings" }, { testid: "sidebar-open" }],
-};
+/** Review round 2's two 3c states were the ⋯ menu open on a project row and a
+ * rail tile's flyout open. Finding 09 deleted the first: the sidebar's project
+ * row is a tree toggle again and carries no hover-only menu, so its
+ * `sidebar-project-menu` / `project-menu-*` testids and the arrow claim that
+ * rode that surface are retired here (the rail flyout keeps its own —
+ * `RCN_RAIL_FLYOUT` / `RCN_RAIL_FLYOUT_ARROW`). The configuration verbs the ⋯
+ * menu held are now page content (`PROJECT_ADD_REPO`, `PROJECT_SETTINGS_LINK`,
+ * `PROJECT_SETTINGS_TABS`), and the project-header screens below claim them. */
 const RCN_RAIL_FLYOUT: Landmark = {
   id: "rcn-rail-flyout",
   desc: "the hovered rail tile's flyout with the project's repositories (at 390, the phone strip's menu button)",
@@ -1279,16 +1312,11 @@ const RCN_RAIL_FLYOUT: Landmark = {
  * claims it at its own width too. `menu-arrow` is the ds primitive's one
  * arrow testid (Menu AND Popover mount the same component); `host: "page"`
  * because the column these open from lives OUTSIDE `<main>`, and
- * `sidebar-open` is the 390 alternate — below `lg` the documented reflow
+ * `sidebar-open` is the 390 alternate — below 768px (Shell's
+ * `PHONE_MAX_WIDTH_PX`, finding 07) the documented reflow
  * unmounts the column (and the menu or flyout open inside it) for the phone
  * strip, exactly as for the two landmarks above. The arrow is therefore a
  * hard claim at 1280 and the one tap is its claim at 390. */
-const RCN_PROJECT_MENU_ARROW: Landmark = {
-  id: "rcn-project-menu-arrow",
-  desc: "the ⋯ menu's pointer arrow (the handoff's rule: every anchored surface gets one; at 390, the phone strip's one tap)",
-  host: "page",
-  any: [{ testid: "menu-arrow" }, { testid: "sidebar-open" }],
-};
 const RCN_RAIL_FLYOUT_ARROW: Landmark = {
   id: "rcn-rail-flyout-arrow",
   desc: "the rail flyout's pointer arrow (the handoff's rule: every anchored surface gets one; at 390, the phone strip's one tap)",
@@ -2136,6 +2164,12 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     PROJECT_TAB_WORKFLOWS,
     PROJECT_TAB_ARTIFACTS,
     PROJECT_TAB_SETTINGS,
+    // Finding 09: the configuration's two doors are header actions now. Only
+    // the one every role gets is claimed here — `+ Repository` needs a
+    // maintainer, which this screen's viewer is not proved to be (the claimed
+    // verb for that state is on `rcn-3c header-actions`, whose journey creates
+    // the project it plays on).
+    PROJECT_SETTINGS_LINK,
     PROJECT_PANEL_RUNNING,
     PROJECT_PANEL_THREADS,
     PROJECT_PANEL_REPOS,
@@ -2260,16 +2294,25 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_WORKFLOWS_AGENTS_ROWS,
     RCN_RAIL_EXPAND,
   ],
-  // Review round 2: the two states 3c actually draws — the ⋯ menu open on a
-  // project row (its pointer arrow), and a tile hovered with the flyout open
-  // (its pointer arrow). Same badge, new screen names, so the report pairs
-  // each with the 3c render.
-  "rcn-3c menu": [
+  // Review round 2 drew two 3c states with arrows: the project row's ⋯ menu
+  // and a hovered tile's flyout. Finding 09 deleted the ⋯ menu, so this badge's
+  // three captures are now the header's own configure surface: the two actions
+  // the menu used to hold, the dialog `+ Repository` opens in place, and the
+  // settings page's Settings | Members tab strip (Members is the old menu's
+  // `Members` row, still `/p/:id/members`). Same badge, new screen names, so the
+  // report still pairs each with the 3c render.
+  "rcn-3c header-actions": [
     RCN_COLUMN,
     RCN_PROJECTS_SECTION,
-    RCN_PROJECT_MENU,
-    RCN_PROJECT_MENU_ITEMS,
-    RCN_PROJECT_MENU_ARROW,
+    PROJECT_ADD_REPO,
+    PROJECT_SETTINGS_LINK,
+  ],
+  "rcn-3c add-repository": [RCN_COLUMN, ADD_REPO_DIALOG, PROJECT_ADD_REPO],
+  "rcn-3c settings-tabs": [
+    RCN_COLUMN,
+    PROJECT_SETTINGS_TABS,
+    PROJECT_SETTINGS_TAB_SETTINGS,
+    PROJECT_SETTINGS_TAB_MEMBERS,
   ],
   "rcn-3c flyout": [
     RCN_COLUMN,
