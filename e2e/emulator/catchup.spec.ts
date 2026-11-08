@@ -46,7 +46,10 @@
 // The screen journey is ONE big test; the proofs that do not need its live
 // screens (the 8a wire dials, the player's key contract, Today's empty-state
 // briefing) run as their OWN serial tests in this file's describe, each on its
-// own timeout. Appended to the journey they starved the screen captures:
+// own timeout. The big-backlog banner proof (acceptance T14) sits in a describe
+// of its own below them all: it seeds its own pile, marks it seen again before
+// it ends, and has no business being skipped because a capture went red.
+// Appended to the journey they starved the screen captures:
 // acceptance 42506795206 saw the 480 s budget expire mid-empty-state, cutting
 // the leg off with `Test ended` / `Failed to find context` at its context
 // close. The serial order keeps each test's server-side precondition (the
@@ -54,7 +57,7 @@
 // seed is resolve-or-create and every test that needs it re-reads it).
 import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
 import { signIn } from "../tests/helpers.js";
-import { expect, test } from "./fixtures.js";
+import { apiMutate, expect, test } from "./fixtures.js";
 import type { Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
@@ -306,6 +309,7 @@ interface ItemWire {
 interface ListWire {
   items: { id: string; unseen_stops: number }[];
   total_unseen: number;
+  oldest_unseen_at: string | null;
 }
 interface TourWire {
   stops: { work_item_id: string; stop: { id: string; importance: string } }[];
@@ -324,6 +328,17 @@ async function getList(page: Page): Promise<ListWire> {
   const res = await page.request.get(`${EMU_BASE_URL}/api/v1/catch-up/items`);
   expect(res.status(), "GET /catch-up/items").toBe(200);
   return (await res.json()) as ListWire;
+}
+
+interface VisitSuggestion {
+  window: string | null;
+  visits_per_week: number;
+}
+
+async function getSuggestion(page: Page): Promise<VisitSuggestion> {
+  const res = await page.request.get(`${EMU_BASE_URL}/api/v1/catch-up/visits/suggestion`);
+  expect(res.status(), "GET /catch-up/visits/suggestion").toBe(200);
+  return (await res.json()) as VisitSuggestion;
 }
 
 async function getTour(page: Page): Promise<TourWire> {
@@ -916,11 +931,13 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       ).toBeVisible({ timeout: 15_000 });
       await page.getByTestId("catchup-show-seen").click({ timeout: 15_000 });
       await seenRequest;
-      // The big-backlog banner (> 12 unseen, mock 8a) is NOT proven here: the
-      // pass seeds three pieces, and manufacturing a real 13-piece unseen pile
-      // would write generator-triggering visits against the shared lab. It is
-      // unit-proven in ui/src/pages/CatchUp.test.tsx ("shows the big-backlog
-      // banner past 12 unseen").
+      // The big-backlog banner is proven in the browser by THIS file's last
+      // test ("8a big backlog …"): the pile it needs (> 12 unseen) is seeded
+      // there, labelled SEEDED FIXTURE, with the pass's own visit rhythm, and
+      // marked seen again before the test ends. The unit proof
+      // (ui/src/pages/CatchUp.test.tsx, "shows the big-backlog banner past 12
+      // unseen") still holds the threshold arithmetic; what it could never
+      // prove is the click.
     });
 
   });
@@ -1076,4 +1093,322 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       }
     });
   });
+});
+
+/* ------------------------------------------------- the big-backlog pile (mock 8a)
+ * SEEDED FIXTURE, same door and the same reason as every other row this file
+ * writes: mock 8a's “big-backlog state” needs MORE unseen pieces than a
+ * journey may honestly manufacture from real runs — `BACKLOG_BANNER_THRESHOLD`
+ * (ui/src/components/catchup/BacklogBanner.tsx) is 12, and a pass that waited
+ * for the assistant to write 13 true stories would be waiting for a model. So
+ * the rows are the store's own (`catchup_work_items` + one ROUTINE beat each,
+ * through `catchup_tour_versions`) and the reader's rhythm is the store's own
+ * `catchup_visits`, and the API's answer is read back rather than assumed.
+ *
+ * What is proven here that no unit test can prove:
+ *   - the banner RENDERS on the real page with the real list read's numbers;
+ *   - `Last 24h` is not a decoration: it moves the page's OWN window state
+ *     (the 24h chip becomes the pressed one) and the items request that
+ *     follows carries `since` = now − 24 h;
+ *   - `Keep all` dismisses the banner for the session (across a reload it is
+ *     back; once clicked, moving off the wide window and back does not
+ *     re-arm it) — acceptance T14.
+ *
+ * The rows are marked seen again in this test's `finally`, scoped to the one
+ * project they were seeded in, so a later pass, a rerun or another screen's
+ * badge never reads this pile.
+ */
+test.describe("catch-up big backlog (alice: mock 8a's pile and the window it proposes)", () => {
+  // Its OWN describe rather than the screen journey's serial group: Playwright
+  // skips the rest of a serial group the moment one test in it fails, and this
+  // proof — seeded, self-contained, every number re-read from the wire — has no
+  // business being collateral damage of a reflow capture.
+  test.use({ storageState: EMU_ALICE_STATE });
+
+  const BACKLOG_PREFIX = `Emu catch-up pile ${EMU_PASS_ID}`;
+  const BACKLOG_PHRASES = [
+    "the retry countdown stopped counting a run that had already gone",
+    "the artifact list pages past its first hundred rows",
+    "worker heartbeats survive a control-plane replica restart",
+    "the audit row names the actor it acted as",
+    "the sidebar badge counts one run exactly once",
+    "a cancelled run releases the lease it held",
+    "the journal replay collapses its invalidations",
+    "the run title gives way before it truncates",
+    "an expired gate re-arms the row it already had",
+    "the idempotency key answers with the stored run",
+    "the member picker lists the organization once per page",
+    "the plan digest outlives the edit that made it",
+    "the catch-up badge follows the reader, not the repository",
+  ];
+
+  /** `daysSince` (ui/src/components/catchup/importance.ts) — whole days between
+   * an instant and now, rounded UP, minimum 1. The banner's own arithmetic,
+   * applied to the timestamp the LIST READ served, so the check compares the
+   * screen against the wire rather than against a constant the seed picked. */
+  function bannerDays(iso: string | null): number {
+    if (iso === null) return 1;
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return 1;
+    return Math.max(1, Math.ceil((Date.now() - then) / 86_400_000));
+  }
+
+  /**
+   * Seed the pile and the rhythm in ONE psql session and read the ids back from
+   * the same call. Resolve-or-create per title (a worker restarted after a
+   * failure reuses the dead one's rows); the visit insert is guarded so a replay
+   * does not stack a second five-day rhythm on the reader.
+   *
+   * One piece is deliberately back-dated three days: the banner's second number
+   * is `daysSince(oldest_unseen_at)` — the reach of the pile — and a pile that
+   * is all `now()` would pin only the singular form of a word the design wrote
+   * plural.
+   */
+  function seedBacklogPile(): string[] {
+    const titles = BACKLOG_PHRASES.map(
+      (phrase, index) => `${BACKLOG_PREFIX} ${index + 1}: ${phrase}`,
+    );
+    const alice =
+      `(SELECT u.id FROM users u JOIN oidc_identities oi ON oi.user_id = u.id ` +
+      `WHERE oi.subject = 'alice' LIMIT 1)`;
+    const statements: string[] = [];
+    titles.forEach((title, index) => {
+      statements.push(
+        upsertItemSql(title, "issue", "merged", { issue_numbers: [940 + index] }),
+        tourVersionSql(title, [
+          stop(`pile${index + 1}`, {
+            kind: "ROUTINE",
+            title: `Pile beat ${index + 1}: ${BACKLOG_PHRASES[index]}`,
+            narrative:
+              `The seeded fixture pile: one routine piece of work with one beat, written so ` +
+              `the big-backlog banner has a real unseen count to name. In production these rows ` +
+              `are the assistant's own generator — see e2e/tests/catchup-lab.spec.ts for that path.`,
+            importance: "routine",
+          }),
+        ]),
+      );
+    });
+    statements.push(
+      `UPDATE catchup_work_items SET updated_at = now() - interval '3 days' ` +
+        `WHERE title = ${sqlQuote(titles[0] ?? "")};`,
+      // Alice's rhythm: one visit a day for the last five days. The API's rule
+      // (catchUpSuggestion, internal/api/catch_up.go) is the MEDIAN gap: under
+      // 36 h → 24 h. Daily stamps answer that whatever else the lab's passes
+      // stacked up (their gaps are minutes), and the answer is asserted below.
+      `INSERT INTO catchup_visits (user_id, visited_at) ` +
+        `SELECT ${alice}, now() - (g.n * interval '1 day') FROM generate_series(1, 5) AS g(n) ` +
+        `WHERE ${alice} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM catchup_visits v2 ` +
+        `WHERE v2.user_id = ${alice} AND v2.visited_at < now() - interval '36 hours');`,
+      `SELECT 'pile|' || id::text FROM catchup_work_items ` +
+        `WHERE title LIKE ${sqlQuote(`${BACKLOG_PREFIX}%`)};`,
+    );
+    const out = labSql(statements.join(" "));
+    const ids = out
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("pile|"))
+      .map((line) => line.slice("pile|".length));
+    expect(
+      ids.length,
+      `the big-backlog seed came back with ${ids.length} of ${titles.length} ids ` +
+        `(seed ${EMU_PASS_ID} needs project ${PROJECT_SLUG} — psql printed [${out.slice(0, 400)}])`,
+    ).toBe(titles.length);
+    for (const id of ids) {
+      expect(id, "every seeded pile piece answers with a uuid").toMatch(UUID_RE);
+    }
+    console.log(
+      `catch-up big-backlog fixture seeded: ${ids.length} unseen pieces + a daily rhythm ` +
+        `(pass ${EMU_PASS_ID}; marked seen again in this test's finally)`,
+    );
+    return ids;
+  }
+
+  test("8a big backlog — the banner names the pile, the click sets the window, Keep all dismisses", async ({
+    page,
+    emu,
+  }) => {
+    // Its own budget, like this file's other appended proofs: one psql seed, one
+    // page load with two reads, three clicks and a cleanup read.
+    test.setTimeout(360_000);
+
+    let projectId = "";
+    let seeded: string[] = [];
+    let bodyPassed = false;
+    try {
+      await test.step("seed the pile and the reader's rhythm (SEEDED FIXTURE)", async () => {
+        const projects = await page.request.get(`${EMU_BASE_URL}/api/v1/projects`);
+        expect(projects.status(), "GET /api/v1/projects answers").toBe(200);
+        projectId =
+          (
+            (await projects.json()) as { items?: { id: string; slug: string }[] }
+          ).items?.find((project) => project.slug === PROJECT_SLUG)?.id ?? "";
+        expect(projectId, `the seeded '${PROJECT_SLUG}' project exists`).toMatch(/^[0-9a-f-]{36}$/);
+        seeded = seedBacklogPile();
+      });
+
+      await test.step("the API's own rule answers 24h for the rhythm it was given", async () => {
+        // Asserted, not assumed: the banner's proposal is this answer, and the
+        // rule lives in the server (catchUpSuggestion's median gap).
+        const suggestion = await getSuggestion(page);
+        expect(
+          suggestion.window,
+          `GET /catch-up/visits/suggestion for a reader with five daily stamps ` +
+            `(visits_per_week=${suggestion.visits_per_week})`,
+        ).toBe("24h");
+      });
+
+      await test.step("8a — the banner counts the pile in the wire's own numbers", async () => {
+        await page.goto("/catch-up");
+        await expect(page.getByTestId("catchup-page"), "design 8a: the page renders").toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(
+          page.getByTestId("catchup-window-unseen"),
+          "design 8a: the page opens on the wide window, which is when the banner may speak",
+        ).toHaveAttribute("aria-pressed", "true");
+
+        const banner = page.getByTestId("catchup-banner");
+        await expect(
+          banner,
+          `design 8a: a pile past 12 unseen gets the big-backlog banner (${seeded.length} seeded)`,
+        ).toBeVisible({ timeout: 45_000 });
+        // The two numbers are the list read's, not the seed's: the banner prints
+        // `total_unseen` and `daysSince(oldest_unseen_at)`, and a generator pass
+        // that lands a true story in between moves both. Polled so the check
+        // reads the screen and the wire at the same moment, and says which
+        // disagreed when it fails.
+        await expect
+          .poll(
+            async () => {
+              const wire = await getList(page);
+              if (wire.total_unseen <= 12) {
+                return `the wire reads ${wire.total_unseen} unseen — the page has nothing to banner about`;
+              }
+              const days = bannerDays(wire.oldest_unseen_at);
+              const wanted = `${wire.total_unseen} unseen over ${days} ${days === 1 ? "day" : "days"}.`;
+              const text = normText(await banner.innerText().catch(() => ""));
+              return text.includes(wanted)
+                ? ""
+                : `the banner reads [${text}], the wire says ${wanted}`;
+            },
+            {
+              message: "design 8a: the banner's counts are the counts the list read served",
+              timeout: 45_000,
+            },
+          )
+          .toBe("");
+        await expect(
+          banner,
+          "design 8a: the banner proposes the window the visit reads suggest",
+        ).toContainText("Narrow to the last 24h?", { timeout: 30_000 });
+        await expect(
+          banner.getByTestId("catchup-banner-narrow-24h"),
+          "the proposal carries its own verb",
+        ).toContainText(/last 24h/i);
+        await emu.screen("cu-8a-backlog", "big backlog");
+      });
+
+      await test.step("8a — 'Last 24h' moves the window chip AND the request", async () => {
+        // The claim is about the REQUEST the click sends, so it is read off the
+        // network (the same way the 24h chip is proved in the wire-dials test).
+        const sinceRequest = page.waitForRequest(
+          (request) =>
+            request.method() === "GET" &&
+            request.url().includes("/api/v1/catch-up/items") &&
+            new URL(request.url()).searchParams.has("since"),
+          { timeout: 30_000 },
+        );
+        await page.getByTestId("catchup-banner-narrow-24h").click({ timeout: 15_000 });
+        const sent = await sinceRequest;
+        const since = new Date(new URL(sent.url()).searchParams.get("since")!);
+        const expected = Date.now() - 24 * 3_600_000;
+        expect(
+          Math.abs(since.getTime() - expected),
+          `the banner's proposal sent since=${since.toISOString()}, which is not 24 h back (±15 min)`,
+        ).toBeLessThan(15 * 60_000);
+        await expect(
+          page.getByTestId("catchup-window-24h"),
+          "design 8a: narrowing from the banner IS choosing the 24h chip — one window state",
+        ).toHaveAttribute("aria-pressed", "true");
+        await expect(
+          page.getByTestId("catchup-banner"),
+          "design 8a: the banner belongs to the wide window, so the narrow one drops it",
+        ).toHaveCount(0);
+      });
+
+      await test.step("8a — a reload brings it back; Keep all dismisses it for the session", async () => {
+        await page.goto("/catch-up");
+        const banner = page.getByTestId("catchup-banner");
+        await expect(
+          banner,
+          "the dismissal is per page-view: the pile is still there, so a fresh view asks again",
+        ).toBeVisible({ timeout: 45_000 });
+        await page.getByTestId("catchup-banner-keep-all").click({ timeout: 15_000 });
+        await expect(banner, "design 8a: Keep all answers the reader's no").toHaveCount(0);
+        await expect(
+          page.getByTestId("catchup-window-unseen"),
+          "Keep all kept the wide window — it dismissed the banner, not the reader's debt",
+        ).toHaveAttribute("aria-pressed", "true");
+        // And it STAYS dismissed for the session: a window change that would
+        // otherwise re-draw it (the banner is a function of the wide window)
+        // does not bring it back.
+        await page.getByTestId("catchup-window-24h").click({ timeout: 15_000 });
+        await page.getByTestId("catchup-window-unseen").click({ timeout: 15_000 });
+        await expect(
+          banner,
+          "design 8a: the dismissal holds for the session, not just the paint it happened on",
+        ).toHaveCount(0);
+      });
+      bodyPassed = true;
+    } finally {
+      await test.step("clean up — the pass's pile is marked seen (scoped to this project)", async () => {
+        try {
+          await cleanUpBacklogPile(page, projectId, seeded);
+        } catch (error) {
+          if (bodyPassed) throw error;
+          // A dead page must not bury the leg's real failure under a second one.
+          // Logged LOUD, because 13 unseen pieces left behind is the defect the
+          // next pass would otherwise debug without this line.
+          console.log(
+            `catch-up CLEANUP problem after an already-failing leg (seed ${EMU_PASS_ID}, ` +
+              `project ${PROJECT_SLUG}): ${String(error)} — ${seeded.length} seeded pieces ` +
+              `may still read unseen`,
+          );
+        }
+      });
+    }
+  });
+
+  /**
+   * The product's own verb, scoped to the one project the rows were seeded in:
+   * `POST /api/v1/catch-up/seen-all {projects:[id]}` (204, no body), then the
+   * list read proves this pass's pieces are gone. The rows stay, seen, with
+   * their SEEDED FIXTURE summary — the alternative (DELETE) is not a route the
+   * product has, and the point is the reader's DEBT, which is what every later
+   * screen and badge reads.
+   */
+  async function cleanUpBacklogPile(page: Page, projectId: string, seeded: string[]): Promise<void> {
+    if (projectId === "") return;
+    const seen = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/catch-up/seen-all`, {
+      projects: [projectId],
+    });
+    expect(
+      seen.status(),
+      `POST /catch-up/seen-all scoped to ${PROJECT_SLUG} answers 204`,
+    ).toBe(204);
+    if (seeded.length === 0) return;
+    await expect
+      .poll(
+        async () => {
+          const list = await getList(page);
+          return list.items.filter((row) => seeded.includes(row.id)).length;
+        },
+        {
+          message:
+            "GET /catch-up/items still owes one of the pass's seeded pile pieces after the cleanup",
+          timeout: 60_000,
+        },
+      )
+      .toBe(0);
+  }
 });
