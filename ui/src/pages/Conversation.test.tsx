@@ -790,7 +790,7 @@ describe("/p/:projectId/conversations/:conversationId", () => {
     expect(screen.getByTestId("turn-status").textContent).toBe("stopped — outcome unknown");
     // The transcript says who lost the turn rather than pretending nothing happened.
     expect(screen.getByTestId("transcript").textContent).toContain(
-      "Turn stopped — outcome unknown (the worker's lease expired)",
+      "Turn stopped — outcome unknown (the worker stopped checking in mid-turn)",
     );
   });
 

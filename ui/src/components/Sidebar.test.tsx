@@ -742,9 +742,9 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
   });
 });
 
-describe("the project row's ⋯ menu (settings and members left the tree)", () => {
-  /** The tree at a project route, with the reads the menu's own pages need. */
-  function menuRoutes(): RouteStub[] {
+describe("the project row has no hover-only menu (finding 09)", () => {
+  /** The tree at a project route. */
+  function treeRoutes(): RouteStub[] {
     return baseRoutes({
       extra: [
         { path: `/api/v1/projects/${P}`, body: projectFixture },
@@ -753,53 +753,35 @@ describe("the project row's ⋯ menu (settings and members left the tree)", () =
     });
   }
 
-  it("opens the four actions over a pointer arrow, each linking its own route", async () => {
-    renderApp({ path: "/", routes: menuRoutes() });
-    const trigger = await screen.findByTestId(`sidebar-project-menu-${P}`, undefined, {
-      timeout: READ_MS,
-    });
-    // Painted only while the row is hovered or holds focus (the design's
-    // "appears on hover and focus"); jsdom cannot hover, so the rule is the
-    // contract the test can read.
-    expect(trigger.className.split(/\s+/)).toContain("opacity-0");
-    expect(trigger.className.split(/\s+/)).toContain("group-hover:opacity-100");
-    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  it("carries no ⋯ trigger, no menu and no opacity-0 action in the tree", async () => {
+    renderApp({ path: "/", routes: treeRoutes() });
+    // The row itself is real (the test would pass vacuously on an empty tree).
+    const row = await screen.findByRole("link", { name: "Widgets" }, { timeout: READ_MS });
+    expect(row.getAttribute("href")).toBe(`/p/${P}`);
 
-    fireEvent.click(trigger);
-    const menu = await screen.findByTestId("sidebar-project-menu", undefined, {
-      timeout: READ_MS,
-    });
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(menu.getAttribute("role")).toBe("menu");
-    // Round-8 design review item 4: the menu flies out to the RIGHT of the
-    // narrow column, beside the row that opened it (design 3c) — the old
-    // bottom drop covered the rows below inside the 220px scroller.
-    expect(menu.getAttribute("data-side")).toBe("right");
-    for (const label of ["Project settings", "Members", "Add repository", "Workflows in use"]) {
-      expect(within(menu).getByRole("menuitem", { name: label })).toBeTruthy();
-    }
-    // "Workflows in use" sits under a divider, and the box has its arrow.
-    expect(menu.querySelectorAll('[role="separator"]')).toHaveLength(1);
-    expect(menu.querySelector('[data-testid="menu-arrow"]')).toBeTruthy();
-    // These actions are not tree rows.
+    // Everything finding 09 removed: the trigger, the menu it opened, and the
+    // hover/focus-only class that hid them. On a touch screen, and in the
+    // collapsed rail, an `opacity-0` action is simply an action that is not
+    // there — which is why `+ Repository` and `Settings` moved to the project
+    // header (`ProjectHeader.test.tsx` covers them there).
+    expect(screen.queryByTestId(`sidebar-project-menu-${P}`)).toBeNull();
+    expect(screen.queryByTestId("sidebar-project-menu")).toBeNull();
+    expect(document.querySelectorAll("[data-testid^='sidebar-project-menu-']")).toHaveLength(0);
     const sidebar = screen.getByTestId("sidebar");
+    expect(sidebar.querySelectorAll("[class*='opacity-0']")).toHaveLength(0);
     expect(within(sidebar).queryByText("Project settings")).toBeNull();
     expect(within(sidebar).queryByText("Add repository")).toBeNull();
-
-    // Members is a route, and the menu item walks through that door.
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Members" }));
-    expect(
-      await screen.findByTestId("project-members-page", undefined, { timeout: READ_MS }),
-    ).toBeTruthy();
+    expect(within(sidebar).queryByText("Workflows in use")).toBeNull();
+    // And the row is not a menu host: no `aria-haspopup` anywhere under the
+    // project's own row.
+    expect(row.closest("div")?.querySelectorAll("[aria-haspopup]")).toHaveLength(0);
   });
 
-  it("falls back to the bottom drop in the mobile drawer, where right has no room", async () => {
-    // The 390px phone frame: the Shell's drawer replaces the desktop column
-    // (Sidebar variant="drawer"), and the drawer's column is wider than the
-    // 190px menu — so the menu keeps the bottom drop there, where the ds
-    // Menu's viewport clamp keeps it on screen, instead of a right flyout
-    // that would leave the viewport (round-8 design review item 4).
+  it("keeps the phone drawer's tree free of the ⋯ too", async () => {
+    // The 390px frame: `Shell` replaces the desktop column with the drawer
+    // (`Sidebar variant="drawer"`). The menu used to fall back to a bottom drop
+    // here because the right side had no room; the whole affordance is gone, so
+    // neither placement exists and the drawer shows only the tree.
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query.includes("max-width"),
       media: query,
@@ -811,33 +793,14 @@ describe("the project row's ⋯ menu (settings and members left the tree)", () =
       dispatchEvent: () => false,
     }));
     try {
-      renderApp({ path: "/", routes: menuRoutes() });
+      renderApp({ path: "/", routes: treeRoutes() });
       fireEvent.click(await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS }));
-      const trigger = await screen.findByTestId(`sidebar-project-menu-${P}`, undefined, {
-        timeout: READ_MS,
-      });
-      fireEvent.click(trigger);
-      const menu = await screen.findByTestId("sidebar-project-menu", undefined, {
-        timeout: READ_MS,
-      });
-      expect(menu.getAttribute("data-side")).toBe("bottom");
+      const row = await screen.findByRole("link", { name: "Widgets" }, { timeout: READ_MS });
+      expect(row.getAttribute("href")).toBe(`/p/${P}`);
+      expect(screen.queryByTestId(`sidebar-project-menu-${P}`)).toBeNull();
+      expect(screen.queryByTestId("sidebar-project-menu")).toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }
-  });
-
-  it("closes on Escape with the keyboard back on the ⋯", async () => {
-    renderApp({ path: "/", routes: menuRoutes() });
-    const trigger = await screen.findByTestId(`sidebar-project-menu-${P}`, undefined, {
-      timeout: READ_MS,
-    });
-    fireEvent.click(trigger);
-    await screen.findByTestId("sidebar-project-menu", undefined, { timeout: READ_MS });
-    fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId("sidebar-project-menu")).toBeNull(), {
-      timeout: READ_MS,
-    });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(trigger);
   });
 });

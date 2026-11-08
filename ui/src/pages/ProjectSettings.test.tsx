@@ -480,3 +480,31 @@ describe("the agent-mail setting (ADR-0072)", () => {
     expect(error.textContent).toContain("beneath you");
   });
 });
+
+describe("the settings section's tabs (finding 09)", () => {
+  it("marks Settings current and offers Members as the section's other tab", async () => {
+    renderSettings();
+
+    await screen.findByTestId("settings-title");
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    const tabs = within(nav).getAllByRole("link");
+    expect(tabs.map((tab) => tab.getAttribute("data-testid"))).toEqual([
+      "project-settings-tab-settings",
+      "project-settings-tab-members",
+    ]);
+    // Routes, not fragments: Members is the page that already owns the list.
+    expect(tabs.map((tab) => tab.getAttribute("href"))).toEqual([
+      `/p/${projectId}/settings`,
+      `/p/${projectId}/members`,
+    ]);
+    expect(
+      within(nav).getByTestId("project-settings-tab-settings").getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      within(nav).getByTestId("project-settings-tab-members").getAttribute("aria-current"),
+    ).toBeNull();
+    // It is a tab strip, not the hover-only menu the sidebar used to hide these
+    // behind: no action on this page waits for a pointer.
+    expect(nav.querySelectorAll("[class*='opacity-0']")).toHaveLength(0);
+  });
+});

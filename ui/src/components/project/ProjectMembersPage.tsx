@@ -18,6 +18,7 @@ import { ProblemBanner, Spinner } from "../Feedback";
 import { ProjectUnavailable, projectAccessRefused } from "../ProjectUnavailable";
 import { MembersPanel } from "./MembersPanel";
 import { ProjectPageShell, PROJECT_PAGE_PAD } from "./ProjectPageShell";
+import { ProjectSettingsTabs } from "./ProjectSettingsTabs";
 import { ProjectTabs } from "./ProjectTabs";
 
 export default function ProjectMembersPage() {
@@ -130,6 +131,9 @@ export default function ProjectMembersPage() {
           </p>
         </div>
         <ProjectTabs projectId={data.id} active={null} />
+        {/* Finding 09: Members is reachable as a tab of the Settings section —
+            the menu item it used to hide behind is gone. */}
+        <ProjectSettingsTabs projectId={data.id} active="members" />
       </header>
       <div className="mx-auto w-full max-w-[900px] space-y-[16px] px-[22px] py-[22px] md:px-[28px]">
         <MembersPanel project={data} />

@@ -18,9 +18,11 @@
  * folders under Workflows, no count on Steps (there is no template store), no
  * per-repo flags.
  *
- * Per DECISIONS.md, Project settings / Members / Add repository / Workflows in
- * use are NOT tree rows: they live behind the "⋯" that the project row shows on
- * hover or focus, and each one links to the route that already owns it.
+ * Finding 09: the project row carries no "⋯" any more. Project settings, Members
+ * and Add repository are actions on the PROJECT PAGE (its header band), not on a
+ * menu that stayed invisible until you hovered the row — and a hover-only menu is
+ * never there on touch or in the rail. The tree does one job: it takes you to a
+ * project and opens its repositories.
  *
  * The column has two placements: `panel` (desktop, a sticky screen-height
  * flex item — the one that can collapse to the rail) and `drawer` (phone,
@@ -28,24 +30,22 @@
  * focus choreography, the `drawer` variant adds the close control and takes
  * focus in on mount).
  *
- * Anchored surfaces: the "⋯" menu and the rail flyouts are positioned against
- * the column's own non-scrolling host, not the row inside the scroller — the
- * 220px/52px column is `overflow-y-auto`, and a flyout that leaves it sideways
- * would be cut off at the column's edge by the scroll container.
+ * Anchored surfaces: the rail flyouts are positioned against the column's own
+ * non-scrolling host, not the row inside the scroller — the 220px/52px column is
+ * `overflow-y-auto`, and a flyout that leaves it sideways would be cut off at the
+ * column's edge by the scroll container.
  */
 import { useEffect, useMemo, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Link, NavLink, useLocation, useNavigate } from "react-router";
+import { Link, NavLink, useLocation } from "react-router";
 import {
   BookOpen,
   CalendarDays,
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
-  Ellipsis,
   Plus,
 } from "lucide-react";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
-import type { Project } from "../api/types";
 import { usePipelines } from "../api/pipelines";
 import { useCatchUpItems } from "../api/catchup";
 import { useLayoutPrefs } from "../lib/prefs";
@@ -53,7 +53,7 @@ import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { useSidebarFlags } from "../lib/sidebarFlags";
 import { Mark } from "./ds/Mark";
-import { Menu, Popover, type MenuEntry } from "./ds/Menu";
+import { Popover } from "./ds/Menu";
 import NewConversationDialog from "./NewConversationDialog";
 import UserMenu from "./UserMenu";
 import { CATCH_UP_PATH, openPalette } from "./CommandPalette";
@@ -250,61 +250,16 @@ function RepoList({ projectHref, projectId }: { projectHref: string; projectId: 
 }
 
 /**
- * The four actions the "⋯" holds (DECISIONS: they left the tree). Each is a
- * route that already exists — and the fourth says what the project's Workflows
- * tab is: the library workflows this project puts in use.
- */
-export function projectMenuEntries(project: Project, navigate: (to: string) => void): MenuEntry[] {
-  const href = routes.project(project.id);
-  return [
-    {
-      id: "settings",
-      label: "Project settings",
-      testId: "project-menu-settings",
-      onSelect: () => navigate(routes.projectTab(project.id, "settings")),
-    },
-    {
-      id: "members",
-      label: "Members",
-      testId: "project-menu-members",
-      onSelect: () => navigate(`${href}/members`),
-    },
-    // There is no route of its own for adding a repository: the form is the
-    // project overview's `+ add`, which opens `AddRepositoryDialog`. The menu
-    // item goes to the page that owns that door rather than inventing a URL.
-    {
-      id: "add-repository",
-      label: "Add repository",
-      testId: "project-menu-add-repository",
-      onSelect: () => navigate(href),
-    },
-    { separator: true },
-    {
-      id: "workflows",
-      label: "Workflows in use",
-      testId: "project-menu-workflows",
-      onSelect: () => navigate(routes.projectTab(project.id, "workflows")),
-    },
-  ];
-}
-
-/**
  * The tree mode (the default): one row per project, a chevron that opens the
- * repository list, the project's worst-state flag on the right, and the "⋯"
- * that appears on hover/focus. Expansion is a saved preference
+ * repository list, and the project's worst-state flag on the right. Finding 09
+ * took the "⋯" off the row: a hover-only menu hid the project's actions from
+ * touch, from the rail and from anyone who never thought to hover.
+ * Expansion is a saved preference
  * (`expanded["project:<id>"]`), not local state, so it survives a reload. The
  * project the current route lives inside opens itself — once per entered
  * project, so a manual collapse is never fought while the route stays put.
  */
-function ProjectTree({
-  openMenuId,
-  onOpenMenu,
-  onCloseMenu,
-}: {
-  openMenuId: string | null;
-  onOpenMenu: (project: Project, trigger: HTMLElement) => void;
-  onCloseMenu: () => void;
-}) {
+function ProjectTree() {
   const { prefs, update, loaded } = useLayoutPrefs();
   const projects = useProjects();
   const flags = useSidebarFlags();
@@ -367,9 +322,8 @@ function ProjectTree({
         const key = `project:${project.id}`;
         const open = bridge[key] ?? prefs.expanded[key] === true;
         const href = routes.project(project.id);
-        const menuOpen = openMenuId === project.id;
         return (
-          <div key={project.id} className="group">
+          <div key={project.id}>
             {/* issue #68: `py-[6px]` (was `py-1`) — the row pitch must clear
                 the shared `.icon-hit` 30px hit box, or the next project's
                 chevron clips this row's hit area back below 28px. */}
@@ -395,24 +349,6 @@ function ProjectTree({
                 </NavLink>
               </span>
               <FlagBadge flag={flags.projects[project.id] ?? { kind: "none", count: 0 }} />
-              {/* The "⋯" is painted only when the row is hovered or holds
-                  focus (and while its menu is open): day-to-day the column
-                  shows what you can act on, not what you configure. */}
-              <button
-                type="button"
-                data-testid={`sidebar-project-menu-${project.id}`}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                aria-label={`${project.name} project menu`}
-                onClick={(event) =>
-                  menuOpen ? onCloseMenu() : onOpenMenu(project, event.currentTarget)
-                }
-                className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border bg-surface p-0 text-ink opacity-0 hover:bg-fill group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 ${
-                  menuOpen ? "border-ink opacity-100" : "border-fill-edge"
-                } ${FOCUS_RING}`}
-              >
-                <Ellipsis size={14} strokeWidth={1.6} aria-hidden="true" />
-              </button>
             </div>
             {open ? <RepoList projectHref={href} projectId={project.id} /> : null}
           </div>
@@ -774,9 +710,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const { prefs, update } = useLayoutPrefs();
   const me = useMe();
-  const navigate = useNavigate();
   const flags = useSidebarFlags();
-  const projectsQuery = useProjects();
   // Finding 02: the Workflows/Agents rows count themselves off the same
   // reads the pages use (see the nav block in the expanded column).
   const pipelines = usePipelines();
@@ -788,10 +722,6 @@ export default function Sidebar({
   const unseenCatchUp = catchUp.data?.total_unseen ?? 0;
   const closeRef = useRef<HTMLButtonElement>(null);
   const [chatOpen, setChatOpen] = useState(false);
-
-  // The project whose "⋯" menu stands open, and the button that opened it.
-  const menuTrigger = useRef<HTMLElement | null>(null);
-  const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
 
   // A drawer opens by intent; the keyboard must land somewhere in it.
   useLayoutEffect(() => {
@@ -858,14 +788,6 @@ export default function Sidebar({
         ) : null,
     },
   ];
-
-  const openProjectMenu = (project: Project, trigger: HTMLElement) => {
-    menuTrigger.current = trigger;
-    setMenuProjectId(project.id);
-  };
-  const closeProjectMenu = () => setMenuProjectId(null);
-  const openMenuProject =
-    (projectsQuery.data?.items ?? []).find((project) => project.id === menuProjectId) ?? null;
 
   return (
     <>
@@ -936,11 +858,7 @@ export default function Sidebar({
               its preference are gone. */}
           <div className="flex flex-col gap-1">
             <span className={SECTION_LABEL}>PROJECTS</span>
-            <ProjectTree
-              openMenuId={menuProjectId}
-              onOpenMenu={openProjectMenu}
-              onCloseMenu={closeProjectMenu}
-            />
+            <ProjectTree />
           </div>
 
           {/* Finding 02: the LIBRARY block is gone. Workflows and Agents are
@@ -986,29 +904,6 @@ export default function Sidebar({
 
           <Footer />
         </aside>
-
-        {/* The "⋯" menu is anchored to its row but mounted outside the
-            scrolling column, so the 220px scroller never cuts it. Round-8
-            design review item 4: it flies out to the RIGHT of the sidebar,
-            beside the row (design 3c — the old bottom drop covered the rows
-            below inside the narrow column). In the mobile drawer (390) the
-            right side has no room, so it falls back to the bottom drop
-            there — the drawer's column is wider than the menu, and the
-            ds Menu's viewport clamp keeps it on screen. */}
-        <Menu
-          open={openMenuProject !== null}
-          onClose={closeProjectMenu}
-          triggerRef={menuTrigger}
-          side={variant === "drawer" ? "bottom" : "right"}
-          align="end"
-          width={190}
-          height={160}
-          ariaLabel={
-            openMenuProject ? `${openMenuProject.name} project actions` : "Project actions"
-          }
-          data-testid="sidebar-project-menu"
-          items={openMenuProject ? projectMenuEntries(openMenuProject, navigate) : []}
-        />
       </div>
 
       <NewConversationDialog open={chatOpen} onClose={() => setChatOpen(false)} />

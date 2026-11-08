@@ -1,7 +1,8 @@
 # ADR-0050 — Assistant v2: per-user persisted conversations, multi-turn questions, change log with undo, server-side trust gating
 
 - **Date:** 2026-10-20 · **Status:** Accepted (product owner decision, design only —
-  implementation evidence required before the routes are claimed as working) · **Owners:**
+  implementation evidence required before the routes are claimed as working);
+  Amended 2026-11-08 (⌘K/⌘J split) · **Owners:**
   assistant/API maintainers; UI maintainer (popover, Settings → Assistant)
 - **Related:** ADR-0034 (read-only assistant broker — its storage clause is amended here),
   ADR-0044 (closed draft-proposal op set; apply through the version-checked draft PUT),
@@ -404,3 +405,28 @@ Verified: `go test -count=1 ./internal/assistant/... ./internal/api/...`
 `update_approvers` applies and its closed inverse restores the previous
 roles; a `human.approval` insert without a role, or with a role outside the
 enum, is refused naming the valid set).
+
+## Addendum (2026-11-08): finding 08 supersedes the ⌘K toggle
+
+Redesign finding 08 (app-shell review) changed the keyboard contract this ADR's
+UI layer was built against. The ADR's decision text is otherwise untouched.
+
+- **⌘K always opens search/jump.** The first-press-opens-Ask toggle (Ask on ⌘K
+  when no palette context was wanted, search otherwise) is retired. One chord,
+  one surface: the jump/search palette (`ui/src/components/CommandPalette.tsx`).
+- **Ask moved to ⌘J and a floating button.** `Shell` draws one floating
+  `Ask ⌘J` button on every page, and ⌘J opens the same surface. The sidebar no
+  longer carries an Ask row.
+- **`openAsk()` is an explicit function.** A caller that already holds the
+  question (the palette's Ask row, the floating button, a page that owns Ask
+  for its own shape) calls `openAsk(question?)` from
+  `ui/src/components/assistant/askControl.ts`, which registers the mounted Ask
+  surface through `useAskOpen` and hands the request to the newest claim.
+  Ask is no longer opened by dispatching a synthetic ⌘K keydown.
+- **The Studio capture-phase workaround was removed.** The Studio draft footer
+  had a `stopImmediatePropagation` hijack so its own ⌘K did not also raise the
+  assistant popover. With the chords split there is no collision to hijack
+  around, and the workaround is gone; the Studio claims ⌘J for its own ask row
+  while it is on screen (footer mode only) and releases it on leaving.
+
+**Status:** Amended 2026-11-08 (⌘K/⌘J split).

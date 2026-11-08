@@ -84,7 +84,10 @@ describe("previewBlockReason", () => {
   });
 
   it("requires the server's preview_url before rendering anything", () => {
-    expect(blocked({ preview_url: null })).toContain("preview_url");
+    // Copy pass (finding 12): the line names what the reader can do, not the
+    // wire field that is missing.
+    expect(blocked({ preview_url: null })).toContain("nothing to preview");
+    expect(blocked({ preview_url: null })).toContain("its details are still shown");
     expect(blocked({ preview_url: "http://preview.localhost:18084/preview/{token}" })).toBeNull();
   });
 });

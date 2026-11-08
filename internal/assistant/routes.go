@@ -22,6 +22,11 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/threads/[A-Za-z0-9_-]{1,64}$`),
 	// Catch up (design 8a, ADR-0078): the reader's own pile of pieces of work.
 	regexp.MustCompile(`^/catch-up$`),
+	// One piece of work (design 8b): `/catch-up/{workId}`.
+	regexp.MustCompile(`^/catch-up/[A-Za-z0-9_-]{1,64}$`),
+	// The tour player (design 7b): a static segment, listed explicitly so a
+	// model cannot invent `/catch-up/<anything>` and have it read as the tour.
+	regexp.MustCompile(`^/catch-up/tour$`),
 	regexp.MustCompile(`^/projects$`),
 	// Project pages (canonical /p/… form).
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}$`),

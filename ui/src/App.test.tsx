@@ -257,6 +257,75 @@ describe("/ops", () => {
   });
 });
 
+/**
+ * Catch up's two deep routes (design 7b/8b, ADR-0078). The piece page lives
+ * inside the shell like every other page; the tour player deliberately does
+ * NOT — it owns the viewport, so no sidebar mounts with it, the same placement
+ * the sign-in screen has. `/catch-up/tour` is declared before `/catch-up/:workId`
+ * so a tour URL is never read as a piece id.
+ */
+describe("catch-up routes", () => {
+  const workId = "01987a90-0000-7000-8000-111111111111";
+  const itemRoutes: RouteStub[] = [
+    me,
+    { path: "/api/v1/catch-up/items", body: { items: [], total_unseen: 0 } },
+    {
+      path: "/api/v1/catch-up/tour",
+      body: { stops: [], total_unseen_stops: 0, more_available: false, minutes_total: 0 },
+    },
+  ];
+
+  it("mounts one piece of work at /catch-up/:workId inside the shell", async () => {
+    renderApp({
+      path: `/catch-up/${workId}`,
+      routes: [
+        ...itemRoutes,
+        {
+          path: `/api/v1/catch-up/items/${workId}`,
+          body: {
+            id: workId,
+            project: { id: "p1", name: "payments", color: "#6a4bc4" },
+            title: "Refund duplicates on checkout",
+            refs: {},
+            seen_by: [],
+            latest: { version: 1, stops: [], created_at: "2026-11-08T10:00:00Z" },
+            history: [],
+            you_saw_version: 1,
+          },
+        },
+      ],
+    });
+
+    await screen.findByTestId("catchup-item", undefined, { timeout: READ_MS });
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("catchup-item").textContent).toContain(
+          "Refund duplicates on checkout",
+        ),
+      { timeout: READ_MS },
+    );
+    // Inside the shell: the column that carries the projects is on screen.
+    expect(screen.getByTestId("sidebar")).toBeTruthy();
+  });
+
+  it("plays the tour at /catch-up/tour with no sidebar, not as a piece id", async () => {
+    renderApp({ path: "/catch-up/tour", routes: itemRoutes });
+
+    const player = await screen.findByTestId("tour-player", undefined, { timeout: READ_MS });
+    expect(player.textContent).toContain("Catch-up tour");
+    // Full screen: the shell's sidebar does not mount beside it.
+    expect(screen.queryByTestId("sidebar")).toBeNull();
+    // And the URL was never taken as `/catch-up/:workId` — the piece page's own
+    // handle is absent.
+    expect(screen.queryByTestId("catchup-item")).toBeNull();
+  });
+
+  it("sends a signed-out visitor from the tour to the sign-in screen", async () => {
+    renderApp({ path: "/catch-up/tour", routes: [unauthenticated] });
+    await screen.findByRole("heading", { name: "Sign in" }, { timeout: READ_MS });
+  });
+});
+
 describe("unknown routes", () => {
   it("sends a signed-out visitor from any deep link to the sign-in screen", async () => {
     renderApp({ path: "/does-not-exist", routes: [unauthenticated] });

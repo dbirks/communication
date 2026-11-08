@@ -194,3 +194,23 @@ describe("/p/:projectId/members", () => {
     }
   });
 });
+
+describe("the settings section's tabs on the members page (finding 09)", () => {
+  it("marks Members current and links back to the section's other tab", async () => {
+    mounted();
+
+    await screen.findByTestId("project-members-page");
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    const tabs = within(nav).getAllByRole("link");
+    expect(tabs.map((tab) => tab.getAttribute("href"))).toEqual([
+      `/p/${projectId}/settings`,
+      `/p/${projectId}/members`,
+    ]);
+    expect(
+      within(nav).getByTestId("project-settings-tab-members").getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      within(nav).getByTestId("project-settings-tab-settings").getAttribute("aria-current"),
+    ).toBeNull();
+  });
+});

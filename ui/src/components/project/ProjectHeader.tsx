@@ -8,7 +8,16 @@
  * and the shell's New menu open), and `Start run` goes to the Runs tab, where
  * the run form reads its fields off the pinned revision. Both live only for a
  * contributor or maintainer — a viewer cannot start either.
+ *
+ * Finding 09 added the project's two configure actions to the same row. They
+ * used to live behind a "⋯" on the sidebar's project row that was painted only
+ * on hover or focus — invisible on touch, invisible in the rail — and whose
+ * "Add repository" item navigated to the overview instead of opening the form.
+ * `+ Repository` now opens `AddRepositoryDialog` here, in place (a maintainer's
+ * write, so it appears for a maintainer only), and `Settings` is a plain link to
+ * the section that holds the project's configuration, Members included.
  */
+import { useState } from "react";
 import { Link } from "react-router";
 import { useAttentionForProject } from "../../lib/attention";
 import { useConversations } from "../../api/queries";
@@ -16,6 +25,7 @@ import { useAssignments } from "../../api/pipelines";
 import type { Project } from "../../api/types";
 import { routes } from "../../lib/routes";
 import { Button, VARIANT_CLASS } from "../ds/Button";
+import { AddRepositoryDialog } from "./AddRepositoryDialog";
 import { ProjectTabs, type ProjectTabFlags, type ProjectTabKey } from "./ProjectTabs";
 import { PROJECT_PAGE_PAD } from "./ProjectPageShell";
 
@@ -37,6 +47,11 @@ export function ProjectHeader({ project, active, onNewThread }: ProjectHeaderPro
   const attention = useAttentionForProject(project);
   const conversations = useConversations(project.id);
   const assignments = useAssignments(project.id);
+  // `+ Repository` is the project's one write with a tighter door than the two
+  // verbs: the server's `POST /projects/{id}/repos` asks for a maintainer, so
+  // the button asks for one too rather than offering a form that will refuse.
+  const canAddRepository = project.my_role === "maintainer";
+  const [addingRepository, setAddingRepository] = useState(false);
   const flags: ProjectTabFlags = {
     needsYou: attention.pending ? null : attention.decisions.length + attention.stalled.length,
     threads: conversations.data ? conversations.data.items.length : null,
@@ -87,17 +102,53 @@ export function ProjectHeader({ project, active, onNewThread }: ProjectHeaderPro
             >
               Start run
             </Link>
+            {/* Finding 09: the two configure actions, in the header the sidebar
+                "⋯" never reached. */}
+            {canAddRepository ? (
+              <Button
+                variant="secondary"
+                onClick={() => setAddingRepository(true)}
+                data-testid="project-add-repository"
+              >
+                + Repository
+              </Button>
+            ) : null}
+            <Link
+              to={routes.projectTab(project.id, "settings")}
+              className={`ds-btn ${VARIANT_CLASS.secondary} inline-flex h-[30px] items-center rounded-[4px] px-[13px]`}
+              data-testid="project-settings-link"
+            >
+              Settings
+            </Link>
           </div>
         ) : (
-          <p
-            className="shrink-0 font-mono text-[10.5px] text-faint"
-            data-testid="project-role-hint"
-          >
-            role: {project.my_role} — read-only
-          </p>
+          <>
+            <p
+              className="shrink-0 font-mono text-[10.5px] text-faint"
+              data-testid="project-role-hint"
+            >
+              role: {project.my_role} — read-only
+            </p>
+            {/* A viewer cannot start work, but the project's own configuration
+                is still a page they may read — Settings is the way there. */}
+            <Link
+              to={routes.projectTab(project.id, "settings")}
+              className={`ds-btn ${VARIANT_CLASS.secondary} inline-flex h-[30px] items-center rounded-[4px] px-[13px]`}
+              data-testid="project-settings-link"
+            >
+              Settings
+            </Link>
+          </>
         )}
       </div>
       <ProjectTabs projectId={project.id} active={active} flags={flags} />
+      {addingRepository ? (
+        <AddRepositoryDialog
+          open
+          onClose={() => setAddingRepository(false)}
+          projectId={project.id}
+        />
+      ) : null}
     </header>
   );
 }

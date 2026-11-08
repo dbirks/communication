@@ -37,6 +37,10 @@ const ArtifactPage = lazy(() => import("./pages/Artifact"));
 const Artifacts = lazy(() => import("./pages/Artifacts"));
 const ApprovalPage = lazy(() => import("./pages/Approval"));
 const CatchUpPage = lazy(() => import("./pages/CatchUp"));
+const CatchUpItemPage = lazy(() => import("./pages/CatchUpItem"));
+// The tour player is the one page that renders OUTSIDE `Shell` (below), so it
+// is still a route chunk: the shell's chrome never enters the tour's viewport.
+const TourPlayerPage = lazy(() => import("./pages/TourPlayer"));
 const ConversationPage = lazy(() => import("./pages/Conversation"));
 const ProjectConversations = lazy(() => import("./pages/ProjectConversations"));
 const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default: m.LibraryPage })));
@@ -162,6 +166,29 @@ export default function App() {
     );
   }
 
+  // The tour player (design 7b, ADR-0078) owns the viewport: no sidebar, no
+  // floating Ask, no shell chrome — the tour is a reader sitting down to a
+  // briefing, and the shell would take its screen. It therefore answers BEFORE
+  // the shell mounts (the same placement the sign-in screen has) and it is
+  // declared ahead of `/catch-up/:workId` so a tour URL is never read as a
+  // piece id.
+  if (pathname === "/catch-up/tour") {
+    return (
+      <Suspense fallback={<RouteFallback label="Loading the tour" />}>
+        <Routes>
+          <Route
+            path="/catch-up/tour"
+            element={
+              <RequireAuth>
+                <TourPlayerPage />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </Suspense>
+    );
+  }
+
   return (
     <Shell>
       <Suspense fallback={<RouteFallback />}>
@@ -225,6 +252,17 @@ export default function App() {
             element={
               <RequireAuth>
                 <Project />
+              </RequireAuth>
+            }
+          />
+          {/* One piece of work (design 8b, ADR-0078): the shared tour of a
+            single issue/PR/push and this reader's debt against it. `/catch-up/tour`
+            answered above, so nothing here can mistake the tour for a piece. */}
+          <Route
+            path="/catch-up/:workId"
+            element={
+              <RequireAuth>
+                <CatchUpItemPage />
               </RequireAuth>
             }
           />

@@ -21,6 +21,7 @@ import {
 } from "../api/queries";
 import type { Project, Secret } from "../api/types";
 import ProjectSectionNav from "../components/ProjectSectionNav";
+import { ProjectSettingsTabs } from "../components/project/ProjectSettingsTabs";
 import Page from "../components/ds/Page";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { MaterializationsPanel, SecretMountsPanel, SecretsPanel } from "../components/Secrets";
@@ -192,6 +193,15 @@ export default function ProjectSettings() {
               Your role: <span className="font-mono">{data.my_role}</span>. A viewer may read
               metadata; only a maintainer may create, rotate, revoke or place a secret.
             </p>
+            {/* Finding 09: Members is a tab of this section, not an item in a
+                hover-only sidebar menu. It stays its own route
+                (`/p/:id/members`, design 1b) — the tab strip is the header
+                pattern the Workflows page's tabs use, so the pair reads as one
+                section with two pages rather than a merge that would strand a
+                live URL. */}
+            <div className="pt-[10px]">
+              <ProjectSettingsTabs projectId={data.id} active="settings" />
+            </div>
           </header>
           <Settings project={data} />
           <WorkspacesPanel projectId={data.id} />
