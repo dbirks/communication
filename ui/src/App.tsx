@@ -32,14 +32,12 @@ const M4PreviewPage = import.meta.env.DEV ? lazy(() => import("./pages/M4Preview
  */
 const StudioPage = lazy(() => import("./pages/Studio"));
 const AgentsPage = lazy(() => import("./pages/Agents"));
-const Board = lazy(() => import("./pages/Board"));
 const Home = lazy(() => import("./pages/Home"));
 const ArtifactPage = lazy(() => import("./pages/Artifact"));
 const Artifacts = lazy(() => import("./pages/Artifacts"));
 const ApprovalPage = lazy(() => import("./pages/Approval"));
 const ConversationPage = lazy(() => import("./pages/Conversation"));
 const ProjectConversations = lazy(() => import("./pages/ProjectConversations"));
-const Inbox = lazy(() => import("./pages/Inbox"));
 const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default: m.LibraryPage })));
 const PipelinePage = lazy(() =>
   import("./pages/Library").then((m) => ({ default: m.PipelinePage })),
@@ -150,7 +148,10 @@ export default function App() {
     // the README says these bodies are not capped).
     /^\/p\/[^/]+$/.test(pathname) ||
     /^\/p\/[^/]+\/members$/.test(pathname) ||
-    /^\/p\/[^/]+\/(runs|threads|conversations|pipelines)$/.test(pathname) ||
+    /^\/p\/[^/]+\/(runs|threads|conversations|pipelines|workflows)$/.test(pathname) ||
+    // Steps is a tab of the Workflows page (finding 02): both step routes
+    // draw the Workflows page's full-width frame.
+    /^\/(workflows|library)\/steps(\/[^/]+)?$/.test(pathname) ||
     // Threads (Projects Review design 1g) is the same shared page pattern:
     // the 320px list pane plus the open thread own the whole content column
     // at full height — a centred 64rem column would squeeze the pane header
@@ -221,22 +222,11 @@ export default function App() {
               </RequireAuth>
             }
           />
-          <Route
-            path="/inbox"
-            element={
-              <RequireAuth>
-                <Inbox />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/board"
-            element={
-              <RequireAuth>
-                <Board />
-              </RequireAuth>
-            }
-          />
+          {/* Finding 03: `/inbox` and `/board` redirected to `/` (exactly
+            like `/ops` above) — their content lives in Today and the
+            repository Lanes view, and the pages are unmounted. */}
+          <Route path="/inbox" element={<Navigate to="/" replace />} />
+          <Route path="/board" element={<Navigate to="/" replace />} />
           {/* gh-69: one optional-param route serves `/threads` and
               `/threads/:conversationId` on ONE mounted screen
               (`pages/Threads.tsx` → `ThreadScreen`). It used to be two routes
@@ -281,7 +271,7 @@ export default function App() {
             }
           />
           <Route
-            path="/p/:projectId/pipelines"
+            path="/p/:projectId/workflows"
             element={
               <RequireAuth>
                 <ProjectPipelines />
@@ -344,6 +334,25 @@ export default function App() {
             }
           />
           <Route
+            path="/workflows/steps"
+            element={
+              <RequireAuth>
+                <Steps />
+              </RequireAuth>
+            }
+          />
+          {/* Declared before `/workflows/:pipelineId` (and ranked static-over-
+            dynamic by the router) so `/workflows/steps` is the Steps tab,
+            never a pipeline id called "steps" (finding 02). */}
+          <Route
+            path="/workflows/steps/:id"
+            element={
+              <RequireAuth>
+                <Steps />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/workflows/:pipelineId"
             element={
               <RequireAuth>
@@ -387,22 +396,8 @@ export default function App() {
               </RequireAuth>
             }
           />
-          <Route
-            path="/steps"
-            element={
-              <RequireAuth>
-                <Steps />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/steps/:id"
-            element={
-              <RequireAuth>
-                <Steps />
-              </RequireAuth>
-            }
-          />
+          <Route path="/steps" element={<Redirect to={routes.steps()} />} />
+          <Route path="/steps/:id" element={<Redirect to={(p) => routes.step(p.id ?? "")} />} />
           <Route
             path="/profiles"
             element={
@@ -486,7 +481,7 @@ export default function App() {
           />
           <Route
             path="/projects/:projectId/pipelines"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "pipelines")} />}
+            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "workflows")} />}
           />
           <Route
             path="/projects/:projectId/settings"
@@ -503,6 +498,12 @@ export default function App() {
           <Route
             path="/projects/:projectId/conversations/:conversationId"
             element={<Redirect to={(p) => routes.thread(p.conversationId ?? "")} />}
+          />
+          {/* Finding 02: the project Workflows tab is `/p/:id/workflows`; the
+            old `pipelines` spelling stays alive as a redirect. */}
+          <Route
+            path="/p/:projectId/pipelines"
+            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "workflows")} />}
           />
           {/* Finding 01: the project Threads tab is `/p/:id/threads`; the old
             `conversations` spelling of the same two routes stays alive as a

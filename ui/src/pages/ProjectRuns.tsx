@@ -419,7 +419,7 @@ export function RunsTabBody({ projectId }: { projectId: string }) {
         Every row opens its run — definition, steps and timeline. What a run of this project looks
         like comes from{" "}
         <Link
-          to={routes.projectTab(projectId, "pipelines")}
+          to={routes.projectTab(projectId, "workflows")}
           className="text-accent-text hover:text-ink"
         >
           the workflows it uses

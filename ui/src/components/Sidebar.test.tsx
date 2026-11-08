@@ -127,12 +127,16 @@ describe("the sidebar tree (the default placement)", () => {
     expect(toggle.className.split(/\s+/)).toContain("icon-hit");
     expect(scope.queryByText("acme-widgets")).toBeNull();
 
-    // The library rows: real counts for what the API counts, none for what it
-    // does not (Steps has no template store behind a number).
+    // Finding 02: Workflows and Agents are top-level rows (the LIBRARY block
+    // is gone, Steps is a tab of the Workflows page, not a row). Real counts
+    // for what the API counts; the Agents row says "Agents" over the testid
+    // and route the profiles page kept.
     await waitFor(() => {
       expect(scope.getByTestId("sidebar-link-workflows").textContent).toContain("2");
     });
-    expect(scope.getByTestId("sidebar-link-steps").textContent).toBe("Steps");
+    expect(scope.queryByTestId("sidebar-link-steps")).toBeNull();
+    expect(scope.queryByText("LIBRARY")).toBeNull();
+    expect(scope.getByTestId("sidebar-link-profiles").textContent).toContain("Agents");
     expect(scope.getByTestId("sidebar-link-profiles").textContent).toContain("0");
 
     // The sidebar placement of the Ask button is the default.
@@ -368,84 +372,26 @@ describe("the sidebar workflow folders (ADR-0049 § 8)", () => {
     ];
   }
 
-  it("expands Workflows to its folders with the API's counts, Unfiled last", async () => {
+  // Finding 02: the sidebar no longer folds the workflow folders (the
+  // `?folder=` sub-rows and their chevron are gone from the column — the
+  // folders stay on the Workflows page itself). Even with the saved
+  // `library:workflows` expansion and the show_workflow_folders preference
+  // on, the column renders no folder row.
+  it("renders no workflow folder rows at all", async () => {
     renderApp({ path: "/", routes: folderRoutes() });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
     const scope = within(sidebar);
-    const toggle = await scope.findByTestId("sidebar-workflows-toggle");
-    // Issue #68: desktop hit area ≥28×28 via the shared `.icon-hit` utility.
-    expect(toggle.className.split(/\s+/)).toContain("icon-hit");
-    // The preferences read settles before the chevron honours it.
-    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"), {
-      timeout: READ_MS,
-    });
-    const rows = scope.getByTestId("sidebar-workflow-folder-delivery");
-    const folderRows = scope.getAllByTestId(/^sidebar-workflow-folder-/);
-    expect(folderRows.map((row) => row.getAttribute("data-testid"))).toEqual([
-      "sidebar-workflow-folder-delivery",
-      "sidebar-workflow-folder-unfiled",
-    ]);
-    // The counts are the API's own rows; Unfiled carries the null-folder row.
-    expect(folderRows[0].textContent).toContain("2");
-    expect(folderRows[1].textContent).toContain("1");
-    expect(rows.getAttribute("href")).toBe("/workflows?folder=Delivery");
-    // The Workflows row keeps its own total.
-    expect(scope.getByTestId("sidebar-link-workflows").textContent).toContain("3");
-  });
-
-  it("persists the chevron through the saved `library:workflows` preference", async () => {
-    const { requests } = renderApp({
-      path: "/",
-      routes: folderRoutes(
-        [{ path: PREFS_PATH, method: "PATCH", body: prefsDoc({ "library:workflows": true }) }],
-        prefsDoc({}),
-      ),
-    });
-    const toggle = await screen.findByTestId("sidebar-workflows-toggle", undefined, {
-      timeout: READ_MS,
-    });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByTestId("sidebar-workflow-folder-delivery")).toBeNull();
-    fireEvent.click(toggle);
+    // The Workflows row settling proves the pipelines read answered; the
+    // folders still do not appear.
     await waitFor(() => {
-      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1);
+      expect(scope.getByTestId("sidebar-link-workflows").textContent).toContain("3");
     });
-    const sent = JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[0].body ?? "{}") as {
-      layout: { expanded: Record<string, boolean> };
-    };
-    expect(sent.layout.expanded["library:workflows"]).toBe(true);
-    // The PATCH answer carries the expanded document: the folders appear.
-    await screen.findByTestId("sidebar-workflow-folder-delivery", undefined, {
-      timeout: READ_MS,
-    });
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-  });
-
-  it("keeps Workflows a plain link when show_workflow_folders is off", async () => {
-    renderApp({
-      path: "/",
-      routes: folderRoutes([], {
-        layout: {
-          projects_mode: "tree",
-          ask_placement: "sidebar",
-          show_workflow_folders: false,
-          expanded: {},
-        },
-        assistant: { trust_level: "ask_risky" },
-        updated_at: "2026-01-01T00:00:00Z",
-      }),
-    });
-    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
-    const scope = within(sidebar);
-    // The preference read settles before the chevron disappears.
-    await waitFor(() => expect(scope.queryByTestId("sidebar-workflows-toggle")).toBeNull(), {
-      timeout: READ_MS,
-    });
+    expect(scope.queryByTestId("sidebar-workflows-toggle")).toBeNull();
     expect(scope.queryAllByTestId(/^sidebar-workflow-folder-/)).toHaveLength(0);
     expect(scope.getByTestId("sidebar-link-workflows").getAttribute("href")).toBe("/workflows");
   });
 
-  // 1b review: `0` is a fact about an EMPTY library, not about a read that
+  // 1b review: `0` is a fact about an EMPTY library  // 1b review: `0` is a fact about an EMPTY library, not about a read that
   // failed — the row stays unnumbered until the list actually answers.
   it("shows no Workflows number while the library read has failed", async () => {
     renderApp({
@@ -624,7 +570,8 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     // Review 3c: the rail's Today is an icon tile, not bare text under the
     // `+` — the word lives in the aria-label (and the tooltip).
     expect(screen.getByTestId("sidebar-link-home").getAttribute("aria-label")).toMatch(/^Today/);
-    expect(screen.getByTestId("sidebar-rail-library").getAttribute("aria-label")).toBe("Library");
+    // Finding 02: the rail tile says what the row says.
+    expect(screen.getByTestId("sidebar-rail-library").getAttribute("aria-label")).toBe("Workflows");
     expect(screen.getByTestId("user-badge").textContent).toContain("Ada Lovelace");
   });
 

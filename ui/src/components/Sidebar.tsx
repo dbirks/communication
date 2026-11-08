@@ -54,7 +54,7 @@ import {
 } from "lucide-react";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import type { Project } from "../api/types";
-import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
+import { usePipelines } from "../api/pipelines";
 import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
@@ -308,7 +308,7 @@ export function projectMenuEntries(project: Project, navigate: (to: string) => v
       id: "workflows",
       label: "Workflows in use",
       testId: "project-menu-workflows",
-      onSelect: () => navigate(routes.projectTab(project.id, "pipelines")),
+      onSelect: () => navigate(routes.projectTab(project.id, "workflows")),
     },
   ];
 }
@@ -598,146 +598,6 @@ function ProjectSwitcher() {
 }
 
 /**
- * The LIBRARY block. Workflows and Agent profiles carry real counts (the
- * pipeline and profile reads); Steps carries none — there is no node-template
- * store behind a number yet, and an invented one is exactly what the column
- * must not do. Workflows expands to its folders (ADR-0049 § 8) when the
- * `showWorkflowFolders` preference allows: the folders are the wire's own
- * `folder` values with the list read's own counts (Unfiled last), the chevron
- * state is the saved `expanded["library:workflows"]` preference, and each
- * folder links the index filtered on it. With the preference off the row is a
- * plain link again.
- */
-function LibrarySection() {
-  const pipelines = usePipelines();
-  const profiles = useAgentProfiles();
-  const { prefs, update } = useLayoutPrefs();
-  const items = pipelines.data?.pipelines ?? [];
-  // The count is the list read's own rows — and there is no number at all
-  // while that read has not answered: a failed or in-flight read must not
-  // render `0`, which would read as "the library is empty" (design 1b review).
-  const workflows = pipelines.data?.pipelines.length;
-  const profileCount = profiles.data?.items.length;
-
-  const folderCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of items) {
-      const name = item.folder && item.folder.length > 0 ? item.folder : UNFILED_FOLDER;
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) => {
-      if (a[0] === UNFILED_FOLDER) return 1;
-      if (b[0] === UNFILED_FOLDER) return -1;
-      return a[0].localeCompare(b[0]);
-    });
-  }, [items]);
-
-  const showFolders = prefs.showWorkflowFolders;
-  const workflowsOpen = showFolders && prefs.expanded["library:workflows"] === true;
-
-  // One row shape for the whole LIBRARY block (review 3c): a leading
-  // chevron column, then the link. Workflows earns its ▸ (folders expand);
-  // Steps and Agent profiles reserve the same column empty, so the three
-  // labels start at one x and the lone chevron never misaligns the list.
-  const row = (
-    to: string,
-    label: string,
-    testid: string,
-    count: number | undefined,
-    leading?: ReactNode,
-  ) => (
-    <div key={testid} className="flex items-center gap-1">
-      {leading ?? <span className="size-4 shrink-0" aria-hidden="true" />}
-      <NavLink
-        to={to}
-        data-testid={testid}
-        className={({ isActive }) =>
-          `flex min-w-0 flex-1 items-center gap-2 rounded-[3px] border px-2 py-[4px] text-[12.5px] no-underline ${FOCUS_RING} ${
-            isActive ? ROW_ACTIVE : ROW_INACTIVE
-          }`
-        }
-      >
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        {count !== undefined ? (
-          <span className="shrink-0 font-mono text-[10.5px] text-muted">{count}</span>
-        ) : null}
-      </NavLink>
-    </div>
-  );
-
-  return (
-    <div className="flex min-h-0 flex-col gap-px">
-      <span className={SECTION_LABEL}>LIBRARY</span>
-      <div className="flex items-center gap-1">
-        {showFolders ? (
-          <button
-            type="button"
-            data-testid="sidebar-workflows-toggle"
-            aria-expanded={workflowsOpen}
-            aria-label={`${workflowsOpen ? "Hide" : "Show"} workflow folders`}
-            onClick={() =>
-              update({
-                expanded: {
-                  ...prefs.expanded,
-                  "library:workflows": !workflowsOpen,
-                },
-              })
-            }
-            className={`icon-hit grid size-4 shrink-0 place-items-center rounded-[3px] p-0 text-ink-2 hover:bg-fill ${FOCUS_RING}`}
-          >
-            <Chevron open={workflowsOpen} size={14} />
-          </button>
-        ) : (
-          <span className="w-4 shrink-0" aria-hidden="true" />
-        )}
-        <NavLink
-          to={routes.workflows()}
-          data-testid="sidebar-link-workflows"
-          className={({ isActive }) =>
-            `flex min-w-0 flex-1 items-center gap-2 rounded-[3px] border px-2 py-[4px] text-[12.5px] no-underline ${FOCUS_RING} ${
-              isActive ? ROW_ACTIVE : ROW_INACTIVE
-            }`
-          }
-        >
-          <span className="min-w-0 flex-1 truncate">Workflows</span>
-          {workflows !== undefined ? (
-            <span className="shrink-0 font-mono text-[10.5px] text-muted">{workflows}</span>
-          ) : null}
-        </NavLink>
-      </div>
-      {workflowsOpen && folderCounts.length > 0 ? (
-        <div className="ml-[14px] flex flex-col gap-px border-l border-line pl-[10px]">
-          {folderCounts.map(([name, count]) => {
-            const slug =
-              name
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")
-                .replace(/^-+|-+$/g, "") || "folder";
-            return (
-              <NavLink
-                key={name}
-                to={`${routes.workflows()}?folder=${encodeURIComponent(name)}`}
-                data-testid={`sidebar-workflow-folder-${slug}`}
-                className={({ isActive }) =>
-                  `flex items-center gap-2 rounded-[3px] px-2 py-[3px] font-mono text-[11.5px] no-underline ${FOCUS_RING} ${
-                    isActive ? "text-ink" : "text-ink-2 hover:underline"
-                  }`
-                }
-              >
-                <span className="min-w-0 flex-1 truncate">{name}</span>
-                <span className="shrink-0 text-[10.5px] text-muted">{count}</span>
-              </NavLink>
-            );
-          })}
-        </div>
-      ) : null}
-      {row(routes.steps(), "Steps", "sidebar-link-steps", undefined)}
-      {row(routes.profiles(), "Agent profiles", "sidebar-link-profiles", profileCount)}
-    </div>
-  );
-}
-
-/**
  * The footer the app bar used to carry: the signed-in user as the menu
  * trigger (`user-badge`) over the account menu (`user-menu-list`: Settings,
  * Operations, Sign out), plus the honest "not signed in" state. The replica
@@ -1007,7 +867,7 @@ function Rail({
 
         <RailItem
           to={routes.workflows()}
-          label="Library"
+          label="Workflows"
           testid="sidebar-rail-library"
           icon={<BookOpen size={15} strokeWidth={1.6} aria-hidden="true" />}
         />
@@ -1087,6 +947,10 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
   const navigate = useNavigate();
   const flags = useSidebarFlags();
   const projectsQuery = useProjects();
+  // Finding 02: the Workflows/Agents rows count themselves off the same
+  // reads the pages use (see the nav block in the expanded column).
+  const pipelines = usePipelines();
+  const profiles = useAgentProfiles();
   const closeRef = useRef<HTMLButtonElement>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
@@ -1240,7 +1104,46 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
             )}
           </div>
 
-          <LibrarySection />
+          {/* Finding 02: the LIBRARY block is gone. Workflows and Agents are
+              top-level rows in the Today/Threads style, after the projects;
+              Steps lives on as a tab of the Workflows page
+              (`/workflows/steps`), and the workflow folders are off the
+              sidebar entirely. The counts are the list reads' own rows — and
+              there is no number at all while a read has not answered: a
+              failed or in-flight read must not render `0`, which would read
+              as "empty" (design 1b review). */}
+          <nav aria-label="Workflows and agents" className="flex flex-col gap-[2px]">
+            {(
+              [
+                {
+                  to: routes.workflows(),
+                  label: "Workflows",
+                  testid: "sidebar-link-workflows",
+                  count: pipelines.data?.pipelines.length,
+                },
+                {
+                  to: routes.profiles(),
+                  label: "Agents",
+                  testid: "sidebar-link-profiles",
+                  count: profiles.data?.items.length,
+                },
+              ] as const
+            ).map((item) => (
+              <NavLink
+                key={item.testid}
+                to={item.to}
+                data-testid={item.testid}
+                className={({ isActive }) => `${ROW} ${isActive ? ROW_ACTIVE : ROW_INACTIVE}`}
+              >
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.count !== undefined ? (
+                  <span className="ml-auto shrink-0 font-mono text-[10.5px] font-semibold text-muted">
+                    {item.count}
+                  </span>
+                ) : null}
+              </NavLink>
+            ))}
+          </nav>
 
           <Footer />
         </aside>

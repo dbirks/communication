@@ -44,9 +44,9 @@ function harness(routes: RouteStub[]) {
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/steps/t-1"]}>
+      <MemoryRouter initialEntries={["/workflows/steps/t-1"]}>
         <Routes>
-          <Route path="/steps/:id" element={<LocationProbe />} />
+          <Route path="/workflows/steps/:id" element={<LocationProbe />} />
         </Routes>
         <DuplicateDialog open onClose={() => {}} source={SOURCE} />
       </MemoryRouter>
@@ -75,7 +75,9 @@ describe("DuplicateDialog", () => {
     });
     fireEvent.click(screen.getByTestId("duplicate-submit"));
 
-    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/steps/t-2"));
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/workflows/steps/t-2"),
+    );
     const post = requestsTo(requests, "/api/v1/node-templates/t-1/duplicate", "POST")[0];
     expect(JSON.parse(String(post.body))).toEqual({
       slug: "security-reviewer",

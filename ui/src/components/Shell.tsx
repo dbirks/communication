@@ -15,14 +15,17 @@ import AssistantPopover from "./assistant/AssistantPopover";
  * at.
  *
  * Handoff 2c/3c: the nav is Today (`/`, what the page called Home) and My
- * chats. Board and Inbox are not nav rows any more — the Board's behavior
- * lives in the repository page's Lanes view and the Inbox folds into Today —
- * but `/board` and `/inbox` stay mounted routes (several pages and deep links
- * still land on them), and `sectionOf` still names them by their own segment.
+ * chats, plus — since finding 02 — the Workflows and Agents rows that sit
+ * under the projects. Board and Inbox are not nav rows any more — the Board's
+ * behavior lives in the repository page's Lanes view and the Inbox folds into
+ * Today — and (finding 03) `/board` and `/inbox` now redirect to `/` the way
+ * `/ops` redirects to Settings.
  */
 const NAV_ITEMS = [
   { to: "/", label: "Today", end: true },
   { to: "/threads", label: "Threads" },
+  { to: "/workflows", label: "Workflows" },
+  { to: "/profiles", label: "Agents" },
 ];
 
 export function sectionOf(pathname: string): string {

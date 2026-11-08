@@ -124,7 +124,7 @@ const PAGES: PaletteItem[] = [
 /** Each project's own sub-pages, so a jump lands on the tab and not the root. */
 const SUB_PAGES = [
   { path: "runs", label: "Runs", hint: "project runs" },
-  { path: "pipelines", label: "Pipelines", hint: "project pipelines" },
+  { path: "workflows", label: "Workflows", hint: "project workflows" },
   { path: "settings", label: "Settings", hint: "project settings" },
 ] as const;
 

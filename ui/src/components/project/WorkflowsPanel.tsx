@@ -145,7 +145,7 @@ export function WorkflowsPanel({
         // button that does nothing.
         project.my_role === "maintainer" && !page ? (
           <Link
-            to={routes.projectTab(project.id, "pipelines")}
+            to={routes.projectTab(project.id, "workflows")}
             className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid="project-workflows-assign"
           >
@@ -187,7 +187,7 @@ export function WorkflowsPanel({
                 </p>
               ) : (
                 <p className="text-[12.5px] text-muted">
-                  <Link to={routes.projectTab(project.id, "pipelines")} className="underline">
+                  <Link to={routes.projectTab(project.id, "workflows")} className="underline">
                     Assign one from the library ›
                   </Link>
                 </p>

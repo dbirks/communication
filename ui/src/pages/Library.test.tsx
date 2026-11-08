@@ -191,6 +191,15 @@ async function clickEnabledCard(testid: string) {
 }
 
 describe("/workflows — the index (3a)", () => {
+  // Finding 02: Steps left the sidebar and became a tab of this page.
+  it("carries the Workflows | Steps tab strip", async () => {
+    mount("/workflows");
+    await screen.findByTestId("library-page");
+    expect(screen.getByTestId("workflows-tab-workflows").getAttribute("aria-current")).toBe("page");
+    // (The route itself — and the old `/steps` redirect — is proven in
+    // App.test.tsx; this table stubs only the library routes.)
+    expect(screen.getByTestId("workflows-tab-steps").getAttribute("href")).toBe("/workflows/steps");
+  });
   it("lists the org workflows with the server's own chips and opens the one you click", async () => {
     mount("/workflows");
     const list = await screen.findByTestId("workflows-list");

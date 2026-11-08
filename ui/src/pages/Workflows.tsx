@@ -39,7 +39,7 @@
  */
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Button } from "../components/ds/Button";
 import { Input } from "../components/ds/Field";
@@ -69,6 +69,43 @@ import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../lib/pipeline/authoring";
 import { PIPELINE_TEMPLATES, templateChain, type TemplateId } from "../lib/pipeline/templates";
 
 /* ------------------------------------------------------------- /workflows */
+
+/**
+ * The Workflows page's header tabs (finding 02): `Workflows | Steps`. Items
+ * are routes, not fragments — `/workflows` and `/workflows/steps` — and the
+ * strip is the same link-on-the-band pattern the workflow page's tabs use
+ * (`pages/Workflow.tsx`): a tab sits on the header's bottom border, the
+ * active one is inked and bold.
+ */
+export function WorkflowsTabs({ active }: { active: "workflows" | "steps" }) {
+  const tabs = [
+    { key: "workflows", label: "Workflows", to: routes.workflows() },
+    { key: "steps", label: "Steps", to: routes.steps() },
+  ] as const;
+  return (
+    <nav
+      aria-label="Workflows page"
+      className="-mb-px flex gap-[4px] border-b border-line"
+      data-testid="workflows-tabs"
+    >
+      {tabs.map((tab) => (
+        <Link
+          key={tab.key}
+          to={tab.to}
+          aria-current={active === tab.key ? "page" : undefined}
+          data-testid={`workflows-tab-${tab.key}`}
+          className={`shrink-0 whitespace-nowrap rounded-t-[3px] border px-[12px] pt-[6px] pb-[7px] text-[13px] no-underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+            active === tab.key
+              ? "border-ink border-b-paper bg-paper font-semibold text-ink"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          {tab.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
 
 /** The filter chip: a pressed state a screen reader hears (`aria-pressed`)
  * and a keyboard can reach (the ds focus ring). */
@@ -421,6 +458,8 @@ export function LibraryPage() {
           </Button>
         </div>
       </div>
+      {/* Finding 02: Steps is a tab of this page, not a sidebar row. */}
+      <WorkflowsTabs active="workflows" />
       {me.isError ? (
         <ProblemBanner error={me.error} fallback="Your identity could not be read." />
       ) : null}

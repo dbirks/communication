@@ -4,11 +4,14 @@
  * the API word is "node template", the UI word is "step" (settled
  * vocabulary decision).
  *
- * `/steps` — grouped list (40px rows: name + version, config summary, kind,
- * "N workflows" — the count only ever comes from `used_in_count`).
- * `/steps/:id` — the same list plus the 360px detail panel (description,
- * facts from the latest revision, USED IN N WORKFLOWS, Edit-for-all and
- * Duplicate). The panel stacks below the list on phone.
+ * `/workflows/steps` — grouped list (40px rows: name + version, config
+ * summary, kind, "N workflows" — the count only ever comes from
+ * `used_in_count`). `/workflows/steps/:id` — the same list plus the 360px
+ * detail panel (description, facts from the latest revision, USED IN N
+ * WORKFLOWS, Edit-for-all and Duplicate). The panel stacks below the list on
+ * phone. Finding 02: Steps is a tab of the Workflows page — the old `/steps`
+ * and `/steps/:id` URLs redirect here, and the page draws the Workflows
+ * page's frame (full-width band + `Workflows | Steps` tabs).
  *
  * Honest states: an empty registry, a server without the endpoint, and an
  * unknown id each get their own copy — nothing is faked.
@@ -23,6 +26,7 @@ import { StepRow, groupByFamily } from "../components/steps/StepRow";
 import { FormError } from "../components/Feedback";
 import { useNodeTemplate, useNodeTemplates, type NodeTemplate } from "../api/nodeTemplates";
 import { routes } from "../lib/routes";
+import { WorkflowsTabs } from "./Workflows";
 
 export default function Steps() {
   const { id } = useParams<{ id: string }>();
@@ -38,14 +42,18 @@ export default function Steps() {
   const latest = detail?.revisions[0];
 
   return (
-    <section data-testid="steps-page" className="flex min-h-0 flex-col gap-[14px]">
+    <section
+      data-testid="steps-page"
+      className="flex min-h-full flex-col gap-[14px] px-7 py-[22px]"
+    >
       <header>
-        <h1 className="text-title-l font-bold">Steps</h1>
+        <h1 className="text-[22px] leading-[28px] font-semibold">Steps</h1>
         <p className="mt-1 text-[12px] text-muted">
           Saved node templates in YAML — kind: NodeTemplate. A step can be edited for every workflow
           that uses it, or duplicated into a new step.
         </p>
       </header>
+      <WorkflowsTabs active="steps" />
       <div className="flex min-h-0 flex-1 flex-col gap-[14px] lg:flex-row">
         <div className="min-w-0 flex-1" data-testid="steps-list">
           {listQuery.isPending ? (

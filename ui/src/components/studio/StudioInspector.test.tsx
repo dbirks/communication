@@ -383,7 +383,9 @@ describe("StudioInspector", () => {
     });
     const done = await screen.findByTestId("insp-save-step-done");
     expect(done.textContent).toContain("Saved as step “build” v1.0.0.");
-    expect(getByTestId("insp-save-step-link").getAttribute("href")).toBe("/steps/01j-tpl-build");
+    expect(getByTestId("insp-save-step-link").getAttribute("href")).toBe(
+      "/workflows/steps/01j-tpl-build",
+    );
   });
 
   it("save-as-step: shows the API error (403 for a non-library caller)", async () => {

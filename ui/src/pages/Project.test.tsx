@@ -220,7 +220,7 @@ describe("/p/:projectId — the header band and its tabs", () => {
       `/p/${projectId}`,
       `/p/${projectId}/runs`,
       `/p/${projectId}/threads`,
-      `/p/${projectId}/pipelines`,
+      `/p/${projectId}/workflows`,
       `/p/${projectId}/artifacts`,
       `/p/${projectId}/settings`,
     ]);
@@ -737,7 +737,7 @@ describe("/p/:projectId — the inventory column", () => {
     );
     // Assigning is the Workflows tab's form, not a second copy of it here.
     expect(screen.getByTestId("project-workflows-assign").getAttribute("href")).toBe(
-      `/p/${projectId}/pipelines`,
+      `/p/${projectId}/workflows`,
     );
   });
 

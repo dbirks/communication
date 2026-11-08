@@ -13,7 +13,7 @@
  * old permalink keeps its view, node, instance, attempt and scopes.
  */
 
-export type ProjectTab = "runs" | "pipelines" | "artifacts" | "threads" | "settings";
+export type ProjectTab = "runs" | "workflows" | "artifacts" | "threads" | "settings";
 
 /** The workflow page's header tabs (design 1e): routes, not fragments. */
 export type WorkflowTab = "overview" | "yaml" | "used-in" | "history";
@@ -36,13 +36,18 @@ function withParams(path: string, params?: Record<string, string>): string {
 export const routes = {
   /** `/` — the Home briefing (placeholder until the briefing data lands). */
   home: (): string => "/",
+  /** Legacy addresses (finding 03): `/inbox` and `/board` are no longer
+   * mounted pages — `App.tsx` redirects both to `/` the way `/ops` redirects
+   * to Settings. The builders stay so the pages that still link them compile
+   * until their copy is rebuilt. */
   inbox: (): string => "/inbox",
   board: (): string => "/board",
   threads: (): string => "/threads",
   thread: (id: string): string => `/threads/${encode(id)}`,
   projects: (): string => "/projects",
   project: (id: string): string => `/p/${encode(id)}`,
-  /** A project tab: `/p/:projectId/{runs|pipelines|artifacts|threads|settings}`. */
+  /** A project tab: `/p/:projectId/{runs|workflows|artifacts|threads|settings}`
+   * (finding 02: the tab is `workflows`; the old `pipelines` segment redirects). */
   projectTab: (id: string, tab: ProjectTab): string => `/p/${encode(id)}/${tab}`,
   /** A thread inside a project's URL space: `/p/:projectId/threads/:threadId`
    * (finding 01 renamed the segment; the resource is still a conversation). */
@@ -59,8 +64,10 @@ export const routes = {
     tab === "overview" ? `/workflows/${encode(id)}` : `/workflows/${encode(id)}/${tab}`,
   draft: (pipelineId: string, draftId: string): string =>
     `/workflows/${encode(pipelineId)}/drafts/${encode(draftId)}`,
-  steps: (): string => "/steps",
-  step: (id: string): string => `/steps/${encode(id)}`,
+  /** Steps lives under Workflows now (finding 02): `/workflows/steps` is a
+   * tab of the Workflows page; the old `/steps` paths redirect. */
+  steps: (): string => "/workflows/steps",
+  step: (id: string): string => `/workflows/steps/${encode(id)}`,
   profiles: (): string => "/profiles",
   profile: (id: string): string => `/profiles/${encode(id)}`,
   /**

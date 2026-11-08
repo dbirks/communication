@@ -107,7 +107,7 @@ describe("ProjectFrame", () => {
   });
 
   it("marks the active tab — and only that one — with aria-current", async () => {
-    mount({ active: "workflows" }, routes.projectTab(projectFixture.id, "pipelines"));
+    mount({ active: "workflows" }, routes.projectTab(projectFixture.id, "workflows"));
 
     const tabs = within(await screen.findByTestId("project-tabs"));
     expect(tabs.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");

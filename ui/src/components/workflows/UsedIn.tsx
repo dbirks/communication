@@ -297,7 +297,7 @@ function UsedInRow({
   );
   const openHref = assignment.repository_name
     ? routes.repository(group.project.id, assignment.repository_name)
-    : routes.projectTab(group.project.id, "pipelines");
+    : routes.projectTab(group.project.id, "workflows");
 
   function repin() {
     if (!newestPublishedId) return;

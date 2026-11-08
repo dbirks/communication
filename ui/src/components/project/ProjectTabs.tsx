@@ -12,7 +12,8 @@
  * API's noun):
  *   Threads   → `/p/:id/threads`        (finding 01 renamed the segment; the
  *              project's list is still the conversations page)
- *   Workflows → `/p/:id/pipelines`      (the project's assignments)
+ *   Workflows → `/p/:id/workflows`      (finding 02 renamed the tab segment;
+ *              the project's assignments are still the pipeline fan)
  *
  * A count trails the label in mono only where the count means something, and
  * the Runs count carries the waiting glyph + color when it is a count of things
@@ -40,16 +41,11 @@ export const PROJECT_TABS: readonly { key: ProjectTabKey; label: string }[] = [
   { key: "settings", label: "Settings" },
 ];
 
-/** The route one tab points at. */
+/** The route one tab points at. Finding 02: the Workflows tab's segment is
+ * `workflows` now, so every non-overview tab is a plain `routes.projectTab`. */
 export function projectTabHref(projectId: string, tab: ProjectTabKey): string {
-  switch (tab) {
-    case "overview":
-      return routes.project(projectId);
-    case "workflows":
-      return routes.projectTab(projectId, "pipelines");
-    default:
-      return routes.projectTab(projectId, tab);
-  }
+  if (tab === "overview") return routes.project(projectId);
+  return routes.projectTab(projectId, tab);
 }
 
 export interface ProjectTabFlags {

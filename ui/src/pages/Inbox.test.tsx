@@ -1,12 +1,17 @@
 /**
- * The inbox as a real route: per-project approvals and runs read through the
- * same hooks the rest of the app uses, sections grouped by what they ask of
- * you, decisions and retries acted on inline. The fixture wires are the frozen
- * M4 ones — nothing here invents a field the API does not carry.
+ * The inbox page over the mocked API: per-project approvals and runs read
+ * through the same hooks the rest of the app uses, sections grouped by what
+ * they ask of you, decisions and retries acted on inline. The fixture wires
+ * are the frozen M4 ones — nothing here invents a field the API does not
+ * carry. Finding 03 unmounted the page's route (`/inbox` now redirects to
+ * `/`; App.test.tsx proves that), so the page — which the shell keeps out of
+ * the nav but other deep links still reach — is mounted directly here.
  */
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderApp } from "../test/render";
+import { setCsrfToken } from "../api/client";
 import {
   WIRE_APPROVAL_ID,
   WIRE_RUN_ID,
@@ -32,7 +37,7 @@ import {
 } from "../test/fakes";
 import { testidOf } from "../lib/format";
 import { attentionTitle } from "../lib/attention";
-import { INBOX_SAFETY_MS } from "./Inbox";
+import Inbox, { INBOX_SAFETY_MS } from "./Inbox";
 import { FRAME_BATCH_MS } from "../api/events";
 
 const PROJECTS_PATH = "/api/v1/projects";
@@ -82,16 +87,27 @@ function routes(
   ];
 }
 
+afterEach(cleanup);
+
 function mountInbox(
   approvals: unknown = wireApprovalList,
   runs: unknown = wireRunList,
   extra: RouteStub[] = [],
   conversations: unknown = { items: [] },
 ) {
-  return renderApp({
-    path: "/inbox",
-    routes: routes(approvals, runs, extra, conversations),
+  setCsrfToken(null);
+  const { requests } = mockFetch(routes(approvals, runs, extra, conversations));
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/inbox"]}>
+        <Inbox />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { requests };
 }
 
 describe("/inbox", () => {

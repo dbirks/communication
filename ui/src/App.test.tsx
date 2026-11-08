@@ -312,7 +312,22 @@ describe("legacy route redirects", () => {
       "/projects/p-1/runs/r-1?view=timeline&node=build&instance=n-1",
       "/runs/r-1?view=timeline&node=build&instance=n-1",
     ],
-    ["/projects/p-1/pipelines", "/p/p-1/pipelines"],
+    ["/projects/p-1/pipelines", "/p/p-1/workflows"],
+    // Finding 02: the project Workflows tab moved to `/p/:id/workflows`; the
+    // old `pipelines` spelling redirects. Steps moved under Workflows; the
+    // old `/steps` paths redirect too.
+    ["/p/p-1/pipelines", "/p/p-1/workflows"],
+    ["/p/p-1/pipelines?x=1", "/p/p-1/workflows?x=1"],
+    ["/steps", "/workflows/steps"],
+    ["/steps?x=1", "/workflows/steps?x=1"],
+    ["/steps/s-1", "/workflows/steps/s-1"],
+    // Finding 03: Board and Inbox left the nav and their pages unmounted —
+    // both URLs redirect to Today the way `/ops` redirects to Settings. The
+    // plain `<Navigate>` does not carry the query over (same as `/ops`).
+    ["/inbox", "/"],
+    ["/inbox?tab=attention", "/"],
+    ["/board", "/"],
+    ["/ops", "/settings/operations"],
     ["/projects/p-1/artifacts", "/p/p-1/artifacts"],
     ["/projects/p-1/conversations", "/p/p-1/threads"],
     ["/projects/p-1/conversations/c-1", "/threads/c-1"],
@@ -334,8 +349,15 @@ describe("legacy route redirects", () => {
   }
 
   it("keeps a new canonical route in place", async () => {
-    const probe = renderAt("/inbox?tab=attention");
-    expect(probe.textContent).toBe("/inbox?tab=attention");
+    // Finding 02: the Steps tab is canonical at its new address and does NOT
+    // redirect (the old `/steps` URL above does).
+    const probe = renderAt("/workflows/steps?x=1");
+    expect(probe.textContent).toBe("/workflows/steps?x=1");
+  });
+
+  it("serves the Steps tab at /workflows/steps/:id, not a workflow page", async () => {
+    const probe = renderAt("/workflows/steps/01j-tpl-build");
+    expect(probe.textContent).toBe("/workflows/steps/01j-tpl-build");
   });
 
   it("mounts the repository page at /p/:projectId/:repo instead of redirecting", async () => {
