@@ -231,12 +231,31 @@ func TestCatchUpGenerateWritesNothingOnMalformedJSON(t *testing.T) {
 	}
 }
 
+// TestCatchUpGenerateRefusesOutsideTheVocabularies pins what a vocabulary
+// miss still costs — and what it no longer costs. A stop whose importance is
+// a near-miss is dropped (it drives shared ranking); if it was the only
+// stop, nothing is written. Shape and resolution, by contrast, are SERVER
+// FACTS (the lab's model sometimes omits `resolution` entirely): an invalid
+// value there is overridden by the derived one, not a reason to throw a
+// complete answer away.
 func TestCatchUpGenerateRefusesOutsideTheVocabularies(t *testing.T) {
 	badShape := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`,
 		fmt.Sprintf(`"shape":"commit"`))
 	f := newCatchUpFixture(t, badShape, catchUpTestCandidate(), catchUpTestFacts())
-	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err == nil {
-		t.Fatal("shape commit accepted")
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("shape commit: %v, want the server's shape to win", err)
+	}
+	if w := f.writer.snapshot()[0]; w.Shape != "issue" {
+		t.Fatalf("write shape = %q, want the facts' issue (issue #42 names the work)", w.Shape)
+	}
+	badResolution := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`,
+		`"resolution":"shipped"`)
+	f1 := newCatchUpFixture(t, badResolution, catchUpTestCandidate(), catchUpTestFacts())
+	if err := f1.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("resolution shipped: %v, want the server's resolution to win", err)
+	}
+	if w := f1.writer.snapshot()[0]; w.Resolution != "open" {
+		t.Fatalf("resolution = %q, want the facts' open", w.Resolution)
 	}
 	// A stop whose importance is a near-miss is dropped; if it was the only
 	// stop, nothing is written.
@@ -246,7 +265,111 @@ func TestCatchUpGenerateRefusesOutsideTheVocabularies(t *testing.T) {
 		t.Fatal("importance important accepted")
 	}
 	if got := f2.writer.snapshot(); len(got) != 0 {
-		t.Fatalf("vocabulary refusal wrote %d tours", len(got))
+		t.Fatalf("vocabulary refusal wrote %d tours, want 0", len(got))
+	}
+}
+
+// catchUpAnswerWithout is the lab's regression verbatim: an answer that
+// simply does not carry shape/resolution members, because the model had
+// nothing to say about facts it could not see.
+func catchUpAnswerWithout(stops string, head ...string) string {
+	parts := append([]string{
+		`"title":"Fix the flaky checkout test"`,
+		`"summary":"Checkout test made green behind PR #7."`,
+		`"reason":"First telling of this run."`}, head...)
+	return `{` + strings.Join(parts, ",") + `,"stops":` + stops + `}`
+}
+
+// TestCatchUpGenerateDerivesResolutionAndShapeWhenOmitted is the resolution
+// rule as a server fact: a failed run is run_failed whatever it left, a PR
+// ref is open (merge state is not knowable here), branch/commits without a
+// PR is branch_ready, and nothing naming code is no_code. The shape follows
+// the same refs: issue first, then pr, then push — with `issue` the
+// documented last resort when nothing names anything.
+func TestCatchUpGenerateDerivesResolutionAndShapeWhenOmitted(t *testing.T) {
+	answer := catchUpAnswerWithout(`[{"id":"a","title":"Beat","narrative":"Narrative.","importance":"routine"}]`)
+	for _, tc := range []struct {
+		name                      string
+		mutate                    func(*CatchUpRunFacts)
+		wantResolution, wantShape string
+	}{
+		{"failed run", func(f *CatchUpRunFacts) { f.Status = "failed" }, "run_failed", "issue"},
+		{"interrupted run", func(f *CatchUpRunFacts) { f.Status = "interrupted" }, "run_failed", "issue"},
+		{"pr only", func(f *CatchUpRunFacts) { f.IssueNumber = 0 }, "open", "pr"},
+		{"branch and commits", func(f *CatchUpRunFacts) {
+			f.IssueNumber, f.PRNumber, f.PRURL = 0, 0, ""
+		}, "branch_ready", "push"},
+		{"issue only", func(f *CatchUpRunFacts) {
+			f.PRNumber, f.PRURL, f.Branch, f.Commits = 0, "", "", nil
+		}, "no_code", "issue"},
+		{"nothing at all", func(f *CatchUpRunFacts) {
+			f.IssueNumber, f.PRNumber, f.PRURL, f.Branch, f.Commits = 0, 0, "", "", nil
+		}, "no_code", "issue"},
+		{"issue over pr", nil, "open", "issue"},
+	} {
+		facts := catchUpTestFacts()
+		if tc.mutate != nil {
+			tc.mutate(&facts)
+		}
+		f := newCatchUpFixture(t, answer, catchUpTestCandidate(), facts)
+		if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+			t.Fatalf("%s: omitted answer refused: %v", tc.name, err)
+		}
+		w := f.writer.snapshot()[0]
+		if w.Resolution != tc.wantResolution || w.Shape != tc.wantShape {
+			t.Fatalf("%s: %q/%q, want %q/%q", tc.name, w.Resolution, w.Shape,
+				tc.wantResolution, tc.wantShape)
+		}
+	}
+}
+
+// TestCatchUpGenerateServerFactsBeatUnfoundedClaims pins the other half:
+// the model's value is used only when the facts back the exact claim the
+// word makes. merged is believed on a real PR ref (merge state is unknowable
+// — the claim is not refutable), refused without one; no fate word outranks
+// a run the facts say ended failed; and shape needs the ref it names.
+func TestCatchUpGenerateServerFactsBeatUnfoundedClaims(t *testing.T) {
+	stops := `[{"id":"a","title":"Beat","narrative":"Narrative.","importance":"routine"}]`
+	// merged on a PR that exists: the server cannot verify it either way.
+	f := newCatchUpFixture(t, catchUpAnswerJSON(stops, `"resolution":"merged"`, `"shape":"issue"`),
+		catchUpTestCandidate(), catchUpTestFacts())
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("merged on a PR: %v", err)
+	}
+	if w := f.writer.snapshot()[0]; w.Resolution != "merged" || w.Shape != "issue" {
+		t.Fatalf("write = %q/%q, want merged (unrefutable on PR #7) and issue (ref exists)",
+			w.Resolution, w.Shape)
+	}
+	// merged with no PR anywhere: an invented fate loses to the facts.
+	facts := catchUpTestFacts()
+	facts.PRNumber, facts.PRURL = 0, ""
+	f = newCatchUpFixture(t, catchUpAnswerJSON(stops, `"resolution":"merged"`),
+		catchUpTestCandidate(), facts)
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("merged without a PR: %v", err)
+	}
+	if w := f.writer.snapshot()[0]; w.Resolution != "branch_ready" {
+		t.Fatalf("resolution = %q, want the facts' branch_ready", w.Resolution)
+	}
+	// run_failed claimed on a run that completed: the run's own status wins.
+	f = newCatchUpFixture(t, catchUpAnswerJSON(stops, `"resolution":"run_failed"`),
+		catchUpTestCandidate(), catchUpTestFacts())
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("run_failed on a completed run: %v", err)
+	}
+	if w := f.writer.snapshot()[0]; w.Resolution != "open" {
+		t.Fatalf("resolution = %q, want the facts' open", w.Resolution)
+	}
+	// shape push with no code refs: unfounded, and the last-resort issue wins.
+	facts = catchUpTestFacts()
+	facts.IssueNumber, facts.PRNumber, facts.PRURL, facts.Branch, facts.Commits = 0, 0, "", "", nil
+	f = newCatchUpFixture(t, catchUpAnswerJSON(stops, `"shape":"push"`, `"resolution":"no_code"`),
+		catchUpTestCandidate(), facts)
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("push with no code: %v", err)
+	}
+	if w := f.writer.snapshot()[0]; w.Shape != "issue" || w.Resolution != "no_code" {
+		t.Fatalf("write = %q/%q, want the last-resort issue beside no_code", w.Shape, w.Resolution)
 	}
 }
 

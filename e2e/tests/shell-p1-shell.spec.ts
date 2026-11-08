@@ -14,7 +14,7 @@
 // issue2 suites' env-gate idiom). Every page runs checkShellScreen (axe
 // serious/critical, no sideways scroll, no pageerror); every step leaves an
 // evidence() screenshot + log line.
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { expectNoLegacyAppBar, signIn } from "./helpers.js";
 import {
@@ -61,6 +61,55 @@ async function pressToggleChord(page: Page, settled: () => Promise<boolean>) {
       await page.keyboard.press("Control+\\");
       await expect.poll(settled, { timeout: 30_000 }).toBe(true);
     });
+}
+
+/** Is the column collapsed in the SAVED document? A ≥1024px viewport must show
+ * exactly what the document says (the forced-rail zone never rewrites it), so
+ * the stored answer doubles as the settle TARGET after a resize out of that
+ * zone — `setViewportSize` is not one by itself, and the forced rail carries
+ * the same `sidebar-expand` the chosen rail does. */
+async function storedRailState(request: APIRequestContext): Promise<boolean> {
+  return (await apiPreferences(request)).layout.expanded["sidebar:collapsed"] === true;
+}
+
+/** Wait for the shell at 1500px to show the saved column state, both halves of
+ * it: the control that belongs and the one that must not mount. Returns which
+ * state was found, so the caller can put it back. */
+async function settleDesktopColumn(page: Page): Promise<"rail" | "column"> {
+  const rail = await storedRailState(page.request);
+  await expect(
+    page.getByTestId(rail ? "sidebar-expand" : "sidebar-collapse"),
+    `1500px shows the saved column state (sidebar:collapsed=${rail})`,
+  ).toBeVisible();
+  await expect(
+    page.getByTestId(rail ? "sidebar-collapse" : "sidebar-expand"),
+    "…and the other width's control does not mount",
+  ).toHaveCount(0);
+  return rail ? "rail" : "column";
+}
+
+/** Put the saved column state back through the UI's own doors. Best effort on
+ * purpose: this runs in a `finally`, and a restore that throws would bury the
+ * real failure behind its own. */
+async function restoreColumnState(page: Page, want: "rail" | "column"): Promise<void> {
+  try {
+    if ((await storedRailState(page.request)) === (want === "rail")) return;
+    await page.setViewportSize({ width: 1500, height: 950 });
+    const door = page.getByTestId(want === "rail" ? "sidebar-collapse" : "sidebar-expand");
+    if (await door.isVisible().catch(() => false)) {
+      await door.click({ timeout: 10_000 });
+    } else {
+      await pressToggleChord(page, () =>
+        page.getByTestId(want === "rail" ? "sidebar-expand" : "sidebar-collapse").isVisible(),
+      );
+    }
+    await expect(
+      page.getByTestId(want === "rail" ? "sidebar-expand" : "sidebar-collapse"),
+      `the saved column state (${want}) is restored`,
+    ).toBeVisible({ timeout: 15_000 });
+  } catch {
+    // The next shell test's own settle point reports a stranded preference.
+  }
 }
 
 /** The sidebar's nav rows and the canonical route each must point at.
@@ -236,10 +285,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       "settings-layout-ask-placement",
       "settings-layout-workflow-folders",
     ]) {
-      await expect(
-        page.getByTestId(gone),
-        `finding 10 removed the ${gone} control`,
-      ).toHaveCount(0);
+      await expect(page.getByTestId(gone), `finding 10 removed the ${gone} control`).toHaveCount(0);
     }
     await checkShellScreen(page, "settings layout", stopWatching);
     await evidence(
@@ -373,10 +419,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       page.getByTestId("rail-item-workflows"),
       "the rail's Workflows tile (redesign 4a: `rail-item-*`, the old `sidebar-rail-library` is gone)",
     ).toBeVisible();
-    await expect(
-      page.getByTestId("rail-item-agents"),
-      "the rail's Agents tile",
-    ).toBeVisible();
+    await expect(page.getByTestId("rail-item-agents"), "the rail's Agents tile").toBeVisible();
     // And it is not the phone: no drawer, no top strip, at a width the phone
     // frame used to own. The rail's own OVERLAY (4a: expand at a rail width)
     // is not open either.
@@ -468,33 +511,59 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await page.mouse.move(600, 400); // leave the rail entirely
     await expect(tip, "leaving the rail takes the label with it").toBeHidden({ timeout: 5_000 });
 
-    // The chord at a width where it owns the preference (≥1024px). Start
-    // EXPANDED whatever the saved pref says, and restore it at the end.
+    // The chord at a width where it owns the preference (≥1024px). Start from
+    // what the saved pref says — EXPANDED on a lab that behaves — and put that
+    // state back at the end, in a `finally`, so a failure halfway through the
+    // toggle cannot strand the eight shell tests that run after this one.
+    //
+    // The resize itself is NOT a settle point, and that is what hung acceptance
+    // 42456100374 for its whole 8-minute budget: the rail the hover leg just
+    // used at 900px is FORCED and carries the same `sidebar-expand` the chosen
+    // rail does, so the old `if (sidebar-expand.isVisible()) click()` aimed at
+    // a rail mid-unmount — the expanded column the 1500px width brings back
+    // never mounts that testid again, and with no action timeout the click
+    // waited for it until the test died. Waiting on the state the SAVED
+    // document commands at a width that honours it settles the frame first, and
+    // every click after it lands on a rail that is staying.
     await page.setViewportSize({ width: 1500, height: 950 });
-    if (await page.getByTestId("sidebar-expand").isVisible()) {
-      await page.getByTestId("sidebar-expand").click();
+    const found = await settleDesktopColumn(page);
+
+    try {
+      if (found === "rail") {
+        await page.getByTestId("sidebar-expand").click({ timeout: 30_000 });
+        await expect(
+          page.getByTestId("sidebar-collapse"),
+          "the rail's expand button starts the test from the column",
+        ).toBeVisible({ timeout: 30_000 });
+      }
+      await expect(
+        page.getByTestId("sidebar-collapse"),
+        "1500px starts from the expanded column",
+      ).toBeVisible();
+      await pressToggleChord(page, () => page.getByTestId("sidebar-expand").isVisible());
+      await expect(
+        page.getByTestId("sidebar-expand"),
+        "⌘\\ collapsed the column to the rail",
+      ).toBeVisible({ timeout: 30_000 });
+      // The rail it collapsed to is the clickable kind: no rail-zone overlay
+      // and no drawer backdrop left standing over the column's edge.
+      await expect(page.getByTestId("sidebar-collapse")).toHaveCount(0);
+      await expect(page.getByTestId("rail-overlay-backdrop")).toHaveCount(0);
+      await expect(page.getByTestId("sidebar-backdrop")).toHaveCount(0);
+      await pressToggleChord(page, () => page.getByTestId("sidebar-collapse").isVisible());
+      await expect(
+        page.getByTestId("sidebar-collapse"),
+        "⌘\\ expanded the column again",
+      ).toBeVisible({ timeout: 30_000 });
+      await checkShellScreen(page, "rail label + ⌘\\ toggle", stopWatching);
+      await evidence(
+        page,
+        "shell-p1-rail-label-chord",
+        "hovering the rail's Today tile prints the rail-tooltip label 'Today' (and leaving takes it), and the ⌘\\ chord (Control+\\ on this lab) collapses the column to the rail and re-expands it at 1500px, restoring the saved preference (redesign 4a)",
+      );
+    } finally {
+      await restoreColumnState(page, found);
     }
-    await expect(
-      page.getByTestId("sidebar-collapse"),
-      "1500px starts from the expanded column",
-    ).toBeVisible();
-    await pressToggleChord(page, () => page.getByTestId("sidebar-expand").isVisible());
-    await expect(
-      page.getByTestId("sidebar-expand"),
-      "⌘\\ collapsed the column to the rail",
-    ).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("sidebar-collapse")).toHaveCount(0);
-    await pressToggleChord(page, () => page.getByTestId("sidebar-collapse").isVisible());
-    await expect(
-      page.getByTestId("sidebar-collapse"),
-      "⌘\\ expanded the column again",
-    ).toBeVisible({ timeout: 30_000 });
-    await checkShellScreen(page, "rail label + ⌘\\ toggle", stopWatching);
-    await evidence(
-      page,
-      "shell-p1-rail-label-chord",
-      "hovering the rail's Today tile prints the rail-tooltip label 'Today' (and leaving takes it), and the ⌘\\ chord (Control+\\ on this lab) collapses the column to the rail and re-expands it at 1500px, restoring the saved preference (redesign 4a)",
-    );
   });
 
   test.describe("narrow 390x844", () => {

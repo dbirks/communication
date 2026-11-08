@@ -565,7 +565,7 @@ func (g *CatchUpGenerator) GenerateRun(ctx context.Context, c Caller, cand Catch
 	if err != nil {
 		return err
 	}
-	w, err := buildCatchUpTour(answer, cand, facts, truth)
+	w, err := buildCatchUpTour(answer, cand, facts, truth, g.logger())
 	if err != nil {
 		return err
 	}
@@ -821,6 +821,43 @@ var catchUpImportanceVocabulary = map[string]bool{
 	"must_know": true, "worth_a_look": true, "routine": true,
 }
 
+// catchUpShapeFounded answers whether the run's facts back the exact claim a
+// shape word makes (see catchUpReconciled). A word outside the set is never
+// founded.
+func catchUpShapeFounded(shape string, facts CatchUpRunFacts) bool {
+	hasPR := facts.PRNumber > 0 || facts.PRURL != ""
+	hasCode := len(facts.Commits) > 0 || facts.Branch != ""
+	switch shape {
+	case "issue":
+		return facts.IssueNumber > 0
+	case "pr":
+		return hasPR
+	case "push":
+		return hasCode
+	}
+	return false
+}
+
+// catchUpResolutionFounded is the same question for "how it ended": a fate
+// that names a PR needs a PR ref to stand on, branch_ready needs code, and
+// no claim may stand over a run the facts say ended failed — there,
+// run_failed IS the fact (catchUpFactsResolution). run_failed itself and
+// no_code are never "founded" guesses: they equal the server's own
+// derivation or lose to it.
+func catchUpResolutionFounded(resolution string, facts CatchUpRunFacts) bool {
+	if facts.Status == "failed" || facts.Status == "cancelled" || facts.Status == "interrupted" {
+		return false
+	}
+	hasPR := facts.PRNumber > 0 || facts.PRURL != ""
+	switch resolution {
+	case "open", "merged":
+		return hasPR
+	case "branch_ready":
+		return hasPR || facts.Branch != "" || len(facts.Commits) > 0
+	}
+	return false
+}
+
 // ParseCatchUpAnswer reads the model's reply as one strict JSON object. A
 // malformed answer is an error — and an error is NOTHING WRITTEN, never a
 // repaired guess. A one-element array wrapper is the same object wearing a
@@ -855,22 +892,110 @@ func ParseCatchUpAnswer(raw string) (catchUpAnswer, error) {
 	return a, nil
 }
 
-// buildCatchUpTour is where every promise is kept: the closed vocabularies
-// refused, over-long prose refused, evidence copied from the truth set only,
+// catchUpFactsResolution is "how the work ended" as a SERVER FACT derived
+// from the run and its harvested refs, in the precedence the lab proved we
+// need (a model that omits `resolution` used to throw the whole answer away):
+//
+//   - a run that ended failed/cancelled/interrupted → run_failed, whatever
+//     refs it left behind — the newest fact about the work is that its run
+//     did not finish; candidates only ever carry the four terminal statuses,
+//     so anything not in that set completed;
+//   - a PR ref → open. The refs this server harvests carry NO merge state,
+//     so "merged" is not knowable from facts — "open" is the honest floor
+//     for a PR that exists;
+//   - a branch or commits with no PR → branch_ready;
+//   - nothing that names code (an issue ref alone is not code) → no_code.
+func catchUpFactsResolution(facts CatchUpRunFacts) string {
+	switch facts.Status {
+	case "failed", "cancelled", "interrupted":
+		return "run_failed"
+	}
+	if facts.PRNumber > 0 || facts.PRURL != "" {
+		return "open"
+	}
+	if facts.Branch != "" || len(facts.Commits) > 0 {
+		return "branch_ready"
+	}
+	return "no_code"
+}
+
+// catchUpFactsShape is "what the work was" as a server fact: an issue ref
+// names the piece of work (issue), else a PR does (pr), else code refs
+// without a review are commits (a branch counts — its existing means code
+// left the run). When NOTHING names a ref the closed set has no honest
+// member: push would claim commits that do not exist, pr would claim a
+// review that does not exist, and the conservative choice is `issue` — the
+// work item IS the request the run served (grouped by the run itself), and
+// the resolution beside it (no_code / run_failed) is what tells the reader
+// no code came out of it. Documented here because the choice is a judgement,
+// not a fact.
+func catchUpFactsShape(facts CatchUpRunFacts) string {
+	if facts.IssueNumber > 0 {
+		return "issue"
+	}
+	if facts.PRNumber > 0 || facts.PRURL != "" {
+		return "pr"
+	}
+	if len(facts.Commits) > 0 || facts.Branch != "" {
+		return "push"
+	}
+	return "issue"
+}
+
+// catchUpReconciled picks the value to store for one closed-vocabulary claim
+// the model made about a fact the server already knows. The model's value is
+// used ONLY when it is in the vocabulary and consistent with the facts —
+// where consistent means the facts back the exact claim the word makes:
+//
+//   - resolution: "open"/"merged" need a PR ref to stand on (merged is the
+//     one fate the server cannot verify either way, so a merged claim on a
+//     real PR ref is beliefable, not refutable); "branch_ready" needs a
+//     branch, commit or PR; none of them may stand over a run the facts say
+//     ended failed, where run_failed is the newest fact;
+//   - shape: each value needs the ref it names (push accepts a branch as
+//     evidence of pushed code).
+//
+// An omitted, invalid or unfounded value loses to the server's, and the loss
+// is logged so the lab can tell a hallucination from a vocabulary bug.
+func catchUpReconciled(model string, valid bool, server string, founded bool,
+	log *slog.Logger, kind, runID string) string {
+	if valid && model == server {
+		return model
+	}
+	if valid && founded {
+		return model
+	}
+	if log != nil {
+		log.Info("catch up: model "+kind+" overridden by the server's facts",
+			slog.String("run_id", runID), slog.String("model", model),
+			slog.String("server", server))
+	}
+	return server
+}
+
+// buildCatchUpTour is where every promise is kept: over-long prose refused,
+// evidence copied from the truth set only,
 // decisions kept only when the work has a conversation to answer them, and
 // stop ids assigned by the SERVER — a beat whose title matches the previous
 // tour's keeps that beat's id and added_in_version (the stable-id hinge of
 // ADR-0078 § Decision 3), a genuinely new beat is stamped at the new version.
 // Refs come from the run's outputs, never from the answer, which has no refs
 // member to read even if the model invented one (json.Unmarshal ignores it).
+// Shape and resolution are reconciled against the server's own facts (see
+// catchUpReconciled): an omitted, invalid or unfounded claim loses to the
+// derived value instead of throwing a complete answer away — the lab's
+// "answer resolution \"\" is outside the vocabulary" was a model that said
+// nothing about a fact the server already knew.
 func buildCatchUpTour(a catchUpAnswer, cand CatchUpCandidate, facts CatchUpRunFacts,
-	truth *catchUpTruth) (CatchUpTourWrite, error) {
-	if a.Shape == nil || !catchUpShapeVocabulary[strings.TrimSpace(*a.Shape)] {
-		return CatchUpTourWrite{}, fmt.Errorf("catch up: answer shape %q is outside the vocabulary", strOr(a.Shape))
-	}
-	if a.Resolution == nil || !catchUpResolutionVocabulary[strings.TrimSpace(*a.Resolution)] {
-		return CatchUpTourWrite{}, fmt.Errorf("catch up: answer resolution %q is outside the vocabulary", strOr(a.Resolution))
-	}
+	truth *catchUpTruth, log *slog.Logger) (CatchUpTourWrite, error) {
+	shapeServer := catchUpFactsShape(facts)
+	shapeModel := strings.TrimSpace(strOr(a.Shape))
+	shape := catchUpReconciled(shapeModel, catchUpShapeVocabulary[shapeModel], shapeServer,
+		catchUpShapeFounded(shapeModel, facts), log, "shape", cand.RunID)
+	resolutionServer := catchUpFactsResolution(facts)
+	resolutionModel := strings.TrimSpace(strOr(a.Resolution))
+	resolution := catchUpReconciled(resolutionModel, catchUpResolutionVocabulary[resolutionModel],
+		resolutionServer, catchUpResolutionFounded(resolutionModel, facts), log, "resolution", cand.RunID)
 	title := strings.Join(strings.Fields(strOr(a.Title)), " ")
 	summary := strings.Join(strings.Fields(strOr(a.Summary)), " ")
 	reason := strings.Join(strings.Fields(strOr(a.Reason)), " ")
@@ -903,8 +1028,8 @@ func buildCatchUpTour(a catchUpAnswer, cand CatchUpCandidate, facts CatchUpRunFa
 	w := CatchUpTourWrite{
 		ProjectID: cand.ProjectID, RunID: cand.RunID, ExistingID: cand.ItemID,
 		GroupKey: facts.GroupKey, ConversationID: cand.ConversationID,
-		Shape: strings.TrimSpace(*a.Shape), Title: title, Summary: summary,
-		Resolution: strings.TrimSpace(*a.Resolution), Reason: reason,
+		Shape: shape, Title: title, Summary: summary,
+		Resolution: resolution, Reason: reason,
 	}
 	// Refs: the server's own read of the run's outputs, plus the run id
 	// itself — the story is always traceable to what produced it.

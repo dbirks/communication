@@ -20,9 +20,13 @@ import (
 // interprets a narrative, and nothing here may be re-interpreted as an
 // instruction (ADR-0078 § Security/privacy).
 
-// CatchUpShape is the form one piece of work took. The assistant chooses it
-// when it groups code: an issue with its PRs and commits nested under it, a PR
-// with no issue, or commits on the default branch with no PR at all.
+// CatchUpShape is the form one piece of work took. The assistant proposes it,
+// but the generator reconciles the proposal against the run's refs — an
+// issue ref makes `issue` sound, a PR ref makes `pr` sound, commits or a
+// branch with no review make `push` sound — and the server's derivation wins
+// an omitted, invalid or unfounded claim. The store still accepts any member
+// of the set: this is the assistant's grouping vocabulary, not a state
+// machine.
 type CatchUpShape string
 
 const (
@@ -39,8 +43,13 @@ func (s CatchUpShape) Validate() error {
 	return fmt.Errorf("%w: catchup shape %q", ErrCatchUpValidation, string(s))
 }
 
-// CatchUpResolution is how the work ended. It is the assistant's own claim
-// about the repository state it saw, not a state machine the engine drives.
+// CatchUpResolution is how the work ended. Like shape it is proposed by the
+// assistant and reconciled by the generator against the run's own facts
+// (terminal run status, PR/branch/commit refs): the server's derivation wins
+// an omitted, invalid or unfounded claim. `merged` stays the assistant's word
+// for the one fate this server cannot verify — it is only ever believed on
+// top of a real PR ref. It remains the assistant's claim about repository
+// state, not a state machine the engine drives.
 type CatchUpResolution string
 
 const (

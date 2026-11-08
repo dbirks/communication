@@ -334,6 +334,75 @@ describe("⌘\\ toggles the sidebar (4a)", () => {
     }
   });
 
+  // lab-e2e acceptance 42456100374: the rail the ⌘\ collapses to at a desktop
+  // width has to be a rail someone can leave. The hung run was the e2e clicking
+  // the FORCED rail's expand mid-resize, but the contract it aims at — after ⌘\
+  // at 1500px the `sidebar-expand` tile is mounted, enabled, unobstructed (no
+  // rail-zone overlay, no drawer backdrop) and expands by the preference — lives
+  // here, where nothing can race it.
+  it("collapses to a clickable rail at 1500px, and the rail's expand brings the column back", async () => {
+    stubViewport(1500);
+    try {
+      const { requests } = renderApp({
+        path: "/",
+        routes: [
+          ...signedIn,
+          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
+          {
+            path: PREFS_PATH,
+            method: "PATCH",
+            // The server echoes the write it was given, so the second toggle
+            // (the rail's expand) genuinely returns the expanded column.
+            body: (n: number) => prefsDoc({ [COLLAPSED]: n === 1 }),
+          },
+        ],
+      });
+      const column = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+      expect(within(column).getByTestId("sidebar-collapse")).toBeTruthy();
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "GET")).toHaveLength(1), {
+        timeout: READ_MS,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // 1500px is outside the forced-rail zone: the chord writes the
+      // preference, and the rail that replaces the column is the CHOSEN one.
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      await waitFor(() => expect(screen.queryByTestId("sidebar-collapse")).toBeNull(), {
+        timeout: READ_MS,
+      });
+
+      // The expand tile is there, in the rail, enabled, and nothing stands
+      // over it: at this width the overlay (768–1023px) and the phone drawer
+      // never mount, so neither backdrop can swallow the click.
+      const rail = screen.getByTestId("sidebar-rail");
+      const expand = within(rail).getByTestId("sidebar-expand");
+      expect(expand.getAttribute("aria-hidden")).not.toBe("true");
+      expect(expand.hasAttribute("disabled")).toBe(false);
+      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
+      expect(screen.queryByTestId("sidebar-backdrop")).toBeNull();
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1);
+
+      // Way one (the tile) still owns the preference at this width — no
+      // overlay opens, the write says `false`, the labelled column returns.
+      fireEvent.click(expand);
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(2), {
+        timeout: READ_MS,
+      });
+      expect(
+        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[1].body ?? "{}").layout.expanded[
+          COLLAPSED
+        ],
+      ).toBe(false);
+      const wide = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+      expect(within(wide).getByTestId("sidebar-collapse")).toBeTruthy();
+      expect(within(wide).getByText("Threads")).toBeTruthy();
+      expect(screen.queryByTestId("sidebar-rail")).toBeNull();
+      expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull();
+    } finally {
+      restoreViewport();
+    }
+  });
+
   it("stays out of the way while someone is typing in a text field", async () => {
     stubViewport(1280);
     try {

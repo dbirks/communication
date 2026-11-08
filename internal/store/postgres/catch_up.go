@@ -542,10 +542,15 @@ const catchUpAppendSQL = `
 		RETURNING 1
 	),
 	claim AS (
+		-- The RETURNING clause is mandatory, not decoration: PostgreSQL
+		-- forbids reading a data-modifying CTE (the count(*) FROM claim
+		-- below) unless it exposes rows; without it this statement fails
+		-- at prepare with SQLSTATE 0A000.
 		INSERT INTO catchup_work_item_runs (work_item_id, run_id)
 		SELECT $4::uuid, $8::uuid
 		WHERE EXISTS (SELECT 1 FROM bump) AND $8::uuid IS NOT NULL
 		ON CONFLICT (work_item_id, run_id) DO NOTHING
+		RETURNING 1
 	),
 	ins AS (
 		INSERT INTO catchup_tour_versions (work_item_id, version, reason, stops)
