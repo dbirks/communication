@@ -131,6 +131,15 @@ export default function CatchUp() {
       return next.length === allProjectIds.length ? [] : next;
     });
 
+  /* The rest excludes what the cards already show (mock 8a): a piece whose
+   * unseen stops are ALL in the shown tour page is not repeated below; a
+   * piece with only some stops featured stays. */
+  const tourStopsByItem = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const entry of stops) counts[entry.work_item_id] = (counts[entry.work_item_id] ?? 0) + 1;
+    return counts;
+  }, [stops]);
+
   const subline = (
     <>
       {totalUnseen} unseen
@@ -192,6 +201,7 @@ export default function CatchUp() {
             <RestList
               items={restItems.data?.items ?? []}
               showSeen={showSeen}
+              tourStopsByItem={tourStopsByItem}
               onToggleShowSeen={() => setShowSeen(false)}
               onMarkAllSeen={() => markAllSeen.mutate(selectedProjects)}
               onMarkSeen={(item) => markItemSeen.mutate({ itemId: item.id })}
@@ -238,6 +248,7 @@ export default function CatchUp() {
               <RestList
                 items={restItems.data?.items ?? []}
                 showSeen={showSeen}
+                tourStopsByItem={tourStopsByItem}
                 onToggleShowSeen={() => setShowSeen((prev) => !prev)}
                 onMarkAllSeen={() => markAllSeen.mutate(selectedProjects)}
                 onMarkSeen={(item) => markItemSeen.mutate({ itemId: item.id })}

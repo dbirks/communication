@@ -313,6 +313,26 @@ describe("TourPlayer — the catch-up tour", () => {
     await waitFor(() => expect(current.textContent).toContain("Checkout summary redesign"));
     expect(current.textContent).not.toContain("FOLLOW-UP");
   });
+
+  it("the lead is the stop's first sentence, never a duplicate of the steps' text", async () => {
+    mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      { path: itemPath(w1), body: itemDetail(w1, bugStops()) },
+    ]);
+    const current = await screen.findByTestId("tour-current");
+    // Stop 1's beat chain is backed by the sibling stop s9: the FOUND/… rows
+    // print the narrative, so the lead stands down instead of repeating it.
+    await waitFor(() => expect(current.textContent).toContain("FOUND"));
+    expect(screen.queryByTestId("tour-lead")).toBeNull();
+    expect(current.textContent).toContain("Narrative for Refund duplicates");
+    // Stop 2 is plain: lead = first sentence only, the rest follows below it.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() => expect(current.textContent).toContain("Checkout summary redesign"));
+    expect(screen.getByTestId("tour-lead").textContent).toBe(
+      "Narrative for Checkout summary redesign.",
+    );
+    expect(current.textContent).toContain("Second paragraph.");
+  });
 });
 
 describe("TourPlayer — one piece (?item=)", () => {

@@ -42,6 +42,7 @@ import { routes } from "../lib/routes";
 import {
   CATCH_UP_TOUR_LIMIT,
   CATCH_UP_WINDOWS,
+  firstSentence,
   useCatchUpItem,
   useCatchUpTour,
   useMarkStopsSeen,
@@ -76,6 +77,15 @@ function paragraphs(narrative: string): string[] {
     .split(/\n\s*\n/)
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+/** The narrative body after the lead sentence: the remainder of the first
+ * paragraph, then every following paragraph (the lead must not swallow it). */
+function bodyAfterLead(paras: string[], lead: string): string[] {
+  const [first, ...rest] = paras;
+  if (!first) return rest;
+  const remainder = first.startsWith(lead) ? first.slice(lead.length).trim() : first;
+  return remainder.length > 0 ? [remainder, ...rest] : rest;
 }
 
 /* ------------------------------------------------------ bug-story steps
@@ -332,6 +342,17 @@ export default function TourPlayer() {
   }, [piece.data, current]);
 
   const steps = current ? deriveSteps(current.stop, siblingStops) : null;
+  /* The lead is the stop's FIRST SENTENCE (mock 7b). When the FOUND/CAUSE/
+   * FIXED/FOLLOW-UP rows render the current stop's own narrative, that
+   * sentence appears inside the step — repeating it above would print the
+   * same text twice, so the lead stands down. */
+  const paras = current ? paragraphs(current.stop.narrative) : [];
+  const lead = paras[0] ? firstSentence(paras[0]) : "";
+  const leadDuplicated =
+    steps?.some(
+      ({ stop }) => stop.id === current?.stop.id && paragraphs(stop.narrative)[0]?.startsWith(lead),
+    ) ?? false;
+  const leadShown = lead.length > 0 && !leadDuplicated;
   // The item read names refs the tour page's copy may omit; either set's
   // pr/commit claims license "Open the fix". Where the server could name a
   // repository, the PR url is the fix and the commit url is next; only when
@@ -469,9 +490,9 @@ export default function TourPlayer() {
       <h2 className="max-w-[760px] text-[24px] leading-[1.25] font-semibold">
         {current.stop.title}
       </h2>
-      {paragraphs(current.stop.narrative)[0] ? (
-        <p className="max-w-[760px] text-[15px] leading-[1.55]">
-          {paragraphs(current.stop.narrative)[0]}
+      {leadShown ? (
+        <p className="max-w-[760px] text-[15px] leading-[1.55]" data-testid="tour-lead">
+          {lead}
         </p>
       ) : null}
       {steps
@@ -506,13 +527,11 @@ export default function TourPlayer() {
               </div>
             </div>
           ))
-        : paragraphs(current.stop.narrative)
-            .slice(1)
-            .map((paragraph, position) => (
-              <p key={position} className="max-w-[760px] text-[15px] leading-[1.55] text-ink-2">
-                {paragraph}
-              </p>
-            ))}
+        : bodyAfterLead(paras, lead).map((paragraph, position) => (
+            <p key={position} className="max-w-[760px] text-[15px] leading-[1.55] text-ink-2">
+              {paragraph}
+            </p>
+          ))}
       {!steps
         ? (current.stop.evidence ?? []).map((evidence, position) => (
             <Evidence

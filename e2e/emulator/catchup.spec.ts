@@ -558,19 +558,17 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       await page.setViewportSize({ width: 1280, height: 900 });
       await emu.screen("today-ask", "today");
 
-      // ⌘J opens the assistant popover (Chromium on Linux answers Meta; the
-      // fallback is shell-journey.spec.ts's, same surface).
-      await page.keyboard.press("Meta+j");
+      // ⌘J opens the assistant popover (ControlOrMeta: ⌘ on mac, Ctrl on the
+      // Linux runner — the palette and the popover accept either modifier).
+      await page.keyboard.press("ControlOrMeta+j");
       const popover = page.getByTestId("assistant-popover");
-      if (!(await popover.isVisible().catch(() => false))) await page.keyboard.press("Control+j");
       await expect(popover, "⌘J opens Ask").toBeVisible({ timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(popover).toBeHidden({ timeout: 10_000 });
 
       // ⌘K opens the jump palette (ADR-0050's addendum: K searches, J asks).
-      await page.keyboard.press("Meta+k");
+      await page.keyboard.press("ControlOrMeta+k");
       const palette = page.getByTestId("palette-root");
-      if (!(await palette.isVisible().catch(() => false))) await page.keyboard.press("Control+k");
       await expect(palette, "⌘K opens the palette").toBeVisible({ timeout: 10_000 });
       await page.keyboard.press("Escape");
       await expect(palette).toBeHidden({ timeout: 10_000 });

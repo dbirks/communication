@@ -99,7 +99,7 @@ function RunRow({ run }: { run: CrossProjectRunSummary }) {
           <StepSegments steps={steps} runId={run.id} />
         </span>
         <span
-          className="hidden font-mono text-[10.5px] text-muted sm:block sm:w-[110px] truncate"
+          className="min-w-0 font-mono text-[10.5px] text-muted truncate sm:w-[110px]"
           data-testid={`home-run-step-${testidOf(run.id)}`}
         >
           {currentLabel}

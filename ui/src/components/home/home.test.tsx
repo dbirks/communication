@@ -98,7 +98,11 @@ describe("RunningNow", () => {
 
     expect(screen.getByText("Feature Delivery")).toBeTruthy();
     expect(screen.getByText("feature-delivery #dddddddd · acme-web")).toBeTruthy();
-    expect(screen.getByTestId("home-run-step-01987a9a44447").textContent).toBe("implement · 2/4");
+    const stepCell = screen.getByTestId("home-run-step-01987a9a44447");
+    expect(stepCell.textContent).toBe("implement · 2/4");
+    // Acceptance item 6: the step cell must survive 390px — it may never be
+    // display-hidden below `sm` again; the age keeps its place beside it.
+    expect(stepCell.className).not.toContain("hidden");
 
     const link = screen.getByTestId("home-run-progress-01987a9a44447").closest("a");
     expect(link?.getAttribute("href")).toBe("/runs/01987a9a-4444-7000-8000-dddddddddddd");

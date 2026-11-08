@@ -180,6 +180,20 @@ describe("CommandPalette", () => {
     expect(input.getAttribute("aria-expanded")).toBe("true");
   });
 
+  // Acceptance 42474636182 item 7: the Linux e2e runner sends Ctrl+K, a mac
+  // reader sends ⌘K — the handler must open the palette on either modifier.
+  it("opens the palette on Ctrl+K on non-mac and on ⌘K on mac", async () => {
+    mountPalette();
+    pressChord(false);
+    await screen.findByTestId("palette-root");
+    cleanup();
+
+    mountPalette();
+    pressChord(true);
+    await screen.findByTestId("palette-root");
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
+  });
+
   it("filters case-insensitively on the label and on the secondary line", async () => {
     mountPalette();
     openPalette();

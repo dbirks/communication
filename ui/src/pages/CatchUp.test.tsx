@@ -395,6 +395,39 @@ describe("/catch-up", () => {
     });
   });
 
+  it("the rest drops pieces the tour cards already fully show (mock 8a)", async () => {
+    // itemB has a single unseen stop and the tour cards show it; itemA has
+    // two unseen stops and only one card — itemA stays in the rest.
+    const oneStopB = {
+      ...twoItems,
+      items: [{ ...twoItems.items[0] }, { ...twoItems.items[1], unseen_stops: 1 }],
+    };
+    mount([{ path: "/api/v1/catch-up/items", body: oneStopB }]);
+    await screen.findByTestId("catchup-card-2");
+    expect(screen.getByTestId(`catchup-row-${itemA}`)).toBeTruthy();
+    expect(screen.queryByTestId(`catchup-row-${itemB}`)).toBeNull();
+    expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 1 UNSEEN");
+  });
+
+  it("cards without evidence draw no empty box and keep the footer aligned", async () => {
+    const bare = {
+      ...tourPage,
+      stops: [
+        { ...tourPage.stops[0], stop: { ...tourPage.stops[0].stop, evidence: [] } },
+        tourPage.stops[1],
+      ],
+    };
+    mount([{ path: "/api/v1/catch-up/tour", body: bare }]);
+    const first = await screen.findByTestId("catchup-card-1");
+    expect(first.textContent).toContain("Refund webhook sent duplicates");
+    // No reserved 124px empty frame when the stop carries no evidence…
+    expect(first.querySelector('[class*="124px"]')).toBeNull();
+    // …and the footer is pushed to the bottom so the row stays aligned.
+    expect(first.querySelector("a")?.className).toContain("mt-auto");
+    const second = screen.getByTestId("catchup-card-2");
+    expect(second.querySelector('[class*="124px"]')).not.toBeNull();
+  });
+
   it("records one visit on mount", async () => {
     const { requests } = mount();
     await screen.findByTestId("catchup-page");
