@@ -364,6 +364,166 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/catch-up/items": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * This reader's work items, unseen by default (ADR-0078)
+     * @description The Catch up page's own read: the pieces of work the assistant grouped code into, with how much of each story THIS reader still owes. The story is shared and the reading is not — one tour per work item, seen state keyed on (user, stop id) with the tour version recorded — so the same row answers "2 of 4 have seen this" and carries an `updated` badge that means the story moved since this reader read it, not that nobody has. `viewer` or above: the projects' own membership is the scope, applied inside the read. `projects` INTERSECTS the caller's projects, so naming one can only narrow a result, never widen it; a project the caller is not in contributes nothing and says nothing. Items whose tour has never been written appear in nobody's list — there is no story to have read — and a project with no generator behind it is an empty list, never a stub. Ordering is the tour's own time, newest story first.
+     */
+    get: operations["listCatchUpItems"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/items/{itemId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One work item, its tour, and who has read it (ADR-0078)
+     * @description One piece of work with the whole of its story: the newest tour version with each beat's `added_in_version` (which rewrite introduced it) and a `seen` flag for THIS reader, the headers of every version — the "why did this change" line beside an UPDATED badge — the roster of members who have finished the newest version, and `you_saw_version`, the newest version this reader has marked anything read (null if never), which is what lets the page say "you left off at 2" rather than re-asking for the beats they already saw. `latest` is null for an item whose tour has not been written. A work item in a project the caller is not in and one that is gone are the same `404`, and the attempt is audited against the project it was aimed at — a `403` here would confirm a project has catch-up content (ADR-0014 § 3). Nothing on this page executes: a beat's `evidence` carries no url and its `decision` is a question whose options are strings, not actions (ADR-0078 § Decision 7).
+     */
+    get: operations["getCatchUpItem"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/items/{itemId}/seen": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * I read these beats of this tour version (ADR-0078)
+     * @description The read the page makes as a person scrolls a story: which beats of which version they actually looked at. Seen state is keyed on the beat's stable id with this version RECORDED, so a rewrite that carries a beat over does not re-ask for it, and a beat the rewrite adds is owed by everybody. The ids are read out of the named tour version rather than trusted from this body, which is why a stop id or a version that is not there marks nothing at all and answers `404` instead of quietly writing a seen row no read will ever count. Idempotent: re-marking a beat refreshes it and can never move a reader's recorded version backwards. This is the caller's own reading state — it marks nothing for anybody else, and a non-member gets the same `404` a gone item gives.
+     */
+    post: operations["markCatchUpStopsSeen"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/seen-all": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Catch me up on everything here (ADR-0078)
+     * @description The `Mark all read` button: every beat of the newest version of every work item in these projects, for THIS reader. No `projects` member is "every project I belong to", not "everything" — the same intersect rule as the list, so the button cannot be aimed at somebody else's work. It merges with `GREATEST(current, new)`, which is the part that matters: the button can mark beats read, and can never DEMOTE a reader's recorded version or resurrect a beat they had already seen. Idempotent; `204` even when there was nothing left to mark.
+     */
+    post: operations["markAllCatchUpSeen"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/visits": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Stamp one visit to Catch up (ADR-0078)
+     * @description A visit is a fact about a reader, not about a project, so this write needs no membership and no scope — it is keyed on the caller's own user id, which is also why it is never somebody else's row. The stamps are what `GET /catch-up/visits/suggestion` infers a window from, so the page can open a daily reader on 24 hours and a weekly one on 7 days instead of a constant nobody chose. Nothing is bounded away: visits accumulate and the read takes the recent ones.
+     */
+    post: operations["recordCatchUpVisit"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/visits/suggestion": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The window this reader's own visits suggest (ADR-0078)
+     * @description The inference, stated rather than hard-coded: the median gap between this reader's recent visit stamps is daily-ish (under 36 h) → `24h`, two-to-a-few-days (`2d`), or weekly-or-rarer (`7d`). Fewer than two visits is no interval at all, so `window` is `null` and the UI keeps whatever default it was told to use — inventing a window from one sample would be a guess wearing a measurement. `visits_per_week` is the count of stamps inside the last seven days, which is the evidence the window was drawn from. Personal state: read with the caller's own id in the query, never as a filter the caller may leave out.
+     */
+    get: operations["getCatchUpVisitSuggestion"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/recap": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The latest saved recap, if the generator wrote one (ADR-0078)
+     * @description The narrative at the top of the page — one person's cached summary, read with the reader's own id as part of the query. It is a SAVED answer, not a request to a model: there is no `POST /catch-up/recap` on this surface, because the half that produces recaps is the server's own assistant behind ADR-0034's secret-scanned egress (ADR-0078 § Migration), and a browser must not be able to buy a completion or to write the sentence another reader sees. `window` and `project_ids` say what the summary covered; `projects` here is an OVERLAP filter on that coverage, since the store keeps one recap per reader rather than one per scope. No saved recap for this reader (or none that covers those projects) is a `404` problem — the page has to tell "the generator has never written you one" apart from a recap that says nothing.
+     */
+    get: operations["getCatchUpRecap"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/catch-up/items/{itemId}/stops/{stopId}/reply": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Answer one beat's question, as plain text (ADR-0078)
+     * @description `YOUR CALL`: the beat ended with a question the model wrote ("which branch should this have gone to?"), and this is the answer. It is TEXT with an owner, and it is NOT a gate — a gate carries the fixed Approve / Request changes / Reject verbs, a decider whose identity authorizes something, and a run state that moves; a beat's question carries model-chosen labels, authorizes nothing, and changes no run state (ADR-0078 § Decision 4, ADR-0052's rule that the model never decides). The beat must exist in the item's NEWEST tour version and must carry a `decision`; a beat that asked nothing is the same `404` no such beat is, and while `allow_text` is false the answer must be one of that question's own options (`422`) — the free-text box is the model's to offer, not this layer's to open. The text is then stored, and posted — unchanged — as an ORDINARY message in the conversation the WORK ITEM names: the destination is copied off the work item by the store's own write, never taken from the caller, which is what stops a reply being posted into a thread its author chose. Delivery rides the conversation's existing path, so its controller lock, its one-active-turn rule and its audit are exactly the ones `POST /conversations/{id}/messages` enforces — a busy agent is the same `409` with the live control row, and a `turn_in_progress` refusal does NOT undo the stored reply (the human did answer; the send did not go out). A work item with no conversation stores the reply and answers `conversation_id: null`: the answer was given and goes nowhere, which the surface must show as a dead end rather than as a send.
+     */
+    post: operations["postCatchUpDecisionReply"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{projectId}/members": {
     parameters: {
       query?: never;
@@ -6058,6 +6218,278 @@ export interface components {
       run_id: string;
     };
     /**
+     * CatchUpItemList
+     * @description ADR-0078: this reader's page. `items` is always an array — `[]` when there is nothing to catch up on — because the page's own rule is "render nothing when there is nothing", and a client should not have to tell an absent member apart from a bug. `total_unseen` is the badge the navigation draws: the number of items that still owe this reader a beat, which is `len(items)` unless `include_seen` was asked for. `oldest_unseen_at` is how far back that backlog reaches (null when there is none — "nothing is waiting" and "the oldest thing is 4 hours old" are different answers).
+     */
+    CatchUpItemList: {
+      items: components["schemas"]["CatchUpListItem"][];
+      /** @description Items with at least one unseen stop of their newest tour. */
+      total_unseen: number;
+      /**
+       * Format: date-time
+       * @description The oldest `updated_at` among the items still owed; null when nothing is. It is the sentence "you have been away since then".
+       */
+      oldest_unseen_at: string | null;
+    };
+    /**
+     * CatchUpListItem
+     * @description ADR-0078: one piece of work as this reader's page draws it. `shape` is the form the work took and `resolution` is how the assistant claims it ended — both CLOSED vocabularies, because the surface colours them; the tour's own labels are not (ADR-0078 § Decision 3). `updated` is the UPDATED badge: this reader has a seen row at an OLDER tour version, so the story moved after they read it, and `unseen_stops` counts only the beats they still owe rather than the whole tour. `importance` is the top importance among the newest version's beats, and it is the SAME for every member of the project — tours are shared, so ranking cannot be a per-user argument.
+     */
+    CatchUpListItem: {
+      /**
+       * Format: uuid
+       * @description The `catchup_work_items` row.
+       */
+      id: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      /**
+       * @description An issue with its PRs and commits nested under it, a PR with no issue, or commits on the default branch with no PR.
+       * @enum {string}
+       */
+      shape: "issue" | "pr" | "push";
+      /** @description The assistant's own title for the work, stored trimmed. */
+      title: string;
+      /** @description One line under the title. Model output: rendered as text. */
+      summary: string;
+      /**
+       * @description The assistant's claim about the repository state it saw. CHECKed as a VOCABULARY, not as a fact — every sentence on this page is falsifiable by the diff it describes (ADR-0078 § Consequences).
+       * @enum {string}
+       */
+      resolution: "merged" | "branch_ready" | "open" | "run_failed" | "no_code";
+      refs: components["schemas"]["CatchUpRefs"];
+      /** @description This reader saw an OLDER version of the tour: badge it UPDATED, not NEW. Only meaningful because seen state survives a rewrite. */
+      updated: boolean;
+      /** @description Beats of the NEWEST version this reader has not viewed. Zero means the item is seen for them. */
+      unseen_stops: number;
+      /** @description How many beats the newest version carries — the denominator of "2 of 4", and the same bound the tour document's own CHECK puts on a story. */
+      total_stops: number;
+      /**
+       * @description The top importance among those beats.
+       * @enum {string}
+       */
+      importance: "must_know" | "worth_a_look" | "routine";
+      /**
+       * Format: date-time
+       * @description When the WORK moved (a new tour version bumps it, in the same statement that writes the version) — the clock `since` filters on.
+       */
+      updated_at: string;
+      /**
+       * Format: date-time
+       * @description When the assistant first grouped this code into one item.
+       */
+      created_at: string;
+    };
+    /**
+     * CatchUpProjectChip
+     * @description ADR-0078: the project a piece of work lives in, as the page draws it. `color` is never empty: `projects.color` is NULLable because "nobody chose" is a real state a backfill would erase, and a NULL is served as the deterministic palette pick BY PROJECT ID — never by name or creation order, so a chip cannot shuffle between replicas or after a rename. A chosen colour is never overridden. The eight hues are the design's, chosen because none of them is a state colour the same screen uses for resolutions.
+     */
+    CatchUpProjectChip: {
+      /** Format: uuid */
+      id: string;
+      name: string;
+      /**
+       * @description The stored palette entry, or — when the column is NULL — the fallback pick derived from `id`. Either way a client renders a chip and never has to know the palette or the rule.
+       * @enum {string}
+       */
+      color:
+        | ""
+        | "#6a4bc4"
+        | "#1f8077"
+        | "#4a5a78"
+        | "#a0527a"
+        | "#7a6a2a"
+        | "#2f6f9a"
+        | "#8a4b2a"
+        | "#5a7a3a";
+    };
+    /**
+     * CatchUpRefs
+     * @description ADR-0078 § Decision 6: what the work touched, as the assistant claimed at the time it wrote the story. There is NO GitHub sync in this design — nothing here is reconciled against the remote, so a PR closed upstream after the tour was written does not make the tour a lie about this database; it makes it a dated account, which a version history with `created_at` already is. These are labels, not join keys.
+     */
+    CatchUpRefs: {
+      /** @description GitHub issue numbers the assistant saw. */
+      issue_numbers?: number[];
+      /** @description GitHub pull-request numbers the assistant saw. */
+      pr_numbers?: number[];
+      /** @description Commit ids, as this platform's own repositories recorded them. */
+      commit_shas?: string[];
+      /** @description Runs that produced the work. Retention may have pruned them. */
+      run_ids?: string[];
+    };
+    /**
+     * CatchUpItem
+     * @description ADR-0078: one work item as its reader sees it — the item, the newest version of its shared story with a per-beat `seen` flag for THIS reader, the headers of every version it has had, the members who have finished the newest one, and the version this reader last recorded. `latest` is null for an item whose tour has never been written: it exists, and it has no story to read.
+     */
+    CatchUpItem: {
+      /** Format: uuid */
+      id: string;
+      project: components["schemas"]["CatchUpProjectChip"];
+      /** @enum {string} */
+      shape: "issue" | "pr" | "push";
+      title: string;
+      summary: string;
+      /** @enum {string} */
+      resolution: "merged" | "branch_ready" | "open" | "run_failed" | "no_code";
+      refs: components["schemas"]["CatchUpRefs"];
+      /**
+       * Format: uuid
+       * @description The run that produced the work, when one did. No foreign key and no promise it still exists: runs are pruned by retention and the record of what a pruned run DID must outlive it (ADR-0078 § Migration).
+       */
+      source_run_id: string | null;
+      /**
+       * Format: uuid
+       * @description The agent conversation the work came from — where a decision reply is posted. Null when the work has no thread, in which case a reply is stored and goes nowhere.
+       */
+      conversation_id: string | null;
+      /** @description The newest version of the shared story, or null for an item whose tour has never been written — it exists, and it has no story to read. */
+      latest: components["schemas"]["CatchUpTour"] | null;
+      /** @description Every version this story has had, oldest first, WITHOUT its beats: the "this changed twice, and here is why each time" line. Nothing prunes them — history is the product. */
+      history: components["schemas"]["CatchUpTourHeader"][];
+      /** @description The members who have finished the NEWEST version — the "2 of 4 have seen this" roster, available to a reader and never to a stranger. It lists readers, not non-readers. */
+      seen_by: components["schemas"]["CatchUpSeenBy"][];
+      /** @description The newest tour version on which THIS reader has marked anything read; null for a reader who never has. Together with `latest.version` it is the difference between NEW and UPDATED. */
+      you_saw_version: number | null;
+      /** @description Beats of `latest` this reader still owes. */
+      unseen_stops: number;
+      /** @description Beats `latest` carries (0 when there is no tour yet). */
+      total_stops: number;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
+    /**
+     * CatchUpTour
+     * @description ADR-0078 § Decision 2: one version of the shared story. A tour is a version history and never a mutable row — overwriting it in place would destroy the only evidence of why the account changed, which is the sentence beside the UPDATED badge. `reason` is the model's own explanation of the rewrite ("Fix landed, stop 3 added").
+     */
+    CatchUpTour: {
+      /** @description Chosen by the database, one higher than the newest row that exists at the moment the insert runs — so two appends that raced produce 4 and 5, never 4 and 4, and no version is ever skipped. */
+      version: number;
+      reason: string;
+      /** Format: date-time */
+      created_at: string;
+      stops: components["schemas"]["CatchUpStop"][];
+    };
+    /**
+     * CatchUpTourHeader
+     * @description ADR-0078: one tour version without its beats — enough to say "the story was rewritten, here is when and why" without shipping four copies of the same prose.
+     */
+    CatchUpTourHeader: {
+      version: number;
+      reason: string;
+      stop_count: number;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /**
+     * CatchUpStop
+     * @description ADR-0078 § Decision 3: one beat of the story. `id` is stable across rewrites (the model is told to reuse the id of a beat it is rewriting), and `added_in_version` is the version that FIRST introduced it — stamped by the store for a beat the model did not declare a version for. A beat is read for a reader when they have a seen row whose recorded tour version is at least `added_in_version`; that one rule is what makes a carried-over beat stay read, a new beat owed, and the item badge UPDATED. `kind` ("BUG · FIXED", "UI CHANGE", "YOUR CALL") is a model-chosen label and deliberately NOT a closed vocabulary — freezing it would be the rule-writing the design rejects. Only `importance` is closed, because ranking is rendered from it. `evidence` is the model's own object with the server's `type` winning over a `type` smuggled into the payload; no member of it is a url this layer follows, and nothing here re-reads a narrative as an instruction.
+     */
+    CatchUpStop: {
+      id: string;
+      title: string;
+      narrative: string;
+      /** @description The model's own label for the beat; absent when it labelled nothing. */
+      kind?: string;
+      /** @enum {string} */
+      importance: "must_know" | "worth_a_look" | "routine";
+      added_in_version: number;
+      /** @description Whether THIS reader has viewed this beat — the store's rule applied to their own seen rows, and never another reader's state. */
+      seen: boolean;
+      evidence?: ({
+        /**
+         * @description The one member the server reads. Which client renders the rest is decided by this value; the payload beside it is opaque here.
+         * @enum {string}
+         */
+        type: "log" | "diff" | "screenshot" | "files";
+      } & {
+        [key: string]: unknown;
+      })[];
+      decision?: components["schemas"]["CatchUpDecision"];
+    };
+    /**
+     * CatchUpDecision
+     * @description ADR-0078 § Decision 4: the one thing a beat may ASK. Its `options` are labels, not actions, and answering it authorizes nothing — which is exactly why this is not an approval gate. A gate carries the fixed Approve / Request changes / Reject verbs, a decider whose identity means something to a run, and a run state that moves; a beat's question has model-chosen options and its answer is a sentence an agent may act on or ignore. `allow_text` says whether the reader may write their own answer or must pick one of these; while it is false the reply route refuses anything else.
+     */
+    CatchUpDecision: {
+      prompt: string;
+      options: string[];
+      allow_text: boolean;
+    };
+    /**
+     * CatchUpSeenBy
+     * @description ADR-0078 § Security/privacy: one reader who has finished the newest version. A presence indicator inside a project whose members already see each other's commits, runs and threads — which is why it adds no new axis of surveillance, and why it is unavailable to a non-member (they get the work item's own `404`, not an empty roster).
+     */
+    CatchUpSeenBy: {
+      /** Format: uuid */
+      id: string;
+      /** @description The reader's display name. */
+      name: string;
+      /**
+       * Format: date-time
+       * @description The last beat they marked, newest stamp of their own.
+       */
+      seen_at: string;
+    };
+    /**
+     * CatchUpRecap
+     * @description ADR-0078: one reader's cached narrative. Regenerating writes a NEW row rather than overwriting — "what did we tell this person, and when" is the generator's evaluation data, the same argument ADR-0071 made for keeping a dismissed note. `text` is model output about text the model does not control: rendered as text, never re-read as an instruction, and never executed by anything on this page.
+     */
+    CatchUpRecap: {
+      text: string;
+      /** Format: date-time */
+      written_at: string;
+      /** @description The window the summary covers, as the UI named it ('24h', '7d', …). */
+      window: string;
+      /** @description The projects it covered — empty array is its own answer ("nothing was scoped"), and a uuid[] is not FK-able, so dropping a project leaves a recap that mentions it: a stale sentence, not a lie about a row another table needs. */
+      project_ids: string[];
+    };
+    /**
+     * CatchUpVisitSuggestion
+     * @description ADR-0078: the window the page should open with, inferred from this reader's own visit history rather than a hard-coded 24 hours. `null` means "two visits are the first moment an interval exists" — inventing a window from one sample is a guess wearing a measurement.
+     */
+    CatchUpVisitSuggestion: {
+      /** @enum {string|null} */
+      window: "24h" | "2d" | "7d" | null;
+      /** @description Visit stamps inside the last seven days. */
+      visits_per_week: number;
+    };
+    /**
+     * CatchUpSeenRequest
+     * @description Which beats of which tour version this reader actually looked at. The store reads the ids out of that version rather than trusting this list, so an id that is not in it marks nothing.
+     */
+    CatchUpSeenRequest: {
+      version: number;
+      /** @description Beat ids, as they appear inside that tour version. */
+      stop_ids: string[];
+    };
+    /**
+     * CatchUpSeenAllRequest
+     * @description The `Mark all read` button's scope. An absent `projects` is "every project I belong to" — never "everything".
+     */
+    CatchUpSeenAllRequest: {
+      projects?: string[];
+    };
+    /**
+     * CatchUpReplyRequest
+     * @description One answer to one beat's question: the chosen option or the text typed into the box, which the route cannot tell apart and does not try to. It is stored verbatim and posted verbatim — it is what an agent will read.
+     */
+    CatchUpReplyRequest: {
+      text: string;
+    };
+    /**
+     * CatchUpReplyResult
+     * @description ADR-0078 § Decision 4: the reply is the record and the conversation is the delivery, so the answer says both. `turn_id` names the turn the conversation's own path queued (its controller lock and one-active-turn rule are what refused or accepted it); both nullable members are null for a work item with no thread, which is the honest dead end — the question was asked, the answer was given, nothing received it. A reply authorizes nothing by itself: answering "which branch?" is not approving a run, and it carries no decision enum precisely so it cannot be mistaken for one.
+     */
+    CatchUpReplyResult: {
+      /** Format: uuid */
+      reply_id: string;
+      /** Format: uuid */
+      conversation_id: string | null;
+      /** Format: uuid */
+      turn_id: string | null;
+    };
+    /**
      * Communication durable event envelope
      * @description Envelope for every row of the `domain_events` journal and every `data:` frame of the project SSE stream (communication-spec/09-api-events-data.md, 'Durable event envelope'). Identifiers are Postgres `uuid` values rendered as strings; timestamps are RFC 3339 in UTC. `global_seq` is the monotonic replay cursor used for SSE `Last-Event-ID` / `?after=`. The envelope is stable; the shape of `payload` is defined per event `type` and per `schema_version` by the event type's own schema.
      * @example {
@@ -6475,6 +6907,10 @@ export interface components {
     ConversationId: string;
     /** @description Assistant note id (`uuid`). The route is not nested under a project or a conversation: the note's own `user_id` is the authorization scope, and a note that is not the caller's active note answers `404` — the same answer as one that never existed, so another user's advice is never confirmed (ADR-0071). */
     NoteId: string;
+    /** @description Catch-up work item id (`uuid`). The route is not nested under a project: the work item's own project is the authorization scope, checked inside the statement that reads it, and a stranger gets the same `404` a deleted row gets — never a `403`, which would confirm a project has catch-up content (ADR-0014 § 3, ADR-0078 § Decision 8). */
+    CatchUpItemId: string;
+    /** @description One beat's STABLE id inside the tour document (1..128 characters), which is a model-chosen string and deliberately not a uuid: seen state, the seen roster and decision replies are all keyed on it precisely so a beat survives the rewrite that describes it again (ADR-0078 § Decision 3). */
+    CatchUpStopId: string;
     /** @description Permission prompt id (`uuid`) — the `permission_request_id` from `conversation.permission.requested`, i.e. the `permission_requests` row id. Not the ACP JSON-RPC request id, which never leaves the worker. */
     PermissionRequestId: string;
     /** @description Last event `global_seq` the client processed, sent automatically by `EventSource` on reconnect. Events with `global_seq` strictly greater than this are replayed before the stream goes live. */
@@ -7054,6 +7490,341 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
       /** @description `projectId` or `repositoryId` is not a uuid. Checked before any lookup, so a malformed id never reaches the datastore. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  listCatchUpItems: {
+    parameters: {
+      query?: {
+        /** @description Project ids — the comma form (`a,b`) or the repeated form, or both. Absent or empty is "every project I belong to". More than `CatchUpProjectsMax` (50) is `422`. */
+        projects?: string;
+        /** @description Only work whose own `updated_at` is at or after this instant — the "what happened since T" filter, where T is the last time this page was read. RFC 3339; anything else is `422`. */
+        since?: string;
+        /** @description `true` keeps the items already caught up on in the list (each with `unseen_stops: 0`), which is what the page's "everything" tab asks for. Anything that is not a bool is `422`. */
+        include_seen?: boolean;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's items, newest story first; `items` is `[]` when there is nothing to catch up on (never an absent member). Never cached (`no-store`) — it is per reader. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpItemList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description `projects` holds a value that is not a uuid, `since` is not RFC 3339, or `include_seen` is not a bool. Checked before any lookup, so junk never reaches the datastore. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  getCatchUpItem: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Catch-up work item id (`uuid`). The route is not nested under a project: the work item's own project is the authorization scope, checked inside the statement that reads it, and a stranger gets the same `404` a deleted row gets — never a `403`, which would confirm a project has catch-up content (ADR-0014 § 3, ADR-0078 § Decision 8). */
+        itemId: components["parameters"]["CatchUpItemId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The item as this reader sees it (`no-store`). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpItem"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      /** @description `itemId` is not a uuid. Checked before any lookup, so a malformed id never reaches the datastore. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  markCatchUpStopsSeen: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Catch-up work item id (`uuid`). The route is not nested under a project: the work item's own project is the authorization scope, checked inside the statement that reads it, and a stranger gets the same `404` a deleted row gets — never a `403`, which would confirm a project has catch-up content (ADR-0014 § 3, ADR-0078 § Decision 8). */
+        itemId: components["parameters"]["CatchUpItemId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CatchUpSeenRequest"];
+      };
+    };
+    responses: {
+      /** @description Marked. No body. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description Missing or wrong CSRF token / `Origin` (the mutation guard every POST on this surface carries), before any store call. */
+      403: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No such work item for this caller — absent, not their project, a tour version that does not exist, or none of the named beats in it. One answer on purpose (ADR-0014 § 3). */
+      404: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description `itemId` is not a uuid, `version` is below 1, or `stop_ids` is empty, over a tour's worth (`CatchUpStopsMax`), or holds a blank id. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  markAllCatchUpSeen: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["CatchUpSeenAllRequest"];
+      };
+    };
+    responses: {
+      /** @description Marked. No body. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description Missing or wrong CSRF token / `Origin`, before any store call. */
+      403: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description `projects` holds a value that is not a uuid. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  recordCatchUpVisit: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Stamped. No body. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description Missing or wrong CSRF token / `Origin`, before any store call. */
+      403: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  getCatchUpVisitSuggestion: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The suggested window (`no-store`). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpVisitSuggestion"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  getCatchUpRecap: {
+    parameters: {
+      query?: {
+        /** @description Project ids — comma or repeated form. Absent or empty is "my newest recap whatever it covered"; present means "the newest one whose coverage touches these". A malformed value is `422`. */
+        projects?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The reader's newest saved recap (`no-store`). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpRecap"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description No saved recap for this reader that covers the named projects. A problem, not an empty `text`: the absence is the answer. */
+      404: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description `projects` holds a value that is not a uuid. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  postCatchUpDecisionReply: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Catch-up work item id (`uuid`). The route is not nested under a project: the work item's own project is the authorization scope, checked inside the statement that reads it, and a stranger gets the same `404` a deleted row gets — never a `403`, which would confirm a project has catch-up content (ADR-0014 § 3, ADR-0078 § Decision 8). */
+        itemId: components["parameters"]["CatchUpItemId"];
+        /** @description One beat's STABLE id inside the tour document (1..128 characters), which is a model-chosen string and deliberately not a uuid: seen state, the seen roster and decision replies are all keyed on it precisely so a beat survives the rewrite that describes it again (ADR-0078 § Decision 3). */
+        stopId: components["parameters"]["CatchUpStopId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CatchUpReplyRequest"];
+      };
+    };
+    responses: {
+      /** @description Stored, and posted when the work has a conversation — `turn_id` names the turn that queued; both `conversation_id` and `turn_id` are null when there is nowhere to post it. `202`, not `201`: the answer is durable, what the agent does with it is not this request's business. */
+      202: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpReplyResult"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description Missing or wrong CSRF token / `Origin` (before any store call), or the conversation's own path refusing a role that cannot write to it. */
+      403: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No such work item for this caller, no such beat in its newest tour, a beat that asked nothing, or — after the reply was stored — a conversation that is gone. The detail says which of the two halves it was; none of them confirms an item exists. */
+      404: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      409: components["responses"]["ConversationConflict"];
+      /** @description `itemId` is not a uuid, `stopId` or `text` is outside its bounds (text is 1..2000 characters), or the text is not one of the question's own options while `allow_text` is false. */
       422: {
         headers: {
           "X-Communication-Replica": components["headers"]["XCommunicationReplica"];

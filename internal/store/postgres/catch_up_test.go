@@ -723,7 +723,7 @@ func TestCatchUpWorkItemIdentity(t *testing.T) {
 	}
 	var padded string
 	f.queryRow(t, `SELECT title FROM catchup_work_items WHERE project_id = $1::uuid
-		AND shape = 'pr'`).into(t, &padded)
+		AND shape = 'pr'`, f.project).into(t, &padded)
 	if padded != "padded" {
 		t.Errorf("stored title = %q, want the trimmed form the CHECK requires", padded)
 	}
@@ -961,9 +961,13 @@ func TestCatchUpSeenStateCascades(t *testing.T) {
 	// And a reader going takes that reader's personal state with them: seen rows,
 	// visits and recaps are facts about a person, and a row beside an absent
 	// subject is a fact about nothing.
-	if _, err := store.MarkStopsSeen(f.ctx(), f.caller(f.bob), doomed.ID, 1,
+	// The fixture's OWN item, not the throwaway one: that project is already
+	// cascaded away at this point, and marking a gone item seen would prove
+	// nothing about a reader's rows. Bob is a member of the fixture project, so
+	// this is the membership-scoped write the cascade below is about.
+	if _, err := store.MarkStopsSeen(f.ctx(), f.caller(f.bob), item, 1,
 		[]string{"s1"}); err != nil {
-		t.Fatalf("mark the throwaway item seen as bob: %v", err)
+		t.Fatalf("mark the fixture item seen as bob: %v", err)
 	}
 	if _, err := store.SaveRecap(f.ctx(), f.caller(f.bob), domain.CatchUpRecap{
 		Text: "bob's own summary", Window: "7d", ProjectIDs: []string{other},
@@ -973,6 +977,13 @@ func TestCatchUpSeenStateCascades(t *testing.T) {
 	if err := store.RecordVisit(f.ctx(), f.caller(f.bob)); err != nil {
 		t.Fatalf("record bob's visit: %v", err)
 	}
+	// A reader is out-referenced by their memberships (00001 puts no cascade on
+	// that table, and it is right not to: losing membership is losing a seat, not
+	// a person), so the seat goes first and the person second — which is what
+	// cnvFixture.delete does for the whole fixture, and what the reader-cascade
+	// below is actually about: catchup's own rows follow the reader, memberships
+	// never do.
+	f.exec(t, `DELETE FROM memberships WHERE user_id = $1::uuid`, f.bob)
 	if _, err := f.pool.Exec(f.ctx(), `DELETE FROM users WHERE id = $1::uuid`,
 		f.bob); err != nil {
 		t.Fatalf("delete a reader: %v", err)

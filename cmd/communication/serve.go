@@ -1363,6 +1363,25 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			Logger: d.API.Logger,
 		}))
 
+	// ADR-0078: Catch up — what the agents did while this person was away. The
+	// eight routes are the store's own membership rule (a work item in a project
+	// the caller is not in is the same 404 as a deleted one, and the adapter
+	// audits that refusal against the project it lived in), and the per-user
+	// reading state is keyed on the reader. The second argument is the delivery
+	// half of a decision reply: the SAME conversation store the messages route
+	// uses, so the controller lock, the one-active-turn rule and the thread's
+	// audit stay in one place — a reply is a sentence handed to an agent, never
+	// a gate that could move a run. What is absent on purpose is the half that
+	// WRITES tours and recaps: `POST /catch-up/recap` does not exist, because
+	// generation is the server's own assistant behind ADR-0034's egress (the
+	// next task), and nothing a browser sends belongs in a shared tour.
+	api.RegisterCatchUp(handler,
+		postgres.APICatchUpStore{
+			S:       &postgres.CatchUpStore{Pool: d.Pool},
+			Denials: projectStore,
+		},
+		apiConversations)
+
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
 	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled
 	// stack so an unauthenticated /api/v1 request carrying the preview Host

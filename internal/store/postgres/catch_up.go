@@ -47,6 +47,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/domain"
 )
 
@@ -697,9 +698,18 @@ func (s *CatchUpStore) SeenBy(ctx context.Context, c Caller,
 		return nil, err
 	}
 	// The membership check runs first, so a stranger never even learns that the
-	// roster is empty: the answer is the same one a gone item gives.
-	if _, _, err := s.tourHead(ctx, pool, c, workItemID); err != nil {
+	// roster is empty: the answer is the same one a gone item gives. The
+	// `visible` flag is the whole check — tourHead answers no error for "not
+	// your project" precisely because it is a read of two scalars, so ignoring
+	// it here would serve an empty roster as a success, and "nobody has read
+	// this yet" from a stranger is exactly the sentence this roster exists to
+	// keep inside the project (ADR-0078 § Security/privacy).
+	visible, _, err := s.tourHead(ctx, pool, c, workItemID)
+	if err != nil {
 		return nil, err
+	}
+	if !visible {
+		return nil, domain.ErrCatchUpNotFound
 	}
 	rows, err := pool.Query(ctx, catchUpSeenBySQL, c.UserID, c.OrganizationID, c.IsOrgAdmin,
 		workItemID)
@@ -959,4 +969,659 @@ func decodeCatchUpStops(raw []byte) ([]domain.CatchUpStop, error) {
 		return nil, fmt.Errorf("postgres: catchup tour stops: %w", err)
 	}
 	return stops, nil
+}
+
+// --- the api surface (ADR-0078 § Migration: "mounting the routes") ------
+
+// APICatchUpStore exposes a *CatchUpStore as internal/api's CatchUpStore. The
+// conversion is where three things the six store methods do not carry get
+// attached, and none of them is a re-implementation of a rule:
+//
+//   - the project chip. The store answers a project id, because that is the
+//     authorization scope; the page draws a name and a colour, so the adapter
+//     joins `projects` (name, `color`) in one bounded statement and renders a
+//     NULL colour through domain.CatchUpProjectColorOr — the deterministic
+//     pick by project id, which is why nothing here has to be backfilled;
+//   - the shape of the story. `total_stops` and the item's top `importance` are
+//     read off the SAME newest tour version the unseen count came from, in one
+//     statement keyed on the ids the authorized list read returned;
+//   - the per-reader view of one item: a seen flag on each beat (the store's
+//     rule, `recorded tour_version >= added_in_version`, applied to this
+//     caller's own rows) and `you_saw_version`, which is what lets the surface
+//     badge an item UPDATED rather than NEW.
+//
+// Every refusal is audited here rather than in the handler: the adapter can ask
+// which project a refused work item lived in, which is precisely what a 404
+// that must not explain itself (ADR-0014 § 3) refuses to put on the wire.
+type APICatchUpStore struct {
+	S *CatchUpStore
+	// Denials writes the audit row; usually the same *ProjectStore the API
+	// already holds, taken as an interface so this file does not assume it.
+	Denials interface {
+		RecordDenied(ctx context.Context, c Caller, projectID, action string) error
+	}
+}
+
+var _ api.CatchUpStore = APICatchUpStore{}
+
+// logger is the store's own sink, so a denial this layer writes lands in the
+// deployment's log rather than a discard one; a store built without one is
+// normal in tests, which is why the fallback is quiet.
+func (s *CatchUpStore) logger() *slog.Logger {
+	if s != nil && s.Log != nil {
+		return s.Log
+	}
+	return discardM4Log()
+}
+
+func (a APICatchUpStore) store() (*CatchUpStore, error) {
+	if a.S == nil || a.S.Pool == nil {
+		return nil, errors.New("postgres: APICatchUpStore has no pool")
+	}
+	return a.S, nil
+}
+
+// catchUpAPIErr maps a store error onto the sentinels the HTTP layer switches
+// on. Anything else passes through and becomes a 500 with the request id.
+func catchUpAPIErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, domain.ErrCatchUpNotFound):
+		return fmt.Errorf("%w: %w", api.ErrCatchUpNotFound, err)
+	case errors.Is(err, domain.ErrCatchUpValidation):
+		return fmt.Errorf("%w: %s", api.ErrCatchUpValidation,
+			strings.TrimPrefix(err.Error(), domain.ErrCatchUpValidation.Error()+": "))
+	default:
+		return err
+	}
+}
+
+// --- list ---------------------------------------------------------------
+
+// catchUpAPIProjectsSQL is the chip read: the names and stored colours of the
+// projects a page came from, re-checked against the caller's own membership. The
+// ids came from a membership-scoped list read, so this is defense in depth
+// rather than the gate; it is also the only place the eight-hue palette's NULL
+// is turned into the fallback, so a replica never picks a different chip.
+const catchUpAPIProjectsSQL = `
+	WITH ` + catchUpVisibleSome + `
+	SELECT p.id::text, p.name, COALESCE (p.color, '')
+	FROM projects p
+	JOIN visible v ON v.id = p.id`
+
+// catchUpAPITourShapeSQL is `total_stops` and the top `importance` of each
+// listed item, read off its newest version — the same version the unseen count
+// counted, so a rewrite between the two statements cannot make a row say "2 of
+// 5 unseen" out of two different tours. It is keyed on ids an authorized read
+// returned, never on ids a caller named, and it is bounded by the page.
+const catchUpAPITourShapeSQL = `
+	WITH ids AS (SELECT unnest ($1::uuid[]) AS id),
+	latest AS (
+		SELECT DISTINCT ON (tv.work_item_id) tv.work_item_id, tv.stops
+		FROM catchup_tour_versions tv
+		JOIN ids i ON i.id = tv.work_item_id
+		ORDER BY tv.work_item_id, tv.version DESC
+	)
+	SELECT l.work_item_id::text,
+	       count(*)::integer AS total_stops,
+	       max(CASE e.value ->> 'importance'
+		           WHEN 'must_know' THEN 3
+		           WHEN 'worth_a_look' THEN 2
+		           WHEN 'routine' THEN 1
+		           ELSE 0 END)::integer AS top_rank
+	FROM latest l
+	CROSS JOIN jsonb_array_elements (l.stops) AS e
+	GROUP BY l.work_item_id`
+
+// catchUpImportanceByRank maps the aggregate's rank back onto the closed
+// vocabulary. Rank 0 means a stop whose importance is outside it — which the
+// write path refused, so it is corruption, and the read fails on it rather than
+// serving a row that ranked nothing (ADR-0078 § Decision 7).
+var catchUpImportanceByRank = map[int]string{
+	3: string(domain.CatchUpImportanceMustKnow),
+	2: string(domain.CatchUpImportanceWorthLook),
+	1: string(domain.CatchUpImportanceRoutine),
+}
+
+func (a APICatchUpStore) ListCatchUpItems(ctx context.Context, c api.Caller,
+	f api.CatchUpListFilter) (api.CatchUpItemList, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.CatchUpItemList{}, err
+	}
+	sc := prjAPICaller(c)
+	items, err := s.ListUnseenWorkItems(ctx, sc, f.ProjectIDs, f.Since, f.IncludeSeen)
+	if err != nil {
+		return api.CatchUpItemList{}, catchUpAPIErr(err)
+	}
+	out := api.CatchUpItemList{Items: make([]api.CatchUpListItemView, 0, len(items))}
+	if len(items) == 0 {
+		return out, nil
+	}
+	chips, err := catchUpAPIChips(ctx, s, sc, items)
+	if err != nil {
+		return api.CatchUpItemList{}, err
+	}
+	shapes, err := catchUpAPITourShapes(ctx, s, items)
+	if err != nil {
+		return api.CatchUpItemList{}, err
+	}
+	for _, it := range items {
+		chip, ok := chips[it.ProjectID]
+		if !ok {
+			// The two statements are not one transaction, so the one honest
+			// reason a project answers the list and not the chip is that the
+			// caller's membership (or the project) went away between them. The
+			// chip read carries the same visibility predicate, and it said no —
+			// so the row goes, rather than a 500 that leaks a project id into
+			// the log or a work item drawn with no project on it.
+			s.logger().WarnContext(ctx, "catch up: dropping a listed work item whose project is no longer visible",
+				slog.String("work_item_id", it.ID), slog.String("project_id", it.ProjectID))
+			continue
+		}
+		shape, ok := shapes[it.ID]
+		if !ok {
+			return api.CatchUpItemList{}, fmt.Errorf(
+				"postgres: catchup work item %s has no tour shape to count", it.ID)
+		}
+		out.Items = append(out.Items, api.CatchUpListItemView{
+			ID: it.ID, Project: chip,
+			Shape: string(it.Shape), Title: it.Title, Summary: it.Summary,
+			Resolution: string(it.Resolution), Refs: catchUpAPIRefs(it.Refs),
+			Updated: it.Updated, UnseenStops: it.UnseenStops,
+			TotalStops: shape.totalStops, Importance: shape.topImportance,
+			UpdatedAt: it.UpdatedAt.UTC(), CreatedAt: it.CreatedAt.UTC(),
+		})
+		// Both totals are facts about this reader's backlog as this same
+		// statement returned it: the badge counts what is still owed, and
+		// `oldest_unseen_at` is how far back that reaches.
+		if it.UnseenStops > 0 {
+			out.TotalUnseen++
+			at := it.UpdatedAt.UTC()
+			if out.OldestUnseenAt == nil || at.Before(*out.OldestUnseenAt) {
+				out.OldestUnseenAt = &at
+			}
+		}
+	}
+	return out, nil
+}
+
+func catchUpAPIChips(ctx context.Context, s *CatchUpStore, sc Caller,
+	items []domain.CatchUpListItem) (map[string]api.CatchUpProjectChip, error) {
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		if !seen[it.ProjectID] {
+			seen[it.ProjectID] = true
+			ids = append(ids, it.ProjectID)
+		}
+	}
+	rows, err := s.Pool.Query(ctx, catchUpAPIProjectsSQL, sc.UserID, sc.OrganizationID,
+		sc.IsOrgAdmin, ids)
+	if err != nil {
+		return nil, catchUpQueryErr(err, "read catchup project chips")
+	}
+	defer rows.Close()
+	out := map[string]api.CatchUpProjectChip{}
+	for rows.Next() {
+		var chip api.CatchUpProjectChip
+		if err := rows.Scan(&chip.ID, &chip.Name, &chip.Color); err != nil {
+			return nil, catchUpQueryErr(err, "scan catchup project chip")
+		}
+		// NULL colour is "nobody chose", and the fallback is by project id, so
+		// the answer is the same on every replica and after a rename.
+		chip.Color = domain.CatchUpProjectColorOr(chip.ID, chip.Color)
+		out[chip.ID] = chip
+	}
+	if err := rows.Err(); err != nil {
+		return nil, catchUpQueryErr(err, "read catchup project chips")
+	}
+	return out, nil
+}
+
+type catchUpTourShape struct {
+	totalStops    int
+	topImportance string
+}
+
+func catchUpAPITourShapes(ctx context.Context, s *CatchUpStore,
+	items []domain.CatchUpListItem) (map[string]catchUpTourShape, error) {
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		if !seen[it.ID] {
+			seen[it.ID] = true
+			ids = append(ids, it.ID)
+		}
+	}
+	rows, err := s.Pool.Query(ctx, catchUpAPITourShapeSQL, ids)
+	if err != nil {
+		return nil, catchUpQueryErr(err, "read catchup tour shape")
+	}
+	defer rows.Close()
+	out := map[string]catchUpTourShape{}
+	for rows.Next() {
+		var (
+			id    string
+			total int
+			rank  int
+		)
+		if err := rows.Scan(&id, &total, &rank); err != nil {
+			return nil, catchUpQueryErr(err, "scan catchup tour shape")
+		}
+		name, ok := catchUpImportanceByRank[rank]
+		if !ok {
+			return nil, fmt.Errorf(
+				"postgres: catchup work item %s has a stop outside the importance vocabulary", id)
+		}
+		out[id] = catchUpTourShape{totalStops: total, topImportance: name}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, catchUpQueryErr(err, "read catchup tour shape")
+	}
+	return out, nil
+}
+
+// --- one item -----------------------------------------------------------
+
+// catchUpItemVisibleSQL answers, for one work item: which project is it in, and
+// may this caller see it. It exists so a refusal can be audited against the
+// project it was refused in — the row the 404 must not name. An item that is
+// not there at all answers no row, which is why a guessed uuid writes nothing:
+// naming a project from a path parameter would put a caller's invention in the
+// ledger.
+const catchUpItemVisibleSQL = `
+	WITH ` + catchUpVisibleItem + `
+	SELECT w.project_id::text, (SELECT count(*) FROM visible)::integer > 0 AS visible
+	FROM catchup_work_items w
+	WHERE w.id = $4::uuid`
+
+// catchUpSeenRowsSQL is one reader's own seen rows on one item. The item's
+// visibility was established by the read in front of it, and the rows are keyed
+// on the caller's own id, so this statement cannot answer another reader's
+// reading state even by accident.
+const catchUpSeenRowsSQL = `
+	SELECT stop_id, tour_version
+	FROM catchup_seen_stops
+	WHERE user_id = $1::uuid AND work_item_id = $2::uuid`
+
+func (a APICatchUpStore) GetCatchUpItem(ctx context.Context, c api.Caller,
+	itemID string) (api.CatchUpItemView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.CatchUpItemView{}, err
+	}
+	sc := prjAPICaller(c)
+	view, err := s.GetWorkItem(ctx, sc, itemID)
+	if err != nil {
+		if errors.Is(err, domain.ErrCatchUpNotFound) {
+			a.deniedItem(ctx, sc, itemID, "catchup.item.read")
+		}
+		return api.CatchUpItemView{}, catchUpAPIErr(err)
+	}
+	chip, err := catchUpAPIChip(ctx, s, view.ProjectID)
+	if err != nil {
+		return api.CatchUpItemView{}, err
+	}
+	seen, youSaw, err := catchUpAPISeenRows(ctx, s, sc, itemID)
+	if err != nil {
+		return api.CatchUpItemView{}, err
+	}
+	readers, err := s.SeenBy(ctx, sc, itemID)
+	if err != nil {
+		return api.CatchUpItemView{}, catchUpAPIErr(err)
+	}
+	out := api.CatchUpItemView{
+		ID: view.ID, Project: chip,
+		Shape: string(view.Shape), Title: view.Title, Summary: view.Summary,
+		Resolution: string(view.Resolution), Refs: catchUpAPIRefs(view.Refs),
+		SourceRunID: view.SourceRunID, ConversationID: view.ConversationID,
+		History:       catchUpAPIHistory(view.History),
+		SeenBy:        catchUpAPISeenBy(readers),
+		YouSawVersion: youSaw,
+		CreatedAt:     view.CreatedAt.UTC(), UpdatedAt: view.UpdatedAt.UTC(),
+	}
+	if view.Latest == nil {
+		// No story yet: the item exists and every per-stop flag is therefore
+		// unread, which the view says by carrying no tour at all.
+		return out, nil
+	}
+	stops := make([]api.CatchUpStopView, 0, len(view.Latest.Stops))
+	unseen := 0
+	for _, st := range view.Latest.Stops {
+		added := st.AddedInVersion
+		if added < 1 {
+			added = view.Latest.Version
+		}
+		isSeen := seen[st.ID] >= added
+		if !isSeen {
+			unseen++
+		}
+		stops = append(stops, api.CatchUpStopView{
+			ID: st.ID, Title: st.Title, Narrative: st.Narrative, Kind: st.Kind,
+			Importance:     string(st.Importance),
+			AddedInVersion: added,
+			Seen:           isSeen,
+			Evidence:       catchUpAPIEvidence(st.Evidence),
+			Decision:       catchUpAPIDecision(st.Decision),
+		})
+	}
+	out.Latest = &api.CatchUpTourView{
+		Version: view.Latest.Version, Reason: view.Latest.Reason,
+		CreatedAt: view.Latest.CreatedAt.UTC(), Stops: stops,
+	}
+	out.UnseenStops, out.TotalStops = unseen, len(stops)
+	return out, nil
+}
+
+// CatchUpStopQuestion is the reply route's read: the newest tour's question on
+// one beat. Everything the rule needs — the item's visibility, the newest
+// version, the stop's existence, whether it asked at all — comes back as
+// api.ErrCatchUpNotFound, because "that beat asked nothing" would be a hint
+// about a story the caller may not be reading.
+func (a APICatchUpStore) CatchUpStopQuestion(ctx context.Context, c api.Caller,
+	itemID, stopID string) (*api.CatchUpDecisionView, error) {
+	s, err := a.store()
+	if err != nil {
+		return nil, err
+	}
+	sc := prjAPICaller(c)
+	view, err := s.GetWorkItem(ctx, sc, itemID)
+	if err != nil {
+		if errors.Is(err, domain.ErrCatchUpNotFound) {
+			a.deniedItem(ctx, sc, itemID, "catchup.stop.reply")
+		}
+		return nil, catchUpAPIErr(err)
+	}
+	if view.Latest == nil {
+		return nil, api.ErrCatchUpNotFound
+	}
+	for _, st := range view.Latest.Stops {
+		if st.ID != stopID {
+			continue
+		}
+		d := catchUpAPIDecision(st.Decision)
+		if d == nil {
+			return nil, api.ErrCatchUpNotFound
+		}
+		return d, nil
+	}
+	return nil, api.ErrCatchUpNotFound
+}
+
+func catchUpAPIChip(ctx context.Context, s *CatchUpStore, projectID string) (api.CatchUpProjectChip, error) {
+	var chip api.CatchUpProjectChip
+	err := s.Pool.QueryRow(ctx, `
+		SELECT p.id::text, p.name, COALESCE (p.color, '')
+		FROM projects p WHERE p.id = $1::uuid`, projectID).
+		Scan(&chip.ID, &chip.Name, &chip.Color)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.CatchUpProjectChip{}, api.ErrCatchUpNotFound
+	}
+	if err != nil {
+		return api.CatchUpProjectChip{}, catchUpQueryErr(err, "read catchup project chip")
+	}
+	chip.Color = domain.CatchUpProjectColorOr(chip.ID, chip.Color)
+	return chip, nil
+}
+
+// catchUpAPISeenRows reads this caller's seen rows and returns the recorded
+// version per beat plus the newest version they have recorded anything at —
+// `you_saw_version`, null for a reader who has never marked a beat.
+func catchUpAPISeenRows(ctx context.Context, s *CatchUpStore, sc Caller,
+	itemID string) (map[string]int, *int, error) {
+	rows, err := s.Pool.Query(ctx, catchUpSeenRowsSQL, sc.UserID, itemID)
+	if err != nil {
+		return nil, nil, catchUpQueryErr(err, "read catchup seen rows")
+	}
+	defer rows.Close()
+	seen := map[string]int{}
+	var youSaw *int
+	for rows.Next() {
+		var (
+			stopID string
+			ver    int
+		)
+		if err := rows.Scan(&stopID, &ver); err != nil {
+			return nil, nil, catchUpQueryErr(err, "scan catchup seen row")
+		}
+		if ver > seen[stopID] {
+			seen[stopID] = ver
+		}
+		if youSaw == nil || ver > *youSaw {
+			at := ver
+			youSaw = &at
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, catchUpQueryErr(err, "read catchup seen rows")
+	}
+	return seen, youSaw, nil
+}
+
+func catchUpAPIHistory(h []domain.CatchUpTourVersionHeader) []api.CatchUpTourHeaderView {
+	out := make([]api.CatchUpTourHeaderView, 0, len(h))
+	for _, v := range h {
+		out = append(out, api.CatchUpTourHeaderView{
+			Version: v.Version, Reason: v.Reason, StopCount: v.StopCount,
+			CreatedAt: v.CreatedAt.UTC(),
+		})
+	}
+	return out
+}
+
+func catchUpAPISeenBy(r []domain.CatchUpSeenBy) []api.CatchUpSeenByView {
+	out := make([]api.CatchUpSeenByView, 0, len(r))
+	for _, s := range r {
+		out = append(out, api.CatchUpSeenByView{
+			ID: s.UserID, Name: s.DisplayName, SeenAt: s.SeenAt.UTC(),
+		})
+	}
+	return out
+}
+
+func catchUpAPIRefs(r domain.CatchUpRefs) api.CatchUpRefsView {
+	return api.CatchUpRefsView{
+		IssueNumbers: r.IssueNumbers, PRNumbers: r.PRNumbers,
+		CommitSHAs: r.CommitSHAs, RunIDs: r.RunIDs,
+	}
+}
+
+// catchUpAPIEvidence flattens each piece of proof through its own marshal,
+// which is the one place that decides the shape (domain.CatchUpEvidence): the
+// server's `type` wins over a `type` smuggled into the opaque payload, and the
+// model's other members ride through untouched for the client that owns the
+// kind. Doing it by round trip rather than by hand is what keeps this adapter
+// from inventing a second opinion about the shape.
+func catchUpAPIEvidence(evs []domain.CatchUpEvidence) []map[string]any {
+	if len(evs) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(evs))
+	for _, ev := range evs {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			// A payload the model wrote that will not encode is not this
+			// reader's problem to see half of: drop the piece of proof rather
+			// than serve a stop whose evidence is a lie.
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue
+		}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func catchUpAPIDecision(d *domain.CatchUpDecision) *api.CatchUpDecisionView {
+	if d == nil {
+		return nil
+	}
+	return &api.CatchUpDecisionView{Prompt: d.Prompt, Options: d.Options, AllowText: d.AllowText}
+}
+
+// --- the writes ---------------------------------------------------------
+
+func (a APICatchUpStore) MarkCatchUpStopsSeen(ctx context.Context, c api.Caller,
+	itemID string, version int, stopIDs []string) error {
+	s, err := a.store()
+	if err != nil {
+		return err
+	}
+	sc := prjAPICaller(c)
+	if _, err := s.MarkStopsSeen(ctx, sc, itemID, version, stopIDs); err != nil {
+		if errors.Is(err, domain.ErrCatchUpNotFound) {
+			a.deniedItem(ctx, sc, itemID, "catchup.item.seen")
+		}
+		return catchUpAPIErr(err)
+	}
+	return nil
+}
+
+func (a APICatchUpStore) MarkAllCatchUpSeen(ctx context.Context, c api.Caller,
+	projectIDs []string) error {
+	s, err := a.store()
+	if err != nil {
+		return err
+	}
+	if _, err := s.MarkAllSeen(ctx, prjAPICaller(c), projectIDs); err != nil {
+		return catchUpAPIErr(err)
+	}
+	return nil
+}
+
+func (a APICatchUpStore) RecordCatchUpVisit(ctx context.Context, c api.Caller) error {
+	s, err := a.store()
+	if err != nil {
+		return err
+	}
+	return catchUpAPIErr(s.RecordVisit(ctx, prjAPICaller(c)))
+}
+
+func (a APICatchUpStore) RecentCatchUpVisits(ctx context.Context,
+	c api.Caller) ([]time.Time, error) {
+	s, err := a.store()
+	if err != nil {
+		return nil, err
+	}
+	return s.RecentVisits(ctx, prjAPICaller(c))
+}
+
+// catchUpAPIRecapSQL is the personal read with the projects the caller named
+// applied as an OVERLAP: a recap is one row per reader (ADR-0078 § Decision 1),
+// so "give me the recap for the projects on my screen" is answered by the newest
+// row whose coverage touches them. A row that covered no project at all is not
+// coverage of these, so an overlap with a non-empty stored list is required.
+// The reader's id is in the WHERE, never a filter the caller may leave out.
+const catchUpAPIRecapSQL = `
+	SELECT r."text", r."window", r.project_ids, r.written_at
+	FROM catchup_recaps r
+	WHERE r.user_id = $1::uuid
+	  AND ($2::uuid[] IS NULL OR r.project_ids && $2::uuid[])
+	ORDER BY r.written_at DESC, r.id DESC
+	LIMIT 1`
+
+func (a APICatchUpStore) LatestCatchUpRecap(ctx context.Context, c api.Caller,
+	projectIDs []string) (api.CatchUpRecapView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.CatchUpRecapView{}, err
+	}
+	var (
+		out api.CatchUpRecapView
+		ids []string
+	)
+	// NULL and the empty array are different questions here, so the empty list
+	// stays NULL ("no filter") rather than becoming catchUpOptUUIDSlice's
+	// "{}" ("cover nothing"), which would answer 404 on the page's own default
+	// read.
+	var named any
+	if len(projectIDs) > 0 {
+		named = projectIDs
+	}
+	err = s.Pool.QueryRow(ctx, catchUpAPIRecapSQL, c.UserID, named).
+		Scan(&out.Text, &out.Window, &ids, &out.WrittenAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.CatchUpRecapView{}, api.ErrCatchUpNotFound
+	}
+	if err != nil {
+		return api.CatchUpRecapView{}, catchUpQueryErr(err, "read catchup recap")
+	}
+	out.ProjectIDs, out.WrittenAt = ids, out.WrittenAt.UTC()
+	return out, nil
+}
+
+func (a APICatchUpStore) InsertCatchUpDecisionReply(ctx context.Context, c api.Caller,
+	itemID, stopID, text string) (api.CatchUpReplyRecord, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.CatchUpReplyRecord{}, err
+	}
+	sc := prjAPICaller(c)
+	// The store copies the conversation id off the work item in its own
+	// statement, so what comes back is the destination this reply has, not the
+	// one the caller could have named.
+	reply, err := s.InsertDecisionReply(ctx, sc, itemID, stopID, text)
+	if err != nil {
+		if errors.Is(err, domain.ErrCatchUpNotFound) {
+			a.deniedItem(ctx, sc, itemID, "catchup.stop.reply")
+		}
+		return api.CatchUpReplyRecord{}, catchUpAPIErr(err)
+	}
+	return api.CatchUpReplyRecord{
+		ID: reply.ID, StopID: reply.StopID, Text: reply.Text,
+		ConversationID: reply.ConversationID,
+	}, nil
+}
+
+// deniedItem records one refusal against the project the refused work item
+// lived in. It runs only after the store answered "not yours to see", and it
+// writes nothing at all for an id that was never a work item: there is no
+// project to audit against, and a caller-chosen uuid does not belong in the
+// ledger (the same rule APIAssistantNotesStore follows, and for the same
+// reason).
+func (a APICatchUpStore) deniedItem(ctx context.Context, c Caller, itemID, action string) {
+	log := discardM4Log()
+	if a.S != nil {
+		log = a.S.logger()
+	}
+	if a.Denials == nil {
+		log.Error("catch up: denial not audited",
+			slog.String("action", action),
+			slog.String("reason", "no denial recorder configured"))
+		return
+	}
+	var (
+		projectID string
+		visible   bool
+	)
+	err := a.S.Pool.QueryRow(ctx, catchUpItemVisibleSQL, c.UserID, c.OrganizationID,
+		c.IsOrgAdmin, itemID).Scan(&projectID, &visible)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return
+	}
+	if err != nil || visible {
+		if err != nil {
+			log.Error("catch up: could not resolve the refused work item",
+				slog.String("action", action), slog.String("error", err.Error()))
+		}
+		return
+	}
+	if err := a.Denials.RecordDenied(ctx, c, projectID, action); err != nil {
+		log.Error("catch up: could not write audit denial",
+			slog.String("action", action),
+			slog.String("project_id", projectID),
+			slog.String("error", err.Error())) // names tables, never values
+		return
+	}
+	log.WarnContext(ctx, "catch up: access denied",
+		slog.String("action", action),
+		slog.String("user_id", c.UserID),
+		slog.String("project_id", projectID))
 }
