@@ -43,6 +43,7 @@ import {
   expect,
   type APIRequestContext,
   type BrowserContext,
+  type Locator,
   type Page,
 } from "@playwright/test";
 import { AGENT_TURN_TIMEOUT_MS, BASE_URL } from "./env.js";
@@ -86,6 +87,78 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
   await scrollToTopForCapture(page);
   await page.screenshot({ path: path.join(EVIDENCE_DIR, `${name}.png`), fullPage: true });
   console.log(`EVIDENCE ${name}: ${what}`);
+}
+
+/* ------------------------------------------------ the surfaces a piece shows in
+ * Design 8a since 5da1b79: "the rest" carries one row per piece still owed,
+ * BUT leaves out a piece whose unseen beats are ALL in the tour cards above it
+ * (`ui/src/components/catchup/RestList.tsx`'s `tourStopsByItem` filter — the
+ * rest is what the cards do not show; a piece with only some beats featured
+ * stays). A piece with more unseen beats than one tour page (limit 4) is only
+ * partly carded, so it keeps its row too. "This piece is owed on /catch-up" is
+ * therefore a claim about TWO surfaces, which the helpers below read together. */
+
+/** Collapse whitespace the way the browser's own text reads it, so a title with
+ * a newline in the store still matches the text a row or a card renders. */
+function normText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** The tour cards belonging to ONE piece: a card's only link is its
+ * "Start here ›", and it targets `/catch-up/<work-item-id>?stop=…` — the href
+ * `ui/src/components/catchup/TourCards.tsx` writes. */
+function pieceCards(page: Page, pieceId: string): Locator {
+  return page
+    .locator("[data-testid^='catchup-card-']")
+    .filter({ has: page.locator(`a[href*="/catch-up/${pieceId}"]`) });
+}
+
+/** What /catch-up shows for one piece right now: its rest row, its tour cards,
+ * both (a partly carded piece keeps its row) or neither. `titled` is the piece
+ * named in the surface that owes it — the work-item title in the row, every
+ * unseen beat's title among the cards, each card reached by its own
+ * "Start here ›" — and it carries 8a's exclusion too: a fully carded piece must
+ * NOT be repeated in the rest. */
+async function readPieceSurface(
+  page: Page,
+  pieceId: string,
+  title: string,
+  beats: string[],
+): Promise<{ surface: "cards" | "row" | "both" | "missing"; titled: boolean; why: string }> {
+  const row = page.getByTestId("catchup-rest").getByTestId(`catchup-row-${pieceId}`);
+  const cards = pieceCards(page, pieceId);
+  const rows = await row.count();
+  const featured = await cards.count();
+  const wanted = beats.map(normText).filter((text) => text !== "");
+  if (wanted.length > 0 && featured >= wanted.length) {
+    const texts = (await cards.allInnerTexts().catch(() => [])).map(normText);
+    const links = await cards
+      .locator("a")
+      .allInnerTexts()
+      .catch(() => []);
+    const titled =
+      rows === 0 &&
+      featured === texts.length &&
+      links.length === featured &&
+      links.every((link) => /start here/i.test(link)) &&
+      wanted.every((beat) => texts.some((text) => text.includes(beat)));
+    return {
+      surface: rows > 0 ? "both" : "cards",
+      titled,
+      why:
+        `${featured} tour card(s) whose "Start here ›" link targets /catch-up/${pieceId}, ` +
+        `carrying its beat titles (${wanted.join(" / ")})` +
+        (rows > 0
+          ? `, repeated in the rest as catchup-row-${pieceId} — 8a says a fully carded piece is not`
+          : ""),
+    };
+  }
+  const rowText = normText(await row.innerText().catch(() => ""));
+  return {
+    surface: rows > 0 ? "row" : "missing",
+    titled: rows > 0 && rowText.includes(normText(title)),
+    why: `catchup-row-${pieceId} carrying "${title}" (${featured} of ${wanted.length} beats carded)`,
+  };
 }
 
 /* ------------------------------------------------ the wire's catch-up shapes
@@ -421,32 +494,106 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
     test.setTimeout(180_000);
     expect(itemId, "leg 1 never named an item").not.toBe("");
     const item = await getJson<CatchUpItemBody>(alice.request, `/api/v1/catch-up/items/${itemId}`);
-    const unseenStops = (item.latest?.stops ?? []).filter((stop) => !stop.seen).length;
-    expect(unseenStops, `item ${itemId} arrived with nothing unseen to show`).toBeGreaterThan(0);
+    expect(item.title.trim().length, `item ${itemId} carries no title to look for`).toBeGreaterThan(
+      0,
+    );
+    // This reader's debt on the piece, beat by beat — the same unseen stops the
+    // rest's `unseen_stops` counts and the tour cards collect.
+    const unseen = (item.latest?.stops ?? []).filter((stop) => !stop.seen);
+    expect(unseen.length, `item ${itemId} arrived with nothing unseen to show`).toBeGreaterThan(0);
 
     await gotoApp(alice, "/catch-up");
     await expect(alice.getByTestId("catchup-page")).toBeVisible({ timeout: 30_000 });
-    // The navigation's own badge: "{n} unseen", n >= 1 — the number the sidebar
-    // draws comes from this reader's unseen count.
+    // The navigation's own badge: "{n} unseen", n >= 1, and it is THIS piece's
+    // debt included — `total_unseen` counts the ITEMS still owed
+    // (internal/api/catch_up.go) and the badge reads the same endpoint the page
+    // does. The badge may lag behind a tour another suite's run just earned (a
+    // 60 s stale read, ADR-0078's calm), so the honest bound is 1 ≤ badge ≤ what
+    // the unseen read answers now — and the unseen read must still owe this item.
     const badge = alice.getByTestId("sidebar-link-catch-up");
     await expect(badge, "the sidebar offers no unseen count at all").toContainText(
       /[1-9][0-9]* unseen/,
       { timeout: 30_000 },
     );
-    // The row: keyed on the item id, inside THE REST (the tour cards above it
-    // carry beats, not rows, so the row is the claim that this PIECE is owed).
+    await expect
+      .poll(
+        async () => {
+          const shown = Number(
+            /([0-9]+) unseen/.exec(normText(await badge.innerText().catch(() => "")))?.[1] ?? "0",
+          );
+          const owed = await getJson<CatchUpListBody>(alice.request, "/api/v1/catch-up/items");
+          return (
+            shown >= 1 &&
+            shown <= owed.total_unseen &&
+            owed.items.some((row) => row.id === itemId)
+          );
+        },
+        {
+          message: `the sidebar's unseen count no longer counts item ${itemId}`,
+          timeout: 30_000,
+        },
+      )
+      .toBe(true);
+
+    // Where the piece shows. It used to be one claim — a row keyed on the item
+    // id inside THE REST — and since 5da1b79 it is 8a's split: a piece whose
+    // unseen beats all fit into the tour cards is shown THERE and leaves the
+    // rest (the lab's single fresh piece is exactly that case); one whose beats
+    // overflow a page (limit 4), or that the tour did not reach at all, keeps
+    // its row. Either way the piece is on this page and named in the surface
+    // that owes it, so `readPieceSurface` checks the title there and the
+    // exclusion in the other direction.
     const rest = alice.getByTestId("catchup-rest");
     await expect(rest, "the rest panel never appeared").toBeVisible({ timeout: 30_000 });
-    const row = rest.getByTestId(`catchup-row-${itemId}`);
-    await expect(row, `no catch-up row for item ${itemId}`).toBeVisible({ timeout: 30_000 });
-    await expect(row, "the row does not name the work item the API served").toContainText(
-      item.title,
-    );
+    // The cards are an async read of their own (GET /catch-up/tour): give that
+    // read a chance to land so the surfaces are judged in the state 8a describes
+    // rather than in the items-loaded-tour-pending flash. A tour page that does
+    // not build is the honest fallback the design itself names ("the list below
+    // still stands") — the piece is then owed in the rest, which the read below
+    // accepts, so a timeout here is not a failure in itself.
+    await alice
+      .getByTestId("catchup-card-1")
+      .waitFor({ state: "visible", timeout: 30_000 })
+      .catch(() => undefined);
+    /** The beats the wire owes RIGHT NOW, re-read every poll iteration: a tour
+     * the generator extended while this page stood shifts the expectation with
+     * it rather than tripping it. */
+    const owedBeats = async (): Promise<string[]> => {
+      const fresh = await getJson<CatchUpItemBody>(
+        alice.request,
+        `/api/v1/catch-up/items/${itemId}`,
+      );
+      return (fresh.latest?.stops ?? []).filter((stop) => !stop.seen).map((stop) => stop.title);
+    };
+    // What the LAST poll iteration saw, so the evidence line describes the state
+    // that passed rather than a later flicker of the page.
+    let shown: Awaited<ReturnType<typeof readPieceSurface>> = {
+      surface: "missing",
+      titled: false,
+      why: "the page had not been read yet",
+    };
+    await expect
+      .poll(
+        async () => {
+          const beats = await owedBeats();
+          shown = await readPieceSurface(alice, itemId, item.title, beats);
+          return beats.length > 0 && shown.titled;
+        },
+        {
+          message:
+            `item ${itemId} is not shown unseen on /catch-up: neither catchup-row-${itemId} ` +
+            `carrying "${item.title}" nor tour cards whose "Start here ›" link targets ` +
+            `/catch-up/${itemId} carrying its unseen beat titles — and the rest never repeats ` +
+            `a fully carded piece`,
+          timeout: 45_000,
+        },
+      )
+      .toBe(true);
     await evidence(
       alice,
       "catchup-leg2-unseen",
-      `sidebar-link-catch-up reads "${(await badge.innerText()).replace(/\s+/g, " ").trim()}" and ` +
-        `catchup-row-${itemId} is in the rest list carrying "${item.title}"`,
+      `sidebar-link-catch-up reads "${normText(await badge.innerText())}" (the unseen read that ` +
+        `owes ${itemId}) and the piece shows as ${shown.surface}: ${shown.why}`,
     );
   });
 
@@ -506,14 +653,27 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
       .toBe(0);
 
     await gotoApp(alice, "/catch-up");
-    await expect(alice.getByTestId(`catchup-row-${itemId}`), {
+    // Gone from BOTH surfaces a piece can be owed on (design 8a as of 5da1b79):
+    // no rest row with show-seen off, and no tour card linking its piece page
+    // either — the tour collects only what the reader still owes.
+    const owedRow = alice.getByTestId(`catchup-row-${itemId}`);
+    await expect(owedRow, {
       message: "the page still shows the row with show-seen off",
     }).toHaveCount(0);
+    await expect
+      .poll(
+        async () => (await owedRow.count()) + (await pieceCards(alice, itemId).count()),
+        {
+          message: `the page still shows ${itemId} as a rest row or a tour card after every stop read seen`,
+          timeout: 30_000,
+        },
+      )
+      .toBe(0);
     await evidence(
       alice,
       "catchup-leg3-seen",
-      `every stop of ${itemId} reads seen, GET /catch-up/items answers without it, and the ` +
-        `row is gone from /catch-up with show-seen off`,
+      `every stop of ${itemId} reads seen, GET /catch-up/items answers without it, and neither ` +
+        `catchup-row-${itemId} nor a tour card linking /catch-up/${itemId} is on /catch-up`,
     );
   });
 

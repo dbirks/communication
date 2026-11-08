@@ -44,7 +44,7 @@
 // the dead one's rows, never double-seed them.
 import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
 import { expect, test } from "./fixtures.js";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
 /** The lab's seeded project (docs/compatibility/probes/m4/seed.sh). */
@@ -303,6 +303,96 @@ async function getList(page: Page): Promise<ListWire> {
   return (await res.json()) as ListWire;
 }
 
+/* ------------------------------------------- the surface a piece shows in
+ * Design 8a since 5da1b79: "the rest" LEAVES OUT a piece whose unseen beats are
+ * all in the tour cards above it — the rest is what the cards do not show, and
+ * a piece with only some beats featured stays (ui/src/components/catchup/
+ * RestList.tsx's `tourStopsByItem` filter; page 1 of the tour is 4 beats). For
+ * this pass's fixture that splits the three seeds cleanly: the bug story's four
+ * must_know beats fill the cards, so it is shown THERE and leaves the rest,
+ * while the worth_a_look PR and the routine push stay as rows.
+ * `readPieceSurface` states the contract rather than a lucky ranking: the piece
+ * is on the page in the surface its own unseen beats belong to, and it is NAMED
+ * there — the work-item title in the row, every beat title among the cards, each
+ * card reached by its own "Start here ›" (ui/src/components/catchup/TourCards.tsx
+ * links a card to `/catch-up/<work-item-id>?stop=…`). */
+
+/** Collapse whitespace the way the browser reads it, so a title with a newline
+ * in the store still matches the text a card or a row renders. */
+function normText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** The tour cards that belong to one piece, picked by their "Start here ›"
+ * href — the card's only link. */
+function pieceCards(page: Page, pieceId: string): Locator {
+  return page
+    .locator("[data-testid^='catchup-card-']")
+    .filter({ has: page.locator(`a[href*="/catch-up/${pieceId}"]`) });
+}
+
+interface PieceSurface {
+  surface: "cards" | "row" | "both" | "missing";
+  /** The piece named in the surface that owes it, and 8a's exclusion honoured: a
+   * fully carded piece is not repeated in the rest. */
+  titled: boolean;
+  why: string;
+}
+
+async function readPieceSurface(
+  page: Page,
+  pieceId: string,
+  title: string,
+  beats: string[],
+): Promise<PieceSurface> {
+  const row = page.getByTestId("catchup-rest").getByTestId(`catchup-row-${pieceId}`);
+  const cards = pieceCards(page, pieceId);
+  const rows = await row.count();
+  const featured = await cards.count();
+  const wanted = beats.map(normText).filter((text) => text !== "");
+  if (wanted.length > 0 && featured >= wanted.length) {
+    const texts = (await cards.allInnerTexts().catch(() => [])).map(normText);
+    const links = await cards
+      .locator("a")
+      .allInnerTexts()
+      .catch(() => []);
+    const titled =
+      rows === 0 &&
+      featured === texts.length &&
+      links.length === featured &&
+      links.every((link) => /start here/i.test(link)) &&
+      wanted.every((beat) => texts.some((text) => text.includes(beat)));
+    return {
+      surface: rows > 0 ? "both" : "cards",
+      titled,
+      why:
+        `${featured} tour card(s) whose "Start here ›" link targets /catch-up/${pieceId} ` +
+        `carrying its beat titles (${wanted.join(" / ")})` +
+        (rows > 0
+          ? `, repeated in the rest as catchup-row-${pieceId} — 8a says a fully carded piece is not`
+          : ""),
+    };
+  }
+  const rowText = normText(await row.innerText().catch(() => ""));
+  return {
+    surface: rows > 0 ? "row" : "missing",
+    titled: rows > 0 && rowText.includes(normText(title)),
+    why: `catchup-row-${pieceId} carrying "${title}" (${featured} of ${wanted.length} beats carded)`,
+  };
+}
+
+/** The pass's beats still unseen on the wire — what the page must show, read
+ * from the same item the browser reads, never from the seed's own constants. */
+async function unseenBeatTitles(page: Page, pieceId: string): Promise<string[]> {
+  const item = await getItem(page, pieceId);
+  const titles = (item.latest?.stops ?? []).filter((stop) => !stop.seen).map((stop) => stop.title);
+  expect(
+    titles.length,
+    `the seeded piece ${pieceId} has no tour with unseen beats to show`,
+  ).toBeGreaterThan(0);
+  return titles;
+}
+
 test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, the rail, Today's Ask)", () => {
   test.describe.configure({ mode: "serial" });
   test.use({ storageState: EMU_ALICE_STATE });
@@ -330,10 +420,13 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         "design 8a: the recap's primary verb starts the tour",
       ).toBeVisible();
       // The tour's first card is the focused one, and the pieces this pass
-      // seeded are in it or in the rest — real rows the API served. Waited
-      // for BEFORE the capture so the screen is recorded with the cards on
+      // seeded are in it or in the rest — real beats and rows the API served.
+      // Waited for BEFORE the capture so the screen is recorded with the cards on
       // screen, never in the items-loaded-tour-pending flash.
-      await expect(page.getByTestId("catchup-card-1"), { timeout: 30_000 }).toBeVisible();
+      await expect(
+        page.getByTestId("catchup-card-1"),
+        "design 8a: the tour's first card renders",
+      ).toBeVisible({ timeout: 30_000 });
       await expect(
         page.getByTestId("catchup-rest"),
         "design 8a: the rest panel carries the pieces still owed",
@@ -342,8 +435,35 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         page.getByTestId("catchup-see-more"),
         "design 8a: more stops (See more) must follow the cards",
       ).toBeVisible();
-      const rest = page.getByTestId("catchup-rest");
-      await expect(rest.getByTestId(`catchup-row-${ids["push"]}`)).toContainText(PUSH_TITLE);
+      // Design 8a as of 5da1b79: the rest shows only what the cards do not. The
+      // bug story's four must_know beats ARE the tour's first page, so the bug
+      // piece is shown as cards and leaves the rest; the PR (worth_a_look) and
+      // the routine push are not carded and keep their rows. Each is checked in
+      // the surface its own unseen beats belong to, and named there.
+      const surfaces: string[] = [];
+      for (const piece of [
+        { key: "bug", id: ids["bug"], title: BUG_TITLE, owed: "cards" as const },
+        { key: "pr", id: ids["pr"], title: PR_TITLE, owed: "row" as const },
+        { key: "push", id: ids["push"], title: PUSH_TITLE, owed: "row" as const },
+      ]) {
+        const beats = await unseenBeatTitles(page, piece.id);
+        await expect
+          .poll(
+            async () => (await readPieceSurface(page, piece.id, piece.title, beats)).titled,
+            {
+              message: `design 8a: ${piece.title} is not named in the surface its ${beats.length} unseen beat(s) belong to`,
+              timeout: 30_000,
+            },
+          )
+          .toBe(true);
+        const shown = await readPieceSurface(page, piece.id, piece.title, beats);
+        expect(
+          shown.surface,
+          `design 8a: ${piece.title} shows as ${shown.why}, expected ${piece.owed}`,
+        ).toBe(piece.owed);
+        surfaces.push(`${piece.key}=${shown.surface}`);
+      }
+      console.log(`catch-up 8a surfaces (pass ${EMU_PASS_ID}): ${surfaces.join(" ")}`);
       await emu.screen("cu-8a", "catch-up");
     });
 
@@ -477,6 +597,12 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         await expect(
           page.getByTestId(`catchup-row-${itemId}`),
           `the rest list still shows ${itemId} after mark-all-seen`,
+        ).toHaveCount(0);
+        // And the piece is gone from the OTHER surface too: with every beat seen
+        // the tour has nothing left to card for it (design 8a since 5da1b79).
+        await expect(
+          pieceCards(page, itemId),
+          `a tour card still links ${itemId} after mark-all-seen`,
         ).toHaveCount(0);
       }
     });
