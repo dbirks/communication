@@ -18,8 +18,6 @@ var allowedRoutes = []*regexp.Regexp{
 	// Shell pages.
 	regexp.MustCompile(`^/login$`),
 	regexp.MustCompile(`^/$`),
-	regexp.MustCompile(`^/inbox$`),
-	regexp.MustCompile(`^/board$`),
 	regexp.MustCompile(`^/threads$`),
 	regexp.MustCompile(`^/threads/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects$`),
@@ -27,14 +25,14 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/artifacts$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/runs$`),
-	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/pipelines$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/workflows$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/settings$`),
-	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/threads$`),
 	// Members/activity page (Projects Review design 1b); a static segment, so
 	// it is listed explicitly like `runs` and `settings` rather than leaning on
 	// the repository catch-all below.
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/members$`),
-	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/threads/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_-]{1,64}$`),
 	// Global pages.
 	regexp.MustCompile(`^/workflows$`),
@@ -43,8 +41,9 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/used-in$`),
 	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/history$`),
 	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/drafts/[A-Za-z0-9_-]{1,64}$`),
-	regexp.MustCompile(`^/steps$`),
-	regexp.MustCompile(`^/steps/[A-Za-z0-9_-]{1,64}$`),
+	// Steps is a tab of the Workflows page now (redesign finding 02).
+	regexp.MustCompile(`^/workflows/steps$`),
+	regexp.MustCompile(`^/workflows/steps/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/profiles$`),
 	regexp.MustCompile(`^/profiles/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/runs/[A-Za-z0-9_-]{1,64}$`),
@@ -53,7 +52,18 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/ops$`),
 	regexp.MustCompile(`^/artifacts/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/approvals/[A-Za-z0-9_-]{1,64}$`),
-	// Legacy routes the app-shell redesign still serves as redirects.
+	// Legacy routes the app-shell redesign still serves as redirects. They are
+	// on the allowlist because routes_test.go mirrors every mounted <Route>
+	// (a stale bookmark resolves instead of 404ing), but nothing the assistant
+	// generates links here — see staticPalettePages below, which names only
+	// destinations that render a page.
+	regexp.MustCompile(`^/inbox$`),
+	regexp.MustCompile(`^/board$`),
+	regexp.MustCompile(`^/steps$`),
+	regexp.MustCompile(`^/steps/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/pipelines$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/library$`),
 	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}/drafts/[A-Za-z0-9_-]{1,64}$`),
@@ -77,22 +87,27 @@ var allowedRoutes = []*regexp.Regexp{
 // static corpus (the C1 canonical routes). The client-supplied palette index
 // is whatever the UI chose to forward — which today is nothing — and the
 // entity fan only names the caller's rows, so without this table "take me
-// to the board" would find 0 matches for a page that exists. Synonyms live
+// to the threads" would find 0 matches for a page that exists. Synonyms live
 // in the secondary line: matching is a case-insensitive substring over the
 // whole row, so every synonym is a needle that hits. Every To must be on the
 // allowlist; add() below re-checks, so a drift cannot leak a dead link.
+//
+// Every To here is also a page that RENDERS, not a redirect (redesign
+// findings 01-03): /inbox and /board now redirect to Today, /steps redirects
+// under /workflows, and the conversations/pipelines segments redirect to
+// threads/workflows. Those legacy names survive as needles on the row that
+// took their job, so "take me to the inbox" jumps to a real page instead of a
+// URL that bounces. routes_test.go pins the set.
 var staticPalettePages = []struct {
 	label     string
 	secondary string
 	to        string
 }{
-	{"Home", "page · overview · dashboard", "/"},
-	{"Inbox", "page · approvals · decisions · attention", "/inbox"},
-	{"Board", "page · kanban · runs board", "/board"},
-	{"Threads", "page · one-off conversations · threads", "/threads"},
-	{"Workflows", "page · pipelines · pipeline library", "/workflows"},
-	{"Steps", "page · node templates · saved steps", "/steps"},
-	{"Agent profiles", "page · agents · agent profiles", "/profiles"},
+	{"Today", "page · home · overview · dashboard · inbox · board · attention · approvals · decisions", "/"},
+	{"Threads", "page · one-off threads · conversations", "/threads"},
+	{"Workflows", "page · pipelines · workflow library", "/workflows"},
+	{"Steps", "page · node templates · saved steps", "/workflows/steps"},
+	{"Agents", "page · agent profiles · profiles", "/profiles"},
 	{"Operations", "page · ops · workers · replicas", "/ops"},
 	{"Settings", "page · preferences · trust level · layout", "/settings/layout"},
 }
@@ -133,7 +148,7 @@ func (t *turn) paletteSearch(needle string) (json.RawMessage, error) {
 
 	// The app-shell's own top-level pages first: they exist regardless of
 	// what the caller's workspace contains. The client's own jump list can
-	// name the same page again (an "Inbox" row pointing at /inbox from
+	// name the same page again (a "Threads" row pointing at /threads from
 	// both), so the two page passes share one seen map; the entity fan below
 	// keeps its one-row-per-hit shape (every profile links at /profiles).
 	for _, page := range staticPalettePages {

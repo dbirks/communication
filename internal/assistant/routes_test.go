@@ -139,12 +139,15 @@ func joinDiff(what string, items []string) string {
 
 // TestStaticPalettePagesAreRealRoutes fails the build if the palette's static
 // page corpus (routes.go's staticPalettePages) names a route the UI does not
-// mount: a search hit that jumps nowhere is worse than a 0-match answer.
+// mount: a search hit that jumps nowhere is worse than a 0-match answer. It
+// also pins the corpus to the pages that RENDER (redesign findings 01-03): the
+// retired /inbox, /board and bare /steps addresses are redirect-only now, so
+// they must not be proposed as destinations even though the allowlist still
+// mirrors them.
 func TestStaticPalettePagesAreRealRoutes(t *testing.T) {
 	want := map[string]bool{
-		"/": true, "/inbox": true, "/board": true, "/threads": true,
-		"/workflows": true, "/steps": true, "/profiles": true,
-		"/ops": true, "/settings/layout": true,
+		"/": true, "/threads": true, "/workflows": true, "/workflows/steps": true,
+		"/profiles": true, "/ops": true, "/settings/layout": true,
 	}
 	have := map[string]bool{}
 	for _, page := range staticPalettePages {
@@ -169,7 +172,8 @@ func TestStaticPalettePagesAreRealRoutes(t *testing.T) {
 
 // TestApprovalLinkIsARealPage pins the approval.pending link behavior: a gate
 // inside a run points at that run's page, and a gate without a run falls back
-// to the inbox — both pages the UI actually renders.
+// to Today — both pages the UI actually renders. (It used to fall back to
+// /inbox, which is a redirect since redesign finding 03.)
 func TestApprovalLinkIsARealPage(t *testing.T) {
 	tl := toolRegistry()["approval.pending"]
 	if tl.links == nil {
@@ -186,12 +190,13 @@ func TestApprovalLinkIsARealPage(t *testing.T) {
 	withoutRun := tl.links(nil, nil, []map[string]any{
 		{"id": "gate-2", "project_id": "p1", "state": "pending"},
 	})
-	if len(withoutRun) != 1 || withoutRun[0].Href != "/inbox" {
-		t.Fatalf("gate without run_id should link to the inbox, got %#v", withoutRun)
+	if len(withoutRun) != 1 || withoutRun[0].Href != "/" {
+		t.Fatalf("gate without run_id should link to Today, got %#v", withoutRun)
 	}
 
 	// And the old approvals href must not survive as a linkable route; the
-	// legacy run redirect is still a real route the allowlist must mirror.
+	// legacy run redirect and the legacy inbox are still real routes the
+	// allowlist must mirror.
 	b := (*Broker)(nil)
 	if _, ok := b.allowedHref("/projects/p1/approvals"); ok {
 		t.Fatal("/projects/{id}/approvals has no UI route and must be dropped")
@@ -201,5 +206,8 @@ func TestApprovalLinkIsARealPage(t *testing.T) {
 	}
 	if _, ok := b.allowedHref("/projects/p1/runs/r1"); !ok {
 		t.Fatal("/projects/{id}/runs/{run_id} is a live redirect route and must be allowed")
+	}
+	if _, ok := b.allowedHref("/inbox"); !ok {
+		t.Fatal("/inbox is a live redirect route and must be allowed")
 	}
 }

@@ -576,8 +576,10 @@ func TestAllowedHrefDropsLinksOutsideTheAppRoutes(t *testing.T) {
 	b := &Broker{}
 	good := []string{"/", "/login", "/inbox", "/board", "/threads/01C", "/projects",
 		"/p/01P", "/p/01P/artifacts", "/p/01P/runs", "/p/01P/pipelines", "/p/01P/settings",
-		"/p/01P/conversations", "/p/01P/conversations/01C", "/p/01P/01R",
+		"/p/01P/threads", "/p/01P/threads/01C", "/p/01P/workflows", "/p/01P/01R",
+		"/p/01P/conversations", "/p/01P/conversations/01C",
 		"/workflows", "/workflows/01PIPELINE", "/workflows/01PIPELINE/drafts/01D",
+		"/workflows/steps", "/workflows/steps/01S",
 		"/steps", "/steps/01S", "/profiles", "/profiles/01AG", "/runs/01R", "/settings",
 		"/settings/layout", "/ops", "/artifacts/01A",
 		"/library", "/library/01PIPELINE", "/library/01PIPELINE/drafts/01D", "/agents", "/agents/01AG",
@@ -658,28 +660,28 @@ func TestPaletteSearchReadsTheCallersOwnIndex(t *testing.T) {
 }
 
 // TestPaletteSearchKnowsTheAppShellPages pins the static page corpus (the C1
-// canonical routes): "board" must return /board and "approvals" must return
-// /inbox even when the caller has no projects, pipelines, runs or profiles
-// at all and the client forwarded no palette index. Every synonym the brief
-// names is a needle: matching is a case-insensitive substring over the row.
+// canonical routes): "threads" must return /threads and "approvals" must
+// return Today even when the caller has no projects, pipelines, runs or
+// profiles at all and the client forwarded no palette index. Every synonym the
+// brief names is a needle: matching is a case-insensitive substring over the
+// row. The retired Inbox/Board names land on Today, and Steps lands on its
+// /workflows/steps tab — no needle may resolve to a redirect-only address.
 func TestPaletteSearchKnowsTheAppShellPages(t *testing.T) {
 	cases := []struct {
 		needle string
 		want   string
 	}{
-		{"board", "/board"},
-		{"kanban", "/board"},
-		{"runs board", "/board"},
-		{"inbox", "/inbox"},
-		{"approvals", "/inbox"},
-		{"decisions", "/inbox"},
+		{"inbox", "/"},
+		{"board", "/"},
+		{"approvals", "/"},
+		{"decisions", "/"},
 		{"threads", "/threads"},
 		{"conversations", "/threads"},
 		{"workflows", "/workflows"},
 		{"pipelines", "/workflows"},
-		{"steps", "/steps"},
-		{"node templates", "/steps"},
-		{"saved steps", "/steps"},
+		{"steps", "/workflows/steps"},
+		{"node templates", "/workflows/steps"},
+		{"saved steps", "/workflows/steps"},
 		{"profiles", "/profiles"},
 		{"agents", "/profiles"},
 		{"operations", "/ops"},
@@ -689,6 +691,7 @@ func TestPaletteSearchKnowsTheAppShellPages(t *testing.T) {
 		{"preferences", "/settings/layout"},
 		{"trust level", "/settings/layout"},
 		{"home", "/"},
+		{"today", "/"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.needle, func(t *testing.T) {

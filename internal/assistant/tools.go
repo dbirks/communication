@@ -104,12 +104,14 @@ var toolRegistry = func() map[string]tool {
 				}
 				// The approval row carries a run_id when the gate sits inside a
 				// run; that run page is the real destination. A gate without
-				// one has no dedicated page, so the inbox — which lists pending
-				// gates — is the page that actually exists.
+				// one has no dedicated page, and `/inbox` is a redirect-only
+				// address since redesign finding 03 — Today is the page that
+				// lists pending gates, so a link goes there rather than to a
+				// URL that only bounces.
 				if rid := field(row, "run_id"); rid != "" {
 					return Link{Label: "Gate on run " + short(rid), Href: "/runs/" + rid}, true
 				}
-				return Link{Label: "Open inbox", Href: "/inbox"}, true
+				return Link{Label: "Open Today", Href: "/"}, true
 			})
 		})
 
@@ -123,7 +125,7 @@ var toolRegistry = func() map[string]tool {
 			return []Link{{Label: "Open pipeline " + short(id), Href: "/workflows/" + id}}
 		})
 
-	add("palette.search", "Search the app's navigation index — the top-level pages (home, inbox, board, threads, workflows, steps, agent profiles, operations, settings) plus the caller's own projects, pipelines, runs and agent profiles — for a name or fragment.",
+	add("palette.search", "Search the app's navigation index — the top-level pages (today, threads, workflows, steps, agents, operations, settings) plus the caller's own projects, pipelines, runs and agent profiles — for a name or fragment.",
 		map[string]any{"needle": stringArg("case-insensitive substring to match")}, []string{"needle"},
 		func(t *turn, args map[string]any) (json.RawMessage, error) {
 			return t.paletteSearch(args["needle"].(string))

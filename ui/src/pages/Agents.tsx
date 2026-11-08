@@ -1,5 +1,5 @@
 /**
- * Agent profiles (`/profiles`, `/profiles/:id`): the organization's launch
+ * Agents (`/profiles`, `/profiles/:id`): the organization's launch
  * descriptors (2e list · 3e detail).
  *
  * Honesty rules (gaps/profiles.md §5):
@@ -52,8 +52,10 @@ export default function AgentsPage() {
     <div className="space-y-4" data-testid="agents-page">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="space-y-1">
+          {/* Redesign finding 02: the sidebar row and this page are both
+              "Agents"; "profile" stays for what the entity is called. */}
           <h1 className="text-[19px] font-bold" id="agents-heading">
-            Agent profiles
+            Agents
           </h1>
           <p className="text-[12.5px] text-muted">
             A profile is an agent, the account it signs in with, its skill package and the sandbox

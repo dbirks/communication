@@ -50,7 +50,7 @@ const assistantConversation = {
 const turnAnswerFixture = {
   answer_markdown: "Two runs wait on you.\n\nBoth stop at `build_until_verified`.",
   links: [
-    { label: "Open the board", route: "/board" },
+    { label: "The workflow library", route: "/workflows" },
     { label: "The stalled run", route: `/runs/${WIRE_RUN_ID}` },
   ],
   tool_calls: [
@@ -159,9 +159,13 @@ describe("CommandPalette", () => {
     expect(screen.getByTestId("palette-footer").textContent).toContain(
       "The Ask row opens the assistant popover",
     );
-    // The sections are jumpable before anything has even loaded.
-    expect(within(dialog).getByText("Inbox")).toBeTruthy();
+    // The sections are jumpable before anything has even loaded. Finding 03:
+    // the pages are Today/Threads/… — no Inbox, no Board, no Library group.
+    expect(within(dialog).getByText("Today")).toBeTruthy();
     expect(within(dialog).getByText("Operations")).toBeTruthy();
+    expect(within(dialog).queryByText("Inbox")).toBeNull();
+    expect(within(dialog).queryByText("Board")).toBeNull();
+    expect(within(dialog).queryByText("Library")).toBeNull();
     // The input drives the list it filters (combobox pattern).
     const input = screen.getByTestId("palette-input");
     expect(input.getAttribute("aria-controls")).toBe("palette-listbox");
@@ -183,7 +187,7 @@ describe("CommandPalette", () => {
     expect(
       await within(list).findByText(`feature-development #${shortId(WIRE_RUN_ID)}`),
     ).toBeTruthy();
-    expect(within(list).queryByText("Inbox")).toBeNull();
+    expect(within(list).queryByText("Threads")).toBeNull();
   });
 
   it("moves the router with ArrowDown and Enter, and closes when it goes", async () => {
@@ -196,9 +200,9 @@ describe("CommandPalette", () => {
       expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0"),
     );
 
-    // Projects is the fifth page (after Home, Inbox, Board and Threads) at "/projects".
-    for (let i = 0; i < 4; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-4");
+    // Projects is the third page (after Today and Threads) at "/projects".
+    for (let i = 0; i < 2; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-2");
     expect(screen.getByRole("option", { selected: true }).textContent).toContain("Projects");
 
     fireEvent.keyDown(input, { key: "Enter" });
@@ -352,7 +356,7 @@ describe("CommandPalette", () => {
     const link = screen.getAllByTestId("assistant-link")[0];
     expect(link.tagName).toBe("BUTTON");
     fireEvent.click(link);
-    expect((await screen.findByTestId("where")).textContent).toBe("/board");
+    expect((await screen.findByTestId("where")).textContent).toBe("/workflows");
   });
 
   it("keeps the jump list when the server has no assistant", async () => {

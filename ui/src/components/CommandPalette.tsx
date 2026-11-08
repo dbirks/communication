@@ -3,8 +3,11 @@
  * the assistant popover, `assistant/AssistantPopover.tsx`, since ADR-0050).
  *
  * The jump list lists only surfaces the user can already see — the app-shell
- * pages (home, inbox, board, threads, settings, plus every section), projects
- * and their sub-pages, library pipelines, recent runs, agent profiles. The Ask
+ * pages (today, threads, projects, workflows, steps, agents, operations,
+ * settings), projects and their sub-pages, library workflows, recent runs and
+ * agents. Inbox and Board are not
+ * entries any more (redesign finding 03): both addresses redirect to Today, so
+ * a jump would land on a bounce. The Ask
  * row no longer posts to the v1 broker: it hands the question to the assistant
  * popover (which carries it over and sends it) and gets out of the way. ⌘K
  * belongs to the popover; the palette opens from `openPalette()` — the popover's
@@ -47,28 +50,17 @@ export interface PaletteItem {
   to: string;
 }
 
-/** The app-shell pages and sections, in the app bar's own order. */
+/** The app-shell pages and sections, in the sidebar's own order (finding 02:
+ * Workflows and Agents are top-level rows, Steps is the Workflows page's tab at
+ * `/workflows/steps`; finding 03: no Inbox and no Board — they redirect to
+ * Today). */
 const PAGES: PaletteItem[] = [
   {
     id: "page-home",
     group: "Pages",
-    label: "Home",
-    secondary: "page · overview",
+    label: "Today",
+    secondary: "page · home · overview · approvals",
     to: routes.home(),
-  },
-  {
-    id: "page-inbox",
-    group: "Pages",
-    label: "Inbox",
-    secondary: "page · approvals · decisions",
-    to: routes.inbox(),
-  },
-  {
-    id: "page-board",
-    group: "Pages",
-    label: "Board",
-    secondary: "page · kanban · runs board",
-    to: routes.board(),
   },
   {
     id: "page-threads",
@@ -85,10 +77,10 @@ const PAGES: PaletteItem[] = [
     to: routes.projects(),
   },
   {
-    id: "page-library",
+    id: "page-workflows",
     group: "Pages",
-    label: "Library",
-    secondary: "page · pipeline library",
+    label: "Workflows",
+    secondary: "page · workflow library · pipelines",
     to: routes.workflows(),
   },
   {

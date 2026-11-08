@@ -155,7 +155,8 @@ afterEach(cleanup);
 describe("/profiles", () => {
   it("renders the list, the chips and the detail of the first profile", async () => {
     mount();
-    expect(screen.getByRole("heading", { name: "Agent profiles" })).toBeDefined();
+    // Redesign finding 02: the page is titled "Agents", not "Agent profiles".
+    expect(screen.getByRole("heading", { name: "Agents" })).toBeDefined();
     const claudeRow = await screen.findByTestId(`agent-row-${pinned.id}`);
     // Both halves evidenced (verified worker + observed nono probe): green.
     expect(within(claudeRow).getByTestId(`profile-chip-${pinned.id}`).textContent).toBe(
