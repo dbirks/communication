@@ -24683,6 +24683,32 @@ def w9_leak_verdicts(dom_text, forbidden):
     return out
 
 
+W9_NODE_NAME_FIELDS = ("node_instance_key", "definition_key", "name", "label")
+
+
+def w9_second_run_needles(forbidden, node_rows, node_keys, pin):
+    """W9's needles when the approval belongs to a SECOND M4 run: that run's node names
+    and pinned digests must join the leak set, or the arms only prove the first run
+    stayed quiet. `forbidden` is the [(label, [needles])] list the caller builds from the
+    member's own reads, so every extension here mutates the LIST in place — writing
+    `forbidden[1][1] += x` instead assigns to the TUPLE slot and raises
+    TypeError: 'tuple' object does not support item assignment, even though the list
+    would have been updated (the gotcha that crashed W9 when a second-run approval first
+    showed up). Returns `forbidden`."""
+    names = forbidden[1][1]
+    for row in node_rows or []:
+        if isinstance(row, dict):
+            names.extend(str(row.get(k) or "") for k in W9_NODE_NAME_FIELDS)
+    names.extend(sorted(node_keys or set()))
+    digests = forbidden[2][1]
+    got = pin or {}
+    for d in (str(got.get("revision_digest") or ""), str(got.get("plan_digest") or ""),
+              w4_short(got.get("revision_digest")), w4_short(got.get("plan_digest"))):
+        if d:
+            digests.append(d)
+    return forbidden
+
+
 def w9_sse_verdict(requests_text, run_id, rendered_text):
     """'SSE never opens'. Measured on the browser's own request log: the events
     request must be there (the outsider really asked) and its response must not be
@@ -28713,18 +28739,11 @@ def w9():
         # when the needles cover what THAT run's page could draw too: its node names
         # and its pinned digests, both read as a member.
         a_nodes_r = alice.get(LB, f"/api/v1/runs/{aid_run}/nodes")
-        if a_nodes_r.status == 200:
-            for row in (a_nodes_r.json() or {}).get("nodes") or []:
-                if isinstance(row, dict):
-                    forbidden[1][1] += [str(row.get(k) or "") for k in
-                                        ("node_instance_key", "definition_key", "name",
-                                         "label")]
-        forbidden[1][1] += sorted(c12_node_keys(aid_run) or set())
-        apin = c12_run_pin(aid_run) or {}
-        for d in (str(apin.get("revision_digest") or ""), str(apin.get("plan_digest") or ""),
-                  w4_short(apin.get("revision_digest")), w4_short(apin.get("plan_digest"))):
-            if d:
-                forbidden[2][1].append(d)
+        a_rows = ([row for row in (a_nodes_r.json() or {}).get("nodes") or []
+                   if isinstance(row, dict)] if a_nodes_r.status == 200 else [])
+        forbidden = w9_second_run_needles(forbidden, a_rows,
+                                          sorted(c12_node_keys(aid_run) or set()),
+                                          c12_run_pin(aid_run) or {})
         show("W9 the approval belongs to a second M4 run — its names and digests joined "
              "the needles", f"approval run {aid_run}")
     show("W9 what a member sees and an outsider must not",

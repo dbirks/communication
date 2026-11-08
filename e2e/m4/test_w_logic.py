@@ -38,6 +38,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w9_not_found,
     w9_outsider_ledger_verdicts,
     w9_run_approval_sql,
+    w9_second_run_needles,
     w9_sse_verdict,
     w9_state_verdicts,
     w10_continuity_verdicts,
@@ -902,6 +903,56 @@ def test_w9_outsider_verdicts():
     assert w9_not_found("Run 01a1 is not visible to you, or does not exist.") is False
     assert w9_not_found("Runs · plan · implement · review") is False
     assert w9_not_found("   ") is None
+
+
+def test_w9_second_run_needles_extend_the_tuple_slots_without_crashing():
+    """The crash live's core-b shard took at 28722: W9's `forbidden` is a list of
+    (label, list) TUPLES, and `forbidden[1][1] += [...]` assigns to the tuple slot —
+    TypeError: 'tuple' object does not support item assignment — even though the list
+    itself was mutated. The branch only runs when the approval belongs to a SECOND M4
+    run, so it sat latent until C11/C14's approvals got picked up. Rebuild the needle
+    list exactly as the leg does and run that extension path."""
+    # how w9 builds it: three (label, list) tuples, in project/node/digest order
+    forbidden = []
+    forbidden.append(("project name", [n for n in ["M4 Exit", "m4-exit"] if n]))
+    forbidden.append(("node name", [n for n in ["/plan", "implement"] if n]))
+    forbidden.append(("digest value",
+                      [d for d in ["sha256:" + "a" * 64, w4_short("sha256:" + "a" * 64)] if d]))
+    before_names, before_digests = list(forbidden[1][1]), list(forbidden[2][1])
+
+    # the second run's page: node rows from the API, keys from the pipeline, pins from the ledger
+    rows = [{"node_instance_key": "plan", "definition_key": "plan@1", "name": "Plan",
+             "label": "planning", "unrelated": "ignored"},
+            "not a row at all",
+            {"name": "Review"}]
+    pin = {"revision_digest": "sha256:" + "b" * 64, "plan_digest": "sha256:" + "c" * 64}
+    got = w9_second_run_needles(forbidden, rows, sorted({"implement", "review"}), pin)
+
+    assert got is forbidden, "the leg keeps using the same list it printed"
+    # every tuple slot still holds a tuple of the SAME identity, extended in place
+    assert all(isinstance(row, tuple) and len(row) == 2 for row in got), got
+    assert forbidden[1][1] == before_names + ["plan", "plan@1", "Plan", "planning",
+                                             "", "", "Review", "", "implement", "review"], \
+        forbidden[1][1]
+    assert forbidden[2][1][:len(before_digests)] == before_digests
+    assert forbidden[2][1][len(before_digests):] == [
+        pin["revision_digest"], pin["plan_digest"],
+        w4_short(pin["revision_digest"]), w4_short(pin["plan_digest"])], forbidden[2][1]
+
+    # nothing to add (unreadable /nodes and no pin) extends nothing and never raises
+    same = w9_second_run_needles([("project name", ["M4 Exit"]), ("node name", ["/plan"]),
+                                  ("digest value", [])], None, None, None)
+    assert [list(row[1]) for row in same] == [["M4 Exit"], ["/plan"], []], same
+
+    # and the verdicts still grade the EXTENDED needles: the first run staying quiet
+    # cannot PASS while the second run's own node name is on screen
+    rows = w9_leak_verdicts("Run · plan · implement", forbidden)
+    v = _vmap(rows)
+    assert v["W9 no node name in the DOM of an outsider's session"][0] is False, v
+    assert "leaked" in one(rows, "no node name", detail=True), rows
+    clean_rows = w9_leak_verdicts("Not found This run doesn't exist.", forbidden)
+    clean = _vmap(clean_rows)
+    assert clean["W9 no node name in the DOM of an outsider's session"][0] is True, clean
 
 
 def test_w9_outsider_observer_arm():
@@ -2818,6 +2869,7 @@ if __name__ == "__main__":
                test_w9_membership_read_distinguishes_absence_from_a_broken_read,
                test_w9_approval_arm_is_located_or_parked_and_never_assumed,
                test_w9_leg_measures_its_observer_and_undoes_its_park,
+               test_w9_second_run_needles_extend_the_tuple_slots_without_crashing,
                test_w2_live_and_order_verdicts, test_w2_turn_gap_and_no_gap,
                test_w2_iteration_verdicts, test_w_strip_cells_takes_only_the_strip,
                test_w2_strip_verdict_is_read_on_the_view_that_has_the_strip,
