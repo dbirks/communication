@@ -35,6 +35,7 @@ import { Button } from "../components/ds/Button";
 import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
 import DecisionBar from "../components/ds/DecisionBar";
+import type { DecisionConflict } from "../components/ds/DecisionBar";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import Page from "../components/ds/Page";
 import { attentionTitle } from "../lib/attention";
@@ -98,6 +99,13 @@ function GateView({ approval }: { approval: Approval }) {
   const me = useMe();
   const projects = useProjects();
   const summary = useApprovalSummary(approval.id);
+  // Finding 04 (gap b): when the viewer clicked and the gate turned out to
+  // be decided by someone else (the bar's 409, or the shared cache moving
+  // under the hold), the conflict sentence must outlive the bar that
+  // reported it — the decide panel unmounts as soon as the row reads
+  // decided. The row the page renders is adopted into `lost`, the sentence
+  // replaces the decided summary's header, and Dismiss clears it.
+  const [lost, setLost] = useState<DecisionConflict | null>(null);
 
   const project = (projects.data?.items ?? []).find((p) => p.id === approval.project_id);
 
@@ -129,9 +137,14 @@ function GateView({ approval }: { approval: Approval }) {
           <aside className="w-full space-y-4 lg:w-[360px]" aria-label="Decide">
             <WhoThenPanel approval={approval} meId={me.data?.id ?? null} />
             {approval.state === "pending" ? (
-              <DecidePanel approval={approval} summary={summary.data ?? null} />
+              <DecidePanel approval={approval} summary={summary.data ?? null} onLost={setLost} />
             ) : (
-              <ClosedPanel approval={approval} testid={testid} />
+              <ClosedPanel
+                approval={approval}
+                testid={testid}
+                lost={lost}
+                onDismiss={() => setLost(null)}
+              />
             )}
           </aside>
         </div>
@@ -502,27 +515,66 @@ function roleWord(role: Approval["approver_roles"][number]): string {
   }
 }
 
-/** A closed gate: its decision, decider and note — nothing to act on. */
-function ClosedPanel({ approval, testid }: { approval: Approval; testid: string }) {
+/** A closed gate: its decision, decider and note — nothing to act on. When
+ * the viewer LOST the race to decide (finding 04), the conflict sentence
+ * takes the header's place (`DecisionBar` renders it, sticky, from the facts
+ * the lost bar reported) and the decided details — the note — stay below. */
+function ClosedPanel({
+  approval,
+  testid,
+  lost = null,
+  onDismiss,
+}: {
+  approval: Approval;
+  testid: string;
+  lost?: DecisionConflict | null;
+  onDismiss?: () => void;
+}) {
   return (
     <Panel title="GATE" headingLevel={2}>
-      <p
-        className="p-3 text-[13px] leading-[1.5] text-ink"
-        data-testid={`approval-detail-closed-${testid}`}
-      >
-        {approval.state === "decided" ? (
-          <>
-            Decided <strong className="font-semibold">{approval.decision}</strong>
-            {approval.decided_by ? ` by ${shortId(approval.decided_by)}` : ""} ·{" "}
-            {formatAge(approval.decided_at)}.
-          </>
-        ) : (
-          <>The gate closed as {approval.state}.</>
-        )}
-        {approval.comments ? (
-          <span className="mt-2 block whitespace-pre-wrap text-muted">“{approval.comments}”</span>
-        ) : null}
-      </p>
+      {lost !== null ? (
+        <div className="space-y-2 p-3" data-testid={`approval-detail-lost-${testid}`}>
+          <DecisionBar
+            approval={{
+              id: approval.id,
+              ...(approval.run_id ? { run_id: approval.run_id } : {}),
+              ...(approval.project_id ? { project_id: approval.project_id } : {}),
+            }}
+            initialConflict={lost}
+          />
+          <Button
+            variant="secondary"
+            compact
+            data-testid={`approval-detail-lost-dismiss-${testid}`}
+            onClick={onDismiss}
+          >
+            Dismiss
+          </Button>
+        </div>
+      ) : (
+        <p
+          className="p-3 text-[13px] leading-[1.5] text-ink"
+          data-testid={`approval-detail-closed-${testid}`}
+        >
+          {approval.state === "decided" ? (
+            <>
+              Decided <strong className="font-semibold">{approval.decision}</strong>
+              {approval.decided_by ? ` by ${shortId(approval.decided_by)}` : ""} ·{" "}
+              {formatAge(approval.decided_at)}.
+            </>
+          ) : (
+            <>The gate closed as {approval.state}.</>
+          )}
+        </p>
+      )}
+      {approval.comments ? (
+        <p
+          className="px-3 pb-3 text-[13px] leading-[1.5] whitespace-pre-wrap text-muted"
+          data-testid={`approval-detail-closed-comments-${testid}`}
+        >
+          “{approval.comments}”
+        </p>
+      ) : null}
     </Panel>
   );
 }
@@ -539,9 +591,14 @@ function ClosedPanel({ approval, testid }: { approval: Approval; testid: string 
 function DecidePanel({
   approval,
   summary,
+  onLost,
 }: {
   approval: Approval;
   summary: ApprovalSummary | null;
+  /** Reported when the bar's decision loses the race (finding 04) — the page
+   * keeps the sentence rendered after this panel unmounts with the pending
+   * row. */
+  onLost?: (conflict: DecisionConflict) => void;
 }) {
   const testid = testidOf(approval.id);
   const [reply, setReply] = useState("");
@@ -573,7 +630,7 @@ function DecidePanel({
   return (
     <Panel title="DECIDE" headingLevel={2}>
       <div className="space-y-3 p-3">
-        <DecisionBar approval={approval} />
+        <DecisionBar approval={approval} onConflict={onLost} />
         {summary === null ? (
           <p className="text-[11.5px] text-faint">
             The model summary is not configured on this server — the gate's own text is above.

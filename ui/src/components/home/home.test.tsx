@@ -6,15 +6,16 @@
  * recent-threads rows (manual conversations only, names from the lists the
  * briefing already holds).
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { RunningNow } from "./RunningNow";
 import { DecisionCallouts, splitGateSummary } from "./DecisionCallout";
 import { RecentThreads } from "./RecentThreads";
 import type { CrossProjectRunSummary } from "../../api/home";
+import { homeKeys } from "../../api/home";
 import {
   conversationSummaryFixture,
   mockFetch,
@@ -75,7 +76,7 @@ function harness(routes: RouteStub[]) {
       <MemoryRouter>{children}</MemoryRouter>
     </QueryClientProvider>
   );
-  return { requests, wrapper };
+  return { requests, wrapper, queryClient };
 }
 
 afterEach(cleanup);
@@ -271,6 +272,76 @@ describe("DecisionCallouts", () => {
     expect(screen.getByTestId("home-read-plan-01987a9011117").getAttribute("href")).toBe(
       `/approvals/${approvalFixture.id}`,
     );
+  });
+
+  it("keeps a just-decided-elsewhere callout on screen until Dismiss (finding 04)", async () => {
+    // The race proof's host arm: the live `approval.decided` frame refetches
+    // the pending list and the gate LEAVES it mid-hold. The callout must not
+    // vanish behind a silent 409 — no decide POST goes out, the sentence
+    // names the winner (read from the gate row the list no longer carries),
+    // and the row stays until the person dismisses it.
+    const winner = {
+      id: "01987a63-7777-7000-8000-cccc00000004",
+      display_name: "Ada Byron",
+      email: null,
+    };
+    const testid = testidOf(approvalFixture.id);
+    const { requests, wrapper, queryClient } = harness([
+      {
+        path: `/api/v1/approvals/${approvalFixture.id}`,
+        method: "GET",
+        body: {
+          ...approvalFixture,
+          state: "decided",
+          decision: "approved",
+          decided_by: winner.id,
+          decided_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+          version: 4,
+        },
+      },
+      { path: "/api/v1/users", method: "GET", body: { items: [winner] } },
+      {
+        path: `/api/v1/projects/${approvalFixture.project_id}/members`,
+        method: "GET",
+        body: { items: [] },
+      },
+    ]);
+    // The briefing's own pending-list cache — what `useHomeApprovals` reads
+    // and what the live frame is about to reload without this gate.
+    queryClient.setQueryData(homeKeys.approvals, { approvals: [approvalFixture] });
+    const view = render(<DecisionCallouts approvals={[approvalFixture]} runs={[]} />, {
+      wrapper,
+    });
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    expect(screen.getByTestId("decision-status").textContent).toContain("The run continues in");
+
+    // The frame lands: the refetched pending list has dropped the gate, and
+    // the briefing re-renders the panel without it (the list the query
+    // serves no longer carries the row).
+    act(() => {
+      queryClient.setQueryData(homeKeys.approvals, { approvals: [] });
+    });
+    view.rerender(<DecisionCallouts approvals={[]} runs={[]} />);
+
+    // Nothing was posted — the hold was cancelled, not flushed.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(
+      requestsTo(requests, `/api/v1/approvals/${approvalFixture.id}/decide`, "POST"),
+    ).toHaveLength(0);
+    // The callout is STILL on screen, in its conflict arm, with a Dismiss.
+    expect(screen.getByTestId(`home-callout-${testid}`)).toBeTruthy();
+    expect(screen.getByTestId("decision-conflict")).toBeTruthy();
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+    // The name arrives with the gate row + directory reads (real timers).
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("decision-conflict").textContent).toContain(
+        "Ada Byron approved this 3m ago. Your decision wasn't recorded.",
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId(`home-callout-dismiss-${testid}`));
+    expect(screen.queryByTestId(`home-callout-${testid}`)).toBeNull();
   });
 });
 

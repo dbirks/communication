@@ -12,12 +12,21 @@
  * to three lines with the full text behind the `Read plan` link. Deciding is
  * the shared `DecisionBar` (finding 04): fixed verbs, a 5s undo hold
  * instead of a confirm step, the POST owned by the bar.
+ *
+ * Finding 04 (the race proof): a live `approval.decided` frame pulls a
+ * decided gate out of the pending query while the viewer's hold is still
+ * open — the bar notices through the shared cache, cancels the hold without
+ * posting, and reports the loss here. The panel then keeps that callout on
+ * screen as a "lost" row (rendered from a local list, outside the pending
+ * query) until the person dismisses it: the sentence says who decided, and
+ * the row never vanishes with the news.
  */
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
 import DecisionBar from "../ds/DecisionBar";
+import type { DecisionConflict } from "../ds/DecisionBar";
 import type { Approval } from "../../api/types";
 import type { CrossProjectRunSummary } from "../../api/home";
 import { formatAge, shortId, testidOf } from "../../lib/format";
@@ -56,10 +65,34 @@ export interface DecisionCalloutsProps {
   runs: CrossProjectRunSummary[];
 }
 
+/** A callout whose decision lost the race: the row as last seen (for the
+ * card's own header and title) plus the facts the bar reported. */
+interface LostCallout {
+  approval: Approval;
+  conflict: DecisionConflict;
+}
+
 export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
   const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? approvals : approvals.slice(0, CALLOUT_PREVIEW);
-  const rest = approvals.length - shown.length;
+  // Finding 04: gates whose bar reported "someone else decided" stay here —
+  // outside the pending query, which has already dropped them — until the
+  // person dismisses the callout. A newer report for the same gate replaces
+  // the older one (the bar re-reports when the decider's name arrives).
+  const [lost, setLost] = useState<LostCallout[]>([]);
+  const rememberLost = useCallback((row: Approval, conflict: DecisionConflict) => {
+    setLost((current) => {
+      const rest = current.filter((entry) => entry.conflict.approvalId !== conflict.approvalId);
+      return [...rest, { approval: row, conflict }];
+    });
+  }, []);
+  const dismissLost = useCallback((approvalId: string) => {
+    setLost((current) => current.filter((entry) => entry.conflict.approvalId !== approvalId));
+  }, []);
+
+  const lostIds = new Set(lost.map((entry) => entry.conflict.approvalId));
+  const pending = approvals.filter((approval) => !lostIds.has(approval.id));
+  const shown = expanded ? pending : pending.slice(0, CALLOUT_PREVIEW);
+  const rest = pending.length - shown.length;
   return (
     <Panel
       title="NEEDS YOUR DECISION"
@@ -69,8 +102,19 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
       meta={approvals.length > 1 ? String(approvals.length) : undefined}
     >
       <div data-testid="home-callouts">
+        {/* Lost rows ride above the live list: they are the news the person
+            has not dismissed, and the pending query no longer carries them. */}
+        {lost.map((entry) => (
+          <CalloutRow
+            key={`lost-${entry.approval.id}`}
+            approval={entry.approval}
+            runs={runs}
+            conflict={entry.conflict}
+            onDismiss={() => dismissLost(entry.conflict.approvalId)}
+          />
+        ))}
         {shown.map((approval) => (
-          <CalloutRow key={approval.id} approval={approval} runs={runs} />
+          <CalloutRow key={approval.id} approval={approval} runs={runs} onLost={rememberLost} />
         ))}
       </div>
       {rest > 0 ? (
@@ -89,7 +133,21 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
   );
 }
 
-function CalloutRow({ approval, runs }: { approval: Approval; runs: CrossProjectRunSummary[] }) {
+function CalloutRow({
+  approval,
+  runs,
+  conflict = null,
+  onLost,
+  onDismiss,
+}: {
+  approval: Approval;
+  runs: CrossProjectRunSummary[];
+  /** Set when this row is a just-decided-elsewhere callout: the bar renders
+   * straight into the sticky conflict sentence, plus a Dismiss control. */
+  conflict?: DecisionConflict | null;
+  onLost?: (approval: Approval, conflict: DecisionConflict) => void;
+  onDismiss?: () => void;
+}) {
   // The briefing's own run rows carry the workflow and project human names;
   // a run that left the list (finished while this tab was open) still shows
   // its short id — the names are never invented.
@@ -140,7 +198,26 @@ function CalloutRow({ approval, runs }: { approval: Approval; runs: CrossProject
         >
           Read plan
         </Link>
-        <DecisionBar approval={approval} compact />
+        <DecisionBar
+          approval={approval}
+          compact
+          initialConflict={conflict}
+          onConflict={
+            onLost && conflict === null
+              ? (info: DecisionConflict) => onLost(approval, info)
+              : undefined
+          }
+        />
+        {conflict !== null && onDismiss ? (
+          <Button
+            variant="secondary"
+            compact
+            data-testid={`home-callout-dismiss-${testidOf(approval.id)}`}
+            onClick={onDismiss}
+          >
+            Dismiss
+          </Button>
+        ) : null}
       </div>
     </div>
   );

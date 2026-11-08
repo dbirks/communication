@@ -21,11 +21,13 @@
  * (`approval_expired`). The copy below says exactly that; the old
  * "rejecting fails this run" promise contradicted the engine and is gone.
  */
-import { useId, useRef } from "react";
+import { useId, useRef, useState } from "react";
 import type { ApprovalDecision, ApprovalDetail } from "../../lib/pipeline/contract";
 import { deciderLabel, fallbackName } from "../../api/actors";
 import { Panel } from "../ds/Panel";
+import { Button } from "../ds/Button";
 import DecisionBar from "../ds/DecisionBar";
+import type { DecisionConflict } from "../ds/DecisionBar";
 import { StatusChip } from "../ds/Row";
 import { APPROVAL_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import { formatAge, formatRemaining, formatTime } from "../../lib/format";
@@ -83,6 +85,12 @@ export function ApprovalCard({
   className = "",
   nameOf = fallbackName,
 }: ApprovalCardProps) {
+  // Finding 04 (the workbench arm of the race rule): a held decision that
+  // loses — the shared cache moves the gate while the hold is open, or the
+  // POST returns 409 — reports here, and the card keeps the conflict
+  // sentence rendered above the decision record until the reader dismisses
+  // it. A clean self-decision never sets this.
+  const [lost, setLost] = useState<DecisionConflict | null>(null);
   /** The decision form is the end of a card that can run past a screenful of
    * plan, so the card keeps a handle on it for the jump verb below. */
   const decisionFormRef = useRef<HTMLDivElement | null>(null);
@@ -278,6 +286,7 @@ export function ApprovalCard({
             <DecisionBar
               approval={approval}
               compact
+              onConflict={open ? setLost : undefined}
               submit={
                 onDecide
                   ? (body) =>
@@ -316,6 +325,22 @@ export function ApprovalCard({
             className="flex flex-wrap items-center gap-[8px] rounded-[3px] border border-line bg-paper p-[8px]"
             data-testid="approval-decided"
           >
+            {lost !== null && lost.approvalId === approval.id ? (
+              /* The lost race reads BEFORE the record: the sentence names
+                 who beat the click, the details below stay (finding 04).
+                 Dismiss clears the sentence, not the decision. */
+              <div className="w-full space-y-[6px]" data-testid="approval-lost-race">
+                <DecisionBar approval={approval} compact initialConflict={lost} />
+                <Button
+                  variant="secondary"
+                  compact
+                  data-testid="approval-lost-dismiss"
+                  onClick={() => setLost(null)}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            ) : null}
             <StatusChip
               state={approval.decision === "rejected" ? "failed" : "done"}
               label={approval.decision ?? approval.state}

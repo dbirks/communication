@@ -4,11 +4,14 @@
  * after it, an unmount flushes the decision, a 409 adopts the winner in
  * words, and Request changes rides the same hold as `rejected` + comments.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import DecisionBar, { DECISION_HOLD_SECONDS } from "./DecisionBar";
+import type { DecisionConflict } from "./DecisionBar";
+import { queryKeys } from "../../api/queries";
+import { homeKeys } from "../../api/home";
 import {
   baseRoutes,
   mockFetch,
@@ -36,7 +39,7 @@ function harness(routes: RouteStub[]) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return { wrapper, requests };
+  return { wrapper, requests, client };
 }
 
 function posted(requests: ReturnType<typeof mockFetch>["requests"]) {
@@ -101,6 +104,115 @@ describe("DecisionBar", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(posted(requests)).toHaveLength(1);
     expect(posted(requests)[0]).toEqual({ decision: "approved", version: 3 });
+  });
+
+  it("a cache update to decided-by-B during the hold sends nothing and names B", async () => {
+    // Finding 04: the live `approval.decided` frame moves the shared row
+    // while the hold is open. The bar must cancel the hold, post NOTHING
+    // (no silent 409), and print the winner's sentence instead.
+    const winner = {
+      id: "01987a63-7777-7000-8000-cccc00000002",
+      display_name: "Grace Hopper",
+      email: null,
+    };
+    const { wrapper, requests, client } = harness([
+      { path: "/api/v1/users", body: { items: [winner] } },
+      { path: `/api/v1/projects/${approval.project_id}/members`, body: { items: [] } },
+    ]);
+    render(<DecisionBar approval={approval} />, { wrapper });
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    expect(screen.getByTestId("decision-status").textContent).toContain("The run continues in");
+
+    // The shared row moves under the hold — the same cache write
+    // `useApproval`'s refetch or a conflict adoption produces.
+    act(() => {
+      client.setQueryData(queryKeys.approval(approval.id), {
+        ...approval,
+        state: "decided",
+        decision: "approved",
+        decided_by: winner.id,
+        decided_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+        version: 4,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(posted(requests)).toHaveLength(0);
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "Grace Hopper approved this 4m ago. Your decision wasn't recorded.",
+    );
+    expect(screen.queryByTestId("decision-approve")).toBeNull();
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+  });
+
+  it("a lost race reported through onConflict lets the host keep the sentence sticky", async () => {
+    // The host-side contract: a watched-away conflict reports immediately
+    // (facts pending), then re-reports once the single gate read names the
+    // winner; and a bar booted from `initialConflict` renders the SAME
+    // sentence with no buttons and no POST of its own.
+    const winner = {
+      id: "01987a63-7777-7000-8000-cccc00000003",
+      display_name: "Alan Turing",
+      email: null,
+    };
+    const decidedRow = {
+      ...approval,
+      state: "decided",
+      decision: "rejected",
+      decided_by: winner.id,
+      decided_at: new Date(Date.now() - 60 * 1000).toISOString(),
+      version: 4,
+    };
+    const { wrapper, requests, client } = harness([
+      { path: `/api/v1/approvals/${approval.id}`, method: "GET", body: decidedRow },
+      { path: "/api/v1/users", body: { items: [winner] } },
+      { path: `/api/v1/projects/${approval.project_id}/members`, body: { items: [] } },
+    ]);
+    const reports: DecisionConflict[] = [];
+    // The gate sits in the briefing's pending list — the list the live frame
+    // is about to drop it from.
+    client.setQueryData(homeKeys.approvals, { approvals: [{ ...approval, state: "pending" }] });
+    const view = render(<DecisionBar approval={approval} onConflict={(c) => reports.push(c)} />, {
+      wrapper,
+    });
+
+    fireEvent.click(screen.getByTestId("decision-reject"));
+    act(() => {
+      client.setQueryData(homeKeys.approvals, { approvals: [] });
+    });
+    // Reported at once, before any name was served…
+    expect(reports[0]).toEqual({
+      approvalId: approval.id,
+      verb: "rejected",
+      deciderId: null,
+      decidedAt: null,
+    });
+    // …the disappearance alone stops the POST, and the one row read fills in
+    // the person (so the host stores the named report too).
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(posted(requests)).toHaveLength(0);
+    expect(requestsTo(requests, `/api/v1/approvals/${approval.id}`, "GET")).toHaveLength(1);
+    expect(reports.length).toBe(2);
+    expect(reports[1].deciderId).toBe(winner.id);
+    // The name rides the directory read the named report re-arms — one more
+    // pump for that fetch to land and re-render the sentence.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "Alan Turing rejected this 1m ago. Your decision wasn't recorded.",
+    );
+    view.unmount();
+    expect(posted(requests)).toHaveLength(0);
+
+    // The sticky re-render: a bar mounted from the stored report prints the
+    // sentence directly — no verbs, no cache watch, no network beyond the
+    // directory it already answered from.
+    render(<DecisionBar approval={approval} initialConflict={reports[1]} />, { wrapper });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "Alan Turing rejected this",
+    );
+    expect(screen.queryByTestId("decision-approve")).toBeNull();
   });
 
   it("Request changes needs text and posts rejected with the comments", async () => {

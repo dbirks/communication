@@ -21,9 +21,24 @@
  * and an Undo link-button that receives focus. Undo cancels the hold and
  * sends nothing. If the bar unmounts mid-hold the decision is flushed
  * immediately — the person decided; navigating away must not silently drop
- * it. A `409 approval_already_decided` adopts the winner (`adoptApproval
+ * it — UNLESS the shared query cache already shows the gate decided elsewhere
+ * (finding 04: the live `approval.decided` frame must never be answered by a
+ * silent 409). During the hold the bar watches the caches that hold its row —
+ * any cached list or row carrying this approval id — and if the gate leaves
+ * `pending` there, the hold is cancelled, NOTHING is posted, and the conflict
+ * sentence takes the bar's place. When the watch sees only the disappearance
+ * (a briefing list that no longer carries the gate), the sentence still owes a
+ * name, so the gate row is read once to fill in the decider and the age.
+ * A `409 approval_already_decided` adopts the winner (`adoptApproval
  * Conflict`) and states who beat the click; any other error restores the bar
  * with an inline line ending in a Try-again action.
+ *
+ * The conflict is STICKY and the host owns it: every transition into the
+ * conflict state reports a `DecisionConflict` through `onConflict` (the
+ * 409 arm and the watched-cache arm alike), so a host whose row leaves its
+ * pending list can keep the sentence on screen (rendered back through
+ * `initialConflict`) until the person dismisses it. The sentence itself
+ * never dies with an unmounting bar.
  *
  * Two honesty rules this component owns, and hosts must not work around:
  *   - **`done` means the server said so.** The recorded line renders only
@@ -44,7 +59,7 @@ import { apiFetch, problemOf } from "../../api/client";
 import { queryKeys } from "../../api/queries";
 import { nameLookup } from "../../api/names";
 import type { NameHint, NameLookup } from "../../api/names";
-import type { ApprovalDecide, MemberList, Me, UserList } from "../../api/types";
+import type { Approval, ApprovalDecide, MemberList, Me, UserList } from "../../api/types";
 import { formatAge } from "../../lib/format";
 import { routes } from "../../lib/routes";
 import { Button } from "./Button";
@@ -71,6 +86,17 @@ export interface DecisionBarApproval {
   run_id?: string;
 }
 
+/** The facts of a decision the viewer lost, in the shape a host stores to keep
+ * the sentence sticky after its own list drops the row. `deciderId`/`decidedAt`
+ * are null when the cache only proved the gate left `pending` without saying
+ * who moved it — the bar then reads the gate row once to fill the sentence in. */
+export interface DecisionConflict {
+  approvalId: string;
+  verb: DecisionWord;
+  deciderId: string | null;
+  decidedAt: string | null;
+}
+
 /** The decide body as the bar builds it; the version rides along when known. */
 export type DecisionBody = Omit<ApprovalDecide, "version"> & { version?: number };
 
@@ -80,6 +106,14 @@ export interface DecisionBarProps {
   approval: DecisionBarApproval;
   /** Notified once the decision is actually posted (the hold expired). */
   onDecided?: (decision: DecisionWord) => void;
+  /** Every transition into the conflict state (a 409, or the watched cache
+   * showing the gate decided elsewhere) reports here, so the host can keep
+   * the sentence rendered even after the row leaves its pending list. */
+  onConflict?: (conflict: DecisionConflict) => void;
+  /** Boot the bar straight into the sticky conflict sentence — the shape a
+   * host renders from its own "recently lost" list while the gate sits
+   * outside the pending query. No buttons, no POST, no watching. */
+  initialConflict?: DecisionConflict | null;
   /** 26px inline buttons for dense surfaces (Today, Inbox). */
   compact?: boolean;
   /**
@@ -117,6 +151,58 @@ function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
+/** The decided-state fields a cached copy of the gate may carry (the shared
+ * row, or the same row inside any list the app caches). */
+type GateFacts = {
+  state: string;
+  decision?: string | null;
+  decided_by?: unknown;
+  decided_at?: unknown;
+  updated_at?: unknown;
+};
+
+function gateRowFacts(value: unknown, id: string): GateFacts | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (row.id !== id || typeof row.state !== "string") return null;
+  return row as unknown as GateFacts;
+}
+
+/** Find this gate inside one cached query's data: the row itself, or an entry
+ * of its `approvals`/`items` array. Keys are never inspected — the id match
+ * plus a `state` field is the whole contract, so a new list shape that
+ * carries the row is watched for free. */
+function findGateInData(data: unknown, id: string): GateFacts | null {
+  const direct = gateRowFacts(data, id);
+  if (direct) return direct;
+  if (!data || typeof data !== "object") return null;
+  const bag = data as Record<string, unknown>;
+  for (const key of ["approvals", "items"]) {
+    const list = bag[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      const hit = gateRowFacts(entry, id);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** Run `effect` at most once per mount, on the first commit where `armed` is
+ * true (a conflict that owes the winner's facts arms exactly once). */
+function useEffectOnce(armed: boolean, effect: () => void): void {
+  const ranRef = useRef(false);
+  useEffect(() => {
+    if (!armed || ranRef.current) return;
+    ranRef.current = true;
+    effect();
+    // The effect closes over the CURRENT props/phase; it only ever runs on
+    // the commit where `armed` first turns true, which is exactly the
+    // arming the caller computes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [armed]);
+}
+
 /** Upper-case the first letter: the subject opens the sentence, and a display
  * name arrives however its owner typed it. */
 function sentenceStart(words: string): string {
@@ -137,12 +223,29 @@ function conflictSubject(deciderId: string | null, lookup: NameLookup): string {
 export default function DecisionBar({
   approval,
   onDecided,
+  onConflict,
+  initialConflict = null,
   compact = false,
   submit,
 }: DecisionBarProps) {
   const decide = useDecideApproval(approval.project_id ?? "");
   const queryClient = useQueryClient();
-  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [phase, setPhase] = useState<Phase>(() =>
+    initialConflict
+      ? {
+          kind: "conflict",
+          verb: initialConflict.verb,
+          deciderId: initialConflict.deciderId,
+          decidedAt: initialConflict.decidedAt,
+        }
+      : { kind: "idle" },
+  );
+  // The latest phase and the latest host callback, readable from the cache
+  // subscription and the unmount flush (both fire outside the render).
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const onConflictRef = useRef(onConflict);
+  onConflictRef.current = onConflict;
   const [changesText, setChangesText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const undoRef = useRef<HTMLButtonElement | null>(null);
@@ -194,6 +297,12 @@ export default function DecisionBar({
                 ? winner.updated_at
                 : null;
           setPhase({ kind: "conflict", verb, deciderId: winnerId, decidedAt });
+          onConflictRef.current?.({
+            approvalId: approval.id,
+            verb,
+            deciderId: winnerId,
+            decidedAt,
+          });
         } else {
           const problem = problemOf(cause);
           setError(problem.detail || problem.title || "The decision could not be posted.");
@@ -247,10 +356,19 @@ export default function DecisionBar({
   flushRef.current = () => {
     if (!holdRef.current) return;
     clearTimer();
+    // Finding 04: navigating away still posts the held decision — but not
+    // when the cache already shows the gate decided elsewhere. The live
+    // `approval.decided` frame that removed this row must not be answered
+    // with a silent 409; `detectElsewhere` cancels and reports instead.
+    if (detectRef.current()) return;
     const held = holdRef.current;
     holdRef.current = null;
     void postRef.current(held.decision, held.comments);
   };
+  // DECLARED BEFORE the watch effect so its cleanup runs first on unmount:
+  // the flush below still needs the watch's baseline of which caches carried
+  // this gate. (React runs a component's cleanup functions in declaration
+  // order.)
   useEffect(
     () => () => {
       // Unmount during the hold: post immediately rather than dropping the
@@ -261,6 +379,142 @@ export default function DecisionBar({
     [],
   );
 
+  // ---- The watched approval (finding 04) --------------------------------
+  // While a hold is open the bar watches every cached query that carries its
+  // gate — the shared `queryKeys.approval(id)` row (patched by a conflict
+  // adoption, refetched by `useApproval`), the pending-list caches the hosts
+  // read (`useHomeApprovals`, `useProjectApprovals`) — through the query
+  // cache itself, so a frame that moved the gate moves the bar with no
+  // extra network. Two signals end the hold WITHOUT posting:
+  //   - a cached copy of the row says `state !== "pending"` → its fields
+  //     carry the winner; or
+  //   - a cache that carried the gate at hold start no longer carries it →
+  //     the gate left the pending set; the name arrives from one row read
+  //     (below), so the sentence still names a person.
+  const seenRef = useRef<Set<string> | null>(null);
+  const detectRef = useRef<() => boolean>(() => false);
+  detectRef.current = () => {
+    const held = phaseRef.current;
+    if (held.kind !== "hold") return false;
+    const present = new Set<string>();
+    let facts: GateFacts | null = null;
+    for (const query of queryClient.getQueryCache().getAll()) {
+      const hit = findGateInData(query.state.data, approval.id);
+      if (!hit) continue;
+      present.add(JSON.stringify(query.queryKey));
+      if (hit.state !== "pending" && facts === null) facts = hit;
+    }
+    let gone = false;
+    const seen = seenRef.current;
+    if (seen !== null) {
+      for (const key of seen) if (!present.has(key)) gone = true;
+      for (const key of present) seen.add(key);
+    }
+    if (facts !== null) return lostTo(facts, held);
+    if (gone) return lostTo(null, held);
+    return false;
+  };
+
+  const lostTo = (facts: GateFacts | null, held: { kind: "hold"; decision: DecisionWord }) => {
+    clearTimer();
+    holdRef.current = null;
+    const me = queryClient.getQueryData<Me>(queryKeys.me);
+    const deciderId =
+      typeof facts?.decided_by === "string" && facts.decided_by.length > 0
+        ? facts.decided_by
+        : null;
+    const decidedAt =
+      typeof facts?.decided_at === "string"
+        ? facts.decided_at
+        : typeof facts?.updated_at === "string"
+          ? facts.updated_at
+          : null;
+    const verb: DecisionWord =
+      facts?.decision === "rejected"
+        ? "rejected"
+        : facts?.decision === "approved"
+          ? "approved"
+          : held.decision;
+    // The same person deciding from another tab IS recorded — say `done`,
+    // not "wasn't recorded". Only a decider who is not the viewer loses.
+    if (deciderId !== null && me !== undefined && deciderId === me.id) {
+      setPhase({ kind: "done", decision: verb });
+      return true;
+    }
+    setPhase({ kind: "conflict", verb, deciderId, decidedAt });
+    onConflictRef.current?.({ approvalId: approval.id, verb, deciderId, decidedAt });
+    return true;
+  };
+
+  const watching = phase.kind === "hold";
+  useEffect(() => {
+    if (!watching) return;
+    if (seenRef.current === null) {
+      const seed = new Set<string>();
+      for (const query of queryClient.getQueryCache().getAll()) {
+        if (findGateInData(query.state.data, approval.id)) {
+          seed.add(JSON.stringify(query.queryKey));
+        }
+      }
+      seenRef.current = seed;
+    }
+    if (detectRef.current()) return;
+    const unsubscribe = queryClient.getQueryCache().subscribe(() => {
+      detectRef.current();
+    });
+    return () => {
+      unsubscribe();
+      seenRef.current = null;
+    };
+    // The baseline must reset whenever the hold opens or closes; the
+    // detection itself reads everything else through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watching, approval.id]);
+
+  // When the watch proved only the disappearance, the sentence still owes a
+  // name and an age: read the gate row ONCE (`queryKeys.approval(id)`, the
+  // key the whole app shares, so a host (or the sticky re-render of this
+  // bar) already holding the row answers from cache and pays nothing). This
+  // fires only for a watched-away conflict — never for a clean decision,
+  // never for a 409 body that named its winner.
+  const factsOwed = phase.kind === "conflict" && phase.deciderId === null;
+  useEffectOnce(factsOwed, () => {
+    if (!factsOwed) return;
+    void queryClient
+      .fetchQuery({
+        queryKey: queryKeys.approval(approval.id),
+        queryFn: () => apiFetch<Approval>(`/api/v1/approvals/${approval.id}`),
+        retry: false,
+      })
+      .then((fetched) => {
+        const row = fetched as unknown as GateFacts & { decision?: string | null };
+        const decider = typeof row.decided_by === "string" ? row.decided_by : null;
+        const at =
+          typeof row.decided_at === "string"
+            ? row.decided_at
+            : typeof row.updated_at === "string"
+              ? row.updated_at
+              : null;
+        const verb: DecisionWord = row.decision === "rejected" ? "rejected" : "approved";
+        const me = queryClient.getQueryData<Me>(queryKeys.me);
+        if (decider !== null && me !== undefined && decider === me.id) {
+          setPhase({ kind: "done", decision: verb });
+          return;
+        }
+        setPhase({ kind: "conflict", verb, deciderId: decider, decidedAt: at });
+        onConflictRef.current?.({
+          approvalId: approval.id,
+          verb,
+          deciderId: decider,
+          decidedAt: at,
+        });
+      })
+      .catch(() => {
+        // The row could not be read: the sentence keeps `Someone` and
+        // `a moment ago` — honest words for facts nobody served.
+      });
+  });
+
   // The hold's Undo link takes focus the moment the bar folds into the
   // status line, so keyboard users land on the escape hatch they just bought.
   useEffect(() => {
@@ -268,7 +522,7 @@ export default function DecisionBar({
     if (phase.kind === "changes") changesRef.current?.focus();
   }, [phase.kind]);
 
-  // A conflict names a person, and the body only carries their id, so the
+  // A conflict names a person, and the 409 body only carries their id, so the
   // directory is read when a name is OWED — never to draw the bar: a clean
   // decision asks the network nothing, and the fixture surface (`M4Preview`,
   // whose whole promise is zero fetches) must keep that. Both keys are ones

@@ -181,6 +181,92 @@ describe("approval detail (4g)", () => {
     }
   });
 
+  it("a lost race keeps the conflict sentence in place of the decided header after the 409", async () => {
+    // Finding 04 (gap b): the 409 adopts the winner into the row this page
+    // reads, the decide panel unmounts with the pending row — and the
+    // sentence must NOT die with it. It replaces the decided summary's
+    // header (naming the winner), the decided note stays below, and
+    // Dismiss restores the plain summary.
+    const winner = {
+      id: "01987a63-7777-7000-8000-cccc00000005",
+      display_name: "Ada Lovelace",
+      email: null,
+    };
+    const decidedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const conflictBody = {
+      type: "https://communication.dev/errors/approval-already-decided",
+      title: "Approval Already Decided",
+      status: 409,
+      detail: "someone else won the click",
+      approval_id: WIRE_APPROVAL_ID,
+      approval: {
+        state: "decided",
+        decision: "approved",
+        decided_by: winner.id,
+        decided_at: decidedAt,
+        version: 2,
+      },
+    };
+    const decidedByWinner = {
+      ...decidedApproval,
+      decided_by: winner.id,
+      decided_at: decidedAt,
+      comments: "Ship it.",
+    };
+    const { requests } = renderApprovalPage(
+      [
+        { path: SUMMARY_PATH, method: "POST", status: 503, body: NOT_CONFIGURED },
+        { path: ARTIFACTS_PATH, body: { artifacts: [] } },
+      ],
+      [
+        // First stub wins: the decide route answers the 409, and the row
+        // re-reads decided by the winner after the adoption — the page's own
+        // `useApproval` sees the same truth the bar reported.
+        { path: DECIDE_PATH, method: "POST", status: 409, body: conflictBody },
+        {
+          path: APPROVAL_PATH,
+          method: "GET",
+          body: (seen: number) => (seen === 1 ? wireApproval : decidedByWinner),
+        },
+        { path: "/api/v1/users", body: { items: [winner] } },
+        { path: `/api/v1/projects/${wireProjectId}/members`, body: { items: [] } },
+      ],
+    );
+
+    await screen.findByTestId(`approval-detail-strip-${T}`);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1);
+      // The winner's row replaces the pending one: the rail closes…
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(textOf(screen.getByTestId(`approval-detail-strip-${T}`))).toContain("DECIDED");
+      // …and the sentence survives the decide panel that unmounted with the
+      // pending row — in place of the decided summary's header, naming the
+      // winner, with the decided note below it.
+      const lost = screen.getByTestId(`approval-detail-lost-${T}`);
+      expect(textOf(screen.getByTestId("decision-conflict"))).toContain(
+        "Ada Lovelace approved this 2m ago. Your decision wasn't recorded.",
+      );
+      expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+      expect(within(lost).queryByText(/^Decided approved by/)).toBeNull();
+      expect(textOf(screen.getByTestId(`approval-detail-closed-comments-${T}`))).toContain(
+        "Ship it.",
+      );
+      expect(screen.queryByTestId(`approval-detail-closed-${T}`)).toBeNull();
+
+      // Dismiss clears the sentence and restores the plain decided summary.
+      fireEvent.click(screen.getByTestId(`approval-detail-lost-dismiss-${T}`));
+      expect(screen.queryByTestId(`approval-detail-lost-${T}`)).toBeNull();
+      expect(textOf(screen.getByTestId(`approval-detail-closed-${T}`))).toContain(
+        "Decided approved",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the retry line when the model summary hit a transient upstream failure", async () => {
     renderApprovalPage([
       {
