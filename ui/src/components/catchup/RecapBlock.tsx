@@ -15,7 +15,7 @@
  */
 import { Link } from "react-router";
 import { Play } from "lucide-react";
-import type { CatchUpRecap } from "../../api/catchup";
+import { firstSentence, type CatchUpRecap } from "../../api/catchup";
 import { clockOf } from "./importance";
 
 export function RecapBlock({
@@ -42,6 +42,11 @@ export function RecapBlock({
   error?: string | null;
 }) {
   const written = recap ? clockOf(recap.written_at) : null;
+  /* The mock sets the recap's first sentence in bold — it is the one line that
+   * says how big the pile is — and the body stays at the reading size (15px),
+   * never a display size. */
+  const lead = recap ? firstSentence(recap.text) : "";
+  const rest = recap ? recap.text.slice(lead.length).replace(/^\s+/, "") : "";
   const ask = onRegenerate ?? noop;
   const canAsk = Boolean(onRegenerate) && !writing;
   return (
@@ -65,7 +70,12 @@ export function RecapBlock({
           ) : null}
         </span>
         {recap ? (
-          <p className="max-w-[760px] text-[15px] leading-[1.55] text-ink">{recap.text}</p>
+          <p className="max-w-[760px] text-[15px] leading-[1.55] text-ink">
+            <span data-testid="catchup-recap-lead" className="font-semibold">
+              {lead}
+            </span>
+            {rest.length > 0 ? ` ${rest}` : ""}
+          </p>
         ) : (
           <p className="text-[13px] text-faint">
             {loading ? "Reading the recap…" : "No recap yet."}
@@ -90,7 +100,7 @@ export function RecapBlock({
           Start the tour · {stops} stops · {minutes} min
         </Link>
         <span className="font-mono text-[10.5px] whitespace-nowrap text-muted">
-          built from {builtFrom} shared tours
+          built from {builtFrom} shared {builtFrom === 1 ? "tour" : "tours"}
         </span>
       </div>
     </div>

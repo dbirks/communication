@@ -19,8 +19,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { Check, Copy, Play } from "lucide-react";
+import type { ReactNode } from "react";
 import Page, { PAGE_BAND_PAD } from "../components/ds/Page";
-import { Panel } from "../components/ds/Panel";
 import { Button } from "../components/ds/Button";
 import { ProblemBanner } from "../components/Feedback";
 import { Evidence } from "../components/catchup/Evidence";
@@ -66,7 +66,7 @@ function firstName(name: string): string {
 /** The seen-by roster: initials squares in the sidebar avatar's style. */
 function SeenByAvatars({ names }: { names: string[] }) {
   return (
-    <span className="flex items-center gap-[4px]" aria-hidden>
+    <span data-testid="catchup-item-seen-by" className="flex items-center gap-[4px]" aria-hidden>
       {names.map((name) => (
         <span
           key={name}
@@ -83,6 +83,27 @@ function SeenByAvatars({ names }: { names: string[] }) {
         </span>
       ))}
     </span>
+  );
+}
+
+/** One rail section: the uppercase bar the design uses for every panel, with
+ * no card around it — the rail itself is the bordered column. */
+function RailSection({
+  title,
+  testid,
+  children,
+}: {
+  title: string;
+  testid?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section data-testid={testid} className="border-b border-line-strong last:border-b-0">
+      <div className="border-b border-line-strong bg-fill px-[10px] py-[4px] font-mono text-[10px] leading-[1.4] font-semibold tracking-[.04em] text-ink-2 uppercase">
+        {title}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -234,7 +255,7 @@ export default function CatchUpItem() {
 
   if (item.isError) {
     return (
-      <Page layout="wide" testid="catchup-item">
+      <Page layout="canvas" testid="catchup-item">
         <div className={PAGE_BAND_PAD}>
           <ProblemBanner
             error={item.error}
@@ -250,7 +271,7 @@ export default function CatchUpItem() {
 
   if (!data) {
     return (
-      <Page layout="wide" testid="catchup-item">
+      <Page layout="canvas" testid="catchup-item">
         <p className={`${PAGE_BAND_PAD} text-[13px] text-faint`}>
           {item.isPending ? "Reading this piece of work…" : "Nothing to show yet."}
         </p>
@@ -270,9 +291,11 @@ export default function CatchUpItem() {
         : `seen by ${seenNames.join(", ")} · you're up to date`;
 
   return (
-    <Page layout="wide" testid="catchup-item">
-      <div className="flex flex-col gap-[16px]">
-        <header className={`${PAGE_BAND_PAD} pb-0`}>
+    <Page layout="canvas" testid="catchup-item">
+      <div className="flex min-h-full flex-col">
+        {/* Header: the piece on the left, its two actions top-RIGHT on the same
+         * row (mock 8b) — the actions are not a third line under the title. */}
+        <header className={`${PAGE_BAND_PAD} border-b border-line-strong pb-[14px]`}>
           <div className="flex items-center gap-[6px] font-mono text-[11px] text-muted">
             <span
               className={projectSquareClasses()}
@@ -283,115 +306,155 @@ export default function CatchUpItem() {
             <span aria-hidden>/</span>
             <span>Catch up</span>
           </div>
-          <div className="mt-[8px] flex flex-wrap items-center gap-[8px]">
-            {importance ? (
-              <span
-                className={`inline-flex h-[18px] items-center rounded-panel px-[6px] font-mono text-[9.5px] font-semibold tracking-[.03em] uppercase ${importance.tagBg} ${importance.tagFg}`}
+          <div className="mt-[8px] flex flex-wrap items-start gap-x-[14px] gap-y-[10px]">
+            <div className="flex min-w-0 flex-1 flex-col gap-[6px]">
+              <div className="flex flex-wrap items-center gap-[8px]">
+                {importance ? (
+                  <span
+                    className={`inline-flex h-[18px] items-center rounded-panel px-[6px] font-mono text-[9.5px] font-semibold tracking-[.03em] uppercase ${importance.tagBg} ${importance.tagFg}`}
+                  >
+                    {importance.label}
+                  </span>
+                ) : null}
+                {firstKind ? (
+                  <span className="inline-flex h-[18px] items-center rounded-panel border border-ink px-[6px] font-mono text-[9.5px] font-semibold tracking-[.03em] uppercase">
+                    {firstKind}
+                  </span>
+                ) : null}
+                <RefChips refs={data.refs} />
+              </div>
+              <h1
+                data-testid="catchup-item-title"
+                className="text-[22px] leading-[28px] font-semibold"
               >
-                {importance.label}
-              </span>
-            ) : null}
-            {firstKind ? (
-              <span className="inline-flex h-[18px] items-center rounded-panel border border-ink px-[6px] font-mono text-[9.5px] font-semibold tracking-[.03em] uppercase">
-                {firstKind}
-              </span>
-            ) : null}
-            <RefChips refs={data.refs} />
-          </div>
-          <h1 className="mt-[6px] text-[22px] leading-[28px] font-semibold">{data.title}</h1>
-          <div className="mt-[6px] flex flex-wrap items-center gap-[8px]">
-            <SeenByAvatars names={(data.seen_by ?? []).map((reader) => reader.name)} />
-            <span className="font-mono text-[11px] text-muted">{seenLine}</span>
-          </div>
-          <div className="mt-[10px] flex flex-wrap items-center gap-[10px]">
-            <Button data-testid="catchup-item-copy" onClick={copyLink}>
-              <Copy size={13} aria-hidden />
-              {copied ? "Copied" : "Copy link"}
-            </Button>
-            <Link
-              to={`/catch-up/tour?item=${encodeURIComponent(data.id)}`}
-              data-testid="catchup-item-play"
-              className="ds-btn ds-btn--primary"
-            >
-              <Play size={13} aria-hidden />
-              Play tour · {stops.length} {stops.length === 1 ? "stop" : "stops"}
-            </Link>
+                {data.title}
+              </h1>
+              <div className="flex flex-wrap items-center gap-[8px]">
+                {/* No empty avatar strip: it reads as a stray leading space
+                 * in front of "nobody has seen this yet". */}
+                {data.seen_by.length > 0 ? (
+                  <SeenByAvatars names={(data.seen_by ?? []).map((reader) => reader.name)} />
+                ) : null}
+                <span
+                  data-testid="catchup-item-seen-line"
+                  className="font-mono text-[11px] text-muted"
+                >
+                  {seenLine}
+                </span>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-[8px] pt-[2px]">
+              <Button data-testid="catchup-item-copy" onClick={copyLink}>
+                <Copy size={13} aria-hidden />
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+              <Link
+                to={`/catch-up/tour?item=${encodeURIComponent(data.id)}`}
+                data-testid="catchup-item-play"
+                className="ds-btn ds-btn--primary"
+              >
+                <Play size={13} aria-hidden />
+                Play tour · {stops.length} {stops.length === 1 ? "stop" : "stops"}
+              </Link>
+            </div>
           </div>
         </header>
 
-        <div className="flex flex-col gap-[14px] px-[22px] pb-[24px] md:grid md:grid-cols-[260px_minmax(0,1fr)_260px] md:items-start md:gap-[12px] md:px-[28px]">
-          {/* Left: this work's shared tour. */}
-          <div className="hidden min-w-0 md:block">
-            <Panel title="THIS WORK'S TOUR" meta="shared with the project">
-              {stops.length === 0 ? (
-                <p className="px-[10px] py-[10px] text-[12.5px] text-faint">
-                  This work has no tour yet — the assistant writes one when a run finishes.
-                </p>
-              ) : (
-                <>
-                  {updated ? (
-                    <p className="border-b border-line px-[10px] py-[6px] font-mono text-[10px] font-semibold tracking-[.03em]">
-                      <span className="rounded-tag bg-imp-look-tag-bg px-[5px] py-[1px] text-imp-look-tag-fg">
-                        UPDATED
-                      </span>{" "}
-                      <span className="text-muted">
-                        {newStops.length} new {newStops.length === 1 ? "stop" : "stops"} since v
-                        {youSaw}
-                      </span>
-                    </p>
-                  ) : null}
-                  {newStops.map((stop) => (
-                    <StopRow
-                      key={stop.id}
-                      stop={stop}
-                      number={stops.indexOf(stop) + 1}
-                      selected={current?.id === stop.id}
-                      addedAt={addedClock(stop)}
-                      onSelect={() => openStop(stop)}
-                    />
-                  ))}
-                  {earlierStops.length > 0 ? (
-                    <>
-                      <button
-                        type="button"
-                        data-testid="catchup-item-earlier-toggle"
-                        onClick={() => setShowEarlier((prev) => !prev)}
-                        className="flex w-full items-center gap-[6px] border-b border-line bg-fill px-[10px] py-[5px] font-mono text-[9.5px] font-semibold tracking-[.04em] text-ink-2 uppercase"
-                      >
-                        {earlierExpanded ? "▾" : "▸"} Earlier stops ({earlierStops.length})
-                      </button>
-                      {earlierExpanded
-                        ? earlierStops.map((stop) => (
-                            <StopRow
-                              key={stop.id}
-                              stop={stop}
-                              number={stops.indexOf(stop) + 1}
-                              selected={current?.id === stop.id}
-                              addedAt={addedClock(stop)}
-                              onSelect={() => openStop(stop)}
-                            />
-                          ))
-                        : null}
-                    </>
-                  ) : null}
-                </>
-              )}
-            </Panel>
-          </div>
+        {/* Three columns the full height of the content area with hairline
+         * dividers (mock 8b): the work's tour, the story, the rail. */}
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-[14px] px-[22px] pb-[24px] md:grid-cols-[260px_minmax(0,1fr)_260px] md:gap-0 md:px-0 md:pb-0">
+          {/* Left: this work's shared tour, edge to edge. */}
+          <aside
+            data-testid="catchup-item-tour-column"
+            className="hidden min-w-0 flex-col border-r border-line-strong bg-surface md:flex"
+          >
+            <div className="flex flex-wrap items-center gap-x-[8px] border-b border-line-strong bg-fill px-[10px] py-[4px] font-mono text-[10px] leading-[1.4] font-semibold tracking-[.04em] text-ink-2 uppercase">
+              <span data-testid="catchup-item-tour-heading">This work&apos;s tour</span>
+              <span className="ml-auto font-normal text-faint normal-case">
+                shared with the project
+              </span>
+            </div>
+            {stops.length === 0 ? (
+              <p className="px-[10px] py-[10px] text-[12.5px] text-faint">
+                This work has no tour yet — the assistant writes one when a run finishes.
+              </p>
+            ) : (
+              <>
+                {updated ? (
+                  <p className="border-b border-line px-[10px] py-[6px] font-mono text-[10px] font-semibold tracking-[.03em]">
+                    <span className="rounded-tag bg-imp-look-tag-bg px-[5px] py-[1px] text-imp-look-tag-fg">
+                      UPDATED
+                    </span>{" "}
+                    <span className="text-muted">
+                      {newStops.length} new {newStops.length === 1 ? "stop" : "stops"} since v
+                      {youSaw}
+                    </span>
+                  </p>
+                ) : null}
+                {newStops.map((stop) => (
+                  <StopRow
+                    key={stop.id}
+                    stop={stop}
+                    number={stops.indexOf(stop) + 1}
+                    selected={current?.id === stop.id}
+                    addedAt={addedClock(stop)}
+                    onSelect={() => openStop(stop)}
+                  />
+                ))}
+                {earlierStops.length > 0 ? (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="catchup-item-earlier-toggle"
+                      onClick={() => setShowEarlier((prev) => !prev)}
+                      className="flex w-full items-center gap-[6px] border-b border-line bg-fill px-[10px] py-[5px] font-mono text-[9.5px] font-semibold tracking-[.04em] text-ink-2 uppercase"
+                    >
+                      {earlierExpanded ? "▾" : "▸"} Earlier stops ({earlierStops.length})
+                    </button>
+                    {earlierExpanded
+                      ? earlierStops.map((stop) => (
+                          <StopRow
+                            key={stop.id}
+                            stop={stop}
+                            number={stops.indexOf(stop) + 1}
+                            selected={current?.id === stop.id}
+                            addedAt={addedClock(stop)}
+                            onSelect={() => openStop(stop)}
+                          />
+                        ))
+                      : null}
+                  </>
+                ) : null}
+              </>
+            )}
+            {/* The mock's explainer sits under the list, inside the column. */}
+            <p
+              data-testid="catchup-item-tour-explainer"
+              className="px-[12px] py-[12px] text-[12px] leading-[1.45] text-muted"
+            >
+              One tour per piece of work. It is rewritten as the work moves, and everyone on the
+              project sees the same one.
+            </p>
+          </aside>
 
-          {/* Mobile: the same pick as a strip. */}
-          <div className="md:hidden">
-            <label className="mb-[4px] block font-mono text-[9.5px] font-semibold tracking-[.04em] text-muted uppercase">
+          {/* Mobile: the same pick as a select the full title fits into. */}
+          <div className="min-w-0 md:hidden">
+            <label
+              htmlFor="catchup-item-stop-select"
+              className="mb-[4px] block font-mono text-[9.5px] font-semibold tracking-[.04em] text-muted uppercase"
+            >
               This work&apos;s tour
             </label>
             <select
+              id="catchup-item-stop-select"
               data-testid="catchup-item-stop-select"
+              title={current?.title ?? ""}
               value={current?.id ?? ""}
               onChange={(event) => {
                 const stop = stops.find((candidate) => candidate.id === event.target.value);
                 openStop(stop ?? null);
               }}
-              className="h-[30px] w-full rounded-panel border border-line-strong bg-surface px-[8px] font-ui text-[13px] text-ink"
+              className="min-h-[32px] w-full truncate rounded-panel border border-line-strong bg-surface px-[8px] py-[6px] font-ui text-[13px] text-ink"
             >
               {stops.map((stop, index) => (
                 <option key={stop.id} value={stop.id}>
@@ -402,7 +465,7 @@ export default function CatchUpItem() {
           </div>
 
           {/* Center: the current stop. */}
-          <div data-testid="catchup-item-current" className="min-w-0">
+          <div data-testid="catchup-item-current" className="min-w-0 md:px-[28px] md:pt-[22px]">
             {current ? (
               <article className="flex flex-col gap-[10px]">
                 <p className="font-mono text-[10.5px] font-semibold tracking-[.04em] text-muted uppercase">
@@ -459,35 +522,33 @@ export default function CatchUpItem() {
           </div>
 
           {/* Right: how the story was rewritten, and its slot in your tour. */}
-          <div className="flex min-w-0 flex-col gap-[12px]">
-            <div data-testid="catchup-item-history">
-              <Panel title="TOUR HISTORY">
-                <ul>
-                  {[...(data.history ?? [])].reverse().map((header) => (
-                    <li
-                      key={header.version}
-                      className="flex flex-col gap-[1px] border-b border-line px-[10px] py-[7px] last:border-b-0"
-                    >
-                      <span className="text-[12.5px] leading-[1.35] font-semibold text-ink">
-                        {header.reason}
-                      </span>
-                      <span className="font-mono text-[10.5px] text-muted">
-                        {clockOf(header.created_at) ?? "—"} · v{header.version} ·{" "}
-                        {header.stop_count} {header.stop_count === 1 ? "stop" : "stops"}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </Panel>
-            </div>
+          <aside className="flex min-w-0 flex-col border-line-strong bg-surface md:border-l">
+            <RailSection title="Tour history" testid="catchup-item-history">
+              <ul>
+                {[...(data.history ?? [])].reverse().map((header) => (
+                  <li
+                    key={header.version}
+                    className="flex flex-col gap-[1px] border-b border-line px-[10px] py-[7px] last:border-b-0"
+                  >
+                    <span className="text-[12.5px] leading-[1.35] font-semibold text-ink">
+                      {header.reason}
+                    </span>
+                    <span className="font-mono text-[10.5px] text-muted">
+                      {clockOf(header.created_at) ?? "—"} · v{header.version} · {header.stop_count}{" "}
+                      {header.stop_count === 1 ? "stop" : "stops"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </RailSection>
             {tourSlot >= 0 && tour.data ? (
-              <Panel title="IN YOUR CATCH-UP TOUR AS">
+              <RailSection title="In your catch-up tour as">
                 <p className="px-[10px] py-[8px] text-[12.5px] leading-[1.45] text-ink-2">
                   Stop {tourSlot + 1} of {tour.data.stops.length}.
                 </p>
-              </Panel>
+              </RailSection>
             ) : null}
-          </div>
+          </aside>
         </div>
       </div>
     </Page>

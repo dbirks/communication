@@ -333,6 +333,70 @@ describe("TourPlayer — the catch-up tour", () => {
     );
     expect(current.textContent).toContain("Second paragraph.");
   });
+
+  it("the stop-list column runs the full height with the hint at its bottom, and its see-more entry counts what is left", async () => {
+    mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      { path: itemPath(w1), body: itemDetail(w1, bugStops()) },
+    ]);
+    const column = await screen.findByTestId("tour-stop-column");
+    await screen.findByTestId("tour-stop-1");
+    // The mock draws "+ See more" at the END of the list, saying how many
+    // pieces are still behind it (9 unseen stops − 4 shown = 5).
+    const more = screen.getByTestId("tour-see-more");
+    expect(more.textContent).toContain("See more");
+    expect(column.textContent).toContain("5 more pieces of work");
+    // The keyboard hint is the column's LAST row, not a line under stop 4.
+    const hint = screen.getByTestId("tour-keyboard-hint");
+    expect(hint.parentElement).toBe(column);
+    expect(column.lastElementChild).toBe(hint);
+    const lastStop = column.querySelector("[data-testid='tour-stop-4']");
+    expect(
+      Boolean(
+        lastStop && lastStop.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+  });
+
+  it("bug rows wear the state TAG colors, so FOUND reads as failed and FIXED as done", async () => {
+    mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      { path: itemPath(w1), body: itemDetail(w1, bugStops()) },
+    ]);
+    const current = await screen.findByTestId("tour-current");
+    await waitFor(() => expect(current.textContent).toContain("FOUND"));
+    const label = (key: string) =>
+      current.querySelector(`[data-testid='tour-step-${key}'] span`)?.className ?? "";
+    expect(label("found")).toContain("bg-st-failed-tag");
+    expect(label("found")).toContain("text-st-failed-tag-fg");
+    expect(label("cause")).toContain("bg-st-waiting-tag");
+    expect(label("fixed")).toContain("bg-st-done-tag");
+    expect(label("follow-up")).toContain("bg-st-queued-tag");
+    // The pale body tint is not a state — nothing in a bug row may use it.
+    expect(current.textContent).toBeTruthy();
+    expect(label("found")).not.toContain("pale-body");
+  });
+
+  it("phone: the stop strip scrolls in its own container and offers + See more", async () => {
+    mount([{ path: "/api/v1/catch-up/tour", body: (n: number) => (n === 1 ? page0 : page4) }]);
+    const first = await screen.findByTestId("tour-stop-strip-1");
+    // A chip the title WRAPS inside (no ellipsis), and a strip that carries its
+    // own horizontal scrollbar so the page never gets one at 390.
+    expect(first.className).toContain("whitespace-normal");
+    const strip = first.parentElement?.parentElement as HTMLElement;
+    expect(strip.className).toContain("overflow-x-auto");
+    expect(screen.getByTestId("tour-see-more-strip").textContent).toBe("+ See more");
+    fireEvent.click(screen.getByTestId("tour-see-more-strip"));
+    await screen.findByTestId("tour-stop-strip-8");
+    expect(screen.queryByTestId("tour-see-more-strip")).toBeNull();
+  });
+
+  it("one piece's own tour asks for nothing: no see-more in either list", async () => {
+    mount([{ path: itemPath(w1), body: itemDetail(w1, bugStops()) }], `/catch-up/tour?item=${w1}`);
+    await screen.findByTestId("tour-stop-4");
+    expect(screen.queryByTestId("tour-see-more")).toBeNull();
+    expect(screen.queryByTestId("tour-see-more-strip")).toBeNull();
+  });
 });
 
 describe("TourPlayer — one piece (?item=)", () => {

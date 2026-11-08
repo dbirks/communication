@@ -12,7 +12,7 @@ import type { CatchUpRecap } from "../../api/catchup";
 import { RecapBlock } from "./RecapBlock";
 
 const recap: CatchUpRecap = {
-  text: "Start with the refund bug: it was fixed straight on main.",
+  text: "Start with the refund bug. It was fixed straight on main.",
   written_at: "2026-10-14T14:07:00Z",
   window: "unseen",
   project_ids: [],
@@ -42,6 +42,31 @@ describe("RecapBlock", () => {
     const ask = screen.getByTestId("catchup-recap-regenerate");
     expect(ask.textContent).toBe("Regenerate");
     expect(ask.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("sets the recap's first sentence in bold, and counts the shared tours honestly", () => {
+    mount(
+      <RecapBlock
+        recap={recap}
+        loading={false}
+        stops={4}
+        minutes={5}
+        builtFrom={3}
+        onRegenerate={vi.fn()}
+      />,
+    );
+    // Mock 8a: "**9 pieces of work you haven't seen, across 3 projects.** Start…"
+    expect(screen.getByTestId("catchup-recap-lead").textContent).toBe("Start with the refund bug.");
+    expect(screen.getByTestId("catchup-recap").textContent).toContain(
+      "Start with the refund bug. It was fixed straight on main.",
+    );
+    expect(screen.getByTestId("catchup-recap").textContent).toContain("built from 3 shared tours");
+  });
+
+  it("says shared tour (singular) for a tour built from one piece", () => {
+    mount(<RecapBlock recap={recap} loading={false} stops={1} minutes={1} builtFrom={1} />);
+    expect(screen.getByTestId("catchup-recap").textContent).toContain("built from 1 shared tour");
+    expect(screen.getByTestId("catchup-recap").textContent).not.toContain("1 shared tours");
   });
 
   it("reads the same button as Write one when there is no recap to replace", async () => {

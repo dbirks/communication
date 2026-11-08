@@ -243,6 +243,35 @@ describe("/catch-up/:workId", () => {
     );
   });
 
+  it("puts Copy link and Play tour on the header ROW, and keeps the stop-list header whole with its explainer under the list", async () => {
+    mount(detail());
+    const title = await screen.findByTestId("catchup-item-title");
+    const copy = screen.getByTestId("catchup-item-copy");
+    const play = screen.getByTestId("catchup-item-play");
+    // Mock 8b: title left, the two actions top-RIGHT of the same band — they
+    // are not a third line under the title, and not inside the story column.
+    expect(copy.closest("header")).toBe(title.closest("header"));
+    expect(play.closest("header")).toBe(title.closest("header"));
+    expect(screen.getByTestId("catchup-item-current").contains(play)).toBe(false);
+    // The column header carries the mock's full text (nothing truncated) and
+    // the explainer line sits under the list, inside the same column.
+    const column = screen.getByTestId("catchup-item-tour-column");
+    expect(screen.getByTestId("catchup-item-tour-heading").textContent).toBe("This work's tour");
+    expect(column.textContent).toContain("shared with the project");
+    expect(column.textContent).toContain(
+      "One tour per piece of work. It is rewritten as the work moves, and everyone on the project sees the same one.",
+    );
+    expect(column.contains(screen.getByTestId("catchup-item-stop-s3"))).toBe(true);
+  });
+
+  it("says nobody has seen this with no stray space in front of it", async () => {
+    mount(detail({ seen_by: [], you_saw_version: null, unseen_stops: 3 }));
+    const line = await screen.findByTestId("catchup-item-seen-line");
+    expect(line.textContent).toBe("nobody has seen this yet");
+    // No empty avatar strip to read as a leading space.
+    expect(screen.queryByTestId("catchup-item-seen-by")).toBeNull();
+  });
+
   it("copy link puts the tour url on the clipboard and says Copied", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {

@@ -16,8 +16,9 @@
  * version, and the store reads the ids out of the named version, so naming
  * the version a beat was born in marks exactly that beat and nothing else.
  *
- * Bug stories render the FOUND → CAUSE → FIXED → FOLLOW-UP rows (failed /
- * waiting / done / queued pale tints) — but only when the sibling stops of
+ * Bug stories render the FOUND → CAUSE → FIXED → FOLLOW-UP rows in the state
+ * TAG colors those beats mean (failed / waiting / done / queued — `states.ts`),
+ * so the label reads as a state, not as a pale band — but only when the sibling stops of
  * the same work item actually carry those kinds/titles. Nothing is invented:
  * without sibling support the stop is plain narrative paragraphs.
  *
@@ -145,7 +146,7 @@ function StepLabel({ def }: { def: StepDef }) {
   const state = STATES[def.state];
   return (
     <span
-      className={`inline-flex items-center self-start rounded-[2px] px-[7px] py-[3px] font-mono text-[10.5px] font-semibold whitespace-nowrap ${state.paleBodyBg} ${state.tagFg}`}
+      className={`inline-flex items-center self-start rounded-[2px] px-[7px] py-[3px] font-mono text-[10.5px] font-semibold whitespace-nowrap ${state.tagBg} ${state.tagFg}`}
     >
       {def.label}
     </span>
@@ -376,6 +377,9 @@ export default function TourPlayer() {
 
   /* --- render ----------------------------------------------------------- */
   const segCount = entries.length + (moreAvailable ? 1 : 0);
+  /* Stops there ARE beyond the ones loaded — the honest count behind the
+   * "+ See more" entry, never a promise about what the assistant will pick. */
+  const remainingStops = Math.max((tour.data?.total_unseen_stops ?? 0) - entries.length, 0);
   const meta =
     entries.length === 0
       ? "about 0 min"
@@ -386,12 +390,15 @@ export default function TourPlayer() {
   const heading = itemIdParam.length > 0 ? (piece.data?.title ?? "Catch-up tour") : "Catch-up tour";
 
   const stopList = (
-    <div className="border-r border-line-strong bg-surface">
+    <div
+      data-testid="tour-stop-column"
+      className="flex min-h-0 flex-1 flex-col border-r border-line-strong bg-surface"
+    >
       <div className="flex items-center gap-[8px] border-b border-line-strong bg-fill px-[10px] py-[4px] font-mono text-[10px] font-semibold tracking-[.04em] text-ink-2 uppercase">
         Stops
         <span className="ml-auto font-normal text-muted">highest priority first</span>
       </div>
-      <div className="overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {entries.map((entry, position) => {
           const importance = IMPORTANCE[entry.stop.importance] ?? IMPORTANCE.routine;
           const selected = position === currentIndex;
@@ -453,12 +460,19 @@ export default function TourPlayer() {
               See more
             </button>
             <span className="text-[12px] leading-[1.4] text-muted">
-              More pieces of work. The assistant adds the ones worth your time.
+              {remainingStops > 0 ? `${remainingStops} more ` : "More "}
+              {remainingStops === 1 ? "piece" : "pieces"} of work. The assistant adds the ones worth
+              your time.
             </span>
           </div>
         ) : null}
       </div>
-      <div className="px-[12px] py-[12px] font-mono text-[10.5px] text-muted">
+      {/* The hint sits at the BOTTOM of the column (mock 7b), not under the
+       * last stop. */}
+      <div
+        data-testid="tour-keyboard-hint"
+        className="shrink-0 border-t border-line-strong px-[12px] py-[12px] font-mono text-[10.5px] whitespace-nowrap text-muted"
+      >
         ← → move · S seen · ⌘J ask about this stop
       </div>
     </div>
@@ -611,8 +625,8 @@ export default function TourPlayer() {
           <X size={14} aria-hidden />
         </button>
         <div className="min-w-0">
-          <p className="truncate text-[15px] font-semibold">{heading}</p>
-          <p className="font-mono text-[10.5px] whitespace-nowrap text-muted">{meta}</p>
+          <p className="text-[15px] font-semibold md:truncate">{heading}</p>
+          <p className="truncate font-mono text-[10.5px] text-muted">{meta}</p>
         </div>
         <div
           data-testid="tour-progress"
@@ -655,9 +669,9 @@ export default function TourPlayer() {
         </span>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="hidden min-h-0 overflow-y-auto md:block">{stopList}</div>
-        <main className="min-h-0 overflow-y-auto">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] md:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="hidden min-h-0 md:flex md:flex-col">{stopList}</div>
+        <main className="min-h-0 min-w-0 overflow-y-auto">
           {segCount > 0 ? (
             <div className="flex items-center gap-[4px] px-[12px] pt-[8px] md:hidden" aria-hidden>
               {Array.from({ length: segCount }, (_, position) => (
@@ -677,23 +691,49 @@ export default function TourPlayer() {
             </div>
           ) : null}
           {entries.length > 0 ? (
-            <div className="flex gap-[4px] overflow-x-auto px-[12px] pt-[8px] md:hidden">
-              {entries.map((entry, position) => (
-                <button
-                  key={`strip:${entry.work_item_id}:${entry.stop.id}`}
-                  type="button"
-                  data-testid={`tour-stop-strip-${position + 1}`}
-                  onClick={() => goTo(position)}
-                  className={`shrink-0 rounded-[2px] border border-line-strong px-[8px] py-[3px] font-mono text-[10.5px] ${
-                    position === currentIndex
-                      ? "bg-imp-look-tag-bg text-imp-look-tag-fg"
-                      : "bg-surface text-ink-2"
-                  }`}
-                >
-                  {position + 1}. {entry.stop.title}
-                </button>
-              ))}
-            </div>
+            /* Own container, own scrollbar: the strip slides, the PAGE never
+             * gets a sideways scrollbar at 390. Titles wrap inside their chip. */
+            <nav
+              aria-label="Tour stops"
+              className="min-w-0 overflow-x-auto overscroll-x-contain border-b border-line bg-surface md:hidden"
+            >
+              <div className="flex w-max items-stretch gap-[4px] px-[12px] py-[8px]">
+                {entries.map((entry, position) => (
+                  <button
+                    key={`strip:${entry.work_item_id}:${entry.stop.id}`}
+                    type="button"
+                    data-testid={`tour-stop-strip-${position + 1}`}
+                    onClick={() => goTo(position)}
+                    className={`w-[168px] shrink-0 rounded-[2px] border px-[8px] py-[3px] text-left font-mono text-[10.5px] leading-[1.35] whitespace-normal break-words ${
+                      position === currentIndex
+                        ? "border-imp-look-border bg-imp-look-tag-bg"
+                        : "border-line-strong bg-surface"
+                    }`}
+                  >
+                    <span
+                      className={
+                        position === currentIndex
+                          ? "font-semibold text-imp-look-tag-fg"
+                          : "text-ink-2"
+                      }
+                    >
+                      {position + 1}. {entry.stop.title}
+                    </span>
+                  </button>
+                ))}
+                {moreAvailable ? (
+                  <button
+                    type="button"
+                    data-testid="tour-see-more-strip"
+                    onClick={loadMore}
+                    disabled={tour.isFetching}
+                    className="w-[120px] shrink-0 rounded-[2px] border border-dashed border-imp-routine-border px-[8px] py-[3px] text-left font-mono text-[10.5px] leading-[1.35] text-accent disabled:text-muted"
+                  >
+                    + See more
+                  </button>
+                ) : null}
+              </div>
+            </nav>
           ) : null}
           <div
             data-testid="tour-current"
