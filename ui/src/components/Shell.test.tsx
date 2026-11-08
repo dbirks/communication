@@ -463,6 +463,35 @@ describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
     expect(open.getAttribute("aria-expanded")).toBe("false");
   });
 
+  // Lab-e2e (acceptance 42452527578, shell-p1): the sign-in helper leaves the
+  // drawer open WITH the footer's account menu open, and one Escape must take
+  // the whole frame away. The menu consumes its own Escape (`preventDefault`),
+  // so the drawer answers the key regardless — and the rail, a desktop
+  // affordance, never renders at 390px (its root carries the same `sidebar`
+  // test id the drawer's column does).
+  it("one Escape closes the drawer even with the account menu open, at 390px", async () => {
+    stubViewport(390);
+    renderApp({ path: "/", routes: signedIn });
+    const open = await screen.findByTestId("sidebar-open", undefined, { timeout: READ_MS });
+    fireEvent.click(open);
+    await screen.findByTestId("sidebar-close", undefined, { timeout: READ_MS });
+    // No rail under the drawer: the phone frame's only column is the drawer's.
+    expect(screen.queryByTestId("sidebar-rail")).toBeNull();
+    expect(screen.getAllByTestId("sidebar")).toHaveLength(1);
+    fireEvent.click(screen.getByTestId("user-menu"));
+    expect(
+      await screen.findByTestId("user-menu-list", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
+    // The key travels the browser's path: body → document (the menu's own
+    // handler, which consumes it) → window (the drawer's).
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("user-menu-list")).toBeNull());
+    expect(screen.queryByTestId("sidebar-close")).toBeNull();
+    expect(screen.queryByTestId("sidebar")).toBeNull();
+    expect(open.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(open);
+  });
+
   it("wraps the strip's brand in a non-selectable, non-draggable link (issue #61)", async () => {
     stubViewport(390);
     renderApp({ path: "/", routes: signedIn });

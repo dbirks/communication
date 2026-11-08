@@ -193,12 +193,17 @@ export default function Shell({ children }: ShellProps) {
     if (!drawerOpen && !railOverlay) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      // A rail popover (or the drawer's) owns Esc while it is open.
-      if (event.defaultPrevented) return;
       if (drawerOpen) {
+        // The drawer answers Esc even when a surface inside it consumed the
+        // key first (the footer's account menu calls `preventDefault` on its
+        // own close): one Escape takes the whole phone frame away and hands
+        // the keyboard back to the menu button — the lab-e2e drawer contract.
         setDrawerOpen(false);
         menuButton.current?.focus();
-      } else {
+      } else if (railOverlay && !event.defaultPrevented) {
+        // The rail overlay keeps the layered rule: a popover (or menu) open
+        // inside the column owns Esc, and the overlay only closes once that
+        // surface has stood down.
         closeRailOverlay();
       }
     };

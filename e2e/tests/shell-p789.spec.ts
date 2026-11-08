@@ -901,6 +901,12 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       waitUntil: "domcontentloaded",
     });
     await expect(page.getByTestId("studio-canvas")).toBeVisible();
+    // Finding 08's new contract on the Studio draft page: the draft's ask row
+    // claims the Ask chord while collapsed, so the first ⌘J expands that row
+    // (the draft's own propose surface) and — the claim dropped with it — the
+    // second ⌘J reaches the floating popover this journey needs.
+    await page.keyboard.press("Meta+j");
+    await expect(page.getByTestId("assistant-proposal-input")).toBeVisible();
     await page.keyboard.press("Meta+j");
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
     // Under ask_all a DRAFT EDIT is a gated tool call (trust.go:

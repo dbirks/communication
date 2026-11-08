@@ -375,3 +375,51 @@ describe("the thread list follows a WORKS-IN move (rcn-review12)", () => {
     },
   );
 });
+
+// m5-inbox (lab-e2e): the row wears the conversation's OWN state word — the
+// `ds/states` rule that a state carries its glyph AND its word, never the
+// glyph (colour/shape) alone. An active chat reads `● … · active`, an idle
+// one `· … · idle`, on the mono meta line where `disconnected` and `archived`
+// have always printed their word.
+describe("thread rows carry the state WORD, not only the glyph", () => {
+  const activeRow: ConversationSummary = {
+    ...conversationSummaryFixture,
+    id: "01987a63-5555-7000-8000-abcdef000005",
+    title: "m5 two-context",
+    status: "active",
+    has_active_turn: false,
+  };
+  const idleRow: ConversationSummary = {
+    ...conversationSummaryFixture,
+    id: "01987a63-6666-7000-8000-abcdef000006",
+    title: "quiet thread",
+    status: "idle",
+    has_active_turn: false,
+  };
+
+  it(
+    "an active row prints `active`, an idle row prints `idle` (glyph + word)",
+    { timeout: 15_000 },
+    async () => {
+      renderApp({
+        path: "/threads",
+        routes: [
+          { path: "/api/v1/me", body: meFixture },
+          { path: "/api/v1/projects", body: { items: [projectFixture] } },
+          { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
+          {
+            path: "/api/v1/conversations",
+            body: { items: [activeRow, idleRow], next_cursor: null },
+          },
+        ],
+      });
+      const row = await screen.findByTestId(`thread-row-${activeRow.id}`);
+      expect(row.textContent).toMatch(/active/);
+      // The word rides the mono meta line with the other facts, and the
+      // glyph stays decorative (`aria-hidden`) — the word is the cue.
+      expect(row.querySelector('[aria-hidden="true"]')?.textContent).toBe("●");
+      const idle = await screen.findByTestId(`thread-row-${idleRow.id}`);
+      expect(idle.textContent).toMatch(/idle/);
+    },
+  );
+});

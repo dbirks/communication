@@ -131,11 +131,14 @@ function isLive(conversation: ConversationSummary): boolean {
   return conversation.status === "active" || conversation.has_active_turn === true;
 }
 
-/** The worded statuses on the mono meta line. `idle` gets its own word too:
- *  an open chat with nothing attached reads as `idle`, not as the queued
- *  `·` glyph alone (rcn-6 review 1 — it must not read as `pending`). Every
- *  other status rides on the glyph alone. */
+/** The worded statuses on the mono meta line — the glyph NEVER rides alone:
+ *  `ds/states` says a state carries its glyph AND its word, never colour (or
+ *  a shape) alone, and the thread row honours that for every status the wire
+ *  can serve (`m5-inbox`: the row wears the conversation's own state word).
+ *  `idle` got its word from rcn-6 review 1 — an open chat with nothing
+ *  attached must not read as the queued `·`-only `pending` row. */
 const ROW_STATUS_WORDS: Partial<Record<ConversationSummary["status"], string>> = {
+  active: "active",
   disconnected: "disconnected",
   archived: "archived",
 };

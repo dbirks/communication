@@ -4,7 +4,10 @@
  *
  * - **Row 1 — where this run lives**: `{project} › Runs`. Both crumbs are
  *   routes (`lib/routes.ts`), so the reader can back out without the browser's
- *   back button. The run's own handle is not a crumb: it rides the title's
+ *   back button. Every link that sits inside running text (both crumbs, the
+ *   facts row's `rev {n}`) carries an UNDERLINE, not colour alone — axe's
+ *   `link-in-text-block` rule (lab-e2e a11y, workbench screens) and the same
+ *   convention the inline links on Today, Projects and Catch up use. The run's own handle is not a crumb: it rides the title's
  *   `title` and the URL, where an internal id belongs.
  * - **Row 2 — what this run is and what to do about it**: the run's sentence
  *   (the 22px title), the state chip, and on the right ONE primary action
@@ -241,14 +244,14 @@ export function RunHeader({
       >
         <Link
           to={routes.project(projectId)}
-          className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
           {project.data?.name ?? projectId}
         </Link>
         <span aria-hidden>›</span>
         <Link
           to={routes.projectTab(projectId, "runs")}
-          className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
           Runs
         </Link>
@@ -430,7 +433,7 @@ export function RunHeader({
               <Link
                 to={routes.workflow(run.pipeline_id)}
                 data-testid="run-pinned-revision"
-                className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               >
                 rev {revision.revision_number}
               </Link>

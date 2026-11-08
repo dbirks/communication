@@ -300,6 +300,23 @@ describe("RunHeader rows 1 and 3", () => {
     expect(screen.getByTestId("run-fact-digest").textContent).toBe("Pinned digest3f2f3f2f3f2f");
   });
 
+  // axe `link-in-text-block` (lab-e2e a11y, workbench surfaces): a link that
+  // sits inside running text — both crumbs, the facts row's `rev {n}` — must
+  // be distinguishable WITHOUT colour, i.e. carry the underline class (the
+  // same cue the inline links on Today/Projects/Catch up carry). `underline`
+  // must be its own class token: `underline-offset-2` alone is not a cue.
+  it("every inline link in the breadcrumb and the facts row is underlined, not colour-only", () => {
+    mountHeader();
+    const inlineLinks = [
+      ...Array.from(screen.getByTestId("run-breadcrumb").querySelectorAll("a")),
+      ...Array.from(screen.getByTestId("run-header-meta").querySelectorAll("a")),
+    ];
+    expect(inlineLinks.length).toBe(3); // project, Runs, rev 7
+    for (const link of inlineLinks) {
+      expect(link.className.split(/\s+/)).toContain("underline");
+    }
+  });
+
   it("leaves out the facts the run's data cannot name", () => {
     mountHeader({ repoName: null, startedBy: null });
     expect(screen.queryByTestId("run-fact-repository")).toBeNull();
