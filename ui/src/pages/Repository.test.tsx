@@ -5,7 +5,7 @@
  * into-Running), plus the honest GitHub refusals both share.
  */
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
 import {
   claudeProfile,
@@ -31,6 +31,14 @@ import {
   wirePipelineList,
   wireRevision,
 } from "../test/fixtures/m4/wire";
+
+/**
+ * The instant every clock-dependent test pretends it is running at: after the
+ * newest fixture activity (2026-11-02T09:45Z) and before the future schedule
+ * fire (2026-11-03T02:00Z), while every `finished_at`/`updated_at` the seven
+ * day window is measured against is still inside that window.
+ */
+const LANES_NOW = "2026-11-02T12:00:00Z";
 
 const repositoryId = "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0";
 
@@ -480,9 +488,9 @@ describe("the activity feed", () => {
     expect(screen.getByTestId(`repo-run-status-${testid(waitingRun.id)}`).textContent).toContain(
       "need you",
     );
-    // The kinds are spelled: RUN for runs, CHAT for chats; the fourth cell
+    // The kinds are spelled: RUN for runs, THREAD for threads; the fourth cell
     // names the workflow (runs) or the agent profile (chats).
-    expect(chat.textContent).toContain("CHAT");
+    expect(chat.textContent).toContain("THREAD");
     expect(chat.textContent).toContain("Search revamp spike");
     expect(chat.textContent).toContain(claudeProfile.name);
     expect(waiting.textContent).toContain("Feature development");
@@ -514,7 +522,7 @@ describe("the activity feed", () => {
     expect(screen.queryByTestId(`repo-run-${testid(doneRun.id)}`)).toBeNull();
   });
 
-  it("shows the empty state pointing at the chat box", async () => {
+  it("shows the empty state pointing at the thread box", async () => {
     renderFeed([
       { path: `/api/v1/projects/${projectFixture.id}/runs`, body: { runs: [] } },
       {
@@ -524,8 +532,8 @@ describe("the activity feed", () => {
       },
     ]);
     const empty = await screen.findByTestId("repo-activity-empty");
-    expect(empty.textContent).toContain("No runs or chats in communication yet");
-    expect(empty.textContent).toContain("chat box");
+    expect(empty.textContent).toContain("No runs or threads in communication yet");
+    expect(empty.textContent).toContain("thread box");
   });
 
   it("shows the error card with Retry when the reads fail", async () => {
@@ -784,6 +792,20 @@ describe("the side panel", () => {
 });
 
 describe("/p/:projectId/:repo — 3b Lanes", () => {
+  // The FINISHED lane is "the last 7 days" counted against the clock the page
+  // reads (`buildLanes(…, now = Date.now())`), and every fixture above is a
+  // fixed calendar date — so the clock is pinned here (the same instant the
+  // pure `buildLanes` test below uses) instead of being a time bomb that
+  // drops `Nightly deps` out of the window as real days pass. Only `Date` is
+  // faked: react-query, promises and `findBy*` keep the real timers.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(LANES_NOW));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("buckets the runs and chats into the four lanes", async () => {
     renderLanes();
     await openLanes();
@@ -901,7 +923,7 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
     expect(startable.textContent).toContain("Feature development");
     expect(menu.textContent).not.toContain("Module check");
     expect(screen.getByTestId("repo-start-issue-chat").textContent).toContain(
-      "Chat about it instead",
+      "Ask in a thread instead",
     );
     // The caught card is the menu's anchor (3b's dropped card).
     expect(screen.getByTestId("repo-lane-drop-card").textContent).toContain("#512");
@@ -979,7 +1001,7 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
     ).toHaveLength(0);
   });
 
-  it("the keyboard `Start…` opens the same menu, and `Chat about it instead` seeds a repo chat", async () => {
+  it("the keyboard `Start…` opens the same menu, and `Ask in a thread instead` seeds a repo chat", async () => {
     const projectPath = `/api/v1/projects/${projectFixture.id}`;
     const { requests } = renderLanes();
     await openLanes();
@@ -1006,7 +1028,7 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
     await waitFor(() => expect(screen.queryByTestId("repo-lane-running")).toBeNull());
   });
 
-  it("New chat opens today's chat box in a modal", async () => {
+  it("New thread opens today's thread box in a modal", async () => {
     renderLanes();
     await openLanes();
     fireEvent.click(screen.getByTestId("repo-new-chat"));
@@ -1053,7 +1075,7 @@ describe("/p/:projectId/:repo — 3b Lanes", () => {
 
 describe("buildLanes (3b bucketing, fixed clock)", () => {
   it("puts each status in its lane and keeps the seven-day window honest", () => {
-    const now = Date.parse("2026-11-02T12:00:00Z");
+    const now = Date.parse(LANES_NOW);
     const stale = {
       ...doneRun,
       id: "01987c11-0004-7000-8000-abcdef012345",
