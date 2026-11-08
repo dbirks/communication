@@ -17,7 +17,7 @@
  * (`Shell.tsx`, `assistant/askControl.ts`). The palette also opens from
  * `openPalette()` — the sidebar's `Search ⌘K` field.
  *
- * **Where the trigger lives** (design review pass 2): the `Ask… Ctrl K` box is a
+ * **Where the trigger lives** (design review pass 2): the `Search… ⌘K` box is a
  * header control. The shell mounts the palette inside its top strip, so the box
  * can only ever sit in that strip; the sidebar's `Search` field and the chord
  * are the other ways in. It used to ride a fixed
@@ -247,6 +247,17 @@ export interface CommandPaletteProps {
   className?: string;
 }
 
+/**
+ * The chord as this keyboard prints it: `⌘K` on an Apple machine, `Ctrl K`
+ * everywhere else — the same hint the sidebar's `Search ⌘K` field carries,
+ * spelled the way the modifier key is really labelled. Read once per render of
+ * the trigger; the palette is a client-only component, so `navigator` is there.
+ */
+function commandKeyHint(): string {
+  const platform = `${navigator.platform} ${navigator.userAgent}`;
+  return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘K" : "Ctrl K";
+}
+
 /** The sidebar's `Search ⌘K` field opens the jump palette this way. */
 export const PALETTE_OPEN_EVENT = "communication:palette-open";
 
@@ -319,15 +330,15 @@ export default function CommandPalette({ context, className = "" }: CommandPalet
         data-testid="ask-box"
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`Ask or jump — current section ${context}`}
+        aria-label={`Search or jump — current section ${context}`}
         onClick={() => (open ? close() : setOpen(true))}
         className="hidden h-[30px] w-[240px] items-center gap-[6px] rounded-[4px] border border-line-strong bg-surface px-[8px] text-left font-mono text-[11.5px] text-faint hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent sm:flex"
       >
         <span className="shrink-0 rounded-[3px] bg-accent-tint px-[5px] py-[1px] text-[10px] text-accent-text">
           {context}
         </span>
-        <span className="truncate">Ask…</span>
-        <span className="ml-auto shrink-0 tracking-[.04em]">Ctrl K</span>
+        <span className="truncate">Search…</span>
+        <span className="ml-auto shrink-0 tracking-[.04em]">{commandKeyHint()}</span>
       </button>
       {open
         ? createPortal(
@@ -350,7 +361,7 @@ export default function CommandPalette({ context, className = "" }: CommandPalet
  * The panel owns its query and its caret, so every open starts empty and the
  * reads behind the list exist only while the list is on screen. It is portalled
  * to the body and anchored to the viewport rather than to the box: the shell
- * hides the box at desktop widths (the sidebar's `Ask ⌘K` row is the trigger
+ * hides the box at desktop widths (the sidebar's `Search ⌘K` row is the trigger
  * there), and a panel that hung off a hidden box would never be seen.
  */
 function PalettePanel({ onClose }: { onClose: () => void }) {

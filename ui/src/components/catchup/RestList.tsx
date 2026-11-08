@@ -151,7 +151,7 @@ export function RestList({
               </span>
             </span>
             <span
-              className={`ml-auto inline-flex h-[18px] items-center rounded-panel border border-line-strong px-[6px] font-mono text-[10.5px] whitespace-nowrap md:ml-0 md:col-start-5 ${state.tagBg} ${state.tagFg}`}
+              className={`ml-auto inline-flex h-[18px] shrink-0 items-center rounded-panel border border-line-strong px-[6px] font-mono text-[10.5px] whitespace-nowrap md:ml-0 md:col-start-5 ${state.tagBg} ${state.tagFg}`}
             >
               {RESOLUTION_WORD[item.resolution]}
             </span>
@@ -161,7 +161,15 @@ export function RestList({
             >
               Tour ›
             </Link>
-            <span className="w-full min-w-0 md:w-auto md:col-start-4">
+            {/* The text cell is the last child (the phone reads landing →
+                title), so the grid must be told which cell it is: with an auto
+                row the sparse packing cursor has already passed column 4 by
+                the time it is placed and drops it into a SECOND row, where its
+                summary line prints over the next row's chip (acceptance
+                42482110455, cu-8a). `md:row-start-1` pins it; `min-w-0` +
+                `truncate` keep the lines inside their own cell at every width,
+                and the chip's `shrink-0` keeps it whole. */}
+            <span className="w-full min-w-0 truncate md:w-auto md:col-start-4 md:row-start-1">
               <span className="block truncate text-[13px] font-semibold">
                 {item.title}{" "}
                 {item.updated ? (

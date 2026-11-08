@@ -3,7 +3,10 @@
  * pieces the tour cards do NOT already show; a piece with only some of its
  * unseen stops in the cards stays; an all-featured pile says so honestly.
  * Below 768px rows stack into two lines and the checkbox carries a 44px hit
- * area without moving the desktop grid.
+ * area without moving the desktop grid. Acceptance 42482110455 adds the
+ * overlap rule: the title/summary cell owns its width (it truncates inside
+ * its own cell and sits in the grid's first row), so its summary line can
+ * never print under the resolution chip.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -64,6 +67,31 @@ describe("RestList", () => {
       "Everything unseen is in the tour above.",
     );
     expect(screen.getByTestId("catchup-rest").textContent).toContain("THE REST · 0 UNSEEN");
+  });
+
+  it("keeps the summary inside its own cell so it can never print over the chip", () => {
+    mount([item("a", 2)]);
+    const row = screen.getByTestId("catchup-row-a");
+    // The text cell owns its width: `min-w-0` lets the flex/grid track shrink
+    // below the text's own length and `truncate` clips what is left, so the
+    // summary line stops at the cell edge instead of running under the
+    // resolution chip (acceptance 42482110455, cu-8a: the summary painted a
+    // 30×14px patch over `branch ready`).
+    const cell = row.querySelector('[class*="col-start-4"]');
+    expect(cell?.className).toContain("min-w-0");
+    expect(cell?.className).toContain("truncate");
+    // It is the last child, so the ≥768 grid needs its row named: left on an
+    // auto row, the sparse packing cursor (already past column 4) pushed it
+    // into a second row, where its second line sat on the NEXT row's chip.
+    expect(cell?.className).toContain("md:row-start-1");
+    expect(cell?.className).toContain("md:col-start-4");
+    // Both lines truncate on their own, and the chip is never squeezed.
+    const lines = Array.from(cell?.children ?? []);
+    expect(lines).toHaveLength(2);
+    for (const line of lines) expect(line.className).toContain("truncate");
+    const chip = row.querySelector('[class*="col-start-5"]');
+    expect(chip?.className).toContain("shrink-0");
+    expect(chip?.textContent).toBe("merged");
   });
 
   it("stacks rows into two lines below 768px with a 44px checkbox hit area", () => {

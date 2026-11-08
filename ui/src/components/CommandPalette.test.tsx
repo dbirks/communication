@@ -258,10 +258,33 @@ describe("CommandPalette", () => {
     mountPalette();
     const box = screen.getByTestId("ask-box");
     expect(box.textContent).toContain("inbox");
+    // Finding 08: ⌘K is search/jump only — Ask has its own chord (⌘J) and its
+    // own floating button — so the box says `Search…`, never `Ask…`.
+    expect(box.textContent).toContain("Search…");
+    expect(box.textContent).not.toContain("Ask…");
+    expect(box.getAttribute("aria-label")).toBe("Search or jump — current section inbox");
+    // jsdom reports no Apple platform, so the chord prints in its Ctrl spelling.
     expect(box.textContent).toContain("Ctrl K");
 
     fireEvent.click(box);
     expect(await screen.findByRole("dialog")).toBeTruthy();
+  });
+
+  // The hint is the same chord the sidebar's `Search ⌘K` field names, spelled
+  // for the keyboard in front of the reader.
+  it("prints the chord the host platform labels its modifier with", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: "MacIntel" });
+    try {
+      mountPalette();
+      expect(screen.getByTestId("ask-box").textContent).toContain("⌘K");
+    } finally {
+      if (descriptor) Object.defineProperty(window.navigator, "platform", descriptor);
+      else delete (window.navigator as unknown as { platform?: string }).platform;
+      cleanup();
+    }
+    mountPalette();
+    expect(screen.getByTestId("ask-box").textContent).toContain("Ctrl K");
   });
 
   it("jumps straight to a project's recent run, and offers its sub-pages", async () => {

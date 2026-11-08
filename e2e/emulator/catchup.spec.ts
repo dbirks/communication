@@ -693,11 +693,16 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       await expect(popover).toBeHidden({ timeout: 10_000 });
 
       // ⌘K opens the jump palette (ADR-0050's addendum: K searches, J asks).
+      // The palette's wrapper (`palette-root`) is never the visible thing: its
+      // children are all `position: fixed`, so the wrapper's own box is empty
+      // and Playwright cannot see it — the panel's input is what a person sees
+      // and types into, and opening means taking the caret.
       await page.keyboard.press("ControlOrMeta+k");
-      const palette = page.getByTestId("palette-root");
-      await expect(palette, "⌘K opens the palette").toBeVisible({ timeout: 10_000 });
+      const paletteInput = page.getByTestId("palette-input");
+      await expect(paletteInput, "⌘K opens the palette").toBeVisible({ timeout: 10_000 });
+      await expect(paletteInput, "the palette takes the caret").toBeFocused();
       await page.keyboard.press("Escape");
-      await expect(palette).toBeHidden({ timeout: 10_000 });
+      await expect(paletteInput, "Esc closes the palette").toBeHidden({ timeout: 10_000 });
     });
   });
 });
