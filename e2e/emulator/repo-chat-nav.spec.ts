@@ -3240,7 +3240,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(
         page.getByTestId("agent-mail-state"),
         "design 3d: the state line reads on",
-      ).toContainText(/on — chats in this project may ask/i, { timeout: 15_000 });
+      ).toContainText(/on — threads in this project may ask/i, { timeout: 15_000 });
     });
 
     await test.step("start the chat in `web` and take control", async () => {

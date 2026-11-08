@@ -339,8 +339,8 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         "design 8a: the rest panel carries the pieces still owed",
       ).toBeVisible({ timeout: 30_000 });
       await expect(
-        page.getByTestId("catchup-see-more").or(page.getByTestId("catchup-rest")),
-        "design 8a: more stops (See more) or the rest list must follow the cards",
+        page.getByTestId("catchup-see-more"),
+        "design 8a: more stops (See more) must follow the cards",
       ).toBeVisible();
       const rest = page.getByTestId("catchup-rest");
       await expect(rest.getByTestId(`catchup-row-${ids["push"]}`)).toContainText(PUSH_TITLE);
