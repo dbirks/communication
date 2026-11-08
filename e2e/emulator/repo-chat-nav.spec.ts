@@ -49,7 +49,7 @@
 //            transcript's "moved this thread to …" system line in both
 //            directions.
 //   rcn-2f — the side panel's `Make a workflow…` opens the assistant panel
-//            with the chat as context. The ask is the app's own canned line;
+//            with the thread as context. The ask is the app's own canned line;
 //            what the model answers with is deliberately NOT asserted. Run
 //            as the ORG ADMIN (rcn-review11-2f): the library draft the flow
 //            saves needs the library role, which alice — the project
@@ -167,7 +167,7 @@ const MAIL_QUESTION_TOKEN = `EMU-Q-${EMU_PASS_ID}`;
  * read-only on a real model. */
 const MAIL_QUESTION = `${MAIL_QUESTION_TOKEN} — what is in this repository? Answer in one short sentence.`;
 
-/** Escape a literal for a RegExp source (the 2f ask carries the chat's title). */
+/** Escape a literal for a RegExp source (the 2f ask carries the thread's title). */
 function escapeForRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -2793,7 +2793,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
   test.describe("thread → workflow (the library-draft actor is the org admin)", () => {
     test.use({ storageState: EMU_ADMIN_STATE });
 
-    test("thread → workflow — Make a workflow… opens the assistant with the chat", async ({
+    test("thread → workflow — Make a workflow… opens the assistant with the thread", async ({
       page,
       emu,
     }) => {
@@ -2819,17 +2819,19 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         ).toBeEnabled();
       });
 
-      await test.step("the assistant panel opens with the chat as context (2f)", async () => {
-        // The ask must name THIS thread: the shipped canned line (e211688) is
-        // `Turn the chat “<title>” into a workflow` — only a title-less chat
-        // falls back to `Turn this chat into a workflow` — so the chat's own
-        // title, read from the API, is what proves the note opened the panel on
-        // this conversation rather than on some generic subject. The model's
-        // answer is never asserted.
+      await test.step("the assistant panel opens with the thread as context (2f)", async () => {
+        // The ask must name THIS thread: the shipped canned line (2a1b7a7,
+        // finding 01 — the thread rename) is
+        // `Turn the thread “<title>” into a workflow` — only a title-less
+        // thread falls back to `Turn this thread into a workflow` (ui/src/
+        // components/assistant/AssistantPopover.tsx, openAssistantWorkflowDraft)
+        // — so the thread's own title, read from the API, is what proves the
+        // note opened the panel on this conversation rather than on some
+        // generic subject. The model's answer is never asserted.
         const conv = await page.request.get(`${EMU_BASE_URL}/api/v1/conversations/${ids.chatId}`);
         expect(conv.status(), "the conversation read answers").toBe(200);
-        const chatTitle = (((await conv.json()) as { title?: string }).title ?? "").trim();
-        expect(chatTitle, "this journey's chat carries a title the ask can name").not.toBe("");
+        const threadTitle = (((await conv.json()) as { title?: string }).title ?? "").trim();
+        expect(threadTitle, "this journey's thread carries a title the ask can name").not.toBe("");
         await page.getByTestId("assistant-note-workflow-action-make_workflow").click();
         await expect(
           page.getByTestId("assistant-popover"),
@@ -2839,12 +2841,12 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
           page
             .getByText(
               new RegExp(
-                `turn the chat [^\n]*${escapeForRegex(chatTitle)}[^\n]* into a workflow`,
+                `turn the thread [^\n]*${escapeForRegex(threadTitle)}[^\n]* into a workflow`,
                 "i",
               ),
             )
             .first(),
-          `the note's ask travels to the panel naming this chat (${chatTitle}) — the app's own canned line; the model's answer is never asserted`,
+          `the note's ask travels to the panel naming this thread (${threadTitle}) — the app's own canned line; the model's answer is never asserted`,
         ).toBeVisible({ timeout: 30_000 });
         // Round-9 defect A: capture ONLY after the answer has landed — the
         // `thinking…` line (AssistantPanel `assistant-thinking`) is gone AND

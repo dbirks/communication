@@ -237,8 +237,13 @@ function seedCatchUpFixture(): Record<string, string> {
     `SELECT 'bug|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(BUG_TITLE)} ` +
     `UNION ALL SELECT 'pr|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(PR_TITLE)} ` +
     `UNION ALL SELECT 'push|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(PUSH_TITLE)} ` +
-    `UNION ALL SELECT 'recap|' || COALESCE((SELECT MAX(id)::text FROM catchup_recaps r ` +
-    `WHERE r."text" LIKE ${sqlQuote(`${RECAP_PREFIX}%`)}), 'MISSING');`,
+    // Newest-first read of the recap, NOT `MAX(id)`: postgres has no `max()`
+    // for uuid (acceptance 42460068894 — `function max(uuid) does not exist`),
+    // so the id comes back through the table's own newest-recap ordering
+    // (catchup_recaps_user_written_idx: written_at DESC, id DESC).
+    `UNION ALL SELECT 'recap|' || COALESCE((SELECT r.id::text FROM catchup_recaps r ` +
+    `WHERE r."text" LIKE ${sqlQuote(`${RECAP_PREFIX}%`)} ` +
+    `ORDER BY r.written_at DESC, r.id DESC LIMIT 1), 'MISSING');`,
   ].join(" ");
   const out = labSql(sql);
   const ids: Record<string, string> = {};
