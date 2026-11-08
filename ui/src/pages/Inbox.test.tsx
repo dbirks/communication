@@ -99,7 +99,7 @@ describe("/inbox", () => {
     mountInbox({ approvals: [] }, { runs: [] });
     expect((await screen.findByTestId("inbox-greeting")).textContent).toContain("Ada");
     expect((await screen.findByTestId("inbox-summary")).textContent).toBe(
-      "Across 1 project: 0 decisions, 0 stalled runs, 0 conversations. 0 runs are going fine.",
+      "Across 1 project: 0 decisions, 0 stalled runs, 0 threads. 0 runs are going fine.",
     );
   });
 
@@ -341,13 +341,13 @@ describe("/inbox", () => {
     ).toContain("active");
     expect(
       within(row).getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).textContent,
-    ).toContain("Open conversation");
+    ).toContain("Open thread");
     expect(
       within(row)
         .getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`)
         .getAttribute("href"),
     ).toBe(`/threads/${conversationId}`);
-    expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 conversation");
+    expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 thread");
     // No turn is open on the list row, so nothing asks a prompt: the detail
     // route is not read for a row the list already answers.
     expect(requestsTo(requests, CONVERSATION_PATH, "GET")).toHaveLength(0);
@@ -386,7 +386,7 @@ describe("/inbox", () => {
     const list = await screen.findByTestId("inbox-conversations");
     expect(within(list).getAllByTestId(/^inbox-open-conversation-/)).toHaveLength(1);
     expect(screen.queryByTestId(`inbox-conversation-${testidOf(otherConversationId)}`)).toBeNull();
-    expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 conversation");
+    expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 thread");
   });
 
   it("badges where a conversation was opened and deep-links a run one into the workbench", async () => {

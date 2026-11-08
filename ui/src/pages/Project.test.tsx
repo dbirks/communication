@@ -219,7 +219,7 @@ describe("/p/:projectId — the header band and its tabs", () => {
     expect(items.map((item) => item.getAttribute("href"))).toEqual([
       `/p/${projectId}`,
       `/p/${projectId}/runs`,
-      `/p/${projectId}/conversations`,
+      `/p/${projectId}/threads`,
       `/p/${projectId}/pipelines`,
       `/p/${projectId}/artifacts`,
       `/p/${projectId}/settings`,
@@ -839,7 +839,7 @@ describe("/p/:projectId — the inventory column", () => {
       screen.queryByTestId(`project-thread-last-line-${testidOf(conversationSummaryFixture.id)}`),
     ).toBeNull();
     expect(screen.getByTestId("project-all-threads").getAttribute("href")).toBe(
-      `/p/${projectId}/conversations`,
+      `/p/${projectId}/threads`,
     );
   });
 

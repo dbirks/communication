@@ -768,7 +768,7 @@ function Footer({ rail = false }: { rail?: boolean }) {
   );
 }
 
-/** The `New chat` row: one chat-starting button (the shared conversation
+/** The `New thread` row: one thread-starting button (the shared conversation
  * dialog, with its project picker) and the `⌘K` box the Ask preference puts
  * beside it. Signed-in affordance only — "start something" needs a member. */
 function NewChatRow({
@@ -789,7 +789,7 @@ function NewChatRow({
           onClick={onNewChat}
           className={`h-[30px] min-w-0 flex-1 truncate rounded-[4px] border border-fill-edge bg-fill px-2 text-[12.5px] font-semibold text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
         >
-          New chat
+          New thread
         </button>
       ) : null}
       {askInSidebar ? (
@@ -807,15 +807,15 @@ function NewChatRow({
   );
 }
 
-/** The rail's `+`: the same conversation dialog as the expanded `New chat`. */
+/** The rail's `+`: the same conversation dialog as the expanded `New thread`. */
 function RailNewChat({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: () => void }) {
   if (!signedIn) return null;
   return (
     <button
       type="button"
       data-testid="new-chat-rail"
-      aria-label="New chat"
-      title="New chat"
+      aria-label="New thread"
+      title="New thread"
       onClick={onNewChat}
       className={`grid size-[28px] shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-fill text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
     >
@@ -1134,7 +1134,7 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
     },
     {
       to: routes.threads(),
-      label: "My chats",
+      label: "Threads",
       testid: "sidebar-link-threads",
       flag:
         flags.threads !== null && flags.threads > 0 ? (

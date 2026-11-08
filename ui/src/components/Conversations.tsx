@@ -179,7 +179,7 @@ export default function Conversations({ project }: ConversationsProps) {
   return (
     <Panel
       id="conversations"
-      title="CONVERSATIONS"
+      title="THREADS"
       headingId="conversations-heading"
       headingLevel={2}
       meta={conversations.data ? `${conversations.data.items.length} total` : undefined}
@@ -187,7 +187,7 @@ export default function Conversations({ project }: ConversationsProps) {
       <div className="space-y-3 p-[10px]">
         <div
           role="group"
-          aria-label="Conversation filters"
+          aria-label="Thread filters"
           className="flex flex-wrap items-center gap-[5px]"
           data-testid="conversation-filters"
         >
@@ -196,7 +196,7 @@ export default function Conversations({ project }: ConversationsProps) {
               key={filter.value}
               type="button"
               aria-pressed={originFilter === filter.value}
-              aria-label={`show ${filter.label} conversations`}
+              aria-label={`show ${filter.label} threads`}
               data-testid={filter.testid}
               onClick={() => setOriginFilter(filter.value)}
               className={`rounded-[2px] border px-[7px] py-[2px] font-mono text-[10.5px] ${
@@ -210,7 +210,7 @@ export default function Conversations({ project }: ConversationsProps) {
           ))}
           <input
             type="search"
-            aria-label="Search conversations by title"
+            aria-label="Search threads by title"
             placeholder="search title"
             value={query}
             data-testid="conversation-search"
@@ -218,22 +218,19 @@ export default function Conversations({ project }: ConversationsProps) {
             className="ml-auto w-[11rem] rounded-[2px] border border-line-strong bg-surface px-[6px] py-[2px] font-mono text-[10.5px] text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           />
         </div>
-        {conversations.isPending ? <Spinner label="Loading conversations" /> : null}
+        {conversations.isPending ? <Spinner label="Loading threads" /> : null}
         {conversations.error ? (
-          <ProblemBanner
-            error={conversations.error}
-            fallback="Conversations could not be loaded."
-          />
+          <ProblemBanner error={conversations.error} fallback="Threads could not be loaded." />
         ) : null}
         {conversations.data ? (
           conversations.data.items.length === 0 ? (
             filtered ? (
               <p className="text-[12.5px] text-muted" data-testid="conversation-list-nomatch">
-                No conversations match
+                No threads match
               </p>
             ) : (
               <p className="text-[12.5px] text-muted" data-testid="conversation-list-empty">
-                No conversations yet.
+                No threads yet.
               </p>
             )
           ) : (
@@ -274,11 +271,11 @@ export default function Conversations({ project }: ConversationsProps) {
             data-testid="conversations-new-open"
             onClick={() => setDialogOpen(true)}
           >
-            New conversation
+            New thread
           </Button>
         ) : (
           <p className="text-[12.5px] text-muted">
-            Only project contributors and maintainers can start conversations.
+            Only project contributors and maintainers can start threads.
           </p>
         )}
         <NewConversationDialog

@@ -77,7 +77,7 @@ export function useIsNarrow(): boolean {
 /**
  * App shell — handoff 2c/3c: one left column and no top bar on desktop. The
  * 220px white column (collapsible to a 52px rail — see `Sidebar.tsx`) carries
- * the mark, New chat + `⌘K`, Today/My chats, the project tree, the library and
+ * the mark, New thread + `⌘K`, Today/Threads, the project tree, the library and
  * the identity footer. Below `PHONE_MAX_WIDTH_PX` the column is an off-canvas
  * drawer opened from a slim top strip (the phone keeps today's hamburger); the
  * content column then owns the full width, and that strip is the only place

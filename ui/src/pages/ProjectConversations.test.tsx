@@ -74,11 +74,11 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
  * the list route as `q`/`origin` (ADR-0043); `mine` narrows client-side, the
  * same chip `/threads` draws.
  */
-describe("/p/:projectId/conversations — the 1g view, filtered to the project", () => {
+describe("/p/:projectId/threads — the 1g view, filtered to the project", () => {
   it(
     "renders the 1b frame: the header band, the tab row, Threads marked, no rail",
     async () => {
-      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+      renderApp({ path: `/p/${projectFixture.id}/threads`, routes: routes() });
 
       // The band is the overview's component, so the project's name is still
       // the page's H1 and the two verbs are still there.
@@ -116,7 +116,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
   it(
     "lists each thread as a 1g pane row: title, agent, relative age — no wire field names",
     async () => {
-      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+      renderApp({ path: `/p/${projectFixture.id}/threads`, routes: routes() });
 
       const row = await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
@@ -142,7 +142,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
   it(
     "stands the open-thread column at rest beside the pane",
     async () => {
-      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+      renderApp({ path: `/p/${projectFixture.id}/threads`, routes: routes() });
 
       await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
@@ -163,7 +163,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
     "starts a thread from the band's verb, with this project fixed",
     async () => {
       const { requests } = renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
+        path: `/p/${projectFixture.id}/threads`,
         routes: routes([
           { path: conversationsPath, method: "POST", status: 201, body: conversationFixture },
           {
@@ -223,7 +223,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
     "says there are no threads yet",
     async () => {
       renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
+        path: `/p/${projectFixture.id}/threads`,
         routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
       });
 
@@ -239,7 +239,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
   it(
     "still renders the pane when the route is reached directly",
     async () => {
-      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+      renderApp({ path: `/p/${projectFixture.id}/threads`, routes: routes() });
 
       await screen.findByTestId(`thread-row-${conversationFixture.id}`, undefined, {
         timeout: READ_MS,
@@ -248,7 +248,7 @@ describe("/p/:projectId/conversations — the 1g view, filtered to the project",
       // (no legacy `/projects/…` href is emitted).
       const nav = screen.getByRole("navigation", { name: /project sections/i });
       expect(within(nav).getByTestId("project-tab-threads").getAttribute("href")).toBe(
-        `/p/${projectFixture.id}/conversations`,
+        `/p/${projectFixture.id}/threads`,
       );
     },
     TEST_TIMEOUT,
@@ -281,7 +281,7 @@ describe("/projects/:projectId/conversations", () => {
       );
       // One canonical form: the tab's href is the route itself.
       expect(within(nav).getByTestId("project-tab-threads").getAttribute("href")).toBe(
-        `/p/${projectFixture.id}/conversations`,
+        `/p/${projectFixture.id}/threads`,
       );
       // The old page's vocabulary is gone from the screen (the ROUTE keeps the
       // API's noun; the product's word is "thread").
@@ -385,7 +385,7 @@ describe("the project pane's search and filters ride the list route (ADR-0043)",
     "sends the `from runs` chip as origin=run",
     async () => {
       const { requests } = renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
+        path: `/p/${projectFixture.id}/threads`,
         routes: routes(),
       });
       const seen = watchFetchTargets();
@@ -409,7 +409,7 @@ describe("the project pane's search and filters ride the list route (ADR-0043)",
     async () => {
       vi.useFakeTimers();
       try {
-        renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
+        renderApp({ path: `/p/${projectFixture.id}/threads`, routes: routes() });
         // Let the mount's reads land while every clock is fake.
         for (let i = 0; i < 5; i += 1) {
           await act(async () => {
@@ -444,7 +444,7 @@ describe("the project pane's search and filters ride the list route (ADR-0043)",
     "says no threads match when the filter finds nothing on the page",
     async () => {
       renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
+        path: `/p/${projectFixture.id}/threads`,
         routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
       });
       await screen.findByTestId("threads-filter-runs", undefined, { timeout: READ_MS });
@@ -471,7 +471,7 @@ describe("the project pane's search and filters ride the list route (ADR-0043)",
         created_by_display_name: "Dana Observer",
       };
       renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
+        path: `/p/${projectFixture.id}/threads`,
         routes: routes([
           { path: conversationsPath, method: "GET", body: { items: [someoneElses] } },
         ]),
@@ -493,7 +493,7 @@ describe("the project pane's search and filters ride the list route (ADR-0043)",
     "a viewer reads the band's honest limit and keeps the 1g pane",
     async () => {
       renderApp({
-        path: `/p/${projectFixture.id}/conversations`,
+        path: `/p/${projectFixture.id}/threads`,
         routes: routes([
           {
             path: projectPath,

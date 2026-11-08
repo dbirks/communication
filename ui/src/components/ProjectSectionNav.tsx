@@ -23,7 +23,7 @@ import { SubNav } from "./ds/SubNav";
 export type ProjectSection =
   | "overview"
   | "runs"
-  | "conversations"
+  | "threads"
   | "pipelines"
   | "artifacts"
   | "settings";
@@ -46,7 +46,7 @@ export const PROJECT_SECTIONS: readonly {
 }[] = [
   { section: "overview", label: "Overview" },
   { section: "runs", label: "Runs" },
-  { section: "conversations", label: "Threads" },
+  { section: "threads", label: "Threads" },
   { section: "pipelines", label: "Workflows" },
   { section: "artifacts", label: "Artifacts" },
   { section: "settings", label: "Settings" },

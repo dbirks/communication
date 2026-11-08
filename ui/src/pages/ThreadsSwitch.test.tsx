@@ -113,12 +113,10 @@ describe("gh-69: switching threads never replaces the painted screen", () => {
     // the list pane unmounted. The fixed answer: the same screen silhouette —
     // the pane is still the pane, its rows still listed, and the pending line
     // sits INSIDE the full-size thread column.
-    // The spinner sits INSIDE the full-size column (`· Loading conversation…`
+    // The spinner sits INSIDE the full-size column (`· Loading thread…`
     // is the announced Spinner's whole line, dots included).
     expect(screen.getByTestId("threads-view")).toBeTruthy();
-    expect(screen.getByTestId("threads-detail-column").textContent).toContain(
-      "Loading conversation",
-    );
+    expect(screen.getByTestId("threads-detail-column").textContent).toContain("Loading thread");
     expect(screen.getByTestId("threads-page")).toBeTruthy();
     expect(screen.getByTestId(`thread-row-${conversationId}`)).toBeTruthy();
 
@@ -154,7 +152,7 @@ describe("gh-69: switching threads never replaces the painted screen", () => {
     );
     expect(screen.getByTestId("conversation-title").textContent).toBe(conversationFixture.title);
     expect(screen.getByTestId("threads-page")).toBeTruthy();
-    expect(screen.queryByText("Loading conversation")).toBeNull();
+    expect(screen.queryByText("Loading thread")).toBeNull();
 
     release();
     await waitFor(() =>

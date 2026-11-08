@@ -1,9 +1,10 @@
 /**
- * `/p/:projectId/conversations` — the project's Threads tab.
+ * `/p/:projectId/threads` — the project's Threads tab.
  *
- * The route keeps its path (`conversations` is the API's noun, and the
- * assistant's route table, breadcrumbs and permalinks name it) while the
- * screen speaks the product's word: **Threads**. The tab IS the 1g view — the
+ * Finding 01 renamed the URL segment to the word the screen already used
+ * (**Threads**); `conversations` stays the API's noun, and the old
+ * `/p/:projectId/conversations` path redirects here (`App.tsx`). The tab IS
+ * the 1g view — the
  * same 320px list pane and open-thread column the `/threads` page draws
  * (`components/threads/ThreadListPane`, `ThreadsDetailColumn`), filtered to
  * this project and sitting under the project's 1b header band and tab row.

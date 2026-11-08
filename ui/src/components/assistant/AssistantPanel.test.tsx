@@ -246,7 +246,7 @@ describe("AssistantPanel (expanded)", () => {
     fireEvent.click(shrink);
     expect(onShrink).toHaveBeenCalledTimes(1);
     const fresh = screen.getByTestId("assistant-new-conversation");
-    expect(fresh.getAttribute("aria-label")).toBe("New conversation");
+    expect(fresh.getAttribute("aria-label")).toBe("New thread");
     expect(fresh.textContent).toContain("New");
   });
 
@@ -446,8 +446,8 @@ describe("AssistantPanel (expanded)", () => {
 });
 
 /**
- * ui-newconv: the header's `New conversation` control and the Recent menu
- * (the caller's last 5 conversations by title + age, newest first).
+ * ui-newconv: the header's `New thread` control and the Recent menu
+ * (the caller's last 5 threads by title + age, newest first).
  */
 describe("AssistantPanel header controls (ui-newconv)", () => {
   const recent: RecentConversation[] = [
@@ -460,23 +460,23 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     renderPanel({ onNewConversation: onNew });
     const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
     expect(button.className).toContain("ds-btn--ghost");
-    expect(button.title).toBe("New conversation");
+    expect(button.title).toBe("New thread");
     // The narrow header's glyph is the lucide Plus (an SVG, so it adds no text
     // to the name); the wording lives in the sr-only span and the tooltip
     // (rcn-6 review: the old fullwidth ＋ rendered as an unlabelled blue bar).
     expect(button.querySelector("svg")).toBeTruthy();
-    expect(button.textContent).toBe("New conversation");
+    expect(button.textContent).toBe("New thread");
     fireEvent.click(button);
     expect(onNew).toHaveBeenCalledTimes(1);
     // No Recent menu without the switch callback.
     expect(screen.queryByTestId("assistant-history")).toBeNull();
   });
 
-  it("expanded: the full New conversation wording", () => {
+  it("expanded: the full New thread wording", () => {
     const onNew = vi.fn();
     render(<AssistantPanel variant="expanded" {...panelProps} onNewConversation={onNew} />);
     const button = screen.getByTestId("assistant-new-conversation");
-    expect(button.textContent).toBe("New conversation");
+    expect(button.textContent).toBe("New thread");
     fireEvent.click(button);
     expect(onNew).toHaveBeenCalledTimes(1);
   });
@@ -508,7 +508,7 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     expect(shrink.querySelector("span")?.className).toContain("min-[640px]:inline");
 
     const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
-    expect(button.getAttribute("aria-label")).toBe("New conversation");
+    expect(button.getAttribute("aria-label")).toBe("New thread");
     expect(button.querySelector("svg")).toBeTruthy();
 
     const chip = screen.getByTestId("assistant-opened-from");

@@ -113,12 +113,12 @@ describe("ProjectFrame", () => {
     expect(tabs.getByTestId("project-tab-workflows").getAttribute("aria-current")).toBe("page");
     expect(tabs.getByTestId("project-tab-runs").getAttribute("aria-current")).toBeNull();
     expect(tabs.getByTestId("project-tab-threads").getAttribute("href")).toBe(
-      routes.projectTab(projectFixture.id, "conversations"),
+      routes.projectTab(projectFixture.id, "threads"),
     );
   });
 
   it("is the only navigation the page has, on the shell's full-bleed column", async () => {
-    mount({ active: "threads" }, routes.projectTab(projectFixture.id, "conversations"));
+    mount({ active: "threads" }, routes.projectTab(projectFixture.id, "threads"));
 
     const shell = await screen.findByTestId("project-tab");
     // Every project tab route is in `App.tsx`'s full-bleed list (the pass-2
@@ -131,7 +131,7 @@ describe("ProjectFrame", () => {
   });
 
   it("gives an empty state the band's own verb, not a second dialog", async () => {
-    mount({ active: "threads" }, routes.projectTab(projectFixture.id, "conversations"));
+    mount({ active: "threads" }, routes.projectTab(projectFixture.id, "threads"));
 
     fireEvent.click(await screen.findByTestId("body-new-thread"));
     const dialog = await screen.findByTestId("new-conversation-dialog");

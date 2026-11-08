@@ -268,7 +268,7 @@ function RecentMenu({
         data-testid="assistant-history"
         aria-haspopup="true"
         aria-expanded={open}
-        aria-label="Recent conversations"
+        aria-label="Recent threads"
         onClick={() => {
           setOpen((nextOpen) => !nextOpen);
           if (open) return;
@@ -283,7 +283,7 @@ function RecentMenu({
         <div
           ref={menuRef}
           role="menu"
-          aria-label="Recent conversations"
+          aria-label="Recent threads"
           data-testid="assistant-history-menu"
           onKeyDown={onMenuKeyDown}
           style={{
@@ -594,8 +594,8 @@ export function AssistantPanel({
       variant="ghost"
       compact
       data-testid="assistant-new-conversation"
-      title="New conversation"
-      aria-label="New conversation"
+      title="New thread"
+      aria-label="New thread"
       className="shrink-0"
       onClick={onNewConversation}
     >
@@ -609,12 +609,12 @@ export function AssistantPanel({
       {narrowHeader ? (
         <>
           <Plus size={13} strokeWidth={2} aria-hidden className="shrink-0" />
-          <span className="sr-only">New conversation</span>
+          <span className="sr-only">New thread</span>
         </>
       ) : (
         <>
           <Plus size={13} strokeWidth={2} aria-hidden className="shrink-0 min-[640px]:hidden" />
-          <span className="hidden min-[640px]:inline">New conversation</span>
+          <span className="hidden min-[640px]:inline">New thread</span>
         </>
       )}
     </Button>

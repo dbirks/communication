@@ -7,12 +7,11 @@
  * (`pages/Workflow.tsx`), so a tab change is a navigation and the URL stays the
  * honest answer to "where am I".
  *
- * Two labels are new words over old routes, which the handoff asks for
- * ("Conversations becomes Threads everywhere"; a library workflow is *used* by
- * a project, which is what the assignments page lists):
- *   Threads   → `/p/:id/conversations`  (rebuilt as its own screen by the
- *              Threads Review handoff; the project's list is still the
- *              conversations page)
+ * One label is still a new word over an old API noun, which the handoff asks
+ * for (finding 01: the visible word is "Thread"; `Conversation` stays the
+ * API's noun):
+ *   Threads   → `/p/:id/threads`        (finding 01 renamed the segment; the
+ *              project's list is still the conversations page)
  *   Workflows → `/p/:id/pipelines`      (the project's assignments)
  *
  * A count trails the label in mono only where the count means something, and
@@ -46,8 +45,6 @@ export function projectTabHref(projectId: string, tab: ProjectTabKey): string {
   switch (tab) {
     case "overview":
       return routes.project(projectId);
-    case "threads":
-      return routes.projectTab(projectId, "conversations");
     case "workflows":
       return routes.projectTab(projectId, "pipelines");
     default:

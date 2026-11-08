@@ -13,7 +13,7 @@
  * old permalink keeps its view, node, instance, attempt and scopes.
  */
 
-export type ProjectTab = "runs" | "pipelines" | "artifacts" | "conversations" | "settings";
+export type ProjectTab = "runs" | "pipelines" | "artifacts" | "threads" | "settings";
 
 /** The workflow page's header tabs (design 1e): routes, not fragments. */
 export type WorkflowTab = "overview" | "yaml" | "used-in" | "history";
@@ -42,8 +42,12 @@ export const routes = {
   thread: (id: string): string => `/threads/${encode(id)}`,
   projects: (): string => "/projects",
   project: (id: string): string => `/p/${encode(id)}`,
-  /** A project tab: `/p/:projectId/{runs|pipelines|artifacts|conversations|settings}`. */
+  /** A project tab: `/p/:projectId/{runs|pipelines|artifacts|threads|settings}`. */
   projectTab: (id: string, tab: ProjectTab): string => `/p/${encode(id)}/${tab}`,
+  /** A thread inside a project's URL space: `/p/:projectId/threads/:threadId`
+   * (finding 01 renamed the segment; the resource is still a conversation). */
+  projectThread: (projectId: string, threadId: string): string =>
+    `/p/${encode(projectId)}/threads/${encode(threadId)}`,
   /** A repository page: `/p/:projectId/:repo` (the repository's own name). */
   repository: (projectId: string, repo: string): string =>
     `/p/${encode(projectId)}/${encode(repo)}`,

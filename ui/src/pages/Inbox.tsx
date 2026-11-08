@@ -148,7 +148,7 @@ export default function Inbox() {
   }
 
   const { decisions, stalled, conversations, running, unread } = attention;
-  const summary = `Across ${list.length} ${list.length === 1 ? "project" : "projects"}: ${decisions.length} ${decisions.length === 1 ? "decision" : "decisions"}, ${stalled.length} stalled ${stalled.length === 1 ? "run" : "runs"}, ${conversations.length} ${conversations.length === 1 ? "conversation" : "conversations"}. ${running.length} ${running.length === 1 ? "run is" : "runs are"} going fine.`;
+  const summary = `Across ${list.length} ${list.length === 1 ? "project" : "projects"}: ${decisions.length} ${decisions.length === 1 ? "decision" : "decisions"}, ${stalled.length} stalled ${stalled.length === 1 ? "run" : "runs"}, ${conversations.length} ${conversations.length === 1 ? "thread" : "threads"}. ${running.length} ${running.length === 1 ? "run is" : "runs are"} going fine.`;
 
   return (
     <div className="space-y-4">
@@ -211,7 +211,7 @@ export default function Inbox() {
 
       {conversations.length > 0 ? (
         <Panel
-          title={`CONVERSATIONS · ${conversations.length}`}
+          title={`THREADS · ${conversations.length}`}
           headingId="inbox-conversations-heading"
           headingLevel={2}
         >
@@ -471,7 +471,7 @@ function StalledRow({
 function ConversationRow({ item }: { item: ConversationItem }) {
   const { project, conversation, pendingPermissions } = item;
   const needsPermission = pendingPermissions > 0;
-  const title = conversation.title.trim() || `conversation ${shortId(conversation.id)}`;
+  const title = conversation.title.trim() || `thread ${shortId(conversation.id)}`;
 
   return (
     <div
@@ -503,7 +503,7 @@ function ConversationRow({ item }: { item: ConversationItem }) {
           className="ds-btn ds-btn--secondary inline-flex h-[26px] items-center rounded-[4px] px-[10px]"
           data-testid={`inbox-open-conversation-${testidOf(conversation.id)}`}
         >
-          {needsPermission ? "Open" : "Open conversation"}
+          {needsPermission ? "Open" : "Open thread"}
         </Link>
       </div>
     </div>

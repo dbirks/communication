@@ -314,8 +314,14 @@ describe("legacy route redirects", () => {
     ],
     ["/projects/p-1/pipelines", "/p/p-1/pipelines"],
     ["/projects/p-1/artifacts", "/p/p-1/artifacts"],
-    ["/projects/p-1/conversations", "/p/p-1/conversations"],
+    ["/projects/p-1/conversations", "/p/p-1/threads"],
     ["/projects/p-1/conversations/c-1", "/threads/c-1"],
+    // Finding 01: the project Threads tab moved to `/p/:id/threads`; the old
+    // `conversations` spelling of both project routes redirects to it.
+    ["/p/p-1/conversations", "/p/p-1/threads"],
+    ["/p/p-1/conversations?origin=run", "/p/p-1/threads?origin=run"],
+    ["/p/p-1/conversations/c-1", "/p/p-1/threads/c-1"],
+    ["/p/p-1/threads", "/p/p-1/threads"],
     ["/projects/p-1/settings", "/p/p-1/settings"],
     ["/settings", "/settings/layout"],
   ];

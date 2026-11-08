@@ -93,7 +93,7 @@ export function RecentThreads({
       headingLevel={2}
       meta={
         <Link
-          to={routes.projectTab(project.id, "conversations")}
+          to={routes.projectTab(project.id, "threads")}
           className="font-mono text-[10.5px] normal-case"
           data-testid="project-all-threads"
         >

@@ -100,11 +100,11 @@ function Redirect({
   return <Navigate to={{ pathname: target, search, hash }} replace />;
 }
 
-/** The thread page behind a project-scoped route (`/p/:id/conversations/:id`):
+/** The thread page behind a project-scoped route (`/p/:id/threads/:id`):
  *  the standalone page keeps its own pending line while the chunk arrives. */
 function ConversationRoute() {
   return (
-    <Suspense fallback={<Spinner label="Loading conversation" />}>
+    <Suspense fallback={<Spinner label="Loading thread" />}>
       <ConversationPage />
     </Suspense>
   );
@@ -150,7 +150,7 @@ export default function App() {
     // the README says these bodies are not capped).
     /^\/p\/[^/]+$/.test(pathname) ||
     /^\/p\/[^/]+\/members$/.test(pathname) ||
-    /^\/p\/[^/]+\/(runs|conversations|pipelines)$/.test(pathname) ||
+    /^\/p\/[^/]+\/(runs|threads|conversations|pipelines)$/.test(pathname) ||
     // Threads (Projects Review design 1g) is the same shared page pattern:
     // the 320px list pane plus the open thread own the whole content column
     // at full height — a centred 64rem column would squeeze the pane header
@@ -297,7 +297,7 @@ export default function App() {
             }
           />
           <Route
-            path="/p/:projectId/conversations"
+            path="/p/:projectId/threads"
             element={
               <RequireAuth>
                 <ProjectConversations />
@@ -319,7 +319,7 @@ export default function App() {
             }
           />
           <Route
-            path="/p/:projectId/conversations/:conversationId"
+            path="/p/:projectId/threads/:conversationId"
             element={
               <RequireAuth>
                 <ConversationRoute />
@@ -498,11 +498,26 @@ export default function App() {
           />
           <Route
             path="/projects/:projectId/conversations"
-            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "conversations")} />}
+            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "threads")} />}
           />
           <Route
             path="/projects/:projectId/conversations/:conversationId"
             element={<Redirect to={(p) => routes.thread(p.conversationId ?? "")} />}
+          />
+          {/* Finding 01: the project Threads tab is `/p/:id/threads`; the old
+            `conversations` spelling of the same two routes stays alive as a
+            query-and-hash-preserving redirect. */}
+          <Route
+            path="/p/:projectId/conversations"
+            element={<Redirect to={(p) => routes.projectTab(p.projectId ?? "", "threads")} />}
+          />
+          <Route
+            path="/p/:projectId/conversations/:conversationId"
+            element={
+              <Redirect
+                to={(p) => routes.projectThread(p.projectId ?? "", p.conversationId ?? "")}
+              />
+            }
           />
 
           <Route path="*" element={<NotFound />} />

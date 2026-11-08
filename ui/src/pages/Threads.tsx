@@ -148,7 +148,7 @@ export function ThreadScreenLoading({ conversationId }: { conversationId: string
         data-testid="threads-detail-column"
       >
         <div className="flex flex-1 items-center justify-center p-8">
-          <Spinner label="Loading conversation" />
+          <Spinner label="Loading thread" />
         </div>
       </div>
     </div>

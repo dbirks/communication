@@ -228,7 +228,7 @@ function ProjectCard({
             state="running"
             glyph="●"
             value={view.conversations.length}
-            label="conversations"
+            label="threads"
             testid={`project-count-${project.slug}-conversations`}
           />
           <Count
@@ -343,9 +343,9 @@ function topItems(view: ProjectAttentionView): CardItem[] {
           ? ("waiting" as StateName)
           : stateOf(CONVERSATION_STATE[conversation.status]),
       tag: pendingPermissions > 0 ? "permission" : conversation.status,
-      title: conversation.title.trim() || `conversation ${shortId(conversation.id)}`,
-      full: conversation.title.trim() || `conversation ${shortId(conversation.id)}`,
-      meta: `${formatAge(conversation.updated_at)} · conversation`,
+      title: conversation.title.trim() || `thread ${shortId(conversation.id)}`,
+      full: conversation.title.trim() || `thread ${shortId(conversation.id)}`,
+      meta: `${formatAge(conversation.updated_at)} · thread`,
       to: routes.thread(conversation.id),
     })),
   ];
@@ -390,7 +390,7 @@ function Tally({ attention }: { attention: Attention }) {
     >
       {count("waiting", "!", attention.decisions.length, "decisions")}
       {count("failed", "×", attention.stalled.length, "stalled")}
-      {count("running", "●", attention.conversations.length, "conversations")}
+      {count("running", "●", attention.conversations.length, "threads")}
       <span className="inline-flex items-center gap-[4px] font-mono text-[10.5px] text-faint">
         <span aria-hidden="true">▸</span>
         {attention.running.length} running fine

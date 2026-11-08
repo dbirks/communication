@@ -4,7 +4,7 @@
  * rendered-router table test in `App.test.tsx` (JSX needs a .tsx file).
  */
 import { describe, expect, it } from "vitest";
-import { routes } from "./routes";
+import { routes, type ProjectTab } from "./routes";
 
 describe("route path builders", () => {
   it("builds the canonical top-level paths", () => {
@@ -28,8 +28,19 @@ describe("route path builders", () => {
     expect(routes.projectTab("p-1", "runs")).toBe("/p/p-1/runs");
     expect(routes.projectTab("p-1", "pipelines")).toBe("/p/p-1/pipelines");
     expect(routes.projectTab("p-1", "artifacts")).toBe("/p/p-1/artifacts");
-    expect(routes.projectTab("p-1", "conversations")).toBe("/p/p-1/conversations");
+    expect(routes.projectTab("p-1", "threads")).toBe("/p/p-1/threads");
     expect(routes.projectTab("p-1", "settings")).toBe("/p/p-1/settings");
+    expect(routes.projectThread("p 1", "c 1")).toBe("/p/p%201/threads/c%201");
+    // Finding 01: `threads` is the project tab segment — `conversations` is the
+    // API's noun and is no longer a route. The old URL redirects (App.test.tsx).
+    const tabs: ProjectTab[] = ["runs", "pipelines", "artifacts", "threads", "settings"];
+    expect(tabs.map((tab) => routes.projectTab("p-1", tab))).toEqual([
+      "/p/p-1/runs",
+      "/p/p-1/pipelines",
+      "/p/p-1/artifacts",
+      "/p/p-1/threads",
+      "/p/p-1/settings",
+    ]);
     expect(routes.workflow("pl-1")).toBe("/workflows/pl-1");
     expect(routes.draft("pl-1", "d-1")).toBe("/workflows/pl-1/drafts/d-1");
     expect(routes.step("s-1")).toBe("/steps/s-1");

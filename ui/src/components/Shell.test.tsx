@@ -56,16 +56,16 @@ function stubViewport(width: number): void {
   }));
 }
 
-describe("the shell's New chat follows the session", () => {
-  it("shows New chat when a member is signed in", async () => {
+describe("the shell's New thread follows the session", () => {
+  it("shows New thread when a member is signed in", async () => {
     renderApp({ path: "/", routes: signedIn });
     expect(await screen.findByTestId("new-chat", undefined, { timeout: READ_MS })).toBeTruthy();
   });
 
-  it("hides New chat when nobody is signed in", async () => {
+  it("hides New thread when nobody is signed in", async () => {
     renderApp({ path: "/", routes: notSignedIn });
     // A signed-out visitor sees the sign-in screen only — no sidebar, no app
-    // chrome, no New chat — for the deep link they opened.
+    // chrome, no New thread — for the deep link they opened.
     await screen.findByTestId("sign-in", undefined, { timeout: READ_MS });
     expect(screen.queryByTestId("sidebar")).toBeNull();
     expect(screen.queryByTestId("new-chat")).toBeNull();
@@ -85,14 +85,14 @@ describe("the sidebar is the whole desktop chrome (2c/3c)", () => {
     expect(screen.queryByRole("navigation", { name: "Primary" })).toBeNull();
   });
 
-  it("shows Today and My chats, and no Board or Inbox rows", async () => {
+  it("shows Today and Threads, and no Board or Inbox rows", async () => {
     stubViewport(1280);
     renderApp({ path: "/", routes: signedIn });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
     const scope = within(sidebar);
     expect(scope.getByTestId("sidebar-link-home").getAttribute("aria-current")).toBe("page");
     expect(scope.getByTestId("sidebar-link-home").textContent).toContain("Today");
-    expect(scope.getByTestId("sidebar-link-threads").textContent).toContain("My chats");
+    expect(scope.getByTestId("sidebar-link-threads").textContent).toContain("Threads");
     expect(scope.queryByTestId("sidebar-link-inbox")).toBeNull();
     expect(scope.queryByTestId("sidebar-link-board")).toBeNull();
     // The label the row used to carry is gone from the column, too.
@@ -190,7 +190,7 @@ describe("the phone frame (<1024px) keeps the hamburger and the drawer", () => {
     // The rail is a desktop affordance: the phone drawer is the 220px column,
     // labels and all.
     expect(within(column).getByTestId("new-chat")).toBeTruthy();
-    expect(within(column).getByText("My chats")).toBeTruthy();
+    expect(within(column).getByText("Threads")).toBeTruthy();
     expect(within(column).queryByTestId("sidebar-expand")).toBeNull();
     expect(screen.getByTestId("sidebar-backdrop")).toBeTruthy();
     // Esc closes it and the keyboard goes back to the button that opened it.

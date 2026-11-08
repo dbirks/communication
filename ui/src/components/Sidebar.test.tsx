@@ -104,7 +104,7 @@ describe("the sidebar tree (the default placement)", () => {
     expect(mark.getAttribute("draggable")).toBe("false");
   });
 
-  it("lists Today and My chats with the current row marked, and the library rows", async () => {
+  it("lists Today and Threads with the current row marked, and the library rows", async () => {
     renderApp({ path: "/", routes: baseRoutes() });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
 
@@ -140,14 +140,18 @@ describe("the sidebar tree (the default placement)", () => {
   });
 
   // 2c/3c: the row labels the design names — Home became Today (same `/`),
-  // Threads became My chats (same `/threads`).
-  it("names the two cross-project rows Today and My chats", async () => {
+  // Threads kept its name (finding 01: the row, the button and the page all
+  // say thread).
+  it("names the two cross-project rows Today and Threads", async () => {
     renderApp({ path: "/", routes: baseRoutes() });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
     const scope = within(sidebar);
     expect(scope.getByTestId("sidebar-link-home").textContent).toContain("Today");
     expect(scope.queryByText("Home", { exact: true })).toBeNull();
-    expect(scope.getByTestId("sidebar-link-threads").textContent).toContain("My chats");
+    expect(scope.getByTestId("sidebar-link-threads").textContent).toContain("Threads");
+    expect(scope.queryByText("My chats")).toBeNull();
+    // Finding 01: the button that starts one says the same word.
+    expect(scope.getByTestId("new-chat").textContent).toBe("New thread");
   });
 
   it("persists the expansion through a preferences PATCH and opens the repo list", async () => {
@@ -612,6 +616,9 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
     expect(screen.queryByTestId("new-chat")).toBeNull();
     expect(screen.getByTestId("new-chat-rail")).toBeTruthy();
+    // Finding 01: the rail's `+` names itself the same way the expanded button
+    // does.
+    expect(screen.getByTestId("new-chat-rail").getAttribute("aria-label")).toBe("New thread");
     expect(screen.getByTestId(`sidebar-rail-project-${P}`)).toBeTruthy();
     expect(screen.queryByTestId("sidebar-link-threads")).toBeNull();
     // Review 3c: the rail's Today is an icon tile, not bare text under the
@@ -639,7 +646,7 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     // `expanded` key by key and never deletes, so absence would leave the rail
     // stuck open-closed by its own last write.
     expect(sent.layout.expanded[COLLAPSED]).toBe(false);
-    // The column is back: labels, My chats, the tree.
+    // The column is back: labels, Threads, the tree.
     expect(screen.getByTestId("sidebar-link-threads")).toBeTruthy();
   });
 
