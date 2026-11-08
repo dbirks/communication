@@ -214,7 +214,12 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00027 (ADR-0071 assistant
+// version every replica demands. Current head: 00028 (ADR-0078 (catch up:
+// catchup_work_items + catchup_tour_versions (one shared tour, versioned,
+// stops jsonb) + catchup_seen_stops (per user, per stop, version recorded) +
+// catchup_recaps + catchup_visits + catchup_decision_replies + the checked
+// projects.color palette) on top of
+// 00027 (ADR-0071 assistant
 // notes: the assistant_notes table — per-user, per-scope suggestions, the
 // 'repository' | 'conversation' scope CHECK, the 1..280-char text CHECK, the
 // partial active index and the store-side cap of 3 active notes per user and
@@ -270,7 +275,7 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 27
+const migHeadVersion = 28
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.
