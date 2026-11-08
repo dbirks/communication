@@ -90,7 +90,7 @@ describe("Page — canvas", () => {
 });
 
 describe("Page — a wide/reading page that draws its own band", () => {
-  it("omits the shared header when no title is given", () => {
+  it("omits the shared header but keeps the shared inset when no title is given", () => {
     render(
       <Page layout="wide" testid="repo-page">
         <header data-testid="own-band">repo header</header>
@@ -98,5 +98,25 @@ describe("Page — a wide/reading page that draws its own band", () => {
     );
     expect(screen.queryByTestId("page-band")).toBeNull();
     expect(screen.getByTestId("own-band")).toBeTruthy();
+    // Acceptance 42452527578: the page draws its own band, but the INSET is
+    // still the shell's job. Without it the repository header sat flush on the
+    // sidebar edge (x=220 at 1280) while every other page's title sits at 248.
+    const body = (screen.getByTestId("own-band").parentElement ?? new HTMLElement()) as HTMLElement;
+    for (const cls of [...PAGE_BAND_PAD.split(/\s+/), "pb-[28px]"]) {
+      expect(body.className).toContain(cls);
+    }
+    expect(body.className).not.toContain("max-w-");
+  });
+
+  it("caps nothing for a title-less `reading` page (the page owns its width)", () => {
+    render(
+      <Page layout="reading" testid="quiet-page">
+        <p>body</p>
+      </Page>,
+    );
+    const body = (screen.getByText("body").parentElement ?? new HTMLElement()) as HTMLElement;
+    expect(screen.queryByTestId("page-band")).toBeNull();
+    expect(body.className).toContain("px-[22px]");
+    expect(body.className).toContain("md:px-[28px]");
   });
 });

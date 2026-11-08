@@ -430,11 +430,54 @@ test.describe("run-gate-artifacts (alice)", () => {
       });
       expect(
         body.replace(/\s+/g, "").length,
-        "the artifact page renders real content (non-empty, no error state)",
-      ).toBeGreaterThan(300);
+        "the artifact page's own chrome (sidebar, band, panel headings, metadata keys) is not empty",
+      ).toBeGreaterThan(80);
       expect(body, "no error state on the artifact page").not.toMatch(
         /could not be (read|shown)|failed to load|artifact not found/i,
       );
+      // Acceptance 42452527578: the floor above used to be 300. Nothing on THIS
+      // page lost content — `git diff 1baaf12 HEAD -- ui/src/pages/Artifact.tsx
+      // ui/src/components/Artifacts.tsx` moves the same `ArtifactDetail` (every
+      // metadata row, the digest, the download) behind `ds/Page` and renames two
+      // strings. What shrank is the shared chrome the measure was counting: the
+      // sidebar is an icon rail now (4879199), the project switcher, the LIBRARY
+      // sub-rows, the three layout settings and the ⋯ project menu are gone
+      // (7061572, 43b8d28) and "conversation" became "thread" (66f9c8d) — a
+      // hundred-odd words of nav text that never belonged to the artifact.
+      // So "real content" is now proven the direct way: the rows the page owes
+      // the reader are visible and each carries a value.
+      for (const [testid, label] of [
+        ["artifact-title", "name"],
+        ["artifact-media-type", "media type"],
+        ["artifact-sha256", "content digest"],
+        ["artifact-size", "size"],
+        ["artifact-sensitivity", "sensitivity"],
+        ["artifact-redaction", "redaction"],
+        ["artifact-created-at", "creation time"],
+        ["artifact-created-by", "author"],
+      ] as const) {
+        const value = page.getByTestId(testid);
+        await expect(value, `the artifact page shows its ${label}`).toBeVisible();
+        expect(
+          ((await value.textContent()) ?? "").replace(/\s+/g, " ").trim(),
+          `the artifact page's ${label} row carries a value`,
+        ).not.toBe("");
+      }
+      // A ready, standard artifact is downloadable and its run is one click away
+      // — the two verbs the page exists to offer.
+      await expect(page.getByTestId("artifact-download"), "the download path").toBeVisible();
+      // The state chip is keyed by artifact id (the row's own test handle), so it
+      // is matched by prefix.
+      const stateChip = page.locator('[data-testid^="artifact-state-"]').first();
+      await expect(stateChip, "the artifact's lifecycle state").toBeVisible();
+      expect(
+        ((await stateChip.textContent()) ?? "").trim(),
+        "the state chip carries its word",
+      ).not.toBe("");
+      await expect(
+        page.getByTestId("artifact-published-run-link"),
+        "the run that produced it",
+      ).toBeVisible();
       // Pass-1 design review item 4 (`artifact-plan-md-1280.png`): the page used
       // to print what was stored — the `model.chat` envelope's `{endpoint, model,
       // text}` with the plan escaped inside a string — under a byline written for

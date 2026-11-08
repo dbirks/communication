@@ -7,6 +7,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
+import { PAGE_BAND_PAD } from "../components/ds/Page";
 import {
   claudeProfile,
   codexProfile,
@@ -414,6 +415,25 @@ function testid(id: string): string {
 }
 
 describe("/p/:projectId/:repo — 3a header", () => {
+  it("stands its own band at the shared page inset (no edge-to-edge header)", async () => {
+    renderFeed();
+    const root = await screen.findByTestId("repo-page");
+    expect(root.getAttribute("data-page-layout")).toBe("wide");
+    // Finding 07 converted this page to `ds/Page` with no `title` (it draws its
+    // own band), and acceptance 42452527578 caught the loss: the shell stopped
+    // padding the column, so the breadcrumb, the H1 and both lists sat flush on
+    // the sidebar edge (x=220 at 1280) and the top edge (y=0) while every other
+    // page's title sits at 248. The inset is the shared constant.
+    const body = (screen.getByTestId("repo-page-body").parentElement ??
+      new HTMLElement()) as HTMLElement;
+    for (const cls of [...PAGE_BAND_PAD.split(/\s+/), "pb-[28px]"]) {
+      expect(body.className).toContain(cls);
+    }
+    // The band (breadcrumb + H1 + composer row) lives inside that padded column,
+    // so its title's left edge IS the band inset.
+    expect(body.contains(screen.getByTestId("repo-header"))).toBe(true);
+  });
+
   it("renders the breadcrumb, the H1 and the List | Lanes control (both arms built)", async () => {
     renderFeed();
     expect(await screen.findByTestId("repo-page")).toBeTruthy();

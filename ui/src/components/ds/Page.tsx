@@ -14,6 +14,11 @@
  *   has one, and draws it with `PAGE_BAND_PAD` so its title still sits at the
  *   shared left edge and baseline.
  *
+ * A `reading`/`wide` page that draws its OWN header band (no `title` prop: the
+ * repository page, the artifact/settings tabs) still gets the shared inset from
+ * the shell — the page only owns the band's content, never its distance from
+ * the sidebar. Only `canvas` is handed the bare column.
+ *
  * The shared band: title 22px/600 (today's page titles), a mono subline
  * below, actions on the right, optional tab strip (`band`) sitting under the
  * title row. The inset is the value the project frame already used
@@ -56,9 +61,9 @@ export function Page({
 }: PageProps) {
   const root = `flex min-h-full flex-col bg-paper ${className}`.trim();
 
-  if (layout === "canvas" || title == null) {
-    // Canvas (and a wide/reading page that keeps its own header): the shell
-    // gives the bare column; the page owns its band inside `PAGE_BAND_PAD`.
+  if (layout === "canvas") {
+    // Canvas: the shell gives the bare column; the page owns its band inside
+    // `PAGE_BAND_PAD`.
     return (
       <div className={root} data-page-layout={layout} data-testid={testid}>
         {children}
@@ -66,24 +71,35 @@ export function Page({
     );
   }
 
+  // A page with no `title` draws its own band, so the band's own inset is the
+  // body's inset (`PAGE_BAND_PAD`) rather than band + 16px of breathing room.
+  const bodyPad =
+    title == null ? `${PAGE_BAND_PAD} pb-[28px]` : "px-[22px] pb-[28px] pt-[16px] md:px-[28px]";
+
   return (
     <div className={root} data-page-layout={layout} data-testid={testid}>
-      <header className={PAGE_BAND_PAD} data-testid="page-band">
-        <div className="flex flex-wrap items-start justify-between gap-x-[14px] gap-y-2">
-          <div className="min-w-0 space-y-1">
-            <h1 className="text-[22px] leading-[28px] font-semibold">{title}</h1>
-            {subtitle != null ? (
-              <div className="font-mono text-[11px] text-muted">{subtitle}</div>
+      {title == null ? null : (
+        <header className={PAGE_BAND_PAD} data-testid="page-band">
+          <div className="flex flex-wrap items-start justify-between gap-x-[14px] gap-y-2">
+            <div className="min-w-0 space-y-1">
+              <h1 className="text-[22px] leading-[28px] font-semibold">{title}</h1>
+              {subtitle != null ? (
+                <div className="font-mono text-[11px] text-muted">{subtitle}</div>
+              ) : null}
+            </div>
+            {actions != null ? (
+              <div className="flex shrink-0 flex-wrap items-center gap-[10px]">{actions}</div>
             ) : null}
           </div>
-          {actions != null ? (
-            <div className="flex shrink-0 flex-wrap items-center gap-[10px]">{actions}</div>
-          ) : null}
-        </div>
-        {band != null ? <div className="pt-[12px]">{band}</div> : null}
-      </header>
-      <div className={`flex flex-1 flex-col px-[22px] pb-[28px] pt-[16px] md:px-[28px]`.trim()}>
-        {layout === "reading" ? <div className="max-w-[960px]">{children}</div> : children}
+          {band != null ? <div className="pt-[12px]">{band}</div> : null}
+        </header>
+      )}
+      <div className={`flex flex-1 flex-col ${bodyPad}`}>
+        {layout === "reading" && title != null ? (
+          <div className="max-w-[960px]">{children}</div>
+        ) : (
+          children
+        )}
       </div>
     </div>
   );
