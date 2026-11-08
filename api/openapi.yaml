@@ -1245,10 +1245,10 @@ paths:
       description: >
         The narrative at the top of the page — one person's cached summary, read
         with the reader's own id as part of the query. It is a SAVED answer, not
-        a request to a model: there is no `POST /catch-up/recap` on this surface,
-        because the half that produces recaps is the server's own assistant behind
-        ADR-0034's secret-scanned egress (ADR-0078 § Migration), and a browser
-        must not be able to buy a completion or to write the sentence another
+        a request to a model: `POST /catch-up/recap` is the half that regenerates
+        it, through the server's own assistant behind ADR-0034's secret-scanned
+        egress (ADR-0078 § Migration), and it writes only the asking reader's own
+        row, so no browser buys a completion that changes the sentence another
         reader sees. `window` and `project_ids` say what the summary covered;
         `projects` here is an OVERLAP filter on that coverage, since the store
         keeps one recap per reader rather than one per scope. No saved recap for
@@ -1380,7 +1380,16 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "413":
-          $ref: "#/components/responses/BodyTooLarge"
+          description: >
+            The request body is over the shared 1 MiB JSON cap (`Request Body
+            Too Large`); no completion was made and nothing was stored.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "422":
           description: >
             `window` is outside the closed set, or `projects` holds a value

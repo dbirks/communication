@@ -513,11 +513,21 @@ export interface paths {
     };
     /**
      * The latest saved recap, if the generator wrote one (ADR-0078)
-     * @description The narrative at the top of the page — one person's cached summary, read with the reader's own id as part of the query. It is a SAVED answer, not a request to a model: there is no `POST /catch-up/recap` on this surface, because the half that produces recaps is the server's own assistant behind ADR-0034's secret-scanned egress (ADR-0078 § Migration), and a browser must not be able to buy a completion or to write the sentence another reader sees. `window` and `project_ids` say what the summary covered; `projects` here is an OVERLAP filter on that coverage, since the store keeps one recap per reader rather than one per scope. No saved recap for this reader (or none that covers those projects) is a `404` problem — the page has to tell "the generator has never written you one" apart from a recap that says nothing.
+     * @description The narrative at the top of the page — one person's cached summary, read with the reader's own id as part of the query. It is a SAVED answer, not a request to a model: `POST /catch-up/recap` is the half that regenerates it, through the server's own assistant behind ADR-0034's secret-scanned egress (ADR-0078 § Migration), and it writes only the asking reader's own row, so no browser buys a completion that changes the sentence another reader sees. `window` and `project_ids` say what the summary covered; `projects` here is an OVERLAP filter on that coverage, since the store keeps one recap per reader rather than one per scope. No saved recap for this reader (or none that covers those projects) is a `404` problem — the page has to tell "the generator has never written you one" apart from a recap that says nothing.
      */
     get: operations["getCatchUpRecap"];
     put?: never;
-    post?: never;
+    /**
+     * Ask for a recap of what this reader has not seen (ADR-0078)
+     * @description The one POST on this surface that buys a completion, and the only one that may: a recap is one reader's row (`catchup_recaps` cascades from `users`, not from a project), so the sentence it writes is advice to the person who asked — never words a browser put into a shared tour, which is why no such tour route exists. T13b.
+     *
+     *     One bounded completion over ADR-0034's secret-scanned egress, given ONE factual DATA block assembled from the reads this route's caller can already make: the unseen work items (the same statement `GET /catch-up/items` runs, narrowed by `window`) and each item's own newest tour's unseen beats. The block numbers the items; the titles in it are the only proper names the answer may use, in double quotes — a quoted name the block never showed is refused and NOTHING is stored. The answer is exactly one JSON object, `{"text": "..."}`, 1..600 characters trimmed, the row's own bound.
+     *
+     *     With nothing unseen the model is never called and the deterministic `"Nothing new since you last looked."` is stored instead: paying a gateway for a sentence the read already established is how a hallucination gets a job. Both answers are 201 with the stored row.
+     *
+     *     Throttled per principal by the ASSISTANT limiter (ADR-0077), the same bucket the assistant turns spend: over the limit is `429` with `Retry-After`. No `COMMUNICATION_ASSISTANT_BASE_URL` is `503` `assistant_not_configured`, the ask route's own answer — the honest absence, not a fake summary.
+     */
+    post: operations["generateCatchUpRecap"];
     delete?: never;
     options?: never;
     head?: never;
@@ -7842,6 +7852,103 @@ export interface operations {
       };
       /** @description `projects` holds a value that is not a uuid. */
       422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  generateCatchUpRecap: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": {
+          /** @description Project ids to scope the read to. Absent or empty is every project the caller belongs to; naming one can only narrow, never widen (the store intersects its own membership). */
+          projects?: string[];
+          /**
+           * @description How far back the recap looks. `unseen` is the page's own question with no clock in it; the rest are the design's windows, applied as the item list's `since` bound. Anything else is `422`.
+           * @default unseen
+           * @enum {string}
+           */
+          window?: "unseen" | "6h" | "24h" | "2d" | "7d";
+        };
+      };
+    };
+    responses: {
+      /** @description The recap, stored (`no-store`). 201 even when the text is the deterministic one: a row was written either way. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CatchUpRecap"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description The request body is over the shared 1 MiB JSON cap (`Request Body Too Large`); no completion was made and nothing was stored. */
+      413: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description `window` is outside the closed set, or `projects` holds a value that is not a uuid. */
+      422: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The caller's assistant budget is spent (ADR-0077); `Retry-After` says when to come back. No completion was made and nothing stored. */
+      429: {
+        headers: {
+          /** @description Whole seconds until a token refills. */
+          "Retry-After"?: number;
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The model answered with something this surface refuses to store: not one JSON object, no `text`, over 600 characters, secret-shaped, or a quoted work-item title the DATA block never showed (`degraded: malformed_completion`). Nothing was written. */
+      502: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description No assistant egress on this deployment (`degraded: assistant_not_configured`). The stored recap, if any, is untouched. */
+      503: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      /** @description The endpoint stopped before it answered (`degraded: model_timeout`). */
+      504: {
         headers: {
           "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
           [name: string]: unknown;
