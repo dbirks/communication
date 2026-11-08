@@ -59,11 +59,25 @@ func cuItem(t *testing.T, f *cnvFixture, user, title string) string {
 	return item.ID
 }
 
-// cuAppend writes one tour version and returns its number.
+// cuAppend writes one tour version about work no single run owns (the store's
+// own no-run path) and returns its number.
 func cuAppend(t *testing.T, f *cnvFixture, user, itemID, reason string,
 	stops ...domain.CatchUpStop) int {
 	t.Helper()
-	v, err := cuStore(f).AppendTourVersion(f.ctx(), f.caller(user), itemID, reason, stops)
+	v, err := cuStore(f).AppendTourVersion(f.ctx(), f.caller(user), itemID, "", reason, stops)
+	if err != nil {
+		t.Fatalf("append tour version to %s: %v", itemID, err)
+	}
+	return v.Version
+}
+
+// cuAppendRun is the generator's path: appending the version is also what
+// CLAIMS the run, so the same call that tells the story takes the run off the
+// list of runs still owed one (ADR-0078 § Grouping).
+func cuAppendRun(t *testing.T, f *cnvFixture, user, itemID, runID, reason string,
+	stops ...domain.CatchUpStop) int {
+	t.Helper()
+	v, err := cuStore(f).AppendTourVersion(f.ctx(), f.caller(user), itemID, runID, reason, stops)
 	if err != nil {
 		t.Fatalf("append tour version to %s: %v", itemID, err)
 	}
@@ -368,7 +382,7 @@ func TestCatchUpMembershipScoping(t *testing.T) {
 		if _, err := store.MarkStopsSeen(f.ctx(), c, item, 1, []string{"s1"}); !errors.Is(err, domain.ErrCatchUpNotFound) {
 			t.Errorf("%s marked a stop seen: %v", name, err)
 		}
-		if _, err := store.AppendTourVersion(f.ctx(), c, item, "Not theirs",
+		if _, err := store.AppendTourVersion(f.ctx(), c, item, "", "Not theirs",
 			[]domain.CatchUpStop{cuStop("s1", "BUG · FIXED", domain.CatchUpImportanceMustKnow, 1)}); !errors.Is(err, domain.ErrCatchUpNotFound) {
 			t.Errorf("%s appended a tour version: %v", name, err)
 		}
@@ -428,7 +442,7 @@ func TestCatchUpVersionAtomicity(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			ctx := f.ctx()
-			_, err := store.AppendTourVersion(ctx, f.caller(f.alice), item,
+			_, err := store.AppendTourVersion(ctx, f.caller(f.alice), item, "",
 				"Concurrent telling", []domain.CatchUpStop{
 					cuStop("s1", "BUG · FIXED", domain.CatchUpImportanceMustKnow, 1),
 					cuStop("sx", "UI CHANGE", domain.CatchUpImportanceWorthLook, 0),
@@ -731,22 +745,22 @@ func TestCatchUpWorkItemIdentity(t *testing.T) {
 	}
 
 	item := cuItem(t, f, f.alice, "Bad stops")
-	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "",
+	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "", "",
 		[]domain.CatchUpStop{cuStop("s1", "k", domain.CatchUpImportanceMustKnow, 0)}); !errors.Is(err, domain.ErrCatchUpValidation) {
 		t.Errorf("blank reason = %v, want ErrCatchUpValidation", err)
 	}
-	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "Duplicated",
+	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "", "Duplicated",
 		[]domain.CatchUpStop{
 			cuStop("s1", "k", domain.CatchUpImportanceMustKnow, 0),
 			cuStop("s1", "k", domain.CatchUpImportanceWorthLook, 0),
 		}); !errors.Is(err, domain.ErrCatchUpValidation) {
 		t.Errorf("repeated stop id = %v, want ErrCatchUpValidation", err)
 	}
-	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "Empty",
+	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "", "Empty",
 		nil); !errors.Is(err, domain.ErrCatchUpValidation) {
 		t.Errorf("a tour with no stops = %v, want ErrCatchUpValidation", err)
 	}
-	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "A tour",
+	if _, err := store.AppendTourVersion(f.ctx(), f.caller(f.alice), item, "", "A tour",
 		[]domain.CatchUpStop{cuStop("s1", "k", domain.CatchUpImportanceMustKnow, 0)}); err != nil {
 		t.Errorf("the valid append after three refusals: %v", err)
 	}
@@ -911,7 +925,12 @@ func TestCatchUpSeenStateCascades(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert into the throwaway project: %v", err)
 	}
-	cuAppend(t, f, f.alice, doomed.ID, "Told once",
+	// The run this item's story is told about is a run of somebody else's
+	// project — which is exactly why `catchup_work_item_runs.run_id` carries no
+	// foreign key: a pruned run must not take the record of what it did, and
+	// the item's own cascade must still take the link.
+	cuAppendRun(t, f, f.alice, doomed.ID,
+		"00000000-0000-7000-8000-0000000000dd", "Told once",
 		cuStop("s1", "BUG · FIXED", domain.CatchUpImportanceMustKnow, 0))
 	if _, err := store.MarkStopsSeen(f.ctx(), f.caller(f.alice), doomed.ID, 1,
 		[]string{"s1"}); err != nil {
@@ -953,6 +972,13 @@ func TestCatchUpSeenStateCascades(t *testing.T) {
 	if left := count(`SELECT count(*) FROM catchup_decision_replies WHERE work_item_id = $1::uuid`,
 		doomed.ID); left != 0 {
 		t.Errorf("%d replies outlived their work item", left)
+	}
+	// 00029's link table has no foreign key on the run, so the ONLY thing that
+	// can clean it is the item's own cascade — and an orphaned link would say a
+	// gone item still owed a story.
+	if left := count(`SELECT count(*) FROM catchup_work_item_runs WHERE work_item_id = $1::uuid`,
+		doomed.ID); left != 0 {
+		t.Errorf("%d run links outlived their work item", left)
 	}
 	// The fixture's own item is untouched by any of that.
 	if left := count(`SELECT count(*) FROM catchup_seen_stops WHERE work_item_id = $1::uuid`,
@@ -1072,8 +1098,9 @@ func TestCatchUpGeneratorCandidates(t *testing.T) {
 		t.Fatalf("candidates = %v, want only the fresh terminal run (stale=%s live=%s)", runs, stale, live)
 	}
 
-	// The work item lands: same run, keyed by (project, source_run_id). The
-	// candidate remains until a tour covers the run — no tour is no story.
+	// The work item lands — an item with no tour is NOT a claim: the run is
+	// still owed a story, because the item's title alone tells nobody what
+	// happened (ADR-0078 § Grouping).
 	runID := fresh
 	item, err := (&CatchUpStore{Pool: f.pool}).UpsertWorkItem(ctx, storeCaller, domain.CatchUpWorkItem{
 		ProjectID: f.projectID, Shape: domain.CatchUpShapePR, Title: "Fresh work",
@@ -1089,11 +1116,19 @@ func TestCatchUpGeneratorCandidates(t *testing.T) {
 		t.Fatalf("an untoured item dropped its candidate run: %v", runs)
 	}
 
-	// A tour written now (>= finished_at) means the run's newest move IS
-	// told: the candidate is gone.
-	if _, err := (&CatchUpStore{Pool: f.pool}).AppendTourVersion(ctx, storeCaller, item.ID,
+	// A tour written for the run now (>= finished_at) is the claim that tells
+	// it: the candidate is gone, and the run is on the item's record.
+	if _, err := (&CatchUpStore{Pool: f.pool}).AppendTourVersion(ctx, storeCaller, item.ID, fresh,
 		"Told once", []domain.CatchUpStop{cuStop("s1", "UI CHANGE", domain.CatchUpImportanceMustKnow, 0)}); err != nil {
 		t.Fatalf("append the tour: %v", err)
+	}
+	var claims int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*)::integer FROM catchup_work_item_runs
+		WHERE work_item_id = $1::uuid AND run_id = $2::uuid`, item.ID, fresh).Scan(&claims); err != nil {
+		t.Fatalf("read the claim row: %v", err)
+	}
+	if claims != 1 {
+		t.Fatalf("%d claim rows for the run that was told, want the one the append wrote", claims)
 	}
 	if cands, err = gen.CatchUpCandidates(ctx, caller, nil, 7*24*time.Hour, 10); err != nil {
 		t.Fatalf("post-tour candidates: %v", err)
@@ -1144,6 +1179,301 @@ func TestCatchUpGeneratorCandidates(t *testing.T) {
 	} else if len(cands) != 0 {
 		t.Fatalf("another organization saw candidates: %v", candRuns(cands))
 	}
+}
+
+// TestCatchUpGrouping is the grouping rule against a real PostgreSQL: two
+// finished runs whose refs name the same issue are ONE piece of work — one
+// work item, claimed by both runs, its refs the union of what each run named,
+// its tour a second version whose carried-over beats keep the ids (and the
+// introducing versions) the reader already has, with only the new beat owed.
+// A run that names no number keeps its own item, and a group key is only
+// unique inside a project.
+func TestCatchUpGrouping(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	store := &CatchUpStore{Pool: f.pool}
+	gen := APICatchUpGenerator{S: store}
+	sc := Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}
+
+	insertRun := func(label string) string {
+		var id string
+		if err := f.pool.QueryRow(ctx, `
+			INSERT INTO runs (organization_id, project_id, pipeline_id, pipeline_revision_id,
+			                  revision_digest, plan_digest, plan_snapshot, policies_snapshot,
+			                  status, failed_cause, finished_at)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, '{}'::jsonb, '{}'::jsonb,
+			        'failed', 'agent_error', now() - interval '30 minutes')
+			RETURNING id`, f.orgID, f.projectID, f.pipelineID, f.revisionID,
+			f.digest, f.planDigest).Scan(&id); err != nil {
+			t.Fatalf("insert %s run: %v", label, err)
+		}
+		return id
+	}
+	runsOf := func(cands []api.CatchUpCandidateView) []string {
+		out := make([]string, 0, len(cands))
+		for _, c := range cands {
+			out = append(out, c.RunID)
+		}
+		return out
+	}
+	owns := func(runs []string, id string) bool {
+		for _, r := range runs {
+			if r == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The template run, then the fix run — the same issue, two runs, which is
+	// the case the run-identity key used to split into two stories.
+	failed, fix := insertRun("failed"), insertRun("fix")
+	key := domain.CatchUpGroupKey("repository-uuid", 42, 7, failed)
+	if key != "issue:repository-uuid:42" {
+		t.Fatalf("group key = %q, want the issue's key", key)
+	}
+	if got := domain.CatchUpGroupKey("repository-uuid", 0, 7, fix); got != "pr:repository-uuid:7" {
+		t.Fatalf("pr group key = %q, want the PR's key", got)
+	}
+	if got := domain.CatchUpGroupKey("", 42, 0, fix); got != "run:"+fix {
+		t.Fatalf("numberless key = %q, want the run itself", got)
+	}
+
+	// Version 1 of the issue's item, told by the failed run.
+	item, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapeIssue, Title: "Checkout went red",
+		Summary: "Red, and not yet fixed.", Resolution: domain.CatchUpResolutionRunFailed,
+		Refs:        domain.CatchUpRefs{IssueNumbers: []int{42}, CommitSHAs: []string{"aaa1111"}},
+		SourceRunID: &failed, GroupKey: key,
+	})
+	if err != nil {
+		t.Fatalf("upsert the issue item: %v", err)
+	}
+	if v := cuAppendM4(t, store, sc, item.ID, failed, "The run failed",
+		domain.CatchUpStop{ID: "why-red", Title: "The test was red on a timeout",
+			Narrative: "It timed out twice.", Importance: domain.CatchUpImportanceMustKnow}); v != 1 {
+		t.Fatalf("first tour version = %d, want 1", v)
+	}
+
+	// The fix run is still owed a story — a claim from ANOTHER run does not
+	// cover it — and its refs name the same piece of work.
+	cands, err := gen.CatchUpCandidates(ctx, api.Caller{UserID: f.userID, OrganizationID: f.orgID,
+		IsOrgAdmin: true}, []string{f.projectID}, 7*24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	if runs := runsOf(cands); !owns(runs, fix) || owns(runs, failed) {
+		t.Fatalf("candidates = %v, want only the untold fix run (failed=%s)", runs, failed)
+	}
+
+	// The grouping read: the item the key names, with the head a rewrite
+	// inherits. The second run's item is the FIRST run's item.
+	head, found, err := gen.CatchUpItemForGroup(ctx, api.Caller{UserID: f.userID,
+		OrganizationID: f.orgID, IsOrgAdmin: true}, f.projectID, key)
+	// (the key is project-scoped: see the second-project check below)
+	if err != nil || !found {
+		t.Fatalf("group read = %v / %v, want the issue's item", found, err)
+	}
+	if head.ItemID != item.ID || head.TourHead != 1 || len(head.HeadStops) != 1 ||
+		head.HeadStops[0].ID != "why-red" || head.HeadStops[0].AddedInVersion != 1 {
+		t.Fatalf("group head = %+v, want the first run's item and tour", head)
+	}
+	if _, found, err := gen.CatchUpItemForGroup(ctx, api.Caller{UserID: f.userID,
+		OrganizationID: "00000000-0000-4000-8000-000000000000", IsOrgAdmin: true},
+		f.projectID, key); err != nil || found {
+		t.Errorf("another organization saw the group: %v / %v", found, err)
+	}
+
+	// The fix run rewrites THAT item: the same id back, the refs unioned, the
+	// run taken as the item's latest, and a second tour version whose carried
+	// beat keeps version 1 while the fix is the only new stop.
+	again, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapeIssue, Title: "Checkout went red",
+		Summary: "Red, then green.", Resolution: domain.CatchUpResolutionBranchReady,
+		Refs:        domain.CatchUpRefs{PRNumbers: []int{7}, CommitSHAs: []string{"bbb2222"}},
+		SourceRunID: &fix, GroupKey: key,
+	})
+	if err != nil {
+		t.Fatalf("regroup the fix run: %v", err)
+	}
+	if again.ID != item.ID {
+		t.Fatalf("two runs on one issue wrote %s and %s, want ONE work item", item.ID, again.ID)
+	}
+	// The merge ran on the way in, so what the store echoes is the union — and
+	// what the reader is served must be the union too.
+	if got := again.Refs; len(got.IssueNumbers) != 1 || got.IssueNumbers[0] != 42 ||
+		len(got.PRNumbers) != 1 || got.PRNumbers[0] != 7 ||
+		len(got.CommitSHAs) != 2 || got.CommitSHAs[0] != "aaa1111" || got.CommitSHAs[1] != "bbb2222" {
+		t.Errorf("merged refs = %+v, want both runs' claims", got)
+	}
+	if v := cuAppendM4(t, store, sc, item.ID, fix, "Fix landed after the failed run",
+		domain.CatchUpStop{ID: "why-red", Title: "The test was red on a timeout",
+			Narrative: "Still the cause.", Importance: domain.CatchUpImportanceMustKnow,
+			AddedInVersion: 1},
+		domain.CatchUpStop{ID: "fix-landed", Title: "The fix landed in PR #7",
+			Narrative: "The retry shipped it.", Importance: domain.CatchUpImportanceMustKnow}); v != 2 {
+		t.Fatalf("rewrite tour version = %d, want 2", v)
+	}
+	view, err := store.GetWorkItem(ctx, sc, item.ID)
+	if err != nil {
+		t.Fatalf("read the grouped item: %v", err)
+	}
+	if len(view.Refs.CommitSHAs) != 2 || len(view.Refs.IssueNumbers) != 1 ||
+		len(view.Refs.PRNumbers) != 1 {
+		t.Errorf("served refs = %+v, want the union of both runs", view.Refs)
+	}
+	if view.SourceRunID == nil || *view.SourceRunID != fix {
+		t.Errorf("source_run_id = %v, want the latest run of the item", view.SourceRunID)
+	}
+	if view.LatestVersion != 2 || len(view.History) != 2 ||
+		view.History[1].Reason != "Fix landed after the failed run" {
+		t.Errorf("history = %+v, want the two versions with what changed", view.History)
+	}
+	if view.Latest == nil || len(view.Latest.Stops) != 2 ||
+		view.Latest.Stops[0].AddedInVersion != 1 || view.Latest.Stops[1].AddedInVersion != 2 {
+		t.Errorf("served tour = %+v, want the carried beat at v1 and the fix at v2", view.Latest)
+	}
+
+	// Both runs are on the item's record, and neither is owed a story now.
+	var claimed []string
+	rows, err := f.pool.Query(ctx, `
+		SELECT run_id::text FROM catchup_work_item_runs WHERE work_item_id = $1::uuid
+		ORDER BY run_id::text`, item.ID)
+	if err != nil {
+		t.Fatalf("read the item's runs: %v", err)
+	}
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			t.Fatalf("scan the item's runs: %v", err)
+		}
+		claimed = append(claimed, r)
+	}
+	rows.Close()
+	if len(claimed) != 2 {
+		t.Fatalf("%v claimed by the item, want both runs", claimed)
+	}
+	if cands, err := gen.CatchUpCandidates(ctx, api.Caller{UserID: f.userID,
+		OrganizationID: f.orgID, IsOrgAdmin: true}, []string{f.projectID},
+		7*24*time.Hour, 10); err != nil {
+		t.Fatalf("post-rewrite candidates: %v", err)
+	} else if runs := runsOf(cands); owns(runs, fix) || owns(runs, failed) {
+		t.Fatalf("a told piece of work came back as owed: %v", runs)
+	}
+
+	// A run that named no number keeps its own item: its key is itself, so no
+	// existing story is rewritten by it.
+	alone := insertRun("no refs")
+	aloneKey := domain.CatchUpGroupKey("", 0, 0, alone)
+	solo, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapePush, Title: "Commits on main",
+		Summary: "Three commits, no PR.", Resolution: domain.CatchUpResolutionMerged,
+		SourceRunID: &alone, GroupKey: aloneKey,
+	})
+	if err != nil {
+		t.Fatalf("upsert the runless item: %v", err)
+	}
+	if solo.ID == item.ID {
+		t.Fatal("a run with no refs was grouped into somebody else's item")
+	}
+	if _, found, err := gen.CatchUpItemForGroup(ctx, api.Caller{UserID: f.userID,
+		OrganizationID: f.orgID, IsOrgAdmin: true}, f.projectID, "issue:repository-uuid:999"); err != nil || found {
+		t.Errorf("an unused group key answered %v / %v, want not found", found, err)
+	}
+
+	// The key is unique INSIDE a project: the same issue in another of the
+	// caller's projects is a different piece of work.
+	second := cuSecondProjectM4(t, f)
+	other, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: second, Shape: domain.CatchUpShapeIssue, Title: "Same issue, other project",
+		Summary: "Another project's #42.", Resolution: domain.CatchUpResolutionOpen,
+		GroupKey: key,
+	})
+	if err != nil {
+		t.Fatalf("the same key in another project: %v", err)
+	}
+	if other.ID == item.ID {
+		t.Fatal("a group key reached across projects")
+	}
+
+	// And an item with no grouping key at all still behaves the way it always
+	// did: re-describing the same run updates it rather than doubling it.
+	repeat := insertRun("repeat")
+	repeatID := repeat
+	firstPass, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapePush, Title: "Ungrouped",
+		Summary: "No key at all.", Resolution: domain.CatchUpResolutionNoCode,
+		SourceRunID: &repeatID,
+	})
+	if err != nil {
+		t.Fatalf("ungrouped upsert: %v", err)
+	}
+	secondPass, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapePush, Title: "Ungrouped, retold",
+		Summary: "Still no key.", Resolution: domain.CatchUpResolutionNoCode,
+		SourceRunID: &repeatID,
+	})
+	if err != nil {
+		t.Fatalf("ungrouped re-describe: %v", err)
+	}
+	if secondPass.ID != firstPass.ID {
+		t.Errorf("ungrouped run wrote %s then %s, want one item", firstPass.ID, secondPass.ID)
+	}
+
+	// A nonsense key is refused before the database, like every other field
+	// the model could reach.
+	if _, err := store.UpsertWorkItem(ctx, sc, domain.CatchUpWorkItem{
+		ProjectID: f.projectID, Shape: domain.CatchUpShapeIssue, Title: "Bad key",
+		Summary: "Invented.", Resolution: domain.CatchUpResolutionOpen,
+		GroupKey: "totally-made-up",
+	}); !errors.Is(err, domain.ErrCatchUpValidation) {
+		t.Errorf("group key %q = %v, want ErrCatchUpValidation", "totally-made-up", err)
+	}
+}
+
+// cuAppendM4 appends one tour version (claiming runID) with the store's own
+// race-safe append, from the m4 fixture whose caller type is the api's.
+func cuAppendM4(t *testing.T, s *CatchUpStore, c Caller, itemID, runID, reason string,
+	stops ...domain.CatchUpStop) int {
+	t.Helper()
+	v, err := s.AppendTourVersion(testCtx(t), c, itemID, runID, reason, stops)
+	if err != nil {
+		t.Fatalf("append tour version to %s: %v", itemID, err)
+	}
+	return v.Version
+}
+
+// cuSecondProjectM4 is a project of the same organization the caller IS a
+// member of — the other half of "unique inside a project", which a foreign
+// project cannot show (the write would be refused before the index saw it).
+func cuSecondProjectM4(t *testing.T, f *m4Fixture) string {
+	t.Helper()
+	var id string
+	if err := f.pool.QueryRow(testCtx(t), `
+		INSERT INTO projects (organization_id, slug, name, created_by)
+		VALUES ($1, 'cu-second-' || substr(md5(random()::text), 1, 10), 'CU second', $2)
+		RETURNING id`, f.orgID, f.userID).Scan(&id); err != nil {
+		t.Fatalf("insert second project: %v", err)
+	}
+	if _, err := f.pool.Exec(testCtx(t),
+		`INSERT INTO memberships (project_id, user_id, role)
+		VALUES ($1::uuid, $2::uuid, 'maintainer')`,
+		id, f.userID); err != nil {
+		t.Fatalf("join the caller to the second project: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		if _, err := f.pool.Exec(bg, `DELETE FROM catchup_work_items WHERE project_id = $1::uuid`, id); err != nil {
+			t.Errorf("cleanup second project items: %v", err)
+		}
+		if _, err := f.pool.Exec(bg, `DELETE FROM memberships WHERE project_id = $1::uuid`, id); err != nil {
+			t.Errorf("cleanup second project memberships: %v", err)
+		}
+		if _, err := f.pool.Exec(bg, `DELETE FROM projects WHERE id = $1::uuid`, id); err != nil {
+			t.Errorf("cleanup second project: %v", err)
+		}
+	})
+	return id
 }
 
 func cuForeignProjectM4(t *testing.T, f *m4Fixture) string {

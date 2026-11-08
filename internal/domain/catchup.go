@@ -136,6 +136,137 @@ type CatchUpRefs struct {
 	RunIDs       []string `json:"run_ids,omitempty"`
 }
 
+// CatchUpRefsListMax bounds each list inside a refs object. A work item is a
+// bounded story, not a repository dump: the assistant writes at most one issue
+// and one PR per run and eight commits per run, and a group that has outgrown
+// this cap has outgrown what a returning engineer can read (ADR-0063).
+const CatchUpRefsListMax = 20
+
+// UnionWith folds another claim set into this one: every number, sha and run id
+// of `other` joins the list it appeared in — the four lists the contract has —
+// deduped, in the order the reader first saw them, capped. This is what a rewritten work item's refs ARE — the
+// union of everything the runs grouped under one piece of work named
+// (ADR-0078 § Grouping) — so it is the contract's rule, not a store detail.
+func (r CatchUpRefs) UnionWith(other CatchUpRefs) CatchUpRefs {
+	return CatchUpRefs{
+		IssueNumbers: unionCatchUpNumbers(r.IssueNumbers, other.IssueNumbers),
+		PRNumbers:    unionCatchUpNumbers(r.PRNumbers, other.PRNumbers),
+		CommitSHAs:   unionCatchUpStrings(r.CommitSHAs, other.CommitSHAs),
+		RunIDs:       unionCatchUpStrings(r.RunIDs, other.RunIDs),
+	}
+}
+
+func unionCatchUpNumbers(lists ...[]int) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, list := range lists {
+		for _, n := range list {
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			out = append(out, n)
+			if len(out) >= CatchUpRefsListMax {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func unionCatchUpStrings(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range lists {
+		for _, s := range list {
+			s = strings.TrimSpace(s)
+			if s == "" || seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+			if len(out) >= CatchUpRefsListMax {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// The three shapes one piece of work takes (ADR-0078 § Grouping). A key is
+// opaque to the store — it is the upsert's conflict target, nothing more — but
+// the prefixes are part of the contract, because a key written by one replica
+// must be the key another replica finds.
+const (
+	CatchUpGroupIssuePrefix = "issue:"
+	CatchUpGroupPRPrefix    = "pr:"
+	CatchUpGroupRunPrefix   = "run:"
+	// CatchUpGroupKeyMaxChars bounds the column (migration 00029 CHECKs it):
+	// a prefix, a repository uuid and an issue number do not come near it, so
+	// hitting the cap means a caller invented a key rather than derived one.
+	CatchUpGroupKeyMaxChars = 160
+)
+
+// CatchUpGroupKey names the piece of work a finished run belongs to, which is
+// what the store's (project, group_key) unique index is the conflict target
+// for. The order is the design's: an issue is the piece of work with its PRs
+// and commits nested under it, so a run that names an issue joins that issue's
+// item; a run that names only a PR joins the PR's item; a run that names
+// nothing IS the piece of work, and is keyed by its own id so the run that
+// produced it stays the whole story (ADR-0078 § Grouping).
+//
+// An issue or PR number is only meaningful inside a repository, so a run that
+// names a number but belongs to none falls back to its own key rather than
+// pretending two repositories' #7 are one story. "" means "no key at all": the
+// caller named neither a number nor a run, and the (project, source_run_id)
+// path is still the identity.
+func CatchUpGroupKey(repositoryID string, issueNumber, prNumber int, runID string) string {
+	if repo := strings.TrimSpace(repositoryID); repo != "" {
+		if issueNumber > 0 {
+			if k, ok := catchUpGroupKeyOf(CatchUpGroupIssuePrefix, repo, issueNumber); ok {
+				return k
+			}
+		}
+		if prNumber > 0 {
+			if k, ok := catchUpGroupKeyOf(CatchUpGroupPRPrefix, repo, prNumber); ok {
+				return k
+			}
+		}
+	}
+	if run := strings.TrimSpace(runID); run != "" {
+		if k := CatchUpGroupRunPrefix + run; len(k) <= CatchUpGroupKeyMaxChars {
+			return k
+		}
+	}
+	return ""
+}
+
+func catchUpGroupKeyOf(prefix, repositoryID string, number int) (string, bool) {
+	k := fmt.Sprintf("%s%s:%d", prefix, repositoryID, number)
+	if len(k) > CatchUpGroupKeyMaxChars {
+		return "", false
+	}
+	return k, true
+}
+
+// ValidCatchUpGroupKey reports whether a key is a legal group key. "" is legal
+// and means "no grouping": an item that predates grouping, or one a caller
+// wrote by id.
+func ValidCatchUpGroupKey(key string) bool {
+	if key == "" {
+		return true
+	}
+	if key != strings.TrimSpace(key) || len(key) > CatchUpGroupKeyMaxChars {
+		return false
+	}
+	for _, p := range []string{CatchUpGroupIssuePrefix, CatchUpGroupPRPrefix, CatchUpGroupRunPrefix} {
+		if rest, ok := strings.CutPrefix(key, p); ok {
+			return rest != "" && !strings.ContainsAny(rest, " \t\n\r")
+		}
+	}
+	return false
+}
+
 // CatchUpEvidence is one piece of proof for one stop. `type` is the one member
 // the server reads; everything else the model wrote beside it rides through as
 // `Fields` and is rendered by the client that owns that type. `type` always
@@ -293,6 +424,20 @@ func StampCatchUpStops(stops []CatchUpStop, version int) {
 	}
 }
 
+// CatchUpGroupItem is the work item a grouping key already names — the piece
+// of work a SECOND run on the same issue (or the same PR) has just moved
+// (ADR-0078 § Grouping). It is not a work item view: it is the minimum the
+// generator may see to rewrite a story it did not write, which is the item's
+// id, the thread its decisions belong in, and the newest tour's version,
+// reason and stops.
+type CatchUpGroupItem struct {
+	ItemID         string
+	ConversationID string
+	TourHead       int
+	Reason         string
+	Stops          []CatchUpStop
+}
+
 // CatchUpWorkItem is one piece of work: an issue, a PR, or a push, with the
 // refs and provenance the assistant derived it from.
 type CatchUpWorkItem struct {
@@ -310,8 +455,15 @@ type CatchUpWorkItem struct {
 	// ConversationID is the agent conversation the work came from. Decision
 	// replies are posted here, which is why it is stored rather than derived.
 	ConversationID *string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// GroupKey is the identity of the PIECE OF WORK rather than of one run:
+	// every run that names the same issue (or the same PR) in the same
+	// repository rewrites the one item this key names, while source_run_id
+	// stays "the run that moved it last". domain.CatchUpGroupKey derives it;
+	// "" means the item is keyed by its run alone, exactly as before grouping
+	// (ADR-0078 § Grouping).
+	GroupKey  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (w CatchUpWorkItem) Validate() error {
@@ -331,6 +483,10 @@ func (w CatchUpWorkItem) Validate() error {
 	}
 	if strings.TrimSpace(w.ProjectID) == "" {
 		return fmt.Errorf("%w: catchup work item needs a project", ErrCatchUpValidation)
+	}
+	if !ValidCatchUpGroupKey(w.GroupKey) {
+		return fmt.Errorf("%w: catchup work item group key %q is not issue:/pr:/run:-shaped",
+			ErrCatchUpValidation, w.GroupKey)
 	}
 	return nil
 }

@@ -20,14 +20,19 @@ import (
 	"time"
 )
 
-// fakeCatchUpSource serves one candidate list and one facts row.
+// fakeCatchUpSource serves one candidate list, one facts row and the grouped
+// item the facts' key names (the zero CatchUpExistingItem is the store's "no
+// piece of work carries that key yet", which is what a first run gets).
 type fakeCatchUpSource struct {
 	mu          sync.Mutex
 	cands       []CatchUpCandidate
 	facts       CatchUpRunFacts
+	existing    CatchUpExistingItem
 	candErr     error
 	factsErr    error
+	existingErr error
 	gotProjects []string
+	gotKeys     []string
 	calls       int
 }
 
@@ -37,6 +42,26 @@ func (s *fakeCatchUpSource) CandidateRuns(_ context.Context, _ Caller, projectID
 	s.gotProjects = projectIDs
 	s.calls++
 	return s.cands, s.candErr
+}
+
+func (s *fakeCatchUpSource) ExistingItem(_ context.Context, _ Caller,
+	_, groupKey string) (CatchUpExistingItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gotKeys = append(s.gotKeys, groupKey)
+	if s.existingErr != nil {
+		return CatchUpExistingItem{}, s.existingErr
+	}
+	if groupKey == "" || groupKey != s.facts.GroupKey {
+		return CatchUpExistingItem{}, nil // the store's "nothing carries that key"
+	}
+	return s.existing, nil
+}
+
+func (s *fakeCatchUpSource) snapshotKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.gotKeys...)
 }
 
 func (s *fakeCatchUpSource) RunFacts(_ context.Context, _ Caller, runID string) (CatchUpRunFacts, error) {
@@ -402,7 +427,7 @@ func TestCatchUpDataBlockBoundsAndTruth(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		facts.Lines = append(facts.Lines, ChatLine{Author: fmt.Sprintf("a%d", i), Text: long})
 	}
-	block, truth, err := catchUpDataBlock(facts)
+	block, truth, err := catchUpDataBlock(facts, catchUpTestCandidate())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,6 +445,133 @@ func TestCatchUpDataBlockBoundsAndTruth(t *testing.T) {
 	if got := truth.excerpts["E1"]; got.Kind != CatchUpEvidenceKindFiles ||
 		!strings.Contains(got.Text, "comm/issue-42-checkout") || !strings.Contains(got.Text, "#7") {
 		t.Fatalf("outputs excerpt = %+v, want the branch and PR named", got)
+	}
+}
+
+// TestCatchUpRewriteOfAGroupedItem is the grouping promise end to end inside
+// the generator: a run whose refs name issue 42 finds the item that the FIRST
+// run on issue 42 wrote, is asked to rewrite THAT story, and writes back
+// version 2 with the old beats' identities intact and only the genuinely new
+// beat stamped as added. This is what makes the UI's ADDED tags and UPDATED
+// badge mean "the same piece of work moved" rather than "two pieces of work".
+func TestCatchUpRewriteOfAGroupedItem(t *testing.T) {
+	cand := CatchUpCandidate{RunID: "run-2", ProjectID: "proj-1"}
+	facts := catchUpTestFacts()
+	facts.GroupKey = "issue:repo-1:42"
+	head := CatchUpExistingItem{
+		ItemID: "item-9", ConversationID: "conv-work", TourHead: 1,
+		HeadReason: "First telling of the failed run.",
+		HeadStops: []CatchUpExistingStop{
+			{ID: "why-red", Title: "The test was red on a timeout",
+				Kind: "BUG \u00b7 FOUND", Importance: "must_know", AddedInVersion: 1},
+			{ID: "dropped", Title: "A beat the rewrite leaves behind",
+				Kind: "routine", Importance: "routine", AddedInVersion: 1},
+		},
+	}
+	// The rewrite keeps "The test was red on a timeout" (a beat whose title
+	// survived is the SAME beat: its id and its introducing version come from
+	// the head) and adds the fix, which is the only ADDED stop.
+	answer := catchUpAnswerJSON(`[`+
+		`{"id":"why-red-again","title":"The test was red on a timeout","narrative":"Still the cause: the fixture outlived its token.","importance":"must_know"},`+
+		`{"id":"fix-landed","title":"The fix landed in PR #7","narrative":"The second run shipped the retry guard.","importance":"must_know"}`+
+		`]`, `"reason":"Fix landed after the failed run."`)
+	f := newCatchUpFixture(t, answer, cand, facts)
+	f.source.mu.Lock()
+	f.source.existing = head
+	f.source.mu.Unlock()
+
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, cand); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	w := f.writer.snapshot()[0]
+	if w.GroupKey != "issue:repo-1:42" {
+		t.Errorf("write lost the group key: %q", w.GroupKey)
+	}
+	if w.ExistingID != "item-9" {
+		t.Errorf("ExistingID = %q, want the grouped item the reader is already reading", w.ExistingID)
+	}
+	if w.ConversationID != "conv-work" {
+		t.Errorf("ConversationID = %q, want the thread the work was born in", w.ConversationID)
+	}
+	if w.Reason != "Fix landed after the failed run." {
+		t.Errorf("reason = %q, want what changed since version 1", w.Reason)
+	}
+	if len(w.Stops) != 2 {
+		t.Fatalf("stops = %+v, want the carried beat and the new one", w.Stops)
+	}
+	if w.Stops[0].ID != "why-red" || w.Stops[0].AddedInVersion != 1 {
+		t.Errorf("carried stop lost its identity: %+v", w.Stops[0])
+	}
+	if w.Stops[1].ID != "fix-landed" || w.Stops[1].AddedInVersion != 2 {
+		t.Errorf("new stop not ADDED at version 2: %+v", w.Stops[1])
+	}
+
+	// The prompt showed the previous tour by TITLE, KIND and IMPORTANCE — and
+	// not its prose, which is the difference between carrying a story forward
+	// and paraphrasing oneself.
+	_, user, _ := f.model.snapshot()
+	for _, want := range []string{`"previous_tour"`, "The test was red on a timeout",
+		"must_know", "First telling of the failed run."} {
+		if !strings.Contains(user, want) {
+			t.Errorf("prompt block is missing %q:\n%s", want, user)
+		}
+	}
+	if strings.Contains(user, "outlived its token") {
+		t.Error("the previous tour's narrative rode into the prompt")
+	}
+}
+
+// TestCatchUpFirstTellingHasNoPreviousTour pins the other half: a run whose
+// group key names nothing yet is told as the first story, so no previous tour
+// rides in the block, no stop claims an older version, and the run is
+// generated against its own key.
+func TestCatchUpFirstTellingHasNoPreviousTour(t *testing.T) {
+	cand := CatchUpCandidate{RunID: "run-1", ProjectID: "proj-1"}
+	facts := catchUpTestFacts()
+	facts.GroupKey = "issue:repo-1:42"
+	answer := catchUpAnswerJSON(
+		`[{"id":"a","title":"Beat","narrative":"Narrative.","importance":"routine"}]`)
+	f := newCatchUpFixture(t, answer, cand, facts)
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, cand); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	if keys := f.source.snapshotKeys(); len(keys) != 1 || keys[0] != "issue:repo-1:42" {
+		t.Fatalf("group lookups = %v, want the run's own key", keys)
+	}
+	w := f.writer.snapshot()[0]
+	if w.ExistingID != "" {
+		t.Errorf("ExistingID = %q, want a new item", w.ExistingID)
+	}
+	if w.Stops[0].AddedInVersion != 1 {
+		t.Errorf("first telling stamped version %d, want 1", w.Stops[0].AddedInVersion)
+	}
+	_, user, _ := f.model.snapshot()
+	if strings.Contains(user, `\"previous_tour\"`) {
+		t.Errorf("a first telling carried a previous tour:\n%s", user)
+	}
+}
+
+// TestCatchUpRunWithoutRefsKeepsItsOwnItem is the identity rule for the run
+// that names no number: its key IS itself, so no other run's story is
+// rewritten and the item stays its own piece of work.
+func TestCatchUpRunWithoutRefsKeepsItsOwnItem(t *testing.T) {
+	facts := catchUpTestFacts()
+	facts.IssueNumber, facts.PRNumber, facts.PRURL, facts.Branch = 0, 0, "", ""
+	facts.HadCodeRefs = false
+	facts.GroupKey = "run:run-7"
+	answer := catchUpAnswerJSON(
+		`[{"id":"a","title":"Beat","narrative":"Narrative.","importance":"routine"}]`)
+	f := newCatchUpFixture(t, answer, CatchUpCandidate{RunID: "run-7", ProjectID: "p"}, facts)
+	if err := f.gen.GenerateRun(context.Background(), Caller{},
+		CatchUpCandidate{RunID: "run-7", ProjectID: "p"}); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	w := f.writer.snapshot()[0]
+	if w.GroupKey != "run:run-7" {
+		t.Errorf("group key = %q, want the run itself", w.GroupKey)
+	}
+	if len(w.Refs.IssueNumbers) != 0 || len(w.Refs.PRNumbers) != 0 {
+		t.Errorf("refs named numbers the run never produced: %+v", w.Refs)
 	}
 }
 

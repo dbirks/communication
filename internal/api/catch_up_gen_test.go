@@ -11,7 +11,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -307,6 +311,110 @@ func TestBuildCatchUpGeneratorNeedsAModelAndEveryRead(t *testing.T) {
 	}
 }
 
+// --- the grouping key the reader derives (ADR-0078 § Grouping) -------------
+
+// scriptedRuns is the run reader with a run to name: the DATA block's refs and
+// the grouping key BOTH come off this one read, which is why they cannot
+// disagree.
+type scriptedRuns struct {
+	run   RunView
+	nodes []NodeExecutionView
+}
+
+func (f *scriptedRuns) GetRun(context.Context, Caller, string) (RunView, error) {
+	return f.run, nil
+}
+func (f *scriptedRuns) ListRunNodes(context.Context, Caller, string) ([]NodeExecutionView, error) {
+	return f.nodes, nil
+}
+
+func catchUpReaderFor(runs *scriptedRuns) *catchUpGenReader {
+	return &catchUpGenReader{
+		store: &fakeCatchUpGenStore{}, runs: runs,
+		pipelines: &fakeCatchUpPipelines{}, chats: &fakeCatchUpChats{},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+// The issue-trigger input names the issue, so an issue-to-pr run belongs to
+// the ISSUE: that is the piece of work, with the PR it opened nested under it.
+func TestCatchUpRunFactsGroupsByIssueThenPRThenRun(t *testing.T) {
+	t.Parallel()
+	repo := "repo-1"
+	issueRun := &scriptedRuns{
+		run: RunView{
+			RunSummaryView: RunSummaryView{Status: "completed", RepositoryID: &repo},
+			Inputs:         []RunInputValueView{{Name: "issue_number", Value: json.RawMessage("42")}},
+		},
+		nodes: []NodeExecutionView{{NodeInstanceKey: "open_pr", Status: "succeeded",
+			Outputs: json.RawMessage(`{"pr_number":7,"branch":"comm/issue-42-x"}`)}},
+	}
+	facts, err := catchUpReaderFor(issueRun).RunFacts(context.Background(),
+		assistant.Caller{UserID: "u1"}, "run-1")
+	if err != nil {
+		t.Fatalf("RunFacts: %v", err)
+	}
+	if facts.RepositoryID != repo || facts.IssueNumber != 42 || facts.PRNumber != 7 {
+		t.Fatalf("facts = %+v, want the repository, the issue and the PR", facts)
+	}
+	if facts.GroupKey != "issue:repo-1:42" {
+		t.Fatalf("group key = %q, want the issue's piece of work", facts.GroupKey)
+	}
+
+	// A run with no issue input but a PR output IS the PR's piece of work.
+	prRun := &scriptedRuns{
+		run: RunView{RunSummaryView: RunSummaryView{Status: "completed", RepositoryID: &repo}},
+		nodes: []NodeExecutionView{{NodeInstanceKey: "push", Status: "succeeded",
+			Outputs: json.RawMessage(`{"pr_url":"https://github.com/acme/web/pull/9"}`)}},
+	}
+	facts, err = catchUpReaderFor(prRun).RunFacts(context.Background(),
+		assistant.Caller{UserID: "u1"}, "run-2")
+	if err != nil {
+		t.Fatalf("RunFacts (pr): %v", err)
+	}
+	if facts.GroupKey != "pr:repo-1:9" {
+		t.Fatalf("group key = %q, want the PR's piece of work", facts.GroupKey)
+	}
+
+	// A run that names no number in no repository is its own piece of work —
+	// grouped by the run, exactly as the store keyed it before grouping.
+	alone := &scriptedRuns{run: RunView{RunSummaryView: RunSummaryView{Status: "failed"}}}
+	facts, err = catchUpReaderFor(alone).RunFacts(context.Background(),
+		assistant.Caller{UserID: "u1"}, "run-3")
+	if err != nil {
+		t.Fatalf("RunFacts (alone): %v", err)
+	}
+	if facts.GroupKey != "run:run-3" {
+		t.Fatalf("group key = %q, want the run itself", facts.GroupKey)
+	}
+}
+
+// The write path carries the key to the store's conflict target and the run id
+// to the tour append, where the run is CLAIMED: appending a version is what
+// stops a run being owed a story.
+func TestCatchUpWriterCarriesTheGroupKeyAndClaimsTheRun(t *testing.T) {
+	t.Parallel()
+	store := &fakeCatchUpGenStore{itemID: "item-9"}
+	w := &catchUpGenWriter{store: store}
+	tour := assistant.CatchUpTourWrite{
+		ProjectID: "p1", RunID: "run-2", ExistingID: "item-9",
+		GroupKey: "issue:repo-1:42", Shape: "issue", Title: "Issue 42",
+		Summary: "Checkout is green.", Resolution: "merged", Reason: "Fix landed.",
+		Refs:  assistant.CatchUpRefsDraft{IssueNumbers: []int{42}, PRNumbers: []int{7}},
+		Stops: []assistant.CatchUpStopDraft{{ID: "fix", Title: "Fix", Narrative: "N.", Importance: "must_know"}},
+	}
+	if err := w.WriteCatchUpTour(context.Background(), assistant.Caller{UserID: "u1"}, tour); err != nil {
+		t.Fatalf("WriteCatchUpTour: %v", err)
+	}
+	item, stops := store.snapshot()
+	if item.ID != "item-9" || item.GroupKey != "issue:repo-1:42" || item.SourceRunID != "run-2" {
+		t.Fatalf("upsert = %+v, want the grouped item revised by its newest run", item)
+	}
+	if len(stops) != 1 || stops[0].ID != "fix" {
+		t.Fatalf("stops = %+v, want the one beat appended", stops)
+	}
+}
+
 // --- ref harvesting --------------------------------------------------------
 
 func TestCatchUpHarvestOutputsReadsOnlyTheRunsOwnClaims(t *testing.T) {
@@ -367,19 +475,57 @@ func TestCatchUpStopMinutesCountsReadableEvidence(t *testing.T) {
 
 // --- fakes for the generator's store/reads ---------------------------------
 
-type fakeCatchUpGenStore struct{}
+// fakeCatchUpGenStore records what the generator's write path asked the store
+// to do, and serves the one grouped item its read path looks up.
+type fakeCatchUpGenStore struct {
+	mu       sync.Mutex
+	group    CatchUpGroupView
+	found    bool
+	item     CatchUpWorkItemWrite
+	runs     []string
+	appended []CatchUpStopWrite
+	itemID   string
+}
 
 func (f *fakeCatchUpGenStore) CatchUpCandidates(context.Context, Caller, []string,
 	time.Duration, int) ([]CatchUpCandidateView, error) {
 	return nil, nil
 }
-func (f *fakeCatchUpGenStore) UpsertCatchUpWorkItem(context.Context, Caller,
-	CatchUpWorkItemWrite) (string, error) {
-	return "", nil
+func (f *fakeCatchUpGenStore) CatchUpItemForGroup(_ context.Context, _ Caller,
+	_, groupKey string) (CatchUpGroupView, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.found || f.group.ItemID == "" {
+		return CatchUpGroupView{}, false, nil
+	}
+	return f.group, true, nil
 }
-func (f *fakeCatchUpGenStore) AppendCatchUpTour(context.Context, Caller, string, string,
-	[]CatchUpStopWrite) error {
+func (f *fakeCatchUpGenStore) UpsertCatchUpWorkItem(_ context.Context, _ Caller,
+	in CatchUpWorkItemWrite) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.item = in
+	if f.itemID == "" {
+		f.itemID = "item-new"
+	}
+	return f.itemID, nil
+}
+func (f *fakeCatchUpGenStore) AppendCatchUpTour(_ context.Context, _ Caller,
+	itemID, runID, reason string, stops []CatchUpStopWrite) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if itemID != f.itemID || runID == "" || reason == "" {
+		return fmt.Errorf("appended %d stops to %s/%s with reason %q",
+			len(stops), itemID, runID, reason)
+	}
+	f.appended = append(f.appended, stops...)
 	return nil
+}
+
+func (f *fakeCatchUpGenStore) snapshot() (CatchUpWorkItemWrite, []CatchUpStopWrite) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.item, append([]CatchUpStopWrite(nil), f.appended...)
 }
 
 type fakeCatchUpRuns struct{}

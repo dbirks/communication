@@ -12,13 +12,16 @@ package api
 // hole, not a feature.
 //
 // The writes go through the store's OWN upsert and append — the generator
-// borrows no side door: the work item is keyed by (project, source_run_id)
+// borrows no side door: the work item is keyed by the PIECE OF WORK the run's
+// refs name (project + group key: the issue, else the PR, else the run itself)
 // and the tour is appended as a new version, with all of ADR-0078's store
-// rules (race-safe versioning, document validation, membership guards) still
-// enforced by the store itself. Refs are built here from the run's node
-// outputs and inputs — the same fields the issue-to-pr template publishes
-// (branch, pr_url, issue_number, commits) — never from anything the model
-// wrote.
+// rules (race-safe versioning, refs merging, document validation, membership
+// guards) still enforced by the store itself. Refs — and therefore the group
+// key — are built here from the run's node outputs and inputs, the same fields
+// the issue-to-pr template publishes (branch, pr_url, issue_number, commits),
+// never from anything the model wrote: an answer that invents an issue number
+// cannot name its way into somebody else's story, because the key it would
+// need is not a member of the answer (ADR-0078 § Grouping).
 
 import (
 	"context"
@@ -31,28 +34,48 @@ import (
 	"time"
 
 	"github.com/dbirks/communication/internal/assistant"
+	"github.com/dbirks/communication/internal/domain"
 )
 
 // --- the seams the generator needs from the store -----------------------
 
-// CatchUpHeadStopView is one stop of an existing item's newest tour, as far
-// as the generator may see it: the id, the title (the match key for the
-// stable-id rule) and the version that introduced it.
+// CatchUpHeadStopView is one stop of an existing item's newest tour, as far as
+// the generator may see it: the id, the title (the match key for the stable-id
+// rule), the label and rank the reader saw, and the version that introduced
+// it. The narrative is deliberately absent — a rewrite is told what the beats
+// WERE, not shown the prose it is supposed to rewrite, which is the difference
+// between carrying a story forward and paraphrasing oneself.
 type CatchUpHeadStopView struct {
 	ID             string
 	Title          string
+	Kind           string
+	Importance     string
 	AddedInVersion int
 }
 
 // CatchUpCandidateView is one run still owed a tour. ItemID is empty when no
-// work item names the run yet; TourHead is the item's newest tour version (0
-// when it has none).
+// work item has claimed the run yet — which, once runs group, says nothing
+// about whether the PIECE OF WORK already has a story: that is what
+// CatchUpItemForGroup answers once the run's own refs have been read. TourHead
+// is the item's newest tour version (0 when it has none).
 type CatchUpCandidateView struct {
 	RunID          string
 	ProjectID      string
 	ItemID         string
 	ConversationID string
 	TourHead       int
+	HeadStops      []CatchUpHeadStopView
+	// HeadReason is why the newest version said what it said.
+	HeadReason string
+}
+
+// CatchUpGroupView is the work item a grouping key names: the piece of work
+// this run belongs under, with the tour a rewrite must carry forward.
+type CatchUpGroupView struct {
+	ItemID         string
+	ConversationID string
+	TourHead       int
+	Reason         string
 	HeadStops      []CatchUpHeadStopView
 }
 
@@ -69,7 +92,9 @@ type CatchUpRefsWrite struct {
 }
 
 // CatchUpWorkItemWrite is the generator's work-item upsert. ID names an
-// existing item to revise ("" = key on project + source run).
+// existing item to revise; GroupKey names the piece of work (issue, PR) the
+// item is keyed by when no id was read; with neither the (project, source run)
+// identity of the pre-grouping store applies.
 type CatchUpWorkItemWrite struct {
 	ID             string
 	ProjectID      string
@@ -80,6 +105,7 @@ type CatchUpWorkItemWrite struct {
 	Refs           CatchUpRefsWrite
 	SourceRunID    string
 	ConversationID string
+	GroupKey       string
 }
 
 // CatchUpStopWrite is one tour stop to append. Evidence objects already carry
@@ -103,8 +129,12 @@ type CatchUpStopWrite struct {
 type CatchUpGenStore interface {
 	CatchUpCandidates(ctx context.Context, c Caller, projectIDs []string,
 		window time.Duration, limit int) ([]CatchUpCandidateView, error)
+	// CatchUpItemForGroup reads the work item a grouping key names; the
+	// boolean is false when no piece of work carries it (yet).
+	CatchUpItemForGroup(ctx context.Context, c Caller, projectID,
+		groupKey string) (CatchUpGroupView, bool, error)
 	UpsertCatchUpWorkItem(ctx context.Context, c Caller, in CatchUpWorkItemWrite) (string, error)
-	AppendCatchUpTour(ctx context.Context, c Caller, itemID, reason string,
+	AppendCatchUpTour(ctx context.Context, c Caller, itemID, runID, reason string,
 		stops []CatchUpStopWrite) error
 }
 
@@ -236,15 +266,44 @@ func (r *catchUpGenReader) CandidateRuns(ctx context.Context, c assistant.Caller
 		cand := assistant.CatchUpCandidate{
 			RunID: row.RunID, ProjectID: row.ProjectID, ItemID: row.ItemID,
 			ConversationID: row.ConversationID, TourHead: row.TourHead,
+			HeadReason: row.HeadReason,
 		}
 		for _, st := range row.HeadStops {
 			cand.HeadStops = append(cand.HeadStops, assistant.CatchUpExistingStop{
-				ID: st.ID, Title: st.Title, AddedInVersion: st.AddedInVersion,
+				ID: st.ID, Title: st.Title, Kind: st.Kind, Importance: st.Importance,
+				AddedInVersion: st.AddedInVersion,
 			})
 		}
 		out = append(out, cand)
 	}
 	return out, nil
+}
+
+// ExistingItem answers the grouping question the candidate read cannot: the
+// candidate row is keyed on the RUN, while the piece of work an issue-naming
+// run belongs to is named by a key only the run's own outputs can say. Not
+// finding one is the ordinary answer for a first run, never an error; a read
+// that fails is, because generating over it would write a twin story.
+func (r *catchUpGenReader) ExistingItem(ctx context.Context, c assistant.Caller,
+	projectID, groupKey string) (assistant.CatchUpExistingItem, error) {
+	if groupKey == "" {
+		return assistant.CatchUpExistingItem{}, nil
+	}
+	row, found, err := r.store.CatchUpItemForGroup(ctx, catchUpAPICaller(c), projectID, groupKey)
+	if err != nil || !found {
+		return assistant.CatchUpExistingItem{}, err
+	}
+	item := assistant.CatchUpExistingItem{
+		ItemID: row.ItemID, ConversationID: row.ConversationID,
+		TourHead: row.TourHead, HeadReason: row.Reason,
+	}
+	for _, st := range row.HeadStops {
+		item.HeadStops = append(item.HeadStops, assistant.CatchUpExistingStop{
+			ID: st.ID, Title: st.Title, Kind: st.Kind, Importance: st.Importance,
+			AddedInVersion: st.AddedInVersion,
+		})
+	}
+	return item, nil
 }
 
 // RunFacts folds one run into the generator's factual summary. A transcript
@@ -270,6 +329,7 @@ func (r *catchUpGenReader) RunFacts(ctx context.Context, c assistant.Caller,
 		StartedAt:  catchUpTime(run.StartedAt),
 		FinishedAt: catchUpTime(run.FinishedAt),
 	}
+	facts.RepositoryID = derefString(run.RepositoryID)
 	facts.Goal = catchUpGoalFromInputs(run.Inputs)
 	if n := catchUpInputInt(run.Inputs, "issue_number"); n > 0 {
 		facts.IssueNumber = n
@@ -283,6 +343,14 @@ func (r *catchUpGenReader) RunFacts(ctx context.Context, c assistant.Caller,
 	}
 	facts.HadCodeRefs = facts.Branch != "" || facts.PRNumber > 0 || facts.PRURL != "" ||
 		len(facts.Commits) > 0 || facts.IssueNumber > 0
+	// The grouping key is derived from the SAME server-side read of the run's
+	// outputs that the refs come from (domain.CatchUpGroupKey: an issue names
+	// the piece of work, else a PR does, else the run is the piece of work),
+	// so it is a fact about the run rather than a claim about the story —
+	// ADR-0078 § Grouping. An empty key is the honest "no grouping read was
+	// possible", not a guess.
+	facts.GroupKey = domain.CatchUpGroupKey(facts.RepositoryID, facts.IssueNumber,
+		facts.PRNumber, runID)
 	if conv := derefString(run.SourceConversationID); conv != "" {
 		transcript, terr := r.chats.ReadChatTranscript(ctx, c, conv)
 		if terr != nil {
@@ -495,6 +563,7 @@ func (w *catchUpGenWriter) WriteCatchUpTour(ctx context.Context, c assistant.Cal
 			CommitSHAs: a.Refs.CommitSHAs, RunIDs: a.Refs.RunIDs,
 		},
 		SourceRunID: a.RunID, ConversationID: a.ConversationID,
+		GroupKey: a.GroupKey,
 	})
 	if err != nil {
 		return fmt.Errorf("api: catch-up generator could not upsert the work item: %w", err)
@@ -525,7 +594,11 @@ func (w *catchUpGenWriter) WriteCatchUpTour(ctx context.Context, c assistant.Cal
 		}
 		stops = append(stops, write)
 	}
-	return w.store.AppendCatchUpTour(ctx, caller, itemID, a.Reason, stops)
+	// The run id rides along so appending the tour is what CLAIMS the run:
+	// a run is owed a story until a story names it (ADR-0078 § Grouping), and
+	// writing the claim anywhere earlier would let a failed completion strand
+	// a run with no tour and no retry.
+	return w.store.AppendCatchUpTour(ctx, caller, itemID, a.RunID, a.Reason, stops)
 }
 
 // --- caller conversion -----------------------------------------------------

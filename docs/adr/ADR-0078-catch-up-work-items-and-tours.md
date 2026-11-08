@@ -1,7 +1,8 @@
 # ADR-0078 — Catch up: one shared tour per piece of work, per-user seen state keyed on stable stop ids, and decision replies that are plain text into an agent conversation
 
 - **Date:** 2026-11-07
-- **Status:** Proposed (step 1: schema, store and contract. The generator that
+- **Status:** Proposed (step 1 shipped schema, store and contract; § Grouping
+  makes the work item an issue/PR/push rather than a run. The generator that
   writes tours and the routes that serve them are later tasks; see
   Migration/rollback)
 - **Owners:** control-plane API + store maintainers
@@ -177,7 +178,88 @@ runs, its own repositories — and labels the rest.
    any read here — the work item's project already scopes both — and both are
    uuid-typed so an id a reader follows is at least an id. Provenance never moves:
    both columns are `COALESCE`d on the upsert, because which run made which work,
-   in which thread, is a fact and not a field to revise.
+   in which thread, is a fact and not a field to revise. (§ Grouping narrows
+   this: `conversation_id` still never moves, while `source_run_id` came to mean
+   the item's LATEST run once one piece of work could hold several runs.)
+
+## Grouping
+
+**Status: Proposed** (migration `00029`, store, generator; the product brief's
+"one piece of work" wording is what this section implements).
+
+The design says a piece of work is an **issue with its PRs and commits nested
+under it**, a **PR only**, or a **push to main**, and that its tour "is
+rewritten as the work moves, with versions and new stops marked ADDED". Step 1
+keyed the work item by `(project, source_run_id)` — which was the engine's
+vocabulary, not the product's. Two runs on the same issue (the issue-to-pr
+template run twice, or a fix run after a failed run) became two items with two
+tours, and the reader had to reconstruct the grouping the design had already
+decided. Grouping moves the identity onto the work:
+
+1. **The key is derived from the run's own refs, never from its narrative.**
+   `domain.CatchUpGroupKey(repositoryID, issueNumber, prNumber, runID)` yields
+   `issue:<repository>:<number>`, else `pr:<repository>:<number>`, else
+   `run:<run id>`. The numbers come from the same server-side read of the run's
+   inputs (the issue-trigger's typed `issue_number`) and node outputs
+   (`issue_number`, `pr_number`, the tail of a `pr_url`) that produces the
+   `refs` — the model's answer has no member to put a key in, so naming your way
+   into somebody else's story is unrepresentable rather than filtered. An issue
+   number means nothing outside a repository, so a run that names a number but
+   belongs to no repository keeps its own key; two repositories' #7 are two
+   pieces of work.
+2. **`catchup_work_items.group_key` is the identity, `source_run_id` is the
+   latest run.** The (project, group_key) partial unique index is the upsert's
+   conflict target; `catchup_work_item_runs (work_item_id, run_id, added_at)`
+   records every run folded into the item, with no foreign key on `run_id` for
+   the same reason `source_run_id` has none (retention prunes runs; the record
+   outlives them). Where 00028 COALESCEd `source_run_id` so provenance never
+   moved, grouping moves it deliberately: once several runs share one piece of
+   work, "the run this came from" has several honest answers and the newest is
+   the one a reader follows. `conversation_id` still never moves — a decision
+   reply belongs to the thread the work was BORN in, not to whichever run moved
+   it last.
+3. **Claims are written by the tour, not by the item.** Appending a version is
+   what records `(item, run)`, in the statement that admits the version. If the
+   item write claimed the run and the completion then failed, the run would be
+   unclaimed-by-nobody and untold forever: a transient model error would cost
+   the work for good. So "a run is owed a story" means exactly *no tour version
+   of the item that claims it was written after the run's newest move*, and a
+   candidate read that says so is one `NOT EXISTS` over the claim table.
+4. **A rewrite sees the story it is rewriting, without seeing its prose.** The
+   generator's DATA block gains a `previous_tour` member — each stop's *title,
+   kind and importance* and the version that introduced it, never the narrative.
+   Shown verbatim, the old beats would become the model's source material and a
+   rewritten tour would drift into a summary of a summary; shown as labels, the
+   model rewrites from the facts of the work and keeps the titles that still
+   hold. Stop ids stay the server's, matched by title as before, so a carried
+   beat keeps its id and its `added_in_version` (read stays read) and a genuinely
+   new beat is stamped at the new version — which is what the UI's ADDED tags and
+   UPDATED badge already read. The version's `reason` is what CHANGED ("Fix
+   landed after the failed run"), because the reader knows the rest.
+5. **Refs merge; they do not replace.** A second run's claims are unioned into
+   the item's (`domain.CatchUpRefs.UnionWith`, deduped, insertion-ordered,
+   `CatchUpRefsListMax` per list), so the PR the first run opened survives the
+   fix run that closed it. The merge is a read-modify-write rather than one
+   statement: two replicas grouping the same issue in the same instant can lose
+   one number from the document. That is the limit to name — no run can land in
+   the *wrong* item, because the unique index decides the row and not the read,
+   and what a lost entry costs is a label on a story rather than a state the
+   platform drives (§ Decision 6).
+6. **Grouping is decided at the first telling and never revised.** An item keeps
+   its `group_key` for life (`COALESCE`d on every write, so a later run can fill
+   in a key an older row never had but cannot move one that exists), and
+   `00029` backfills existing rows with `run:<source_run_id>` — the identity
+   they were already keyed by — rather than re-deriving issue keys from stored
+   `refs`. Re-deciding old groupings would move stops between documents that
+   readers have already read, which is the one thing § Decision 3 exists to
+   prevent.
+
+Rejected within grouping, because the table made it look cheap: keying on
+`(project, issue_number)` with no repository (two repositories' #7 would be one
+story); a `run_id` foreign key plus cascade (a pruned run would take the story of
+what it did with it); claiming the run at the item write (a point-4 failure
+becomes permanent); and putting the key in the generator's answer (a tour that
+can name its own destination can attach a run to work it did not do).
 
 ## Consequences
 
@@ -267,15 +349,37 @@ own list and nobody else's and cannot resurrect a read beat after a rewrite;
 outsider and other-organization users get nothing from all seven methods, and
 naming a project cannot widen a list; a malformed uuid is a validation error
 rather than a 500; five concurrent appends produce versions 1..6 each exactly
-once; the run id is the re-grouping key (one item, not two) and provenance does
-not move; an explicit id revises that row and an id naming nothing writes
-nothing; three refused appends leave the head at 1; refs, evidence and narrative
+once; the run id is still a re-grouping key when nothing else names the row (one
+item, not two) and a revision that names no run does not move provenance; an
+explicit id revises that row and an id naming nothing writes nothing; three refused appends leave the head at 1; refs, evidence and narrative
 round-trip; recaps and visits are per user and regeneration keeps the earlier
 row; every palette colour stores and a state hue, a padded or an unprefixed one
 fails `projects_color_check`; a hand-corrupted `importance` fails the read where
 `stops = '[]'::jsonb` and a non-array document are refused by the table's own
 CHECK; and dropping a project or a reader cascades the work items, tours, seen
 rows, replies, visits and recaps with them.
+
+`TestCatchUpGrouping` (same real PostgreSQL) is § Grouping as a data rule: two
+failed runs whose refs name issue 42 in one repository write ONE work item
+(`again.ID == item.ID`), both runs end up in `catchup_work_item_runs`, the
+served `refs` hold both runs' issue/PR numbers and both commit SHAs, the item's
+`source_run_id` names the later run, its history is two versions with the second
+`reason` saying what changed, and its newest tour carries the old beat at
+`added_in_version` 1 and the fix at 2; a run that names no number keeps its own
+item; the same key in a second project the caller belongs to is a second item;
+a run with no key at all still re-describes the one row the pre-grouping index
+names; and a made-up key is a validation error. The candidate read is asserted
+on both sides of a claim: an item with no tour has not told its run, and after
+the rewrite neither run comes back.
+
+`internal/assistant/catchup_gen_test.go` (fake model, no database) pins the
+generator half: a run whose facts carry `issue:repo-1:42` asks for the item that
+key names, and the rewrite it writes back is version 2 with the carried beat's
+id and introducing version intact, the new beat stamped ADDED, and the item's
+own conversation (not the newest run's) as the destination of a decision; the
+prompt block carried the previous stops' titles, kinds and importance and NOT
+their narrative; a first telling carries no `previous_tour` at all and stamps
+version 1.
 
 Plus `go build ./...`, `go vet ./internal/store/... ./internal/domain/...`,
 `gofmt -l internal/` (empty) and `go test ./internal/domain/...`.
@@ -285,6 +389,11 @@ whether its narratives are true), the HTTP surface, and the page itself. Every
 row of the protocol-compatibility sense of "done" for this ADR arrives with those.
 
 ## Migration/rollback
+
+`00029_catch_up_grouping.sql` adds `catchup_work_items.group_key` with its
+partial unique index and the `catchup_work_item_runs` claim table (§ Grouping),
+backfilling both from the `source_run_id` the rows already carried; it changes
+nothing else.
 
 `00028_catch_up.sql` adds six tables, `projects.color`, and the four indexes the
 reads above need; it changes no existing column semantics and breaks no existing

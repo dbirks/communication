@@ -154,27 +154,82 @@ const catchUpStopsSeen = `
 
 // catchUpWorkItemColumns is the read projection shared by every work-item read,
 // so all three decode the same thing.
+// The grouping key rides the projection too: it is the item's identity, and a
+// read that could not say which piece of work it served would be a read of a
+// document without its title.
 const catchUpWorkItemColumns = `w.id::text, w.project_id::text, w.shape, w.title, w.summary,
 	       w.resolution, w.refs, w.source_run_id::text, w.conversation_id::text,
-	       w.created_at, w.updated_at`
+	       w.created_at, w.updated_at, COALESCE (w.group_key, '')`
 
 // --- work items -------------------------------------------------------------
 
-// UpsertWorkItem writes (or revises) one work item in a SINGLE statement whose
-// own WHERE carries the membership guard — the ADR-0071 pattern: a row is never
-// written into a project the caller may not see, rather than cleaned up
-// afterwards. Two identity paths:
+// catchUpFindItemSQL answers the grouping question BEFORE anything is written:
+// which row does this write land on, and what does that row already claim? An
+// explicit id names the row; otherwise the (project, group_key) index does —
+// the piece of work the run's refs name — and an item with neither key falls
+// back to the (project, source_run_id) identity it was born with. The ordering
+// is that same priority, so one write can never be pointed at two rows. The
+// membership predicate is in the statement, because an item in a project the
+// caller is not in is not there at all, exactly as in every other read here.
+const catchUpFindItemSQL = `
+	WITH ` + catchUpVisibleOne + `
+	SELECT w.id::text, w.refs
+	FROM catchup_work_items w
+	JOIN visible v ON v.id = w.project_id
+	WHERE ($5::uuid IS NOT NULL AND w.id = $5::uuid)
+	   OR ($5::uuid IS NULL AND $6::text IS NOT NULL AND w.group_key = $6::text)
+	   OR ($5::uuid IS NULL AND $6::text IS NULL AND $7::uuid IS NOT NULL
+	       AND w.source_run_id = $7::uuid)
+	ORDER BY CASE
+		         WHEN $5::uuid IS NOT NULL AND w.id = $5::uuid THEN 0
+		         WHEN $5::uuid IS NULL AND $6::text IS NOT NULL
+		              AND w.group_key = $6::text THEN 1
+		         ELSE 2
+		     END
+	LIMIT 1`
+
+// catchUpUpsertAttempts bounds the retry in UpsertWorkItem. One insert that
+// loses the (project, group_key) race to another replica is the ordinary
+// reason for a second pass: the loser re-reads the row that won, unions its
+// own claims into it and updates that row. Three attempts is two more than two
+// writers can plausibly need at one instant, and a caller that never wins
+// surfaces the last real error instead of spinning (ADR-0063).
+const catchUpUpsertAttempts = 3
+
+// UpsertWorkItem writes (or revises) one work item, with the caller's own
+// project membership inside every statement it runs — the ADR-0071 pattern: a
+// row is never written into a project the caller may not see, rather than
+// cleaned up afterwards. Three identity paths, tried in that order:
 //
 //   - an explicit id updates that work item: the assistant re-describing work it
 //     already reported. An id that names nothing is NOT a create — the caller
 //     asked to revise a specific thing, and inventing one would be a lie;
-//   - with no id, the (project, source_run_id) partial unique index is the
-//     conflict target, so re-grouping the same run updates its item instead of
-//     writing a duplicate, and an item with no run is simply new.
+//   - a group key is the identity of the PIECE OF WORK (ADR-0078 § Grouping), so
+//     the (project, group_key) partial unique index decides which row a second
+//     run on the same issue rewrites — the item the first run wrote, not a twin;
+//   - with neither, the (project, source_run_id) identity of the pre-grouping
+//     store applies, and an item with no run is simply new.
 //
-// Provenance never moves once written: source_run_id and conversation_id are
-// COALESCEd, because "which run made this, in which thread" is a fact rather
-// than a field to revise.
+// Where two runs meet in one item their claims MERGE: the row's stored refs are
+// read first and the new run's issue numbers, PR numbers, commit SHAs and run
+// ids are unioned into them by the contract's own rule
+// (domain.CatchUpRefs.UnionWith), so a fix run does not erase the PR the run it
+// fixed opened. That read-merge-write is not one statement, which is the
+// honest limitation to name: two replicas generating the same group in the same
+// instant can lose one run's number from the document. No run can be written
+// into the WRONG item — the unique index, not the read, decides the row — and
+// what a lost entry costs is a label on a story, not a state the platform
+// drives (ADR-0078 § Decision 6).
+//
+// Provenance moves the way it always did in one column and a new way in the
+// other: `conversation_id` is COALESCEd (the thread a piece of work was born in
+// is where its decision replies belong), while `source_run_id` follows the
+// NEWEST run of the item — once several runs share one piece of work, "which
+// run this came from" has several honest answers and the newest is the one a
+// reader follows. A run is CLAIMED (recorded in `catchup_work_item_runs`) by
+// the tour write, not by this one: an item whose story the model never
+// finished writing must leave its run owed a story, or a transient failure
+// would cost somebody the work for good.
 func (s *CatchUpStore) UpsertWorkItem(ctx context.Context, c Caller,
 	in domain.CatchUpWorkItem) (domain.CatchUpWorkItem, error) {
 	pool, err := s.pool()
@@ -185,40 +240,103 @@ func (s *CatchUpStore) UpsertWorkItem(ctx context.Context, c Caller,
 		return domain.CatchUpWorkItem{}, err
 	}
 	in.Title, in.Summary = strings.TrimSpace(in.Title), strings.TrimSpace(in.Summary)
+
+	for attempt := 0; attempt < catchUpUpsertAttempts; attempt++ {
+		item, retry, err := s.writeWorkItem(ctx, pool, c, in)
+		if err != nil || !retry {
+			return item, err
+		}
+		// The insert lost the race: the next pass re-reads the row that won
+		// and merges this run's claims into it.
+	}
+	return domain.CatchUpWorkItem{}, fmt.Errorf(
+		"postgres: upsert catchup work item: %d writers in a row claimed group %q "+
+			"in project %s before this one could",
+		catchUpUpsertAttempts, in.GroupKey, in.ProjectID)
+}
+
+// writeWorkItem is one attempt. retry=true, err=nil is the single recoverable
+// answer: the caller named no row, nothing matched the key, and the insert then
+// lost the unique index to another writer — so the caller re-reads and merges.
+// Everything else is an answer: the row written, or the reason none exists.
+func (s *CatchUpStore) writeWorkItem(ctx context.Context, pool *pgxpool.Pool, c Caller,
+	in domain.CatchUpWorkItem) (domain.CatchUpWorkItem, bool, error) {
+	target, prior, err := s.findWorkItem(ctx, pool, c, in)
+	if err != nil {
+		return domain.CatchUpWorkItem{}, false, err
+	}
+	write := in
+	if prior != nil {
+		write.Refs = prior.UnionWith(in.Refs)
+	}
+	if in.ID == "" && target != "" {
+		// The group key (or the bare run id) named an existing item: this write
+		// is a revision of THAT row, and the one statement below is the one
+		// that revises rows by id.
+		write.ID = target
+	}
+	if write.ID != "" {
+		return s.reviseWorkItem(ctx, pool, c, write)
+	}
+	return s.insertWorkItem(ctx, pool, c, write)
+}
+
+// findWorkItem names the row this write belongs to and the refs it already
+// carries. No row is the ordinary answer for a piece of work nobody has
+// described yet — not an error, and not a licence to create a different one.
+func (s *CatchUpStore) findWorkItem(ctx context.Context, pool *pgxpool.Pool, c Caller,
+	in domain.CatchUpWorkItem) (string, *domain.CatchUpRefs, error) {
+	var (
+		id   string
+		raw  []byte
+		refs domain.CatchUpRefs
+	)
+	// An explicit id is the only predicate that may name a row of a project the
+	// write also names; the two keyed paths are project-scoped by construction.
+	err := pool.QueryRow(ctx, catchUpFindItemSQL, c.UserID, c.OrganizationID, c.IsOrgAdmin,
+		in.ProjectID, catchUpOptID(in.ID), catchUpOptStr(in.GroupKey),
+		catchUpOptUUID(in.SourceRunID)).Scan(&id, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, catchUpQueryErr(err, "find catchup work item")
+	}
+	if err := json.Unmarshal(raw, &refs); err != nil {
+		return "", nil, fmt.Errorf("postgres: catchup refs: %w", err)
+	}
+	return id, &refs, nil
+}
+
+// catchUpWorkItemFields is the UPDATE's field list: the description, the
+// merged claims and the two provenance rules. Only the UPDATE uses it — the
+// INSERT below names its own columns — and it is shared by every revise so a
+// piece of work's provenance is moved by ONE rule: `conversation_id` keeps the
+// thread the work was born in, `source_run_id` follows the newest run, and
+// `group_key` is written once and never moved again.
+const catchUpWorkItemFields = `shape = $5, title = $6, summary = $7, resolution = $8,
+		    refs = $9::jsonb,
+		    source_run_id = COALESCE ($10::uuid, source_run_id),
+		    conversation_id = COALESCE (conversation_id, $11::uuid),
+		    group_key = COALESCE (group_key, $13::text),
+		    updated_at = now()`
+
+// reviseWorkItem rewrites the row this write names, in one statement whose
+// WHERE carries the membership guard: the project a write names is the project
+// the caller must belong to, not merely one of the projects they belong to.
+func (s *CatchUpStore) reviseWorkItem(ctx context.Context, pool *pgxpool.Pool, c Caller,
+	in domain.CatchUpWorkItem) (domain.CatchUpWorkItem, bool, error) {
 	refs, err := json.Marshal(in.Refs)
 	if err != nil {
-		return domain.CatchUpWorkItem{}, fmt.Errorf("postgres: encode catchup refs: %w", err)
+		return domain.CatchUpWorkItem{}, false, fmt.Errorf("postgres: encode catchup refs: %w", err)
 	}
-	const q = `
-	WITH ` + catchUpVisibleOne + `,
-	upd AS (
-		UPDATE catchup_work_items AS w
-		SET shape = $5, title = $6, summary = $7, resolution = $8, refs = $9::jsonb,
-		    source_run_id = COALESCE (w.source_run_id, $10::uuid),
-		    conversation_id = COALESCE (w.conversation_id, $11::uuid),
-		    updated_at = now()
-		FROM visible v
-		WHERE w.id = $12::uuid AND w.project_id = v.id
-		RETURNING w.id::text AS id, w.updated_at AS moved_at
-	),
-	ins AS (
-		INSERT INTO catchup_work_items
-		    (project_id, shape, title, summary, resolution, refs, source_run_id, conversation_id)
-		SELECT $4::uuid, $5, $6, $7, $8, $9::jsonb, $10::uuid, $11::uuid
-		WHERE $12::uuid IS NULL
-		  AND EXISTS (SELECT 1 FROM visible)
-		ON CONFLICT (project_id, source_run_id) WHERE source_run_id IS NOT NULL
-		DO UPDATE SET shape = EXCLUDED.shape, title = EXCLUDED.title,
-		              summary = EXCLUDED.summary, resolution = EXCLUDED.resolution,
-		              refs = EXCLUDED.refs,
-		              conversation_id = COALESCE (catchup_work_items.conversation_id,
-		                                          EXCLUDED.conversation_id),
-		              updated_at = now()
-		RETURNING id::text AS id, updated_at AS moved_at
-	)
-	SELECT id, moved_at FROM upd
-	UNION ALL
-	SELECT id, moved_at FROM ins`
+	q := `
+	WITH ` + catchUpVisibleOne + `
+	UPDATE catchup_work_items AS w
+	SET ` + catchUpWorkItemFields + `
+	FROM visible v
+	WHERE w.id = $12::uuid AND w.project_id = v.id
+	RETURNING w.id::text AS id, w.updated_at AS moved_at`
 	var (
 		id        string
 		updatedAt time.Time
@@ -226,16 +344,73 @@ func (s *CatchUpStore) UpsertWorkItem(ctx context.Context, c Caller,
 	err = pool.QueryRow(ctx, q, c.UserID, c.OrganizationID, c.IsOrgAdmin, in.ProjectID,
 		string(in.Shape), in.Title, in.Summary, string(in.Resolution), refs,
 		catchUpOptUUID(in.SourceRunID), catchUpOptUUID(in.ConversationID),
-		catchUpOptID(in.ID)).Scan(&id, &updatedAt)
-	if err != nil {
-		return domain.CatchUpWorkItem{}, catchUpQueryErr(err, "upsert catchup work item")
+		catchUpOptID(in.ID), catchUpOptStr(in.GroupKey)).Scan(&id, &updatedAt)
+	if m4UniqueViolation(err) {
+		// Filling in a group key (or the latest run) can collide with a row
+		// another writer moved under the same index a moment ago. That is the
+		// same race the insert path answers with a retry: re-read which row the
+		// identity names now, and merge into it.
+		return domain.CatchUpWorkItem{}, true, nil
 	}
-	// created_at is the row's own, older than this write on the update path, so
-	// it is read back rather than echoed: a caller that wants the full item uses
-	// GetWorkItem, and one that wanted the write confirmed gets the id and the
-	// clock that moved.
+	if err != nil {
+		return domain.CatchUpWorkItem{}, false, catchUpQueryErr(err, "revise catchup work item")
+	}
 	in.ID, in.UpdatedAt, in.CreatedAt = id, updatedAt, time.Time{}
-	return in, nil
+	return in, false, nil
+}
+
+// insertWorkItem writes a new row. There is no ON CONFLICT DO UPDATE here on
+// purpose: the whole point of the group key is that a write that FOUND a row
+// updates it and a write that did not is the one that inserts. `ON CONFLICT DO
+// NOTHING` therefore has exactly one meaning — another replica grouped a run of
+// the same piece of work at the same instant — and the answer is the retry
+// that re-reads the winner and merges into it, not a second opinion about
+// which fields a conflict should move.
+func (s *CatchUpStore) insertWorkItem(ctx context.Context, pool *pgxpool.Pool, c Caller,
+	in domain.CatchUpWorkItem) (domain.CatchUpWorkItem, bool, error) {
+	refs, err := json.Marshal(in.Refs)
+	if err != nil {
+		return domain.CatchUpWorkItem{}, false, fmt.Errorf("postgres: encode catchup refs: %w", err)
+	}
+	q := `
+	WITH ` + catchUpVisibleOne + `,
+	ins AS (
+		INSERT INTO catchup_work_items
+		    (project_id, shape, title, summary, resolution, refs, source_run_id,
+		     conversation_id, group_key)
+		SELECT $4::uuid, $5, $6, $7, $8, $9::jsonb, $10::uuid, $11::uuid, $12::text
+		WHERE EXISTS (SELECT 1 FROM visible)
+		ON CONFLICT DO NOTHING
+		RETURNING id::text AS id, updated_at AS moved_at
+	),
+	seen AS (SELECT count (*)::integer AS n FROM visible)
+	SELECT COALESCE (i.id, ''), COALESCE (i.moved_at, 'epoch'::timestamptz), seen.n
+	FROM seen LEFT JOIN ins i ON TRUE`
+	var (
+		id     string
+		moved  time.Time
+		shared int
+	)
+	err = pool.QueryRow(ctx, q, c.UserID, c.OrganizationID, c.IsOrgAdmin, in.ProjectID,
+		string(in.Shape), in.Title, in.Summary, string(in.Resolution), refs,
+		catchUpOptUUID(in.SourceRunID), catchUpOptUUID(in.ConversationID),
+		catchUpOptStr(in.GroupKey)).Scan(&id, &moved, &shared)
+	if err != nil {
+		return domain.CatchUpWorkItem{}, false, catchUpQueryErr(err, "insert catchup work item")
+	}
+	if id == "" {
+		// An empty id out of a statement that always answers one row is one of
+		// two opposite sentences: "this is not your project" — the refusal the
+		// UPDATE path gives for the same fact — or "somebody else wrote this
+		// row first". The membership count the statement already carries tells
+		// them apart, so a stranger is refused rather than retried forever.
+		if shared > 0 {
+			return domain.CatchUpWorkItem{}, true, nil
+		}
+		return domain.CatchUpWorkItem{}, false, domain.ErrCatchUpNotFound
+	}
+	in.ID, in.UpdatedAt, in.CreatedAt = id, moved, time.Time{}
+	return in, false, nil
 }
 
 // catchUpGetSQL reads one item plus the headers of every tour version it has
@@ -276,7 +451,7 @@ func (s *CatchUpStore) GetWorkItem(ctx context.Context, c Caller,
 	err = pool.QueryRow(ctx, catchUpGetSQL, c.UserID, c.OrganizationID, c.IsOrgAdmin,
 		workItemID).Scan(&view.ID, &view.ProjectID, &view.Shape, &view.Title, &view.Summary,
 		&view.Resolution, &refs, &view.SourceRunID, &view.ConversationID,
-		&view.CreatedAt, &view.UpdatedAt, &history)
+		&view.CreatedAt, &view.UpdatedAt, &view.GroupKey, &history)
 	if err != nil {
 		return domain.CatchUpWorkItemView{}, catchUpQueryErr(err, "read catchup work item")
 	}
@@ -366,10 +541,16 @@ const catchUpAppendSQL = `
 		WHERE w.id = $4::uuid AND guard.ok IS NOT NULL
 		RETURNING 1
 	),
+	claim AS (
+		INSERT INTO catchup_work_item_runs (work_item_id, run_id)
+		SELECT $4::uuid, $8::uuid
+		WHERE EXISTS (SELECT 1 FROM bump) AND $8::uuid IS NOT NULL
+		ON CONFLICT (work_item_id, run_id) DO NOTHING
+	),
 	ins AS (
 		INSERT INTO catchup_tour_versions (work_item_id, version, reason, stops)
 		SELECT $4::uuid, $5::int, $6, $7::jsonb
-		WHERE EXISTS (SELECT 1 FROM bump)
+		WHERE EXISTS (SELECT 1 FROM bump) AND (SELECT count(*) FROM claim) >= 0
 		RETURNING created_at
 	)
 	SELECT ins.created_at FROM ins`
@@ -383,8 +564,15 @@ const catchUpAppendSQL = `
 // its row only while the version it claims is still the next one, so a loser
 // writes nothing and retries with a recomputed number. A caller that never wins
 // inside catchUpAppendAttempts gets the last real error, not a silent skip.
-func (s *CatchUpStore) AppendTourVersion(ctx context.Context, c Caller, workItemID, reason string,
-	stops []domain.CatchUpStop) (domain.CatchUpTourVersion, error) {
+//
+// runID names the run this version tells — the run being CLAIMED. It is
+// optional ("" = a version written about work no single run owns, or a caller
+// that has no run to point at), and the claim lands in the same statement as
+// the version, so a run is owed a story until a story exists that names it
+// (ADR-0078 § Grouping). Losing the version race means losing the claim too,
+// which is the point: the run stays owed until the version is really there.
+func (s *CatchUpStore) AppendTourVersion(ctx context.Context, c Caller, workItemID, runID,
+	reason string, stops []domain.CatchUpStop) (domain.CatchUpTourVersion, error) {
 	pool, err := s.pool()
 	if err != nil {
 		return domain.CatchUpTourVersion{}, err
@@ -421,7 +609,7 @@ func (s *CatchUpStore) AppendTourVersion(ctx context.Context, c Caller, workItem
 		}
 		var createdAt time.Time
 		err = pool.QueryRow(ctx, catchUpAppendSQL, c.UserID, c.OrganizationID, c.IsOrgAdmin,
-			workItemID, version, reason, encoded).Scan(&createdAt)
+			workItemID, version, reason, encoded, catchUpOptUUID(&runID)).Scan(&createdAt)
 		if err == nil {
 			v.CreatedAt = createdAt
 			return v, nil
@@ -1712,24 +1900,39 @@ const catchUpCandidateRunsMax = 10
 //     instant a CHECK guarantees every terminal run carries);
 //   - in a project the caller belongs to (the same `visible` CTE every other
 //     read here carries — naming a project can only narrow);
-//   - whose work item does not exist, has no tour at all, or whose newest
-//     tour was written BEFORE the run last moved (`finished_at` past the
-//     tour's `created_at` — a new terminal attempt moves finished_at, which
-//     is the "the run changed after the tour" signal the generator acts on).
+//   - unclaimed: no `catchup_work_item_runs` row names the run, which is what
+//     "nobody has told this run yet" means once runs are grouped (ADR-0078 §
+//     Grouping). A run that a work item already carries is only owed a story
+//     again when it moved AFTER that item's newest tour (the same-run retry the
+//     pre-grouping read already re-armed on), and the claim row is what finds
+//     the item to rewrite — the grouping key itself is read off the run's own
+//     outputs, which is generator territory, not SQL's.
 //
 // The newest tour's stops come back for the id-carry-over rule: a rewrite
 // must know the beats it is rewriting to keep their ids.
 const catchUpCandidatesSQL = `
 	WITH ` + catchUpVisibleSome + `,
 	cands AS (
-		SELECT r.id, r.project_id, w.id AS item_id, w.conversation_id, r.finished_at
+		SELECT r.id, r.project_id, w.id AS item_id,
+		       COALESCE (w.conversation_id, r.source_conversation_id) AS conversation_id,
+		       r.finished_at
 		FROM runs r
 		JOIN visible v ON v.id = r.project_id
+		-- One claim per run: the newest one, so a run that somehow ended up on
+		-- two items rewrites the item that took it last rather than answering
+		-- the candidate read twice.
+		LEFT JOIN LATERAL (
+			SELECT l.work_item_id
+			FROM catchup_work_item_runs l
+			WHERE l.run_id = r.id
+			ORDER BY l.added_at DESC, l.work_item_id
+			LIMIT 1
+		) AS l ON TRUE
 		LEFT JOIN catchup_work_items w
-			ON w.project_id = r.project_id AND w.source_run_id = r.id
+			ON w.id = l.work_item_id AND w.project_id = r.project_id
 		WHERE r.status IN ('completed','failed','cancelled','interrupted')
 		  AND r.finished_at >= now() - $5::interval
-		  AND (w.id IS NULL OR NOT EXISTS (
+		  AND (l.work_item_id IS NULL OR NOT EXISTS (
 			      SELECT 1 FROM catchup_tour_versions tv
 			      WHERE tv.work_item_id = w.id
 			        AND tv.created_at >= r.finished_at))
@@ -1738,16 +1941,79 @@ const catchUpCandidatesSQL = `
 	)
 	SELECT c.id::text, c.project_id::text, c.item_id::text, c.conversation_id::text,
 	       COALESCE (h.version, 0)::integer,
-	       COALESCE (h.stops, '[]'::jsonb)
+	       COALESCE (h.stops, '[]'::jsonb), COALESCE (h.reason, '')
 	FROM cands c
 	LEFT JOIN LATERAL (
-		SELECT tv.version, tv.stops
+		SELECT tv.version, tv.stops, tv.reason
 		FROM catchup_tour_versions tv
 		WHERE tv.work_item_id = c.item_id
 		ORDER BY tv.version DESC
 		LIMIT 1
 	) AS h ON TRUE
 	ORDER BY c.finished_at DESC, c.id DESC`
+
+// catchUpItemForGroupSQL is the grouping read: the work item a piece of work
+// ALREADY has, named by (project, group_key) rather than by the run that
+// started it — which is how the second run on an issue finds the story the
+// first one wrote. It carries the same membership predicate as every other
+// read here (the group key of a project the caller is not in is no key at
+// all), the thread the item's decisions belong in, and the newest tour's
+// stops so a rewrite can inherit their ids and stamp only its own as new.
+const catchUpItemForGroupSQL = `
+	WITH ` + catchUpVisibleOne + `
+	SELECT w.id::text, w.conversation_id::text,
+	       COALESCE (h.version, 0)::integer,
+	       COALESCE (h.stops, '[]'::jsonb),
+	       COALESCE (h.reason, '')
+	FROM catchup_work_items w
+	JOIN visible v ON v.id = w.project_id
+	LEFT JOIN LATERAL (
+		SELECT tv.version, tv.stops, tv.reason
+		FROM catchup_tour_versions tv
+		WHERE tv.work_item_id = w.id
+		ORDER BY tv.version DESC
+		LIMIT 1
+	) AS h ON TRUE
+	WHERE w.project_id = $4::uuid AND w.group_key = $5::text`
+
+// CatchUpItemForGroup reads the work item a group key names in one project,
+// or ErrCatchUpNotFound when no piece of work carries it yet — the answer a
+// first run gets, and the answer a stranger gets, because the membership
+// predicate is inside the statement (ADR-0014 § 3).
+func (s *CatchUpStore) CatchUpItemForGroup(ctx context.Context, c Caller,
+	projectID, groupKey string) (domain.CatchUpGroupItem, error) {
+	pool, err := s.pool()
+	if err != nil {
+		return domain.CatchUpGroupItem{}, err
+	}
+	if strings.TrimSpace(groupKey) == "" {
+		return domain.CatchUpGroupItem{}, fmt.Errorf(
+			"%w: catchup grouping needs a group key", domain.ErrCatchUpValidation)
+	}
+	var (
+		item     domain.CatchUpGroupItem
+		convID   *string
+		stopsRaw []byte
+	)
+	err = pool.QueryRow(ctx, catchUpItemForGroupSQL, c.UserID, c.OrganizationID,
+		c.IsOrgAdmin, projectID, groupKey).
+		Scan(&item.ItemID, &convID, &item.TourHead, &stopsRaw, &item.Reason)
+	if err != nil {
+		return domain.CatchUpGroupItem{}, catchUpQueryErr(err, "read catchup group item")
+	}
+	if convID != nil {
+		item.ConversationID = *convID
+	}
+	// The head stops are read through the same decoder the GET path uses, so a
+	// corrupt tour document fails the grouping read rather than letting a
+	// rewrite pile a new version on top of garbage (ADR-0078 § Decision 7).
+	stops, derr := decodeCatchUpStops(stopsRaw)
+	if derr != nil && len(stopsRaw) > 2 {
+		return domain.CatchUpGroupItem{}, derr
+	}
+	item.Stops = stops
+	return item, nil
+}
 
 func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller,
 	projectIDs []string, window time.Duration, limit int) ([]api.CatchUpCandidateView, error) {
@@ -1783,7 +2049,7 @@ func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller
 			stopsRaw []byte
 		)
 		if err := rows.Scan(&view.RunID, &view.ProjectID, &itemID, &convID,
-			&view.TourHead, &stopsRaw); err != nil {
+			&view.TourHead, &stopsRaw, &view.HeadReason); err != nil {
 			return nil, catchUpQueryErr(err, "scan catchup candidate")
 		}
 		if itemID != nil {
@@ -1801,7 +2067,9 @@ func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller
 		}
 		for _, st := range stops {
 			view.HeadStops = append(view.HeadStops, api.CatchUpHeadStopView{
-				ID: st.ID, Title: st.Title, AddedInVersion: st.AddedInVersion,
+				ID: st.ID, Title: st.Title, Kind: st.Kind,
+				Importance:     string(st.Importance),
+				AddedInVersion: st.AddedInVersion,
 			})
 		}
 		out = append(out, view)
@@ -1812,11 +2080,14 @@ func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller
 	return out, nil
 }
 
-// UpsertCatchUpWorkItem delegates to the store's keyed upsert: with an
-// explicit id it revises that item, and without one the (project,
-// source_run_id) index is the conflict target — the generator re-grouping
-// the same run updates its item rather than writing a twin. The domain
-// validation and the membership guard are the store's, not restated here.
+// UpsertCatchUpWorkItem delegates to the store's keyed upsert: an explicit id
+// revises that item, a group key revises the item the PIECE OF WORK has (the
+// second run on an issue rewrites the first run's item rather than writing a
+// twin), and with neither the (project, source_run_id) identity of the
+// pre-grouping store applies. The refs of a write that lands on an existing
+// item are unioned with what it already claimed, so a fix run does not erase
+// the PR it fixed. The domain validation, the merge and the membership guard
+// are the store's, not restated here.
 func (g APICatchUpGenerator) UpsertCatchUpWorkItem(ctx context.Context, c api.Caller,
 	in api.CatchUpWorkItemWrite) (string, error) {
 	s, err := g.store()
@@ -1833,6 +2104,7 @@ func (g APICatchUpGenerator) UpsertCatchUpWorkItem(ctx context.Context, c api.Ca
 			CommitSHAs: in.Refs.CommitSHAs, RunIDs: in.Refs.RunIDs,
 		},
 		SourceRunID: catchUpOptStr(in.SourceRunID), ConversationID: catchUpOptStr(in.ConversationID),
+		GroupKey: in.GroupKey,
 	}
 	out, err := s.UpsertWorkItem(ctx, prjAPICaller(c), item)
 	if err != nil {
@@ -1841,12 +2113,46 @@ func (g APICatchUpGenerator) UpsertCatchUpWorkItem(ctx context.Context, c api.Ca
 	return out.ID, nil
 }
 
+// CatchUpItemForGroup answers the grouping question — has this piece of work
+// already been told? — with the item's newest tour, and false (not an error)
+// when nothing carries the key yet. The store's own membership guard is what
+// makes "an item in a project you are not in" the same answer as "no item".
+func (g APICatchUpGenerator) CatchUpItemForGroup(ctx context.Context, c api.Caller,
+	projectID, groupKey string) (api.CatchUpGroupView, bool, error) {
+	s, err := g.store()
+	if err != nil {
+		return api.CatchUpGroupView{}, false, err
+	}
+	item, err := s.CatchUpItemForGroup(ctx, prjAPICaller(c), projectID, groupKey)
+	if err != nil {
+		if errors.Is(err, domain.ErrCatchUpNotFound) {
+			return api.CatchUpGroupView{}, false, nil
+		}
+		if errors.Is(err, domain.ErrCatchUpValidation) {
+			return api.CatchUpGroupView{}, false, catchUpAPIErr(err)
+		}
+		return api.CatchUpGroupView{}, false, catchUpAPIErr(err)
+	}
+	view := api.CatchUpGroupView{ItemID: item.ItemID, ConversationID: item.ConversationID,
+		TourHead: item.TourHead, Reason: item.Reason}
+	for _, st := range item.Stops {
+		view.HeadStops = append(view.HeadStops, api.CatchUpHeadStopView{
+			ID: st.ID, Title: st.Title, Kind: st.Kind,
+			Importance:     string(st.Importance),
+			AddedInVersion: st.AddedInVersion,
+		})
+	}
+	return view, true, nil
+}
+
 // AppendCatchUpTour converts the generator's stop drafts back into the
 // domain document and hands them to the store's race-safe append. The ids
 // and added_in_version were assigned by the generator's server code (the
 // stable-id rule); the store is still the last word on what it will admit.
+// The run id rides along because appending the version is the moment the run
+// is claimed: no version, no claim, no lost story.
 func (g APICatchUpGenerator) AppendCatchUpTour(ctx context.Context, c api.Caller,
-	itemID, reason string, stops []api.CatchUpStopWrite) error {
+	itemID, runID, reason string, stops []api.CatchUpStopWrite) error {
 	s, err := g.store()
 	if err != nil {
 		return err
@@ -1877,7 +2183,7 @@ func (g APICatchUpGenerator) AppendCatchUpTour(ctx context.Context, c api.Caller
 		}
 		doc = append(doc, d)
 	}
-	if _, err := s.AppendTourVersion(ctx, prjAPICaller(c), itemID, reason, doc); err != nil {
+	if _, err := s.AppendTourVersion(ctx, prjAPICaller(c), itemID, runID, reason, doc); err != nil {
 		return catchUpAPIErr(err)
 	}
 	return nil
