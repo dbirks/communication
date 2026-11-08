@@ -37,18 +37,26 @@ export interface ApprovalCardProps {
   /** Server-told, never guessed from a role name: the API is the decider about
    * who may decide (route 35's approver arrays plus the caller's own identity). */
   canDecide: boolean;
-  /** `version` travels back as the CAS token; the caller owns the POST. */
+  /** `version` travels back as the CAS token; the caller owns the POST.
+   *
+   * **A host that rejects must reject the promise it returns.** `DecisionBar`
+   * renders "Your decision is recorded" only when this resolves, so a host
+   * that catches the POST error and swallows it makes the bar say the
+   * opposite of the truth. The right shape is: adopt the winner into the
+   * cache, then `throw` — the bar's own conflict/error arms then state the
+   * refusal, and `conflictError` below is not needed for it. */
   onDecide?: (input: {
     approvalId: string;
     decision: ApprovalDecision;
     comments: string;
     version: number;
-  }) => void;
+  }) => void | Promise<unknown>;
   /** @deprecated Legacy: the bar owns its posting now (the hold replaces a
    * disabled-while-posting pair); kept on the interface so hosts built
    * against the old shape still compile while they are updated. */
   pending?: boolean;
-  /** A 409 from a concurrent decision, shown in place rather than as a toast. */
+  /** A refusal the card itself was told about (not the decide POST's — the bar
+   * renders those), shown in place rather than as a toast. */
   conflictError?: string | null;
   /** Wall clock for the countdown; injectable so a test can freeze it. */
   now?: () => number;

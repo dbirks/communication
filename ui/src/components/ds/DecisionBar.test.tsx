@@ -9,7 +9,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import DecisionBar, { DECISION_HOLD_SECONDS } from "./DecisionBar";
-import { mockFetch, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
+import {
+  baseRoutes,
+  mockFetch,
+  projectFixture,
+  requestsTo,
+  type RouteStub,
+} from "../../test/fakes";
 
 const approval = {
   id: "01987a90-1111-7000-8000-aaaaaaaaaaaa",
@@ -19,7 +25,13 @@ const approval = {
 const decidePath = `/api/v1/approvals/${approval.id}/decide`;
 
 function harness(routes: RouteStub[]) {
-  const { requests } = mockFetch(routes);
+  const { requests } = mockFetch([
+    // The bar reads the actor directory for a conflict's decider, so every
+    // harness answers the directory routes; a test that wants a specific name
+    // passes its own `users` stub on top (first match wins).
+    ...routes,
+    ...baseRoutes(),
+  ]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -138,6 +150,75 @@ describe("DecisionBar", () => {
     expect(screen.queryByTestId("decision-approve")).toBeNull();
   });
 
+  it("a 409 names the person the directory knows, with the age the body serves", async () => {
+    // T10b: the conflict body carries `decided_by` — a user id — and the bar's
+    // sentence is a name. The directory the app already reads (`/api/v1/users`,
+    // the same one the transcript and the decision record use) resolves it; a
+    // uuid in that sentence is the bug this guards.
+    const winner = {
+      id: "01987a63-7777-7000-8000-cccc00000001",
+      display_name: "Ada Lovelace",
+      email: null,
+    };
+    const conflictBody = {
+      type: "https://communication.dev/errors/approval-already-decided",
+      title: "Approval Already Decided",
+      status: 409,
+      detail: "the winner's click arrived first",
+      approval_id: approval.id,
+      approval: {
+        state: "decided",
+        decision: "approved",
+        decided_by: winner.id,
+        // The one timestamp the body may serve; the age is measured from it.
+        decided_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        version: 4,
+      },
+    };
+    const { wrapper } = harness([
+      { path: decidePath, method: "POST", status: 409, body: conflictBody },
+      { path: "/api/v1/users", body: { items: [winner] } },
+      { path: `/api/v1/projects/${projectFixture.id}/members`, body: { items: [] } },
+    ]);
+    render(<DecisionBar approval={approval} />, { wrapper });
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    await vi.advanceTimersByTimeAsync(5000);
+    // The name arrives with the directory read, so the sentence is re-rendered
+    // once `/api/v1/users` answers — the fake timer advance lets both reads land.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "Ada Lovelace approved this 5m ago. Your decision wasn't recorded.",
+    );
+    expect(screen.getByTestId("decision-conflict").textContent).not.toContain(winner.id);
+    expect(screen.queryByTestId("decision-approve")).toBeNull();
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+  });
+
+  it("says Someone only for a decider the directory cannot name", async () => {
+    const conflictBody = {
+      type: "https://communication.dev/errors/approval-already-decided",
+      title: "Approval Already Decided",
+      status: 409,
+      detail: "someone else won the click",
+      approval_id: approval.id,
+      approval: { state: "decided", decision: "rejected", decided_by: "u-1", version: 4 },
+    };
+    const { wrapper } = harness([
+      { path: decidePath, method: "POST", status: 409, body: conflictBody },
+      { path: "/api/v1/users", body: { items: [] } },
+      { path: `/api/v1/projects/${projectFixture.id}/members`, body: { items: [] } },
+    ]);
+    render(<DecisionBar approval={approval} />, { wrapper });
+
+    fireEvent.click(screen.getByTestId("decision-reject"));
+    await vi.advanceTimersByTimeAsync(6000);
+    // A stranger gets the honest word, never a bare uuid (`names.ts`'s rule).
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "Someone rejected this a moment ago. Your decision wasn't recorded.",
+    );
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+  });
   it("a plain error restores the bar with a Try again line", async () => {
     const { wrapper, requests } = harness([
       { path: decidePath, method: "POST", status: 500, body: { title: "boom", status: 500 } },

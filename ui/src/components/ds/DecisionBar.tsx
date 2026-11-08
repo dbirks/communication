@@ -24,12 +24,27 @@
  * it. A `409 approval_already_decided` adopts the winner (`adoptApproval
  * Conflict`) and states who beat the click; any other error restores the bar
  * with an inline line ending in a Try-again action.
+ *
+ * Two honesty rules this component owns, and hosts must not work around:
+ *   - **`done` means the server said so.** The recorded line renders only
+ *     after the POST resolved. A host that injects `submit` and swallows the
+ *     rejection therefore makes the bar lie, so hosts rethrow after their own
+ *     cache adoption — see `ApprovalCard`'s `onDecide` contract.
+ *   - **The conflict names a person.** The 409 body carries `decided_by`, a
+ *     user id, never a name; the sentence resolves it through the directory the
+ *     app already reads (`GET /api/v1/users`, the same entry `api/actors.ts`
+ *     keys) and says `Someone` only for an id that directory cannot name. The
+ *     read happens *when a name is owed* — a bar that decided cleanly, or a
+ *     fixture surface that promises zero fetches, asks the network nothing.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { adoptApprovalConflict, approvalConflictOf, useDecideApproval } from "../../api/approvals";
-import { problemOf } from "../../api/client";
-import type { ApprovalDecide } from "../../api/types";
+import { apiFetch, problemOf } from "../../api/client";
+import { queryKeys } from "../../api/queries";
+import { nameLookup } from "../../api/names";
+import type { NameHint, NameLookup } from "../../api/names";
+import type { ApprovalDecide, MemberList, Me, UserList } from "../../api/types";
 import { formatAge } from "../../lib/format";
 import { Button } from "./Button";
 
@@ -77,7 +92,14 @@ type Phase =
   | { kind: "hold"; decision: DecisionWord; comments?: string; remaining: number }
   | { kind: "posting"; decision: DecisionWord }
   | { kind: "done"; decision: DecisionWord }
-  | { kind: "conflict"; sentence: string };
+  /** The winner's facts, not a finished sentence: the name arrives with the
+   * directory read, so the words are assembled at render time. */
+  | {
+      kind: "conflict";
+      verb: DecisionWord;
+      deciderId: string | null;
+      decidedAt: string | null;
+    };
 
 /** The status line's leading word for a held decision. */
 function holdWord(decision: DecisionWord, comments?: string): string {
@@ -87,6 +109,23 @@ function holdWord(decision: DecisionWord, comments?: string): string {
 
 function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).length;
+}
+
+/** Upper-case the first letter: the subject opens the sentence, and a display
+ * name arrives however its owner typed it. */
+function sentenceStart(words: string): string {
+  return words.length === 0 ? words : words[0].toUpperCase() + words.slice(1);
+}
+
+/**
+ * Who won the click, in words. A gate's `decided_by` is a user id — a uuid in a
+ * sentence nobody can read — so it goes through the directory the app already
+ * reads. A policy pseudo-id (`profile_policy:deny`, ADR-0039) names no person,
+ * and the last honest word for an id the directory cannot name is `Someone`.
+ */
+function conflictSubject(deciderId: string | null, lookup: NameLookup): string {
+  if (!deciderId || deciderId.includes(":")) return "Someone";
+  return sentenceStart(lookup(deciderId) ?? "Someone");
 }
 
 export default function DecisionBar({
@@ -128,16 +167,27 @@ export default function DecisionBar({
         if (conflict) {
           adoptApprovalConflict(queryClient, cause);
           const winner = conflict.approval as
-            | { decision?: string | null; decided_by_name?: unknown; decided_at?: unknown }
+            | {
+                decision?: string | null;
+                decided_by?: unknown;
+                decided_at?: unknown;
+                updated_at?: unknown;
+              }
             | undefined;
-          const verb = winner?.decision === "rejected" ? "rejected" : "approved";
-          const name =
-            typeof winner?.decided_by_name === "string" && winner.decided_by_name.length > 0
-              ? winner.decided_by_name
-              : "Someone";
-          const decidedAt = typeof winner?.decided_at === "string" ? winner.decided_at : null;
-          const age = decidedAt ? `${formatAge(decidedAt)} ago` : "a moment ago";
-          setPhase({ kind: "conflict", sentence: `${name} ${verb} this ${age}.` });
+          const verb: DecisionWord = winner?.decision === "rejected" ? "rejected" : "approved";
+          const winnerId =
+            typeof winner?.decided_by === "string" && winner.decided_by.length > 0
+              ? winner.decided_by
+              : null;
+          // The conflict body is a summary; the timestamp it serves (either
+          // one) is what the age is measured from.
+          const decidedAt =
+            typeof winner?.decided_at === "string"
+              ? winner.decided_at
+              : typeof winner?.updated_at === "string"
+                ? winner.updated_at
+                : null;
+          setPhase({ kind: "conflict", verb, deciderId: winnerId, decidedAt });
         } else {
           const problem = problemOf(cause);
           setError(problem.detail || problem.title || "The decision could not be posted.");
@@ -211,6 +261,39 @@ export default function DecisionBar({
     if (phase.kind === "hold") undoRef.current?.focus();
     if (phase.kind === "changes") changesRef.current?.focus();
   }, [phase.kind]);
+
+  // A conflict names a person, and the body only carries their id, so the
+  // directory is read when a name is OWED — never to draw the bar: a clean
+  // decision asks the network nothing, and the fixture surface (`M4Preview`,
+  // whose whole promise is zero fetches) must keep that. Both keys are ones
+  // `api/actors.ts` reads, so a live surface pays no extra request.
+  const deciderId = phase.kind === "conflict" ? phase.deciderId : null;
+  const owesAName = deciderId !== null && !deciderId.includes(":");
+  const users = useQuery({
+    queryKey: queryKeys.users,
+    queryFn: () => apiFetch<UserList>("/api/v1/users"),
+    enabled: owesAName,
+    retry: false,
+  });
+  const members = useQuery({
+    queryKey: queryKeys.members(approval.project_id ?? ""),
+    queryFn: () => apiFetch<MemberList>(`/api/v1/projects/${approval.project_id}/members`),
+    enabled: owesAName && Boolean(approval.project_id),
+    retry: false,
+  });
+  const lookup = useMemo<NameLookup>(() => {
+    const me = queryClient.getQueryData<Me>(queryKeys.me);
+    const hints: NameHint[] = [
+      ...(users.data?.items ?? []).map((user) => [user.id, user.display_name] satisfies NameHint),
+      ...(members.data?.items ?? []).map(
+        (member) => [member.user_id, member.display_name] satisfies NameHint,
+      ),
+      // The caller is the commonest decider on the screen, and every live
+      // surface already holds their own row.
+      ...(me ? ([[me.id, me.display_name]] satisfies NameHint[]) : []),
+    ];
+    return nameLookup(hints);
+  }, [users.data, members.data, queryClient]);
 
   const canSendChanges =
     changesText.trim().length > 0 && utf8Bytes(changesText) <= MAX_COMMENTS_BYTES;
@@ -336,7 +419,9 @@ export default function DecisionBar({
           role="alert"
           data-testid="decision-conflict"
         >
-          × {phase.sentence} Your decision wasn&apos;t recorded.
+          × {conflictSubject(phase.deciderId, lookup)} {phase.verb} this{" "}
+          {phase.decidedAt ? `${formatAge(phase.decidedAt)} ago` : "a moment ago"}. Your decision
+          wasn&apos;t recorded.
         </p>
       )}
     </div>

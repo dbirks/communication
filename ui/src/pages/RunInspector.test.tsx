@@ -321,6 +321,65 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     }
   });
 
+  it("a decide the inspector's host refuses is stated by the bar, not buried", async () => {
+    // T10b: the inspector owns the decide POST. It used to catch the failure
+    // into its own line while the bar (whose submit had resolved) read "Your
+    // decision is recorded". It now adopts the winner and rethrows, so the
+    // page states the refusal once, in the bar — and names the winner from the
+    // directory rather than the user id the 409 carries.
+    const conflictBody = {
+      type: "https://communication.dev/errors/approval-already-decided",
+      title: "Approval Already Decided",
+      status: 409,
+      detail: "The gate is already decided; the body carries the winner.",
+      approval_id: wireApproval.id,
+      approval: {
+        state: "decided",
+        decision: "approved",
+        decided_by: meFixture.id,
+        version: 2,
+      },
+    };
+    const { requests } = mountRun("", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+      {
+        path: `/api/v1/projects/${wireProjectId}/approvals`,
+        body: {
+          ...wireApprovalList,
+          approvals: [{ ...wireApproval, node_execution_id: WIRE_NODE_APPROVE }],
+        },
+      },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_APPROVE}`, body: wireNodeDetail },
+      {
+        path: `/api/v1/approvals/${wireApproval.id}/decide`,
+        method: "POST",
+        status: 409,
+        body: conflictBody,
+      },
+    ]);
+
+    await screen.findByTestId("approval-summary");
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(6000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(
+      requestsTo(requests, `/api/v1/approvals/${wireApproval.id}/decide`, "POST"),
+    ).toHaveLength(1);
+    const conflict = screen.getByTestId("decision-conflict");
+    expect(conflict.textContent).toContain(
+      `${meFixture.display_name} approved this a moment ago. Your decision wasn't recorded.`,
+    );
+    expect(conflict.textContent).not.toContain(meFixture.id);
+    // The lie this brief exists to kill, and the host's duplicate line with it.
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+    expect(screen.queryByTestId("approval-error")).toBeNull();
+  });
+
   it("shows the gate card for a node with no attempts at all", async () => {
     // A control-plane approval gate never has attempts (attempt_count=0), so
     // the pane must not spin on "Reading attempts…" forever — the decision is

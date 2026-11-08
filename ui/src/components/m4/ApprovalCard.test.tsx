@@ -9,6 +9,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
 import { ApprovalCard } from "./ApprovalCard";
+import { ApiError } from "../../api/client";
+import { baseRoutes, mockFetch } from "../../test/fakes";
 import {
   notApproverView,
   pendingApproval,
@@ -34,6 +36,33 @@ function mount(element: ReactElement) {
 
 /** A real-looking decider id: the pass-2 emulator wrote this shape verbatim. */
 const DECIDER_ID = "01a18c3e-5347-787b-86d3-6b8ae2d22c36";
+
+/** A host's decide that the server refused: the bar sees exactly this error,
+ * because the host rethrows it (`T10b`) rather than swallowing it. */
+function refused(status: number, body: Record<string, unknown>): ApiError {
+  const problem = {
+    type: "https://communication.dev/errors/problem",
+    title: "Refused",
+    status,
+    detail: "the gate kept waiting",
+    ...body,
+  };
+  return new ApiError(problem, problem);
+}
+
+/** The `409 approval_already_decided` winner, as route 36 serves it: the
+ * decider is a user ID — a name is the app's directory's job, not the body's. */
+function alreadyDecided(decidedBy: string | null = DECIDER_ID): ApiError {
+  const body = {
+    type: "https://communication.dev/errors/approval-already-decided",
+    title: "Approval Already Decided",
+    status: 409,
+    detail: "The gate is already decided; the body carries the winner.",
+    approval_id: pendingApproval.id,
+    approval: { state: "decided", decision: "approved", decided_by: decidedBy, version: 2 },
+  };
+  return new ApiError(body, body);
+}
 
 describe("a pending gate you can decide", () => {
   it("posts through the DecisionBar once the undo hold expires, with the CAS version", async () => {
@@ -346,6 +375,61 @@ describe("a decision refused by the server", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("a host whose decide the server refused", () => {
+  // T10b: the hosts that own the POST (the workbench dock, the run inspector,
+  // the M4 previews) used to catch the error themselves. The bar then resolved
+  // and printed "Your decision is recorded" while the host printed a refusal —
+  // a refused decision reading as a recorded one. The hosts rethrow now, so the
+  // card's own decide is the thing under test here.
+  //
+  // The directory is stubbed because the bar now reads it (an id in a conflict
+  // is a person to look up, not a verdict to print).
+  it("reads the conflict, never 'recorded', when the host's decide gets a 409", async () => {
+    mockFetch(baseRoutes());
+    const host = vi.fn().mockRejectedValue(alreadyDecided());
+    mount(<ApprovalCard approval={pendingApproval} canDecide onDecide={host} now={now} />);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(5000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(host).toHaveBeenCalledTimes(1);
+    // The truth, in the bar's own words: the loser sees who beat the click.
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "approved this a moment ago. Your decision wasn't recorded.",
+    );
+    // And not the lie: no "recorded" line, and no half-decided status either.
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+    expect(screen.queryByTestId("decision-status")).toBeNull();
+  });
+
+  it("keeps the bar and its Try again line when the host's decide gets a 500", async () => {
+    mockFetch(baseRoutes());
+    const host = vi.fn().mockRejectedValue(refused(500, { title: "Internal Server Error" }));
+    mount(<ApprovalCard approval={pendingApproval} canDecide onDecide={host} now={now} />);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(5000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(host).toHaveBeenCalledTimes(1);
+    const line = screen.getByTestId("decision-error");
+    expect(line.getAttribute("role")).toBe("alert");
+    expect(line.textContent).toContain("Try again.");
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+    // The verbs come back: a failed POST leaves the decision unmade, so the
+    // reader must be able to make it again.
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-reject")).toBeTruthy();
   });
 });
 

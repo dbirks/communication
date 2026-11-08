@@ -297,7 +297,31 @@ function LiveGates({ projectId, runId }: { projectId: string; runId: string | nu
   const queryClient = useQueryClient();
   const me = useMe();
   const project = useProject(projectId);
-  const [conflict, setConflict] = useState<string | null>(null);
+
+  /** The decide is the preview host's, but the sentence is the bar's: it
+   * prints "Your decision is recorded" when this promise resolves, so the
+   * winner is adopted here and the error is RE-THROWN for the bar to state. */
+  const decideGate = async (input: {
+    approvalId: string;
+    decision: "approved" | "rejected";
+    comments: string;
+    version: number;
+  }) => {
+    try {
+      await decide.mutateAsync({
+        approvalId: input.approvalId,
+        body: {
+          decision: input.decision,
+          version: input.version,
+          ...(input.comments ? { comments: input.comments } : {}),
+        },
+      });
+    } catch (error) {
+      // `12` case 9d: the loser adopts the winner by re-reading.
+      if (approvalConflictOf(error)) adoptApprovalConflict(queryClient, error);
+      throw error;
+    }
+  };
 
   const approvals = useMemo(() => {
     const rows = (approvalsQuery.data?.approvals ?? []).map(viewApproval);
@@ -327,34 +351,7 @@ function LiveGates({ projectId, runId }: { projectId: string; runId: string | nu
                 me.data,
                 project.data?.my_role,
               )}
-              pending={decide.isPending}
-              conflictError={conflict}
-              onDecide={({ approvalId, decision, comments, version }) =>
-                decide.mutate(
-                  {
-                    approvalId,
-                    body: {
-                      decision,
-                      version,
-                      ...(comments ? { comments } : {}),
-                    },
-                  },
-                  {
-                    onSuccess: () => setConflict(null),
-                    onError: (error) => {
-                      if (approvalConflictOf(error)) {
-                        // `12` case 9d: the loser adopts the winner by re-reading.
-                        adoptApprovalConflict(queryClient, error);
-                        setConflict(
-                          "someone decided this gate first — the decision you see now is the winner's",
-                        );
-                      } else {
-                        setConflict(problemCopy(error));
-                      }
-                    },
-                  },
-                )
-              }
+              onDecide={decideGate}
               headingId={`live-approval-heading-${approval.id}`}
             />
           ))

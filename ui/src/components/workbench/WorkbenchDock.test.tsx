@@ -16,6 +16,7 @@ import {
   meFixture,
   mockFetch,
   projectFixture,
+  requestsTo,
   turnId,
   type RouteStub,
 } from "../../test/fakes";
@@ -366,6 +367,125 @@ describe("WorkbenchDock", () => {
     expect(screen.getByTestId("decision-reject")).toBeTruthy();
     // A gate with no attempts does not spin on "Reading attempts…".
     expect(screen.queryByTestId("workbench-dock-pending")).toBeNull();
+  });
+
+  it("a decide the server refuses is the bar's to say, and the dock says it once", async () => {
+    // T10b: the dock owns the POST. It used to catch the error and print its
+    // own line while the bar — whose `submit` had resolved — printed "Your
+    // decision is recorded". The dock now adopts the winner and rethrows, so
+    // the refusal is stated once, by the bar, and never as a recorded decision.
+    const gateId = "01987b24-0009-7000-8000-abcdef012345";
+    const conflictBody = {
+      type: "https://communication.dev/errors/approval-already-decided",
+      title: "Approval Already Decided",
+      status: 409,
+      detail: "The gate is already decided; the body carries the winner.",
+      approval_id: wireApproval.id,
+      approval: {
+        state: "decided",
+        decision: "approved",
+        decided_by: meFixture.id,
+        version: 2,
+      },
+    };
+    const { requests } = renderDock(
+      row({
+        id: gateId,
+        node_id: "approve",
+        kind: "human.approval",
+        node_instance_key: "/approve",
+        status: "waiting",
+        waiting_reason: "approval",
+        attempt_count: 0,
+      }),
+      [
+        { path: `${RUN_PATH}/nodes/${gateId}`, body: { ...wireNodeDetail, attempts: [] } },
+        {
+          path: `/api/v1/projects/${wireProjectId}/approvals`,
+          body: {
+            ...wireApprovalList,
+            approvals: [{ ...wireApproval, node_execution_id: gateId }],
+          },
+        },
+        {
+          path: `/api/v1/approvals/${wireApproval.id}/decide`,
+          method: "POST",
+          status: 409,
+          body: conflictBody,
+        },
+      ],
+    );
+
+    await screen.findByTestId("approval-summary");
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(6000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(
+      requestsTo(requests, `/api/v1/approvals/${wireApproval.id}/decide`, "POST"),
+    ).toHaveLength(1);
+    expect(screen.getByTestId("decision-conflict").textContent).toContain(
+      "approved this a moment ago. Your decision wasn't recorded.",
+    );
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+    // The dock's own duplicate line is gone — one refusal, one sentence.
+    expect(screen.queryByTestId("approval-error")).toBeNull();
+  });
+
+  it("a decide that failed for another reason leaves the bar standing ready", async () => {
+    const gateId = "01987b24-000a-7000-8000-abcdef012345";
+    renderDock(
+      row({
+        id: gateId,
+        node_id: "approve",
+        kind: "human.approval",
+        node_instance_key: "/approve",
+        status: "waiting",
+        waiting_reason: "approval",
+        attempt_count: 0,
+      }),
+      [
+        { path: `${RUN_PATH}/nodes/${gateId}`, body: { ...wireNodeDetail, attempts: [] } },
+        {
+          path: `/api/v1/projects/${wireProjectId}/approvals`,
+          body: {
+            ...wireApprovalList,
+            approvals: [{ ...wireApproval, node_execution_id: gateId }],
+          },
+        },
+        {
+          path: `/api/v1/approvals/${wireApproval.id}/decide`,
+          method: "POST",
+          status: 500,
+          body: {
+            type: "https://communication.dev/errors/internal",
+            title: "Internal Server Error",
+            status: 500,
+            detail: "the control plane dropped the write",
+          },
+        },
+      ],
+    );
+
+    await screen.findByTestId("approval-summary");
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-reject"));
+      await vi.advanceTimersByTimeAsync(6000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const line = screen.getByTestId("decision-error");
+    expect(line.textContent).toContain("the control plane dropped the write");
+    expect(line.textContent).toContain("Try again.");
+    expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.queryByTestId("approval-error")).toBeNull();
   });
 
   it("gives the dock attempt tabs when the node ran more than once", async () => {

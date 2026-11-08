@@ -1365,7 +1365,32 @@ function RunNodeDetail({
   const queryClient = useQueryClient();
   const me = useMe();
   const project = useProject(projectId);
-  const [conflict, setConflict] = useState<string | null>(null);
+
+  /** The gate's decision is the dock's `decideGate`, with the same rule: the
+   * host adopts the winner and RE-THROWS, because `DecisionBar` prints
+   * "Your decision is recorded" the moment the POST it awaited resolves — a
+   * caught-and-swallowed refusal makes the bar lie. */
+  const decideGate = async (input: {
+    approvalId: string;
+    decision: "approved" | "rejected";
+    comments: string;
+    version: number;
+  }) => {
+    try {
+      await decide.mutateAsync({
+        approvalId: input.approvalId,
+        body: {
+          decision: input.decision,
+          version: input.version,
+          ...(input.comments ? { comments: input.comments } : {}),
+        },
+      });
+    } catch (error) {
+      // `12` case 9d: the loser adopts the winner by re-reading.
+      if (approvalConflictOf(error)) adoptApprovalConflict(queryClient, error);
+      throw error;
+    }
+  };
 
   // Every attempt of the node, in the order they happened. W5's page has to
   // read *attempt 1 interrupted, then the retry, then attempt 2*: a pane that
@@ -1415,24 +1440,7 @@ function RunNodeDetail({
         me.data,
         project.data?.my_role,
       )}
-      pending={decide.isPending}
-      conflictError={conflict}
-      onDecide={({ approvalId, decision, comments, version }) =>
-        decide.mutate(
-          { approvalId, body: { decision, version, ...(comments ? { comments } : {}) } },
-          {
-            onSuccess: () => setConflict(null),
-            onError: (error) => {
-              if (approvalConflictOf(error)) {
-                adoptApprovalConflict(queryClient, error);
-                setConflict("someone decided this gate first — what you see now is the winner's");
-              } else {
-                setConflict(problemOf(error).title);
-              }
-            },
-          },
-        )
-      }
+      onDecide={decideGate}
       headingId={`run-approval-heading-${gate.id}`}
       nameOf={nameOf}
     />

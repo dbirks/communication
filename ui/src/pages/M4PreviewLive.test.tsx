@@ -200,6 +200,62 @@ describe("M4 live preview (fixture seam → real routes)", () => {
   );
 
   it(
+    "a refused decide is the bar's sentence, and the preview host says it once",
+    async () => {
+      // T10b: this host owned the POST and caught its failure into its own
+      // line, so the bar — whose `submit` had resolved — read "Your decision is
+      // recorded" next to it. The host now adopts the winner and rethrows.
+      const conflictBody = {
+        type: "https://communication.dev/errors/approval-already-decided",
+        title: "Approval Already Decided",
+        status: 409,
+        detail: "The gate is already decided; the body carries the winner.",
+        approval_id: wireApproval.id,
+        approval: {
+          state: "decided",
+          decision: "approved",
+          decided_by: meFixture.id,
+          version: 2,
+        },
+      };
+      const { requests } = renderApp({
+        path: `/__m4-preview?source=live&project=${wireProjectId}&run=${WIRE_RUN_ID}`,
+        routes: routes([
+          {
+            path: `/api/v1/approvals/${wireApproval.id}/decide`,
+            method: "POST",
+            status: 409,
+            body: conflictBody,
+          },
+        ]),
+      });
+
+      await screen.findByTestId("approval-summary", undefined, { timeout: MOUNT_MS });
+      vi.useFakeTimers();
+      try {
+        fireEvent.click(screen.getByTestId("decision-approve"));
+        await vi.advanceTimersByTimeAsync(6000);
+      } finally {
+        vi.useRealTimers();
+      }
+      await waitFor(
+        () =>
+          expect(
+            requestsTo(requests, `/api/v1/approvals/${wireApproval.id}/decide`, "POST"),
+          ).toHaveLength(1),
+        { timeout: READ_MS },
+      );
+
+      expect(screen.getByTestId("decision-conflict").textContent).toContain(
+        `${meFixture.display_name} approved this a moment ago. Your decision wasn't recorded.`,
+      );
+      expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
+      expect(screen.queryByTestId("approval-error")).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
     "the run stream paints the tree before any refetch does",
     async () => {
       const { requests } = mountLive();

@@ -16,7 +16,7 @@
  * execution; the page's SSE stream invalidates that read, and nothing here
  * ever claims a state the backend did not report.
  */
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMe, useProject } from "../../api/queries";
@@ -29,7 +29,6 @@ import {
   useProjectApprovals,
 } from "../../api/approvals";
 import { viewApproval, viewAttempt, viewRunCheckpoint } from "../../api/m4view";
-import { problemOf } from "../../api/client";
 import { AgentConversationPanel } from "../conversation/AgentConversationPanel";
 import { ApprovalCard } from "../m4/ApprovalCard";
 import { AttemptDetail, attemptWord, CheckpointBlock } from "../m4/AttemptDetail";
@@ -96,7 +95,6 @@ export function WorkbenchDock({
   const queryClient = useQueryClient();
   const me = useMe();
   const project = useProject(projectId);
-  const [conflict, setConflict] = useState<string | null>(null);
 
   const attempts = useMemo(
     () =>
@@ -193,33 +191,35 @@ export function WorkbenchDock({
     );
   }
 
-  const decideGate = (input: {
+  /**
+   * The dock owns the POST (its `useDecideApproval` also owns the cache), but
+   * it does NOT own the sentence the reader gets afterwards: `DecisionBar`
+   * renders "Your decision is recorded" when this resolves, so a swallowed
+   * rejection would print the opposite of what happened. It therefore adopts
+   * the winner into the cache and RE-THROWS, letting the bar state the
+   * conflict or the failure itself.
+   */
+  const decideGate = async (input: {
     approvalId: string;
     decision: "approved" | "rejected";
     comments: string;
     version: number;
   }) => {
-    decide.mutate(
-      {
+    try {
+      await decide.mutateAsync({
         approvalId: input.approvalId,
         body: {
           decision: input.decision,
           version: input.version,
           ...(input.comments ? { comments: input.comments } : {}),
         },
-      },
-      {
-        onSuccess: () => setConflict(null),
-        onError: (error: unknown) => {
-          if (approvalConflictOf(error)) {
-            adoptApprovalConflict(queryClient, error);
-            setConflict("someone decided this gate first — what you see now is the winner's");
-          } else {
-            setConflict(problemOf(error).title);
-          }
-        },
-      },
-    );
+      });
+    } catch (error) {
+      // `12` case 9d: the loser adopts the winner by re-reading. The loser's
+      // card is then the winner's card, whatever the bar goes on to say.
+      if (approvalConflictOf(error)) adoptApprovalConflict(queryClient, error);
+      throw error;
+    }
   };
 
   return (
@@ -318,8 +318,6 @@ export function WorkbenchDock({
           <ApprovalCard
             approval={gate}
             canDecide={canDecide(gate, me.data?.id, project.data?.my_role)}
-            pending={decide.isPending}
-            conflictError={conflict}
             onDecide={decideGate}
             nameOf={nameOf}
             headingId={`workbench-approval-heading-${gate.id}`}
