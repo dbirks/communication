@@ -7,6 +7,7 @@ import Sidebar from "./Sidebar";
 import CommandPalette, { CATCH_UP_PATH } from "./CommandPalette";
 import AssistantPopover from "./assistant/AssistantPopover";
 import { openAsk } from "./assistant/askControl";
+import { useLayoutPrefs } from "../lib/prefs";
 
 /**
  * The sections the Ask box's context chip names, in the order the sidebar
@@ -83,6 +84,21 @@ export function useMediaQuery(query: string): boolean {
   return matches;
 }
 
+/**
+ * Is the event aimed at something that is busy typing? ⌘\ toggles the
+ * sidebar from anywhere (4a) — except from inside a text field, where the
+ * chord (or the platform's variant of it) may belong to the editor.
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT" ||
+    target.isContentEditable
+  );
+}
+
 /** Phone frame (drawer + top strip)? */
 export function useIsNarrow(): boolean {
   return useMediaQuery(NARROW_QUERY);
@@ -111,28 +127,79 @@ export default function Shell({ children }: ShellProps) {
   const location = useLocation();
   const narrow = useIsNarrow();
   const railWidth = useIsRailWidth();
+  const { prefs, update, loaded } = useLayoutPrefs();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
 
-  // Content changed = the phone drawer has delivered its link.
+  // The 4a expand in the forced-rail zone: the full column opens as an
+  // OVERLAY over the rail, and the stored `sidebarCollapsed` preference is
+  // not touched — a tablet window is too narrow for the column by geometry,
+  // not by the user's choice. Esc / a click outside / another ⌘\ close it.
+  const [railOverlay, setRailOverlay] = useState(false);
+  const overlayReturnFocus = useRef<HTMLElement | null>(null);
+
+  const openRailOverlay = (source?: HTMLElement) => {
+    overlayReturnFocus.current = source ?? (document.activeElement as HTMLElement | null);
+    setRailOverlay(true);
+  };
+  const closeRailOverlay = (restoreFocus = true) => {
+    setRailOverlay(false);
+    if (restoreFocus) overlayReturnFocus.current?.focus();
+  };
+
+  // Content changed = the phone drawer has delivered its link, and so has
+  // the rail overlay's popover; both stand down on navigation.
   useEffect(() => {
     setDrawerOpen(false);
+    setRailOverlay(false);
   }, [location.pathname]);
 
   // Leaving the phone frame must not strand an open drawer over the desktop
-  // column (or keep the body locked).
+  // column (or keep the body locked), and leaving the rail zone must not
+  // strand the overlay the geometry asked for.
   useEffect(() => {
     if (!narrow) setDrawerOpen(false);
   }, [narrow]);
+  useEffect(() => {
+    if (!railWidth) setRailOverlay(false);
+  }, [railWidth]);
+
+  // ⌘\ (⌃\ off Apple keyboards) toggles the column from anywhere (4a):
+  // the preference at ≥1024px, the overlay inside the forced-rail zone —
+  // never from inside a text field, never on the phone (the drawer already
+  // is "expanded on demand").
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "\\" || !(event.metaKey || event.ctrlKey)) return;
+      if (narrow || isTypingTarget(event.target)) return;
+      event.preventDefault();
+      if (railWidth) {
+        if (railOverlay) closeRailOverlay();
+        else openRailOverlay();
+        return;
+      }
+      // The write waits for the read, or a toggle would stamp over a
+      // document still in flight (the same race the tree's auto-expand gate
+      // guards in `Sidebar.tsx`).
+      if (loaded) update({ sidebarCollapsed: !prefs.sidebarCollapsed });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [narrow, railWidth, railOverlay, loaded, prefs.sidebarCollapsed, update]);
 
   // Esc closes the drawer and the keyboard goes back to the button that
   // opened it; the page body is locked while it stands over the content.
   useEffect(() => {
-    if (!drawerOpen) return;
+    if (!drawerOpen && !railOverlay) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") return;
+      // A rail popover (or the drawer's) owns Esc while it is open.
+      if (event.defaultPrevented) return;
+      if (drawerOpen) {
         setDrawerOpen(false);
         menuButton.current?.focus();
+      } else {
+        closeRailOverlay();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -142,7 +209,8 @@ export default function Shell({ children }: ShellProps) {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = previous;
     };
-  }, [drawerOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawerOpen, railOverlay]);
 
   const closeDrawer = () => {
     setDrawerOpen(false);
@@ -152,10 +220,12 @@ export default function Shell({ children }: ShellProps) {
   return (
     <div className="flex min-h-screen bg-paper text-ink">
       {/* Desktop column: sticky, screen-height; the column scrolls itself. It
-          is the shell's only chrome at this width — the top bar is gone. */}
+          is the shell's only chrome at this width — the top bar is gone. In
+          the rail zone the rail's expand opens the OVERLAY below, and the
+          edge drag snaps to the same overlay. */}
       {narrow ? null : (
         <div className="sticky top-0 h-screen shrink-0">
-          <Sidebar forceCollapsed={railWidth} />
+          <Sidebar forceCollapsed={railWidth} onExpand={railWidth ? openRailOverlay : undefined} />
         </div>
       )}
 
@@ -244,6 +314,26 @@ export default function Shell({ children }: ShellProps) {
           />
           <div className="absolute inset-y-0 left-0">
             <Sidebar variant="drawer" onClose={closeDrawer} />
+          </div>
+        </div>
+      ) : null}
+
+      {/* The 4a rail-zone expand: the full column over the page, NOT the
+          preference. Esc, the backdrop, the column\u2019s own ‹‹ button and
+          another ⌘\ all close it; the keyboard returns to the control that
+          opened it. */}
+      {railWidth && railOverlay ? (
+        <div className="fixed inset-0 z-40">
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            data-testid="rail-overlay-backdrop"
+            onClick={() => closeRailOverlay()}
+            className="absolute inset-0 h-full w-full cursor-default bg-ink/25"
+          />
+          <div className="absolute inset-y-0 left-0">
+            <Sidebar forceExpanded onCollapse={() => closeRailOverlay()} />
           </div>
         </div>
       ) : null}

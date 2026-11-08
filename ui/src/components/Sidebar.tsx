@@ -3,11 +3,19 @@
  *
  * It has two widths, and which one you get is a saved layout preference
  * (`sidebarCollapsed`, `lib/prefs.ts`), not local state: 220px expanded, or a
- * 52px rail of tiles. The rail is not a second implementation of the content:
- * it carries the same facts — the same projects, the same worst-state flags —
- * in the same reads, and every tile that hides a list (a project) opens a
- * `ds/Popover` flyout beside it so nothing becomes unreachable when the labels
- * go away.
+ * 52px rail (redesign 3a/4a). The rail is not a second implementation of the
+ * content: it carries the same facts — the same badges, the same unseen and
+ * waiting counts — in the same reads; the one tile with children (Projects)
+ * opens a click-surface `ds/Popover` beside it, and every icon names itself
+ * on a dark hover/focus label. Nothing opens by accident while the mouse
+ * crosses the rail: hover is a label, only a click opens a menu.
+ *
+ * Three ways back to the full column (4a): the expand button under the mark,
+ * ⌘\ (wired in `Shell`), and dragging the column's right edge past ~120px —
+ * the pointer travels a ghost, never a layout, and the column snaps open or
+ * shut at the threshold. In the forced-rail zone (768–1023px) `Shell` owns
+ * the expand: there the full column shows as an OVERLAY and the saved
+ * preference is never touched.
  *
  * Everything the column shows is real: the project tree and its status flags
  * come from the same reads Inbox runs (`useSidebarFlags` projects the
@@ -35,15 +43,28 @@
  * `overflow-y-auto`, and a flyout that leaves it sideways would be cut off at the
  * column's edge by the scroll container.
  */
-import { useEffect, useMemo, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { Link, NavLink, useLocation } from "react-router";
 import {
-  BookOpen,
+  Bot,
   CalendarDays,
   ChevronDown,
   ChevronsLeft,
   ChevronsRight,
+  Folder,
+  Inbox,
+  MessageSquare,
   Plus,
+  Search,
+  Workflow,
 } from "lucide-react";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import { usePipelines } from "../api/pipelines";
@@ -53,7 +74,7 @@ import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { useSidebarFlags } from "../lib/sidebarFlags";
 import { Mark } from "./ds/Mark";
-import { Popover } from "./ds/Menu";
+import { Popover, POPOVER_WIDTH_PX } from "./ds/Popover";
 import NewConversationDialog from "./NewConversationDialog";
 import UserMenu from "./UserMenu";
 import { CATCH_UP_PATH, openPalette } from "./CommandPalette";
@@ -102,87 +123,6 @@ function Chevron({
   );
 }
 
-function initialsOf(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
-
-/** Characterwise longest shared prefix of a group of names. */
-function commonPrefix(names: readonly string[]): string {
-  let prefix = names[0] ?? "";
-  for (const name of names.slice(1)) {
-    let i = 0;
-    while (i < prefix.length && i < name.length && prefix[i] === name[i]) i += 1;
-    prefix = prefix.slice(0, i);
-  }
-  return prefix;
-}
-
-/**
- * The rail tiles' initials — unique within the rail wherever the names
- * allow, and a pure function of the list (so a reload never re-shuffles
- * them). Pass 1 is the plain two-word initials. Where those collide the
- * tile keeps the first letter and takes the shortest head (1–2 characters,
- * so at most 3 on the tile) of what the colliding names have after the
- * part they share — the distinguishing token starts there, turning three
- * “Emu rcn rcn-labA-…/-devA-…/rcnA-…” projects into `EL`/`ED`/`EA`.
- * Names too alike for that fall back to 2–3 characters of the whole name;
- * truly identical names cannot be told apart by ink alone, so they keep
- * the same tile and the flyout's full name carries the difference.
- */
-export function railInitials(names: readonly string[]): string[] {
-  const out = names.map((name) => initialsOf(name) || "?");
-  const groups = new Map<string, number[]>();
-  out.forEach((initials, index) => {
-    const group = groups.get(initials);
-    if (group) group.push(index);
-    else groups.set(initials, [index]);
-  });
-  const assignable = (candidates: readonly string[], indexes: readonly number[]): boolean =>
-    new Set(candidates).size === candidates.length &&
-    candidates.every(
-      (candidate) => !out.some((value, i) => !indexes.includes(i) && value === candidate),
-    );
-  for (const [initials, indexes] of groups) {
-    if (indexes.length < 2) continue;
-    const memberNames = indexes.map((index) => names[index]);
-    const shared = commonPrefix(memberNames);
-    const letter = (initials[0] ?? "?").toUpperCase();
-    const tails = memberNames.map((name) =>
-      name
-        .slice(shared.length)
-        .replace(/^[^A-Za-z0-9]+/, "")
-        .toUpperCase(),
-    );
-    let resolved = false;
-    for (let take = 1; take <= 2 && !resolved; take += 1) {
-      const candidates = tails.map((tail) => letter + (tail.slice(0, take) || "?"));
-      if (assignable(candidates, indexes)) {
-        candidates.forEach((candidate, i) => {
-          out[indexes[i]] = candidate;
-        });
-        resolved = true;
-      }
-    }
-    for (let take = 2; take <= 3 && !resolved; take += 1) {
-      const candidates = memberNames.map((name) => name.trim().slice(0, take).toUpperCase());
-      if (assignable(candidates, indexes)) {
-        candidates.forEach((candidate, i) => {
-          out[indexes[i]] = candidate;
-        });
-        resolved = true;
-      }
-    }
-    // Still unresolved (identical, or case-only differences): the members
-    // keep the shared base initials; the flyout names each one in full.
-  }
-  return out;
-}
-
 /** The row rhythm: the active row is an ink border on the 4px blueprint grid. */
 const ROW =
   "flex items-center gap-[6px] rounded-[3px] border px-[8px] py-[5px] text-[13px] text-ink no-underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring";
@@ -192,9 +132,6 @@ const ROW_ACTIVE = "ds-texture-accent border-ink bg-surface font-semibold text-i
 const SECTION_LABEL = "px-2 pb-1 font-mono text-[10px] tracking-[.06em] text-faint";
 const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring";
-
-/** The rail's hover flyout stays open long enough to cross the 4px gap. */
-const FLYOUT_CLOSE_MS = 150;
 
 /**
  * One repository under a project: indent 14, left rule, mono 11.5. The
@@ -425,259 +362,491 @@ function NewChatRow({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: () 
   );
 }
 
-/** The rail's `+`: the same conversation dialog as the expanded `New thread`. */
-function RailNewChat({ signedIn, onNewChat }: { signedIn: boolean; onNewChat: () => void }) {
-  if (!signedIn) return null;
+/* ─────────────────────────────── collapsed rail (3a/4a) ─────────────────────────── */
+
+/**
+ * The 3a icon tile: 34×34, 3px radius, a reserved 1px transparent border so
+ * hover and active never shift the box. The active treatment is the sidebar
+ * row\u2019s own — ink border on the blue grid-paper fill — and hover is
+ * `#efede7` fill with the `#cfc9bd` border (`fill`/`fill-edge` tokens).
+ */
+const RAIL_TILE =
+  "relative grid size-[34px] shrink-0 place-items-center rounded-[3px] border text-ink no-underline";
+const RAIL_TILE_ACTIVE = "ds-texture-accent border-ink bg-surface font-semibold";
+const RAIL_TILE_INACTIVE = "border-transparent hover:border-fill-edge hover:bg-fill";
+
+/** Badge tones: the state tint as background, the state ink as text; Catch up
+ * carries the accent pair the handoff names for the unseen count. */
+const RAIL_BADGE_TONE: Record<"waiting" | "running" | "accent", string> = {
+  waiting: "bg-st-waiting-tag text-st-waiting-tag-fg",
+  running: "bg-st-running-tag text-st-running-tag-fg",
+  accent: "bg-accent-tint text-accent-edge",
+};
+
+/**
+ * The 3a corner badge: a 15×14 box at the tile\u2019s top-right, offset
+ * −4/−5px, mono 9px/600 on the state tint with a 1px white outline. The
+ * tile\u2019s `aria-label` states the same number in words (`Today · 2
+ * waiting`), so the tint is never the only carrier — and the count is the
+ * very number the expanded row prints.
+ */
+function RailBadge({
+  name,
+  count,
+  tone,
+}: {
+  name: string;
+  count: number;
+  tone: keyof typeof RAIL_BADGE_TONE;
+}) {
+  if (count <= 0) return null;
+  return (
+    <span
+      aria-hidden="true"
+      data-testid={`rail-badge-${name}`}
+      className={`absolute -top-[4px] -right-[5px] flex h-[14px] min-w-[15px] items-center justify-center rounded-[3px] border border-surface px-[3px] font-mono text-[9px] font-semibold leading-none ${RAIL_BADGE_TONE[tone]}`}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+/** The one tooltip element the rail draws; tiles point at it while it shows. */
+const RAIL_TOOLTIP_ID = "rail-tooltip";
+
+interface RailTip {
+  key: string;
+  label: string;
+  hint?: string;
+  top: number;
+}
+
+/** The hover/focus wiring one tile carries (see `Rail`\u2019s `tipProps`). */
+interface TipProps {
+  onPointerEnter: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerLeave: (event: ReactPointerEvent<HTMLElement>) => void;
+  onFocus: (event: ReactFocusEvent<HTMLElement>) => void;
+  onBlur: () => void;
+  "aria-describedby"?: string;
+}
+
+interface RailTileProps {
+  testid: string;
+  ariaLabel: string;
+  icon: ReactNode;
+  badge?: ReactNode;
+  /** With `to` the tile is a NavLink; without it, a button (popover/command). */
+  to?: string;
+  end?: boolean;
+  /** Extra active mark beyond the route (the Projects tile on any `/p/…`). */
+  active?: boolean;
+  onClick?: (el: HTMLElement) => void;
+  hasPopup?: boolean;
+  expanded?: boolean;
+  controls?: string;
+  tip: TipProps;
+}
+
+/** One rail tile \u2014 the 3a icon tile, as a link or a button. */
+function RailTile({
+  testid,
+  ariaLabel,
+  icon,
+  badge,
+  to,
+  end,
+  active,
+  onClick,
+  hasPopup,
+  expanded,
+  controls,
+  tip,
+}: RailTileProps) {
+  const tileClass = (isActive: boolean) =>
+    `${RAIL_TILE} ${FOCUS_RING} ${isActive ? RAIL_TILE_ACTIVE : RAIL_TILE_INACTIVE}`;
+  if (to) {
+    return (
+      <NavLink
+        to={to}
+        end={end}
+        data-testid={testid}
+        aria-label={ariaLabel}
+        className={({ isActive }) => tileClass(isActive || active === true)}
+        {...tip}
+      >
+        {icon}
+        {badge}
+      </NavLink>
+    );
+  }
   return (
     <button
       type="button"
-      data-testid="new-chat-rail"
-      aria-label="New thread"
-      title="New thread"
-      onClick={onNewChat}
-      className={`grid size-[28px] shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-fill text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg ${FOCUS_RING}`}
+      data-testid={testid}
+      aria-label={ariaLabel}
+      onClick={(event) => onClick?.(event.currentTarget)}
+      aria-haspopup={hasPopup ? "dialog" : undefined}
+      aria-expanded={hasPopup ? Boolean(expanded) : undefined}
+      aria-controls={hasPopup ? controls : undefined}
+      className={tileClass(active === true)}
+      {...tip}
     >
-      <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
+      {icon}
+      {badge}
     </button>
   );
 }
 
 /**
- * A rail item: the 30px icon tile the design draws for every labelled start
- * (Today, Library) — a lucide icon, never bare text under another control's
- * button (review 3c: the text `Today` sat under the `+` and read as its
- * caption). The word survives as the tooltip and the aria-label, so the
- * meaning is never icon alone.
+ * The 4a third way: the column\u2019s right edge is a drag handle — 5px of
+ * `#dfe4fa` (`accent-ring`), shown on hover. Dragging past ~120px snaps the
+ * sidebar open; dragging back below it snaps it closed. The pointer never
+ * resizes the column (no layout thrash): it only ever checks one threshold,
+ * and the snap reuses the same expand/collapse path as the buttons and ⌘\.
+ * The keyboard alternative is the ⌘\ chord (`Shell`).
  */
-function RailItem({
-  to,
-  label,
-  testid,
-  icon,
-  end = false,
-  className = "",
+export const RAIL_EDGE_SNAP_PX = 120;
+
+function EdgeResizeHandle({
+  collapsed,
+  onExpand,
+  onCollapse,
 }: {
-  to: string;
-  label: string;
-  testid: string;
-  icon: ReactNode;
-  end?: boolean;
-  className?: string;
+  collapsed: boolean;
+  onExpand?: () => void;
+  onCollapse?: () => void;
 }) {
-  return (
-    <NavLink
-      to={to}
-      end={end}
-      data-testid={testid}
-      aria-label={label}
-      title={label}
-      className={({ isActive }) =>
-        `grid size-[30px] shrink-0 place-items-center rounded-[3px] border no-underline ${FOCUS_RING} ${
-          isActive
-            ? "border-ink bg-accent-tint text-ink"
-            : `border-fill-edge bg-surface text-muted hover:bg-fill hover:text-ink ${className}`
-        }`
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (event: PointerEvent) => {
+      if (collapsed ? event.clientX > RAIL_EDGE_SNAP_PX : event.clientX < RAIL_EDGE_SNAP_PX) {
+        setDragging(false);
+        (collapsed ? onExpand : onCollapse)?.();
       }
-    >
-      {icon}
-    </NavLink>
+    };
+    const stop = () => setDragging(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, [dragging, collapsed, onExpand, onCollapse]);
+  return (
+    <div className="group absolute inset-y-0 -right-[3px] z-30 flex w-[11px] justify-center">
+      <button
+        type="button"
+        data-testid="sidebar-resize-handle"
+        aria-label={collapsed ? "Expand sidebar (drag right)" : "Collapse sidebar (drag left)"}
+        title="Drag past 120px to toggle the sidebar"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        className={`h-full w-[5px] cursor-col-resize border-0 bg-accent-ring p-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100 ${
+          dragging ? "opacity-100" : ""
+        } ${FOCUS_RING}`}
+      />
+    </div>
   );
 }
 
 /**
- * The collapsed column: a 52px rail (handoff 3c). The mark, `+`, Today, one
- * initials tile per project, Library, the expand control and the avatar.
- * A tile's flyout is the honest replacement for the labels: it names the
- * project, states its worst flag and links its repositories.
- * Tiles carry the project's worst-state flag (design 3c) as a corner
- * badge — glyph + count from the very data the expanded rows read
- * (`useSidebarFlags`), never colour alone — and their initials are made
- * unique within the rail (`railInitials`), so three “Emu rcn …” projects
- * are three distinguishable tiles.
+ * The collapsed rail (redesign 3a + 4a): the 52px white column with its 1px
+ * ink right edge — the mark, the expand button, Search, the `+`, and the six
+ * nav icons, with the avatar pinned at the bottom. Hover or keyboard focus on
+ * a tile prints the dark label 8px to the right (never on a touch tap); a
+ * CLICK on the one icon with children (Projects) opens the `ds/Popover`
+ * project menu, so nothing opens by accident while the mouse crosses the rail.
+ * The badges are the same counts the expanded rows carry: waiting on Today,
+ * unseen on Catch up, live threads. No initials any more \u2014 every tile is
+ * an icon, and the words live in the label, the `aria-label` and the popover.
  */
 function Rail({
   signedIn,
+  unseenCatchUp,
   onNewChat,
   onExpand,
 }: {
   signedIn: boolean;
+  unseenCatchUp: number;
   onNewChat: () => void;
-  onExpand: () => void;
+  onExpand: (source?: HTMLElement) => void;
 }) {
-  const projects = useProjects();
   const flags = useSidebarFlags();
   const location = useLocation();
+  const projects = useProjects();
   const items = projects.data?.items ?? [];
   const activeProjectId = projectIdFromPath(location.pathname);
-  // One pass over the whole list: a tile's letters depend on its
-  // neighbours', so they are computed together, deterministically.
-  const tiles = useMemo(() => railInitials(items.map((project) => project.name)), [items]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const projectsTrigger = useRef<HTMLElement | null>(null);
+  const touchAt = useRef(0);
+  const pointerOver = useRef<string | null>(null);
+  const [tip, setTip] = useState<RailTip | null>(null);
+  const [projectsOpen, setProjectsOpen] = useState(false);
 
-  // One flyout at a time, anchored to whichever tile opened it. The popover
-  // is a child of the column's host (outside the scrolling list), so the
-  // scroll container cannot cut it at 52px.
-  const triggerRef = useRef<HTMLElement | null>(null);
-  const closeTimer = useRef<number | null>(null);
-  const [flyoutId, setFlyoutId] = useState<string | null>(null);
-  const flyoutProject = items.find((project) => project.id === flyoutId) ?? null;
+  // Navigation delivered the popover\u2019s link; the next click opens it anew.
+  useEffect(() => setProjectsOpen(false), [location.pathname]);
+  // Leaving the rail entirely takes the label with it (a pointerleave on the
+  // last tile can be missed when the pointer jumps elsewhere).
+  useEffect(() => {
+    const onLeaveRail = () => {
+      pointerOver.current = null;
+      setTip(null);
+    };
+    window.addEventListener("blur", onLeaveRail);
+    return () => window.removeEventListener("blur", onLeaveRail);
+  }, []);
 
-  const cancelClose = () => {
-    if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = null;
+  // Non-mouse pointer activity on the rail stamps `touchAt`; a focus that
+  // arrives right after it (the tail of a tap) is not the keyboard, and gets
+  // no label. Keyboard-only focus (no tap behind it) keeps the label.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onPointerActivity = (event: PointerEvent) => {
+      const pointerType = String(event.pointerType);
+      if (pointerType !== "mouse" && pointerType !== "pen") touchAt.current = Date.now();
+    };
+    host.addEventListener("pointerdown", onPointerActivity);
+    host.addEventListener("pointerup", onPointerActivity);
+    return () => {
+      host.removeEventListener("pointerdown", onPointerActivity);
+      host.removeEventListener("pointerup", onPointerActivity);
+    };
+  }, []);
+
+  const showTip = (key: string, label: string, hint: string | undefined, el: HTMLElement) => {
+    const host = hostRef.current;
+    if (!host) return;
+
+    const r = el.getBoundingClientRect();
+    const b = host.getBoundingClientRect();
+    setTip({ key, label, hint, top: r.top - b.top + (r.height - 24) / 2 });
+  };
+  const hideTip = (key: string) => setTip((current) => (current?.key === key ? null : current));
+  /**
+   * 3a: the label answers hover AND keyboard focus, and a touch tap gets
+   * neither \u2014 `pointerType: touch` is ignored outright, and the focus a
+   * tap drags in behind it is ignored for a beat after the touch.
+   */
+  const tipProps = (key: string, label: string, hint?: string): TipProps => ({
+    onPointerEnter: (event) => {
+      pointerOver.current = key;
+      // Only the mouse/pen gets a label; a touch pointer (or a browser that
+      // reports no pointer type at all, where touch is the likelier guest)
+      // never paints one.
+      const pointerType = String(event.pointerType);
+      if (pointerType === "" || pointerType === "touch") return;
+      showTip(key, label, hint, event.currentTarget);
+    },
+    onPointerLeave: (event) => {
+      if (event.pointerType === "touch") return;
+      if (pointerOver.current === key) pointerOver.current = null;
+      hideTip(key);
+    },
+    // A tap lands focus after the pointer already left the tile — so ANY
+    // recent pointer presence suppresses the focus label for a beat. (This
+    // is why the keyboard-only `focusin` in the tests fires no pointer at
+    // all: with no pointer on the rail, focus owns the label outright.)
+    onFocus: (event) => {
+      if (Date.now() - touchAt.current < 700) return;
+      showTip(key, label, hint, event.currentTarget);
+    },
+    onBlur: () => hideTip(key),
+    "aria-describedby": tip?.key === key ? RAIL_TOOLTIP_ID : undefined,
+  });
+
+  const waiting = flags.inbox.needsYou;
+  const live = flags.threads ?? 0;
+
+  const toggleProjects = (el: HTMLElement) => {
+    setTip(null);
+    pointerOver.current = null;
+    if (projectsOpen) {
+      setProjectsOpen(false);
+      return;
     }
+    projectsTrigger.current = el;
+    setProjectsOpen(true);
   };
-  const closeNow = () => {
-    cancelClose();
-    setFlyoutId(null);
-  };
-  const scheduleClose = () => {
-    cancelClose();
-    closeTimer.current = window.setTimeout(closeNow, FLYOUT_CLOSE_MS);
-  };
-  const openFlyoutFor = (trigger: HTMLElement, id: string) => {
-    cancelClose();
-    triggerRef.current = trigger;
-    setFlyoutId(id);
-  };
-
-  useEffect(() => cancelClose, []);
-  // Navigation delivered the flyout's link; the next hover opens the next one.
-  useEffect(() => setFlyoutId(null), [location.pathname]);
 
   return (
-    <div className="relative flex h-full w-[52px] shrink-0">
+    <div ref={hostRef} data-testid="sidebar" className="relative flex h-full w-[52px] shrink-0">
       <aside
-        data-testid="sidebar"
+        data-testid="sidebar-rail"
         aria-label="Primary"
-        className="flex h-full w-[52px] flex-col items-center gap-[10px] border-r border-ink bg-surface py-3 text-ink"
+        className="flex h-full w-[52px] flex-col items-center gap-[6px] border-r border-ink bg-surface py-3 text-ink"
       >
         <Link
           to="/"
           aria-label="Communication"
           draggable={false}
           data-testid="brand-home"
-          className={`flex select-none items-center justify-center text-ink ${FOCUS_RING}`}
+          className={`flex h-[26px] shrink-0 select-none items-center justify-center text-ink ${FOCUS_RING}`}
         >
-          <Mark size={24} />
+          <Mark size={26} />
         </Link>
 
-        <RailNewChat signedIn={signedIn} onNewChat={onNewChat} />
-
-        {/* Today: an icon tile like every other rail item. Amber is the
-            waiting flag the expanded row carries, and the tooltip names the
-            count, so the state is never colour alone. */}
-        <RailItem
-          to={routes.home()}
-          label={flags.inbox.needsYou > 0 ? `Today · ${flags.inbox.needsYou} waiting` : "Today"}
-          testid="sidebar-link-home"
-          end
-          className={flags.inbox.needsYou > 0 ? "text-st-waiting-tag-fg" : ""}
-          icon={<CalendarDays size={15} strokeWidth={1.6} aria-hidden="true" />}
+        {/* 4a way one: the expand button under the logo. Way two is ⌘\
+            (Shell), way three is the edge handle (below). */}
+        <RailTile
+          testid="sidebar-expand"
+          ariaLabel="Expand sidebar (⌘\)"
+          icon={<ChevronsRight size={16} strokeWidth={1.6} aria-hidden="true" />}
+          onClick={onExpand}
+          tip={tipProps("expand", "Expand sidebar", "⌘\\")}
         />
 
-        <div className="h-px w-[28px] shrink-0 bg-line" aria-hidden="true" />
-
-        {/* The tiles keep their natural height (2c draws Library directly
-            under them) and only scroll when there is not enough of it: a
-            growing `flex-1` would push Library down to the bottom group. */}
-        <div className="flex w-full min-h-0 shrink flex-col items-center gap-[8px] overflow-y-auto">
-          {items.map((project, index) => {
-            const active = project.id === activeProjectId;
-            const flag = flags.projects[project.id] ?? { kind: "none", count: 0 };
-            const style = flag.kind === "none" || flag.count === 0 ? null : FLAG_STYLE[flag.kind];
-            return (
-              <NavLink
-                key={project.id}
-                to={routes.project(project.id)}
-                data-testid={`sidebar-rail-project-${project.id}`}
-                aria-label={style ? `${project.name} · ${flag.count} ${style.word}` : project.name}
-                onMouseEnter={(event) => openFlyoutFor(event.currentTarget, project.id)}
-                onMouseLeave={scheduleClose}
-                onFocus={(event) => openFlyoutFor(event.currentTarget, project.id)}
-                onBlur={scheduleClose}
-                className={`relative grid size-[30px] shrink-0 place-items-center rounded-[3px] border font-mono text-[10px] no-underline ${FOCUS_RING} ${
-                  active
-                    ? "border-ink bg-accent-tint text-ink"
-                    : "border-fill-edge bg-surface text-muted hover:bg-fill hover:text-ink"
-                }`}
-              >
-                {tiles[index] || "?"}
-                {/* The worst-state flag, design 3c's corner badge: the same
-                    data the expanded row prints (one `FlagBadge`'s worth),
-                    glyph + count at rail size. */}
-                {style ? (
-                  <span
-                    aria-hidden="true"
-                    data-testid={`sidebar-rail-flag-${project.id}`}
-                    className={`absolute -bottom-[5px] -right-[5px] rounded-[3px] border border-line-strong bg-surface px-[2px] font-mono text-[8.5px] font-semibold leading-[11px] ${style.fg}`}
-                  >
-                    {style.glyph}
-                    {flag.count}
-                  </span>
-                ) : null}
-              </NavLink>
-            );
-          })}
-        </div>
-
-        <div className="h-px w-[28px] shrink-0 bg-line" aria-hidden="true" />
-
-        <RailItem
-          to={routes.workflows()}
-          label="Workflows"
-          testid="sidebar-rail-library"
-          icon={<BookOpen size={15} strokeWidth={1.6} aria-hidden="true" />}
+        <RailTile
+          testid="rail-item-search"
+          ariaLabel="Search (⌘K)"
+          icon={<Search size={18} strokeWidth={1.6} aria-hidden="true" />}
+          onClick={() => openPalette()}
+          tip={tipProps("search", "Search", "⌘K")}
         />
 
-        <div className="mt-auto flex w-full flex-col items-center gap-[10px]">
-          <button
-            type="button"
-            data-testid="sidebar-expand"
-            aria-label="Expand sidebar"
-            onClick={onExpand}
-            className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface p-0 text-ink hover:bg-fill ${FOCUS_RING}`}
-          >
-            <ChevronsRight size={14} strokeWidth={1.6} aria-hidden="true" />
-          </button>
+        {/* The rail\u2019s `+`: the same conversation dialog as the expanded
+            `New thread`, kept reachable directly under Search. */}
+        {signedIn ? (
+          <RailTile
+            testid="new-chat-rail"
+            ariaLabel="New thread"
+            icon={<Plus size={17} strokeWidth={1.7} aria-hidden="true" />}
+            onClick={() => onNewChat()}
+            tip={tipProps("new", "New thread")}
+          />
+        ) : null}
+
+        <div className="h-px w-[24px] shrink-0 bg-line" aria-hidden="true" />
+
+        <nav aria-label="Sections" className="flex shrink-0 flex-col items-center gap-[6px]">
+          <RailTile
+            to={routes.home()}
+            end
+            testid="rail-item-today"
+            ariaLabel={waiting > 0 ? `Today · ${waiting} waiting` : "Today"}
+            icon={<CalendarDays size={18} strokeWidth={1.6} aria-hidden="true" />}
+            badge={<RailBadge name="today" count={waiting} tone="waiting" />}
+            tip={tipProps("today", "Today")}
+          />
+          <RailTile
+            to={CATCH_UP_PATH}
+            testid="rail-item-catch-up"
+            ariaLabel={unseenCatchUp > 0 ? `Catch up · ${unseenCatchUp} unseen` : "Catch up"}
+            icon={<Inbox size={18} strokeWidth={1.6} aria-hidden="true" />}
+            badge={<RailBadge name="catch-up" count={unseenCatchUp} tone="accent" />}
+            tip={tipProps("catch-up", "Catch up")}
+          />
+          <RailTile
+            to={routes.threads()}
+            testid="rail-item-threads"
+            ariaLabel={live > 0 ? `Threads · ${live} live` : "Threads"}
+            icon={<MessageSquare size={18} strokeWidth={1.6} aria-hidden="true" />}
+            badge={<RailBadge name="threads" count={live} tone="running" />}
+            tip={tipProps("threads", "Threads")}
+          />
+          {/* The one tile with children: the click-surface (3a) that carries
+              the projects, their state counts and the active project\u2019s
+              repositories \u2014 what the labels used to say. */}
+          <RailTile
+            testid="rail-item-projects"
+            ariaLabel="Projects"
+            icon={<Folder size={18} strokeWidth={1.6} aria-hidden="true" />}
+            active={activeProjectId !== null}
+            hasPopup
+            expanded={projectsOpen}
+            controls="rail-projects-panel"
+            onClick={toggleProjects}
+            tip={tipProps("projects", "Projects")}
+          />
+          <RailTile
+            to={routes.workflows()}
+            testid="rail-item-workflows"
+            ariaLabel="Workflows"
+            icon={<Workflow size={18} strokeWidth={1.6} aria-hidden="true" />}
+            tip={tipProps("workflows", "Workflows")}
+          />
+          <RailTile
+            to={routes.profiles()}
+            testid="rail-item-agents"
+            ariaLabel="Agents"
+            icon={<Bot size={18} strokeWidth={1.6} aria-hidden="true" />}
+            tip={tipProps("agents", "Agents")}
+          />
+        </nav>
+
+        <div className="mt-auto flex w-full shrink-0 flex-col items-center">
           <Footer rail />
         </div>
       </aside>
 
+      {/* 3a: the dark label, 8px off the rail\u2019s edge, on hover and on
+          keyboard focus \u2014 a `role="tooltip"` the described tile points at,
+          with the optional mono chord. */}
+      {tip ? (
+        <span
+          role="tooltip"
+          id={RAIL_TOOLTIP_ID}
+          data-testid="rail-tooltip"
+          style={{ top: tip.top }}
+          className="pointer-events-none absolute left-[60px] z-50 flex h-6 items-center gap-[8px] whitespace-nowrap rounded-[3px] bg-ink px-[9px] text-[12px] font-semibold text-surface"
+        >
+          <span
+            aria-hidden="true"
+            className="absolute -left-[4px] top-1/2 h-[8px] w-[8px] -translate-y-1/2 rotate-45 bg-ink"
+          />
+          {tip.label}
+          {tip.hint ? (
+            <span className="font-mono text-[10.5px] font-normal text-line-strong">{tip.hint}</span>
+          ) : null}
+        </span>
+      ) : null}
+
       <Popover
-        open={flyoutProject !== null}
-        onClose={closeNow}
-        triggerRef={triggerRef}
-        side="right"
-        // 260, not 212: the flyout's project name is its whole content, and
-        // review 3c watched it cut to `Emu rcn rcn-rev3-1793644…`. The name
-        // wraps onto as many lines as it needs inside this width.
-        width={260}
-        height={160}
-        ariaLabel={flyoutProject ? `${flyoutProject.name} repositories` : "Project"}
-        data-testid={flyoutProject ? `sidebar-rail-flyout-${flyoutProject.id}` : undefined}
+        open={projectsOpen}
+        onClose={() => setProjectsOpen(false)}
+        triggerRef={projectsTrigger}
+        width={POPOVER_WIDTH_PX}
+        panelId="rail-projects-panel"
+        ariaLabel="Projects"
+        data-testid="rail-projects-popover"
       >
-        {flyoutProject ? (
-          <div
-            onMouseEnter={cancelClose}
-            onMouseLeave={closeNow}
-            onFocus={cancelClose}
-            onBlur={scheduleClose}
-            data-testid={`sidebar-rail-flyout-content-${flyoutProject.id}`}
-          >
-            <div className="flex items-center gap-2 px-[6px] pb-[4px] pt-[2px]">
-              <Link
-                to={routes.project(flyoutProject.id)}
-                className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-[17px] text-ink no-underline hover:underline"
-              >
-                {flyoutProject.name}
-              </Link>
-              <FlagBadge flag={flags.projects[flyoutProject.id] ?? { kind: "none", count: 0 }} />
-            </div>
-            <RepoList projectHref={routes.project(flyoutProject.id)} projectId={flyoutProject.id} />
-          </div>
+        <span className="px-[6px] pb-[4px] pt-[2px] font-mono text-[10px] tracking-[.06em] text-faint">
+          PROJECTS
+        </span>
+        {items.length === 0 && !projects.isPending ? (
+          <span className="px-[6px] font-mono text-[11px] text-faint">no projects yet</span>
         ) : null}
+        {items.map((project) => {
+          const active = project.id === activeProjectId;
+          return (
+            <div key={project.id}>
+              <Link
+                to={routes.project(project.id)}
+                data-testid={`rail-project-${project.id}`}
+                onClick={() => setProjectsOpen(false)}
+                className={`flex items-center gap-[6px] rounded-[3px] border px-[6px] py-1 text-[12.5px] font-semibold no-underline ${FOCUS_RING} ${
+                  active
+                    ? "ds-texture-accent border-ink text-ink"
+                    : "border-transparent text-ink hover:bg-fill"
+                }`}
+              >
+                <span className="min-w-0 truncate">{project.name}</span>
+                <FlagBadge flag={flags.projects[project.id] ?? { kind: "none", count: 0 }} />
+              </Link>
+              {active ? (
+                <RepoList projectHref={routes.project(project.id)} projectId={project.id} />
+              ) : null}
+            </div>
+          );
+        })}
       </Popover>
+
+      <EdgeResizeHandle collapsed onExpand={onExpand} />
     </div>
   );
 }
@@ -687,10 +856,23 @@ export interface SidebarProps {
   variant?: "panel" | "drawer";
   /** Drawer only: the close control (backdrop and esc are Shell's job). */
   onClose?: () => void;
-  /** Panel only (finding 07): rail-only widths (768–1023px) force the
-   * collapsed rail. The `sidebarCollapsed` preference is not touched — the
-   * expanded column returns on its own as soon as the window is wide again. */
+  /** Finding 07: rail-only widths (768–1023px) force the collapsed rail.
+   * The `sidebarCollapsed` preference is not touched — the expanded column
+   * returns on its own as soon as the window is wide again. In that zone the
+   * rail's expand (button, edge drag, ⌘\) opens the full column as an
+   * OVERLAY, which is `Shell`'s `forceExpanded` mount below. */
   forceCollapsed?: boolean;
+  /** Overlay only (4a): show the expanded column regardless of the
+   * preference and the forced-rail zone. */
+  forceExpanded?: boolean;
+  /** The rail's expand affordances (button, edge drag), given the element
+   * that started it so an overlay can return the keyboard there: `Shell`
+   * opens the overlay in the rail zone; unbound, the `sidebarCollapsed`
+   * preference decides (≥1024px). */
+  onExpand?: (source?: HTMLElement) => void;
+  /** The expanded column's collapse affordances (‹‹ button, edge drag):
+   * `Shell` closes the overlay in the rail zone; unbound, the preference. */
+  onCollapse?: () => void;
 }
 
 /** The expanded column's width, so `Shell` can park the floating Ask box. */
@@ -707,6 +889,9 @@ export default function Sidebar({
   variant = "panel",
   onClose,
   forceCollapsed = false,
+  forceExpanded = false,
+  onExpand,
+  onCollapse,
 }: SidebarProps) {
   const { prefs, update } = useLayoutPrefs();
   const me = useMe();
@@ -728,15 +913,23 @@ export default function Sidebar({
     if (variant === "drawer") closeRef.current?.focus();
   }, [variant]);
 
-  const collapsed = variant === "panel" && (forceCollapsed || prefs.sidebarCollapsed);
+  const collapsed =
+    variant === "panel" && !forceExpanded && (forceCollapsed || prefs.sidebarCollapsed);
+
+  // The rail zone hands both directions to `Shell` (overlay in, overlay
+  // out); everywhere else they are plain preference writes.
+  const expand = (source?: HTMLElement) =>
+    onExpand ? onExpand(source) : update({ sidebarCollapsed: false });
+  const collapse = () => (onCollapse ? onCollapse() : update({ sidebarCollapsed: true }));
 
   if (collapsed) {
     return (
       <>
         <Rail
           signedIn={Boolean(me.data)}
+          unseenCatchUp={unseenCatchUp}
           onNewChat={() => setChatOpen(true)}
-          onExpand={() => update({ sidebarCollapsed: false })}
+          onExpand={expand}
         />
         <NewConversationDialog open={chatOpen} onClose={() => setChatOpen(false)} />
       </>
@@ -827,7 +1020,7 @@ export default function Sidebar({
                 type="button"
                 data-testid="sidebar-collapse"
                 aria-label="Collapse sidebar"
-                onClick={() => update({ sidebarCollapsed: true })}
+                onClick={collapse}
                 className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface p-0 text-ink hover:bg-fill ${FOCUS_RING}`}
               >
                 <ChevronsLeft size={14} strokeWidth={1.6} aria-hidden="true" />
@@ -904,6 +1097,11 @@ export default function Sidebar({
 
           <Footer />
         </aside>
+        {/* 4a way three, expanded side: dragging this edge back below ~120px
+            snaps the column closed (the drawer has no rail to snap to). */}
+        {variant === "panel" ? (
+          <EdgeResizeHandle collapsed={false} onCollapse={collapse} onExpand={expand} />
+        ) : null}
       </div>
 
       <NewConversationDialog open={chatOpen} onClose={() => setChatOpen(false)} />

@@ -14,20 +14,52 @@
  * the `Catch up` row sits right after Today and badges the unseen count.
  *
  * The column's two widths are the same contract: `sidebarCollapsed` is the
- * saved preference that trades the 220px column for the 52px rail, and the
- * rail's tile flyouts are what carry the project, its flag and its
- * repositories when the labels go away (handoff 2c/3c).
+ * saved preference that trades the 220px column for the 52px rail (redesign
+ * 3a/4a). The rail is icons under dark hover/focus labels; the one tile with
+ * children (Projects) opens a click-surface `ds/Popover` that carries the
+ * projects, their state counts and the active project's repositories; the
+ * edge drags past 120px snap between the two widths.
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
-import { meFixture, projectFixture, repositoryId, requestsTo, type RouteStub } from "../test/fakes";
+import {
+  conversationSummaryFixture,
+  meFixture,
+  projectFixture,
+  repositoryId,
+  requestsTo,
+  type RouteStub,
+} from "../test/fakes";
 import { wirePipelineList, wireRun } from "../test/fixtures/m4/wire";
-import { railInitials } from "./Sidebar";
-import type { Project, Repository } from "../api/types";
+import type { Repository } from "../api/types";
 
 /** Wait budget for the first round trips the sidebar waits on. */
 const READ_MS = 5_000;
+
+/** Answer the shell\u2019s frame queries (phone <768, rail 768\u20131023) as a
+ * `width` px viewport would (the same helper `Shell.test.tsx` uses). */
+const nativeMatchMedia = window.matchMedia;
+
+function stubViewport(width: number): void {
+  vi.stubGlobal("matchMedia", (query: string) => {
+    const max = /\(max-width: ([\d.]+)px\)/.exec(query);
+    const min = /\(min-width: ([\d.]+)px\)/.exec(query);
+    let matches = true;
+    if (min) matches = matches && width >= Number(min[1]);
+    if (max) matches = matches && width <= Number(max[1]);
+    return {
+      matches,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    };
+  });
+}
 
 const P = projectFixture.id;
 const PREFS_PATH = "/api/v1/me/preferences";
@@ -68,16 +100,6 @@ interface StubOverrides {
   runs?: unknown;
   prefs?: unknown;
   extra?: RouteStub[];
-}
-
-/** Per-project reads one more fixture project needs (repos, flags, chats). */
-function projectReads(project: Project): RouteStub[] {
-  return [
-    { path: `/api/v1/projects/${project.id}/repos`, body: { items: [] } },
-    { path: `/api/v1/projects/${project.id}/approvals`, body: { approvals: [] } },
-    { path: `/api/v1/projects/${project.id}/runs`, body: { runs: [] } },
-    { path: `/api/v1/projects/${project.id}/conversations`, body: { items: [] } },
-  ];
 }
 
 /** Everything the column reads, against the one fixture project. */
@@ -488,38 +510,7 @@ describe("the sidebar flags read off the same reduction as Inbox", () => {
   });
 });
 
-describe("railInitials (the tiles are distinguishable)", () => {
-  it("keeps the plain initials when nothing collides", () => {
-    // Today's rule unchanged for names that do not need help: one letter
-    // per leading word, up to two words.
-    expect(railInitials(["Northwind", "Acme", "M4 Exit"])).toEqual(["N", "A", "ME"]);
-  });
-  it("picks the distinguishing token when the first letters collide", () => {
-    expect(
-      railInitials([
-        "Emu rcn rcn-labA-1793626180",
-        "Emu rcn rcn-devA-1793626180",
-        "Emu rcn rcnA-1793626180",
-      ]),
-    ).toEqual(["EL", "ED", "EA"]);
-  });
-  it("widens within the tail before falling back to name characters", () => {
-    // The tails collide letter-for-letter at one character (`B`/`B`) and
-    // only part at the second: the tile widens to three characters.
-    expect(railInitials(["Emu rcn rcn-labA-1", "Emu rcn rcn-laBB-2"])).toEqual(["EBA", "EBB"]);
-  });
-  it("keeps the shared initials for names nothing can separate", () => {
-    // Identical names cannot be told apart by ink; the flyout carries the
-    // full name. Nothing else changes.
-    expect(railInitials(["Emu rcn dup", "Emu rcn dup"])).toEqual(["ER", "ER"]);
-  });
-  it("is deterministic", () => {
-    const names = ["Emu rcn x-1", "Emu rcn x-2", "Emu rcn x-3"];
-    expect(railInitials(names)).toEqual(railInitials([...names]));
-  });
-});
-
-describe("the collapsed rail (handoff 2c/3c)", () => {
+describe("the collapsed rail (redesign 3a/4a)", () => {
   /** The layout-prefs key the rail's state rides (see `lib/prefs.ts`). */
   const COLLAPSED = "sidebar:collapsed";
 
@@ -528,50 +519,216 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     return baseRoutes({ prefs: prefsDoc({ [COLLAPSED]: true }), projects, extra });
   }
 
-  // Design-3a rail review: three “Emu rcn …” projects that all INITIALise
-  // “ER” must not collapse into three identical tiles.
-  it("gives same-first-letter projects distinct tiles", async () => {
-    const emuA: Project = {
-      ...projectFixture,
-      id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b81",
-      name: "Emu rcn rcn-labA-1793626180",
-    };
-    const emuB: Project = {
-      ...projectFixture,
-      id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b82",
-      name: "Emu rcn rcn-devA-1793626180",
-    };
-    const emuC: Project = {
-      ...projectFixture,
-      id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b83",
-      name: "Emu rcn rcnA-1793626180",
-    };
-    const projects: Project[] = [emuA, emuB, emuC, projectFixture];
+  const failedRun = {
+    ...wireRun,
+    status: "failed",
+    failed_cause: "node_execution_failed:/implement",
+  } as unknown as typeof wireRun;
+
+  /** The six nav icons, as buttons/links with self-naming aria-labels. */
+  const NAV_TILES = [
+    "rail-item-today",
+    "rail-item-catch-up",
+    "rail-item-threads",
+    "rail-item-projects",
+    "rail-item-workflows",
+    "rail-item-agents",
+  ];
+
+  it("renders the icon set and badges the same counts the expanded rows carry", async () => {
     renderApp({
       path: "/",
-      routes: railRoutes(
-        projects.flatMap((project) => projectReads(project)),
-        { items: projects },
+      routes: railRoutes([
+        {
+          path: "/api/v1/catch-up/items",
+          body: { items: [], total_unseen: 3, oldest_unseen_at: "2026-01-01T00:00:00Z" },
+        },
+      ]).map((stub) =>
+        stub.path === `/api/v1/projects/${P}/conversations`
+          ? { ...stub, body: { items: [conversationSummaryFixture] } }
+          : stub.path === `/api/v1/projects/${P}/runs`
+            ? { ...stub, body: { runs: [failedRun] } }
+            : stub,
       ),
     });
+    // The rail is the column now: 52px, and every nav tile is an icon — no
+    // initials tiles survive the redesign.
+    expect(await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS })).toBeTruthy();
+    for (const testid of NAV_TILES) {
+      expect(screen.getByTestId(testid)).toBeTruthy();
+    }
+    expect(screen.queryAllByTestId(/^sidebar-rail-project-/)).toHaveLength(0);
+    // `+` and the expand button stay reachable.
+    expect(screen.getByTestId("new-chat-rail").getAttribute("aria-label")).toBe("New thread");
+    expect(screen.getByTestId("sidebar-expand")).toBeTruthy();
+    expect(screen.getByTestId("user-badge").textContent).toContain("Ada Lovelace");
 
-    const tiles = await Promise.all(
-      projects.map((project) =>
-        screen.findByTestId(`sidebar-rail-project-${project.id}`, undefined, { timeout: READ_MS }),
-      ),
+    // The badges are the expanded rows' own numbers: the waiting count off
+    // the stalled run (waiting tint), the unseen count off the catch-up read
+    // (accent), the live count off the conversations read (running tint).
+    const today = await screen.findByTestId("rail-badge-today", undefined, { timeout: READ_MS });
+    expect(today.textContent).toBe("1");
+    expect(today.className).toContain("bg-st-waiting-tag");
+    const catchUp = await screen.findByTestId("rail-badge-catch-up", undefined, {
+      timeout: READ_MS,
+    });
+    expect(catchUp.textContent).toBe("3");
+    expect(catchUp.className).toContain("bg-accent-tint");
+    const threads = await screen.findByTestId("rail-badge-threads", undefined, {
+      timeout: READ_MS,
+    });
+    expect(threads.textContent).toBe("1");
+    expect(threads.className).toContain("bg-st-running-tag");
+    // The number is never ink-only: the tile's accessible name says it in words.
+    expect(screen.getByTestId("rail-item-today").getAttribute("aria-label")).toBe(
+      "Today · 1 waiting",
     );
-    // The plain names keep their two-word initials; the colliding trio
-    // takes the letter that tells the projects apart.
-    expect(tiles.map((tile) => tile.textContent)).toEqual(["EL", "ED", "EA", "W"]);
-    expect(new Set(tiles.map((tile) => tile.textContent)).size).toBe(4);
+    expect(screen.getByTestId("rail-item-catch-up").getAttribute("aria-label")).toBe(
+      "Catch up · 3 unseen",
+    );
+    // The routes are the column's routes.
+    expect(screen.getByTestId("rail-item-catch-up").getAttribute("href")).toBe("/catch-up");
+    expect(screen.getByTestId("rail-item-workflows").getAttribute("href")).toBe("/workflows");
+    expect(screen.getByTestId("rail-item-agents").getAttribute("href")).toBe("/profiles");
   });
 
-  it("prints the project's worst-state flag on the tile (design 3c)", async () => {
-    const failedRun = {
-      ...wireRun,
-      status: "failed",
-      failed_cause: "node_execution_failed:/implement",
-    } as unknown as typeof wireRun;
+  it("prints no badge for a count that is zero or still unread", async () => {
+    renderApp({
+      path: "/",
+      routes: baseRoutes({ prefs: prefsDoc({ [COLLAPSED]: true }) }),
+    });
+    // Catch up answers zero unseen, nothing waits, no live threads: no badges.
+    const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
+    await within(rail).findByTestId("rail-item-workflows", undefined, { timeout: READ_MS });
+    expect(rail.querySelector('[data-testid^="rail-badge-"]')).toBeNull();
+    expect(screen.getByTestId("rail-item-today").getAttribute("aria-label")).toBe("Today");
+  });
+
+  it("shows the dark label on hover and on keyboard focus — never on a touch tap", async () => {
+    renderApp({ path: `/p/${P}`, routes: railRoutes() });
+    const tile = await screen.findByTestId("rail-item-projects", undefined, {
+      timeout: READ_MS,
+    });
+
+    // Hover (mouse): the label appears and the tile points at it.
+    fireEvent.pointerOver(tile, { pointerType: "mouse" });
+    const tip = await screen.findByTestId("rail-tooltip", undefined, { timeout: READ_MS });
+    expect(tip.getAttribute("role")).toBe("tooltip");
+    expect(tip.textContent).toContain("Projects");
+    expect(tile.getAttribute("aria-describedby")).toBe("rail-tooltip");
+    fireEvent.pointerOut(tile, { pointerType: "mouse" });
+    await waitFor(() => expect(screen.queryByTestId("rail-tooltip")).toBeNull(), {
+      timeout: READ_MS,
+    });
+
+    // Keyboard focus: the same label.
+    fireEvent.focusIn(tile);
+    await screen.findByTestId("rail-tooltip", undefined, { timeout: READ_MS });
+    expect(tile.getAttribute("aria-describedby")).toBe("rail-tooltip");
+    fireEvent.focusOut(tile);
+    await waitFor(() => expect(screen.queryByTestId("rail-tooltip")).toBeNull(), {
+      timeout: READ_MS,
+    });
+
+    // A touch tap gets neither: pointer touch never shows the label, and the
+    // focus a tap drags in behind it is ignored too.
+    fireEvent.pointerOver(tile, { pointerType: "touch" });
+    expect(screen.queryByTestId("rail-tooltip")).toBeNull();
+    fireEvent.pointerDown(tile, { pointerType: "touch" });
+    fireEvent.pointerUp(tile, { pointerType: "touch" });
+    fireEvent.focusIn(tile);
+    expect(screen.queryByTestId("rail-tooltip")).toBeNull();
+
+    // Past the tap's suppression window, the keyboard owns the label again
+    // (this is the 700ms tail the touch guard keeps).
+    await new Promise((resolve) => setTimeout(resolve, 750));
+
+    // The expand tile's label carries its chord (4a: "Expand sidebar ⌘\\").
+    const expand = screen.getByTestId("sidebar-expand");
+    fireEvent.focusIn(expand);
+    const expandTip = await screen.findByTestId("rail-tooltip", undefined, {
+      timeout: READ_MS,
+    });
+    expect(expandTip.textContent).toContain("Expand sidebar");
+    expect(expandTip.textContent).toContain("⌘\\");
+  });
+
+  it("clicking Projects opens the popover; ↑/↓ move, Enter activates, Esc restores focus", async () => {
+    renderApp({ path: `/p/${P}`, routes: railRoutes() });
+    const tile = await screen.findByTestId("rail-item-projects", undefined, {
+      timeout: READ_MS,
+    });
+    // Hover alone never opens a menu (3a: predictable, click = menu).
+    fireEvent.pointerOver(tile, { pointerType: "mouse" });
+    expect(screen.queryByTestId("rail-projects-popover")).toBeNull();
+    expect(tile.getAttribute("aria-haspopup")).toBe("dialog");
+
+    fireEvent.click(tile);
+    const popover = await screen.findByTestId("rail-projects-popover", undefined, {
+      timeout: READ_MS,
+    });
+    expect(popover.getAttribute("role")).toBe("dialog");
+    // The 3a box: ~196px with a 10px rotated-square arrow on its left edge.
+    expect(popover.style.width).toBe("196px");
+    expect(popover.querySelector('[data-testid="menu-arrow"]')).toBeTruthy();
+    expect(tile.getAttribute("aria-expanded")).toBe("true");
+    expect(tile.getAttribute("aria-controls")).toBe("rail-projects-panel");
+
+    // The mono header, the project row with its state count, and — because
+    // the route lives in this project — its repositories nested under it.
+    expect(within(popover).getByText("PROJECTS")).toBeTruthy();
+    const projectLink = within(popover).getByRole("link", { name: /Widgets/ });
+    expect(projectLink.getAttribute("href")).toBe(`/p/${P}`);
+    const repoLink = await within(popover).findByRole(
+      "link",
+      { name: "acme-widgets" },
+      {
+        timeout: READ_MS,
+      },
+    );
+    expect(repoLink.getAttribute("href")).toBe(`/p/${P}/acme-widgets`);
+
+    // Opening parks the keyboard inside; ↑/↓ rove with wrap.
+    expect(document.activeElement).toBe(projectLink);
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(repoLink);
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(projectLink);
+    fireEvent.keyDown(document, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(repoLink);
+
+    // Enter activates the focused row (a real click on the link — which the
+    // router turns into a navigation and the row\u2019s own handler into a close).
+    let activated = 0;
+    repoLink.addEventListener("click", () => {
+      activated += 1;
+    });
+    fireEvent.keyDown(repoLink, { key: "Enter" });
+    expect(activated).toBe(1);
+    await waitFor(() => expect(screen.queryByTestId("rail-projects-popover")).toBeNull(), {
+      timeout: READ_MS,
+    });
+
+    // Esc from inside closes it and the keyboard returns to the tile.
+    fireEvent.click(tile);
+    await screen.findByTestId("rail-projects-popover", undefined, { timeout: READ_MS });
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("rail-projects-popover")).toBeNull(), {
+      timeout: READ_MS,
+    });
+    expect(document.activeElement).toBe(tile);
+    expect(tile.getAttribute("aria-expanded")).toBe("false");
+
+    // A pointerdown outside closes it too.
+    fireEvent.click(tile);
+    await screen.findByTestId("rail-projects-popover", undefined, { timeout: READ_MS });
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.queryByTestId("rail-projects-popover")).toBeNull(), {
+      timeout: READ_MS,
+    });
+  });
+
+  it("states the project\u2019s worst flag in the popover", async () => {
     renderApp({
       path: `/p/${P}`,
       routes: baseRoutes({
@@ -579,17 +736,19 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
         runs: { runs: [failedRun] },
       }),
     });
-    // The same reduction the expanded row reads, at rail size: glyph +
-    // count, and the tile's accessible name states it too.
-    const badge = await screen.findByTestId(`sidebar-rail-flag-${P}`, undefined, {
+    const tile = await screen.findByTestId("rail-item-projects", undefined, {
       timeout: READ_MS,
     });
-    expect(badge.textContent).toBe("×1");
-    const tile = screen.getByTestId(`sidebar-rail-project-${P}`);
-    expect(tile.getAttribute("aria-label")).toBe(`${projectFixture.name} · 1 failed`);
+    fireEvent.click(tile);
+    const popover = await screen.findByTestId("rail-projects-popover", undefined, {
+      timeout: READ_MS,
+    });
+    expect(
+      await within(popover).findByLabelText("1 failed", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
   });
 
-  it("collapses on the brand row's control and saves it in the layout prefs", async () => {
+  it("collapses on the brand row\u2019s control and saves it in the layout prefs", async () => {
     const { requests } = renderApp({
       path: "/",
       routes: baseRoutes({
@@ -609,22 +768,14 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     const sent = JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[0].body ?? "{}");
     expect(sent.layout.expanded[COLLAPSED]).toBe(true);
 
-    // The rail replaces the column: the labels are gone, the tiles and the
-    // expand control are not, and the footer identity survives the collapse.
+    // The rail replaces the column: the labels are gone, the icons, the
+    // `+`, the expand control and the footer identity are not.
     await screen.findByTestId("sidebar-expand", undefined, { timeout: READ_MS });
     expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
     expect(screen.queryByTestId("new-chat")).toBeNull();
     expect(screen.getByTestId("new-chat-rail")).toBeTruthy();
-    // Finding 01: the rail's `+` names itself the same way the expanded button
-    // does.
-    expect(screen.getByTestId("new-chat-rail").getAttribute("aria-label")).toBe("New thread");
-    expect(screen.getByTestId(`sidebar-rail-project-${P}`)).toBeTruthy();
+    expect(screen.getByTestId("sidebar-rail")).toBeTruthy();
     expect(screen.queryByTestId("sidebar-link-threads")).toBeNull();
-    // Review 3c: the rail's Today is an icon tile, not bare text under the
-    // `+` — the word lives in the aria-label (and the tooltip).
-    expect(screen.getByTestId("sidebar-link-home").getAttribute("aria-label")).toMatch(/^Today/);
-    // Finding 02: the rail tile says what the row says.
-    expect(screen.getByTestId("sidebar-rail-library").getAttribute("aria-label")).toBe("Workflows");
     expect(screen.getByTestId("user-badge").textContent).toContain("Ada Lovelace");
   });
 
@@ -672,73 +823,67 @@ describe("the collapsed rail (handoff 2c/3c)", () => {
     expect(sent.layout.expanded[COLLAPSED]).toBeUndefined();
   });
 
-  it("opens a project's flyout on tile focus, with the flag and the repos as links", async () => {
-    renderApp({ path: `/p/${P}`, routes: railRoutes() });
-    const tile = await screen.findByTestId(`sidebar-rail-project-${P}`, undefined, {
-      timeout: READ_MS,
-    });
-    // The project the route lives inside is the active tile: ink border and
-    // the accent tint, and `aria-current` for assistive tech.
-    expect(tile.getAttribute("aria-current")).toBe("page");
-    expect(tile.className.split(/\s+/)).toContain("border-ink");
-    expect(tile.className.split(/\s+/)).toContain("bg-accent-tint");
+  it("snaps open on an edge drag past 120px, and closed on the way back below it", async () => {
+    stubViewport(1280);
+    try {
+      const { requests } = renderApp({
+        path: "/",
+        routes: baseRoutes({
+          prefs: prefsDoc({ [COLLAPSED]: true }),
+          extra: [
+            {
+              path: PREFS_PATH,
+              method: "PATCH",
+              body: (n: number) => prefsDoc({ [COLLAPSED]: n === 1 ? false : true }),
+            },
+          ],
+        }),
+      });
 
-    // A tile with no pointer (keyboard only) still opens its flyout (React
-    // maps `onFocus` to the bubbling `focusin`).
-    fireEvent.focusIn(tile);
-    const flyout = await screen.findByTestId(`sidebar-rail-flyout-${P}`, undefined, {
-      timeout: READ_MS,
-    });
-    expect(within(flyout).getByText("Widgets")).toBeTruthy();
-    const project = within(flyout).getByRole("link", { name: "Widgets" });
-    // Review 3c: the flyout is what names the project, so the name wraps
-    // inside a 260px box instead of ellipsizing to `Widgets…`.
-    expect(flyout.style.width).toBe("260px");
-    expect(project.className).toContain("break-words");
-    expect(project.className).not.toContain("truncate");
-    // The flyout's repository rows ride a lazy `useRepositories` read that
-    // starts when the flyout mounts, so they land one round trip after the
-    // flyout itself (@tanstack/query 5.105+ subscribes the observer before it
-    // fetches). Await the row rather than assuming the cache is already warm.
-    const repo = await within(flyout).findByRole(
-      "link",
-      { name: "acme-widgets" },
-      { timeout: READ_MS },
-    );
-    expect(repo.getAttribute("href")).toBe(`/p/${P}/acme-widgets`);
-    // The flyout is a `ds/Popover`: the pointer arrow is its own element.
-    expect(flyout.querySelector('[data-testid="menu-arrow"]')).toBeTruthy();
+      // Rail: dragging the right edge to 140px snaps the column open — the
+      // same preference write the expand button makes. The rail must be
+      // mounted first (the saved prefs land a tick after the first paint,
+      // and the expanded column's edge handle is a different element).
+      await screen.findByTestId("sidebar-expand", undefined, { timeout: READ_MS });
+      const railHandle = await screen.findByTestId("sidebar-resize-handle", undefined, {
+        timeout: READ_MS,
+      });
+      fireEvent.pointerDown(railHandle);
+      fireEvent.pointerMove(window, { clientX: 90 });
+      expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
+      fireEvent.pointerMove(window, { clientX: 140 });
+      await screen.findByTestId("sidebar-collapse", undefined, { timeout: READ_MS });
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1), {
+        timeout: READ_MS,
+      });
+      expect(
+        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[0].body ?? "{}").layout.expanded[
+          COLLAPSED
+        ],
+      ).toBe(false);
+      fireEvent.pointerUp(window);
 
-    // Escape closes it and the keyboard is back on the tile.
-    fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId(`sidebar-rail-flyout-${P}`)).toBeNull(), {
-      timeout: READ_MS,
-    });
-  });
-
-  it("states the project's worst flag in the flyout", async () => {
-    const failedRun = {
-      ...wireRun,
-      status: "failed",
-      failed_cause: "node_execution_failed:/implement",
-    } as unknown as typeof wireRun;
-    renderApp({
-      path: `/p/${P}`,
-      routes: baseRoutes({
-        prefs: prefsDoc({ [COLLAPSED]: true }),
-        runs: { runs: [failedRun] },
-      }),
-    });
-    const tile = await screen.findByTestId(`sidebar-rail-project-${P}`, undefined, {
-      timeout: READ_MS,
-    });
-    fireEvent.focusIn(tile);
-    const flyout = await screen.findByTestId(`sidebar-rail-flyout-${P}`, undefined, {
-      timeout: READ_MS,
-    });
-    expect(
-      await within(flyout).findByLabelText("1 failed", undefined, { timeout: READ_MS }),
-    ).toBeTruthy();
+      // Expanded: dragging the same edge back to 90px snaps the rail shut.
+      // Re-query: the column replaced the rail, so the handle is a new node.
+      const columnHandle = screen.getByTestId("sidebar-resize-handle");
+      fireEvent.pointerDown(columnHandle);
+      fireEvent.pointerMove(window, { clientX: 150 });
+      expect(screen.getByTestId("sidebar-collapse")).toBeTruthy();
+      fireEvent.pointerMove(window, { clientX: 90 });
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(2), {
+        timeout: READ_MS,
+      });
+      expect(
+        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[1].body ?? "{}").layout.expanded[
+          COLLAPSED
+        ],
+      ).toBe(true);
+      fireEvent.pointerUp(window);
+    } finally {
+      // Re-stub the native `matchMedia`: `vi.unstubAllGlobals()` would also
+      // drop the session-wide `EventSource` stub while the app is mounted.
+      vi.stubGlobal("matchMedia", nativeMatchMedia);
+    }
   });
 });
 

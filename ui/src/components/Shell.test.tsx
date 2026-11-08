@@ -18,7 +18,7 @@
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { meFixture, type RouteStub } from "../test/fakes";
+import { meFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
 import { sectionOf } from "./Shell";
 
@@ -65,6 +65,15 @@ function stubViewport(width: number): void {
       dispatchEvent: () => false,
     };
   });
+}
+
+/** Restore jsdom's real `matchMedia` after a `stubViewport` test. Re-stubbing
+ * the native function (NOT `vi.unstubAllGlobals()` — that also drops the
+ * session-wide `EventSource` stub while the rendered app is still mounted,
+ * and a reconnect tick without it throws through the NEXT test). */
+const nativeMatchMedia = window.matchMedia;
+function restoreViewport(): void {
+  vi.stubGlobal("matchMedia", nativeMatchMedia);
 }
 
 describe("the shell's New thread follows the session", () => {
@@ -239,6 +248,172 @@ describe("the saved preference decides at desktop width (≥1024px)", () => {
     renderApp({ path: "/", routes: signedIn });
     const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
     expect(within(sidebar).getByTestId("sidebar-collapse")).toBeTruthy();
+  });
+});
+
+// Redesign 4a: three ways between the rail and the column — the expand
+// button (covered in `Sidebar.test.tsx`), ⌘\\ from anywhere, and the edge
+// drag (`Sidebar.test.tsx`). At ≥1024px ⌘\\ writes the stored preference; in
+// the forced-rail zone (768–1023px) it opens the full column as an OVERLAY
+// and the preference is never touched.
+describe("⌘\\ toggles the sidebar (4a)", () => {
+  const PREFS_PATH = "/api/v1/me/preferences";
+  const COLLAPSED = "sidebar:collapsed";
+
+  function prefsDoc(expanded: Record<string, boolean>): unknown {
+    return {
+      layout: {
+        projects_mode: "tree",
+        ask_placement: "sidebar",
+        show_workflow_folders: true,
+        expanded,
+      },
+      assistant: { trust_level: "ask_risky" },
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  it("flips the stored preference at desktop width, both directions", async () => {
+    stubViewport(1280);
+    try {
+      const { requests } = renderApp({
+        path: "/",
+        routes: [
+          ...signedIn,
+          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
+          {
+            path: PREFS_PATH,
+            method: "PATCH",
+            // The server echoes the write it was given: collapse on the
+            // first ⌘\, expand on the second (a constant `true` answer
+            // would snap the rail back over the expanded column).
+            body: (n: number) => prefsDoc({ [COLLAPSED]: n === 1 }),
+          },
+        ],
+      });
+      const column = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+      expect(within(column).getByTestId("sidebar-collapse")).toBeTruthy();
+
+      // The chord does nothing while the saved document is still in flight
+      // (a toggle must not stamp over a read), so the press waits for the
+      // GET to settle — then fires exactly once.
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "GET")).toHaveLength(1), {
+        timeout: READ_MS,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1), {
+        timeout: READ_MS,
+      });
+      expect(
+        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[0].body ?? "{}").layout.expanded[
+          COLLAPSED
+        ],
+      ).toBe(true);
+      // The rail replaced the column: expand is back, collapse is gone.
+      await waitFor(() => expect(screen.queryByTestId("sidebar-collapse")).toBeNull(), {
+        timeout: READ_MS,
+      });
+      expect(screen.getByTestId("sidebar-expand")).toBeTruthy();
+
+      // Ctrl+backslash works the same on non-mac platforms.
+      fireEvent.keyDown(window, { key: "\\", ctrlKey: true });
+      await waitFor(() => expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(2), {
+        timeout: READ_MS,
+      });
+      expect(
+        JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[1].body ?? "{}").layout.expanded[
+          COLLAPSED
+        ],
+      ).toBe(false);
+      await waitFor(() => expect(screen.getByTestId("sidebar-collapse")).toBeTruthy(), {
+        timeout: READ_MS,
+      });
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("stays out of the way while someone is typing in a text field", async () => {
+    stubViewport(1280);
+    try {
+      const { requests } = renderApp({
+        path: "/",
+        routes: [
+          ...signedIn,
+          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
+          { path: PREFS_PATH, method: "PATCH", body: prefsDoc({ [COLLAPSED]: true }) },
+        ],
+      });
+      await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+      // The palette's own input is the app's nearest real text field: the
+      // chord fired inside it must NOT toggle the column.
+      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+      const input = await screen.findByTestId("palette-input", undefined, { timeout: READ_MS });
+      fireEvent.keyDown(input, { key: "\\", metaKey: true });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+    } finally {
+      restoreViewport();
+    }
+  });
+
+  it("opens the column as an overlay in the rail zone without touching the preference", async () => {
+    stubViewport(900);
+    try {
+      const { requests } = renderApp({
+        path: "/",
+        routes: [
+          ...signedIn,
+          { path: PREFS_PATH, method: "GET", body: prefsDoc({}) },
+          { path: PREFS_PATH, method: "PATCH", body: prefsDoc({ [COLLAPSED]: true }) },
+        ],
+      });
+      const rail = await screen.findByTestId("sidebar-rail", undefined, { timeout: READ_MS });
+      expect(within(rail).getByTestId("sidebar-expand")).toBeTruthy();
+
+      // The rail's expand button opens the overlay — not a preference write.
+      fireEvent.click(within(rail).getByTestId("sidebar-expand"));
+      const overlay = await screen.findByTestId("rail-overlay-backdrop", undefined, {
+        timeout: READ_MS,
+      });
+      const column = overlay.parentElement?.querySelector('[data-testid="sidebar"]');
+      expect(column).toBeTruthy();
+      // The overlay column is the real one: labels and the ‹‹ collapse button.
+      expect(within(column as HTMLElement).getByTestId("sidebar-collapse")).toBeTruthy();
+      expect(within(column as HTMLElement).queryByText("Threads")).toBeTruthy();
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+
+      // Its ‹‹ button closes it, and the keyboard returns to the expand tile.
+      const expandTile = within(rail).getByTestId("sidebar-expand");
+      fireEvent.click(within(column as HTMLElement).getByTestId("sidebar-collapse"));
+      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
+        timeout: READ_MS,
+      });
+      expect(document.activeElement).toBe(expandTile);
+
+      // ⌘\\ opens it again; Esc closes it.
+      fireEvent.keyDown(window, { key: "\\", metaKey: true });
+      await screen.findByTestId("rail-overlay-backdrop", undefined, { timeout: READ_MS });
+      fireEvent.keyDown(window, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
+        timeout: READ_MS,
+      });
+
+      // A click on the backdrop closes it too.
+      fireEvent.click(expandTile);
+      const backdrop = await screen.findByTestId("rail-overlay-backdrop", undefined, {
+        timeout: READ_MS,
+      });
+      fireEvent.click(backdrop);
+      await waitFor(() => expect(screen.queryByTestId("rail-overlay-backdrop")).toBeNull(), {
+        timeout: READ_MS,
+      });
+      // None of it ever touched the stored preference.
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(0);
+    } finally {
+      restoreViewport();
+    }
   });
 });
 
