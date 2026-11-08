@@ -5,6 +5,7 @@
 import { afterEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import M4Preview from "./M4Preview";
 import { mockFetch } from "../test/fakes";
 import { renderApp } from "../test/render";
@@ -42,12 +43,26 @@ async function flushLazyChunk(): Promise<void> {
  */
 const PAINT_TEST_TIMEOUT = 20_000;
 
+/** The preview's gate cards host the DecisionBar, which reaches for the
+ * query client on mount (finding 04) — so the fixture mount needs a provider
+ * even though it never contacts the API. */
+function mountPreview() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <M4Preview />
+    </QueryClientProvider>,
+  );
+}
+
 describe("M4Preview", () => {
   it(
     "renders every building block without contacting the API",
     () => {
       const { fetchMock, requests } = mockFetch([]);
-      render(<M4Preview />);
+      mountPreview();
 
       expect(screen.getByTestId("m4-preview-notice").textContent).toMatch(/fixtures, not a run/i);
       // Several blocks appear twice on purpose: the looping run and the fan-out
@@ -60,7 +75,7 @@ describe("M4Preview", () => {
       expect(screen.getAllByTestId("run-tree")).toHaveLength(2);
       expect(screen.getByTestId("attempt-outputs")).toBeTruthy();
       expect(screen.getByTestId("attempt-checkpoint")).toBeTruthy();
-      expect(screen.getByTestId("approval-approve")).toBeTruthy();
+      expect(screen.getByTestId("decision-approve")).toBeTruthy();
 
       expect(requests).toHaveLength(0);
       expect(fetchMock).not.toHaveBeenCalled();
@@ -80,7 +95,7 @@ describe("M4Preview", () => {
       // second full suite running alongside — that kill is how this test flaked.
       // `PAINT_TEST_TIMEOUT` is the same ceiling as the mount test above: a
       // watchdog raise, never a wait.
-      render(<M4Preview />);
+      mountPreview();
       fireEvent.click(screen.getByTestId("definition-graph-list-verdict"));
       expect(screen.getByTestId("definition-graph-inspector-id").textContent).toBe("verdict");
 

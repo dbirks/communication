@@ -6,7 +6,7 @@
  * same doubles that prove `/__m4-preview?source=live`.
  */
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FakeEventSource,
   claudeProfile,
@@ -295,18 +295,30 @@ describe(`/projects/:projectId/runs/:runId`, () => {
 
     // The reader lands on the thing they owe an answer to: no click first.
     expect(await screen.findByTestId("approval-summary")).toBeTruthy();
-    expect(screen.getByTestId("approval-approve")).toBeTruthy();
-    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-reject")).toBeTruthy();
     expect(
       (await screen.findByTestId("definition-graph-node-approve")).getAttribute("aria-pressed"),
     ).toBe("true");
 
-    fireEvent.click(screen.getByTestId("approval-approve"));
-    await waitFor(() =>
+    // Finding 04: the click starts the 5s undo hold; the decide POST goes out
+    // only when the window expires.
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
       expect(
         requestsTo(requests, `/api/v1/approvals/${wireApproval.id}/decide`, "POST"),
-      ).toHaveLength(1),
-    );
+      ).toHaveLength(0);
+      expect(screen.getByTestId("decision-status").textContent).toContain(
+        "Approved. The run continues in 5s.",
+      );
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(
+        requestsTo(requests, `/api/v1/approvals/${wireApproval.id}/decide`, "POST"),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the gate card for a node with no attempts at all", async () => {
@@ -329,7 +341,7 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     ]);
 
     expect(await screen.findByTestId("approval-summary")).toBeTruthy();
-    expect(screen.getByTestId("approval-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
     expect(screen.queryByTestId("run-detail-pending")).toBeNull();
     expect(screen.queryByTestId("attempt-status")).toBeNull();
   });

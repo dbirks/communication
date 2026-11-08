@@ -1,23 +1,22 @@
 /**
  * The 4g approval detail as a real route. The contract under test:
  * - a 503 `assistant_not_configured` names the cause and falls back to the
- *   gate's own summary plus the static Approve/Reject pair — never a fake
- *   model voice;
- * - NOTHING decides before the human confirms: the decide route is not
- *   called on tapping a suggested button, and Escape closes the confirm
- *   step without deciding;
- * - the suggested actions are colored by risk and the plan artifact renders
- *   inline from `/artifacts/{id}/content`;
- * - "OR IN YOUR WORDS" → interpret → the proposal is shown, and only its
- *   confirmed confirm calls decide, with the proposed note;
+ *   gate's own summary — never a fake model voice;
+ * - NOTHING decides during the undo hold: the decide route is not called
+ *   until the 5s hold expires, and Undo cancels it without deciding
+ *   (finding 04 — no confirm step, no "not a decision word" path);
+ * - the decide verbs are fixed (`DecisionBar`), never model-written, and the
+ *   plan artifact renders inline from `/artifacts/{id}/content`;
+ * - "OR IN YOUR WORDS" → interpret → the proposal is shown as TEXT above the
+ *   bar and decides nothing by itself;
  * - a `404` (M4 contract § 7.2 W9: an outsider deep-links a gate they cannot
  *   see) renders an honest not-found state in plain words — no scaffold, no
  *   project name — and links back to the Inbox.
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mockFetch,
   requestsTo,
@@ -129,12 +128,13 @@ describe("approval detail (4g)", () => {
       wireApproval.summary,
     );
 
-    // No model, no model buttons: the gate's own pair.
-    const suggested = screen.getByTestId(`approval-detail-suggested-${T}`);
-    const approve = within(suggested).getByTestId(`approval-detail-suggested-${T}-approve`);
-    const reject = within(suggested).getByTestId(`approval-detail-suggested-${T}-reject`);
-    expect(approve.className).toContain("ds-btn--primary");
-    expect(reject.className).toContain("ds-btn--danger");
+    // Finding 04: no model voice on the verbs — the shared DecisionBar's
+    // fixed Approve / Request changes / Reject, styled by verb not by risk.
+    expect(textOf(screen.getByTestId("decision-approve"))).toBe("Approve");
+    expect(screen.getByTestId("decision-approve").className).toContain("ds-btn--primary");
+    expect(screen.getByTestId("decision-request-changes").className).toContain("ds-btn--secondary");
+    expect(textOf(screen.getByTestId("decision-reject"))).toBe("Reject");
+    expect(screen.getByTestId("decision-reject").className).toContain("ds-btn--danger");
 
     expect(textOf(screen.getByTestId(`approval-detail-files-${T}`))).toContain("Not available yet");
     expect(textOf(await screen.findByText(/named by the gate but not in this project/))).toContain(
@@ -142,36 +142,43 @@ describe("approval detail (4g)", () => {
     );
   });
 
-  it("does not call decide until the human confirms, and Escape closes the step", async () => {
+  it("holds the decision for the undo window; only the expired hold posts, with the CAS version", async () => {
     const { requests } = renderApprovalPage([
       { path: SUMMARY_PATH, method: "POST", status: 503, body: NOT_CONFIGURED },
       { path: ARTIFACTS_PATH, body: { artifacts: [] } },
     ]);
 
     await screen.findByTestId(`approval-detail-strip-${T}`);
-    const suggested = screen.getByTestId(`approval-detail-suggested-${T}`);
-    const approveButton = within(suggested).getByTestId(`approval-detail-suggested-${T}-approve`);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      expect(textOf(screen.getByTestId("decision-status"))).toContain(
+        "Approved. The run continues in 5s.",
+      );
+      expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
 
-    fireEvent.click(approveButton);
-    const dialog = screen.getByTestId(`approval-detail-confirm-${T}`);
-    expect(textOf(dialog)).toContain("Confirm the decision");
-    expect(textOf(dialog)).toContain("approved");
-    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
+      // Undo cancels the hold without deciding and restores the bar.
+      fireEvent.click(screen.getByTestId("decision-undo"));
+      expect(screen.getByTestId("decision-approve")).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(6100);
+      expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
 
-    // Escape closes the step without deciding.
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByTestId(`approval-detail-confirm-${T}`)).toBeNull();
-    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
+      // Letting the hold expire posts exactly once, with the CAS version.
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1);
+      const body = JSON.parse(requestsTo(requests, DECIDE_PATH, "POST")[0].body ?? "{}");
+      expect(body).toEqual({ decision: "approved", version: 1 });
 
-    // Confirming calls decide exactly once, with the CAS version.
-    fireEvent.click(within(suggested).getByTestId(`approval-detail-suggested-${T}-approve`));
-    fireEvent.click(screen.getByTestId(`approval-detail-confirm-go-${T}`));
-
-    await waitFor(() => expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1));
-    const body = JSON.parse(requestsTo(requests, DECIDE_PATH, "POST")[0].body ?? "{}");
-    expect(body).toEqual({ decision: "approved", version: 1 });
-    expect(textOf(screen.getByTestId(`approval-detail-strip-${T}`))).toContain("DECIDED");
-    expect(textOf(screen.getByTestId(`approval-detail-closed-${T}`))).toContain("Decided approved");
+      // The winner's row lands in the cache: the strip and the rail close.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(textOf(screen.getByTestId(`approval-detail-strip-${T}`))).toContain("DECIDED");
+      expect(textOf(screen.getByTestId(`approval-detail-closed-${T}`))).toContain(
+        "Decided approved",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the retry line when the model summary hit a transient upstream failure", async () => {
@@ -216,19 +223,18 @@ describe("approval detail (4g)", () => {
     expect(textOf(summary)).toContain("A per-key limiter backed by Redis");
     expect(screen.getByText(/summary by claude-opus-4-5/)).toBeTruthy();
 
-    const suggested = screen.getByTestId(`approval-detail-suggested-${T}`);
-    const approve = within(suggested).getByTestId(`approval-detail-suggested-${T}-approve`);
-    const reject = within(suggested).getByTestId(`approval-detail-suggested-${T}-reject`);
-    expect(textOf(approve)).toBe("Approve plan");
-    expect(textOf(reject)).toBe("Reject and stop the run");
-    expect(reject.className).toContain("ds-btn--danger");
+    // The model's labels are gone: the verbs are the bar's, fixed.
+    expect(screen.queryByTestId(`approval-detail-suggested-${T}`)).toBeNull();
+    expect(screen.queryByText("Approve plan")).toBeNull();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-request-changes")).toBeTruthy();
 
     const plan = await screen.findByTestId(`approval-detail-plan-body-${T}`);
     expect(textOf(plan)).toContain("Token bucket per API key, stored in Redis.");
     expect(textOf(plan)).toContain("The 61st request gets 429.");
   });
 
-  it("interprets a free-text reply and decides only from the confirmed proposal", async () => {
+  it("interprets a free-text reply into TEXT above the bar — the proposal decides nothing", async () => {
     const { requests } = renderApprovalPage([
       {
         path: SUMMARY_PATH,
@@ -262,24 +268,24 @@ describe("approval detail (4g)", () => {
     expect(textOf(proposal)).toContain("approved");
     expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
 
-    // The proposal's confirm button opens the confirm step, not decide.
-    fireEvent.click(within(proposal).getByTestId(`approval-detail-proposal-confirm-${T}`));
-    const dialog = screen.getByTestId(`approval-detail-confirm-${T}`);
-    expect(textOf(dialog)).toContain("Approve with note");
-    const note = document.getElementById(`approval-detail-confirm-note-${T}`);
-    expect(note).toBeTruthy();
-    expect((note as HTMLTextAreaElement).value).toBe("Paid keys get 300/min.");
+    // The reading is TEXT above the bar: no confirm step, no decide call.
+    expect(screen.queryByTestId(`approval-detail-confirm-${T}`)).toBeNull();
+    expect(textOf(proposal)).toContain("reads like");
     expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
 
-    fireEvent.click(screen.getByTestId(`approval-detail-confirm-go-${T}`));
-    await waitFor(() => expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1));
-    const body = JSON.parse(requestsTo(requests, DECIDE_PATH, "POST")[0].body ?? "{}");
-    expect(body).toEqual({
-      decision: "approved",
-      comments: "Paid keys get 300/min.",
-      version: 1,
+    // The human decides with the bar; "Request changes" carries the note —
+    // through the undo hold, so nothing is posted until it expires.
+    fireEvent.click(screen.getByTestId("decision-request-changes"));
+    fireEvent.change(screen.getByTestId("decision-changes-text"), {
+      target: { value: "Paid keys get 300/min." },
     });
-    expect(textOf(screen.getByTestId(`approval-detail-strip-${T}`))).toContain("DECIDED");
+    fireEvent.click(screen.getByTestId("decision-changes-send"));
+    expect(textOf(screen.getByTestId("decision-status"))).toContain("Changes requested.");
+    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("decision-undo"));
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
   });
 
   it("promises the THEN line the engine actually performs — rejecting is a business outcome", async () => {

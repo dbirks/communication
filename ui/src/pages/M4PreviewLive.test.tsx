@@ -6,7 +6,7 @@
  * W-legs re-run the same page in a browser against the real server later.
  */
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   FakeEventSource,
   meFixture,
@@ -172,11 +172,19 @@ describe("M4 live preview (fixture seam → real routes)", () => {
         requestsTo(requests, `/api/v1/runs/${WIRE_RUN_ID}/nodes/${WIRE_NODE_IMPLEMENT}`).length,
       ).toBeGreaterThan(0);
 
-      // Gates: pending card with the decision form (the caller is a named approver).
+      // Gates: pending card with the shared DecisionBar (the caller is a
+      // named approver). The click holds 5s behind Undo; the POST rides the
+      // expiry (finding 04), so the window is fast-forwarded.
       await screen.findByTestId("approval-summary", undefined, { timeout: READ_MS });
-      expect(screen.getByTestId("approval-approve")).toBeTruthy();
+      expect(screen.getByTestId("decision-approve")).toBeTruthy();
 
-      fireEvent.click(screen.getByTestId("approval-approve"));
+      vi.useFakeTimers();
+      try {
+        fireEvent.click(screen.getByTestId("decision-approve"));
+        await vi.advanceTimersByTimeAsync(5000);
+      } finally {
+        vi.useRealTimers();
+      }
       await waitFor(
         () =>
           expect(

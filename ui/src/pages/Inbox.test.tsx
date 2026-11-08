@@ -9,7 +9,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setCsrfToken } from "../api/client";
 import {
@@ -38,6 +38,7 @@ import {
 import { testidOf } from "../lib/format";
 import { attentionTitle } from "../lib/attention";
 import Inbox, { INBOX_SAFETY_MS } from "./Inbox";
+import ApprovalPage from "./Approval";
 import { FRAME_BATCH_MS } from "../api/events";
 
 const PROJECTS_PATH = "/api/v1/projects";
@@ -103,7 +104,10 @@ function mountInbox(
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/inbox"]}>
-        <Inbox />
+        <Routes>
+          <Route path="/inbox" element={<Inbox />} />
+          <Route path="/approvals/:approvalId" element={<ApprovalPage />} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -119,7 +123,7 @@ describe("/inbox", () => {
     );
   });
 
-  it("lists a pending gate as a card and posts the row's version after the confirmed approve", async () => {
+  it("lists a pending gate as a card and posts the row's version once the undo hold expires", async () => {
     const { requests } = mountInbox(wireApprovalList, { runs: [] }, [
       {
         path: DECIDE_PATH,
@@ -131,41 +135,52 @@ describe("/inbox", () => {
     const list = await screen.findByTestId("inbox-decisions");
     const row = await within(list).findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
     // The model summary read 404s here, so the card shows the gate's own
-    // text and the static pair — its model actions would take their place
-    // when the server can serve one.
+    // text — and the shared DecisionBar's fixed verbs (finding 04), never a
+    // model-written label.
     expect(row.textContent).toContain("The plan is ready");
     expect(row.textContent).toContain("Widgets");
+    expect(within(row).getByTestId("decision-approve").textContent).toBe("Approve");
+    expect(within(row).getByTestId("decision-request-changes")).toBeTruthy();
+    expect(within(row).getByTestId("decision-reject")).toBeTruthy();
 
-    // Tap the card's Approve: the confirm step must appear and NO decide
-    // call may go out before the human confirms it.
-    fireEvent.click(within(row).getByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-0`));
-    const confirm = await within(row).findByTestId(
-      `inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`,
-    );
-    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
+    // Tap Approve: the hold line replaces the bar and NO decide call goes
+    // out until the 5s window expires.
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(within(row).getByTestId("decision-approve"));
+      expect(within(row).getByTestId("decision-status").textContent).toContain(
+        "Approved. The run continues in 5s.",
+      );
+      expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
 
-    fireEvent.click(
-      within(confirm).getByTestId(`inbox-card-confirm-go-${testidOf(WIRE_APPROVAL_ID)}`),
-    );
-    await waitFor(() => expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1));
-    const [request] = requestsTo(requests, DECIDE_PATH, "POST");
-    expect(JSON.parse(request.body ?? "{}")).toEqual({ decision: "approved", version: 1 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1);
+      const [request] = requestsTo(requests, DECIDE_PATH, "POST");
+      expect(JSON.parse(request.body ?? "{}")).toEqual({ decision: "approved", version: 1 });
+      // The winner path: flush the cache update so the row leaves the list.
+      await vi.advanceTimersByTimeAsync(100);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("cancels the card's confirm step without deciding", async () => {
+  it("Undo cancels the hold without deciding and restores the bar", async () => {
     const { requests } = mountInbox(wireApprovalList, { runs: [] }, [
       { path: DECIDE_PATH, method: "POST", body: { ...wireApproval } },
     ]);
 
     const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
-    fireEvent.click(within(row).getByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-0`));
-    await within(row).findByTestId(`inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`);
-    fireEvent.click(
-      within(row).getByTestId(`inbox-card-confirm-cancel-${testidOf(WIRE_APPROVAL_ID)}`),
-    );
-    await waitFor(() =>
-      expect(screen.queryByTestId(`inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`)).toBeNull(),
-    );
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(within(row).getByTestId("decision-reject"));
+      expect(within(row).getByTestId("decision-status").textContent).toContain("Rejected.");
+      fireEvent.click(within(row).getByTestId("decision-undo"));
+      expect(within(row).getByTestId("decision-reject")).toBeTruthy();
+      expect(within(row).queryByTestId("decision-status")).toBeNull();
+      await vi.advanceTimersByTimeAsync(30000);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
   });
 
@@ -198,20 +213,17 @@ describe("/inbox", () => {
     ]);
 
     const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
-    // The card's actions come from the model's lazy summary read; wait for
-    // the model's second action — the reject word: risk `refuse` → the
-    // danger button — before the confirm step records `rejected`.
-    const rejectAction = await within(row).findByTestId(
-      `inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-1`,
-    );
-    fireEvent.click(rejectAction);
-    const confirm = await within(row).findByTestId(
-      `inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`,
-    );
-    expect(confirm.textContent).toContain("rejected");
-    fireEvent.click(
-      within(confirm).getByTestId(`inbox-card-confirm-go-${testidOf(WIRE_APPROVAL_ID)}`),
-    );
+    // Reject is a fixed verb now (finding 04): click it, let the hold expire,
+    // and the server's 403 refusal must be stated in place — the row's own
+    // error line — never swallowed.
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(within(row).getByTestId("decision-reject"));
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(100);
+    } finally {
+      vi.useRealTimers();
+    }
     const error = await screen.findByTestId(`inbox-decision-error-${testidOf(WIRE_APPROVAL_ID)}`);
     expect(error.textContent).toContain("not an approver");
   });

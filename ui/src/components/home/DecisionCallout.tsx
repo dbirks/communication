@@ -6,19 +6,15 @@
  *
  * The gate's own `summary` is the body, labelled "from the workflow" —
  * never "written by the model": the gate text is the author's static
- * config, digested, and nothing on the wire says otherwise.
- * `Approve` always asks for a small confirmation first (an approval is
- * a business outcome, not a click), then posts to the existing decide
- * endpoint with the row's `version` as the CAS token; a `409` adopts the
- * winner, the Inbox row's rule (`api/approvals.ts`).
+ * config, digested, and nothing on the wire says otherwise. Deciding is
+ * the shared `DecisionBar` (finding 04): fixed verbs, a 5s undo hold
+ * instead of a confirm step, the POST owned by the bar.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
-import { useQueryClient } from "@tanstack/react-query";
-import { Button } from "../ds/Button";
 import { Panel } from "../ds/Panel";
-import { adoptApprovalConflict, approvalConflictOf, useDecideApproval } from "../../api/approvals";
-import { problemOf } from "../../api/client";
+import { Button } from "../ds/Button";
+import DecisionBar from "../ds/DecisionBar";
 import type { Approval } from "../../api/types";
 import type { CrossProjectRunSummary } from "../../api/home";
 import { formatAge, shortId, testidOf } from "../../lib/format";
@@ -67,11 +63,6 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
 }
 
 function CalloutRow({ approval, runs }: { approval: Approval; runs: CrossProjectRunSummary[] }) {
-  const decide = useDecideApproval(approval.project_id);
-  const queryClient = useQueryClient();
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   // The briefing's own run rows carry the workflow and project human names;
   // a run that left the list (finished while this tab was open) still shows
   // its short id — the names are never invented.
@@ -81,25 +72,6 @@ function CalloutRow({ approval, runs }: { approval: Approval; runs: CrossProject
   );
   const workflow = run ? run.pipeline_display_name : undefined;
   const project = run?.project_name;
-
-  const submit = () => {
-    setConfirming(false);
-    setError(null);
-    decide.mutate(
-      { approvalId: approval.id, body: { decision: "approved", version: approval.version } },
-      {
-        onSuccess: () => setError(null),
-        onError: (err) => {
-          if (approvalConflictOf(err)) {
-            adoptApprovalConflict(queryClient, err);
-            setError("someone decided this gate first — what you see now is the winner's");
-          } else {
-            setError(problemOf(err).detail || problemOf(err).title);
-          }
-        },
-      },
-    );
-  };
 
   return (
     <div
@@ -128,50 +100,8 @@ function CalloutRow({ approval, runs }: { approval: Approval; runs: CrossProject
         >
           Read plan
         </Link>
-        {confirming ? (
-          <>
-            <span className="font-mono text-[10.5px] text-muted" role="status">
-              approve this gate?
-            </span>
-            <Button
-              variant="primary"
-              compact
-              disabled={decide.isPending}
-              data-testid={`home-approve-confirm-${testidOf(approval.id)}`}
-              onClick={submit}
-            >
-              Confirm
-            </Button>
-            <Button
-              variant="ghost"
-              compact
-              data-testid={`home-approve-cancel-${testidOf(approval.id)}`}
-              onClick={() => setConfirming(false)}
-            >
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button
-            variant="primary"
-            compact
-            disabled={decide.isPending}
-            data-testid={`home-approve-${testidOf(approval.id)}`}
-            onClick={() => setConfirming(true)}
-          >
-            {decide.isPending ? "Posting…" : "Approve"}
-          </Button>
-        )}
+        <DecisionBar approval={approval} compact />
       </div>
-      {error ? (
-        <p
-          className="mt-[6px] font-mono text-[10.5px] text-st-failed-tag-fg"
-          role="alert"
-          data-testid={`home-callout-error-${testidOf(approval.id)}`}
-        >
-          × {error}
-        </p>
-      ) : null}
     </div>
   );
 }

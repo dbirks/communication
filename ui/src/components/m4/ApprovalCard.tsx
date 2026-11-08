@@ -9,8 +9,10 @@
  *   - decided / expired / denied                 → the outcome, who, when, and
  *     for a denied gate the reason the approver set stopped applying.
  *
- * The decision posts the row's `version` as a CAS token: a concurrent decision
- * is a *conflict*, stated as one, never a silent overwrite. And a `rejected`
+ * The decision posts the row's `version` as a CAS token through the shared
+ * `DecisionBar` (finding 04): fixed verbs, a 5s undo hold in place of the
+ * old comment box + Approve/Reject pair, and no confirm step. A concurrent
+ * decision is a *conflict*, stated as one, never a silent overwrite. And a `rejected`
  * decision is a business outcome, NOT an execution failure
  * (`docs/m4-contract.md` § 5.3, C9e; `03`:49's success/fail split applied to
  * gates): the gate row closes `succeeded` with outcome `rejected`, the
@@ -19,12 +21,11 @@
  * (`approval_expired`). The copy below says exactly that; the old
  * "rejecting fails this run" promise contradicted the engine and is gone.
  */
-import { useId, useRef, useState } from "react";
+import { useId, useRef } from "react";
 import type { ApprovalDecision, ApprovalDetail } from "../../lib/pipeline/contract";
 import { deciderLabel, fallbackName } from "../../api/actors";
 import { Panel } from "../ds/Panel";
-import { Button } from "../ds/Button";
-import { Field, Textarea } from "../ds/Field";
+import DecisionBar from "../ds/DecisionBar";
 import { StatusChip } from "../ds/Row";
 import { APPROVAL_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import { formatAge, formatRemaining, formatTime } from "../../lib/format";
@@ -43,6 +44,9 @@ export interface ApprovalCardProps {
     comments: string;
     version: number;
   }) => void;
+  /** @deprecated Legacy: the bar owns its posting now (the hold replaces a
+   * disabled-while-posting pair); kept on the interface so hosts built
+   * against the old shape still compile while they are updated. */
   pending?: boolean;
   /** A 409 from a concurrent decision, shown in place rather than as a toast. */
   conflictError?: string | null;
@@ -65,14 +69,12 @@ export function ApprovalCard({
   approval,
   canDecide,
   onDecide,
-  pending = false,
   conflictError = null,
   now = Date.now,
   headingId = "approval-card-heading",
   className = "",
   nameOf = fallbackName,
 }: ApprovalCardProps) {
-  const [comments, setComments] = useState("");
   /** The decision form is the end of a card that can run past a screenful of
    * plan, so the card keeps a handle on it for the jump verb below. */
   const decisionFormRef = useRef<HTMLDivElement | null>(null);
@@ -86,7 +88,9 @@ export function ApprovalCard({
     if (typeof form.scrollIntoView === "function") {
       form.scrollIntoView({ block: "start", behavior: "smooth" });
     }
-    form.querySelector("textarea")?.focus();
+    // The form is the DecisionBar now (finding 04): the jump lands on its
+    // first verb, the same control a sighted reader would click.
+    form.querySelector<HTMLElement>("[data-testid='decision-approve']")?.focus();
   };
   const state = stateOf(APPROVAL_STATE[approval.state]);
   // A summary can be prose, or a title line with the planner's JSON document
@@ -257,57 +261,27 @@ export function ApprovalCard({
             className="space-y-[8px]"
             data-testid="approval-decision-form"
           >
-            <Field
-              id="approval-comments"
-              label="comments (optional)"
-              hint="Recorded with the decision and shown to anyone who can read the run."
-            >
-              <Textarea
-                id="approval-comments"
-                rows={2}
-                value={comments}
-                data-testid="approval-comment"
-                onChange={(event) => setComments(event.target.value)}
-              />
-            </Field>
-            <div className="flex flex-wrap items-center gap-[8px]">
-              <Button
-                variant="primary"
-                data-testid="approval-approve"
-                disabled={pending}
-                onClick={() =>
-                  onDecide?.({
-                    approvalId: approval.id,
-                    decision: "approved",
-                    comments,
-                    version: approval.version,
-                  })
-                }
-              >
-                {pending ? "Posting…" : "Approve"}
-              </Button>
-              <Button
-                variant="secondary"
-                data-testid="approval-reject"
-                disabled={pending}
-                onClick={() =>
-                  onDecide?.({
-                    approvalId: approval.id,
-                    decision: "rejected",
-                    comments,
-                    version: approval.version,
-                  })
-                }
-              >
-                Reject
-              </Button>
-              <span
-                className="font-mono text-[10.5px] text-faint"
-                data-testid="approval-cas-version"
-              >
-                rejecting records the decision · version {approval.version}
-              </span>
-            </div>
+            {/* Finding 04: the fixed-verb DecisionBar replaces the card's own
+                comment box and Approve/Reject pair. A host that owns the
+                decide mutation (the run inspector, the M4 previews) injects
+                `onDecide` and the bar POSTs through it; a bare card posts
+                itself with the row's CAS `version`. "Request changes" is the
+                card's note path: `rejected` + the person's text. */}
+            <DecisionBar
+              approval={approval}
+              compact
+              submit={
+                onDecide
+                  ? (body) =>
+                      onDecide({
+                        approvalId: approval.id,
+                        decision: body.decision,
+                        comments: body.comments ?? "",
+                        version: body.version ?? approval.version,
+                      })
+                  : undefined
+              }
+            />
             <p className="font-mono text-[10.5px] text-muted" data-testid="approval-consequence">
               approving lets the loop start; it does not merge anything, and it is not a review of
               the code — it is the gate the pipeline definition asked for. Rejecting records the

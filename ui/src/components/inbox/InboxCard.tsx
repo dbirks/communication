@@ -1,31 +1,32 @@
 /**
- * The phone-first inbox card (design 2f → 3f, 390×844 first): a type chip,
- * the project, the age, the title, a two-line clamped model summary with
- * "More", and two 44px buttons. The model chooses the button labels; the
- * color comes from risk (`refuse`/`destructive` → danger, `proceed` →
- * primary, else secondary) and the labels stay free text.
+ * The phone-first inbox card (finding 04 rewrite): a type chip, the project,
+ * the age, the title, a two-line clamped model summary with "More", a Read
+ * link, and the shared `DecisionBar` — Approve / Request changes / Reject,
+ * fixed verbs, no confirm step, a 5s undo hold on the decision.
  *
- * Honesty rule: when the server has no model summary and no suggested
- * actions (the assistant is not configured), the card falls back to the
- * static Approve / Read pair — it never invents a label or a summary.
+ * The model no longer chooses button labels: model-written text belongs in
+ * the summary above the bar, never on a verb. The `actions` prop is kept for
+ * wire compatibility with hosts that still pass the model's suggestions —
+ * the card ignores it; there is no "is not a decision word" path any more,
+ * because no label can be anything but a fixed verb.
  *
- * Every decision goes through a confirm step: tapping a button opens an
- * inline confirmation naming the label and the wire decision it records;
- * Escape closes it without deciding. `onDecide` fires only after the human
- * confirms. The card is presentational — the parent owns the decide
- * mutation and the navigation ("Read").
+ * The card stays presentational: the decide mutation belongs to the parent,
+ * so the bar's POST is injected (`submit`) and reaches the parent through
+ * `onDecide(id, decision, comments?)` — "Request changes" arrives as
+ * `rejected` with the person's note (see DecisionBar's mapping).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Button } from "../ds/Button";
+import DecisionBar from "../ds/DecisionBar";
 import { StatusChip } from "../ds/Row";
 import { formatAge, testidOf } from "../../lib/format";
-import { actionDecision, riskToVariant, type SuggestedAction } from "./riskStyle";
+import type { SuggestedAction } from "./riskStyle";
 
 export interface InboxCardAction extends SuggestedAction {
   /**
-   * The wire decision the card records for this action. Defaults to
-   * `actionDecision(intent)`; a fallback (non-model) button names it
-   * explicitly.
+   * Legacy field: the wire decision a model label used to record. The bar's
+   * verbs are fixed now, so the card never reads it; it is kept so hosts
+   * built against the old shape still compile while they are updated.
    */
   decision?: "approved" | "rejected";
 }
@@ -43,12 +44,14 @@ export interface InboxCardProps {
   /** The model's two-line summary; omit for the fallback card. */
   summary?: string;
   /**
-   * The model's suggested actions, at most two rendered. Omit for the
-   * fallback card, which offers Approve / Read.
+   * Legacy: the model's suggested actions. Kept on the interface so hosts
+   * that still pass them compile; the card no longer renders them — the
+   * DecisionBar's fixed verbs replaced every model-written label.
    */
   actions?: InboxCardAction[];
-  /** Called once the human confirms a decision. */
-  onDecide: (id: string, decision: "approved" | "rejected") => void;
+  /** Called when the bar's undo hold expires and the decision is posted.
+   * `comments` carries the "Request changes" note (decision `rejected`). */
+  onDecide: (id: string, decision: "approved" | "rejected", comments?: string) => void;
   /** The detail link the "Read" button opens. */
   onOpen?: (id: string) => void;
 }
@@ -59,14 +62,6 @@ const KIND_STATE = {
   failed: "failed",
 } as const;
 
-const FALLBACK_ACTIONS: InboxCardAction[] = [
-  { label: "Approve", intent: "approve", risk: "proceed", decision: "approved" },
-];
-
-function decisionFor(action: InboxCardAction): "approved" | "rejected" | null {
-  return action.decision ?? actionDecision(action.intent);
-}
-
 export default function InboxCard({
   kind,
   id,
@@ -74,55 +69,11 @@ export default function InboxCard({
   createdAt,
   title,
   summary,
-  actions,
   onDecide,
   onOpen,
 }: InboxCardProps) {
   const testid = testidOf(id);
   const [expanded, setExpanded] = useState(false);
-  const [pending, setPending] = useState<InboxCardAction | null>(null);
-  const [choice, setChoice] = useState<"approved" | "rejected" | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-
-  const modelActions = (actions ?? []).slice(0, 2);
-  const fallback = modelActions.length === 0;
-  // The fallback card is still two 44px buttons: Approve (a decision) and
-  // Read (a link, never a decision).
-  const buttons: (InboxCardAction | { label: "Read" })[] = fallback
-    ? [...FALLBACK_ACTIONS, { label: "Read" }]
-    : modelActions;
-
-  const openConfirm = useCallback((action: InboxCardAction) => {
-    setChoice(decisionFor(action));
-    setPending(action);
-  }, []);
-
-  const closeConfirm = useCallback(() => {
-    setPending(null);
-    setChoice(null);
-  }, []);
-
-  // Escape closes the confirm step without deciding; focus lands on the
-  // confirming control so the step is reachable by keyboard alone.
-  useEffect(() => {
-    if (!pending) return;
-    panelRef.current?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        closeConfirm();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pending, choice, closeConfirm]);
-
-  const confirm = () => {
-    if (pending && choice !== null) {
-      onDecide(id, choice);
-      closeConfirm();
-    }
-  };
 
   return (
     <article
@@ -156,98 +107,25 @@ export default function InboxCard({
         </p>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2 p-3">
-        {buttons.map((button, index) =>
-          fallback && index === 1 ? (
+      <div className="p-3">
+        <DecisionBar
+          approval={{ id }}
+          compact
+          submit={(body) => onDecide(id, body.decision, body.comments)}
+        />
+        {onOpen ? (
+          <div className="mt-2">
             <Button
-              key="read"
               variant="secondary"
-              className="h-[44px]"
+              className="h-[36px]"
               data-testid={`inbox-card-read-${testid}`}
-              onClick={() => onOpen?.(id)}
+              onClick={() => onOpen(id)}
             >
               Read
             </Button>
-          ) : (
-            <Button
-              key={button.label}
-              variant={riskToVariant((button as InboxCardAction).risk)}
-              className="h-[44px] text-[12.5px]"
-              data-testid={`inbox-card-action-${testid}-${index}`}
-              onClick={() => openConfirm(button as InboxCardAction)}
-            >
-              {button.label}
-            </Button>
-          ),
-        )}
+          </div>
+        ) : null}
       </div>
-
-      {pending ? (
-        <div
-          ref={panelRef}
-          tabIndex={-1}
-          role="group"
-          aria-label={`Confirm: ${pending.label}`}
-          className="mx-3 mb-3 rounded-[3px] border border-line bg-fill p-2.5"
-          data-testid={`inbox-card-confirm-${testid}`}
-        >
-          <p className="text-[12.5px] leading-[1.45] text-ink">
-            {choice === null ? (
-              <>“{pending.label}” is not a decision word — choose the decision to record:</>
-            ) : (
-              <>
-                Confirm <strong className="font-semibold">“{pending.label}”</strong>? This records{" "}
-                <code className="font-mono text-[11.5px] text-ink">{choice}</code> on the gate.
-              </>
-            )}
-          </p>
-          {choice === null ? (
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <Button
-                variant="primary"
-                className="h-[40px] text-[12.5px]"
-                data-testid={`inbox-card-confirm-approved-${testid}`}
-                onClick={() => {
-                  onDecide(id, "approved");
-                  closeConfirm();
-                }}
-              >
-                Approve
-              </Button>
-              <Button
-                variant="danger"
-                className="h-[40px] text-[12.5px]"
-                data-testid={`inbox-card-confirm-rejected-${testid}`}
-                onClick={() => {
-                  onDecide(id, "rejected");
-                  closeConfirm();
-                }}
-              >
-                Reject
-              </Button>
-            </div>
-          ) : (
-            <div className="mt-2 flex gap-2">
-              <Button
-                variant={choice === "approved" ? "primary" : "danger"}
-                className="h-[40px] flex-1 text-[12.5px]"
-                data-testid={`inbox-card-confirm-go-${testid}`}
-                onClick={confirm}
-              >
-                Confirm {choice === "approved" ? "approve" : "reject"}
-              </Button>
-              <Button
-                variant="secondary"
-                className="h-[40px] text-[12.5px]"
-                data-testid={`inbox-card-confirm-cancel-${testid}`}
-                onClick={closeConfirm}
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
-        </div>
-      ) : null}
     </article>
   );
 }

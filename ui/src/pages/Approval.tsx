@@ -4,32 +4,28 @@
  * model-written summary (or the gate's own summary when the server has no
  * assistant), the referenced plan artifact rendered inline, and an honest
  * "not available yet" for the files the plan will touch (no diff/manifest
- * API). The right rail carries who/then, the model's suggested buttons —
- * colored by risk via `riskStyle` — and "OR IN YOUR WORDS": a free-text
- * reply the model interprets into a PROPOSED decision and note.
+ * API). The right rail carries who/then and the decision itself,
  *
- * The model never decides. Every path — a suggested button, a proposed
- * interpretation, the fallback Approve/Reject pair — goes through the same
- * confirm step, and only the human's confirmed confirm calls the decide
- * route (with the CAS `version`).
+ * "OR IN YOUR WORDS": a free-text reply the model interprets; the reading
+ * and its note are shown as TEXT above the bar — the model never decides
+ * and never labels a verb. Deciding is the shared `DecisionBar` (finding
+ * 04): Approve / Request changes / Reject, fixed verbs, a 5s undo hold
+ * instead of a confirm step, posting to the decide route with the row's
+ * CAS `version` ("Request changes" records `rejected` + the note).
  *
  * Honesty rules (gaps/inbox-ops.md § 5): a 503 `assistant_not_configured`
- * names the cause and falls back to the gate's own summary plus static
- * buttons; the file list is never invented; and a `404` — a gate the reader
+ * names the cause and falls back to the gate's own summary; the file list is
+ * never invented; and a `404` — a gate the reader
  * cannot see or that does not exist (M4 contract § 7.2 W9) — renders the
  * honest not-found state, never a scaffold, never a project name.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   useApproval,
-  useDecideApproval,
   useApprovalSummary,
   useInterpretApproval,
   useArtifactContent,
-  adoptApprovalConflict,
-  approvalConflictOf,
 } from "../api/approvals";
 import type { ApprovalSummary, ApprovalInterpretation } from "../api/approvals";
 import { assistantNotConfigured } from "../api/assistant";
@@ -38,7 +34,7 @@ import { useArtifacts, useProjects, useMe } from "../api/queries";
 import { Button } from "../components/ds/Button";
 import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
-import { Field, Textarea } from "../components/ds/Field";
+import DecisionBar from "../components/ds/DecisionBar";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { attentionTitle } from "../lib/attention";
 import { routes } from "../lib/routes";
@@ -50,11 +46,6 @@ import {
   shortId,
   testidOf,
 } from "../lib/format";
-import {
-  riskToVariant,
-  actionDecision,
-  type SuggestedActionRisk,
-} from "../components/inbox/riskStyle";
 import type { Approval } from "../api/types";
 
 /** The 4g strip: a waiting gate is the amber ALERT-K; a closed one keeps its
@@ -105,14 +96,8 @@ function GateView({ approval }: { approval: Approval }) {
   const me = useMe();
   const projects = useProjects();
   const summary = useApprovalSummary(approval.id);
-  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
-  const [decideError, setDecideError] = useState<string | null>(null);
 
   const project = (projects.data?.items ?? []).find((p) => p.id === approval.project_id);
-  const openConfirm = (request: ConfirmRequest) => {
-    setDecideError(null);
-    setConfirm(request);
-  };
 
   return (
     <div className="space-y-4">
@@ -143,29 +128,12 @@ function GateView({ approval }: { approval: Approval }) {
         <aside className="w-full space-y-4 lg:w-[360px]" aria-label="Decide">
           <WhoThenPanel approval={approval} meId={me.data?.id ?? null} />
           {approval.state === "pending" ? (
-            <DecidePanel
-              approval={approval}
-              summary={summary.data ?? null}
-              onConfirm={openConfirm}
-              decideError={decideError}
-            />
+            <DecidePanel approval={approval} summary={summary.data ?? null} />
           ) : (
             <ClosedPanel approval={approval} testid={testid} />
           )}
         </aside>
       </div>
-
-      {confirm ? (
-        <ConfirmDialog
-          request={confirm}
-          approval={approval}
-          onDecided={() => setConfirm(null)}
-          onError={(message) => {
-            setConfirm(null);
-            setDecideError(message);
-          }}
-        />
-      ) : null}
     </div>
   );
 }
@@ -557,36 +525,21 @@ function ClosedPanel({ approval, testid }: { approval: Approval; testid: string 
   );
 }
 
-/** What a confirm step is asked to record. `decision` is `null` only for an
- * action whose intent is `other` — the step then offers the decision to the
- * human instead of guessing it. */
-export interface ConfirmRequest {
-  /** The label the step prints (a suggested action, a proposed reading). */
-  label: string;
-  decision: "approved" | "rejected" | null;
-  /** The note prefilled into the step. */
-  comments: string;
-  /** One line of context above the label (e.g. the model's interpretation). */
-  note?: string;
-}
-
 /**
- * The right-rail decide panel: SUGGESTED buttons (model actions colored by
- * risk; the static Approve/Reject pair when the model is not configured) and
- * "OR IN YOUR WORDS" — a free-text reply the model interprets into a
- * proposed decision + note. Nothing here decides: every path opens the
- * confirm step.
+ * The right-rail decide panel (finding 04): the shared `DecisionBar` is the
+ * only way to decide — fixed verbs (Approve / Request changes / Reject), a
+ * 5s undo hold, the row's CAS `version`, no confirm step and no
+ * "is not a decision word" fallback: a verb here is never model-written.
+ * "OR IN YOUR WORDS" stays: a free-text reply the model interprets, and the
+ * reading is shown as TEXT above the bar. The model proposes; it never
+ * decides and never labels a verb.
  */
 function DecidePanel({
   approval,
   summary,
-  onConfirm,
-  decideError,
 }: {
   approval: Approval;
   summary: ApprovalSummary | null;
-  onConfirm: (request: ConfirmRequest) => void;
-  decideError: string | null;
 }) {
   const testid = testidOf(approval.id);
   const [reply, setReply] = useState("");
@@ -594,25 +547,6 @@ function DecidePanel({
   const [interpretError, setInterpretError] = useState<string | null>(null);
   const interpret = useInterpretApproval(approval.id);
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
-
-  const actions = (summary?.actions ?? []).slice(0, 4);
-  const suggested: {
-    label: string;
-    risk: SuggestedActionRisk;
-    decision: "approved" | "rejected" | null;
-    intent: string;
-  }[] =
-    actions.length > 0
-      ? actions.map((action) => ({
-          label: action.label,
-          risk: action.risk,
-          decision: actionDecision(action.intent),
-          intent: action.intent,
-        }))
-      : [
-          { label: "Approve", risk: "proceed", decision: "approved" as const, intent: "approve" },
-          { label: "Reject", risk: "refuse", decision: "rejected" as const, intent: "reject" },
-        ];
 
   const send = () => {
     const text = reply.trim();
@@ -627,51 +561,20 @@ function DecidePanel({
         setProposal(null);
         setInterpretError(
           assistantNotConfigured(error)
-            ? "The assistant isn't configured on this server — the suggested buttons above still work."
+            ? "The assistant isn't configured on this server — the decision bar above still works."
             : problemText(error),
         );
       },
     });
   };
 
-  const proposalDecision = proposal?.proposed.decision;
-  const proposeLabel = proposalDecision === "approve" ? "Approve with note" : "Reject with note";
-
   return (
     <Panel title="DECIDE" headingLevel={2}>
       <div className="space-y-3 p-3">
-        <div>
-          <div className="font-mono text-[10.5px] tracking-[.04em] text-faint">SUGGESTED</div>
-          <div className="mt-2 grid gap-2" data-testid={`approval-detail-suggested-${testid}`}>
-            {suggested.map((action) => (
-              <Button
-                key={action.label}
-                variant={riskToVariant(action.risk)}
-                className="justify-start"
-                data-testid={`approval-detail-suggested-${testid}-${action.intent}`}
-                onClick={() =>
-                  onConfirm({ label: action.label, decision: action.decision, comments: "" })
-                }
-              >
-                {action.label}
-              </Button>
-            ))}
-          </div>
-          {summary === null ? (
-            <p className="mt-2 text-[11.5px] text-faint">
-              Suggested actions are model-written; none are configured on this server, so these are
-              the gate's own.
-            </p>
-          ) : null}
-        </div>
-
-        {decideError ? (
-          <p
-            className="text-[12.5px] text-st-failed-pale-fg"
-            role="alert"
-            data-testid={`approval-detail-decide-error-${testid}`}
-          >
-            {decideError}
+        <DecisionBar approval={approval} />
+        {summary === null ? (
+          <p className="text-[11.5px] text-faint">
+            The model summary is not configured on this server — the gate's own text is above.
           </p>
         ) : null}
 
@@ -683,7 +586,7 @@ function DecidePanel({
             ref={replyRef}
             rows={2}
             className="mt-2"
-            placeholder="Approve with changes, or ask a question about the plan…"
+            placeholder="Ask a question about the plan, or say what should change…"
             value={reply}
             aria-label="Reply in your own words"
             data-testid={`approval-detail-reply-${testid}`}
@@ -710,257 +613,43 @@ function DecidePanel({
             </p>
           ) : null}
           {proposal ? (
-            <ProposalCard
-              proposal={proposal}
-              onConfirm={onConfirm}
-              onChange={() => {
-                setProposal(null);
-                replyRef.current?.focus();
-              }}
-              testid={testid}
-              proposeLabel={proposeLabel}
-            />
-          ) : null}
-          <p className="mt-2 text-[11px] text-faint">you confirm whatever it proposes</p>
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-/** The model's reading of the approver's words, shown as a proposal. */
-function ProposalCard({
-  proposal,
-  onConfirm,
-  onChange,
-  testid,
-  proposeLabel,
-}: {
-  proposal: ApprovalInterpretation;
-  onConfirm: (request: ConfirmRequest) => void;
-  onChange: () => void;
-  testid: string;
-  proposeLabel: string;
-}) {
-  const decision = proposal.proposed.decision;
-  return (
-    <div
-      className="mt-2 rounded-[3px] border border-line bg-fill p-2.5"
-      data-testid={`approval-detail-proposal-${testid}`}
-    >
-      <p className="text-[12.5px] leading-[1.45] text-ink">
-        <span className="font-mono text-[10.5px] tracking-[.04em] text-faint">PROPOSED · </span>
-        {proposal.interpretation}
-      </p>
-      <p className="mt-1 text-[12px] text-muted">
-        would record{" "}
-        <code className="font-mono text-[11.5px] text-ink">
-          {decision === "approve" ? "approved" : "rejected"}
-        </code>
-        {proposal.proposed.comments ? ` with the note: “${proposal.proposed.comments}”` : ""}
-      </p>
-      <div className="mt-2 flex gap-2">
-        <Button variant="secondary" className="h-[36px] text-[12px]" onClick={onChange}>
-          Change it
-        </Button>
-        <Button
-          variant={decision === "approve" ? "primary" : "danger"}
-          className="h-[36px] text-[12px]"
-          data-testid={`approval-detail-proposal-confirm-${testid}`}
-          onClick={() =>
-            onConfirm({
-              label: proposeLabel,
-              decision: decision === "approve" ? "approved" : "rejected",
-              comments: proposal.proposed.comments,
-              note: proposal.interpretation,
-            })
-          }
-        >
-          {proposeLabel}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-const CONFIRM_FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-/**
- * The confirm step every decision goes through: an accessible modal (focus
- * trapped, Escape closes, focus returns to the opener) that names the label
- * and the wire decision it will record, prefills the note, and calls the
- * decide route only on the human's confirm.
- */
-function ConfirmDialog({
-  request,
-  approval,
-  onDecided,
-  onError,
-}: {
-  request: ConfirmRequest;
-  approval: Approval;
-  onDecided: () => void;
-  onError: (message: string) => void;
-}) {
-  const testid = testidOf(approval.id);
-  const decide = useDecideApproval(approval.project_id);
-  const queryClient = useQueryClient();
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const openerRef = useRef<Element | null>(null);
-  const [choice, setChoice] = useState<"approved" | "rejected" | null>(request.decision);
-  const [comments, setComments] = useState(request.comments);
-
-  useLayoutEffect(() => {
-    openerRef.current = document.activeElement;
-    const first = containerRef.current?.querySelector<HTMLElement>(CONFIRM_FOCUSABLE);
-    first?.focus();
-    return () => {
-      const opener = openerRef.current;
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onDecided();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const container = containerRef.current;
-      if (!container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(CONFIRM_FOCUSABLE));
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !container.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onDecided]);
-
-  const confirm = () => {
-    if (choice === null) return;
-    decide.mutate(
-      {
-        approvalId: approval.id,
-        body: {
-          decision: choice,
-          comments: comments.trim().length > 0 ? comments.trim() : undefined,
-          version: approval.version,
-        },
-      },
-      {
-        onSuccess: () => onDecided(),
-        onError: (error) => {
-          // A 409 means someone else decided first: adopt the winner's
-          // row (the gate is now closed) instead of surfacing an error.
-          if (approvalConflictOf(error)) {
-            adoptApprovalConflict(queryClient, error);
-            onDecided();
-          } else {
-            onError(problemText(error));
-          }
-        },
-      },
-    );
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4">
-      <div
-        ref={containerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={`approval-detail-confirm-heading-${testid}`}
-        className="w-full max-w-[440px] rounded-[3px] border border-line-strong bg-surface shadow-[0_8px_24px_rgba(30,29,26,.18)]"
-        data-testid={`approval-detail-confirm-${testid}`}
-      >
-        <div className="border-b border-line px-4 py-2.5">
-          <h2
-            id={`approval-detail-confirm-heading-${testid}`}
-            className="text-[15px] font-semibold text-ink"
-          >
-            Confirm the decision
-          </h2>
-        </div>
-        <div className="space-y-3 p-4">
-          <div className="rounded-[3px] border border-line bg-fill p-2.5">
-            <p className="text-[13.5px] font-semibold text-ink">“{request.label}”</p>
-            {request.note ? (
-              <p className="mt-1 text-[12px] leading-[1.45] text-muted">{request.note}</p>
-            ) : null}
-          </div>
-
-          {choice === null ? (
-            <div data-testid={`approval-detail-confirm-choice-${testid}`}>
-              <p className="text-[12.5px] text-ink">
-                That label is not a decision word — choose what to record:
+            <div
+              className="mt-2 rounded-[3px] border border-line bg-fill p-2.5"
+              data-testid={`approval-detail-proposal-${testid}`}
+            >
+              <p className="text-[12.5px] leading-[1.45] text-ink">
+                <span className="font-mono text-[10.5px] tracking-[.04em] text-faint">
+                  READ AS ·{" "}
+                </span>
+                {proposal.interpretation}
               </p>
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <p className="mt-1 text-[12px] text-muted">
+                reads like{" "}
+                <code className="font-mono text-[11.5px] text-ink">
+                  {proposal.proposed.decision === "approve" ? "approved" : "rejected"}
+                </code>
+                {proposal.proposed.comments
+                  ? ` with the note: “${proposal.proposed.comments}”`
+                  : ""}{" "}
+                — the bar above decides, in your words if you like.
+              </p>
+              <div className="mt-2">
                 <Button
-                  variant="primary"
-                  className="h-[36px]"
-                  onClick={() => setChoice("approved")}
+                  variant="secondary"
+                  className="h-[36px] text-[12px]"
+                  onClick={() => {
+                    setProposal(null);
+                    replyRef.current?.focus();
+                  }}
                 >
-                  Approve
-                </Button>
-                <Button variant="danger" className="h-[36px]" onClick={() => setChoice("rejected")}>
-                  Reject
+                  Change it
                 </Button>
               </div>
             </div>
-          ) : (
-            <p className="text-[12.5px] text-ink">
-              This records <code className="font-mono text-[11.5px] text-ink">{choice}</code> on the
-              gate.
-            </p>
-          )}
-
-          <Field label="Note for the record" id={`approval-detail-confirm-note-${testid}`}>
-            <Textarea
-              id={`approval-detail-confirm-note-${testid}`}
-              rows={3}
-              value={comments}
-              onChange={(event) => setComments(event.target.value)}
-            />
-          </Field>
-
-          <p className="text-[11px] text-faint">
-            The note is a decider note; it never enters the journal.
-          </p>
-
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" className="h-[36px]" onClick={onDecided}>
-              Cancel
-            </Button>
-            <Button
-              variant={choice === "approved" ? "primary" : "danger"}
-              className="h-[36px]"
-              disabled={choice === null || decide.isPending}
-              data-testid={`approval-detail-confirm-go-${testid}`}
-              onClick={confirm}
-            >
-              {decide.isPending
-                ? "Deciding…"
-                : choice === "approved"
-                  ? "Approve with note"
-                  : choice === "rejected"
-                    ? "Reject with note"
-                    : "Choose a decision"}
-            </Button>
-          </div>
+          ) : null}
+          <p className="mt-2 text-[11px] text-faint">the model only reads — you decide</p>
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }

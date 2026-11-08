@@ -264,22 +264,31 @@ function InboxDecisionCard({ project, approval }: { project: Project; approval: 
   // out loud with a retry, instead of pretending the server never had a model.
   const summaryUnavailable = summary.isError && !assistantNotConfigured(summary.error);
 
-  const submit = (decision: "approved" | "rejected") => {
+  // The bar (components/ds/DecisionBar.tsx) holds the decision for 5s behind
+  // Undo; only an expired hold calls this. It awaits so a refusal travels
+  // back to the bar (which restores itself) and lands in the row's own
+  // error line — a POST that never recorded must never read as recorded.
+  const submit = async (decision: "approved" | "rejected", comments?: string) => {
     setError(null);
-    decide.mutate(
-      { approvalId: approval.id, body: { decision, version: approval.version } },
-      {
-        onSuccess: () => setError(null),
-        onError: (err) => {
-          if (approvalConflictOf(err)) {
-            adoptApprovalConflict(queryClient, err);
-            setError("someone decided this gate first — what you see now is the winner's");
-          } else {
-            setError(problemOf(err).detail || problemOf(err).title);
-          }
+    try {
+      await decide.mutateAsync({
+        approvalId: approval.id,
+        body: {
+          decision,
+          ...(comments ? { comments } : {}),
+          version: approval.version,
         },
-      },
-    );
+      });
+      setError(null);
+    } catch (err) {
+      if (approvalConflictOf(err)) {
+        adoptApprovalConflict(queryClient, err);
+        setError("someone decided this gate first — what you see now is the winner's");
+      } else {
+        setError(problemOf(err).detail || problemOf(err).title);
+      }
+      throw err;
+    }
   };
 
   const openDetail = useCallback(
@@ -322,7 +331,7 @@ function InboxDecisionCard({ project, approval }: { project: Project; approval: 
           title={attentionTitle(approval.summary)}
           summary={model?.summary}
           actions={model ? model.actions : undefined}
-          onDecide={(_id, decision) => submit(decision)}
+          onDecide={(_id, decision, comments) => submit(decision, comments)}
           onOpen={openDetail}
         />
       </div>

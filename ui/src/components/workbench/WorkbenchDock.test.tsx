@@ -361,8 +361,9 @@ describe("WorkbenchDock", () => {
 
     const summary = await screen.findByTestId("approval-summary");
     expect(summary.closest('[data-testid="workbench-dock"]')).toBeTruthy();
-    expect(screen.getByTestId("approval-approve")).toBeTruthy();
-    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-request-changes")).toBeTruthy();
+    expect(screen.getByTestId("decision-reject")).toBeTruthy();
     // A gate with no attempts does not spin on "Reading attempts…".
     expect(screen.queryByTestId("workbench-dock-pending")).toBeNull();
   });

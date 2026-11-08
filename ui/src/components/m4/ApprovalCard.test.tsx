@@ -4,8 +4,10 @@
  * as a conflict in place, never as a silent overwrite.
  */
 import { afterEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render as renderBase, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
 import { ApprovalCard } from "./ApprovalCard";
 import {
   notApproverView,
@@ -20,33 +22,76 @@ afterEach(cleanup);
  * that lets "now" move cannot assert on it. */
 const now = () => Date.parse("2026-07-31T14:44:02Z");
 
+/** The decide arm hosts the shared DecisionBar, which reaches for the query
+ * client on mount (its default POST path) — so every card mounts inside a
+ * provider, exactly as it renders in the app. */
+function mount(element: ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return renderBase(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
+}
+
 /** A real-looking decider id: the pass-2 emulator wrote this shape verbatim. */
 const DECIDER_ID = "01a18c3e-5347-787b-86d3-6b8ae2d22c36";
 
 describe("a pending gate you can decide", () => {
-  it("posts the decision with the row's CAS version and the comments", () => {
+  it("posts through the DecisionBar once the undo hold expires, with the CAS version", async () => {
     const onDecide = vi.fn();
-    render(<ApprovalCard approval={pendingApproval} canDecide onDecide={onDecide} now={now} />);
-    fireEvent.change(screen.getByTestId("approval-comment"), { target: { value: "Ship it." } });
-    fireEvent.click(screen.getByTestId("approval-approve"));
-    expect(onDecide).toHaveBeenCalledWith({
-      approvalId: pendingApproval.id,
-      decision: "approved",
-      comments: "Ship it.",
-      version: 1,
-    });
+    mount(<ApprovalCard approval={pendingApproval} canDecide onDecide={onDecide} now={now} />);
+    // Finding 04: fixed verbs, never model-written labels.
+    expect(screen.getByTestId("decision-approve").textContent).toBe("Approve");
+    expect(screen.getByTestId("decision-request-changes").textContent).toBe("Request changes");
+    expect(screen.getByTestId("decision-reject").textContent).toBe("Reject");
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      expect(onDecide).not.toHaveBeenCalled(); // the hold is not a post
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(onDecide).toHaveBeenCalledTimes(1);
+      expect(onDecide).toHaveBeenCalledWith({
+        approvalId: pendingApproval.id,
+        decision: "approved",
+        comments: "",
+        version: 1,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Request changes carries the person's note as rejected + comments", async () => {
+    const onDecide = vi.fn();
+    mount(<ApprovalCard approval={pendingApproval} canDecide onDecide={onDecide} now={now} />);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId("decision-request-changes"));
+      fireEvent.change(screen.getByTestId("decision-changes-text"), {
+        target: { value: "Ship it." },
+      });
+      fireEvent.click(screen.getByTestId("decision-changes-send"));
+      expect(onDecide).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(onDecide).toHaveBeenCalledWith({
+        approvalId: pendingApproval.id,
+        decision: "rejected",
+        comments: "Ship it.",
+        version: 1,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says what rejecting does, in the same breath as the button", () => {
-    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     // A rejection is a business outcome, not an execution failure
     // (`docs/m4-contract.md` § 5.3, C9e): the card must say so and must NEVER
     // promise that rejecting fails the run — the old "rejecting fails this
     // run" sentence contradicted the engine and is a regression guard now.
-    const version = screen.getByTestId("approval-cas-version").textContent ?? "";
-    expect(version).toContain("rejecting records the decision");
-    expect(version).toContain("version 1");
-    expect(version).not.toContain("fails");
+    // The version line is gone with the old form (the bar carries the CAS
+    // token itself); the consequence copy stays and stays honest.
     const consequence = screen.getByTestId("approval-consequence").textContent ?? "";
     expect(consequence).toContain("does not merge");
     expect(consequence).toContain("Rejecting records the decision as a business outcome");
@@ -55,7 +100,7 @@ describe("a pending gate you can decide", () => {
   });
 
   it("names the roles, the deadline and the consequence of the deadline", () => {
-    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     // Round-2 review item 3: the card read `node /approve` — the run's internal
     // path identity — where the reader wants the step. The leaf of the key *is*
     // the step's name (`/approve` → `approve`, `/scope[2]/gate` → `gate`), and
@@ -82,7 +127,7 @@ describe("a pending gate you can decide", () => {
   // a clamp on a decidable body) — instead the card says the decision is further
   // down and puts one verb at the top that lands the reader on the form.
   it("offers a Decide jump at the top of the card, above the plan", () => {
-    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     const jump = screen.getByTestId("approval-decide-jump");
     expect(jump.textContent).toContain("Decide");
     // It sits ABOVE the plan, which is the whole point: a reader who can see the
@@ -106,31 +151,31 @@ describe("a pending gate you can decide", () => {
       scrolled.push(this.getAttribute("data-testid") ?? "?");
     };
     try {
-      render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+      mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
       fireEvent.click(screen.getByTestId("approval-decide-jump"));
     } finally {
       Element.prototype.scrollIntoView = original;
     }
     expect(scrolled).toEqual(["approval-decision-form"]);
     // A keyboard user gets the caret where their next keystroke belongs.
-    expect(document.activeElement).toBe(screen.getByTestId("approval-comment"));
+    expect(document.activeElement).toBe(screen.getByTestId("decision-approve"));
   });
 
   it("offers no jump verb where there is no decision to make", () => {
     // W3's arm: the card is readable, and there is no form to jump to.
-    const { unmount } = render(
+    const { unmount } = mount(
       <ApprovalCard approval={pendingApproval} canDecide={false} now={now} />,
     );
     expect(screen.queryByTestId("approval-decide-jump")).toBeNull();
     expect(screen.queryByTestId("approval-decide-bar")).toBeNull();
     unmount();
     // A closed gate has no decision either — the record is what it shows.
-    render(<ApprovalCard approval={rejectedApproval} canDecide now={now} />);
+    mount(<ApprovalCard approval={rejectedApproval} canDecide now={now} />);
     expect(screen.queryByTestId("approval-decide-jump")).toBeNull();
   });
 
   it("lists the evidence, including what is restricted and why that matters", () => {
-    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     const evidence = screen.getByTestId("approval-evidence");
     expect(evidence.textContent).toContain("plan.md");
     expect(evidence.textContent).toContain("restricted — metadata only");
@@ -139,7 +184,7 @@ describe("a pending gate you can decide", () => {
 
 describe("a pending gate you cannot decide (W3)", () => {
   const show = () =>
-    render(
+    mount(
       <ApprovalCard
         approval={{ ...pendingApproval, id: "01J8APPROVALBOB" }}
         canDecide={false}
@@ -150,7 +195,7 @@ describe("a pending gate you cannot decide (W3)", () => {
   it("has no decision controls at all", () => {
     const { container } = show();
     expect(screen.queryByTestId("approval-decision-form")).toBeNull();
-    expect(screen.queryByTestId("approval-approve")).toBeNull();
+    expect(screen.queryByTestId("decision-approve")).toBeNull();
     expect(container.querySelector("button[data-testid^='approval-']")).toBeNull();
   });
 
@@ -163,7 +208,7 @@ describe("a pending gate you cannot decide (W3)", () => {
 
 describe("a closed gate", () => {
   it("shows the decision, the decider and the comments", () => {
-    render(<ApprovalCard approval={rejectedApproval} canDecide={false} now={now} />);
+    mount(<ApprovalCard approval={rejectedApproval} canDecide={false} now={now} />);
     expect(screen.getByTestId("approval-decided").textContent).toContain("rejected");
     expect(screen.getByTestId("approval-decided").textContent).toContain("usr_alice");
     expect(screen.getByTestId("approval-decision-comments").textContent).toContain(
@@ -182,7 +227,7 @@ describe("a closed gate", () => {
   // `01a18c3e-5347-787b-86d3-6b8ae2d22c36 · 2026-10-30 09:59:32 UTC`. The gate
   // card is where a team learns who said yes, so it says a name.
   it("writes the decider's name from the caller's directory into the record", () => {
-    render(
+    mount(
       <ApprovalCard
         approval={{ ...rejectedApproval, decided_by: DECIDER_ID }}
         canDecide={false}
@@ -202,7 +247,7 @@ describe("a closed gate", () => {
   });
 
   it("says someone (id) rather than a bare uuid when no directory was handed over", () => {
-    render(
+    mount(
       <ApprovalCard approval={{ ...rejectedApproval, decided_by: DECIDER_ID }} canDecide={false} />,
     );
     // `names.ts`'s last resort: short enough to read, distinct between two
@@ -212,7 +257,7 @@ describe("a closed gate", () => {
 
   it("reads a policy pseudo-id as the policy it is, not as a missing person", () => {
     // ADR-0039: a decider can be `profile_policy:deny` — a mode, not a human.
-    render(
+    mount(
       <ApprovalCard
         approval={{ ...rejectedApproval, decided_by: "profile_policy:deny" }}
         canDecide={false}
@@ -223,7 +268,7 @@ describe("a closed gate", () => {
   });
 
   it("shows an expired gate as a failure of the deadline, not a decision", () => {
-    render(
+    mount(
       <ApprovalCard
         approval={{ ...pendingApproval, state: "expired", decision: null, decided_by: null }}
         canDecide={false}
@@ -243,7 +288,7 @@ describe("a closed gate", () => {
   });
 
   it("shows a denied gate as the approver set stopping applying", () => {
-    render(
+    mount(
       <ApprovalCard
         approval={{ ...pendingApproval, state: "denied" }}
         canDecide={false}
@@ -256,7 +301,7 @@ describe("a closed gate", () => {
   });
 
   it("says when the gate carries no evidence at all", () => {
-    render(
+    mount(
       <ApprovalCard
         approval={{ ...pendingApproval, artifact_refs: [] }}
         canDecide={false}
@@ -269,7 +314,7 @@ describe("a closed gate", () => {
 
 describe("a decision refused by the server", () => {
   it("keeps the card open and names the conflict in place", () => {
-    render(
+    mount(
       <ApprovalCard
         approval={pendingApproval}
         canDecide
@@ -283,13 +328,24 @@ describe("a decision refused by the server", () => {
       "someone decided this gate first",
     );
     // Still decidable: the version it carries is stale, but the gate is open.
-    expect(screen.getByTestId("approval-approve").hasAttribute("disabled")).toBe(false);
+    expect(screen.getByTestId("decision-approve").hasAttribute("disabled")).toBe(false);
   });
 
-  it("disables the buttons while a decision is in flight", () => {
-    render(<ApprovalCard approval={pendingApproval} canDecide pending now={now} />);
-    expect(screen.getByTestId("approval-approve").hasAttribute("disabled")).toBe(true);
-    expect(screen.getByTestId("approval-approve").textContent).toBe("Posting…");
+  it("replaces the verbs with the undo hold while the decision waits", () => {
+    vi.useFakeTimers();
+    try {
+      mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+      fireEvent.click(screen.getByTestId("decision-approve"));
+      expect(screen.queryByTestId("decision-approve")).toBeNull();
+      expect(screen.getByTestId("decision-status").textContent).toContain(
+        "Approved. The run continues in 5s.",
+      );
+      // Undo so the hold never posts (there is no decide stub under this test).
+      fireEvent.click(screen.getByTestId("decision-undo"));
+      expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -304,9 +360,7 @@ describe("a gate whose summary carries the plan document", () => {
   });
 
   it("keeps the title line and renders the plan as a plan, not as JSON", () => {
-    render(
-      <ApprovalCard approval={planGate(`Plan for hello.py\n${plan}\n`)} canDecide now={now} />,
-    );
+    mount(<ApprovalCard approval={planGate(`Plan for hello.py\n${plan}\n`)} canDecide now={now} />);
     expect(screen.getByTestId("approval-summary-title").textContent).toBe("Plan for hello.py");
     expect(screen.getByTestId("plan-goal").textContent).toBe("Document and fix add() in hello.py");
     expect(screen.getByTestId("plan-steps").textContent).toContain("Find the file and its tests");
@@ -315,7 +369,7 @@ describe("a gate whose summary carries the plan document", () => {
   });
 
   it("leaves a prose summary as prose", () => {
-    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    mount(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
     expect(screen.queryByTestId("approval-summary-title")).toBeNull();
     expect(screen.getByTestId("approval-summary").textContent).toContain(
       "four files, one migration",

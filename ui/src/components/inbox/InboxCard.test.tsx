@@ -1,14 +1,16 @@
 /**
- * The phone inbox card (2f → 3f): the model writes the labels, the risk
- * writes the style, and a confirm step stands between the tap and the
- * decision. The contract under test is behavioral:
- * - `onDecide` fires only after the human confirms (never on the tap);
- * - Escape closes the confirm step without deciding;
- * - no model summary/actions → the static Approve / Read fallback;
- * - the two-line summary clamps, "More" expands it.
+ * The phone inbox card (finding 04 rewrite): chip, project, age, title, the
+ * clamped summary with "More", and the shared `DecisionBar` — fixed verbs
+ * (Approve / Request changes / Reject) behind a 5s undo hold. The card stays
+ * presentational: the bar's POST is injected and reaches the parent through
+ * `onDecide(id, decision, comments?)`. Model-written labels no longer exist
+ * on this card (the `actions` prop is ignored); there is no confirm step and
+ * no "is not a decision word" path to test any more.
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
 import { testidOf } from "../../lib/format";
 import InboxCard from "./InboxCard";
 
@@ -25,20 +27,29 @@ const BASE = {
     "Plans a per-key limiter backed by Redis: 60 requests a minute, burst 20. Adds one dependency and touches 3 files.",
 };
 
-const MODEL_ACTIONS = [
-  { label: "Approve plan", intent: "approve", risk: "proceed" },
-  { label: "Reject and stop the run", intent: "reject", risk: "destructive" },
-] as const;
+function wrapper() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+}
 
 function textOf(element: Element): string {
   return element.textContent ?? "";
 }
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("InboxCard", () => {
   it("renders chip, project, age, title and the clamped summary", () => {
-    render(<InboxCard {...BASE} onDecide={vi.fn()} />);
+    render(<InboxCard {...BASE} onDecide={vi.fn()} />, { wrapper: wrapper() });
     expect(screen.getByTestId(`inbox-card-${T}`)).toBeTruthy();
     expect(screen.getByText("acme-api")).toBeTruthy();
     expect(textOf(screen.getByTestId(`inbox-card-title-${T}`))).toContain(BASE.title);
@@ -48,100 +59,83 @@ describe("InboxCard", () => {
   });
 
   it("expands the summary on More", () => {
-    render(<InboxCard {...BASE} onDecide={vi.fn()} />);
+    render(<InboxCard {...BASE} onDecide={vi.fn()} />, { wrapper: wrapper() });
     const more = screen.getByTestId(`inbox-card-more-${T}`);
     fireEvent.click(more);
     expect(textOf(more)).toBe("Less");
     expect(more.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("falls back to Approve and Read when the model gives nothing", () => {
-    const onOpen = vi.fn();
-    const decide = vi.fn();
-    render(<InboxCard {...BASE} summary={undefined} onDecide={decide} onOpen={onOpen} />);
-    expect(screen.queryByTestId(`inbox-card-more-${T}`)).toBeNull();
-    const read = screen.getByTestId(`inbox-card-read-${T}`);
-    expect(textOf(read)).toBe("Read");
-    const approve = screen.getByTestId(`inbox-card-action-${T}-0`);
-    expect(textOf(approve)).toBe("Approve");
-    expect(screen.queryByTestId(`inbox-card-action-${T}-1`)).toBeNull();
-
-    // "Read" is a link, not a decision: it opens the detail and decides nothing.
-    fireEvent.click(screen.getByTestId(`inbox-card-read-${T}`));
-    expect(onOpen).toHaveBeenCalledWith(ID);
-    expect(decide).not.toHaveBeenCalled();
-    expect(screen.queryByTestId(`inbox-card-confirm-${T}`)).toBeNull();
-  });
-
-  it("colors the model's actions by risk", () => {
-    render(<InboxCard {...BASE} actions={[...MODEL_ACTIONS]} onDecide={vi.fn()} />);
-    const approve = screen.getByTestId(`inbox-card-action-${T}-0`);
-    const reject = screen.getByTestId(`inbox-card-action-${T}-1`);
-    expect(textOf(approve)).toBe("Approve plan");
-    expect(textOf(reject)).toBe("Reject and stop the run");
-    expect(approve.className).toContain("ds-btn--primary");
-    expect(reject.className).toContain("ds-btn--danger");
-  });
-
-  it("does not decide on the tap: the confirm step opens instead", () => {
-    const onDecide = vi.fn();
-    render(<InboxCard {...BASE} actions={[...MODEL_ACTIONS]} onDecide={onDecide} />);
-    fireEvent.click(screen.getByTestId(`inbox-card-action-${T}-0`));
-
-    expect(onDecide).not.toHaveBeenCalled();
-    const confirm = screen.getByTestId(`inbox-card-confirm-${T}`);
-    expect(textOf(confirm)).toContain("Approve plan");
-    expect(textOf(confirm)).toContain("approved");
-  });
-
-  it("Escape closes the confirm step without deciding", () => {
-    const onDecide = vi.fn();
-    render(<InboxCard {...BASE} actions={[...MODEL_ACTIONS]} onDecide={onDecide} />);
-    fireEvent.click(screen.getByTestId(`inbox-card-action-${T}-0`));
-    expect(screen.getByTestId(`inbox-card-confirm-${T}`)).toBeTruthy();
-
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByTestId(`inbox-card-confirm-${T}`)).toBeNull();
-    expect(onDecide).not.toHaveBeenCalled();
-  });
-
-  it("records the mapped wire decision only after the human confirms", () => {
-    const onDecide = vi.fn();
-    render(<InboxCard {...BASE} actions={[...MODEL_ACTIONS]} onDecide={onDecide} />);
-    fireEvent.click(screen.getByTestId(`inbox-card-action-${T}-1`));
-    expect(textOf(screen.getByTestId(`inbox-card-confirm-${T}`))).toContain("rejected");
-
-    fireEvent.click(screen.getByTestId(`inbox-card-confirm-go-${T}`));
-    expect(onDecide).toHaveBeenCalledTimes(1);
-    expect(onDecide).toHaveBeenCalledWith(ID, "rejected");
-    expect(screen.queryByTestId(`inbox-card-confirm-${T}`)).toBeNull();
-  });
-
-  it("cancels the confirm step", () => {
-    const onDecide = vi.fn();
-    render(<InboxCard {...BASE} actions={[...MODEL_ACTIONS]} onDecide={onDecide} />);
-    fireEvent.click(screen.getByTestId(`inbox-card-action-${T}-0`));
-    fireEvent.click(screen.getByTestId(`inbox-card-confirm-cancel-${T}`));
-    expect(screen.queryByTestId(`inbox-card-confirm-${T}`)).toBeNull();
-    expect(onDecide).not.toHaveBeenCalled();
-  });
-
-  it("offers the decision when the action's intent is not a decision word", () => {
+  it("renders the fixed verbs and ignores model-written labels", () => {
     const onDecide = vi.fn();
     render(
       <InboxCard
         {...BASE}
-        actions={[{ label: "Inspect the plan", intent: "other", risk: "other" }]}
+        actions={[{ label: "Ship it", intent: "other", risk: "proceed" }]}
         onDecide={onDecide}
       />,
+      { wrapper: wrapper() },
     );
-    fireEvent.click(screen.getByTestId(`inbox-card-action-${T}-0`));
-    const confirm = screen.getByTestId(`inbox-card-confirm-${T}`);
-    expect(textOf(confirm)).toContain("not a decision word");
+    expect(textOf(screen.getByTestId("decision-approve"))).toBe("Approve");
+    expect(textOf(screen.getByTestId("decision-request-changes"))).toBe("Request changes");
+    expect(textOf(screen.getByTestId("decision-reject"))).toBe("Reject");
+    expect(screen.queryByText("Ship it")).toBeNull();
+    expect(screen.queryByTestId(`inbox-card-action-${T}-0`)).toBeNull();
+    expect(screen.queryByTestId(`inbox-card-confirm-${T}`)).toBeNull();
+  });
+
+  it("the Read button opens the detail and decides nothing", () => {
+    const onOpen = vi.fn();
+    const decide = vi.fn();
+    render(<InboxCard {...BASE} summary={undefined} onDecide={decide} onOpen={onOpen} />, {
+      wrapper: wrapper(),
+    });
+    expect(screen.queryByTestId(`inbox-card-more-${T}`)).toBeNull();
+    expect(textOf(screen.getByTestId(`inbox-card-read-${T}`))).toBe("Read");
+    fireEvent.click(screen.getByTestId(`inbox-card-read-${T}`));
+    expect(onOpen).toHaveBeenCalledWith(ID);
+    expect(decide).not.toHaveBeenCalled();
+  });
+
+  it("Approve holds the undo window; only the expired hold reaches the parent", async () => {
+    const onDecide = vi.fn();
+    render(<InboxCard {...BASE} onDecide={onDecide} />, { wrapper: wrapper() });
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    expect(textOf(screen.getByTestId("decision-status"))).toContain(
+      "Approved. The run continues in 5s.",
+    );
     expect(onDecide).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId(`inbox-card-confirm-rejected-${T}`));
-    expect(onDecide).toHaveBeenCalledWith(ID, "rejected");
-    expect(screen.queryByTestId(`inbox-card-confirm-${T}`)).toBeNull();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide).toHaveBeenCalledWith(ID, "approved", undefined);
+  });
+
+  it("Undo sends nothing and restores the bar", async () => {
+    const onDecide = vi.fn();
+    render(<InboxCard {...BASE} onDecide={onDecide} />, { wrapper: wrapper() });
+
+    fireEvent.click(screen.getByTestId("decision-reject"));
+    fireEvent.click(screen.getByTestId("decision-undo"));
+    expect(screen.getByTestId("decision-reject")).toBeTruthy();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it("Request changes needs text and arrives as rejected with the note", async () => {
+    const onDecide = vi.fn();
+    render(<InboxCard {...BASE} onDecide={onDecide} />, { wrapper: wrapper() });
+
+    fireEvent.click(screen.getByTestId("decision-request-changes"));
+    expect((screen.getByTestId("decision-changes-send") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("decision-changes-text"), {
+      target: { value: "Name the flag after the RFC." },
+    });
+    fireEvent.click(screen.getByTestId("decision-changes-send"));
+    expect(onDecide).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(onDecide).toHaveBeenCalledWith(ID, "rejected", "Name the flag after the RFC.");
   });
 });

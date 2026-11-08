@@ -276,8 +276,8 @@ describe("the Run Workbench", () => {
       timeout: 5000,
     });
     expect(summary.closest('[data-testid="workbench-dock"]')).toBeTruthy();
-    expect(screen.getByTestId("approval-approve")).toBeTruthy();
-    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-reject")).toBeTruthy();
     // The graph agrees: the gate is the raised node.
     expect((await stepRow("canvas-step-row-approve")).className).toContain("bg-accent-wash");
   });
@@ -328,8 +328,8 @@ describe("the Run Workbench", () => {
 
     const summary = await screen.findByTestId("approval-summary", undefined, { timeout: 5000 });
     expect(summary.closest('[data-testid="workbench-dock"]')).toBeTruthy();
-    expect(screen.getByTestId("approval-approve")).toBeTruthy();
-    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-reject")).toBeTruthy();
     // The graph agrees: the gate is the raised node.
     await waitFor(() =>
       expect(screen.getByTestId("canvas-step-row-approve").className).toContain("bg-accent-wash"),

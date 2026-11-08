@@ -1,11 +1,12 @@
 /**
  * The Home briefing sections against the fake fetch: the "running now"
  * row (one 7px segment per step, honest names only), the decision callout
- * (the gate's own summary, always a confirm before Approve posts) and the
+ * (the gate's own summary, decided through the shared DecisionBar — fixed
+ * verbs behind a 5s undo hold, no confirm step) and the
  * recent-threads rows (manual conversations only, names from the lists the
  * briefing already holds).
  */
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,6 +23,7 @@ import {
   type RouteStub,
 } from "../../test/fakes";
 import type { Approval } from "../../api/types";
+import { testidOf } from "../../lib/format";
 
 const runFixture: CrossProjectRunSummary = {
   id: "01987a9a-4444-7000-8000-dddddddddddd",
@@ -172,7 +174,7 @@ describe("DecisionCallouts", () => {
     expect(screen.queryByTestId("home-show-more")).toBeNull();
   });
 
-  it("Approve always asks for a confirmation; only the confirm posts the decision", async () => {
+  it("the callout decides through the DecisionBar: Undo cancels, nothing posts", async () => {
     const decided: Approval = {
       ...approvalFixture,
       state: "decided",
@@ -182,26 +184,28 @@ describe("DecisionCallouts", () => {
     const { requests, wrapper } = harness([
       { path: `/api/v1/approvals/${approvalFixture.id}/decide`, method: "POST", body: decided },
     ]);
-    const user = { click: (el: HTMLElement) => fireEvent.click(el) };
     render(<DecisionCallouts approvals={[approvalFixture]} runs={[]} />, { wrapper });
 
-    await user.click(screen.getByTestId("home-approve-01987a9011117"));
+    // Finding 04: fixed verbs, never model-written labels.
+    expect(screen.getByTestId("decision-approve").textContent).toBe("Approve");
+    expect(screen.getByTestId("decision-request-changes").textContent).toBe("Request changes");
+    expect(screen.getByTestId("decision-reject").textContent).toBe("Reject");
+    expect(screen.queryByTestId(`home-approve-${testidOf(approvalFixture.id)}`)).toBeNull();
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    expect(screen.getByTestId("decision-status").textContent).toContain(
+      "Approved. The run continues in 5s.",
+    );
     expect(
       requestsTo(requests, `/api/v1/approvals/${approvalFixture.id}/decide`, "POST"),
     ).toHaveLength(0);
-    expect(screen.getByRole("status").textContent).toBe("approve this gate?");
 
-    await user.click(screen.getByTestId("home-approve-confirm-01987a9011117"));
-    await waitFor(() =>
-      expect(
-        requestsTo(requests, `/api/v1/approvals/${approvalFixture.id}/decide`, "POST"),
-      ).toHaveLength(1),
-    );
-    const body = JSON.parse(
-      requestsTo(requests, `/api/v1/approvals/${approvalFixture.id}/decide`, "POST")[0].body ??
-        "{}",
-    );
-    expect(body).toEqual({ decision: "approved", version: 3 });
+    fireEvent.click(screen.getByTestId("decision-undo"));
+    expect(screen.getByTestId("decision-approve")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      requestsTo(requests, `/api/v1/approvals/${approvalFixture.id}/decide`, "POST"),
+    ).toHaveLength(0);
   });
 
   it("the Read plan link leaves for the gate's own detail page (ADR-0052)", () => {
