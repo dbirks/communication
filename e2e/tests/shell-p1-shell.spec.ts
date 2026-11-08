@@ -57,7 +57,7 @@ async function setLayoutOption(page: Page, testid: string): Promise<void> {
 }
 
 /** The sidebar's five nav rows and the canonical route each must point at.
- * Handoff 2c/3c: Today (`/`, what the row called Home) and My chats
+ * Handoff 2c/3c: Today (`/`, what the row called Home) and Threads
  * (`/threads`) are the cross-project rows; the Inbox and Board rows are gone
  * (Inbox folded into Today, the Board's behavior into the repository page's
  * Lanes view) while `/inbox` and `/board` stay mounted routes. */
@@ -94,7 +94,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await evidence(
       page,
       "shell-p1-sidebar",
-      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, and all five nav rows (Today, My chats, Workflows, Steps, Agent profiles) link to the canonical C1 routes",
+      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, and all five nav rows (Today, Threads, Workflows, Steps, Agent profiles) link to the canonical C1 routes",
     );
   });
 

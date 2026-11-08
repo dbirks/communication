@@ -615,7 +615,7 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
   // Design 1b: the overview shows three recent threads and a `Threads` tab; the
   // list itself — every row, with its search and filters — is the tab's page,
   // and since the project-tabs-2 review that page is the shared 1g pane.
-  await gotoApp(page, `${projectPath.replace(/\/+$/, "")}/conversations`);
+  await gotoApp(page, `${projectPath.replace(/\/+$/, "")}/threads`);
   const row = page.getByTestId(`thread-row-${conversationId}`);
   await expect(row, `the created thread "${title}" must list its own row`).toBeVisible({
     timeout: LOADED_TIMEOUT_MS,

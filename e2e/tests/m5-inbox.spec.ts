@@ -22,7 +22,7 @@
 // reads the served `permission_mode` back off the row.
 //
 // WHY BOB'S INBOX IS OPENED AFTER THE PROMPT IS PENDING: the three reads behind
-// CONVERSATIONS (`ui/src/lib/attention.ts` `useProjectAttention`) carry no
+// the inbox's THREADS panel (`ui/src/lib/attention.ts` `useProjectAttention`) carry no
 // `refetchInterval`, and `/inbox` subscribes to no event stream, so the pending
 // read happens when the section mounts. The page is therefore navigated to once
 // and afterwards touched only by polling its DOM — no reload, no re-navigation.
@@ -334,7 +334,7 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
             .toBe(0);
           // The chip is really there, wearing the conversation's own status.
           await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/active|idle/i);
-          await expect(bob.locator("#inbox-conversations-heading")).toContainText(/CONVERSATIONS/);
+          await expect(bob.locator("#inbox-conversations-heading")).toContainText(/THREADS/);
           await expect(row).toContainText(TITLE);
           expect(bob.url()).toContain("/inbox");
           expect(await markerSurvived(bob)).toBe(true);
@@ -350,7 +350,7 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
         await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/permission/i, {
           timeout: INBOX_TIMEOUT_MS,
         });
-        await expect(bob.locator("#inbox-conversations-heading")).toContainText(/CONVERSATIONS/);
+        await expect(bob.locator("#inbox-conversations-heading")).toContainText(/THREADS/);
         // The row names the conversation the wire carries it under.
         await expect(row).toContainText(TITLE);
         expect(bob.url()).toContain("/inbox");

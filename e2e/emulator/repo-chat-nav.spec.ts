@@ -1453,19 +1453,19 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     // A GH-page leg fans out to the real tracker's issues read; the
     // lab's own 502s on it are scratch noise, declared (see issuesReadOf).
     emu.expectFailure(issuesReadOf(ids.projectId));
-    await test.step("expanded (2c): New chat, Today, My chats, PROJECTS, LIBRARY", async () => {
+    await test.step("expanded (2c): New thread, Today, Threads, PROJECTS, LIBRARY", async () => {
       await page.goto(`/p/${ids.projectId}`);
       await expect(
         page.getByTestId("sidebar"),
         "design 2c: the one left column renders",
       ).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByTestId("new-chat"), "design 2c: New chat").toBeVisible();
+      await expect(page.getByTestId("new-chat"), "design 2c: New thread").toBeVisible();
       await expect(
         page.getByTestId("sidebar-link-home"),
         "design 2c: the row is Today (was Home)",
       ).toContainText(/today/i);
-      await expect(page.getByTestId("sidebar-link-threads"), "design 2c: My chats").toContainText(
-        /my chats/i,
+      await expect(page.getByTestId("sidebar-link-threads"), "design 2c: Threads").toContainText(
+        /threads/i,
       );
       await expect(
         page.getByTestId(`sidebar-project-toggle-${ids.projectId}`),

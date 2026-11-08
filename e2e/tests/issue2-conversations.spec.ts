@@ -239,7 +239,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   );
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("A7: one-off conversation from the header and the sidebar's New chat", async ({ page }) => {
+  test("A7: one-off conversation from the header and the sidebar's New thread", async ({ page }) => {
     // One real agent turn plus four axe passes, bounded. The ceiling sits
     // ABOVE the reply wait so that wait's own deadline can fire first and
     // print the turn's diagnostics (a raw playwright hard-timeout aborts the
@@ -264,7 +264,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     await evidence(
       page,
       "conv-a7-dialog",
-      `New conversation dialog opened from the ${PROJECT_SLUG} overview header with the project pinned, profile ${PROFILE} and the first prompt filled — no pipeline field exists`,
+      `New thread dialog opened from the ${PROJECT_SLUG} overview header with the project pinned, profile ${PROFILE} and the first prompt filled — no pipeline field exists`,
     );
     await page.getByTestId("conversation-new-submit").click();
     // The one-off conversation lands on its standalone thread page
@@ -315,9 +315,9 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
         "its Thread-details disclosure opened, no part-of-run-link or node reference",
     );
 
-    // --- Entry 2: the sidebar's `New chat` opens the SAME dialog with a picker. ---
-    // Handoff 2c/3c: the shell's cross-project row is one chat-starting button
-    // (`new-chat`); the global "New" menu it replaced is gone from the column.
+    // --- Entry 2: the sidebar's `New thread` opens the SAME dialog with a picker. ---
+    // Handoff 2c/3c (finding 01): the shell's cross-project row is one thread-starting
+    // button (`new-chat`); the global "New" menu it replaced is gone from the column.
     await page.getByTestId("new-chat").click();
     await expect(dialog).toBeVisible();
     // No project was passed in, so the dialog offers the project picker.
@@ -326,11 +326,11 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     const projectOption = picker.locator("option", { hasText: PROJECT_NAME });
     await picker.selectOption((await projectOption.first().getAttribute("value")) ?? "");
     await expect(page.getByTestId("conversation-new-title")).toBeVisible();
-    await checkA11y(page, "sidebar New-chat dialog (A7)");
+    await checkA11y(page, "sidebar New-thread dialog (A7)");
     await evidence(
       page,
       "conv-a7-global-menu",
-      "the sidebar's New chat (new-chat) opened the same dialog with a working project picker set to M4 Exit",
+      "the sidebar's New thread (new-chat) opened the same dialog with a working project picker set to M4 Exit",
     );
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
@@ -345,7 +345,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     expect(conversationId, "the thread page names the conversation it opened").toMatch(
       /^[0-9a-f-]{36}$/,
     );
-    await page.goto(`${projectUrl}/conversations`);
+    await page.goto(`${projectUrl}/threads`);
     await expect(
       page.getByTestId("threads-page"),
       "design 1g: the Threads tab is the shared list pane",
@@ -402,7 +402,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     // shared 1g pane, filtered to the project. There is no second card list and
     // no origin badge on it — the `from runs` chip is the way to a run-origin
     // thread, and the thread's own PART OF panel is the deep link.
-    await page.goto(`${listUrl}/conversations`);
+    await page.goto(`${listUrl}/threads`);
     await expect(
       page.getByTestId("threads-page"),
       "design 1g: the Threads tab is the shared list pane",

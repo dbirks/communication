@@ -132,7 +132,7 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
     // overview, because only the overview and the members page carry the band.
     for (const [tab, route, landing, surface] of [
       ["runs", "/runs", "project-runs", "runs-list"],
-      ["threads", "/conversations", "project-conversations", "threads-search"],
+      ["threads", "/threads", "project-conversations", "threads-search"],
       ["workflows", "/pipelines", "project-pipelines", "project-workflows"],
     ] as const) {
       await test.step(`project-1b — the ${tab} tab opens ${route}`, async () => {

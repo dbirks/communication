@@ -1182,7 +1182,7 @@ const RCN_COLUMN: Landmark = {
 };
 const RCN_NEW_CHAT: Landmark = {
   id: "rcn-new-chat",
-  desc: "the 'New chat' button (at 390, the one tap that reaches it)",
+  desc: "the 'New thread' button (at 390, the one tap that reaches it)",
   host: "page",
   any: [{ testid: "new-chat" }, { testid: "new-chat-rail" }, { testid: "sidebar-open" }],
 };
@@ -1198,11 +1198,11 @@ const RCN_TODAY: Landmark = {
 };
 const RCN_MY_CHATS: Landmark = {
   id: "rcn-my-chats",
-  desc: "the 'My chats' row",
+  desc: "the 'Threads' row",
   host: "page",
   any: [
     { testid: "sidebar-link-threads" },
-    { role: "link", name: /my chats/i },
+    { role: "link", name: /threads/i },
     { testid: "sidebar-open" },
   ],
 };
