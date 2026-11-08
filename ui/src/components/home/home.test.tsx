@@ -100,7 +100,9 @@ describe("RunningNow", () => {
 
     const link = screen.getByTestId("home-run-progress-01987a9a44447").closest("a");
     expect(link?.getAttribute("href")).toBe("/runs/01987a9a-4444-7000-8000-dddddddddddd");
-    expect(screen.getByTestId("home-open-board").getAttribute("href")).toBe("/board");
+    // Finding 03: nothing on Today links to the Board — the panel's own rows
+    // are the destination.
+    expect(screen.queryByTestId("home-open-board")).toBeNull();
   });
 
   it("puts the run's own title first when the API serves one (ADR-0064)", () => {
@@ -151,15 +153,23 @@ describe("DecisionCallouts", () => {
     expect(screen.getByText(/run #bbbbbbbb/)).toBeTruthy();
   });
 
-  it("caps at three callouts and points the rest at the Inbox", () => {
+  it("shows the first three callouts and expands the rest in place", () => {
     const { wrapper } = harness([]);
-    const many = [0, 1, 2, 3].map((index) => ({
+    const many = [0, 1, 2, 3, 4].map((index) => ({
       ...approvalFixture,
       id: `01987a90-999${index}-7000-8000-${index}${index}${index}${index}`,
     }));
     render(<DecisionCallouts approvals={many} runs={[]} />, { wrapper });
-    expect(screen.getByText("1 more in Inbox ›")).toBeTruthy();
-    expect(screen.getByTestId("home-more-inbox").getAttribute("href")).toBe("/inbox");
+    const rowIds = /^home-callout-[0-9a-f]+$/;
+    expect(screen.getAllByTestId(rowIds)).toHaveLength(3);
+    // Finding 03: the rest expand on Today itself — no door to the Inbox.
+    expect(screen.queryByTestId("home-more-inbox")).toBeNull();
+    const more = screen.getByTestId("home-show-more");
+    expect(more.textContent).toBe("Show 2 more");
+
+    fireEvent.click(more);
+    expect(screen.getAllByTestId(rowIds)).toHaveLength(5);
+    expect(screen.queryByTestId("home-show-more")).toBeNull();
   });
 
   it("Approve always asks for a confirmation; only the confirm posts the decision", async () => {

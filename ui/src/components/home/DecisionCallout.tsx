@@ -1,6 +1,8 @@
 /**
  * The briefing's decision callouts (artboard 2a): the caller's pending
- * gates, at most three, in the amber "needs action" panel.
+ * gates in the amber "needs action" panel — the first three are shown,
+ * the rest expand IN PLACE on `Show n more` (finding 03: nothing on
+ * Today links to the Inbox any more).
  *
  * The gate's own `summary` is the body, labelled "from the workflow" —
  * never "written by the model": the gate text is the author's static
@@ -22,8 +24,8 @@ import type { CrossProjectRunSummary } from "../../api/home";
 import { formatAge, shortId, testidOf } from "../../lib/format";
 import { routes } from "../../lib/routes";
 
-/** How many callouts the briefing renders before pointing at the Inbox. */
-export const CALLOUT_MAX = 3;
+/** How many callouts the briefing renders before offering to show the rest. */
+export const CALLOUT_PREVIEW = 3;
 
 export interface DecisionCalloutsProps {
   approvals: Approval[];
@@ -32,7 +34,8 @@ export interface DecisionCalloutsProps {
 }
 
 export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
-  const shown = approvals.slice(0, CALLOUT_MAX);
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? approvals : approvals.slice(0, CALLOUT_PREVIEW);
   const rest = approvals.length - shown.length;
   return (
     <Panel
@@ -49,13 +52,14 @@ export function DecisionCallouts({ approvals, runs }: DecisionCalloutsProps) {
       </div>
       {rest > 0 ? (
         <p className="border-t border-line px-[10px] py-[6px] text-right">
-          <Link
-            to={routes.inbox()}
-            className="font-mono text-[11px] underline"
-            data-testid="home-more-inbox"
+          <Button
+            variant="secondary"
+            compact
+            data-testid="home-show-more"
+            onClick={() => setExpanded(true)}
           >
-            {rest} more in Inbox ›
-          </Link>
+            Show {rest} more
+          </Button>
         </p>
       ) : null}
     </Panel>

@@ -53,16 +53,7 @@ export interface RunningNowProps {
 export function RunningNow({ runs, limit = 8 }: RunningNowProps) {
   const rows = runs.slice(0, limit);
   return (
-    <Panel
-      title="RUNNING NOW"
-      headingId="home-running-heading"
-      headingLevel={2}
-      meta={
-        <Link to={routes.board()} data-testid="home-open-board" className="underline">
-          open board ›
-        </Link>
-      }
-    >
+    <Panel title="RUNNING NOW" headingId="home-running-heading" headingLevel={2}>
       <ul className="space-y-[6px] bg-surface p-2">
         {rows.map((run) => (
           <RunRow key={run.id} run={run} />

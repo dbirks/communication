@@ -1,8 +1,10 @@
 /**
  * `/` — the Home briefing (artboard 2a, contract C3/C4): the greeting and
  * the mono count line across every project the caller belongs to, the
- * decision callouts (at most three, the rest in the Inbox), the
- * "running now" rows and the recent one-off threads.
+ * decision callouts (the first three, the rest expanded in place), the
+ * "running now" rows and the recent one-off threads — nothing on Today
+ * links to Board or Inbox (finding 03), and the empty state opens the run
+ * form in place.
  *
  * All the data is one cross-project run list (the board's own read,
  * ADR-0047 — Home and Board share the rows, so the count line equals the
@@ -11,17 +13,18 @@
  * never a poll. The lab image predating the C3 reads renders an honest
  * "not available yet" note instead of faking counts.
  */
-import { Link } from "react-router";
+import { useState } from "react";
 import { DecisionCallouts } from "../components/home/DecisionCallout";
 import { RunningNow } from "../components/home/RunningNow";
 import { RecentThreads } from "../components/home/RecentThreads";
+import { StartRunDialog } from "../components/home/StartRunDialog";
 import { useBoardRuns } from "../api/board";
 import { useHomeApprovals, useHomeConversations, useHomeLiveUpdates } from "../api/home";
 import { problemOf } from "../api/client";
 import { useAgentProfiles, useMe, useProjects } from "../api/queries";
 import { STATES } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
-import { routes } from "../lib/routes";
+import { Button } from "../components/ds/Button";
 import { greeting } from "../lib/greeting";
 
 /** Run statuses each count-line segment counts (the board's columns). */
@@ -35,6 +38,7 @@ const ACTIVE = [...NEED_YOU, ...FAILED, ...RUNNING, ...QUEUED];
 const isHttpError = (error: unknown, status: number): boolean => problemOf(error).status === status;
 
 export default function Home() {
+  const [startRunOpen, setStartRunOpen] = useState(false);
   const me = useMe();
   const projects = useProjects();
   const profiles = useAgentProfiles();
@@ -115,13 +119,14 @@ export default function Home() {
           <p className="text-[13.5px] text-muted">
             Nothing is running and nothing is waiting on you.
           </p>
-          <Link
-            to={routes.projects()}
-            className="ds-btn ds-btn--primary inline-flex h-[30px] items-center rounded-[4px] px-3"
+          <Button
+            variant="primary"
             data-testid="home-start-run"
+            onClick={() => setStartRunOpen(true)}
           >
             Start run
-          </Link>
+          </Button>
+          {startRunOpen ? <StartRunDialog onClose={() => setStartRunOpen(false)} /> : null}
         </div>
       ) : (
         <div className="mt-5 space-y-4">
