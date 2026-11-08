@@ -26,7 +26,7 @@ import {
   useCatchUpTour,
   useCatchUpRecap,
   useVisitSuggestion,
-  useMarkSeen,
+  useMarkItemSeen,
   useMarkAllSeen,
   useRecordVisit,
   CATCH_UP_TOUR_LIMIT,
@@ -56,7 +56,9 @@ export default function CatchUp() {
   const recap = useCatchUpRecap(baseFilters);
   const suggestion = useVisitSuggestion();
   const approvals = useHomeApprovals();
-  const markSeen = useMarkSeen();
+  // The rest-list checkbox is an explicit "mark this whole piece seen" —
+  // stop navigation uses useMarkStopsSeen, never this.
+  const markItemSeen = useMarkItemSeen();
   const markAllSeen = useMarkAllSeen();
   const recordVisit = useRecordVisit();
 
@@ -183,8 +185,8 @@ export default function CatchUp() {
               showSeen={showSeen}
               onToggleShowSeen={() => setShowSeen(false)}
               onMarkAllSeen={() => markAllSeen.mutate(selectedProjects)}
-              onMarkSeen={(item) => markSeen.mutate({ itemId: item.id })}
-              markingIds={markSeen.variables ? [markSeen.variables.itemId] : []}
+              onMarkSeen={(item) => markItemSeen.mutate({ itemId: item.id })}
+              markingIds={markItemSeen.variables ? [markItemSeen.variables.itemId] : []}
             />
           ) : null}
           {!caughtUp && !items.isPending ? (
@@ -224,8 +226,8 @@ export default function CatchUp() {
                 showSeen={showSeen}
                 onToggleShowSeen={() => setShowSeen((prev) => !prev)}
                 onMarkAllSeen={() => markAllSeen.mutate(selectedProjects)}
-                onMarkSeen={(item) => markSeen.mutate({ itemId: item.id })}
-                markingIds={markSeen.variables ? [markSeen.variables.itemId] : []}
+                onMarkSeen={(item) => markItemSeen.mutate({ itemId: item.id })}
+                markingIds={markItemSeen.variables ? [markItemSeen.variables.itemId] : []}
               />
             </div>
           ) : null}

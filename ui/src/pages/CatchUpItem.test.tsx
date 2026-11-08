@@ -182,7 +182,7 @@ describe("/catch-up/:workId", () => {
     expect(screen.getByTestId("catchup-item-stop-s2")).toBeTruthy();
   });
 
-  it("opens the first unseen beat, and Next pays the beat left behind", async () => {
+  it("opens the first unseen beat, and Next pays ONLY the beat left behind", async () => {
     const { requests } = mount(detail());
     const current = await screen.findByTestId("catchup-item-current");
     expect(current.textContent).toContain("Fix and follow-up");
@@ -200,7 +200,8 @@ describe("/catch-up/:workId", () => {
       requests.filter((request) => request.url === seenPath && request.method === "POST").at(-1)!
         .body!,
     );
-    expect(seenBody).toEqual({ version: 2, stop_ids: ["s1", "s2", "s3"] });
+    // Per-stop seen: leaving s3 marks s3, never the whole tour.
+    expect(seenBody).toEqual({ version: 2, stop_ids: ["s3"] });
     await waitFor(() =>
       expect(screen.getByTestId("catchup-item-current").textContent).toContain(
         "Found: nightly replay failed",

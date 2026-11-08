@@ -10,9 +10,11 @@
  * - `GET /catch-up/tour` is still landing on the backend. The shape below is
  *   the contract the page codes against; it is a LOCAL type (commented as
  *   such) because `schema.d.ts` is generated and must not be hand-edited.
- * - The rest-list checkbox marks an item seen without knowing its stop ids,
- *   so `useMarkSeen` reads the item first (the store demands a
+ * - The rest-list checkbox is an explicit "mark this whole piece seen", so
+ *   `useMarkItemSeen` reads the item first (the store demands a
  *   `{version, stop_ids}` body) and posts every beat of the newest version.
+ *   Reading one stop is NOT that: `useMarkStopsSeen` posts exactly the stop
+ *   ids its caller names, so leaving one stop pays only that stop's debt.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client";
@@ -212,21 +214,24 @@ export function useRecordVisit() {
   });
 }
 
-/** A seen-mark scoped to one item: the row's checkbox knows only the item. */
-export interface MarkSeenInput {
+/** A seen-mark scoped to one ITEM: only the rest-list row's explicit
+ * "mark this piece seen" checkbox uses it — never stop navigation. */
+export interface MarkItemSeenInput {
   itemId: string;
 }
 
 /**
  * `POST /api/v1/catch-up/items/{itemId}/seen` — mark this reader's debt on
- * one piece done. The body must name a tour version and its beat ids, so the
- * mutation reads the item first and posts every beat of its newest version
- * (an item with no tour has nothing to mark and posts nothing).
+ * one WHOLE piece done (the rest list's checkbox). The body must name a tour
+ * version and its beat ids, so the mutation reads the item first and posts
+ * every beat of its newest version (an item with no tour has nothing to mark
+ * and posts nothing). Moving between stops must NOT use this — see
+ * `useMarkStopsSeen`.
  */
-export function useMarkSeen() {
+export function useMarkItemSeen() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ itemId }: MarkSeenInput) => {
+    mutationFn: async ({ itemId }: MarkItemSeenInput) => {
       const item = await apiFetch<CatchUpItem>(`/api/v1/catch-up/items/${itemId}`);
       if (!item.latest) return;
       const stopIds = item.latest.stops.map((stop) => stop.id);
@@ -235,6 +240,42 @@ export function useMarkSeen() {
         method: "POST",
         json: {
           version: item.latest.version,
+          stop_ids: stopIds,
+        } satisfies components["schemas"]["CatchUpSeenRequest"],
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: catchUpKeys.all });
+    },
+  });
+}
+
+/** A seen-mark scoped to named beats: the caller already knows the tour
+ * version and the stop ids it is leaving behind. */
+export interface MarkStopsSeenInput {
+  itemId: string;
+  /** The tour version the named beats live in — the page posts exactly this
+   * version, it does not go hunting for the newest one. */
+  version: number;
+  /** The beats this reader actually viewed. Empty posts nothing. */
+  stopIds: string[];
+}
+
+/**
+ * `POST /api/v1/catch-up/items/{itemId}/seen` — pay the debt for EXACTLY the
+ * named beats ("Viewing a stop marks it seen when you move on", ADR-0078).
+ * The tour player and the piece page mark only the stop left behind with
+ * this; the whole-item checkbox is `useMarkItemSeen`.
+ */
+export function useMarkStopsSeen() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ itemId, version, stopIds }: MarkStopsSeenInput) => {
+      if (stopIds.length === 0) return Promise.resolve();
+      return apiFetch<void>(`/api/v1/catch-up/items/${itemId}/seen`, {
+        method: "POST",
+        json: {
+          version,
           stop_ids: stopIds,
         } satisfies components["schemas"]["CatchUpSeenRequest"],
       });

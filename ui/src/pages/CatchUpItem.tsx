@@ -16,14 +16,15 @@
  * The route is `/catch-up/:workId`; wiring it into the router is a later
  * task. `?stop=` selects the opened beat.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { Check, CircleDot, Copy, GitCommitHorizontal, GitPullRequest, Play } from "lucide-react";
+import { Check, Copy, Play } from "lucide-react";
 import Page, { PAGE_BAND_PAD } from "../components/ds/Page";
 import { Panel } from "../components/ds/Panel";
 import { Button } from "../components/ds/Button";
 import { ProblemBanner } from "../components/Feedback";
 import { Evidence } from "../components/catchup/Evidence";
+import { RefChips } from "../components/catchup/RefChips";
 import { StopDecision } from "../components/catchup/StopDecision";
 import {
   IMPORTANCE,
@@ -35,9 +36,8 @@ import {
 import {
   useCatchUpItem,
   useCatchUpTour,
-  useMarkSeen,
+  useMarkStopsSeen,
   type CatchUpImportance,
-  type CatchUpRefs,
   type CatchUpStop,
 } from "../api/catchup";
 
@@ -61,48 +61,6 @@ function worstImportance(stops: CatchUpStop[]): CatchUpImportance | null {
 
 function firstName(name: string): string {
   return name.trim().split(/\s+/)[0] ?? name;
-}
-
-/** The ref chips the header carries: every issue, PR and commit the
- * assistant named, each with its own glyph. Labels, not links — these are
- * the model's claims about the repository, not join keys (ADR-0078). */
-function RefChips({ refs }: { refs: CatchUpRefs }) {
-  const chips: { key: string; icon: ReactNode; label: string }[] = [];
-  for (const issue of refs.issue_numbers ?? []) {
-    chips.push({
-      key: `issue-${issue}`,
-      icon: <CircleDot size={12} aria-hidden />,
-      label: `#${issue}`,
-    });
-  }
-  for (const pr of refs.pr_numbers ?? []) {
-    chips.push({
-      key: `pr-${pr}`,
-      icon: <GitPullRequest size={12} aria-hidden />,
-      label: `PR #${pr}`,
-    });
-  }
-  for (const sha of refs.commit_shas ?? []) {
-    chips.push({
-      key: `commit-${sha}`,
-      icon: <GitCommitHorizontal size={12} aria-hidden />,
-      label: sha.slice(0, 7),
-    });
-  }
-  if (chips.length === 0) return null;
-  return (
-    <span className="flex flex-wrap items-center gap-[8px]">
-      {chips.map((chip) => (
-        <span
-          key={chip.key}
-          className="inline-flex items-center gap-[4px] font-mono text-[11px] text-ink-2 whitespace-nowrap"
-        >
-          {chip.icon}
-          {chip.label}
-        </span>
-      ))}
-    </span>
-  );
 }
 
 /** The seen-by roster: initials squares in the sidebar avatar's style. */
@@ -196,7 +154,7 @@ export default function CatchUpItem() {
   const [params, setParams] = useSearchParams();
   const item = useCatchUpItem(workId);
   const tour = useCatchUpTour();
-  const markSeen = useMarkSeen();
+  const markStopsSeen = useMarkStopsSeen();
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [showEarlier, setShowEarlier] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -237,9 +195,16 @@ export default function CatchUpItem() {
 
   const openStop = (stop: CatchUpStop | null) => {
     if (!stop || !data || (current && stop.id === current.id)) return;
-    // Moving off a stop pays this reader's debt for it (the shared seen
-    // write posts the newest version's beats).
-    if (current && !current.seen) markSeen.mutate({ itemId: data.id });
+    // Moving off a stop pays THIS reader's debt for the stop left behind —
+    // and only that stop (design: "viewing a stop marks it seen when you
+    // move on"; the whole-item mark is the rest list's checkbox).
+    if (current && !current.seen) {
+      markStopsSeen.mutate({
+        itemId: data.id,
+        version: latestVersion,
+        stopIds: [current.id],
+      });
+    }
     setPickedId(stop.id);
     setParams({ stop: stop.id }, { replace: true });
   };

@@ -14,7 +14,8 @@ import {
   useCatchUpRecap,
   useCatchUpTour,
   useVisitSuggestion,
-  useMarkSeen,
+  useMarkItemSeen,
+  useMarkStopsSeen,
   useMarkAllSeen,
   useReplyToStop,
   useRecordVisit,
@@ -225,12 +226,12 @@ describe("useVisitSuggestion", () => {
 });
 
 describe("seen writes", () => {
-  it("useMarkSeen reads the item, then posts every beat of its newest version", async () => {
+  it("useMarkItemSeen reads the item, then posts every beat of its newest version", async () => {
     const { requests, wrapper } = harness([
       { path: `/api/v1/catch-up/items/${itemId}`, body: itemDetail },
       { path: `/api/v1/catch-up/items/${itemId}/seen`, method: "POST", status: 204 },
     ]);
-    const write = renderHook(() => useMarkSeen(), { wrapper });
+    const write = renderHook(() => useMarkItemSeen(), { wrapper });
     write.result.current.mutate({ itemId });
     await waitFor(() => expect(write.result.current.isSuccess).toBe(true));
     expect(requestsTo(requests, `/api/v1/catch-up/items/${itemId}/seen`, "POST")).toHaveLength(1);
@@ -238,6 +239,21 @@ describe("seen writes", () => {
       version: 2,
       stop_ids: ["s1", "s2"],
     });
+  });
+
+  it("useMarkStopsSeen posts EXACTLY the named beats, and nothing for none", async () => {
+    const { requests, wrapper } = harness([
+      { path: `/api/v1/catch-up/items/${itemId}/seen`, method: "POST", status: 204 },
+    ]);
+    const write = renderHook(() => useMarkStopsSeen(), { wrapper });
+    write.result.current.mutate({ itemId, version: 2, stopIds: ["s2"] });
+    await waitFor(() => expect(write.result.current.isSuccess).toBe(true));
+    const posts = requestsTo(requests, `/api/v1/catch-up/items/${itemId}/seen`, "POST");
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0]!.body!)).toEqual({ version: 2, stop_ids: ["s2"] });
+    write.result.current.mutate({ itemId, version: 2, stopIds: [] });
+    await waitFor(() => expect(write.result.current.isSuccess).toBe(true));
+    expect(requestsTo(requests, `/api/v1/catch-up/items/${itemId}/seen`, "POST")).toHaveLength(1);
   });
 
   it("useMarkAllSeen posts the scope, and nothing when unscoped", async () => {
