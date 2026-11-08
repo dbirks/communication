@@ -350,6 +350,9 @@ describe("TourPlayer — the catch-up tour", () => {
     const hint = screen.getByTestId("tour-keyboard-hint");
     expect(hint.parentElement).toBe(column);
     expect(column.lastElementChild).toBe(hint);
+    // The hint WRAPS inside the 260px column: at 10.5px mono the line is wider
+    // than the column, and a non-wrapping one printed over the main pane.
+    expect(hint.className).not.toContain("whitespace-nowrap");
     const lastStop = column.querySelector("[data-testid='tour-stop-4']");
     expect(
       Boolean(
@@ -375,6 +378,23 @@ describe("TourPlayer — the catch-up tour", () => {
     // The pale body tint is not a state — nothing in a bug row may use it.
     expect(current.textContent).toBeTruthy();
     expect(label("found")).not.toContain("pale-body");
+  });
+
+  it("stacks the bug-row label above its text below the phone cut", async () => {
+    mount([
+      { path: "/api/v1/catch-up/tour", body: page0 },
+      { path: itemPath(w1), body: itemDetail(w1, bugStops()) },
+    ]);
+    const current = await screen.findByTestId("tour-current");
+    await waitFor(() => expect(current.textContent).toContain("FOUND"));
+    for (const key of ["found", "cause", "fixed", "follow-up"]) {
+      const row = current.querySelector(`[data-testid='tour-step-${key}']`);
+      expect(row).toBeTruthy();
+      // One column by default (the label's own row, then the body), the
+      // mock's 110px label column only from `md` up.
+      expect(row!.className).toContain("grid-cols-1");
+      expect(row!.className).toContain("md:grid-cols-[110px_minmax(0,1fr)]");
+    }
   });
 
   it("phone: the stop strip scrolls in its own container and offers + See more", async () => {

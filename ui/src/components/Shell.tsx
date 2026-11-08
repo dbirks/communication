@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
+import { Sparkles } from "lucide-react";
 import { Mark } from "./ds/Mark";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
@@ -104,21 +105,26 @@ export function useIsNarrow(): boolean {
   return useMediaQuery(NARROW_QUERY);
 }
 
-/** The floating Ask button's own measurements: a 30px button 16px off the
- * bottom edge on the wide frames, a 26px `compact` one on the phone. */
+/** The floating Ask button's own measurements: a 30px pill 16px off the
+ * edges on the wide frames; on the phone a 44×44 round icon button 12px off
+ * the edges (the touch-target floor the design already asks for, and the
+ * narrowest box that still reads as a target). */
 export const ASK_FAB_OFFSET_PX = 16;
 export const ASK_FAB_HEIGHT_PX = 30;
-export const ASK_FAB_HEIGHT_PHONE_PX = 26;
+export const ASK_FAB_SIZE_PHONE_PX = 44;
+export const ASK_FAB_OFFSET_PHONE_PX = 12;
 
 /**
- * The band the phone frame reserves at the bottom of `<main>`: the compact
- * button's height plus its offset, with the safe area added on top. Without
- * it the button draws over whatever the page puts last — the review caught it
- * on the `/catch-up` See-more card, over a piece of work's Tour box and over
- * the second decision card's Reject button at 390px. Reserved on the phone
- * only: at ≥768px the content column has room beside the button.
+ * The band the phone frame reserves at the bottom of `<main>`: the button's
+ * own height plus its offset, with the safe area added on top, so the LAST row
+ * of a page is still reachable below the overlay (the review caught the old
+ * wide pill over the `/catch-up` See-more card, a piece of work's Tour box and
+ * a decision card's Reject button at 390px). The button is round and 44px wide
+ * precisely because padding alone cannot save content that passes UNDER a
+ * fixed overlay mid-scroll — see the round treatment below. Reserved on the
+ * phone only: at ≥768px the content column has room beside the pill.
  */
-export const PHONE_ASK_RESERVE_PX = ASK_FAB_HEIGHT_PHONE_PX + ASK_FAB_OFFSET_PX;
+export const PHONE_ASK_RESERVE_PX = ASK_FAB_SIZE_PHONE_PX + ASK_FAB_OFFSET_PHONE_PX;
 
 /** The reserved padding as a CSS value — the safe area is part of the ask. */
 export function phoneAskReserveCss(): string {
@@ -379,27 +385,41 @@ export default function Shell({ children }: ShellProps) {
           page, in its own corner — never a sidebar row (the sidebar carries the
           `Search ⌘K` field instead). It stands clear of the column that is
           actually showing, and on the phone frame it lifts above the safe
-          area. Finding 08: one shortcut, ⌘J, and the button says so. */}
+          area. Finding 08: one shortcut, ⌘J, and the button says so.
+
+          The second review's fix: at ≥768px it is the `Ask ⌘J` pill; below the
+          phone cut it is a 44×44 ROUND icon button — the word and the chord go
+          into `title` and the accessible name. A wide pill parked over the
+          page's mid-line hid whatever it landed on (a card's "Start here" link,
+          a tour narrative, the Running-now corner) and no bottom padding can
+          rescue content that scrolls under a fixed overlay; a 44px circle
+          covers a fraction of it. */}
       <Button
         variant="primary"
-        compact={narrow}
         data-testid="ask-fab"
         aria-label="Ask the assistant (⌘J)"
+        title={narrow ? "Ask" : undefined}
         onClick={() => openAsk()}
         style={{
-          right: ASK_FAB_OFFSET_PX,
+          right: narrow
+            ? `calc(${ASK_FAB_OFFSET_PHONE_PX}px + env(safe-area-inset-right))`
+            : ASK_FAB_OFFSET_PX,
           bottom: narrow
-            ? `max(${ASK_FAB_OFFSET_PX}px, env(safe-area-inset-bottom))`
+            ? `calc(${ASK_FAB_OFFSET_PHONE_PX}px + env(safe-area-inset-bottom))`
             : ASK_FAB_OFFSET_PX,
         }}
-        className="fixed z-30 flex items-center gap-[6px]"
+        className={`fixed z-30 flex items-center justify-center gap-[6px] ${
+          narrow ? "h-[44px] w-[44px] rounded-full px-0" : ""
+        }`}
       >
-        Ask
-        {/* At phone width the button goes compact: the word stays, the chord
-            goes (the label is `Ask`, the accessible name keeps `⌘J`), and the
-            shell reserves the band underneath it so no card hides below. */}
-        {narrow ? null : (
-          <span className="font-mono text-[10.5px] tracking-[.04em] opacity-80">⌘J</span>
+        {narrow ? (
+          /* The round phone button carries the sparkle glyph alone. */
+          <Sparkles size={17} aria-hidden />
+        ) : (
+          <>
+            Ask
+            <span className="font-mono text-[10.5px] tracking-[.04em] opacity-80">⌘J</span>
+          </>
         )}
       </Button>
     </div>

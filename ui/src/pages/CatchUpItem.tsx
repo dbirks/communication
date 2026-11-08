@@ -305,9 +305,20 @@ export default function CatchUpItem() {
 
   return (
     <Page layout="canvas" testid="catchup-item">
-      <div className="flex min-h-full flex-col">
-        {/* Header: the piece on the left, its two actions top-RIGHT on the same
-         * row (mock 8b) — the actions are not a third line under the title. */}
+      {/* The page owns its height (review 8b, column finding): `min-h-full`
+       * alone is no height at all — its `main` is a `flex-1` child of a
+       * `min-h-screen` wrapper, so the percentage had nothing to resolve
+       * against and the three columns stopped where their content ended, with
+       * blank paper under the hairlines. From `md` up (where the phone strip
+       * does not mount) the page is the viewport tall, so `flex-1` hands what
+       * the header does not use to the column row and the dividers run to the
+       * bottom as the mock draws them. */}
+      <div className="flex min-h-full flex-col md:min-h-dvh">
+        {/* Header: at `md` and up the piece sits on the left and its two
+         * actions top-RIGHT on the same row (mock 8b). Below the phone cut the
+         * SAME blocks stack — tags, title, seen-by line, then the actions on
+         * their own row — because side by side the two buttons squeezed the
+         * title to one word per line and clipped the tags. */}
         <header className={`${PAGE_BAND_PAD} border-b border-line-strong pb-[14px]`}>
           <div className="flex items-center gap-[6px] font-mono text-[11px] text-muted">
             <span
@@ -319,9 +330,20 @@ export default function CatchUpItem() {
             <span aria-hidden>/</span>
             <span>Catch up</span>
           </div>
-          <div className="mt-[8px] flex flex-wrap items-start gap-x-[14px] gap-y-[10px]">
-            <div className="flex min-w-0 flex-1 flex-col gap-[6px]">
-              <div className="flex flex-wrap items-center gap-[8px]">
+          <div
+            data-testid="catchup-item-head"
+            className="mt-[8px] flex flex-col gap-[10px] md:flex-row md:flex-wrap md:items-start md:gap-x-[14px] md:gap-y-[10px]"
+          >
+            <div
+              data-testid="catchup-item-headline"
+              className="flex min-w-0 flex-col gap-[6px] md:flex-1"
+            >
+              {/* The tags and refs wrap on their own line at every width — they
+               * are never clipped by the title or the actions beside them. */}
+              <div
+                data-testid="catchup-item-tags"
+                className="flex flex-wrap items-center gap-[8px]"
+              >
                 {importance ? (
                   <span
                     className={`inline-flex h-[18px] items-center rounded-panel px-[6px] font-mono text-[9.5px] font-semibold tracking-[.03em] uppercase ${importance.tagBg} ${importance.tagFg}`}
@@ -356,7 +378,10 @@ export default function CatchUpItem() {
                 </span>
               </div>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-[8px] pt-[2px]">
+            <div
+              data-testid="catchup-item-actions"
+              className="flex flex-wrap items-center gap-[8px] md:shrink-0 md:pt-[2px]"
+            >
               <Button data-testid="catchup-item-copy" onClick={copyLink}>
                 <Copy size={13} aria-hidden />
                 {copied ? "Copied" : "Copy link"}

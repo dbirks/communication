@@ -340,6 +340,51 @@ describe("/catch-up/:workId", () => {
     },
   );
 
+  it("stacks the phone header so the title keeps its width and the tags never clip", async () => {
+    stubViewport(390);
+    try {
+      mount(detail());
+      const title = await screen.findByTestId("catchup-item-title");
+      const copy = screen.getByTestId("catchup-item-copy");
+      const play = screen.getByTestId("catchup-item-play");
+      const head = screen.getByTestId("catchup-item-head");
+      const headline = screen.getByTestId("catchup-item-headline");
+      const actions = screen.getByTestId("catchup-item-actions");
+      // Below the phone cut the header is a COLUMN: tags, title, seen-by, then
+      // the actions on their own row — the two buttons beside the title squeezed
+      // it to one word per line and clipped the importance/kind tags.
+      expect(head.className).toContain("flex-col");
+      expect(head.className).toContain("md:flex-row");
+      // The title's own block stretches (nothing shrinks it to fit the buttons),
+      // and the flex-shrink that keeps the buttons whole is a `md` rule only.
+      expect(headline.className).toContain("min-w-0");
+      expect(headline.className).toContain("md:flex-1");
+      expect(actions.className).toContain("md:shrink-0");
+      expect(actions.className).not.toMatch(/(^|\s)shrink-0(\s|$)/);
+      // Order: the tags row and the seen-by line live inside the title block,
+      // the actions after it.
+      const tags = screen.getByTestId("catchup-item-tags");
+      expect(headline.contains(tags)).toBe(true);
+      expect(headline.contains(title)).toBe(true);
+      expect(Boolean(tags.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(
+        true,
+      );
+      expect(headline.compareDocumentPosition(actions)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      // The tags wrap rather than clip.
+      expect(tags.className).toContain("flex-wrap");
+      // Still one header, and still not inside the story column (desktop rule).
+      expect(copy.closest("header")).toBe(title.closest("header"));
+      expect(play.closest("header")).toBe(title.closest("header"));
+      // The three columns own what the header does not use, at every frame.
+      const columns = screen.getByTestId("catchup-item-tour-column").parentElement;
+      expect(columns?.className).toContain("flex-1");
+      expect(head.closest("header")?.parentElement?.className).toContain("md:min-h-dvh");
+      cleanup();
+    } finally {
+      restoreViewport();
+    }
+  });
+
   it("says nobody has seen this with no stray space in front of it", async () => {
     mount(detail({ seen_by: [], you_saw_version: null, unseen_stops: 3 }));
     const line = await screen.findByTestId("catchup-item-seen-line");

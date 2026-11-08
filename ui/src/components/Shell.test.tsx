@@ -24,8 +24,8 @@ import {
   PHONE_ASK_RESERVE_PX,
   phoneAskReserveCss,
   sectionOf,
-  ASK_FAB_HEIGHT_PHONE_PX,
-  ASK_FAB_OFFSET_PX,
+  ASK_FAB_SIZE_PHONE_PX,
+  ASK_FAB_OFFSET_PHONE_PX,
 } from "./Shell";
 
 /** Wait budget for the `/me` round trip the shell waits on. */
@@ -567,22 +567,33 @@ describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
     expect(document.activeElement).toBe(open);
   });
 
-  // Review finding (phone): the floating Ask button drew over the page's last
-  // card — the `/catch-up` See more card, a piece of work's Tour box, the
-  // second decision card's Reject button. Below 768px the shell reserves the
-  // button's own band as bottom padding on `<main>`, and the button goes
-  // compact: the word `Ask` stays, the chord moves into the accessible name.
-  it("reserves the Ask button's band under the content at 390px", async () => {
+  // Review finding (phone, round 2): the wide `Ask ⌘J` pill sat on top of
+  // whatever was mid-page — a card's "Start here" link, a narrative line, the
+  // Running-now corner — and no bottom padding rescues content that scrolls
+  // UNDER a fixed overlay. Below 768px the button is now a 44×44 ROUND icon
+  // button (the word and the chord live in `title`/`aria-label`); the shell
+  // still reserves the button's band so the LAST row stays reachable.
+  it("shrinks the Ask button to a 44px round icon at 390px and reserves its band", async () => {
     stubViewport(390);
     renderApp({ path: "/", routes: signedIn });
     const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
-    // The reserve is the compact button's height plus its offset, and the
+    // The reserve is the round button's own box plus its 12px offset, and the
     // safe area rides on top of it.
-    expect(PHONE_ASK_RESERVE_PX).toBe(ASK_FAB_HEIGHT_PHONE_PX + ASK_FAB_OFFSET_PX);
+    expect(PHONE_ASK_RESERVE_PX).toBe(ASK_FAB_SIZE_PHONE_PX + ASK_FAB_OFFSET_PHONE_PX);
     const main = screen.getByRole("main");
     expect(main.getAttribute("style")).toContain(`padding-bottom: ${phoneAskReserveCss()}`);
-    expect(fab.className).toContain("ds-btn--compact");
-    expect(fab.textContent).toBe("Ask");
+    // A 44×44 circle, not a pill: the size and the radius are its own.
+    expect(fab.className).toContain("h-[44px]");
+    expect(fab.className).toContain("w-[44px]");
+    expect(fab.className).toContain("rounded-full");
+    // 12px off both edges, safe-area included.
+    const fabStyle = fab.getAttribute("style") ?? "";
+    expect(fabStyle).toContain(`right: calc(${ASK_FAB_OFFSET_PHONE_PX}px`);
+    expect(fabStyle).toContain(`bottom: calc(${ASK_FAB_OFFSET_PHONE_PX}px`);
+    // Icon only: no visible word, no chord — both move to the names.
+    expect(fab.textContent).toBe("");
+    expect(fab.querySelector("svg")).toBeTruthy();
+    expect(fab.getAttribute("title")).toBe("Ask");
     expect(fab.getAttribute("aria-label")).toBe("Ask the assistant (⌘J)");
     restoreViewport();
   });
@@ -593,7 +604,8 @@ describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
     const fab = await screen.findByTestId("ask-fab", undefined, { timeout: READ_MS });
     const main = screen.getByRole("main");
     expect(main.getAttribute("style")).toBe(null);
-    expect(fab.className).not.toContain("ds-btn--compact");
+    expect(fab.className).not.toContain("rounded-full");
+    expect(fab.getAttribute("title")).toBe(null);
     expect(fab.textContent).toContain("Ask");
     expect(fab.textContent).toContain("⌘J");
     restoreViewport();

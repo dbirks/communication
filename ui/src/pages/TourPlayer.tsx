@@ -468,10 +468,12 @@ export default function TourPlayer() {
         ) : null}
       </div>
       {/* The hint sits at the BOTTOM of the column (mock 7b), not under the
-       * last stop. */}
+       * last stop — and it WRAPS inside the 260px column: at 10.5px mono the
+       * line is wider than the column, and the second review caught it running
+       * out over the main pane. */}
       <div
         data-testid="tour-keyboard-hint"
-        className="shrink-0 border-t border-line-strong px-[12px] py-[12px] font-mono text-[10.5px] whitespace-nowrap text-muted"
+        className="shrink-0 border-t border-line-strong px-[12px] py-[12px] font-mono text-[10.5px] leading-[1.5] text-muted"
       >
         ← → move · S seen · ⌘J ask about this stop
       </div>
@@ -514,7 +516,11 @@ export default function TourPlayer() {
             <div
               key={`${def.key}:${stop.id}`}
               data-testid={`tour-step-${def.key}`}
-              className="grid grid-cols-[110px_minmax(0,1fr)] gap-[14px]"
+              /* The mock's 110px state-label column, but only from `md` up:
+               * below the phone cut a 110px label column squeezed the body to
+               * a few characters, so the label takes its own row above the
+               * text (same labels, same order, one column). */
+              className="grid grid-cols-1 gap-[6px] md:grid-cols-[110px_minmax(0,1fr)] md:gap-[14px]"
             >
               <StepLabel def={def} />
               <div className="flex min-w-0 flex-col gap-[8px]">

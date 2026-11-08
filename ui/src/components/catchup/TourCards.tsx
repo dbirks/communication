@@ -84,8 +84,12 @@ export function TourCards({
             <p className="text-[12.5px] leading-[1.45] text-ink-2">
               {firstSentence(entry.stop.narrative)}
             </p>
+            {/* The frame is the evidence's OWN height, capped at the mock's
+             * 124px (README Part C): a fixed 124px box left a three-line file
+             * list floating in empty paper. The footer keeps its place at the
+             * card's bottom through `mt-auto`, not by stretching the frame. */}
             {entry.stop.evidence?.[0] ? (
-              <div className="h-[124px] overflow-hidden">
+              <div className="max-h-[124px] overflow-hidden">
                 <Evidence evidence={entry.stop.evidence[0]} />
               </div>
             ) : null}
