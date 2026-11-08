@@ -370,7 +370,7 @@ test.describe("shell p2 — Home briefing (counts, callouts, run cards, decision
     await expect(callout.getByTestId("decision-undo")).toBeVisible();
     await evidence(
       page,
-      "shell-p2-home-approve-hold",
+      "shell-p2-home-hold",
       "the callout's Approve verb holds the decision behind a counting-down Undo window instead of POSTing on the click (finding 04's replacement for the confirm step)",
     );
     await callout.getByTestId("decision-undo").click();
@@ -387,7 +387,7 @@ test.describe("shell p2 — Home briefing (counts, callouts, run cards, decision
     stopWatching();
     await evidence(
       page,
-      "shell-p2-home-approve-undone",
+      "shell-p2-home-undone",
       "Undo cancels the hold with zero POST /api/v1/approvals and the gate still serves as pending — the journey never decides a gate",
     );
   });

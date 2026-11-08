@@ -36,6 +36,7 @@
 // attached, because the create had SUCCEEDED and the dialog had correctly
 // closed. A node that is not there is an answer, not a hang.
 import { apiMutate, expect, test } from "./fixtures.js";
+import { decideGate } from "../tests/helpers.js";
 import type { Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_ADMIN_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
@@ -729,18 +730,16 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
         page.getByTestId("approval-node"),
         "design: the run view opens the gate card for the waiting approve node",
       ).toBeVisible({ timeout: 30_000 });
-      const approve = page.getByTestId("approval-approve");
-      const drawerApprove = page.getByTestId("run-drawer-approve");
-      const offer = (await approve.isVisible().catch(() => false)) ? approve : drawerApprove;
+      // Finding 04: the gate card's decision is the ONE DecisionBar — fixed
+      // verbs, no confirm step, the POST held ~5s behind Undo. `decideGate`
+      // clicks Approve, asserts the hold line and waits for the single decide
+      // POST, so this journey still PROVES it decided the gate it fired.
+      const gateCard = page.getByTestId("approval-decision-form");
       await expect(
-        offer,
-        "design: the waiting gate offers Approve to alice — in the run view or its drawer",
+        gateCard.getByTestId("decision-approve"),
+        "design: the waiting gate offers Approve to alice on the run view's decision bar",
       ).toBeVisible({ timeout: 30_000 });
-      await offer.click({ timeout: 20_000 });
-      const confirm = page.getByTestId("run-drawer-approve-confirm");
-      if (await confirm.isVisible().catch(() => false)) {
-        await confirm.click({ timeout: 15_000 }).catch(() => undefined);
-      }
+      await decideGate(gateCard, "approve", undefined, { timeoutMs: 30_000 });
       await expect(
         page.getByTestId("approval-decided"),
         "the gate reads as decided after the approval",

@@ -11,6 +11,7 @@
 // → open plan.md and prove the content renders. Polling everywhere; model
 // calls can take minutes.
 import { expect, test } from "./fixtures.js";
+import { decideGate } from "../tests/helpers.js";
 import type { Page } from "@playwright/test";
 import { collectPlanNumbering, judgePlanNumbering } from "./plan-steps.js";
 import { collectDocumentProse, escapedMarkdownFault } from "./markdown-ink.js";
@@ -265,7 +266,7 @@ test.describe("run-gate-artifacts (alice)", () => {
       const [jumpBox, summaryBox, approveBox] = await Promise.all([
         jump.boundingBox(),
         page.getByTestId("approval-summary").boundingBox(),
-        page.getByTestId("approval-approve").boundingBox(),
+        page.getByTestId("decision-approve").boundingBox(),
       ]);
       expect(jumpBox, "the Decide verb is on screen").not.toBeNull();
       expect(summaryBox, "the plan is on screen").not.toBeNull();
@@ -279,8 +280,8 @@ test.describe("run-gate-artifacts (alice)", () => {
       await jump.click();
       expect(
         await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? ""),
-        "the jump lands the reader in the decision form",
-      ).toBe("approval-comment");
+        "the jump lands the reader on the decision bar's first verb (finding 04: the form IS the DecisionBar)",
+      ).toBe("decision-approve");
       // Pass-1 review item 1: the plan's steps are numbered so the reader can
       // count them — the renderer used to print “1.” for every step. The plan
       // is LIVE model output, so the check holds for the SHAPE-INDEPENDENT
@@ -318,27 +319,25 @@ test.describe("run-gate-artifacts (alice)", () => {
         await gateTitle.evaluate((el: HTMLElement) => el.scrollWidth - el.clientWidth),
         "the run's own title gives way horizontally inside its box (item 3)",
       ).toBeLessThanOrEqual(0);
-      // The run page offers the decision from the gate card itself or from
-      // its attention drawer — whichever this build wires up.
-      const approve = page.getByTestId("approval-approve");
-      const drawerApprove = page.getByTestId("run-drawer-approve");
-      const offer = (await approve.isVisible().catch(() => false)) ? approve : drawerApprove;
+      // Finding 04: the gate card decides through the ONE DecisionBar — fixed
+      // verbs, no confirm step, the POST held ~5s behind Undo. The old drawer
+      // fallback is gone with the retired board surface: the run view's gate card
+      // is the decision surface, and `decideGate` is what proves the click held,
+      // POSTed exactly once and was accepted. The note this pass used to type
+      // before approving is gone too — on the new bar a note belongs to `Request
+      // changes`, which records a REJECTION, and this journey needs the run to
+      // continue; the pass id still rides the run's own goal and evidence lines.
       await expect(
-        offer,
-        "design: the waiting gate offers Approve to alice (maintainer of the project) — in the run view or its drawer",
+        page.getByTestId("approval-decision-form").getByTestId("decision-approve"),
+        "design: the waiting gate offers Approve to alice (maintainer of the project) on the run view's decision bar",
       ).toBeVisible({ timeout: 30_000 });
-      await expect(offer, "the Approve action is enabled for the approver").toBeEnabled({
-        timeout: 15_000,
+      await expect(
+        page.getByTestId("approval-decision-form").getByTestId("decision-approve"),
+        "the Approve action is enabled for the approver",
+      ).toBeEnabled({ timeout: 15_000 });
+      await decideGate(page.getByTestId("approval-decision-form"), "approve", undefined, {
+        timeoutMs: 30_000,
       });
-      const comment = page.getByTestId("approval-comment");
-      if (await comment.isVisible().catch(() => false)) {
-        await comment.fill(`emu ${EMU_PASS_ID}: approved from the emulator.`);
-      }
-      await offer.click({ timeout: 20_000 });
-      const confirm = page.getByTestId("run-drawer-approve-confirm");
-      if (await confirm.isVisible().catch(() => false)) {
-        await confirm.click({ timeout: 15_000 }).catch(() => undefined);
-      }
       await expect(
         page.getByTestId("approval-decided"),
         "the gate reads as decided after the approval",

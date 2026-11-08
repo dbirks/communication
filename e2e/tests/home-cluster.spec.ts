@@ -50,6 +50,7 @@ import {
 import {
   addRepository,
   clickRunAction,
+  decideGate,
   expectRunStatus,
   rowFor,
   selectByOptionText,
@@ -1324,12 +1325,15 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         await expect(page.getByTestId("approval-node")).toContainText(GATE_NODE_ID, {
           timeout: UI_TIMEOUT_MS,
         });
-        const comment = page.getByTestId("approval-comment");
-        await expect(comment).toBeVisible({ timeout: UI_TIMEOUT_MS });
-        await comment.fill(`${TARGET_TITLE} proof — approved.`, { timeout: UI_TIMEOUT_MS });
-        const approveButton = page.getByTestId("approval-approve");
-        await expect(approveButton).toBeVisible({ timeout: UI_TIMEOUT_MS });
-        await approveButton.click({ timeout: UI_TIMEOUT_MS });
+        // Finding 04: the card's own comment box and Approve verb are gone — the
+        // ONE DecisionBar offers the three fixed verbs and holds the POST ~5s
+        // behind Undo. `decideGate` clicks the bar, proves the hold line, waits
+        // for the decide response and checks it happened exactly once; this leg
+        // approves, so it carries no note (a note now means Request changes,
+        // which records a rejection — the wrong verb for this journey).
+        await decideGate(page.getByTestId("approval-decision-form"), "approve", undefined, {
+          timeoutMs: DECISION_TIMEOUT_MS,
+        });
         await expect(page.getByTestId("approval-decided")).toBeVisible({
           timeout: DECISION_TIMEOUT_MS,
         });

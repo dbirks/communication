@@ -36,6 +36,7 @@
 import { test, expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import {
+  decideGate,
   expectRunActionAbsent,
   expectRunStatus,
   gotoApp,
@@ -892,10 +893,14 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // This template has no `agent.acp` node, so there is no attempt
       // conversation to take control of; the human half of control is the
       // gate, and the decision is made here, not by the deadline.
-      await alice
-        .getByTestId("approval-comment")
-        .fill("Plan accepted — the run may proceed to its own check.");
-      await alice.getByTestId("approval-approve").click();
+      // Finding 04: the card's own comment box is gone — the ONE DecisionBar
+      // carries the fixed verbs, and a note belongs to `Request changes`, which
+      // records a REJECTION. This leg approves the plan, so it decides with the
+      // bar's Approve verb and carries no note; the hold + exactly-one-POST
+      // checks live in `decideGate`.
+      await decideGate(alice.getByTestId("approval-decision-form"), "approve", undefined, {
+        timeoutMs: DECISION_TIMEOUT_MS,
+      });
       await expect(alice.getByTestId("approval-decided")).toBeVisible({
         timeout: DECISION_TIMEOUT_MS,
       });
@@ -1262,8 +1267,11 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
 
     await test.step("approving the re-armed gate lets the run proceed", async () => {
-      await alice.getByTestId("approval-comment").fill("Decided after the retry — go ahead.");
-      await alice.getByTestId("approval-approve").click();
+      // Same rule as step 6: the note field that used to ride an Approve is
+      // gone, so the re-armed gate is approved by verb alone.
+      await decideGate(alice.getByTestId("approval-decision-form"), "approve", undefined, {
+        timeoutMs: DECISION_TIMEOUT_MS,
+      });
       await expect(alice.getByTestId("approval-decided")).toBeVisible({
         timeout: DECISION_TIMEOUT_MS,
       });
@@ -1374,25 +1382,42 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // The row identity BEFORE the decision: one pending approval row per
       // node execution (ADR-0023 § 9), so this id IS the gate's row.
       const gateId = await pendingGateFor(alice, rejectRunId, DECISION_TIMEOUT_MS);
-      // The version half of the card's one-line promise survives the copy
-      // fix; the fixed SENTENCE is vitest's job until the lab image rebuilds
-      // (see the doc comment above).
-      await expect(alice.getByTestId("approval-cas-version")).toContainText("version 1");
-      await alice.getByTestId("approval-comment").fill("No — this path is not taken.");
-      await alice.getByTestId("approval-reject").click();
+      // A rejection WITH the person's note is the bar's `Request changes` verb
+      // (finding 04): the wire still records `rejected` and the comments. The
+      // card no longer prints its CAS version — the token rides the POST now,
+      // so the "still version 1, nobody decided first" claim is read off the
+      // request body, which is the stronger place for it anyway.
+      await decideGate(
+        alice.getByTestId("approval-decision-form"),
+        "changes",
+        "No — this path is not taken.",
+        {
+          timeoutMs: DECISION_TIMEOUT_MS,
+          expectedVersion: 1,
+        },
+      );
       // The decided card says `rejected` and nothing else failed it: the row
       // closed with a decision, not an error.
       await expect(alice.getByTestId("approval-decided")).toBeVisible({
         timeout: DECISION_TIMEOUT_MS,
       });
       await expect(alice.getByTestId("approval-decided")).toContainText("rejected");
+      // The note rode the rejection: Request changes is a `rejected` decision
+      // WITH the person's words, and the card is where they read back.
+      await expect(alice.getByTestId("approval-decision-comments")).toContainText(
+        "No — this path is not taken.",
+      );
       // The row's own truth, from the API rather than the chip colour.
       const row = (await (await alice.request.get(`/api/v1/approvals/${gateId}`)).json()) as {
         state: string;
         decision: string | null;
+        comments?: string | null;
       };
       expect(row.state, "the gate closed as DECIDED, not expired/denied").toBe("decided");
       expect(row.decision).toBe("rejected");
+      expect(row.comments, "the wire keeps the note that Request changes wrote").toBe(
+        "No — this path is not taken.",
+      );
       await shot(alice, "m5-09-gate-rejected");
     });
 

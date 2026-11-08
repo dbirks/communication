@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type Response } from "@playwright/test";
 import {
   AGENT_TURN_TIMEOUT_MS,
   COMPOSE_FILES,
@@ -14,6 +14,145 @@ import {
   PERMISSION_TERMINAL_CONFIRM_MS,
   PERMISSION_TIMEOUT_MS,
 } from "./env.js";
+
+/**
+ * The ONE workflow-gate decision path (finding 04, `DecisionBar`). Every gate
+ * surface — Today's callout, the Inbox card, `/approvals/:id`, the run
+ * workbench's gate card — renders the same bar with the same FIXED verbs
+ * (`decision-approve` / `decision-request-changes` / `decision-reject`) and no
+ * confirm step. A click holds the `POST /api/v1/approvals/{id}/decide` for ~5s
+ * behind `decision-undo` (`decision-status` counts down), then sends it once.
+ *
+ * So a spec never clicks a verb and moves on: it goes through this helper,
+ * which (a) proves the hold line appeared rather than an instant POST, (b)
+ * waits for the decide response itself (the hold makes the POST ~5s late, so a
+ * `toBeVisible` on a decided card is not evidence about the wire), (c) checks
+ * the wire body carries the right decision word — a rejection with a note is
+ * `Request changes` (`{decision: "rejected", comments}`), the API has no third
+ * verb — and (d) counts the POSTs, so the decision happens EXACTLY once.
+ *
+ * `scope` is the tightest container the spec has (a callout, the gate card, the
+ * page); the bar is found inside it.
+ */
+export type GateDecision = "approve" | "reject" | "changes";
+
+/** Locate the decide route on any origin (`/api/v1/approvals/{id}/decide`). */
+function isDecidePost(response: Response): boolean {
+  return (
+    response.request().method() === "POST" &&
+    /\/api\/v1\/approvals\/[^/]+\/decide\b/.test(response.url())
+  );
+}
+
+/** A `Locator` answers `.page()`; a `Page` does not (it has `context()`). */
+function pageOf(scope: Page | Locator): Page {
+  return typeof (scope as Locator).page === "function"
+    ? (scope as Locator).page()
+    : (scope as Page);
+}
+
+/**
+ * The bar inside `scope`. A spec may hand the helper the bar itself (a locator
+ * already keyed on `decision-bar`), a card, a callout or a whole page — and
+ * `getByTestId` only searches DESCENDANTS, so the self case is checked first.
+ */
+async function decisionBarOf(scope: Page | Locator): Promise<Locator> {
+  if (typeof (scope as Locator).getAttribute === "function") {
+    const own = await (scope as Locator).getAttribute("data-testid").catch(() => null);
+    if (own === "decision-bar") return scope as Locator;
+  }
+  return (scope as Locator).getByTestId("decision-bar").first();
+}
+
+export async function decideGate(
+  scope: Page | Locator,
+  decision: GateDecision,
+  comments?: string,
+  opts?: { timeoutMs?: number; expectedStatus?: number; expectedVersion?: number },
+): Promise<Response> {
+  // The brief's floor: the hold alone is ~5s, so nothing here may time out sooner.
+  const timeoutMs = Math.max(15_000, opts?.timeoutMs ?? 30_000);
+  const page = pageOf(scope);
+  const bar = await decisionBarOf(scope);
+  await expect(bar, "the gate's ONE decision bar is on screen").toBeVisible({ timeout: timeoutMs });
+  const decidePosts: Response[] = [];
+  const tap = (response: Response) => {
+    if (isDecidePost(response)) decidePosts.push(response);
+  };
+  page.on("response", tap);
+  try {
+    const posted = page.waitForResponse((response) => isDecidePost(response), {
+      timeout: timeoutMs,
+    });
+    const holdWord =
+      decision === "approve"
+        ? "Approved"
+        : decision === "reject"
+          ? "Rejected"
+          : "Changes requested";
+    if (decision === "changes") {
+      await bar.getByTestId("decision-request-changes").click({ timeout: timeoutMs });
+      const note = bar.getByTestId("decision-changes-text");
+      await expect(note, "Request changes asks what should change").toBeVisible({
+        timeout: timeoutMs,
+      });
+      if (comments === undefined || comments.trim().length === 0) {
+        throw new Error("decideGate: 'changes' needs the note the person wrote");
+      }
+      await note.fill(comments, { timeout: timeoutMs });
+      await bar.getByTestId("decision-changes-send").click({ timeout: timeoutMs });
+    } else {
+      await bar
+        .getByTestId(decision === "approve" ? "decision-approve" : "decision-reject")
+        .click({ timeout: timeoutMs });
+    }
+    // The hold, not an instant POST: the bar folds into its counting-down status
+    // line and Undo becomes the escape hatch. A click that POSTed immediately
+    // would blow past this line.
+    const status = bar.getByTestId("decision-status");
+    await expect(
+      status,
+      "the click holds the decision ~5s behind Undo instead of POSTing on the click",
+    ).toContainText(new RegExp(`${holdWord}\\. The run continues in \\d+s\\.`), {
+      timeout: timeoutMs,
+    });
+    await expect(bar.getByTestId("decision-undo"), "Undo is offered").toBeVisible({
+      timeout: timeoutMs,
+    });
+    const response = await posted;
+    expect(response.status(), "the decide POST's answer").toBe(opts?.expectedStatus ?? 200);
+    const body = (
+      response.request().postData() ? JSON.parse(response.request().postData()!) : {}
+    ) as {
+      decision?: string;
+      comments?: string;
+      version?: number;
+    };
+    // The API knows only `approved` | `rejected`; "Request changes" is a
+    // rejection carrying the person's note.
+    expect(body.decision, "the wire's decision word").toBe(
+      decision === "approve" ? "approved" : "rejected",
+    );
+    if (decision === "changes") {
+      expect(body.comments, "the note rides the rejection").toBe(comments!.trim());
+    } else {
+      expect(body.comments ?? "", "a bare verb carries no note").toBe("");
+    }
+    if (opts?.expectedVersion !== undefined) {
+      // The CAS token the bar sends with the decision. It used to be printed on
+      // the card (`approval-cas-version`); finding 04 folded it into the bar, so
+      // the version claim is now read off the wire instead of off a label.
+      expect(body.version, "the decide carries the row's CAS version").toBe(opts.expectedVersion);
+    }
+    // Exactly once: the hold has already elapsed, so a stray second POST (an
+    // unmount flush racing the timer) would show up in this short settle.
+    await page.waitForTimeout(1_000);
+    expect(decidePosts.length, "the gate is decided exactly once").toBe(1);
+    return response;
+  } finally {
+    page.off("response", tap);
+  }
+}
 
 /** Throwaway mock-IdP subjects used across the suite. */
 export const ADMIN_SUBJECT = "admin";

@@ -1288,7 +1288,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     await page.keyboard.press("Escape");
   });
 
-  test("7. approval detail /approvals/<id>: summary, plan, files note, free text, cancel — both widths", async ({
+  test("7. approval detail /approvals/<id>: summary, plan, files note, free text read as text above the fixed verbs — both widths", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -1388,8 +1388,9 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     const files = page.getByTestId(`approval-detail-files-${tid}`);
     await expect(files).toBeVisible();
     await expect(files).toContainText("Not available yet");
-    // Free text → interpretation → proposed decision → the confirm step —
-    // and the journey CANCELS the confirm, it never decides.
+    // Free text → interpretation → the reading shown AS TEXT above the bar —
+    // and the journey never decides. Finding 04 removed the proposal's confirm
+    // step: the model only reads, the DecisionBar's three FIXED verbs decide.
     const reply = page.getByTestId(`approval-detail-reply-${tid}`);
     await reply.fill("sounds good, approve it");
     await page.getByTestId(`approval-detail-reply-send-${tid}`).click();
@@ -1407,23 +1408,64 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
       "the free-text reply must end in a proposal or an honest interpretation error",
     ).not.toBe("neither");
     if (outcome === "proposal") {
-      await page.getByTestId(`approval-detail-proposal-confirm-${tid}`).click();
-      const confirmDialog = page.getByTestId(`approval-detail-confirm-${tid}`);
-      await expect(confirmDialog, "every decision goes through the confirm step").toBeVisible();
-      await confirmDialog.getByRole("button", { name: "Cancel" }).click();
-      await expect(confirmDialog).toBeHidden();
-      // Cancelled, not decided: the gate is still pending at the API.
+      // What replaces the old "that label is not a decision word" arm: the
+      // model's reading is prose above the bar, and the ONLY decision buttons
+      // on the page are the bar's three fixed verbs. A model-written label on a
+      // verb — the failure this test exists to catch — fails the exact-name
+      // checks or the no-model-words-on-a-button sweep below.
+      const bar = page.getByTestId("decision-bar");
+      await expect(bar, "the Approval page decides through the ONE DecisionBar").toBeVisible();
+      await expect(bar.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+      await expect(bar.getByRole("button", { name: "Request changes", exact: true })).toBeVisible();
+      await expect(bar.getByRole("button", { name: "Reject", exact: true })).toBeVisible();
+      // The verbs are exactly three, and nothing left over carries the model's
+      // words: the only other button in the bar is the changes flow's Send, and
+      // it appears once the person opens that flow.
+      expect(
+        await bar.getByRole("button").count(),
+        "the bar offers its three fixed verbs and nothing else while it is idle",
+      ).toBe(3);
+      // The proposal itself is a reading, not a control: it offers the person's
+      // "Change it" escape and nothing that decides. A decide verb (or the
+      // removed per-proposal confirm step) appearing inside it is the defect.
+      await expect(
+        proposal.getByRole("button", { name: /^approve$|^reject$|^request changes$/i }),
+      ).toHaveCount(0);
+      await expect(proposal.locator('[data-testid^="decision-"]')).toHaveCount(0);
+      // No decision verb anywhere else on the page either: every button OUTSIDE
+      // the bar that reads like a verdict is a model-written label — the shape
+      // the removed "that label is not a decision word" fallback used to catch.
+      const barButtons = new Set(
+        (await bar.getByRole("button").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim()),
+      );
+      const verbShaped = [
+        ...new Set(
+          (await page.getByRole("button").allInnerTexts())
+            .map((t) => t.replace(/\s+/g, " ").trim())
+            .filter((t) => /^(approve|reject|request changes)\b/i.test(t)),
+        ),
+      ];
+      expect(
+        verbShaped.filter((label) => !barButtons.has(label)),
+        "the only approve/reject-shaped buttons are the bar's fixed verbs",
+      ).toEqual([]);
+      // The removed confirm step and the model-labelled verb list stay removed.
+      await expect(
+        page.locator(`[data-testid="approval-detail-proposal-confirm-${tid}"]`),
+      ).toHaveCount(0);
+      await expect(page.locator(`[data-testid^="approval-detail-suggested-"]`)).toHaveCount(0);
+      // Nothing was clicked, so nothing was posted: the gate is still pending.
       const still = await apiPendingApprovals(request);
       expect(
         still.some((row) => row.id === approval.id),
-        "cancelling the confirm step must not decide the gate",
+        "a model reading must not decide the gate",
       ).toBe(true);
     }
     await checkShellScreen(page, "approval detail at desktop width", stopWatching);
     await evidence(
       page,
       "shell-p789-approval-detail",
-      `the amber 'NEEDS YOUR DECISION' strip, the ${String(summaryKind)} card, the plan section and the 'Not available yet' files note all rendered for gate ${tid}; the free-text reply produced ${outcome === "proposal" ? "a proposed decision and its confirm step, which the journey cancelled — the API still lists the approval pending" : `an honest interpretation error (${(await interpretError.innerText()).trim().slice(0, 120)})`}`,
+      `the amber 'NEEDS YOUR DECISION' strip, the ${String(summaryKind)} card, the plan section and the 'Not available yet' files note all rendered for gate ${tid}; the free-text reply produced ${outcome === "proposal" ? `a reading shown as text above the bar — whose only controls are the three fixed verbs Approve / Request changes / Reject, with no model-written label on any button (${(await apiPendingApprovals(request)).some((row) => row.id === approval.id) ? "the API still lists the approval pending" : "UNEXPECTEDLY DECIDED"})` : `an honest interpretation error (${(await interpretError.innerText()).trim().slice(0, 120)})`}`,
     );
     // Phone width: the same page, the same honest content, no sideways scroll.
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1434,7 +1476,7 @@ test.describe("shell p789 — live flags, reusable steps, mic, trust, questions,
     await evidence(
       page,
       "shell-p789-approval-narrow",
-      "at 390px the strip, the files note and the decide rail stack without sideways scroll and stay axe-clean; the gate is still pending (the journey cancelled, never decided)",
+      "at 390px the strip, the files note and the decide rail stack without sideways scroll and stay axe-clean; the gate is still pending (the journey read the model's proposal, never decided)",
     );
   });
 

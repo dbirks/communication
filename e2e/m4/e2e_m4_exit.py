@@ -24283,6 +24283,60 @@ def w3_gate_detail_verdict(detail_status, attempt_count=None, card_mounted=None)
             f"(8d05235), observed={card_mounted}")
 
 
+def w3_decision_verb(node):
+    """True for a button that DECIDES the gate (finding 04's ONE DecisionBar: the
+    fixed Approve / Request changes / Reject verbs and their Undo escape hatch).
+    A leg that selects the gate's node row must never fall through onto one of
+    these: the click is a decision held ~5s, and leaving the page mid-hold flushes
+    the POST — a harness that meant to look would have decided the gate."""
+    name = str(node.get("name") or "").strip().lower()
+    return node.get("role") == "button" and name in ("approve", "request changes", "reject",
+                                                     "undo")
+
+
+def w3_hold_present(nodes):
+    """The DecisionBar's hold line on screen: the counting-down sentence AND its
+    Undo verb. Empty snapshot nodes never satisfy it (a hiccup is not evidence)."""
+    text = " ".join(pw_text(n) for n in nodes).lower()
+    return ("the run continues in" in text
+            and any(n.get("role") == "button"
+                    and (n.get("name") or "").strip().lower() == "undo" for n in nodes))
+
+
+def w3_hold_verdict(nodes, pending_after_s=None, clicked=True):
+    """Finding 04's half of the round-trip. The Approve verb no longer posts on the
+    click: the ONE DecisionBar folds into a counting-down line (`Approved. The run
+    continues in 5s.`) whose `Undo` button is the escape hatch, and only after that
+    window does it `POST /approvals/{id}/decide` (see
+    `ui/src/components/ds/DecisionBar.tsx`). So the leg must measure the HOLD, not
+    just a decided row — a bare `sleep(6)` + read would also PASS a one-click
+    decision, which is the behaviour the hold exists to prevent. Two arms prove it:
+    the hold line with its Undo verb on screen, OR (when the snapshot raced past the
+    countdown) the ledger row STILL `pending` two seconds after the click — an
+    instant POST would have landed by then. `pending_after_s` is None when that read
+    never happened; `clicked` False GAPs the claim rather than failing it."""
+    label = "the Approve click holds ~5s behind Undo before /decide is posted"
+    if not clicked:
+        return (label, None, "the Approve verb was never clicked — the hold is unmeasured")
+    text = " ".join(pw_text(n) for n in nodes).lower()
+    undo = any(n["role"] == "button" and (n["name"] or "").strip().lower() == "undo"
+               for n in nodes)
+    holding = "the run continues in" in text
+    shown = w3_hold_present(nodes)
+    if shown:
+        ok = True
+    elif pending_after_s is None:
+        return (label, None,
+                f"countdown line={holding} undo verb={undo} and no pending read was taken — "
+                f"the hold is unmeasured")
+    else:
+        ok = pending_after_s
+    return (label, ok,
+            f"countdown line={holding} undo verb={undo} "
+            f"pending 2s after the click={pending_after_s} "
+            f"(want the line+Undo, or the row still pending after 2s)")
+
+
 def w3_decide_verdict(row, approver_id=""):
     """W3's round-trip: the Approve click posts /approvals/{id}/decide, which the
     ledger records as `state='decided'` PLUS `decision='approved'` — the two columns
@@ -26538,7 +26592,20 @@ def w3():
         if not found:
             # the gate card lives in the detail panel of the SELECTED node
             # execution, so select the waiting gate row, not the definition node.
+            # The bare "approve" needle is what the ONE DecisionBar's own Approve
+            # verb now also answers to, so that last resort filters the decision
+            # verbs out of the snapshot rather than trusting pw_click's first hit
+            # (see w3_decision_verb — this leg reads the card, it does not decide).
             for needle in ("waiting approve", "approve human.approval", "approve"):
+                if needle == "approve":
+                    rc, snap = pw_snapshot(session=session)
+                    rows = [n for n in pw_snapshot_nodes(snap)
+                            if n["role"] == "button" and needle in pw_text(n).lower()
+                            and n["ref"] and not w3_decision_verb(n)]
+                    if rows and pw("click", rows[0]["ref"], session=session)[0] == 0:
+                        time.sleep(1)
+                        break
+                    continue
                 if pw_click(role="button", contains=needle, session=session)[0]:
                     break
             found, ns = pw_poll(has, session=session, tries=6, delay=2)
@@ -26581,13 +26648,40 @@ def w3():
         gap("W3 the decision round-trip", "the button never appeared, so /decide "
                                          "was never posted from the browser")
         return
-    time.sleep(6)
+    # Finding 04: this click does not post. The ONE DecisionBar folds into a
+    # counting-down line (`Approved. The run continues in 5s.`) with an Undo verb,
+    # and only at the end of that window does it POST /approvals/{id}/decide — so
+    # the hold is measured (snapshot first, then the ledger's own patience) and the
+    # decided row is POLLED for instead of read one fixed 6 s after the click
+    # (which straddled the timer).
+    t_click = time.time()
+    held, hnodes = pw_poll(w3_hold_present, session="m4w3", tries=4, delay=1)
+    shot_hold = pw_shot("w3-alice-hold", session="m4w3")
+    pending_after_s = None
+    pend = ""
+    if not held:
+        # The snapshot raced the countdown. The row itself settles it: an instant
+        # POST would be 'decided' by now, a held decision is still 'pending'. An
+        # unreadable row leaves the arm unmeasured rather than failed.
+        pend = pw_first(psql(f"SELECT state FROM approval_requests WHERE id = '{aid}'"))
+        if pend:
+            pending_after_s = pend == "pending" and time.time() - t_click >= 2.0
+    label, ok, det = w3_hold_verdict(hnodes, pending_after_s=pending_after_s)
+    if ok is None:
+        gap(f"W3 {label}", det)
+    else:
+        check(f"W3 {label}", ok, f"{det} [{shot_hold}]")
     # state is the lifecycle column ('pending','decided','expired','cancelled',
     # 'denied'); the approve/reject fact is `decision`. Reading 'approved' out of
     # `state` is a column the CHECK forbids, so the click is measured on both.
-    row = pw_first(psql(f"SELECT state || '|' || COALESCE(decision,'') || '|' || "
-                        f"COALESCE(decided_by::text,'') FROM approval_requests "
-                        f"WHERE id = '{aid}'"))
+    row = ""
+    for _ in range(10):
+        row = pw_first(psql(f"SELECT state || '|' || COALESCE(decision,'') || '|' || "
+                            f"COALESCE(decided_by::text,'') FROM approval_requests "
+                            f"WHERE id = '{aid}'"))
+        if (row.split("|") + [""])[0].strip() == "decided":
+            break
+        time.sleep(3)
     label, ok, detail = w3_decide_verdict(row, alice_id)
     check(f"W3 {label}", ok, detail)
     nodes2, _ = card("m4w3")

@@ -34,6 +34,7 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 import { checkA11y } from "./a11y.js";
 import { AGENT_TURN_TIMEOUT_MS, BASE_URL } from "./env.js";
 import {
+  decideGate,
   expectRunStatus,
   openProjectBySlug,
   repinAssignment,
@@ -719,7 +720,9 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
             `WORKBENCH A4: run pinned to the studio-published revision ${expected} (${digest12})`,
           );
         } else {
-          console.log(`WORKBENCH A4: run pinned to digest ${digest12} (revision number unreadable)`);
+          console.log(
+            `WORKBENCH A4: run pinned to digest ${digest12} (revision number unreadable)`,
+          );
         }
       } else {
         console.log(`WORKBENCH A4: run pinned to digest ${digest12} (revision number unreadable)`);
@@ -756,7 +759,12 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await clickNodeBox(page, "approve");
     const decision = page.getByTestId("approval-decision-form");
     await expect(decision).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
-    await page.getByTestId("approval-approve").click();
+    // Finding 04: the dock's gate card decides through the ONE DecisionBar (fixed
+    // verbs, a ~5s Undo hold in place of the old confirm step). decideGate
+    // clicks the bar, asserts the hold line, waits for the decide POST and
+    // requires exactly one of them; the form is then gone because the card
+    // re-renders as decided.
+    await decideGate(decision, "approve", undefined, { timeoutMs: NODE_STEP_TIMEOUT_MS });
     await expect(decision).toHaveCount(0, { timeout: NODE_STEP_TIMEOUT_MS });
     await evidence(
       page,

@@ -74,7 +74,10 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_gate_release_verdict,
     w_type_matches,
     w3_decide_verdict,
+    w3_decision_verb,
     w3_gate_detail_verdict,
+    w3_hold_present,
+    w3_hold_verdict,
     w_counter_verdicts,
     w_form_field_verdicts,
     w_form_opened_verdict,
@@ -675,6 +678,53 @@ def test_w3_decide_verdict():
     assert w3_decide_verdict("")[1] is None, "an unreadable row is a GAP"
     assert w3_decide_verdict("decided")[1] is None, "a half row is a GAP"
     assert "state='decided'" in ok[2], ok
+
+
+def test_w3_decision_verb_excludes_the_bar_from_the_row_picker():
+    """Finding 04 put ONE DecisionBar on the gate card, and its verbs are named
+    `Approve` / `Request changes` / `Reject` (+ the hold's `Undo`). W3's fallback
+    selects the gate's NODE ROW by a substring over button text, so the bare
+    `approve` needle now also matches the decision verb — a leg that meant to look
+    at the card would click the verb, wait out the hold and decide the gate (or
+    flush the POST by navigating away). The picker's filter is the only thing
+    standing between them, so it is asserted here."""
+    for name in ("Approve", "Request changes", "Reject", "Undo"):
+        assert w3_decision_verb({"role": "button", "name": name, "text": "", "ref": "e1"}), name
+    assert not w3_decision_verb({"role": "button", "name": "waiting approve", "text": ""}), \
+        "the node row is not a decision verb"
+    assert not w3_decision_verb({"role": "paragraph", "name": "Approve", "text": ""}), \
+        "prose that says Approve is not the verb"
+    assert not w3_decision_verb({"role": "button", "name": "Decide ↓", "text": ""}), \
+        "the card's jump is navigation, not a decision"
+
+
+def test_w3_hold_verdict_reads_the_5s_window_off_the_snapshot():
+    """The click no longer POSTs: the bar folds into `Approved. The run continues
+    in 5s.` with an Undo link, and the decided row only arrives after that window.
+    A bare sleep + read would PASS a one-click decision, which is the behaviour the
+    hold exists to prevent — so both halves of the line are required, an empty
+    snapshot FAILS, and a leg that never clicked the verb GAPs rather than FAILs."""
+    holding = pw_snapshot_nodes(
+        '- paragraph "Approved. The run continues in 5s." [ref=e1]\n'
+        '  - button "Undo" [ref=e2]\n')
+    assert w3_hold_present(holding) is True
+    got = w3_hold_verdict(holding)
+    assert got[1] is True, got
+    assert "countdown line=True undo verb=True" in got[2], got
+    # A card that decided on the click (no hold line) FAILS on the ledger arm too…
+    posted = pw_snapshot_nodes('- paragraph: Approved. Your decision is recorded. [ref=e9]')
+    assert w3_hold_present(posted) is False
+    assert w3_hold_verdict(posted, pending_after_s=False)[1] is False
+    # …but a row still `pending` 2 s after the click proves the hold even when the
+    # snapshot raced past the counting-down line.
+    assert w3_hold_verdict(posted, pending_after_s=True)[1] is True
+    # A countdown sentence with no Undo link is not the bar.
+    no_undo = pw_snapshot_nodes('- paragraph: Approved. The run continues in 4s. [ref=e9]')
+    assert w3_hold_present(no_undo) is False
+    assert w3_hold_verdict(no_undo, pending_after_s=False)[1] is False
+    assert w3_hold_present([]) is False, "no snapshot nodes is not evidence"
+    assert w3_hold_verdict([])[1] is None, "neither arm read is a GAP, not a FAIL"
+    assert w3_hold_verdict([], clicked=False)[1] is None, "a verb that never appeared GAPs"
 
 
 def _vmap(verdicts):
@@ -2752,6 +2802,8 @@ if __name__ == "__main__":
                test_w1_typed_inputs_are_driven_and_graded_as_json,
                test_w1_typed_controls_are_the_checkbox_and_number_field_4fc5a95_drew,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
+               test_w3_decision_verb_excludes_the_bar_from_the_row_picker,
+               test_w3_hold_verdict_reads_the_5s_window_off_the_snapshot,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,
                test_w9_membership_read_distinguishes_absence_from_a_broken_read,
