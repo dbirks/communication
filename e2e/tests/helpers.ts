@@ -164,9 +164,12 @@ export const OUTSIDER_SUBJECT = "mallory";
  * for a few seconds (observed in the M1 restart → next-test handoff), and a
  * blank error page is what makes a later locator hang instead of fail.
  */
-export async function gotoApp(page: Page, path = "/"): Promise<void> {
+export async function gotoApp(page: Page, path = "/", timeoutMs?: number): Promise<void> {
   for (let attempt = 1; attempt <= 10; attempt++) {
-    const response = await page.goto(path, { waitUntil: "domcontentloaded" });
+    const response = await page.goto(path, {
+      waitUntil: "domcontentloaded",
+      ...(timeoutMs ? { timeout: timeoutMs } : {}),
+    });
     if (response && response.ok()) return;
     await page.waitForTimeout(1_000);
   }
@@ -181,30 +184,65 @@ export async function gotoApp(page: Page, path = "/"): Promise<void> {
  * `claims` are written into the IdP's "Optional claims JSON" box, which is how
  * a journey gets a readable profile (`name`, `email`) instead of the bare
  * subject — the app derives a display name from the id token (ADR-0012 §4).
+ *
+ * Callers in a spec that carries a `use.storageState` MUST create the page's
+ * context with an explicit empty state (`storageState: { cookies: [], origins:
+ * [] }`): @playwright/test's `runBeforeCreateBrowserContext` hook merges the
+ * test's own storage state into every `browser.newContext()` that does not name
+ * one, and a context born signed in can never reach the IdP door — `signIn`
+ * now says exactly that within seconds instead of waiting for a `sign-in`
+ * link that will not render (acceptance 42524332059's hang).
  */
 export async function signIn(
   page: Page,
   subject: string,
   claims?: Record<string, unknown>,
 ): Promise<void> {
-  await gotoApp(page, "/");
-  await page.getByTestId("sign-in").click();
+  // Every navigation/click is bounded at 30 s: Playwright's default action
+  // timeout is 0, so an unbounded click waits out the WHOLE test budget — the
+  // shape of the 7-minute hangs this guards against (T10a, "today empty").
+  const step = 30_000;
+  await gotoApp(page, "/", step);
+  const badge = page.getByTestId("user-badge");
+  // The signed-out door is the `sign-in` link; the signed-in page shows the
+  // `user-badge` instead. Wait for whichever of the two the app actually
+  // renders (the badge lands after the shell's first `/api/v1/me` read), then
+  // fail FAST — naming the real cause — when this context is already signed in.
+  await page
+    .getByTestId("sign-in")
+    .or(badge)
+    .first()
+    .waitFor({
+      state: "visible",
+      timeout: step,
+    });
+  if (await badge.isVisible().catch(() => false)) {
+    throw new Error(
+      `signIn(${subject}): the page is ALREADY SIGNED IN as another identity ` +
+        `(user-badge visible at ${page.url()}) — a context created inside a spec with a ` +
+        `use.storageState inherits it unless the context names one; open this door with ` +
+        `browser.newContext({ storageState: { cookies: [], origins: [] } })`,
+    );
+  }
+  await page.getByTestId("sign-in").click({ timeout: step });
   const subjectField = page.getByPlaceholder("Enter any user/subject");
-  await expect(subjectField).toBeVisible();
-  await subjectField.fill(subject);
+  await expect(subjectField, "the mock IdP's subject field").toBeVisible({ timeout: step });
+  await subjectField.fill(subject, { timeout: step });
   if (claims) {
     const claimsField = page.getByPlaceholder(/Optional claims JSON/);
-    await expect(claimsField).toBeVisible();
-    await claimsField.fill(JSON.stringify(claims));
+    await expect(claimsField, "the mock IdP's claims box").toBeVisible({ timeout: step });
+    await claimsField.fill(JSON.stringify(claims), { timeout: step });
   }
-  await page.getByRole("button", { name: "Sign-in" }).click();
+  await page.getByRole("button", { name: "Sign-in" }).click({ timeout: step });
   // The IdP redirect chain ends on the lab's own embedded UI origin (the
   // OIDC callback is registered there); the session cookie is shared per
   // host, so a fresh navigation to the app under test (baseURL) is signed in.
   // Every later relative `page.goto` in the suite resolves against baseURL,
   // so the suite works on the dev server's live tree from here on.
-  await gotoApp(page, "/");
-  await expect(page.getByTestId("user-badge")).toBeVisible();
+  await gotoApp(page, "/", step);
+  await expect(page.getByTestId("user-badge"), `signIn(${subject}) ends signed in`).toBeVisible({
+    timeout: step,
+  });
 }
 
 /** Add a repository through the project page form and wait for its row. */

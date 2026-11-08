@@ -1053,7 +1053,15 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       // subject (helpers.signIn's documented use — a readable profile, no
       // membership anywhere) sees an honest empty Today. Its own throwaway
       // context; alice's state and the shared lab data are untouched.
-      const context = await browser.newContext({ baseURL: EMU_BASE_URL });
+      // An EXPLICIT empty state, never the inherited default: this describe
+      // carries `use.storageState` (alice), and @playwright/test merges it into
+      // every `browser.newContext()` that does not name one — a context born
+      // signed in as alice has no `sign-in` door to walk (acceptance
+      // 42524332059's hang; helpers.signIn now refuses that state in seconds).
+      const context = await browser.newContext({
+        baseURL: EMU_BASE_URL,
+        storageState: { cookies: [], origins: [] },
+      });
       try {
         const nobody = await context.newPage();
         // The lab's shared sign-in helper (e2e/tests/helpers.ts — the same

@@ -3,6 +3,12 @@
  * appears only when the unseen pile is large (> 12) while the window is the
  * default "unseen". It proposes the window the reader's own visit rhythm
  * suggests; "Keep all" dismisses it for the session.
+ *
+ * Responsive contract (acceptance 42524332059, `cu-8a-backlog`): the one-line
+ * 38px layout is the DESKTOP shape. Below 768px the nowrap text plus the
+ * `shrink-0` buttons pushed the page's scrollWidth to 692px on a 390px phone,
+ * so there the row wraps: the text keeps `min-w-0` and breaks on its own
+ * lines, and the buttons ride `w-full` onto a row below.
  */
 import { Info } from "lucide-react";
 
@@ -29,17 +35,17 @@ export function BacklogBanner({
   return (
     <div
       data-testid="catchup-banner"
-      className="flex h-[38px] items-center gap-[10px] rounded-panel border border-accent-ring bg-accent-wash px-[10px]"
+      className="flex flex-wrap items-center gap-x-[10px] gap-y-[6px] rounded-panel border border-accent-ring bg-accent-wash px-[10px] py-[7px] md:h-[38px] md:flex-nowrap md:py-0"
       role="note"
     >
       <Info size={13} className="shrink-0 text-accent-edge" aria-hidden />
-      <span className="text-[13px] whitespace-nowrap text-ink">
+      <span className="min-w-0 flex-1 text-[13px] text-ink md:whitespace-nowrap">
         <b>
           {unseen} unseen over {days} {days === 1 ? "day" : "days"}.
         </b>{" "}
         The tour covers the {tourStops} that matter. Narrow to the last {suggestedWindow}?
       </span>
-      <span className="ml-auto flex shrink-0 gap-[4px]">
+      <span className="flex w-full shrink-0 justify-end gap-[4px] md:ml-auto md:w-auto md:justify-start">
         <button
           type="button"
           onClick={onNarrow}

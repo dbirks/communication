@@ -272,7 +272,15 @@ async function signInDecider(
   subject: string,
   approverIds: Set<string>,
 ): Promise<Decider | null> {
-  const context = await browser.newContext({ baseURL: EMU_BASE_URL });
+  // An EXPLICIT empty state. @playwright/test's `runBeforeCreateBrowserContext`
+  // hook merges this test's own `use.storageState` (alice's EMU state) into
+  // every `browser.newContext()` that does not name one, so the unnamed default
+  // would birth a context already signed in as alice — and `signIn` (which now
+  // refuses that state in seconds) could never reach the IdP door.
+  const context = await browser.newContext({
+    baseURL: EMU_BASE_URL,
+    storageState: { cookies: [], origins: [] },
+  });
   try {
     const page = await context.newPage();
     await signIn(page, subject, { email: `${subject}@example.test` });
