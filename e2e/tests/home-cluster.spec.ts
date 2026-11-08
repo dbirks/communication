@@ -49,6 +49,7 @@ import {
 } from "@playwright/test";
 import {
   addRepository,
+  clickRunAction,
   expectRunStatus,
   rowFor,
   selectByOptionText,
@@ -1286,9 +1287,12 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           }
         }
         const retryButton = page.getByTestId("run-retry");
+        // A failed run's ONE primary action is `run-retry` ("Retry step") —
+        // the redesigned header (finding 11) keeps it inline; every other
+        // verb rides the ⋯ menu, so the click goes through clickRunAction.
         await expect(retryButton).toBeVisible({ timeout: UI_TIMEOUT_MS });
         await expect(retryButton).toBeEnabled({ timeout: UI_TIMEOUT_MS });
-        await retryButton.click({ timeout: UI_TIMEOUT_MS });
+        await clickRunAction(page, "run-retry");
         // The advancer re-schedules the failed node; the run leaves the
         // failed state. If it failed again before the next leg read, the loop
         // sees it and counts it as the next retry.

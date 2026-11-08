@@ -365,7 +365,7 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
       await expect(
         page.getByTestId("repo-chat-input"),
         "design 3a: the chat line names the repository in its placeholder",
-      ).toHaveAttribute("placeholder", /^Chat in app…/);
+      ).toHaveAttribute("placeholder", /^Thread in app…/);
 
       await expect(
         page.getByTestId("repo-workflows"),
@@ -415,8 +415,8 @@ test.describe("projects (alice: repo-1e the repository page)", () => {
       if (runs.length === 0) {
         await expect(
           page.getByTestId("repo-runs-empty"),
-          "design 3a: a repository with no runs or chats yet says so in words",
-        ).toContainText(/no runs or chats in .* yet/i);
+          "design 3a: a repository with no runs or threads yet says so in words",
+        ).toContainText(/no runs or threads in .* yet/i);
       }
       await emu.screen("repo-1e", "repo");
     });

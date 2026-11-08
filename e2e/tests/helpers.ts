@@ -627,6 +627,46 @@ export async function expectRunStatus(page: Page, status: RegExp, timeout: numbe
   await expect(page.getByTestId("run-header-status")).toContainText(status, { timeout });
 }
 
+/**
+ * Click a Run Workbench header action (redesign finding 11, RunHeader.tsx):
+ * the header carries ONE primary action inline per run state (waiting →
+ * `run-review-plan`, failed → `run-retry` "Retry step", running →
+ * `run-pause`) and every other action rides the ⋯ menu — `run-more-actions`
+ * opens `run-more-menu`, whose items are only in the DOM while it is open
+ * (the ds `Menu` renders nothing when closed). Click the id inline when the
+ * header shows it there, else open ⋯ and click it in the menu.
+ */
+export async function clickRunAction(page: Page, testid: string, timeout = 15_000): Promise<void> {
+  const action = page.getByTestId(testid);
+  if (await action.isVisible().catch(() => false)) {
+    await action.click({ timeout });
+    return;
+  }
+  await page.getByTestId("run-more-actions").click({ timeout });
+  await expect(page.getByTestId("run-more-menu")).toBeVisible({ timeout });
+  await action.click({ timeout });
+}
+
+/**
+ * The strict counterpart of `clickRunAction`: the header offers this action
+ * NOWHERE — not inline and not in the ⋯ menu. A closed-menu `toHaveCount(0)`
+ * proves nothing about a menu-borne verb (its items are not mounted until the
+ * menu opens), so this opens ⋯ first and only then asserts the absence.
+ */
+export async function expectRunActionAbsent(
+  page: Page,
+  testid: string,
+  timeout = 30_000,
+): Promise<void> {
+  await expect(page.getByTestId(testid), `no inline ${testid}`).toHaveCount(0, { timeout });
+  const more = page.getByTestId("run-more-actions");
+  await expect(more, "the ⋯ trigger is part of every run header").toBeVisible({ timeout });
+  await more.click({ timeout });
+  await expect(page.getByTestId("run-more-menu")).toBeVisible({ timeout });
+  await expect(page.getByTestId(testid), `${testid} is not in the ⋯ menu either`).toHaveCount(0);
+  await page.keyboard.press("Escape");
+}
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**

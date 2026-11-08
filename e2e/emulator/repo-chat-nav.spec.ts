@@ -1593,7 +1593,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         empty,
         "design 3a: the feed starts honestly empty (its own repo, this pass's project)",
       ).toBeVisible({ timeout: 30_000 });
-      await expect(empty).toContainText(/say something in the chat box/i);
+      await expect(empty).toContainText(/say something in the thread box/i);
       await emu.screen("rcn-3a", "repo-feed-empty");
     });
 
@@ -1602,8 +1602,8 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await expect(page.getByTestId("repo-chat-box")).toBeVisible({ timeout: 30_000 });
       await expect(
         page.getByTestId("repo-chat-input"),
-        "design 3a: the chat box names the repo it chats in",
-      ).toHaveAttribute("aria-label", new RegExp(`chat in ${FILE_REPO}`, "i"));
+        "design 3a: the thread box names the repo it threads in",
+      ).toHaveAttribute("aria-label", new RegExp(`thread in ${FILE_REPO}`, "i"));
       // WORKFLOWS · n — the seeded pin's row: its trigger line, its latest
       // result line, its Run verb. (This project has no GitHub issues to hand
       // off — OPEN ISSUES proves that below.)
@@ -2476,7 +2476,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       await scopeMenu.getByTestId("side-panel-scope-item-whole").click({ timeout: 15_000 });
       await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
       await expect(
-        page.getByText(/moved this chat to the whole project/i),
+        page.getByText(/moved this thread to the whole project/i),
         "the transcript prints the journal's scope-changed system line",
       ).toBeVisible({ timeout: 30_000 });
       await switcher.click({ timeout: 15_000 });

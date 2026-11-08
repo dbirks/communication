@@ -11,6 +11,7 @@
 // → open plan.md and prove the content renders. Polling everywhere; model
 // calls can take minutes.
 import { expect, test } from "./fixtures.js";
+import type { Page } from "@playwright/test";
 import { collectPlanNumbering, judgePlanNumbering } from "./plan-steps.js";
 import { collectDocumentProse, escapedMarkdownFault } from "./markdown-ink.js";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
@@ -23,6 +24,24 @@ type Json = Record<string, unknown>;
  * compacted uuid's first 13 characters, which is a test id and NOT a run id. */
 function testidOf(id: string): string {
   return id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
+}
+
+/**
+ * Assert a Run Workbench header action is offered NOWHERE (redesign finding
+ * 11, RunHeader.tsx): the header keeps ONE primary action inline per run
+ * state and every other verb rides the ⋯ menu (`run-more-actions` →
+ * `run-more-menu`), whose items are only in the DOM while the menu is open.
+ * A closed-menu `toHaveCount(0)` therefore proves nothing about a menu-borne
+ * verb, so this opens ⋯ first and only then asserts the absence.
+ */
+async function expectRunActionAbsent(page: Page, testid: string, timeout = 30_000): Promise<void> {
+  await expect(page.getByTestId(testid), `no inline ${testid}`).toHaveCount(0, { timeout });
+  const more = page.getByTestId("run-more-actions");
+  await expect(more, "the ⋯ trigger is part of every run header").toBeVisible({ timeout });
+  await more.click({ timeout });
+  await expect(page.getByTestId("run-more-menu")).toBeVisible({ timeout });
+  await expect(page.getByTestId(testid), `${testid} is not in the ⋯ menu either`).toHaveCount(0);
+  await page.keyboard.press("Escape");
 }
 
 test.describe("run-gate-artifacts (alice)", () => {
@@ -365,12 +384,11 @@ test.describe("run-gate-artifacts (alice)", () => {
         finishedTitle,
         "the reloaded finished-run page renders its run title (a missing title is the defect this waits for)",
       ).toBeVisible({ timeout: 60_000 });
-      await expect(page.getByTestId("run-retry"), "no Retry verb on a finished run").toHaveCount(
-        0,
-        {
-          timeout: 30_000,
-        },
-      );
+      // Finding 11: the finished run's Retry must be absent INLINE and in the ⋯
+      // menu alike (menu items are unmounted while closed, so the old
+      // closed-menu count(0) alone could not tell "no verb" from "verb behind
+      // the ⋯"). expectRunActionAbsent opens the menu and looks inside.
+      await expectRunActionAbsent(page, "run-retry", 30_000);
       await expect(
         page.getByTestId("run-retry-reason"),
         "a clean completed run says nothing about Retry",

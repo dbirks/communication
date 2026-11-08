@@ -718,11 +718,11 @@ const REPO_CHAT_BOX: Landmark = {
   // chat box: an input whose label names the repository, the profile chip
   // and `Start` (repo-chat-start, ADR-0067). A run is started from the
   // WORKFLOWS row's `Run` (REPO_ROW_RUN).
-  desc: "the 'Chat in <repo>…' box with its Start verb (design 3a)",
+  desc: "the 'Thread in <repo>…' box with its Start verb (design 3a)",
   any: [
     { testid: "repo-chat-box" },
     { testid: "repo-chat-start" },
-    { role: "textbox", name: /^chat in /i },
+    { role: "textbox", name: /^thread in /i },
   ],
 };
 const REPO_WORKFLOWS_PANEL: Landmark = {
@@ -1324,8 +1324,8 @@ const RCN_CHAT_BOX: Landmark = {
 };
 const RCN_CHAT_INPUT: Landmark = {
   id: "rcn-repo-chat-input",
-  desc: "the chat box's input ('Chat in <repo>…')",
-  any: [{ testid: "repo-chat-input" }, { role: "textbox", name: /chat in /i }],
+  desc: "the chat box's input ('Thread in <repo>…')",
+  any: [{ testid: "repo-chat-input" }, { role: "textbox", name: /thread in /i }],
 };
 const RCN_CHAT_PROFILE: Landmark = {
   id: "rcn-repo-chat-profile",
@@ -1355,11 +1355,11 @@ const RCN_ACTIVITY: Landmark = {
 };
 const RCN_ACTIVITY_EMPTY: Landmark = {
   id: "rcn-activity-empty",
-  desc: "the honest empty activity line ('say something in the chat box above')",
+  desc: "the honest empty activity line ('say something in the thread box above')",
   any: [
     { testid: "repo-activity-empty" },
     { testid: "repo-runs-empty" },
-    { text: /say something in the chat box/i },
+    { text: /say something in the thread box/i },
   ],
 };
 const RCN_WORKFLOWS_PANEL: Landmark = {
@@ -1432,7 +1432,7 @@ const RCN_REPO_NOTE_ACTION: Landmark = {
   id: "rcn-assistant-note-action",
   desc: "the one allowlisted action the note offers",
   any: [
-    { role: "button", name: /^(ask in a new chat|hand it off|make a workflow…|open the run)$/i },
+    { role: "button", name: /^(ask in a new thread|hand it off|make a workflow…|open the run)$/i },
   ],
 };
 const RCN_REPO_NOTE_DISMISS: Landmark = {
@@ -1593,10 +1593,10 @@ const RCN_WORKS_IN: Landmark = {
 };
 const RCN_PANEL_AGENTS: Landmark = {
   id: "rcn-agents-in-this-chat",
-  desc: "the panel's AGENTS IN THIS CHAT section (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
+  desc: "the panel's AGENTS IN THIS THREAD section (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
   any: [
     { testid: "side-panel-agents" },
-    { text: /agents in this chat/i },
+    { text: /agents in this thread/i },
     { testid: "chat-details-toggle" },
   ],
 };
@@ -1639,11 +1639,11 @@ const RCN_ASSISTANT_ASK: Landmark = {
   desc: "the canned workflow ask the note sent (the app's own line, titled or not)",
   host: "page",
   // Shipped copy (ui AssistantPopover `openAssistantWorkflowDraft`, e211688):
-  // a TITLED chat seeds `Turn the chat “title” into a workflow`; only a
-  // title-less one keeps `Turn this chat into a workflow`. The design owns
+  // a TITLED thread seeds `Turn the thread “title” into a workflow`; only a
+  // title-less one keeps `Turn this thread into a workflow`. The design owns
   // the sentence, never the title inside it, so both forms satisfy the claim;
   // which CHAT the line names is the journey's own assertion.
-  any: [{ text: /turn (the chat [^\n]*|this chat) into a workflow/i }],
+  any: [{ text: /turn (the thread [^\n]*|this thread) into a workflow/i }],
 };
 
 /* Agent mail (rcn-3d, ADR-0072). The design's "gpt-5" model segment and its
@@ -1667,11 +1667,11 @@ const RCN_MAIL_ANSWER: Landmark = {
 // landmarks above: the mail-card capture shoots 390 with the sheet closed.)
 const RCN_LINKED_CHATS: Landmark = {
   id: "rcn-linked-chats",
-  desc: "the panel's LINKED CHATS section with its mail row (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
+  desc: "the panel's LINKED THREADS section with its mail row (or, at 390 with the Details sheet closed, the header's toggle that opens it)",
   any: [
     { testid: "side-panel-links" },
     { testid: "side-panel-link-row-0" },
-    { text: /linked chats/i },
+    { text: /linked threads/i },
     { testid: "chat-details-toggle" },
   ],
 };

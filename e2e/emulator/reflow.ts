@@ -323,13 +323,26 @@ export function judgeParityPair(desktop: ParityCapture, phone: ParityCapture): P
  *   presence is state — `run-pause`/`run-cancel` disappearing is exactly the
  *   parity item this guards — and whose TEXT is volatile
  *   (`approval-countdown` ticks, `approval-decided-at` says `8m ago`) or
- *   empty, so only presence may be compared.
+ *   empty, so only presence may be compared. Since the header redesign
+ *   (finding 11, RunHeader.tsx) the workbench header shows ONE primary verb
+ *   inline (`run-pause` running, `run-retry` failed, `run-review-plan`
+ *   waiting) and the rest ride the ⋯ menu — items the ds `Menu` does not
+ *   mount until it opens, so on the graph view the primary's presence is the
+ *   state signal (`run-cancel`/`run-resume` stay off there and speak on the
+ *   Diagnostics tab's `RunActions`, where they are still inline). Joined for
+ *   the same reason: a run moving waiting → running → done between the two
+ *   widths changes the control set, exactly like the RUNNING → DONE flake
+ *   above, and must re-capture rather than file a loss.
  *
  * Deliberately NOT fingerprinted: anything that moves without changing what
- * a person can operate — `run-stream-status` (an SSE reconnect flicker),
- * relative timestamps, node-level progress lines. A false "state moved" costs
- * parity coverage (the pair is re-captured or skipped with a note); the
- * curated surface keeps that cost rare.
+ * a person can operate — relative timestamps, node-level progress lines. A
+ * false "state moved" costs parity coverage (the pair is re-captured or
+ * skipped with a note); the curated surface keeps that cost rare. Since the
+ * redesign `run-stream-status` MOVED INTO the fingerprint: it is now silent
+ * while the stream is live and only mounts to say "reconnecting", so its
+ * flicker changes the parity INVENTORY itself (an item present at 1280 and
+ * absent at 390) — an SSE reconnect between the captures must mark the pair
+ * incomparable, not file a lost item.
  */
 export function collectStateFingerprint(): string {
   const norm = (value: string | null | undefined): string =>
@@ -369,6 +382,11 @@ export function collectStateFingerprint(): string {
     "run-resume",
     "run-cancel",
     "run-retry",
+    // The redesigned header's other inline primary (waiting → Review plan) and
+    // the stream line that only EXISTS when it is not live — both flip the
+    // inventory between widths (see the doc block above).
+    "run-review-plan",
+    "run-stream-status",
     "run-waiting-for-worker",
     "approval-decided",
     "approval-decide-bar",

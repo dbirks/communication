@@ -786,8 +786,9 @@ test.describe("the edge + hover word is a desktop-only affordance", () => {
  * a regression. The fix (goal: fix flakes, never retry them) is the state
  * fingerprint — `collectStateFingerprint` reads the run/approval/thread
  * STATUS surfaces (`run-header-status`, the gate card, the controller pill,
- * the pause/cancel/resume/retry verbs by presence) at the SAME moment as
- * each inventory, and `judgeParityPair` refuses to diff two captures whose
+ * the primary verbs \u2014 pause/resume/cancel/retry plus the waiting run's
+ * Review plan and the not-live stream line \u2014 by presence) at the SAME moment
+ * as each inventory, and `judgeParityPair` refuses to diff two captures whose
  * fingerprints differ (the fixture then re-captures the 1280 side, or skips
  * the pair with a note — `fixtures.ts`). These cases pin the judge on the
  * flake's own shapes, no lab:
@@ -799,16 +800,20 @@ test.describe("the edge + hover word is a desktop-only affordance", () => {
 function runStateDoc(status: "RUNNING" | "DONE", opts: { keepLog?: boolean } = {}): string {
   const running = status === "RUNNING";
   return [
-    // The header exactly as RunInspector.tsx draws it: the RunStateChip word,
-    // the verbs that exist only while the run is live, and one stable content
-    // item that must survive the reflow either way.
-    '<div data-testid="run-inspector-title">',
+    // The header as the redesigned RunHeader.tsx (finding 11) draws it: the
+    // RunStateChip word, ONE primary verb inline for a live run (Pause) plus
+    // the ⋯ trigger that holds every other verb the — menu items are not in
+    // the DOM until the menu opens, so Cancel/Resume never ride the inventory
+    // here — and one stable content item that must survive the reflow either
+    // way. Stream status is silent while live, so it is absent (its own
+    // flicker is a PRESENCE_STATE entry, pinned by (x0)'s sibling above).
+    '<div data-testid="run-header-title">',
     `<h1 data-testid="run-title">Gate run</h1>`,
     `<span data-testid="run-header-status">${running ? "● RUNNING" : "✓ DONE"}</span>`,
     "</div>",
-    '<div data-testid="run-actions">',
+    '<div data-testid="run-header-actions">',
     running ? '<button data-testid="run-pause">Pause</button>' : "",
-    running ? '<button data-testid="run-cancel">Cancel</button>' : "",
+    '<button data-testid="run-more-actions">⋯</button>',
     "</div>",
     opts.keepLog === false ? "" : '<h2 data-testid="run-log-heading">Run log</h2>',
   ].join("");
@@ -900,13 +905,14 @@ test.describe("parity only compares captures of the same page state", () => {
     ]);
   });
 
-  test("(x2) RUNNING at 1280, DONE at 390 with Pause/Cancel gone: NOT comparable — no defect", async ({
+  test("(x2) RUNNING at 1280, DONE at 390 with the primary Pause gone: NOT comparable — no defect", async ({
     page,
   }) => {
     const desktop = await runCapture(page, 1280, runStateDoc("RUNNING"));
     const phone = await runCapture(page, 390, runStateDoc("DONE"));
-    // The fingerprints really do differ, on the words the flake turned:
-    // the chip text and the pause/cancel presence.
+    // The fingerprints really do differ, on the words the flake turned: the
+    // chip text and the primary verb's presence (finding 11 moved Cancel into
+    // the ⋯ menu, so Pause inline ↔ absent is the RUNNING/DONE flip).
     expect(desktop.stateFingerprint).toContain("run-header-status=● RUNNING");
     expect(desktop.stateFingerprint).toContain("run-pause#on");
     expect(phone.stateFingerprint).toContain("run-header-status=✓ DONE");
@@ -923,9 +929,7 @@ test.describe("parity only compares captures of the same page state", () => {
     // reach the defect log again — `judgeParityPair` above is what keeps it
     // out.
     expect(missingParityItems(desktop.items, phone.items).map((item) => item.key)).toEqual([
-      "testid:run-actions",
       "testid:run-pause",
-      "testid:run-cancel",
     ]);
   });
 

@@ -1131,18 +1131,21 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.waitForURL(/\/runs\/[0-9a-fA-F-]+/);
     state.runId = new URL(page.url()).pathname.split("/").pop() as string;
     await expect(page.getByTestId("workbench")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
-    // The run is pinned to the revision just published. The header renders
-    // it as `r{number} {shortDigest(digest).slice(0,6)}` (shortDigest strips
-    // the `sha256:` prefix), so assert that exact shape: the published
-    // number plus the digest's first six hex chars.
-    const expectedPinned = `r${state.revisionBefore + 1} ${state.revisionDigest
-      .replace(/^sha256:/, "")
-      .slice(0, 6)}`;
-    await expect(page.getByTestId("run-pinned-revision")).toContainText(expectedPinned);
+    // The run is pinned to the revision just published. The redesigned header
+    // (finding 11) splits that pin into two facts of the labeled row:
+    // `run-pinned-revision` holds only `rev {number}` (the number the page's
+    // revision read names for the pin) and the Pinned digest fact holds
+    // `shortDigest(digest)`'s full 12 hex chars (shortDigest strips the
+    // `sha256:` prefix). Assert both — the same facts the old
+    // `revision r{n} {digest} (pinned)` sentence spelled in one line.
+    const expectedPin = `rev ${state.revisionBefore + 1}`;
+    const expectedDigest12 = state.revisionDigest.replace(/^sha256:/, "").slice(0, 12);
+    await expect(page.getByTestId("run-pinned-revision")).toHaveText(expectedPin);
+    await expect(page.getByTestId("run-fact-digest").locator("dd")).toHaveText(expectedDigest12);
     await evidence(
       page,
       `journey-c-run-${STAMP}`,
-      `run ${state.runId} started from the new revision ${expectedPinned} (${state.revisionDigest.slice(0, 19)}…) and the workbench opened on it`,
+      `run ${state.runId} started from the new revision ${expectedPin} (${expectedDigest12} / ${state.revisionDigest.slice(0, 19)}…) and the workbench opened on it`,
     );
   });
 

@@ -36,6 +36,7 @@
 import { test, expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import {
+  expectRunActionAbsent,
   expectRunStatus,
   gotoApp,
   openProjectBySlug,
@@ -1429,16 +1430,14 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("and the finished run offers no Retry — the rejection was final, and says so", async () => {
       // The UI arm, per the brief's CHANGED CONTRACT (pass-1 design review item
       // 3): a rejected gate is a business outcome and leaves no retry target, so
-      // the header shows no `Retry` verb at all. The disabled button plus its
-      // ~100-character sentence beside it measured ~537px of action column, which
-      // is what truncated the run's H1 to `pr…` in `run-gate-completed-1280.png`.
-      // The note that replaces it says the same fact in the header's measure, with
-      // the full sentence one hover away (and in the dock beside a node that
-      // really failed).
-      await expect(alice.getByTestId("run-retry"), "no Retry verb on a finished run").toHaveCount(
-        0,
-        { timeout: 30_000 },
-      );
+      // the header shows no `Retry` verb at all. With the redesigned header
+      // (finding 11) that means NEITHER the inline primary row NOR the ⋯ menu
+      // carries `run-retry` — a closed-menu count(0) would pass vacuously for a
+      // verb that merely rode the menu, so expectRunActionAbsent opens ⋯ and
+      // looks inside before calling it absent. The note that replaces the verb
+      // says the same fact in the header's measure, with the full sentence one
+      // hover away (and in the dock beside a node that really failed).
+      await expectRunActionAbsent(alice, "run-retry", 30_000);
       await expect(alice.getByTestId("run-retry-reason")).toContainText("answered rejected");
       await expect(alice.getByTestId("run-retry-reason")).toHaveAttribute(
         "title",

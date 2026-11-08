@@ -684,15 +684,21 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
 
     // The run page names the pinned revision — it must be the studio-published
     // one (the repin's proof), not the older revision without code_review.
-    // The redesigned header reads `r<n> <digest6>` (design 4e: "revision r3
-    // 8f2c1a (pinned)"), so the expected text pairs the first six hex of the
-    // digest with the revision NUMBER the API names for it.
+    // The redesigned header (finding 11) splits the old meta line into the
+    // facts row: `run-pinned-revision` carries only `rev {n}` (the revision
+    // NUMBER the API names for the pin) and `run-fact-digest` carries the
+    // pinned digest's full 12 hex chars (`shortDigest`) — the same two facts
+    // the old `revision r<n> <digest> (pinned)` sentence spelled together.
     if (state.revisionDigest) {
-      const digest6 = state.revisionDigest.startsWith("sha256:")
-        ? state.revisionDigest.slice(7, 13)
-        : state.revisionDigest.slice(0, 6);
-      let expected = digest6;
+      const digest12 = state.revisionDigest.startsWith("sha256:")
+        ? state.revisionDigest.slice(7, 19)
+        : state.revisionDigest.slice(0, 12);
+      // The fact's testid is the div (label + value), so read the value line.
+      await expect(page.getByTestId("run-fact-digest").locator("dd")).toHaveText(digest12, {
+        timeout: NODE_STEP_TIMEOUT_MS,
+      });
       if (state.pipelineId) {
+        let expected: string | null = null;
         const revisionsRes = await page.request.get(
           `${BASE_URL}/api/v1/pipelines/${state.pipelineId}/revisions?limit=100`,
         );
@@ -703,13 +709,21 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
           const pinned = revisions.revisions.find(
             (row) => row.revision_digest === state.revisionDigest,
           );
-          if (pinned) expected = `r${pinned.revision_number} ${digest6}`;
+          if (pinned) expected = `rev ${pinned.revision_number}`;
         }
+        if (expected) {
+          await expect(page.getByTestId("run-pinned-revision")).toHaveText(expected, {
+            timeout: NODE_STEP_TIMEOUT_MS,
+          });
+          console.log(
+            `WORKBENCH A4: run pinned to the studio-published revision ${expected} (${digest12})`,
+          );
+        } else {
+          console.log(`WORKBENCH A4: run pinned to digest ${digest12} (revision number unreadable)`);
+        }
+      } else {
+        console.log(`WORKBENCH A4: run pinned to digest ${digest12} (revision number unreadable)`);
       }
-      await expect(page.getByTestId("run-pinned-revision")).toContainText(expected, {
-        timeout: NODE_STEP_TIMEOUT_MS,
-      });
-      console.log(`WORKBENCH A4: run pinned to the studio-published revision ${expected}`);
     }
 
     // The DEFAULT view is the graph: tab selected, canvas present, and the
@@ -1052,7 +1066,12 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
       "approve",
     );
     await expect(page.getByTestId("dock-title")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
-    await expect(page.getByTestId("run-stream-status")).toContainText(/live|reconnecting/i, {
+    // The redesigned header (finding 11) is SILENT while the stream is live —
+    // `run-stream-status` only mounts when the stream is not live (e.g.
+    // "↻ reconnecting" after the reload). So the live proof is the element
+    // going away: until the stream is back, the header may briefly still carry
+    // the reconnecting line; the poll waits for the live state (absent).
+    await expect(page.getByTestId("run-stream-status")).toHaveCount(0, {
       timeout: 60_000,
     });
     console.log("WORKBENCH A6: mid-run reload restored the approve selection and a live stream");

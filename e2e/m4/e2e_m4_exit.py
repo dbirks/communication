@@ -24351,28 +24351,30 @@ def w_approval_verdicts(approver, decided, nodes, roles="", deadline=True, artif
 
 
 def w4_short(digest):
-    """The 12 hex chars the inspector prints for a digest — mirrors
+    """The 12 hex chars the run header prints for a digest — mirrors
     ui/src/lib/pipeline/yamlPointer.ts shortDigest(), the one spelling every digest on
     screen uses (the runs list, the newer-revision notice, the diagnostics pin, and —
-    since the W4 fix — the workbench header's pin, which used to print a silent
-    6-char prefix of it). The DOM comparison is against what the page can actually
-    render, not against the full sha256."""
+    since the W4 fix, still true since the finding-11 header redesign — the header's
+    own `run-fact-digest` fact, which prints it in full). The DOM comparison is
+    against what the page can actually render, not against the full sha256."""
     d = str(digest or "")
     return d[7:19] if d.startswith("sha256:") else d[:12]
 
 
 def w4_pin_label(number, digest):
-    """The pinned-revision label as the CURRENT run page writes it. The graph-first
-    workbench header (`ui/src/components/workbench/RunHeader.tsx`, ADR-0043) spells the
-    meta line `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age> ago`,
-    and the aria snapshot carries the pin link's own accessible name — `r<N> <12 hex>`.
-    The pre-workbench inspector (`RunInspector.tsx`, today the Diagnostics tab) spelled
-    the same fact `pinned r<N> · <digest>`; the WORD ORDER moved, the fact (the page
-    names the run's pin by number and digest, and marks it pinned) did not — so this is
-    the shape the arm reads, and `"(pinned)"` is asserted with it so a page that printed
-    a bare revision link without saying the run is pinned still fails."""
+    """The pinned-revision label as the CURRENT run page writes it. Since the header
+    redesign (finding 11, `ui/src/components/workbench/RunHeader.tsx`) the facts row
+    carries the pin as a link named `rev <N>` (`run-pinned-revision`) inside the
+    Workflow fact, and the digest rides the separate `Pinned digest` fact — the old
+    meta line's adjacency (`revision r<N> <digest> (pinned)`) is gone, so the arms
+    check the two halves apart (`w4_short(digest)` is the other half) and assert the
+    `Pinned digest` FACT label in place of the old `(pinned)` marker, so a page that
+    printed a bare revision link without saying the run is pinned still fails. The
+    older spellings still live on the Diagnostics tab (`pinned r<N> · <digest>` in
+    RunInspector.tsx). `digest` stays in the signature so naming a pin without its
+    digest remains an explicit pairing decision at each call site."""
     n = number if isinstance(number, int) else (int(number) if str(number or "").isdigit() else None)
-    return "" if n is None else f"r{n} {w4_short(digest)}".lower()
+    return "" if n is None else f"rev {n}".lower()
 
 
 def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_number,
@@ -24400,22 +24402,29 @@ def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_numbe
                 f'run page={bool(got) and got_n in body} — row W4: the page shows the PINNED '
                 f'digests, not the library newest'))
     if pin and moved_pin:
-        # Today's DOM: the header's pin link is `r<N> <digest>` and the meta line marks
-        # it "(pinned)"; the arm asks for the pinned number WITH its digest, so a page
-        # that had silently re-pinned to the newest revision cannot pass it by printing
-        # its own number next to the wrong digest (and the notice's "revision N+1"
-        # half, which row W4 also wants, cannot trip this check by accident).
+        # Today's DOM (finding 11): the facts row names the pin by link (`rev <N>`)
+        # and marks it with its own `Pinned digest` FACT, whose value is the pinned
+        # short digest — the old one-sentence `revision r<N> <digest> (pinned)`
+        # adjacency is gone. The arm keeps the same teeth: the number, the pinned
+        # marker AND the pinned digest must all be on the page, and the newly
+        # published revision must appear as NEITHER its rev number NOR its digest
+        # (so a page that silently re-pinned cannot pass by naming a number the
+        # digest does not back — and the notice's "revision N+1" half, which row W4
+        # also wants, cannot trip this check by accident).
         named, moved = pin_n in body, moved_n in body
-        marked = "(pinned)" in body
-        out.append((f'W4 the page still names the run pin as r{pinned_number}',
-                    named and marked and not moved,
-                    f'the header pin label {pin!r} rendered={named}; the meta line marks it '
-                    f'"(pinned)"={marked}; the newly published pin {moved_pin!r} rendered={moved} '
+        marked = "pinned digest" in body
+        pinned_shown = bool(want) and want in body
+        out.append((f'W4 the page still names the run pin as rev {pinned_number}',
+                    named and marked and pinned_shown and not moved,
+                    f'the header pin label {pin!r} rendered={named}; the facts row carries the '
+                    f'"Pinned digest" fact={marked} with the pinned value {want!r} '
+                    f'rendered={pinned_shown}; the newly published pin {moved_pin!r} rendered={moved} '
                     f'— row W4: the reloaded page still names N as the run\'s pin '
-                    f'(the pre-workbench inspector spelled this "pinned r<N> · <digest>"; '
-                    f'ADR-0043 moved the words, not the fact)'))
+                    f'(the pre-finding-11 header spelled this "revision r<N> <digest> (pinned)" '
+                    f'in one sentence; the redesign moved the words into labelled facts, '
+                    f'not the fact)'))
     else:
-        out.append(("W4 the page still names the run pin as r<N>", None,
+        out.append(("W4 the page still names the run pin as rev <N>", None,
                     "the gate could not read the pinned/newest revision numbers, so which "
                     "revision the page names is unmeasured"))
     return out
@@ -26644,11 +26653,12 @@ def w4():
         return
     try:
         pw_goto(f"/projects/{project_id}/runs/{run_id}", session="m4w4")
-        # The pin row W4 asks for is the NUMBER and the DIGEST together. The digest
-        # rides the run row and paints with the header; the number arrives with the
-        # page's own revision read, so the poll waits for the LABEL — not for the word
-        # "pinned", which the meta line prints before either half is on screen (the
-        # race that read as "the page shows no pin" in the 2026-10-25 pass).
+        # The pin row W4 asks for is the NUMBER and the DIGEST together, as two
+        # labelled facts of the redesigned header (finding 11): the digest rides the
+        # run row and paints with the header (`run-fact-digest`), the number arrives
+        # with the page's own revision read (the `rev <N>` link), so the poll waits
+        # for the LABEL — not for the words "Pinned digest", which the facts row
+        # prints before the number is on screen (the 2026-10-25 race, same shape).
         want = w4_short(pinned_digest)
         pin = w4_pin_label(pinned_number, pinned_digest)
         landed, nodes = pw_poll(lambda ns: bool(pin) and pin in w_norm(w8_dom_text(ns)),

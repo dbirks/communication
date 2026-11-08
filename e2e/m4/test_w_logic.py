@@ -691,34 +691,39 @@ def one(verdicts, needle, detail=False):
 def test_w4_pinned_and_notice():
     pinned, newer = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     assert w4_short(pinned) == "a" * 12 and w4_short("deadbeef" * 8) == "deadbeefdead"
-    # Today's run page is the graph-first workbench: its header meta line reads
-    # `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age> ago …` and the
-    # pin link's accessible name is `r<N> <12 hex>` — the FULL short digest, the same
-    # spelling the runs list and the newer-revision notice use. (The pre-workbench
-    # inspector spelled it `pinned r<N> · <digest>`; that spelling still lives on the
-    # Diagnostics tab, which is why the canned page below carries both.)
+    # Today's run page is the graph-first workbench, and since the header redesign
+    # (finding 11) the pin is TWO labelled facts, not one sentence: the Workflow
+    # fact's pin link (`run-pinned-revision`) reads `rev <N>` and the Pinned digest
+    # fact (`run-fact-digest`) carries the FULL 12-char short digest — the same
+    # spelling the runs list and the newer-revision notice use. (The pre-redesign
+    # meta line spelled it `revision r<N> <digest> (pinned)`, and that fact still
+    # lives on the Diagnostics tab as `pinned r<N> · <digest>` — which is why the
+    # canned page below carries both.)
     pin = w4_pin_label(1, pinned)
-    assert pin == f"r1 {'a' * 12}", pin
-    header = lambda label, marked=True: (f"feature-development #9661b1b8 · app · revision {label}"
-                                         f"{' (pinned) · started 2m ago by alice' if marked else ''}")
-    page = (f'{header(pin)} · pinned r1 · {w4_short(pinned)} · 12 frames')
+    assert pin == "rev 1", pin
+    def header(label, digest, marked=True):
+        return (f"Workflow feature-development · {label} Started 2m ago by alice"
+                f"{' Pinned digest ' + digest if marked else ''} · pinned r1"
+                f" · {digest} · 12 frames")
+    page = header(pin, w4_short(pinned))
     v = _vmap(w4_pinned_verdicts(pinned, 1, newer, 2, page, page))
     assert all(ok is True for ok, _ in v.values()), v
     moved = page.replace(pin, w4_pin_label(2, newer)).replace(w4_short(pinned), w4_short(newer))
     v = _vmap(w4_pinned_verdicts(pinned, 1, newer, 2, page, moved))
     assert any(ok is False for ok, _ in v.values()), v
     assert one(w4_pinned_verdicts(pinned, 1, newer, 2, page, page), 'shows the pinned digest') is True
-    # no loosening: the pin must name N WITH the pinned digest, and the page must say
-    # the word "pinned". A 6-char prefix (what the header printed before the W4 fix) is
-    # not the pinned digest; a revision link with no "(pinned)" marks nothing; a page
-    # that prints the newest number is not naming this run's pin.
-    short_only = header(f"r1 {'a' * 6}")
+    # no loosening: the pin must name N, the facts row must carry the Pinned digest
+    # fact WITH the pinned digest, and neither may be the library newest. A 6-char
+    # prefix (what the header printed before the W4 fix) is not the pinned digest;
+    # a revision link with no Pinned digest fact marks nothing; a page that names
+    # the newest number is not naming this run's pin.
+    short_only = header(pin, "a" * 6)
     assert one(w4_pinned_verdicts(pinned, 1, newer, 2, short_only, short_only),
                'shows the pinned digest') is False, "a 6-char prefix is not the digest"
-    unmarked = header(pin, marked=False)
+    unmarked = header(pin, w4_short(pinned), marked=False)
     assert one(w4_pinned_verdicts(pinned, 1, newer, 2, unmarked, unmarked),
                'names the run pin') is False, "a bare revision link does not name a pin"
-    renumbered = header(f"r2 {'a' * 12}")
+    renumbered = header("rev 2", w4_short(pinned))
     assert one(w4_pinned_verdicts(pinned, 1, newer, 2, renumbered, renumbered),
                'names the run pin') is False, "the page must name N, not the library newest"
     assert one(w4_pinned_verdicts(pinned, None, newer, 2, page, page), 'names the run pin') is None
