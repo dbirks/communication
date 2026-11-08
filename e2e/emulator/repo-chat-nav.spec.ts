@@ -46,7 +46,7 @@
 //            side panel's AGENTS IN THIS CHAT with its turn ranges. The WORKS
 //            IN switcher (ADR-0067 amendment) moves the chat to "Whole
 //            project" and back — the ds Menu's rows and tick, and the
-//            transcript's "moved this chat to …" system line in both
+//            transcript's "moved this thread to …" system line in both
 //            directions.
 //   rcn-2f — the side panel's `Make a workflow…` opens the assistant panel
 //            with the chat as context. The ask is the app's own canned line;
@@ -2611,7 +2611,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       // repositories plus "Whole project", the DECLARED binding ticked, one
       // pick = one `PATCH /api/v1/conversations/{id}`. The journal's
       // `conversation.scope_changed` row is the transcript's own evidence —
-      // the move prints its system line ("<person> moved this chat to …"),
+      // the move prints its system line ("<person> moved this thread to …"),
       // and the new scope answers from the next turn. This step moves and
       // moves BACK, leaving the chat bound to the repo it was born in.
       const worksIn = page.getByTestId("side-panel-works-in");
@@ -2775,7 +2775,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       });
       await expect(scopeMenu, "the pick closes the menu").toBeHidden({ timeout: 10_000 });
       await expect(
-        page.getByText(new RegExp(`moved this chat to ${FILE_REPO}`, "i")),
+        page.getByText(new RegExp(`moved this thread to ${FILE_REPO}`, "i")),
         "the move back prints its own scope-changed system line",
       ).toBeVisible({ timeout: 30_000 });
     });

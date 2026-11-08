@@ -13,7 +13,7 @@
 // postgres via this seed upsert. Specs under `pi` create their profile
 // through the product dialog (launcher card `pi`), then re-affirm the mode
 // here; specs under `claude` never touch this path and stay `ask`.
-import { COMPOSE_FILES, COMPOSE_PROJECT } from "./env.js";
+import { COMPOSE_PROJECT } from "./env.js";
 import { execDocker } from "./helpers.js";
 
 /** The launcher the suite runs on; the default keeps local runs unchanged. */
@@ -91,17 +91,51 @@ export function seedLabPiProfile(name: string, commitGranted = false): void {
  *
  * Exported because a lab journey that needs a row the PRODUCT has no route for
  * must go through this one door rather than shell out to docker a second time
- * (the m4 seed's own writer, the same compose layers, the same sudo fallback).
- * `-tAqc` prints rows only — no headers, no tags — so the return value is the
- * statement's own output, trimmed.
+ * (the m4 seed's own writer, the same sudo fallback). `-tAqc` prints rows only
+ * — no headers, no tags — so the return value is the statement's own output,
+ * trimmed.
+ *
+ * The postgres container is found by COMPOSE LABELS, never by
+ * `docker compose exec`: compose interpolates EVERY layer on EVERY
+ * subcommand, and `compose.real.yml` marks the gateway keys REQUIRED
+ * (`${LLMC_API_KEY:?}`) — a verification job that starts the lab but does not
+ * export the key to the Playwright process therefore died at config render,
+ * before psql ever ran. `docker ps`/`docker exec` against the running
+ * container need no render and touch no secret.
  */
 export function seedSql(sql: string): string {
-  const args = ["compose", "-p", COMPOSE_PROJECT];
-  for (const file of COMPOSE_FILES) args.push("-f", file);
-  args.push(
+  return seedSqlInProject(sql, COMPOSE_PROJECT);
+}
+
+/**
+ * `seedSql` for a caller whose stack is a DIFFERENT compose project than the
+ * CI e2e default (the emulator loop drives the `communication-m4` lab).
+ * Same labels, same `psql -tAqc` contract, same one door.
+ */
+export function seedSqlInProject(sql: string, composeProject: string): string {
+  const psOut = execDocker([
+    "ps",
+    "-q",
+    "--filter",
+    `label=com.docker.compose.project=${composeProject}`,
+    "--filter",
+    "label=com.docker.compose.service=postgres",
+  ])
+    .toString("utf8")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (psOut.length === 0) {
+    throw new Error(
+      `seed sql: no running postgres container for compose project ` +
+        `${composeProject} (label com.docker.compose.project=${composeProject}, ` +
+        `com.docker.compose.service=postgres) — is that stack up?`,
+    );
+  }
+  const container = psOut[0]!;
+  const args = [
     "exec",
-    "-T",
-    "postgres",
+    "-i",
+    container,
     "psql",
     "-U",
     "communication",
@@ -109,6 +143,27 @@ export function seedSql(sql: string): string {
     "communication",
     "-tAqc",
     sql,
-  );
-  return execDocker(args).toString("utf8").trim();
+  ];
+  try {
+    return execDocker(args).toString("utf8").trim();
+  } catch (error) {
+    // Name the DATABASE's reason first: psql writes its ERROR/WARNING lines to
+    // stderr, and the raw execFileSync message buries them under the full
+    // command line (which here is the whole seed). Stderr first (600 chars),
+    // then a short SQL echo — a future defect names the check that fired.
+    const stderr = bufferToString((error as { stderr?: unknown }).stderr).slice(0, 600);
+    const stdout = bufferToString((error as { stdout?: unknown }).stdout).slice(0, 300);
+    throw new Error(
+      `seed sql failed (postgres container ${container}, compose project ` +
+        `${composeProject})\npsql stderr: ${stderr || "(empty)"}` +
+        (stdout ? `\npsql stdout: ${stdout}` : "") +
+        `\nsql: ${sql.slice(0, 200)}${sql.length > 200 ? " …" : ""}`,
+    );
+  }
+}
+
+function bufferToString(value: unknown): string {
+  if (Buffer.isBuffer(value)) return value.toString("utf8").trim();
+  if (typeof value === "string") return value.trim();
+  return value === undefined ? "" : String(value);
 }

@@ -42,8 +42,7 @@
 // Seeds resolve-or-create on their pass-stamped titles: Playwright restarts
 // the worker after a serial-group failure, and the fresh process must reuse
 // the dead one's rows, never double-seed them.
-import { execDocker } from "../tests/helpers.js";
-import { sqlQuote } from "../tests/lab-launcher.js";
+import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
 import { expect, test } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
@@ -53,40 +52,20 @@ const PROJECT_SLUG = "m4-exit";
 
 /**
  * The lab's ONE DOOR for rows the product has no route for is
- * e2e/tests/lab-launcher.ts's exported `seedSql` — but its compose
- * coordinates (`E2E_COMPOSE_PROJECT`/`E2E_COMPOSE_FILES`, e2e/tests/env.js)
- * default to the isolated CI e2e stack, and the emulator loop drives the
- * `communication-m4` lab scripts/lab-up.sh brings up (compose.yml +
- * compose.harness.yml + compose.m4.yml + compose.real.yml). Same door, same
- * `psql -tAqc` contract, the LAB's coordinates — and an exported knob still
- * wins, exactly like seedSql honours it.
+ * e2e/tests/lab-launcher.ts's exported seed (shared `psql -tAqc` contract,
+ * shared error shape) — but its compose coordinates (`E2E_COMPOSE_PROJECT`,
+ * e2e/tests/env.js) default to the isolated CI e2e stack, and the emulator
+ * loop drives the `communication-m4` lab scripts/lab-up.sh brings up
+ * (compose.yml + compose.harness.yml + compose.m4.yml + compose.real.yml).
+ * Same door, the LAB's project — and an exported knob still wins, exactly
+ * like seedSql honours it. The helper finds postgres by compose LABELS and
+ * `docker exec`s the running container directly: no compose config render,
+ * so a verification job that starts the lab but never exports the gateway
+ * keys `compose.real.yml` interpolates (`${LLMC_API_KEY:?}`) to the
+ * Playwright process seeds just the same.
  */
 function labSql(sql: string): string {
-  const project = process.env.E2E_COMPOSE_PROJECT ?? "communication-m4";
-  const files = (
-    process.env.E2E_COMPOSE_FILES ??
-    "compose.yml,compose.harness.yml,compose.m4.yml,compose.real.yml"
-  )
-    .split(",")
-    .map((file) => file.trim())
-    .filter(Boolean);
-  const args = ["compose", "-p", project];
-  for (const file of files) args.push("-f", file);
-  args.push(
-    "exec",
-    "-T",
-    "postgres",
-    "psql",
-    "-U",
-    "communication",
-    "-d",
-    "communication",
-    "-tAqc",
-    sql,
-  );
-  return execDocker(args)
-    .toString("utf8")
-    .trim();
+  return seedSqlInProject(sql, process.env.E2E_COMPOSE_PROJECT ?? "communication-m4");
 }
 
 /* ------------------------------------------------------------ the fixture
