@@ -132,6 +132,11 @@ type CatchUpGenDeps struct {
 	Pipelines catchUpGenPipelineReader
 	Chats     assistant.ChatTranscriptReader
 	Logger    *slog.Logger
+	// Cooldown overrides the generator's per-RUN floor between two attempts.
+	// Zero means assistant.CatchUpGenCooldown (ten minutes); a deployment that
+	// runs the generator against a real model in a short-lived lab may shorten
+	// it — see COMMUNICATION_CATCHUP_GEN_COOLDOWN in `serve`'s environment.
+	Cooldown time.Duration
 }
 
 // CatchUpGeneratorTrigger is the seam the list route calls once it has
@@ -159,10 +164,11 @@ func BuildCatchUpGenerator(deps CatchUpGenDeps) CatchUpGeneratorTrigger {
 		chats: deps.Chats, log: log,
 	}
 	g := assistant.NewCatchUpGenerator(assistant.CatchUpDeps{
-		Model:  deps.Broker,
-		Source: source,
-		Writer: &catchUpGenWriter{store: deps.CatchUp},
-		Log:    log,
+		Model:    deps.Broker,
+		Source:   source,
+		Writer:   &catchUpGenWriter{store: deps.CatchUp},
+		Log:      log,
+		Cooldown: deps.Cooldown,
 	})
 	if g == nil {
 		return nil

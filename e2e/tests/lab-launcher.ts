@@ -35,7 +35,7 @@ export const newProfileCardTestid = () => `new-profile-card-${LAB_LAUNCHER}`;
  * Single-quote escape for the psql literal (same shape as seed.sh's fixed
  * names; a stray quote must break the statement loudly, not the org's rows).
  */
-function sqlQuote(value: string): string {
+export function sqlQuote(value: string): string {
   if (/\0/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value.replace(/'/g, "''")}'`;
 }
@@ -86,8 +86,16 @@ export function seedLabPiProfile(name: string, commitGranted = false): void {
   );
 }
 
-/** Run one SQL statement through the stack's own postgres (seed.sh's path). */
-function seedSql(sql: string): string {
+/**
+ * Run one SQL statement through the stack's own postgres (seed.sh's path).
+ *
+ * Exported because a lab journey that needs a row the PRODUCT has no route for
+ * must go through this one door rather than shell out to docker a second time
+ * (the m4 seed's own writer, the same compose layers, the same sudo fallback).
+ * `-tAqc` prints rows only — no headers, no tags — so the return value is the
+ * statement's own output, trimmed.
+ */
+export function seedSql(sql: string): string {
   const args = ["compose", "-p", COMPOSE_PROJECT];
   for (const file of COMPOSE_FILES) args.push("-f", file);
   args.push(

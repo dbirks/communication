@@ -100,6 +100,18 @@ environment:
                                         startup refusal. WriteTimeout stays
                                         unset on purpose — it would kill SSE
                                         streams (see newServeServer).
+  COMMUNICATION_CATCHUP_GEN_COOLDOWN    ADR-0078 catch-up tour generator's
+                                        per-RUN floor between two model
+                                        attempts (default "10m"). How long a
+                                        finished run must sit before opening
+                                        the page asks the model about it
+                                        again. A Go duration; 0, a negative
+                                        value and unparseable text all fall
+                                        back to the default rather than
+                                        refusing startup — this knob protects
+                                        a model from a page-load storm, and a
+                                        typo in it costs a slower retry, not
+                                        a wrong answer.
   COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
   COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
@@ -233,6 +245,13 @@ const (
 
 	envSessionPurgeInterval     = "COMMUNICATION_SESSION_PURGE_INTERVAL"
 	defaultSessionPurgeInterval = 10 * time.Minute
+
+	// envCatchUpGenCooldown overrides the catch-up tour generator's per-RUN
+	// cooldown (assistant.CatchUpGenCooldown, ten minutes). Unlike the serve
+	// ticks above, a value this process cannot read is NOT a startup refusal:
+	// the cooldown is a hammer-guard, not a correctness contract, so 0, a
+	// negative number and unparseable text all fall back to the default.
+	envCatchUpGenCooldown = "COMMUNICATION_CATCHUP_GEN_COOLDOWN"
 )
 
 // serveServerTimeout parses one of the http.Server deadline variables with
@@ -273,6 +292,25 @@ func serveSessionPurgeInterval(getenv func(string) string) (time.Duration, error
 		return 0, fmt.Errorf("%s must be positive, or 0 to disable, got %s", envSessionPurgeInterval, d)
 	}
 	return d, nil
+}
+
+// serveCatchUpGenCooldown reads COMMUNICATION_CATCHUP_GEN_COOLDOWN for the
+// catch-up tour generator wired below. Unset, 0, negative or unparseable is
+// the generator's own default (ten minutes): the knob exists so a lab that
+// runs a real model can retry a failed generation inside a test's bounded
+// wait, and a deployment that typos it keeps the shipped guard rather than
+// refusing to start — the worst outcome of a mistyped hammer-guard is a
+// slower retry, never a wrong answer.
+func serveCatchUpGenCooldown(getenv func(string) string) time.Duration {
+	raw := strings.TrimSpace(getenv(envCatchUpGenCooldown))
+	if raw == "" {
+		return assistant.CatchUpGenCooldown
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return assistant.CatchUpGenCooldown
+	}
+	return d
 }
 
 // newServeServer builds the process's http.Server. ReadTimeout bounds only
@@ -375,6 +413,9 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	// The catch-up generator's per-run cooldown: never a startup refusal, so
+	// there is no error to handle here (see serveCatchUpGenCooldown).
+	catchUpGenCooldown := serveCatchUpGenCooldown(os.Getenv)
 	rateLimits, err := serveRateLimits(os.Getenv)
 	if err != nil {
 		// A throttle the process cannot parse must be a startup refusal, not a
@@ -447,6 +488,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		ScheduleTick:         scheduleTick,
 		IssueTriggerTick:     issueTriggerTick,
 		SessionPurgeInterval: sessionPurge,
+		CatchUpGenCooldown:   catchUpGenCooldown,
 		API: api.Config{
 			ReplicaName:      replica,
 			Version:          version,
@@ -696,6 +738,14 @@ type serveStackDeps struct {
 	// sessionPurgeRunner overrides the purge ticker loop; nil means
 	// production's runSessionPurger over the stack's own IdentityStore.
 	sessionPurgeRunner func(ctx context.Context) error
+
+	// CatchUpGenCooldown is COMMUNICATION_CATCHUP_GEN_COOLDOWN resolved
+	// (serveCatchUpGenCooldown): the ADR-0078 tour generator's per-RUN floor
+	// between two model attempts. Zero means the generator's own default (ten
+	// minutes), so every stack test that never names the variable keeps the
+	// shipped cadence; the lab shortens it to retry a failed generation inside
+	// one acceptance run's bounded wait.
+	CatchUpGenCooldown time.Duration
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -1396,7 +1446,8 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			Chats: api.NewAssistantChatTranscript(apiConversations,
 				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
 				apiProjects),
-			Logger: d.API.Logger,
+			Logger:   d.API.Logger,
+			Cooldown: d.CatchUpGenCooldown,
 		})),
 		// The recap (T13b): the same broker, asked once per request, behind
 		// the assistant's own per-principal throttle. A recap is one reader's

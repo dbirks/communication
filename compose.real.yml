@@ -109,6 +109,12 @@ services:
       # the real gateway is slower, so the lab's assistant journeys timed out.
       # Parsed with time.ParseDuration (cmd/communication/serve.go).
       COMMUNICATION_ASSISTANT_TIMEOUT: 180s
+      # ADR-0078's catch-up tour generator waits 10 minutes per RUN before it
+      # will ask the model about that run again. In a lab whose acceptance spec
+      # finishes a run and then waits minutes for its tour, that floor is
+      # longer than the wait: one failed attempt would block the retry past the
+      # spec's deadline. Same parser as above; see serveCatchUpGenCooldown.
+      COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
 
   api-b:
     volumes:
@@ -119,3 +125,5 @@ services:
       COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
       COMMUNICATION_ASSISTANT_TIMEOUT: 180s
+      # See api-a: the tour generator's per-run cooldown, shortened for the lab.
+      COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
