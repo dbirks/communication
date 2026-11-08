@@ -452,7 +452,7 @@ test.describe("W3 start a run from a GitHub issue", () => {
       // inline assign form is gone and the tab's one way in is the
       // `+ use a library workflow` picker, whose single `Use` verb resolves
       // the newest published revision and posts the whole-project pin.
-      await gotoApp(alice, `${projectPath}/pipelines`);
+      await gotoApp(alice, `${projectPath}/workflows`);
       await expect(alice.getByTestId("project-pipelines")).toBeVisible();
       await expect(
         alice

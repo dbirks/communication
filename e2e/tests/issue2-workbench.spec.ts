@@ -591,7 +591,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // — the assignment's old “when to run” block became the row's own
     // STARTS WHEN box. The panel's row for this pipeline, with its
     // STARTS WHEN box open (the 2e default), is what proves it is live here.
-    await page.goto(`${projectPath}/pipelines`);
+    await page.goto(`${projectPath}/workflows`);
     await expect(page.getByTestId("project-pipelines")).toBeVisible();
     const assignedRow = page
       .locator('[data-testid^="project-workflow-row-"]')

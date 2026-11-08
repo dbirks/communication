@@ -1,4 +1,8 @@
-// Phase 2 acceptance: the Home briefing and the cross-project Board.
+// Phase 2 acceptance: the Home briefing (finding 03 retired the cross-project
+// Board as a destination — `/inbox` and `/board` redirect to Today; the
+// decision callouts with the shared DecisionBar and the Running now rows are
+// the briefing now, and the per-repository work lives in each repository's
+// Lanes view).
 //
 // Home's count line and its decision callouts must equal the cross-project
 // reads (contract C3: GET /api/v1/runs + GET /api/v1/approvals) — no invented
@@ -9,11 +13,11 @@
 // still in the API's order — nothing on Today links to the Inbox any more. The
 // spec seeds scratch gates through the API when the lab holds ≤ 3 pending so
 // the cap path is proven whether 1 or 12 gates were pending at entry.
-// The Board's five columns carry the same per-status counts, the
-// repo / workflow groupings re-group the same cards, a card click opens the
-// 440px drawer on `?run=`, the drawer traps focus and Escape closes it, and
-// the drawer's Approve always shows a confirm step (cancelled here — the
-// journey never decides a gate).
+// The old board's per-status kanban columns and repo/workflow groupings were
+// retired with the page and have no carrier any more; what the board cards
+// carried that still exists — a run card opens its run page, and deciding a
+// gate is never a one-click commit (finding 04: the DecisionBar holds the
+// POST behind a 5 s Undo window) — is proven here on Today.
 //
 // Runs ONLY when COMMUNICATION_E2E_SHELL=1. checkShellScreen on every page;
 // evidence() per step.
@@ -21,7 +25,6 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { signIn, testidOf } from "./helpers.js";
 import {
-  BOARD_COLUMNS,
   SHELL_ENABLED,
   SHELL_GATE,
   apiBoardRuns,
@@ -31,11 +34,9 @@ import {
   apiRuns,
   apiScratchProject,
   apiStartRun,
-  boardCardRuns,
   boardColumnCounts,
   checkShellScreen,
   evidence,
-  pinBrowserClock,
   signInNarrow,
   watchPageErrors,
 } from "./shell-helpers.js";
@@ -136,25 +137,15 @@ async function ensureMoreGatesThanCap(request: APIRequestContext): Promise<void>
     .toBeGreaterThan(CALLOUT_MAX);
 }
 
-/** The card ROOT only — the inner testids (open/step/actions/retry) share the
-    `board-card-` prefix, so a bare `[data-testid^="board-card-"]` counts children too. */
-const CARD_ROOT =
-  '[data-testid^="board-card-"]' +
-  ':not([data-testid^="board-card-open-"])' +
-  ':not([data-testid^="board-card-step-"])' +
-  ':not([data-testid^="board-card-actions-"])' +
-  ':not([data-testid^="board-card-retry-"])';
+/** The Running-now card ROOT only — `home-run-step-`/`home-run-progress-`
+    share the `home-run-` prefix, so a bare `[data-testid^="home-run-"]`
+    counts children too. */
+const RUN_CARD_ROOT =
+  '[data-testid^="home-run-"]' +
+  ':not([data-testid^="home-run-step-"])' +
+  ':not([data-testid^="home-run-progress-"])';
 
-/** The number a column header prints (its trailing mono span). */
-async function columnCount(page: import("@playwright/test").Page, column: string): Promise<number> {
-  const header = page.locator(`[data-testid="board-col-${column}"] > button`);
-  const text = (await header.innerText()).trim();
-  const match = text.match(/(\d+)\s*$/);
-  expect(match, `column ${column} header shows a count`).toBeTruthy();
-  return Number(match![1]);
-}
-
-test.describe("shell p2 — Home briefing + cross-project board", () => {
+test.describe("shell p2 — Home briefing (counts, callouts, run cards, decisions)", () => {
   test.skip(!SHELL_ENABLED, SHELL_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(10 * 60_000);
@@ -300,131 +291,71 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
     );
   });
 
-  test("Board: column counts equal the API; repo and workflow groupings", async ({ page }) => {
-    // Pin the browser clock BEFORE the first navigation: DONE TODAY is a
-    // client-side clock (ui/src/components/board/columns.ts isDoneToday), so
-    // the page's local midnight and the test's must be the same instant —
-    // otherwise a journey that crosses midnight drifts between the API read
-    // and the page read. `setFixedTime` freezes Date only; timers keep
-    // running, so SSE and the board's coalesced invalidations are unaffected.
-    const now = await pinBrowserClock(page);
-    await signIn(page, "admin");
-    const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
-    // The board's own read — one page of GET /runs?status=<all nine>&limit=200,
-    // no updated_since (ui/src/api/board.ts) — filtered by the board's own
-    // rule: a completed run is a card only while it finished at/after local
-    // midnight, so a run from yesterday is off the board entirely.
-    const runs = await apiBoardRuns(page.request);
-    const cards = boardCardRuns(runs, now);
-    const counts = boardColumnCounts(runs, now);
-    for (const column of BOARD_COLUMNS) {
-      expect(await columnCount(page, column), `column ${column}`).toBe(counts[column]);
-    }
-    await checkShellScreen(page, "board (state columns)", stopWatching);
-    await evidence(
-      page,
-      "shell-p2-board-columns",
-      `board column counts equal the board's own read under its DONE TODAY clock (${BOARD_COLUMNS.map((c) => `${c}=${counts[c]}`).join(", ")} of ${cards.length} cards; ${runs.length - cards.length} of the ${runs.length} API rows finished before local midnight and are off the board)`,
-    );
-
-    // Group by repo: one group row per distinct repo label, each labelled
-    // "<label> (N)" with N the group size — the same cards, re-grouped.
-    await page.getByTestId("board-group-by-repo").check();
-    await expect(page.getByTestId("board-col-queued")).toBeHidden();
-    const repoGroups = page.locator('section[aria-label$=")"]');
-    const groupCount = await repoGroups.count();
-    expect(groupCount, "repo grouping renders one row per group").toBeGreaterThan(0);
-    for (let i = 0; i < groupCount; i += 1) {
-      const label = (await repoGroups.nth(i).getAttribute("aria-label")) ?? "";
-      const shown = Number(label.match(/\((\d+)\)$/)![1]);
-      const cards = await repoGroups.nth(i).locator(CARD_ROOT).count();
-      expect(cards, `group "${label}" card count`).toBe(shown);
-    }
-    await evidence(
-      page,
-      "shell-p2-board-group-repo",
-      `grouping by repo re-groups the same ${runs.length} rows into ${groupCount} group row(s), each labelled with its count (the repo/workflow groupings group the whole page — the DONE TODAY clock belongs to the state columns only)`,
-    );
-    await page.getByTestId("board-group-by-workflow").check();
-    const workflowGroups = page.locator('section[aria-label$=")"]');
-    const workflowCount = await workflowGroups.count();
-    expect(workflowCount, "workflow grouping renders groups").toBeGreaterThan(0);
-    const total = await page.locator(`section[aria-label$=")"] ${CARD_ROOT}`).count();
-    expect(total, "workflow grouping keeps every row of the board's page").toBe(runs.length);
-    stopWatching();
-    await evidence(
-      page,
-      "shell-p2-board-group-workflow",
-      `grouping by workflow re-groups all ${runs.length} cards into ${workflowCount} group row(s)`,
-    );
-  });
-
-  test("card click opens the drawer on ?run=; focus stays in the drawer; esc closes", async ({
+  test("Today: every Running now card links its run page, equal to the board read's active set", async ({
     page,
   }) => {
-    // A card to click must be a card the board RENDERS: a completed run that
-    // finished before local midnight has none (ui/src/components/board/
-    // columns.ts isDoneToday), so the newest API row is not automatically the
-    // newest card. The clock is pinned before any navigation so the page's and
-    // the test's midnight are the same instant.
-    const now = await pinBrowserClock(page);
+    // The retired board's cards carried this claim; Today's Running now is the
+    // briefing's carrier: ui/src/pages/Home.tsx mounts the SAME board read
+    // (`useBoardRuns({})`) and lists every row whose status is not
+    // `completed`, capped at the panel's 8 rows — no DONE TODAY clock any
+    // more, so no pinned clock is needed here either.
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
-    const runs = boardCardRuns(await apiBoardRuns(page.request), now);
-    expect(runs.length).toBeGreaterThan(0);
-    await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
-    const card = page.getByTestId(`board-card-open-${runs[0].id}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
-    await card.click();
-    const drawer = page.getByTestId("run-drawer");
-    await expect(drawer).toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`\\?run=${runs[0].id}`));
-    await checkShellScreen(page, "board with drawer", stopWatching);
-    await evidence(
-      page,
-      "shell-p2-drawer-open",
-      `clicking the run card opens the 440px drawer and the URL carries ?run=${runs[0].id.slice(0, 8)}…`,
-    );
-
-    // Focus trap: the drawer owns focus and Tab cycles never escape it.
-    const drawerEl = await drawer.elementHandle();
-    const focusedInDrawer = async () => {
-      const active = await page.evaluateHandle(() => document.activeElement);
-      return await drawerEl.evaluate((el, a) => el.contains(a as Node), active);
-    };
-    expect(await focusedInDrawer(), "focus starts inside the drawer").toBe(true);
-    for (let i = 0; i < 25; i += 1) {
-      await page.keyboard.press("Tab");
-      expect(await focusedInDrawer(), `focus escapes after Tab ${i + 1}`).toBe(true);
+    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("home-page")).toBeVisible({ timeout: 30_000 });
+    const runs = await apiBoardRuns(page.request);
+    const active = runs.filter((run) => run.status !== "completed").slice(0, 8);
+    expect(active.length, "the lab has at least one active run").toBeGreaterThan(0);
+    for (const run of active) {
+      const card = page.getByTestId(`home-run-${testidOf(run.id)}`);
+      await expect(card, `Running now card for run ${run.id.slice(0, 8)}…`).toBeVisible({
+        timeout: 30_000,
+      });
+      expect(
+        await card.getAttribute("href"),
+        `the card for run ${run.id.slice(0, 8)}… links its own run page`,
+      ).toBe(`/runs/${run.id}`);
     }
-    await page.keyboard.press("Escape");
-    await expect(drawer).toBeHidden();
-    expect(page.url().includes(`?run=${runs[0].id}`), "esc clears ?run=").toBe(false);
-    stopWatching();
+    // No invented rows and none missing: the panel shows exactly the active
+    // page slice it was handed.
+    await expect(page.locator(RUN_CARD_ROOT)).toHaveCount(active.length);
+    // A card click opens the run — the board drawer's `?run=` was retired with
+    // the page; the run page itself is the destination now.
+    await page.getByTestId(`home-run-${testidOf(active[0].id)}`).click();
+    await expect(page).toHaveURL(new RegExp(`/runs/${active[0].id}$`), { timeout: 30_000 });
+    await checkShellScreen(page, "run page from a Running now card", stopWatching);
     await evidence(
       page,
-      "shell-p2-drawer-focus-esc",
-      "focus starts inside the drawer and 25 Tab presses never escape it; Escape closes the drawer and drops ?run=",
+      "shell-p2-running-now-cards",
+      `Today's Running now shows exactly the first ${active.length} of the ${runs.length} rows of the board read that are not completed, every card links /runs/<id> and the click landed there (the retired board's card→run claim)`,
     );
   });
 
-  test("drawer Approve shows a confirm step; the journey cancels it", async ({ page }) => {
+  test("a decision on Today is never one-click: Approve holds behind a 5 s Undo, and undoing posts nothing", async ({
+    page,
+  }) => {
+    // Finding 04 replaced the drawer's confirm step with the ONE DecisionBar:
+    // a verb click holds the POST ~5 s behind an Undo link, which is the same
+    // safety the old confirm step bought — the journey still never decides a
+    // gate.
     await signIn(page, "admin");
     const runs = await apiRuns(page.request);
     const waiting = runs.find((r) => r.status === "waiting_human");
     expect(waiting, "a waiting run exists in the lab").toBeTruthy();
     const approvals = await apiPendingApprovals(page.request);
-    expect(
-      approvals.some((a) => a.run_id === waiting!.id),
-      "the waiting run has a pending gate",
-    ).toBeTruthy();
-    await page.goto(BASE_URL + `/board?run=${waiting!.id}`, { waitUntil: "domcontentloaded" });
-    const drawer = page.getByTestId("run-drawer");
-    await expect(drawer).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("run-drawer-approve")).toBeVisible();
-    // Count approval POSTs across the confirm + cancel journey. (An unbounded
+    const gate = approvals.find((a) => a.run_id === waiting!.id);
+    expect(gate, "the waiting run has a pending gate").toBeTruthy();
+    const stopWatching = watchPageErrors(page);
+    await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("home-callouts")).toBeVisible({ timeout: 30_000 });
+    const callout = page.getByTestId(`home-callout-${testidOf(gate!.id)}`);
+    // The preview cap can hide the gate's own callout: `Show n more` then
+    // expands the panel in place (the assertion above proved the cap path).
+    if ((await callout.count()) === 0) {
+      await page.getByTestId("home-show-more").click();
+    }
+    await expect(callout).toBeVisible({ timeout: 30_000 });
+    // Count approval POSTs across the hold + undo journey. (An unbounded
     // `page.waitForRequest` only rejects after the whole test timeout in the
     // correct case — no POST ever happens — and hangs the journey.)
     let approvalPosts = 0;
@@ -432,61 +363,73 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
       if (req.url().includes("/api/v1/approvals") && req.method() === "POST") approvalPosts += 1;
     };
     page.on("request", onRequest);
-    await page.getByTestId("run-drawer-approve").click();
-    await expect(page.getByTestId("run-drawer-approve-confirm")).toBeVisible();
+    await callout.getByTestId("decision-approve").click();
+    await expect(callout.getByTestId("decision-status")).toContainText(
+      /Approved\. The run continues in \d+s\./,
+    );
+    await expect(callout.getByTestId("decision-undo")).toBeVisible();
     await evidence(
       page,
-      "shell-p2-drawer-approve-confirm",
-      "the drawer's Approve button shows a confirm step before any decision is recorded",
+      "shell-p2-home-approve-hold",
+      "the callout's Approve verb holds the decision behind a counting-down Undo window instead of POSTing on the click (finding 04's replacement for the confirm step)",
     );
-    await drawer.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByTestId("run-drawer-approve")).toBeVisible();
-    // A short settle window: the decision would POST in the click's own tick.
+    await callout.getByTestId("decision-undo").click();
+    await expect(callout.getByTestId("decision-approve")).toBeVisible();
+    // A short settle window: a decided gate would POST in the hold's own tick.
     await page.waitForTimeout(1_000);
     page.off("request", onRequest);
     expect(approvalPosts, "no approval was POSTed").toBe(0);
+    const stillPending = await apiPendingApprovals(page.request);
+    expect(
+      stillPending.some((a) => a.id === gate!.id),
+      "the gate is still pending after the undo",
+    ).toBe(true);
+    stopWatching();
     await evidence(
       page,
-      "shell-p2-drawer-approve-cancelled",
-      "cancelling the confirm step returns to the Approve button without any POST /api/v1/approvals — the gate is still pending",
+      "shell-p2-home-approve-undone",
+      "Undo cancels the hold with zero POST /api/v1/approvals and the gate still serves as pending — the journey never decides a gate",
     );
   });
 
   test.describe("narrow 390x844", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
-    test("phone: drawer fits, esc closes, approve confirm cancels", async ({ page }) => {
+    test("phone: a decision callout fits 390px and its Approve can be undone", async ({ page }) => {
       await signInNarrow(page, "admin");
       const runs = await apiRuns(page.request);
-      const waiting = runs.find((r) => r.status === "waiting_human") ?? runs[0];
+      const waiting = runs.find((r) => r.status === "waiting_human");
+      expect(waiting, "a waiting run exists in the lab").toBeTruthy();
+      const approvals = await apiPendingApprovals(page.request);
+      const gate = approvals.find((a) => a.run_id === waiting!.id);
+      expect(gate, "the waiting run has a pending gate").toBeTruthy();
       const stopWatching = watchPageErrors(page);
-      await page.goto(BASE_URL + `/board?run=${waiting.id}`, { waitUntil: "domcontentloaded" });
-      const drawer = page.getByTestId("run-drawer");
-      await expect(drawer).toBeVisible({ timeout: 30_000 });
-      const box = await drawer.boundingBox();
-      expect(box, "the drawer is on screen at 390px").not.toBeNull();
+      await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
+      await page.keyboard.press("Escape"); // close the drawer signInNarrow left open
+      await expect(page.getByTestId("home-callouts")).toBeVisible({ timeout: 30_000 });
+      const callout = page.getByTestId(`home-callout-${testidOf(gate!.id)}`);
+      if ((await callout.count()) === 0) {
+        await page.getByTestId("home-show-more").click();
+      }
+      await expect(callout).toBeVisible({ timeout: 30_000 });
+      // The drawer's "fits the viewport" claim, carried by the callout that
+      // replaced it: on screen at 390px, no sideways scroll.
+      const box = await callout.boundingBox();
+      expect(box, "the decision callout is on screen at 390px").not.toBeNull();
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.width).toBeLessThanOrEqual(390);
-      await checkShellScreen(page, "board drawer at phone width", stopWatching);
+      await callout.getByTestId("decision-approve").click();
+      await expect(callout.getByTestId("decision-status")).toContainText(
+        /Approved\. The run continues in \d+s\./,
+      );
+      await callout.getByTestId("decision-undo").click();
+      await expect(callout.getByTestId("decision-approve")).toBeVisible();
+      await checkShellScreen(page, "today with the callout at phone width", stopWatching);
       await evidence(
         page,
-        "shell-p2-drawer-phone",
-        "at 390x844 the run drawer fits the viewport and the page does not scroll sideways",
+        "shell-p2-phone-callout-undo",
+        "at 390x844 the run's decision callout fits the viewport, its Approve holds behind the Undo window and the journey undoes it — the page never scrolls sideways",
       );
-      if (waiting.status === "waiting_human") {
-        await expect(page.getByTestId("run-drawer-approve")).toBeVisible();
-        await page.getByTestId("run-drawer-approve").click();
-        await expect(page.getByTestId("run-drawer-approve-confirm")).toBeVisible();
-        await drawer.getByRole("button", { name: "Cancel" }).click();
-        await evidence(
-          page,
-          "shell-p2-drawer-phone-approve-confirm",
-          "at 390x844 the drawer's Approve shows its confirm step, and the journey cancels it",
-        );
-      }
-      await page.keyboard.press("Escape");
-      await expect(drawer).toBeHidden();
-      stopWatching();
     });
   });
 });

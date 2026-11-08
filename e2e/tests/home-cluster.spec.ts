@@ -895,7 +895,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       // inline assign form is gone and its one way in is the
       // `+ use a library workflow` picker, whose single `Use` verb resolves the
       // newest published revision and posts the whole-project pin.
-      await gotoApp(page, `${projectPath}/pipelines`);
+      await gotoApp(page, `${projectPath}/workflows`);
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
       await expect(
         page
@@ -1498,7 +1498,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     await test.step("assign it and start a run on the repository binding", async () => {
       // Same picker the plan pipeline used: the tab's one way in is
       // `+ use a library workflow`; `Use` resolves r1 and posts.
-      await gotoApp(page, `${projectPath}/pipelines`);
+      await gotoApp(page, `${projectPath}/workflows`);
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
       await expect(
         page

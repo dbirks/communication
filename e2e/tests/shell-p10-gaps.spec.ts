@@ -460,7 +460,7 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
       `GET /api/v1/node-templates/${templateId}/usage -> ${stepUsageRes.status()}`,
     ).toBe(200);
     const stepUsage = (await stepUsageRes.json()) as { workflow_count: number; uses?: unknown[] };
-    await page.goto(`${BASE_URL}/steps/${templateId}`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE_URL}/workflows/steps/${templateId}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("step-usage")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("step-usage")).toContainText(
       `USED IN ${stepUsage.workflow_count} WORKFLOW${stepUsage.workflow_count === 1 ? "" : "S"}`,

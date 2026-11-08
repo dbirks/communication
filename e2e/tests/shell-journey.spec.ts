@@ -32,10 +32,10 @@
 // tests/a11y.ts, no sideways scroll, no uncaught page errors).
 //
 // If a step fails only because another worker's piece is not wired yet
-// (assistant popover p7-wire, inbox cards p8-wire, assistant tool loop
+// (assistant popover p7-wire, decision callouts p8-wire, assistant tool loop
 // be-as-loop), the failing message names that piece — the assertions stay
 // honest and are never weakened.
-import { test, expect, type Locator, type Page, type APIRequestContext } from "@playwright/test";
+import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { BASE_URL, AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { expectNoLegacyAppBar, gotoApp, repinAssignment, signIn, testidOf } from "./helpers.js";
 import {
@@ -798,24 +798,6 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     stopWatching?.();
   });
 
-  /** The Inbox card's Approve action button — matched by its label, never guessed. */
-  async function findApproveAction(page: Page, tid: string): Promise<Locator> {
-    const buttons = page.locator(`[data-testid^="inbox-card-action-${tid}-"]`);
-    await expect(buttons.first()).toBeVisible({ timeout: 30_000 });
-    const count = await buttons.count();
-    for (let i = 0; i < count; i += 1) {
-      if (/approve/i.test((await buttons.nth(i).textContent()) ?? "")) return buttons.nth(i);
-    }
-    const labels = await Promise.all(
-      Array.from({ length: count }, (_, i) => buttons.nth(i).textContent()),
-    );
-    throw new Error(
-      `the Inbox decision card ${tid} has no Approve action (buttons: ${labels
-        .map((label) => JSON.stringify(label ?? ""))
-        .join(" | ")}) — are the inbox cards wired (p8-wire)?`,
-    );
-  }
-
   test("a — Studio: add an Agent step after plan with a brand-new profile", async ({ page }) => {
     // Step 0 (the serial journey shares one page; the first test owns setup):
     // sign in, and the shell is a sidebar app — no top bar anywhere.
@@ -1292,7 +1274,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await checkShellScreen(page, "workbench-after-takeover", stopWatching ?? undefined);
   });
 
-  test("d — approve the run's human gate from the Inbox at 390x844", async ({ page }) => {
+  test("d — approve the run's human gate from the project overview at 390x844", async ({ page }) => {
     await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
     // The run's plan step and journey_step's re-queued attempt 2 (the step e
     // hand-back runs it again) precede the gate, so the approval may take the
@@ -1301,29 +1283,30 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
 
     // PHONE width: 390x844, as the journey demands.
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(BASE_URL + "/inbox");
-    await expect(page.getByTestId("inbox-decisions")).toBeVisible({ timeout: 30_000 });
+    // Finding 03 retired the Inbox page; the decision surface that carries a
+    // gate to a person is the project overview's Needs-You fan (same
+    // attention read, still one callout per pending gate row).
+    await gotoApp(page, `/p/${state.projectId}`);
+    await expect(page.getByTestId("project-attention")).toBeVisible({ timeout: 30_000 });
     const tid = testidOf(state.approvalId);
-    const card = page.getByTestId(`inbox-decision-${tid}`);
+    const card = page.getByTestId(`project-attention-decision-${tid}`);
     await expect(card).toBeVisible({ timeout: 30_000 });
 
-    // The card's Approve action, then its confirm step.
-    const action = await findApproveAction(page, tid);
-    await action.click();
-    const confirm = page.getByTestId(`inbox-card-confirm-${tid}`);
+    // The card's Approve action, then its confirm step (the callout asks
+    // before it posts — a gate is a business decision).
+    await card.getByTestId(`project-approve-${tid}`).click();
+    const confirm = page.getByTestId(`project-approve-confirm-${tid}`);
     await expect(confirm).toBeVisible();
-    await checkShellScreen(page, "inbox-phone-approval", stopWatching ?? undefined);
+    await checkShellScreen(page, "overview-phone-approval", stopWatching ?? undefined);
     await evidence(
       page,
-      `journey-d-inbox-${STAMP}`,
-      `at 390x844 the Inbox decision card for the run's gate is open with its confirm step armed (approval …${state.approvalId.slice(-8)})`,
+      `journey-d-decision-${STAMP}`,
+      `at 390x844 the project overview decision callout for the run's gate is open with its confirm step armed (approval …${state.approvalId.slice(-8)})`,
     );
 
-    // The label is a decision word → “Confirm approve”; otherwise the card
-    // offers the Approve / Reject pair — either records the approval.
-    const go = page.getByTestId(`inbox-card-confirm-go-${tid}`);
-    if ((await go.count()) > 0) await go.click();
-    else await page.getByTestId(`inbox-card-confirm-approved-${tid}`).click();
+    // The confirm button records the approval — the same decision the old
+    // Inbox card's Confirm approve made.
+    await confirm.click();
 
     // Asserted via the API: the approval is decided and the run moves on.
     await waitForApprovalDecided(page.request, state.runId);
@@ -1331,7 +1314,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await evidence(
       page,
       `journey-d-decided-${STAMP}`,
-      `the gate was approved from the phone-width Inbox; the run's approve step is succeeded via the API and the card left the Inbox`,
+      `the gate was approved from the phone-width project overview; the run's approve step is succeeded via the API and the callout left the Needs-You fan`,
     );
     await page.setViewportSize({ width: 1500, height: 950 });
   });

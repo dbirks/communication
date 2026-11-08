@@ -123,11 +123,13 @@ interface FitReport {
 
 const screens: Screen[] = [
   {
-    label: "/inbox",
+    label: "/",
     viewer: "alice",
-    path: () => "/inbox",
-    anchor: "inbox-greeting",
-    why: "the landing screen",
+    path: () => "/",
+    anchor: "home-page",
+    // Finding 03 retired /inbox and /board as destinations; Today (/) is the
+    // landing screen the shell opens on.
+    why: "the landing screen (Today — was /inbox)",
   },
   {
     label: "/projects",

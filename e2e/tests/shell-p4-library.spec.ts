@@ -5,7 +5,7 @@
 // from the API; Duplicate creates N+1 and lands on the copy's draft editor;
 // the Studio edge "+" opens the step picker with its five kind cards and no
 // Publish; a new Agent step gets the profile select (SUGGESTED hint, sandbox
-// chips, "+ New profile…" opening the NewProfileDialog); /steps shows the
+// chips, "+ New profile…" opening the NewProfileDialog); /workflows/steps shows the
 // registry rows with their "used in" from the API; and Edit for all publishes
 // a new immutable revision whose version label comes back from the API.
 //
@@ -268,7 +268,7 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     stopWatching();
   });
 
-  test("/steps registry rows with used-in from the API; Edit for all creates a new revision", async ({
+  test("/workflows/steps registry rows with used-in from the API; Edit for all creates a new revision", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -326,7 +326,7 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
       );
     }
     expect(templates.length, "the lab has saved steps").toBeGreaterThan(0);
-    await page.goto(BASE_URL + "/steps", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/workflows/steps", { waitUntil: "domcontentloaded" });
     // The row ROOT only — `step-row-summary-`/`step-row-usage-` share the prefix.
     const rows = page.locator(
       '[data-testid^="step-row-"]:not([data-testid^="step-row-summary-"]):not([data-testid^="step-row-usage-"])',
@@ -345,7 +345,7 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     await evidence(
       page,
       "shell-p4-steps-registry",
-      `/steps lists the ${templates.length} registry rows grouped by family, each with its used-in line from GET /api/v1/node-templates`,
+      `/workflows/steps lists the ${templates.length} registry rows grouped by family, each with its used-in line from GET /api/v1/node-templates`,
     );
 
     // Edit for all on the first template: a new immutable revision.

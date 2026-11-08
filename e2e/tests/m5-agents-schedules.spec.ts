@@ -1,12 +1,12 @@
 // The M6 screens of the M5 exit suite: `/profiles` (ADR-0030 — a launch
 // descriptor, its permission mode, and the APM skill-package pin with its
 // "How do I get this?" digest recipe) and the project's Workflows tab
-// (`/p/:id/pipelines`, design project-1b-workflows: ONE panel of 2e rows whose
+// (`/p/:id/workflows`, design project-1b-workflows: ONE panel of 2e rows whose
 // STARTS WHEN box carries the ADR-0032 schedules — a schedule belongs to a
 // project ASSIGNMENT and fires its pinned revision on a UTC cron cadence,
 // authored through the shared 2c `TriggerDialog`). There is no `/schedules`
 // route to visit: `ui/src/App.tsx` mounts `/profiles` and
-// `/p/:projectId/pipelines`, and the schedule UI lives in the row's own
+// `/p/:projectId/workflows` (finding 02 renamed the tab segment), and the schedule UI lives in the row's own
 // STARTS WHEN box (`ProjectWorkflowsPanel`, rows shared with
 // `components/workflows/RepoWorkflows`).
 //
@@ -40,7 +40,7 @@
 // information here". So this spec asserts the org-wide visibility positively
 // (erin reads the same row, with no write control) and proves the project
 // boundary where the domain really draws it: project A's assignments and their
-// triggers. Erin deep-linked to `/p/<A>/pipelines` gets the one
+// triggers. Erin deep-linked to `/p/<A>/workflows` gets the one
 // refusal sentence (`ProjectUnavailable`, ADR-0014 § 3) and zero
 // assignment rows (the panel's `project-workflow-row-*` and the STARTS WHEN
 // rows under them), while alice's identical URL lists the 2e rows whose
@@ -286,7 +286,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       // that could leak is the Workflows panel's own rows — each 2e row and
       // its STARTS WHEN box is where schedules live now — and she is served
       // zero of each, so there is nothing to leak.
-      await gotoApp(erin, `${projectPath}/pipelines`);
+      await gotoApp(erin, `${projectPath}/workflows`);
       await expect(erin.getByTestId("project-pipelines-not-found")).toBeVisible();
       await expect(erin.locator('[data-testid^="project-workflow-row-"]')).toHaveCount(0);
       await expect(erin.locator('[data-testid^="project-workflow-starts-"]')).toHaveCount(0);
@@ -318,7 +318,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
         .locator('div[data-testid^="repo-workflow-trigger-"]')
         .filter({ hasNotText: "checked every minute" });
     await test.step("the panel's 2e rows, found by served test id", async () => {
-      await gotoApp(alice, `${projectPath}/pipelines`);
+      await gotoApp(alice, `${projectPath}/workflows`);
       await expect(alice.getByTestId("project-pipelines")).toBeVisible();
       // No hard-coded id: read the rows the served assignments produced and
       // keep the first one the lab is known to fire. A row names itself with
@@ -489,7 +489,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       ).not.toMatch(/next in [0-9]/);
       // Read the served state back from a fresh navigation, not the client's
       // cache: the pause is the database's, not the page's.
-      await gotoApp(alice, `${projectPath}/pipelines`);
+      await gotoApp(alice, `${projectPath}/workflows`);
       const fresh = scheduleRows(scheduledRowKey);
       await expect(fresh.first()).toBeVisible({ timeout: 30_000 });
       const remaining = await fresh.count();
@@ -536,7 +536,7 @@ async function removePinQuietly(page: Page, id: string): Promise<void> {
 async function pauseScheduleQuietly(page: Page, path: string, rowKey: string): Promise<void> {
   if (!path || !rowKey) return;
   try {
-    await gotoApp(page, `${path}/pipelines`);
+    await gotoApp(page, `${path}/workflows`);
     const rows = page
       .getByTestId(`project-workflow-starts-${rowKey}`)
       .locator('div[data-testid^="repo-workflow-trigger-"]')

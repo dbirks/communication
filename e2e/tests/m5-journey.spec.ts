@@ -111,7 +111,7 @@ async function pinWorkflowOnProject(
   projectPath: string,
   slug: string,
 ): Promise<string> {
-  await gotoApp(page, `${projectPath}/pipelines`);
+  await gotoApp(page, `${projectPath}/workflows`);
   await expect(page.getByTestId("project-pipelines")).toBeVisible();
   await page.getByTestId("project-workflow-library").click();
   await expect(page.getByTestId("project-library-dialog")).toBeVisible();
@@ -156,12 +156,13 @@ async function openRunForm(page: Page, projectPath: string): Promise<void> {
 
 /**
  * The pending gate row for `runId`, read from the API instead of the page:
- * the redesigned inbox card (`ui/src/components/inbox/InboxCard.tsx`) no
- * longer prints "run <short>", so a card cannot be picked by that text. The
+ * the decision callouts (`ui/src/components/project/NeedsYou.tsx` on the
+ * project overview, `ui/src/components/home/DecisionCallout.tsx` on Today) no
+ * longer print "run <short>", so a card cannot be picked by that text. The
  * cross-project list (`GET /api/v1/approvals?status=pending`, ADR-0047)
  * carries a `run_id` on every row, and `approval_requests` admits one pending
  * row per node execution (ADR-0023 § 9) — exactly one row for the run is
- * exactly one decision card in the inbox. Polls the API (bounded) so a row
+ * exactly one decision callout. Polls the API (bounded) so a row
  * still being written is waited for, not failed.
  */
 async function pendingGateFor(page: Page, runId: string, timeoutMs: number): Promise<string> {
@@ -809,17 +810,19 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // no longer spells `waiting_human` out).
       await expectRunStatus(alice, /need you/, RUN_TIMEOUT_MS);
     });
-    await test.step("the Inbox shows it under NEEDS YOUR DECISION", async () => {
-      await gotoApp(alice, "/inbox");
-      await expect(alice.getByTestId("inbox-decisions")).toBeVisible({ timeout: 60_000 });
-      // Picked by the gate row's own id (via the API), not by printed text:
-      // the redesigned card no longer shows "run <short>". Exactly one gate
-      // row for this run is exactly one decision card here.
+    await test.step("the project overview shows it under NEEDS YOUR DECISION", async () => {
+      // Finding 03 retired the Inbox as a destination; its decisions surface
+      // is the project overview's Needs-You fan (same attention read).
+      await gotoApp(alice, projectPath);
+      await expect(alice.getByTestId("project-attention")).toBeVisible({ timeout: 60_000 });
+      // Picked by the gate row's own id (via the API), not by printed text: a
+      // card never shows "run <short>". Exactly one gate row for this run is
+      // exactly one decision callout here.
       const gateId = await pendingGateFor(alice, runId, 60_000);
-      const row = alice.getByTestId(`inbox-decision-${testidOf(gateId)}`);
+      const row = alice.getByTestId(`project-attention-decision-${testidOf(gateId)}`);
       await expect(row).toBeVisible({ timeout: 15_000 });
       await expect(row).toContainText(/approve/i);
-      await shot(alice, "m5-05-inbox-needs-your-decision");
+      await shot(alice, "m5-05-overview-needs-your-decision");
     });
     await test.step("the gate card carries a plan a person can read", async () => {
       await gotoApp(alice, runPath);
@@ -898,7 +901,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       });
       await shot(alice, "m5-06-decided");
     });
-    await test.step("the run's own check fails it, and the Inbox calls that stalled", async () => {
+    await test.step("the run's own check fails it, and the project overview calls that stalled", async () => {
       // `verify` exits 1 on purpose (the plan describes a test suite the
       // fixture repository does not have) and declares `exit_code: 0` as the
       // only envelope that node accepts, so the boundary turns that business
@@ -906,20 +909,22 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // fact of the definition rather than a flake waiting to be retried: a
       // bare exit 1 lands in the 1..125 business band and COMPLETES the run.
       await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
-      await gotoApp(alice, "/inbox");
+      // Finding 03: the stalled-run callout left the retired Inbox and lives
+      // in the project overview's Needs-You fan (same attention read).
+      await gotoApp(alice, projectPath);
       const id = testidOf(runId);
-      await expect(alice.getByTestId(`inbox-stalled-${id}`)).toBeVisible({
+      await expect(alice.getByTestId(`project-attention-run-${id}`)).toBeVisible({
         timeout: DECISION_TIMEOUT_MS,
       });
-      await expect(alice.getByTestId(`inbox-stalled-status-${id}`)).toContainText("failed");
-      await shot(alice, "m5-06-stalled-inbox");
+      await expect(alice.getByTestId(`project-attention-run-${id}`)).toContainText("failed");
+      await shot(alice, "m5-06-stalled-overview");
     });
     await test.step("the retry is accepted: a run.retried frame and a second attempt", async () => {
       const id = testidOf(runId);
-      await alice.getByTestId(`inbox-retry-${id}`).click();
+      await alice.getByTestId(`project-retry-${id}`).click();
       // The retry is refused loudly if it fails — a silent no-op is not allowed
       // to pass as a retry.
-      await expect(alice.getByTestId(`inbox-retry-error-${id}`)).toHaveCount(0, {
+      await expect(alice.getByTestId(`project-attention-run-error-${id}`)).toHaveCount(0, {
         timeout: DECISION_TIMEOUT_MS,
       });
       await gotoApp(alice, runPath);
@@ -1094,7 +1099,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   test("a retried run whose retriable node is an expired gate comes back live", async () => {
     let gatePath = ""; // /runs/{scratch run id}
     let gateRunId = "";
-    let askedRow = ""; // the inbox decision row's own testid, id and all
+    let askedRow = ""; // the decision callout's own testid, id and all
     const gateId = () => testidOf(gateRunId);
 
     await test.step("publish a scratch copy whose gate deadline is the schema floor", async () => {
@@ -1149,12 +1154,12 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // before anything can close it: `approval_requests` admits ONE row per
       // node execution (ADR-0023 § 9), so the row named now is the row 14e8ff5
       // has to re-arm later — a second row would carry a different id.
-      await gotoApp(alice, "/inbox");
+      await gotoApp(alice, projectPath);
       const gateId = await pendingGateFor(alice, gateRunId, DECISION_TIMEOUT_MS);
-      askedRow = `inbox-decision-${testidOf(gateId)}`;
-      expect(askedRow).toMatch(/^inbox-decision-[0-9a-z]{13}$/);
+      askedRow = `project-attention-decision-${testidOf(gateId)}`;
+      expect(askedRow).toMatch(/^project-attention-decision-[0-9a-z]{13}$/);
       await expect(
-        alice.getByTestId("inbox-decisions").locator(`[data-testid="${askedRow}"]`),
+        alice.getByTestId("project-attention").locator(`[data-testid="${askedRow}"]`),
       ).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
       await shot(alice, "m5-08-scratch-gate-open");
     });
@@ -1209,26 +1214,28 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
 
     await test.step("the retry is accepted — the dead end is gone", async () => {
-      await gotoApp(alice, "/inbox");
-      await expect(alice.getByTestId(`inbox-stalled-${gateId()}`)).toBeVisible({
+      // Finding 03: the stalled retry and the re-asked decision both live on
+      // the project overview's Needs-You fan now, not on the retired Inbox.
+      await gotoApp(alice, projectPath);
+      await expect(alice.getByTestId(`project-attention-run-${gateId()}`)).toBeVisible({
         timeout: DECISION_TIMEOUT_MS,
       });
-      await alice.getByTestId(`inbox-retry-${gateId()}`).click();
+      await alice.getByTestId(`project-retry-${gateId()}`).click();
       // The whole finding. This control used to answer the 500
       // (`approval_requests_node_execution_id_key`) and paint itself
-      // `inbox-retry-error-*`; a 4xx refusal is allowed to do that, a 500 is
-      // not, and a silent no-op is neither.
-      await expect(alice.getByTestId(`inbox-retry-error-${gateId()}`)).toHaveCount(0, {
+      // `project-attention-run-error-*`; a 4xx refusal is allowed to do that, a
+      // 500 is not, and a silent no-op is neither.
+      await expect(alice.getByTestId(`project-attention-run-error-${gateId()}`)).toHaveCount(0, {
         timeout: DECISION_TIMEOUT_MS,
       });
       // The run left STALLED and came back to the human as a decision — on the
       // row read before the deadline passed, which is the one-per-node-
       // execution model made visible: the gate was re-asked THROUGH its row.
-      // (Selected by the row's stable test id: the redesigned card no longer
-      // prints "run <short>", and askedRow is this run's own gate row.)
-      const reAsk = alice.getByTestId("inbox-decisions").locator(`[data-testid="${askedRow}"]`);
+      // (Selected by the row's stable test id: askedRow is this run's own gate
+      // callout.)
+      const reAsk = alice.getByTestId("project-attention").locator(`[data-testid="${askedRow}"]`);
       await expect(reAsk).toHaveCount(1, { timeout: DECISION_TIMEOUT_MS });
-      await shot(alice, "m5-08-inbox-re-asked");
+      await shot(alice, "m5-08-overview-re-asked");
     });
 
     await test.step("the gate card is live again: the same ask, re-armed", async () => {

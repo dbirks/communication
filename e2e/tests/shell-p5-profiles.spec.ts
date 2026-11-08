@@ -1,4 +1,4 @@
-// Phase 5 acceptance: Agent profiles — the list, the detail, and the
+// Phase 5 acceptance: Agents (agent profiles) — the list, the detail, and the
 // New-profile dialog (contract C6) driven end to end.
 //
 // /profiles rows carry the launcher id and the sandbox chip exactly as

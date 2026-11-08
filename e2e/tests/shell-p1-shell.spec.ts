@@ -56,16 +56,19 @@ async function setLayoutOption(page: Page, testid: string): Promise<void> {
   await expect(page.getByTestId(testid).locator("input[type=radio]")).toBeChecked();
 }
 
-/** The sidebar's five nav rows and the canonical route each must point at.
+/** The sidebar's nav rows and the canonical route each must point at.
  * Handoff 2c/3c: Today (`/`, what the row called Home) and Threads
  * (`/threads`) are the cross-project rows; the Inbox and Board rows are gone
  * (Inbox folded into Today, the Board's behavior into the repository page's
- * Lanes view) while `/inbox` and `/board` stay mounted routes. */
+ * Lanes view), and finding 03 unmounted `/inbox` and `/board` — both now
+ * redirect to `/`. Finding 02: the LIBRARY block is gone — Workflows and
+ * Agents are top-level rows (Steps is a tab of the Workflows page at
+ * `/workflows/steps`, not a sidebar row; the row says `Agents`, not
+ * `Agent profiles`). */
 const NAV: { testid: string; href: string }[] = [
   { testid: "sidebar-link-home", href: "/" },
   { testid: "sidebar-link-threads", href: "/threads" },
   { testid: "sidebar-link-workflows", href: "/workflows" },
-  { testid: "sidebar-link-steps", href: "/steps" },
   { testid: "sidebar-link-profiles", href: "/profiles" },
 ];
 
@@ -90,11 +93,18 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       const href = await link.getAttribute("href");
       expect(href, `${row.testid} href`).toBe(row.href);
     }
+    // Finding 02: the LIBRARY block is gone — no section label, no Steps row,
+    // and the Agents row says `Agents`.
+    await expect(page.getByText("LIBRARY")).toHaveCount(0);
+    await expect(page.getByTestId("sidebar-link-steps")).toHaveCount(0);
+    // (the row carries a count chip, so match the label word, not the line)
+    await expect(page.getByTestId("sidebar-link-workflows")).toContainText(/Workflows/);
+    await expect(page.getByTestId("sidebar-link-profiles")).toContainText(/Agents/);
     await checkShellScreen(page, "home with sidebar", stopWatching);
     await evidence(
       page,
       "shell-p1-sidebar",
-      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, and all five nav rows (Today, Threads, Workflows, Steps, Agent profiles) link to the canonical C1 routes",
+      "the sidebar is present, the old header[aria-label=Primary] app bar is gone, all four nav rows (Today, Threads, Workflows, Agents) link to the canonical routes, and no Steps row or LIBRARY label exists (finding 02)",
     );
   });
 
@@ -106,7 +116,21 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     const rows: { old: string; canonical: string }[] = [
       { old: "/library", canonical: "/workflows" },
       { old: "/agents", canonical: "/profiles" },
+      // Finding 02: Steps is a tab of the Workflows page; the old addresses
+      // redirect there.
+      { old: "/steps", canonical: "/workflows/steps" },
+      // Finding 03: `/inbox` and `/board` are no longer destinations — both
+      // land on Today.
+      { old: "/inbox", canonical: "/" },
+      { old: "/board", canonical: "/" },
     ];
+    if (project)
+      // Finding 02: the project Workflows tab is `/p/:id/workflows`; the old
+      // `pipelines` spelling stays alive as a redirect.
+      rows.push({
+        old: `/p/${project.id}/pipelines`,
+        canonical: `/p/${project.id}/workflows`,
+      });
     if (project) rows.push({ old: `/projects/${project.id}`, canonical: `/p/${project.id}` });
     if (project && runs.length > 0)
       rows.push({
@@ -130,7 +154,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await evidence(
       page,
       "shell-p1-redirects",
-      `all ${rows.length} legacy URLs (library, agents, projects/<id>, projects/<id>/runs/<run>?view=timeline, projects/<id>/conversations/<c>) land on their canonical C1 URLs with query state preserved`,
+      `all ${rows.length} legacy URLs (library, agents, steps, inbox, board, p/<id>/pipelines, projects/<id>, projects/<id>/runs/<run>?view=timeline, projects/<id>/conversations/<c>) land on their canonical URLs with query state preserved — /inbox and /board land on Today`,
     );
   });
 
@@ -258,7 +282,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
 
   test("at 1500x950 the sidebar is always visible (no drawer control)", async ({ page }) => {
     await signIn(page, "admin");
-    await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("sidebar")).toBeVisible();
     await expect(page.getByTestId("sidebar-open")).toBeHidden();
   });
@@ -294,7 +318,8 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
   }) => {
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 800 });
-      for (const path of ["/", "/board"]) {
+      // `/board` is retired (finding 03): `/workflows` is a real deep link now.
+      for (const path of ["/", "/workflows"]) {
         await page.goto(BASE_URL + path, { waitUntil: "domcontentloaded" });
         const stopWatching = watchPageErrors(page);
         const signIn = page.getByTestId("sign-in");
@@ -302,7 +327,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
         // No sidebar element at all — the shell chrome must not mount.
         await expect(page.getByTestId("sidebar")).toHaveCount(0);
         const expectedHref =
-          path === "/" ? "/auth/login?return_to=%2F" : "/auth/login?return_to=%2Fboard";
+          path === "/" ? "/auth/login?return_to=%2F" : "/auth/login?return_to=%2Fworkflows";
         await expect(signIn).toHaveAttribute("href", expectedHref);
         await checkShellScreen(page, `signed-out ${path}`, stopWatching);
         await evidence(

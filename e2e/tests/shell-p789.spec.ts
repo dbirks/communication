@@ -1,10 +1,9 @@
 // P7–P9 acceptance: the rows `docs/design/handoff-app-shell/acceptance.md`
 // still marks NOT COVERED. The sidebar's Inbox flag rises from the org event
 // stream (ADR-0048) with NO timer poll (row: "live flags … NOT COVERED"),
-// the Board "mine" filter matches `GET /runs?mine=true` and the from issues /
-// scheduled chips are enabled and filter `GET /runs` by trigger (ADR-0056), a Studio
+// a Studio
 // agent node saved "as a reusable step" appears in `GET /node-templates`
-// and on /steps (row: 3349840), the ⌘K mic drives a fake SpeechRecognition
+// and on /workflows/steps (row: 3349840), the ⌘K mic drives a fake SpeechRecognition
 // into an editable composer with nothing sent until Send (row: mic), the
 // per-person trust level is enforced in the assistant loop (row: trust),
 // follow-up questions round-trip as the option's plain-text label (row:
@@ -27,14 +26,11 @@ import {
   SHELL_ENABLED,
   SHELL_GATE,
   apiAgentProfiles,
-  apiBoardRuns,
   apiLaunchers,
   apiPendingApprovals,
   apiScratchProject,
-  boardCardRuns,
   checkShellScreen,
   evidence,
-  pinBrowserClock,
   type ApprovalRow,
   type ProjectRow,
   watchPageErrors,
@@ -468,15 +464,7 @@ export async function inboxFlagCount(page: Page): Promise<number> {
   return match ? Number(match[1]) : 0;
 }
 
-/** The card ROOT only (the shell-p2 trick: the inner testids share the prefix). */
-const CARD_ROOT =
-  '[data-testid^="board-card-"]' +
-  ':not([data-testid^="board-card-open-"])' +
-  ':not([data-testid^="board-card-step-"])' +
-  ':not([data-testid^="board-card-actions-"])' +
-  ':not([data-testid^="board-card-retry-"])';
-
-test.describe("shell p789 — live flags, board filters, reusable steps, mic, trust, questions, approvals, ops, settings", () => {
+test.describe("shell p789 — live flags, reusable steps, mic, trust, questions, approvals, ops, settings", () => {
   test.skip(!SHELL_ENABLED, SHELL_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(10 * 60_000);
@@ -638,84 +626,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     );
   });
 
-  test("2. board: the 'mine' count equals GET /runs?mine=true; the from-issues/scheduled chips filter by trigger", async ({
-    page,
-  }) => {
-    // Pin the browser clock before the first navigation: the board's state
-    // columns hide every `completed` run that finished before the BROWSER's
-    // local midnight (ui/src/components/board/columns.ts isDoneToday), so the
-    // page's midnight and the test's must be one instant. `setFixedTime`
-    // freezes Date only — timers, SSE and react-query keep running.
-    const now = await pinBrowserClock(page);
-    await signIn(page, "admin");
-    const request = page.request;
-    const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("board-page")).toBeVisible();
-    await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
-    // The board's own read: one page of GET /runs?status=<all nine>&limit=200,
-    // no pagination (ui/src/api/board.ts). Every run on that page is a card
-    // EXCEPT a completed one from before local midnight — yesterday's work is
-    // off the board by design, so the old "every row is a card" claim was the
-    // test's, not the product's.
-    const allRuns = await apiBoardRuns(request);
-    const allCards = await page.locator(CARD_ROOT).count();
-    expect(
-      allCards,
-      "every run the board shows becomes one card (completed runs only while they finished today)",
-    ).toBe(boardCardRuns(allRuns, now).length);
-    const mineRuns = await apiBoardRuns(request, { mine: true });
-    const mineCount = boardCardRuns(mineRuns, now).length;
-    const mineChip = page.getByTestId("board-filter-mine");
-    await expect(mineChip).toBeVisible();
-    await mineChip.click();
-    await expect(mineChip).toHaveAttribute("aria-pressed", "true");
-    await expect(page.locator(CARD_ROOT)).toHaveCount(mineCount, { timeout: 15_000 });
-    const issueChip = page.getByTestId("board-filter-issue");
-    const scheduledChip = page.getByTestId("board-filter-scheduled");
-    await expect(issueChip).toBeVisible();
-    await expect(scheduledChip).toBeVisible();
-    await expect(issueChip).toBeEnabled();
-    await expect(scheduledChip).toBeEnabled();
-    await expect(issueChip).toHaveAttribute("aria-pressed", "false");
-    await expect(scheduledChip).toHaveAttribute("aria-pressed", "false");
-    await checkShellScreen(page, "board with the mine filter", stopWatching);
-    await evidence(
-      page,
-      "shell-p789-board-mine",
-      `board cards without the filter equal the board's own page of GET /api/v1/runs under its DONE TODAY clock (${allCards} of ${allRuns.length} rows, ${allRuns.length - allCards} of them completed before local midnight), with 'mine' pressed the ${mineCount} cards equal the same read of GET /api/v1/runs?mine=true, and the from issues / scheduled chips are enabled and idle (ADR-0056)`,
-    );
-
-    // The scheduled chip now filters the board list by the run's trigger.
-    const scheduledRequestPromise = page.waitForRequest(
-      (req) => req.url().includes("/api/v1/runs") && req.url().includes("trigger=schedule"),
-    );
-    await scheduledChip.click();
-    const scheduledRequest = await scheduledRequestPromise;
-    expect(scheduledRequest.url()).toContain("trigger=schedule");
-    await expect(scheduledChip).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
-    // The board's own page for the same filter (status list + limit=200), so a
-    // scheduled run past row 100 cannot make a rendered card look unknown.
-    const scheduledRows = await apiBoardRuns(request, { trigger: "schedule" });
-    const scheduledIds = new Set(
-      scheduledRows.filter((row) => row.trigger?.kind === "schedule").map((row) => row.id),
-    );
-    const cards = page.locator(CARD_ROOT);
-    const cardCount = await cards.count();
-    const cardIds: string[] = [];
-    for (let i = 0; i < cardCount; i += 1) {
-      const testid = await cards.nth(i).getAttribute("data-testid");
-      if (typeof testid === "string" && testid.startsWith("board-card-")) {
-        cardIds.push(testid.slice("board-card-".length));
-      }
-    }
-    for (const id of cardIds) {
-      expect(scheduledIds.has(id), `rendered card ${id} is a scheduled run`).toBe(true);
-    }
-  });
-
-  test("3. studio: 'also save as a reusable step' lands in GET /node-templates and on /steps", async ({
+  test("3. studio: 'also save as a reusable step' lands in GET /node-templates and on /workflows/steps", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -799,7 +710,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
       listed.templates?.some((row) => row.id === template.id),
       "the saved step is served by GET /api/v1/node-templates",
     ).toBe(true);
-    await page.goto(BASE_URL + "/steps", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/workflows/steps", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("steps-page")).toBeVisible();
     await expect(page.getByTestId("steps-loading")).toBeHidden({ timeout: 30_000 });
     await expect(page.getByTestId("steps-list")).toContainText(nodeId, { timeout: 15_000 });
@@ -807,7 +718,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await evidence(
       page,
       "shell-p789-save-step",
-      `selecting the agent node in the ${slug} draft and arming 'also save as a reusable step' POSTed the node as template ${template.id.slice(0, 8)} — it is listed by GET /api/v1/node-templates and shows on /steps`,
+      `selecting the agent node in the ${slug} draft and arming 'also save as a reusable step' POSTed the node as template ${template.id.slice(0, 8)} — it is listed by GET /api/v1/node-templates and shows on /workflows/steps`,
     );
   });
 
@@ -1141,7 +1052,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await expect(page.getByTestId("assistant-popover")).toBeVisible();
     const navComposer = page.getByTestId("assistant-composer-input");
     const rowsBeforeNav = (await assistantRows(request)).length;
-    await navComposer.fill("take me to the board");
+    await navComposer.fill("take me to the workflows page");
     await page.getByTestId("assistant-send").click();
     // The turn appends its rows atomically — an answer, or a follow-up
     // question instead of one. Baseline on the total row count, so either
@@ -1156,19 +1067,21 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     const navRow = [...navRows].reverse().find((row) => row.kind === "assistant");
     const navQuestion = [...navRows].reverse().find((row) => row.kind === "question");
     const usedNavigateTool = (navRow?.tool_calls ?? []).some((call) => call.name === "ui_navigate");
-    const wroteBoardRef = /board/i.test(navRow?.answer_markdown ?? "");
-    const landedOnBoard = /\/board([/?#]|$)/.test(new URL(page.url()).pathname);
+    const wroteWorkflowsRef = /workflows/i.test(navRow?.answer_markdown ?? "");
+    // Finding 02/03: `/board` is retired (it redirects to Today); the palette
+    // destination is now `/workflows`.
+    const landedOnWorkflows = /\/workflows([/?#]|$)/.test(new URL(page.url()).pathname);
     await evidence(
       page,
       "shell-p789-trust-navigate",
-      `DOCUMENTED SECONDARY CHECK (no assertion on model choice): under ask_all 'take me to the board' ${
+      `DOCUMENTED SECONDARY CHECK (no assertion on model choice): under ask_all 'take me to the workflows page' ${
         usedNavigateTool
-          ? `used the ui.navigate tool — class navigate is NEVER gated (internal/assistant/trust.go toolClasses) — and the browser ${landedOnBoard ? "landed on /board on its own" : "did not navigate on its own"}`
-          : wroteBoardRef
-            ? "answered with a board reference in its text/links and made NO ui.navigate tool call — links are not tool calls, so nothing was gated and the user would click"
+          ? `used the ui.navigate tool — class navigate is NEVER gated (internal/assistant/trust.go toolClasses) — and the browser ${landedOnWorkflows ? "landed on /workflows on its own" : "did not navigate on its own"}`
+          : wroteWorkflowsRef
+            ? "answered with a workflows reference in its text/links and made NO ui.navigate tool call — links are not tool calls, so nothing was gated and the user would click"
             : navQuestion !== undefined
               ? `did not navigate or answer; it asked a follow-up question instead ('${navQuestion.text ?? ""}') — a question stops the turn without acting`
-              : "neither called ui.navigate nor named the board in its answer"
+              : "neither called ui.navigate nor named the workflows page in its answer"
       }`,
     );
     // Reset the lab's stored level: the default, per C2. PATCH is the

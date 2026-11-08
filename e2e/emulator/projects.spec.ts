@@ -133,7 +133,7 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
     for (const [tab, route, landing, surface] of [
       ["runs", "/runs", "project-runs", "runs-list"],
       ["threads", "/threads", "project-conversations", "threads-search"],
-      ["workflows", "/pipelines", "project-pipelines", "project-workflows"],
+      ["workflows", "/workflows", "project-pipelines", "project-workflows"],
     ] as const) {
       await test.step(`project-1b — the ${tab} tab opens ${route}`, async () => {
         await page.goto(`/p/${projectId}`);
@@ -258,7 +258,7 @@ test.describe("projects (alice: 1b overview, tabs, empty and not-found)", () => 
       // is left is ONE panel of 2e-shaped rows, whose honest absence is this
       // project's line — not a list of everything the org has.
       const empty = await projectBySlug(page, BARE_SLUG);
-      await page.goto(`/p/${empty}/pipelines`);
+      await page.goto(`/p/${empty}/workflows`);
       await expect(
         page.getByTestId("project-pipelines"),
         "design 1b: the Workflows tab renders for a project with nothing in it",

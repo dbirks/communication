@@ -1217,12 +1217,16 @@ const RCN_PROJECTS_SECTION: Landmark = {
     { testid: "sidebar-open" },
   ],
 };
-const RCN_LIBRARY_SECTION: Landmark = {
+/**
+ * Finding 02 split the LIBRARY block: Workflows and Agents are top-level rows
+ * (no section label, no Steps row — Steps is a tab of the Workflows page at
+ * `/workflows/steps`), and the rail tile carries the Workflows name.
+ */
+const RCN_WORKFLOWS_AGENTS_ROWS: Landmark = {
   id: "rcn-library-section",
-  desc: "the LIBRARY section (Workflows / Steps / Agent profiles)",
+  desc: "the Workflows and Agents sidebar rows (finding 02: no LIBRARY label, no Steps row)",
   host: "page",
   any: [
-    { text: /^LIBRARY$/ },
     { testid: "sidebar-link-workflows" },
     { testid: "sidebar-rail-library" },
     { testid: "sidebar-open" },
@@ -2245,7 +2249,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_TODAY,
     RCN_MY_CHATS,
     RCN_PROJECTS_SECTION,
-    RCN_LIBRARY_SECTION,
+    RCN_WORKFLOWS_AGENTS_ROWS,
     RCN_EXPANDED_CONTROLS,
   ],
   "rcn-3c rail": [
@@ -2253,7 +2257,7 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
     RCN_NEW_CHAT,
     RCN_TODAY,
     RCN_RAIL_TILES,
-    RCN_LIBRARY_SECTION,
+    RCN_WORKFLOWS_AGENTS_ROWS,
     RCN_RAIL_EXPAND,
   ],
   // Review round 2: the two states 3c actually draws — the ⋯ menu open on a

@@ -1002,7 +1002,7 @@ def test_snapshot_spill_guard():
     W8 pastes YAML whose header names its own source file, the snapshot echoes that
     text, and a bare `.yaml` match once returned the seed pipeline document as the
     page — a page with no textarea in it, and a leg that failed for the wrong reason."""
-    pasted = ("### Page\n- Page URL: http://lb/projects/p/pipelines\n### Snapshot\n"
+    pasted = ("### Page\n- Page URL: http://lb/p/p/workflows\n### Snapshot\n"
               "```yaml\n- textbox \"Pipeline YAML to validate\" [ref=f2e54]: "
               "'# docs/compatibility/probes/m4/pipeline.yaml — the § 7 exit seed set'\n```")
     assert _SNAP_SPILL.search(pasted) is None, \

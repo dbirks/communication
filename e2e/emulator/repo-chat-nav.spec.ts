@@ -1453,7 +1453,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
     // A GH-page leg fans out to the real tracker's issues read; the
     // lab's own 502s on it are scratch noise, declared (see issuesReadOf).
     emu.expectFailure(issuesReadOf(ids.projectId));
-    await test.step("expanded (2c): New thread, Today, Threads, PROJECTS, LIBRARY", async () => {
+    await test.step("expanded (2c): New thread, Today, Threads, PROJECTS, Workflows/Agents rows", async () => {
       await page.goto(`/p/${ids.projectId}`);
       await expect(
         page.getByTestId("sidebar"),
@@ -1473,7 +1473,7 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
       ).toBeVisible();
       await expect(
         page.getByTestId("sidebar-link-workflows"),
-        "design 2c: the LIBRARY section leads with Workflows",
+        "design 2c/finding 02: the split library keeps a top-level Workflows row",
       ).toBeVisible();
       await emu.screen("rcn-3c", "expanded");
     });
@@ -1532,7 +1532,10 @@ test.describe("repo-chat-nav (alice: shell, repo list, lanes, chat, run form)", 
         page.getByTestId(`sidebar-rail-project-${ids.projectId}`),
         "design 3c: one initials tile per project",
       ).toBeVisible();
-      await expect(page.getByTestId("sidebar-rail-library"), "design 3c: Library").toBeVisible();
+      await expect(
+        page.getByTestId("sidebar-rail-library"),
+        "design 3c/finding 02: the rail tile is labelled Workflows",
+      ).toBeVisible();
       await emu.screen("rcn-3c", "rail");
     });
 

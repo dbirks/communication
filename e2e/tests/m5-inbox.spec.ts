@@ -1,7 +1,10 @@
 // W8 arm of the M5 exit suite (docs/design/wishlist-gap.md "## W8"): a
-// permission prompt that alice's turn raises reaches *bob's* Inbox — another
-// member's browser, his own session, a fact written entirely by the running
-// agent and not seeded for the assertion.
+// permission prompt that alice's turn raises reaches *bob's* browser — another
+// member's session, a fact written entirely by the running agent and not
+// seeded for the assertion. Finding 03 retired the Inbox page: the cross-
+// project carrier of "a thread exists somewhere and reaches me without a
+// reload" is now the `/threads` list, and the prompt itself is read on the
+// thread page.
 //
 // It runs against the M4 lab by env override only, exactly like m5-journey —
 // no second compose project:
@@ -21,13 +24,12 @@
 // admin creates it through the product's own /profiles form and the arm then
 // reads the served `permission_mode` back off the row.
 //
-// WHY BOB'S INBOX IS OPENED AFTER THE PROMPT IS PENDING: the three reads behind
-// the inbox's THREADS panel (`ui/src/lib/attention.ts` `useProjectAttention`) carry no
-// `refetchInterval`, and `/inbox` subscribes to no event stream, so the pending
-// read happens when the section mounts. The page is therefore navigated to once
-// and afterwards touched only by polling its DOM — no reload, no re-navigation.
+// WHY BOB'S THREADS LIST IS OPENED AFTER THE PROMPT IS PENDING: the list read
+// behind `/threads` happens when the page mounts, so the page is therefore
+// navigated to once and afterwards touched only by polling its DOM — no
+// reload, no re-navigation.
 // What is proved is that a fact from alice's turn reaches bob's view of the
-// organization; the inbox's own live-push behaviour is NOT claimed here, and
+// organization; the list's own live-push behaviour is NOT claimed here, and
 // the live claim this suite does make is bob's conversation page, which keeps
 // its decision current with no reload at all.
 //
@@ -51,7 +53,6 @@ import {
   shot,
   signIn,
   startConversation,
-  testidOf,
   waitForOpenPermission,
   type PermissionCardRef,
 } from "./helpers.js";
@@ -100,7 +101,7 @@ const PROMPT =
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
-test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () => {
+test.describe("M5 inbox attention: a pending prompt reaches another member's browser", () => {
   test.describe.configure({
     mode: "serial",
     timeout: PERMISSION_REQUEST_TIMEOUT_MS + INBOX_TIMEOUT_MS * 3 + TURN_CLOSE_TIMEOUT_MS + 180_000,
@@ -297,67 +298,63 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
 
   test(
     IS_PI_LAUNCHER
-      ? "bob's /inbox carries the conversation with no PERMISSION tag, and nothing reloads"
-      : "bob's /inbox carries the conversation with a PERMISSION tag, and nothing reloads",
+      ? "bob's threads list carries the conversation with no permission affordance, and nothing reloads"
+      : "bob's threads list carries the conversation, and nothing reloads",
     async () => {
-      await test.step("bob's inbox is opened once, then only polled", async () => {
-        await gotoApp(bob, "/inbox");
-        await expect(bob.getByTestId("inbox-greeting")).toBeVisible({ timeout: 30_000 });
+      await test.step("bob's threads list is opened once, then only polled", async () => {
+        // Finding 03: the Inbox page is retired (a `/inbox` visit redirects to
+        // Today); the cross-project list the pending thread must reach is the
+        // shared 1g pane at `/threads`.
+        await gotoApp(bob, "/threads");
+        await expect(bob.getByTestId("threads-page")).toBeVisible({ timeout: 30_000 });
         await markDocument(bob);
       });
       if (IS_PI_LAUNCHER) {
-        await test.step("the row appears and carries no permission tag (ADR-0069)", async () => {
-          // Bounded the same way: the conversation must still reach his inbox —
-          // what must NOT appear is the PERMISSION tag, which only a pending
-          // permission request ever produces (ui/pages/Inbox.tsx renders the
-          // chip as `needsPermission ? "permission" : status`). A never-asks
-          // launcher produces no request, so demanding a PERMISSION tag here
-          // would assert a fake prompt; asserting nothing would pass vacuously
-          // on a row that never arrived.
-          const id = testidOf(conversationId);
-          const row = bob.getByTestId(`inbox-conversation-${id}`);
+        await test.step("the row appears and carries no permission affordance (ADR-0069)", async () => {
+          // Bounded the same way: the conversation must still reach his
+          // cross-project list — what must NOT appear is any permission control
+          // or tag on it. A never-asks launcher produces no request; asserting
+          // nothing would pass vacuously on a row that never arrived, so the
+          // row itself is asserted first, over the window a pending request
+          // would have taken to land.
+          const row = bob.getByTestId(`thread-row-${conversationId}`);
           await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
-          // Re-read over the window a pending request would have taken to
-          // land — bounded, and it names the failure.
           await expect
             .poll(
-              async () =>
-                bob
-                  .getByTestId(`inbox-conversation-tag-${id}`)
-                  .filter({ hasText: /permission/i })
-                  .count(),
+              async () => row.locator('[data-testid*="permission" i]').count(),
               {
                 timeout: 20_000,
-                message: "a PERMISSION tag appeared on a launcher that never asks (ADR-0069)",
+                message: "a permission affordance appeared on a launcher that never asks (ADR-0069)",
               },
             )
             .toBe(0);
-          // The chip is really there, wearing the conversation's own status.
-          await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/active|idle/i);
-          await expect(bob.locator("#inbox-conversations-heading")).toContainText(/THREADS/);
+          // The row wears the conversation's own status word, and names the
+          // conversation the wire carries it under.
+          await expect(row).toContainText(/active|idle/i);
           await expect(row).toContainText(TITLE);
-          expect(bob.url()).toContain("/inbox");
+          expect(bob.url()).toContain("/threads");
           expect(await markerSurvived(bob)).toBe(true);
-          await shot(bob, "m5-inbox-03-bob-inbox-autonomous");
+          await shot(bob, "m5-inbox-03-bob-threads-autonomous");
         });
         return;
       }
-      await test.step("the row and its PERMISSION tag appear within 60s", async () => {
-        const id = testidOf(conversationId);
-        const row = bob.getByTestId(`inbox-conversation-${id}`);
-        // Bounded: a prompt that never reaches his inbox fails here saying so.
+      await test.step("the row appears within 60s; the pending prompt is read on his thread page", async () => {
+        // The retired inbox card's PERMISSION tag exists on no surface any
+        // more (finding 03/04 answer only from a decision surface); the
+        // pending fact it carried is asserted on bob's own session in the next
+        // test — the card is on his open page, not a list chip. Here the claim
+        // is the cross-project arrival itself, proved without a reload.
+        const row = bob.getByTestId(`thread-row-${conversationId}`);
+        // Bounded: a prompt whose conversation never reaches his list fails here.
         await expect(row).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
-        await expect(bob.getByTestId(`inbox-conversation-tag-${id}`)).toHaveText(/permission/i, {
-          timeout: INBOX_TIMEOUT_MS,
-        });
-        await expect(bob.locator("#inbox-conversations-heading")).toContainText(/THREADS/);
-        // The row names the conversation the wire carries it under.
+        // The row names the conversation the wire carries it under, and it
+        // lives on the same document bob landed on.
         await expect(row).toContainText(TITLE);
-        expect(bob.url()).toContain("/inbox");
+        expect(bob.url()).toContain("/threads");
         // No reload, proved rather than claimed: the marker set on this exact
         // document is still there.
         expect(await markerSurvived(bob)).toBe(true);
-        await shot(bob, "m5-inbox-03-bob-inbox-permission");
+        await shot(bob, "m5-inbox-03-bob-threads-permission");
       });
     },
   );
@@ -367,9 +364,11 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
       ? "bob opens it and sees a running turn with no request to answer (ADR-0069)"
       : "bob opens it and sees the pending request — one he is not offered to answer",
     async () => {
-      await test.step("the inbox's own Open link, not a hand-built url", async () => {
-        await bob.getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).click();
-        // The inbox's Open link goes to the standalone thread page (C1).
+      await test.step("the threads list's own row link, not a hand-built url", async () => {
+        // The /threads row IS the link (C1: it goes to the standalone thread
+        // page). Clicking it keeps bob on the document his list rendered on.
+        await bob.getByTestId(`thread-row-${conversationId}`).click();
+        // The thread row's link goes to the standalone thread page (C1).
         await bob.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
         await expect(bob.getByTestId("conversation-title")).toHaveText(TITLE);
       });
