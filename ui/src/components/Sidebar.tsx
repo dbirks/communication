@@ -929,6 +929,10 @@ export interface SidebarProps {
   variant?: "panel" | "drawer";
   /** Drawer only: the close control (backdrop and esc are Shell's job). */
   onClose?: () => void;
+  /** Panel only (finding 07): rail-only widths (768–1023px) force the
+   * collapsed rail. The `sidebarCollapsed` preference is not touched — the
+   * expanded column returns on its own as soon as the window is wide again. */
+  forceCollapsed?: boolean;
 }
 
 /** The expanded column's width, so `Shell` can park the floating Ask box. */
@@ -941,7 +945,11 @@ export const SIDEBAR_RAIL_WIDTH_PX = 52;
  * which placement shows; the width is the `sidebarCollapsed` layout
  * preference (a drawer is always the expanded column — a phone has no rail).
  */
-export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
+export default function Sidebar({
+  variant = "panel",
+  onClose,
+  forceCollapsed = false,
+}: SidebarProps) {
   const { prefs, update } = useLayoutPrefs();
   const me = useMe();
   const navigate = useNavigate();
@@ -963,7 +971,7 @@ export default function Sidebar({ variant = "panel", onClose }: SidebarProps) {
     if (variant === "drawer") closeRef.current?.focus();
   }, [variant]);
 
-  const collapsed = variant === "panel" && prefs.sidebarCollapsed;
+  const collapsed = variant === "panel" && (forceCollapsed || prefs.sidebarCollapsed);
 
   if (collapsed) {
     return (

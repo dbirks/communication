@@ -595,11 +595,11 @@ describe("Used in tab (2a)", () => {
     expect(body).toEqual({ pinned_revision_id: WIRE_REVISION_ID });
   });
 
-  it("a project-wide pin links Open › to the project's Pipelines tab", async () => {
+  it("a project-wide pin links Open › to the project's Workflows tab", async () => {
     mount(`${detail}/used-in`);
     const row = await screen.findByTestId(`used-in-row-${A2_ID}`);
     expect(within(row).getByTestId(`used-in-open-${A2_ID}`).getAttribute("href")).toBe(
-      `/p/${GADGETS_ID}/pipelines`,
+      `/p/${GADGETS_ID}/workflows`,
     );
   });
 
@@ -1063,10 +1063,11 @@ describe("legacy and layout", () => {
     expect(screen.queryByTestId("pipeline-page")).toBeNull();
   });
 
-  it("bleeds to the shell's content column, never under the sidebar", async () => {
-    // Repeats the desktop shell's geometry — a 240px sticky sidebar, then the
-    // content column that holds the page's <main> — as the old library page
-    // test did; jsdom does no layout, so the rects are stubbed.
+  it("sits at the content column's left edge — no bleed machinery (finding 07)", async () => {
+    // Finding 07 removed the shell's centred column, so the canvas page no
+    // longer measures its way out of it: the page renders as `ds/Page`'s
+    // canvas layout, flush with the column, with no inline width or negative
+    // margin.
     mockFetch(routes());
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
@@ -1085,28 +1086,9 @@ describe("legacy and layout", () => {
       </QueryClientProvider>,
     );
     const page = (await screen.findByTestId("pipeline-page")) as HTMLElement;
-    const mainEl = page.parentElement as HTMLElement;
-    const column = mainEl.parentElement as HTMLElement;
-    const rect = (left: number, width: number) =>
-      ({
-        left,
-        right: left + width,
-        top: 0,
-        bottom: 0,
-        width,
-        height: 0,
-        x: left,
-        y: 0,
-      }) as DOMRect;
-    Object.defineProperty(column, "clientWidth", { value: 1260, configurable: true });
-    column.getBoundingClientRect = () => rect(240, 1260);
-    mainEl.getBoundingClientRect = () => rect(370, 1000);
-    window.dispatchEvent(new Event("resize"));
-    await waitFor(() => expect(page.getAttribute("data-full-width")).toBe("1260"));
-    // The negative margin pulls the page to the column's left edge (240px, the
-    // sidebar's right edge); nothing runs under the sidebar.
-    expect(page.style.marginLeft).toBe("-130px");
-    expect(page.style.width).toBe("1260px");
+    expect(page.getAttribute("data-page-layout")).toBe("canvas");
+    expect(page.style.marginLeft).toBe("");
+    expect(page.style.width).toBe("");
     // And the mobile-safe primitives are in place: the tab row scrolls inside
     // itself, the body stacks below lg.
     const tabs = screen.getByTestId("workflow-tabs");

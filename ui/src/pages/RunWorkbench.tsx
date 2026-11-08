@@ -27,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { usePipelines, usePipelineRevisions, useRevision } from "../api/pipelines";
 import { useRepositories } from "../api/queries";
+import Page from "../components/ds/Page";
 import { useActorNames } from "../api/actors";
 import { useRun, useRunNodes, useRunTree } from "../api/runs";
 import { useRunEvents } from "../api/runEvents";
@@ -852,184 +853,188 @@ export default function RunWorkbench({ projectId: projectIdProp }: { projectId?:
   );
 
   return (
-    <div
-      className="flex min-h-full flex-col bg-paper"
-      data-testid="workbench"
-      ref={(node) => {
-        graphTopRef.current = node;
-      }}
-    >
-      <div className="px-4 pt-3">
-        <RunHeader
-          projectId={projectId}
-          run={run}
-          goal={goal}
-          runTitle={runTitle}
-          slug={slug}
-          streamStatus={stream.status}
-          repoName={repoName}
-          startedBy={startedBy}
-          revision={
-            revisionNumber === null
-              ? null
-              : {
-                  revision_number: revisionNumber,
-                  revision_digest: revisionRecord.data?.revision_digest ?? run.revision_digest,
-                }
-          }
-          nodes={projection.nodes}
-        />
-        {revisionNotice ? (
-          <NewRevisionNotice
-            notice={revisionNotice}
+    // Finding 07: the run workbench is a `canvas` page — the shell gives it
+    // the bare content column and this page owns the frame.
+    <Page layout="canvas">
+      <div
+        className="flex min-h-full flex-col bg-paper"
+        data-testid="workbench"
+        ref={(node) => {
+          graphTopRef.current = node;
+        }}
+      >
+        <div className="px-4 pt-3">
+          <RunHeader
+            projectId={projectId}
+            run={run}
+            goal={goal}
+            runTitle={runTitle}
             slug={slug}
-            pipelineId={run.pipeline_id}
-            revisionDigest={run.revision_digest}
+            streamStatus={stream.status}
+            repoName={repoName}
+            startedBy={startedBy}
+            revision={
+              revisionNumber === null
+                ? null
+                : {
+                    revision_number: revisionNumber,
+                    revision_digest: revisionRecord.data?.revision_digest ?? run.revision_digest,
+                  }
+            }
+            nodes={projection.nodes}
           />
-        ) : null}
+          {revisionNotice ? (
+            <NewRevisionNotice
+              notice={revisionNotice}
+              slug={slug}
+              pipelineId={run.pipeline_id}
+              revisionDigest={run.revision_digest}
+            />
+          ) : null}
 
-        {/* The tab row belongs to the split presentation; in full screen
-         * (design 5c) the step strip takes its place. */}
-        {!fullScreen ? (
-          <div className="flex gap-1 py-3">
-            <div
-              role="tablist"
-              aria-label="Workbench views"
-              className="flex max-w-full gap-1 overflow-x-auto"
-            >
-              {WORKBENCH_TABS.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={view === item.id}
-                  data-testid={`workbench-tab-${item.id}`}
-                  onClick={() => setView(item.id)}
-                  className={`shrink-0 whitespace-nowrap rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
-                    view === item.id
-                      ? "border-ink bg-ink text-paper"
-                      : "border-line text-muted hover:border-line-strong hover:text-ink"
-                  } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
-                >
-                  {item.label}
-                  {item.id === "artifacts" && artifactRefs.length > 0 ? (
-                    <span
-                      data-testid="workbench-artifacts-badge"
-                      className="ml-1.5 rounded-[3px] bg-paper/15 px-1 font-mono text-[10.5px] font-normal"
-                    >
-                      {artifactRefs.length}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-            {!narrow ? (
-              <button
-                type="button"
-                data-testid="workbench-dock-collapse"
-                aria-label={dockCollapsed ? "Show the node detail" : "Hide the node detail"}
-                onClick={() => setDockCollapsed((value) => !value)}
-                className="ml-auto self-center rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          {/* The tab row belongs to the split presentation; in full screen
+           * (design 5c) the step strip takes its place. */}
+          {!fullScreen ? (
+            <div className="flex gap-1 py-3">
+              <div
+                role="tablist"
+                aria-label="Workbench views"
+                className="flex max-w-full gap-1 overflow-x-auto"
               >
-                {dockCollapsed ? "detail »" : "« detail"}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="flex min-h-0 flex-1">
-        {fullScreen ? (
-          /* Full-screen transcript (design 5c): the graph is the strip of
-           * step cells across the top; the transcript is centred at 760px. */
-          <main className="min-w-0 flex-1 px-4 pb-4">
-            <div className="flex flex-col items-center gap-3">
-              <div className="flex w-full min-w-0 items-center gap-2">
+                {WORKBENCH_TABS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={view === item.id}
+                    data-testid={`workbench-tab-${item.id}`}
+                    onClick={() => setView(item.id)}
+                    className={`shrink-0 whitespace-nowrap rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
+                      view === item.id
+                        ? "border-ink bg-ink text-paper"
+                        : "border-line text-muted hover:border-line-strong hover:text-ink"
+                    } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+                  >
+                    {item.label}
+                    {item.id === "artifacts" && artifactRefs.length > 0 ? (
+                      <span
+                        data-testid="workbench-artifacts-badge"
+                        className="ml-1.5 rounded-[3px] bg-paper/15 px-1 font-mono text-[10.5px] font-normal"
+                      >
+                        {artifactRefs.length}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+              {!narrow ? (
                 <button
                   type="button"
-                  data-testid="workbench-show-graph"
-                  onClick={() => setFull(false)}
-                  className="shrink-0 rounded-[3px] border border-line px-2.5 py-[5px] text-[12px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  data-testid="workbench-dock-collapse"
+                  aria-label={dockCollapsed ? "Show the node detail" : "Hide the node detail"}
+                  onClick={() => setDockCollapsed((value) => !value)}
+                  className="ml-auto self-center rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                 >
-                  ⤡ show graph
+                  {dockCollapsed ? "detail »" : "« detail"}
                 </button>
-                <div className="min-w-0 flex-1">
-                  <StepStrip
-                    cells={stripCells}
-                    selectedId={selectedDefId}
-                    onSelect={selectDefinition}
-                  />
-                </div>
-              </div>
-              <div className="w-full max-w-[760px]" data-testid="workbench-fullscreen-transcript">
-                {dock}
-              </div>
+              ) : null}
             </div>
-          </main>
-        ) : (
-          <>
+          ) : null}
+        </div>
+
+        <div className="flex min-h-0 flex-1">
+          {fullScreen ? (
+            /* Full-screen transcript (design 5c): the graph is the strip of
+             * step cells across the top; the transcript is centred at 760px. */
             <main className="min-w-0 flex-1 px-4 pb-4">
-              {view === "graph" ? graphView : null}
-              {view === "timeline" ? timelineView : null}
-              {view === "tree" ? treeView : null}
-              {view === "artifacts" ? artifactsView : null}
-              {view === "diagnostics" ? <RunInspector embedded /> : null}
-            </main>
-            {!narrow && !dockCollapsed ? (
-              <aside className="flex min-w-0 border-l border-line bg-surface">
-                <div
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-valuemin={DOCK_MIN}
-                  aria-valuemax={DOCK_MAX}
-                  aria-valuenow={dockWidth}
-                  aria-label="Resize the node detail"
-                  tabIndex={0}
-                  data-testid="workbench-dock-resizer"
-                  onPointerDown={startResize}
-                  onPointerMove={onResize}
-                  onPointerUp={endResize}
-                  onPointerCancel={endResize}
-                  onKeyDown={onSeparatorKey}
-                  className="w-[6px] shrink-0 cursor-col-resize border-r border-line hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"
-                />
-                <div
-                  role="region"
-                  tabIndex={0}
-                  aria-label="Node detail"
-                  className="w-full overflow-y-auto px-3 py-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  style={{ width: dockWidth }}
-                  data-testid="workbench-dock-pane"
-                >
+              <div className="flex flex-col items-center gap-3">
+                <div className="flex w-full min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="workbench-show-graph"
+                    onClick={() => setFull(false)}
+                    className="shrink-0 rounded-[3px] border border-line px-2.5 py-[5px] text-[12px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  >
+                    ⤡ show graph
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <StepStrip
+                      cells={stripCells}
+                      selectedId={selectedDefId}
+                      onSelect={selectDefinition}
+                    />
+                  </div>
+                </div>
+                <div className="w-full max-w-[760px]" data-testid="workbench-fullscreen-transcript">
                   {dock}
                 </div>
-              </aside>
-            ) : null}
-          </>
-        )}
-      </div>
+              </div>
+            </main>
+          ) : (
+            <>
+              <main className="min-w-0 flex-1 px-4 pb-4">
+                {view === "graph" ? graphView : null}
+                {view === "timeline" ? timelineView : null}
+                {view === "tree" ? treeView : null}
+                {view === "artifacts" ? artifactsView : null}
+                {view === "diagnostics" ? <RunInspector embedded /> : null}
+              </main>
+              {!narrow && !dockCollapsed ? (
+                <aside className="flex min-w-0 border-l border-line bg-surface">
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-valuemin={DOCK_MIN}
+                    aria-valuemax={DOCK_MAX}
+                    aria-valuenow={dockWidth}
+                    aria-label="Resize the node detail"
+                    tabIndex={0}
+                    data-testid="workbench-dock-resizer"
+                    onPointerDown={startResize}
+                    onPointerMove={onResize}
+                    onPointerUp={endResize}
+                    onPointerCancel={endResize}
+                    onKeyDown={onSeparatorKey}
+                    className="w-[6px] shrink-0 cursor-col-resize border-r border-line hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"
+                  />
+                  <div
+                    role="region"
+                    tabIndex={0}
+                    aria-label="Node detail"
+                    className="w-full overflow-y-auto px-3 py-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    style={{ width: dockWidth }}
+                    data-testid="workbench-dock-pane"
+                  >
+                    {dock}
+                  </div>
+                </aside>
+              ) : null}
+            </>
+          )}
+        </div>
 
-      {narrow && !fullScreen ? (
-        <section
-          className="border-t border-line bg-surface px-4 py-3"
-          data-testid="workbench-dock-panel"
-        >
-          <div className="flex items-center justify-between border-b border-line pb-2">
-            <span className="font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
-              node detail
-            </span>
-            <button
-              type="button"
-              data-testid="workbench-dock-back"
-              onClick={() => graphTopRef.current?.scrollIntoView({ block: "start" })}
-              className="rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-ink-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-            >
-              Back to graph
-            </button>
-          </div>
-          <div className="pt-3">{dock}</div>
-        </section>
-      ) : null}
-    </div>
+        {narrow && !fullScreen ? (
+          <section
+            className="border-t border-line bg-surface px-4 py-3"
+            data-testid="workbench-dock-panel"
+          >
+            <div className="flex items-center justify-between border-b border-line pb-2">
+              <span className="font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
+                node detail
+              </span>
+              <button
+                type="button"
+                data-testid="workbench-dock-back"
+                onClick={() => graphTopRef.current?.scrollIntoView({ block: "start" })}
+                className="rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-ink-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                Back to graph
+              </button>
+            </div>
+            <div className="pt-3">{dock}</div>
+          </section>
+        ) : null}
+      </div>
+    </Page>
   );
 }

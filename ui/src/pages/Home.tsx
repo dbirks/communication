@@ -25,6 +25,7 @@ import { useAgentProfiles, useMe, useProjects } from "../api/queries";
 import { STATES } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Button } from "../components/ds/Button";
+import Page from "../components/ds/Page";
 import { greeting } from "../lib/greeting";
 
 /** Run statuses each count-line segment counts (the board's columns). */
@@ -61,13 +62,17 @@ export default function Home() {
 
   if (runs.isPending) {
     return (
-      <div data-testid="home-page">
+      <Page layout="reading" testid="home-page">
         <Spinner label="Reading your projects" />
-      </div>
+      </Page>
     );
   }
   if (runs.isError && !isHttpError(runs.error, 404)) {
-    return <ProblemBanner error={runs.error} fallback="Your runs could not be read." />;
+    return (
+      <Page layout="reading">
+        <ProblemBanner error={runs.error} fallback="Your runs could not be read." />
+      </Page>
+    );
   }
 
   const notYet = [runs, approvals, conversations].filter((query) => isHttpError(query.error, 404));
@@ -86,17 +91,12 @@ export default function Home() {
   );
 
   return (
-    <section
-      data-testid="home-page"
-      className="mx-auto w-full max-w-[960px] px-[22px] py-[28px] sm:px-[28px]"
+    <Page
+      layout="reading"
+      testid="home-page"
+      title={<span data-testid="home-greeting">{greeting(new Date(), me.data?.display_name)}</span>}
+      subtitle={<CountLine counts={counts} settled={settled} />}
     >
-      <header className="space-y-1">
-        <h1 className="text-[22px] leading-[28px] font-semibold" data-testid="home-greeting">
-          {greeting(new Date(), me.data?.display_name)}
-        </h1>
-        <CountLine counts={counts} settled={settled} />
-      </header>
-
       {notYet.length > 0 ? (
         <p
           className="mt-3 border border-st-waiting-strong bg-st-waiting-pale-body px-3 py-2 font-mono text-[11px] text-st-waiting-pale-fg"
@@ -139,7 +139,7 @@ export default function Home() {
           />
         </div>
       )}
-    </section>
+    </Page>
   );
 }
 

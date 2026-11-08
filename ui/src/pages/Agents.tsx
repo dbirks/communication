@@ -22,6 +22,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { Button } from "../components/ds/Button";
+import Page from "../components/ds/Page";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { useAgentProfiles, useMe, useSystemSandbox } from "../api/queries";
 import { useLaunchers } from "../api/launchers";
@@ -49,74 +50,75 @@ export default function AgentsPage() {
   const launcherCards = launchers.data?.launchers ?? null;
 
   return (
-    <div className="space-y-4" data-testid="agents-page">
-      <header className="flex flex-wrap items-start justify-between gap-2">
-        <div className="space-y-1">
-          {/* Redesign finding 02: the sidebar row and this page are both
-              "Agents"; "profile" stays for what the entity is called. */}
-          <h1 className="text-[19px] font-bold" id="agents-heading">
-            Agents
-          </h1>
-          <p className="text-[12.5px] text-muted">
-            A profile is an agent, the account it signs in with, its skill package and the sandbox
-            it runs in.
-          </p>
-        </div>
-        {canWrite ? (
+    <Page
+      layout="reading"
+      testid="agents-page"
+      title={<span id="agents-heading">Agents</span>}
+      subtitle={
+        <span className="font-sans text-[12.5px]">
+          A profile is an agent, the account it signs in with, its skill package and the sandbox it
+          runs in.
+        </span>
+      }
+      actions={
+        canWrite ? (
           <Button onClick={() => setDialogOpen(true)} data-testid="agents-new-open">
             New profile
           </Button>
+        ) : null
+      }
+    >
+      <div className="space-y-4">
+        {me.isError ? (
+          <ProblemBanner error={me.error} fallback="Your identity could not be read." />
         ) : null}
-      </header>
-      {me.isError ? (
-        <ProblemBanner error={me.error} fallback="Your identity could not be read." />
-      ) : null}
-      {profiles.isPending && !profiles.data ? <Spinner label="Loading agent profiles" /> : null}
-      {profiles.isError ? (
-        <ProblemBanner
-          error={profiles.error}
-          fallback="The agent profiles could not be read."
-          testid="agents-load-error"
-        />
-      ) : null}
-      {profiles.data ? (
-        <div className="flex flex-col gap-4 md:flex-row md:items-start">
-          <div className="w-full shrink-0 md:w-[260px]">
-            <ProfileList
-              profiles={items}
-              selectedId={selected?.id ?? null}
-              canWrite={canWrite}
-              launchers={launcherCards}
-              sandbox={sandbox.data ?? null}
-              onOpen={(profile) => navigate(routes.profile(profile.id))}
-              onEdit={(profile) => {
-                setApmOpenId(profile.id);
-                navigate(routes.profile(profile.id));
-              }}
-            />
-          </div>
-          <div className="min-w-0 flex-1">
-            {selected ? (
-              <ProfileDetail
-                profile={selected}
+        {profiles.isPending && !profiles.data ? <Spinner label="Loading agent profiles" /> : null}
+        {profiles.isError ? (
+          <ProblemBanner
+            error={profiles.error}
+            fallback="The agent profiles could not be read."
+            testid="agents-load-error"
+          />
+        ) : null}
+        {profiles.data ? (
+          <div className="flex flex-col gap-4 md:flex-row md:items-start">
+            <div className="w-full shrink-0 md:w-[260px]">
+              <ProfileList
+                profiles={items}
+                selectedId={selected?.id ?? null}
                 canWrite={canWrite}
                 launchers={launcherCards}
                 sandbox={sandbox.data ?? null}
-                apmOpen={apmOpenId === selected.id}
-                onApmToggle={() => setApmOpenId(apmOpenId === selected.id ? null : selected.id)}
+                onOpen={(profile) => navigate(routes.profile(profile.id))}
+                onEdit={(profile) => {
+                  setApmOpenId(profile.id);
+                  navigate(routes.profile(profile.id));
+                }}
               />
-            ) : null}
+            </div>
+            <div className="min-w-0 flex-1">
+              {selected ? (
+                <ProfileDetail
+                  profile={selected}
+                  canWrite={canWrite}
+                  launchers={launcherCards}
+                  sandbox={sandbox.data ?? null}
+                  apmOpen={apmOpenId === selected.id}
+                  onApmToggle={() => setApmOpenId(apmOpenId === selected.id ? null : selected.id)}
+                />
+              ) : null}
+            </div>
           </div>
-        </div>
-      ) : null}
-      <NewProfileDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        onCreated={(profile) => {
-          setDialogOpen(false);
-          navigate(routes.profile(profile.id));
-        }}
-      />
-    </div>
+        ) : null}
+        <NewProfileDialog
+          open={dialogOpen}
+          onClose={() => setDialogOpen(false)}
+          onCreated={(profile) => {
+            setDialogOpen(false);
+            navigate(routes.profile(profile.id));
+          }}
+        />
+      </div>
+    </Page>
   );
 }

@@ -21,6 +21,7 @@ import {
 } from "../api/queries";
 import type { Project, Secret } from "../api/types";
 import ProjectSectionNav from "../components/ProjectSectionNav";
+import Page from "../components/ds/Page";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { MaterializationsPanel, SecretMountsPanel, SecretsPanel } from "../components/Secrets";
 import { WorkspacesPanel } from "../components/Workspaces";
@@ -148,54 +149,54 @@ export default function ProjectSettings() {
 
   if (project.error instanceof ApiError && project.error.status === 404) {
     return (
-      <section aria-labelledby="settings-missing-heading">
-        <h1 id="settings-missing-heading" className="text-title-l font-bold">
-          Settings
-        </h1>
-        <p className="mt-2 text-st-failed-tag-fg" role="alert">
+      <Page layout="reading" title={<span id="settings-missing-heading">Settings</span>}>
+        <p className="text-st-failed-tag-fg" role="alert">
           <span aria-hidden="true">× </span>
           <span data-testid="settings-not-found">Project not found or you do not have access</span>
         </p>
-      </section>
+      </Page>
     );
   }
 
   if (project.error || !project.data) {
     return (
-      <section aria-labelledby="settings-error-heading">
-        <h1 id="settings-error-heading" className="text-title-l font-bold">
-          Settings
-        </h1>
+      <Page layout="reading" title={<span id="settings-error-heading">Settings</span>}>
         <ProblemBanner error={project.error} fallback="The project could not be loaded." />
-      </section>
+      </Page>
     );
   }
 
   const data = project.data;
 
   return (
-    <div className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
-      <ProjectSectionNav projectId={data.id} active="settings" />
-      <div className="min-w-0 space-y-4">
-        <header className="space-y-1">
-          <p className="font-mono text-[11px] text-muted">
-            <Link to={routes.project(data.id)} className="text-accent-text hover:text-ink">
-              {data.name}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>Settings</span>
-          </p>
-          <h1 id="settings-heading" className="text-title-l font-bold" data-testid="settings-title">
-            Secrets &amp; workspaces — {data.name}
-          </h1>
-          <p className="text-[12.5px] text-muted">
-            Your role: <span className="font-mono">{data.my_role}</span>. A viewer may read
-            metadata; only a maintainer may create, rotate, revoke or place a secret.
-          </p>
-        </header>
-        <Settings project={data} />
-        <WorkspacesPanel projectId={data.id} />
+    <Page layout="wide">
+      <div className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
+        <ProjectSectionNav projectId={data.id} active="settings" />
+        <div className="min-w-0 space-y-4">
+          <header className="space-y-1">
+            <p className="font-mono text-[11px] text-muted">
+              <Link to={routes.project(data.id)} className="text-accent-text hover:text-ink">
+                {data.name}
+              </Link>
+              <span aria-hidden="true"> / </span>
+              <span>Settings</span>
+            </p>
+            <h1
+              id="settings-heading"
+              className="text-title-l font-bold"
+              data-testid="settings-title"
+            >
+              Secrets &amp; workspaces — {data.name}
+            </h1>
+            <p className="text-[12.5px] text-muted">
+              Your role: <span className="font-mono">{data.my_role}</span>. A viewer may read
+              metadata; only a maintainer may create, rotate, revoke or place a secret.
+            </p>
+          </header>
+          <Settings project={data} />
+          <WorkspacesPanel projectId={data.id} />
+        </div>
       </div>
-    </div>
+    </Page>
   );
 }

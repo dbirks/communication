@@ -36,6 +36,7 @@ import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
 import DecisionBar from "../components/ds/DecisionBar";
 import { ProblemBanner, Spinner } from "../components/Feedback";
+import Page from "../components/ds/Page";
 import { attentionTitle } from "../lib/attention";
 import { routes } from "../lib/routes";
 import {
@@ -73,17 +74,18 @@ export default function ApprovalPage() {
     // show no scaffold, and offer the way back to their own Inbox.
     if (problemOf(gate.error).status === 404) {
       return (
-        <section className="space-y-2 py-2" role="status" data-testid="approval-not-found">
-          <h1 className="text-title-l font-bold">Approval not found</h1>
-          <p className="text-[13.5px] text-muted">
-            This approval doesn't exist, or you don't have access to it.
-          </p>
-          <p className="text-[13.5px]">
-            <Link to={routes.inbox()} className="text-accent-text hover:text-ink">
-              Back to Inbox
-            </Link>
-          </p>
-        </section>
+        <Page layout="reading" title="Approval not found" testid="approval-not-found">
+          <section className="space-y-2" role="status">
+            <p className="text-[13.5px] text-muted">
+              This approval doesn't exist, or you don't have access to it.
+            </p>
+            <p className="text-[13.5px]">
+              <Link to={routes.inbox()} className="text-accent-text hover:text-ink">
+                Back to Inbox
+              </Link>
+            </p>
+          </section>
+        </Page>
       );
     }
     return <ProblemBanner error={gate.error} fallback="The gate could not be read." />;
@@ -100,41 +102,41 @@ function GateView({ approval }: { approval: Approval }) {
   const project = (projects.data?.items ?? []).find((p) => p.id === approval.project_id);
 
   return (
-    <div className="space-y-4">
-      <GateStrip approval={approval} />
+    <Page
+      layout="reading"
+      title={
+        <span title={approval.summary} data-testid={`approval-detail-title-${testid}`}>
+          {attentionTitle(approval.summary)}
+        </span>
+      }
+      subtitle={
+        <>
+          {project?.name ?? shortId(approval.project_id)} · run {shortId(approval.run_id)} ·{" "}
+          {approval.node_instance_key ?? "unknown node"} · asked {formatAge(approval.created_at)}
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <GateStrip approval={approval} />
 
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0 space-y-4">
-          <header className="space-y-1">
-            <h1
-              className="text-[22px] leading-[28px] font-semibold"
-              title={approval.summary}
-              data-testid={`approval-detail-title-${testid}`}
-            >
-              {attentionTitle(approval.summary)}
-            </h1>
-            <p className="font-mono text-[10.5px] text-faint">
-              {project?.name ?? shortId(approval.project_id)} · run {shortId(approval.run_id)} ·{" "}
-              {approval.node_instance_key ?? "unknown node"} · asked{" "}
-              {formatAge(approval.created_at)}
-            </p>
-          </header>
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="min-w-0 space-y-4">
+            <SummaryCard approval={approval} summary={summary} testid={testid} />
+            <PlanArtifact approval={approval} testid={testid} />
+            <FilesItWillTouch testid={testid} />
+          </div>
 
-          <SummaryCard approval={approval} summary={summary} testid={testid} />
-          <PlanArtifact approval={approval} testid={testid} />
-          <FilesItWillTouch testid={testid} />
+          <aside className="w-full space-y-4 lg:w-[360px]" aria-label="Decide">
+            <WhoThenPanel approval={approval} meId={me.data?.id ?? null} />
+            {approval.state === "pending" ? (
+              <DecidePanel approval={approval} summary={summary.data ?? null} />
+            ) : (
+              <ClosedPanel approval={approval} testid={testid} />
+            )}
+          </aside>
         </div>
-
-        <aside className="w-full space-y-4 lg:w-[360px]" aria-label="Decide">
-          <WhoThenPanel approval={approval} meId={me.data?.id ?? null} />
-          {approval.state === "pending" ? (
-            <DecidePanel approval={approval} summary={summary.data ?? null} />
-          ) : (
-            <ClosedPanel approval={approval} testid={testid} />
-          )}
-        </aside>
       </div>
-    </div>
+    </Page>
   );
 }
 

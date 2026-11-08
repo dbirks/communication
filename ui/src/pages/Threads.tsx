@@ -20,6 +20,7 @@ import { Suspense, lazy } from "react";
 import { useParams } from "react-router";
 import { useConversation } from "../api/queries";
 import { Spinner } from "../components/Feedback";
+import Page from "../components/ds/Page";
 import { ThreadListPane, useThreadList } from "../components/threads/ThreadListPane";
 
 /**
@@ -168,14 +169,27 @@ export function ThreadScreenLoading({ conversationId }: { conversationId: string
 export function ThreadScreen() {
   const { conversationId = "" } = useParams();
   const conversation = useConversation(conversationId);
-  if (conversationId.length === 0) return <ThreadsView />;
+  // Finding 07: the threads screen is a `canvas` page — the 320px list pane
+  // and the open thread own the whole content column at full height.
+  if (conversationId.length === 0)
+    return (
+      <Page layout="canvas">
+        <ThreadsView />
+      </Page>
+    );
   if (conversation.isPending) {
-    return <ThreadScreenLoading conversationId={conversationId} />;
+    return (
+      <Page layout="canvas">
+        <ThreadScreenLoading conversationId={conversationId} />
+      </Page>
+    );
   }
   return (
-    <Suspense fallback={<ThreadScreenLoading conversationId={conversationId} />}>
-      <ConversationPage projectId={conversation.data?.project_id ?? ""} />
-    </Suspense>
+    <Page layout="canvas">
+      <Suspense fallback={<ThreadScreenLoading conversationId={conversationId} />}>
+        <ConversationPage projectId={conversation.data?.project_id ?? ""} />
+      </Suspense>
+    </Page>
   );
 }
 

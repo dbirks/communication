@@ -19,6 +19,7 @@ import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { InitialsBox } from "../components/ds/AppBar";
 import { Button } from "../components/ds/Button";
 import { Field, Textarea, Input } from "../components/ds/Field";
+import Page from "../components/ds/Page";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
 import { routes } from "../lib/routes";
@@ -71,15 +72,12 @@ export default function Projects() {
   const adding = formOpen || list.length === 0;
 
   return (
-    <div className="space-y-4">
-      <header className="flex flex-wrap items-start justify-between gap-x-[14px] gap-y-2">
-        <div className="min-w-0 space-y-1">
-          <h1 className="text-[22px] leading-[28px] font-semibold" data-testid="projects-heading">
-            Your projects
-          </h1>
-          {list.length > 0 ? <Tally attention={attention} /> : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-[10px]">
+    <Page
+      layout="wide"
+      title={<span data-testid="projects-heading">Your projects</span>}
+      subtitle={list.length > 0 ? <Tally attention={attention} /> : null}
+      actions={
+        <>
           <SortToggle sort={sort} onChange={setSort} />
           <Button
             variant="primary"
@@ -90,37 +88,39 @@ export default function Projects() {
           >
             {adding ? "Close" : "New project"}
           </Button>
-        </div>
-      </header>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {adding ? <NewProjectForm /> : null}
 
-      {adding ? <NewProjectForm /> : null}
-
-      {projects.isPending ? <Spinner label="Loading projects" /> : null}
-      {projects.error ? (
-        <ProblemBanner error={projects.error} fallback="Projects could not be loaded." />
-      ) : null}
-      {projects.data ? (
-        list.length === 0 ? (
-          <p className="text-[12.5px] text-muted" data-testid="project-list-empty">
-            No projects yet
-          </p>
-        ) : (
-          <ul
-            className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3"
-            data-testid="project-list"
-          >
-            {ordered.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                view={views.get(project.id) ?? EMPTY_PROJECT_VIEW}
-                readError={readErrors.get(project.id)}
-              />
-            ))}
-          </ul>
-        )
-      ) : null}
-    </div>
+        {projects.isPending ? <Spinner label="Loading projects" /> : null}
+        {projects.error ? (
+          <ProblemBanner error={projects.error} fallback="Projects could not be loaded." />
+        ) : null}
+        {projects.data ? (
+          list.length === 0 ? (
+            <p className="text-[12.5px] text-muted" data-testid="project-list-empty">
+              No projects yet
+            </p>
+          ) : (
+            <ul
+              className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3"
+              data-testid="project-list"
+            >
+              {ordered.map((project) => (
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  view={views.get(project.id) ?? EMPTY_PROJECT_VIEW}
+                  readError={readErrors.get(project.id)}
+                />
+              ))}
+            </ul>
+          )
+        ) : null}
+      </div>
+    </Page>
   );
 }
 

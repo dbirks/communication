@@ -46,6 +46,7 @@ import { WorkspaceWidget } from "../components/Workspaces";
 import { TurnSandboxPanel } from "../components/Sandbox";
 import { ThreadArtifacts } from "../components/threads/ThreadArtifacts";
 import { ProblemBanner, Spinner } from "../components/Feedback";
+import Page from "../components/ds/Page";
 import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
 import { Button } from "../components/ds/Button";
@@ -806,25 +807,28 @@ export default function ConversationPage({
         "[&>div:first-child>span:first-child]:before:content-['●']"
       : "";
     return (
-      <div
-        className="flex h-[calc(100vh-44px)] min-w-0 flex-col overflow-hidden bg-paper md:h-screen lg:flex-row"
-        data-testid="thread-pane-page"
-      >
+      // Finding 07: the thread pane is a canvas page — the list pane and the
+      // open thread own the content column at full height, no shell padding.
+      <Page layout="canvas">
         <div
-          className="hidden w-[320px] shrink-0 border-r border-line-strong lg:block"
-          data-testid="thread-list-pane"
+          className="flex h-[calc(100vh-44px)] min-w-0 flex-col overflow-hidden bg-paper md:h-screen lg:flex-row"
+          data-testid="thread-pane-page"
         >
-          <ThreadListPane
-            selectedId={conversationId}
-            declaredScope={
-              data.repository_id !== undefined
-                ? { id: conversationId, repositoryId: data.repository_id }
-                : undefined
-            }
-          />
-        </div>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* round-19 (rcn-3d): the header is the pane's FIXED band — a
+          <div
+            className="hidden w-[320px] shrink-0 border-r border-line-strong lg:block"
+            data-testid="thread-list-pane"
+          >
+            <ThreadListPane
+              selectedId={conversationId}
+              declaredScope={
+                data.repository_id !== undefined
+                  ? { id: conversationId, repositoryId: data.repository_id }
+                  : undefined
+              }
+            />
+          </div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {/* round-19 (rcn-3d): the header is the pane's FIXED band — a
               `shrink-0` flex sibling ABOVE the transcript's own scroller, never
               `sticky`/`fixed`/`absolute` over it — so transcript content can
               never slide under it. What it did at 390 was leave ~280px of the
@@ -834,37 +838,37 @@ export default function ConversationPage({
               `max-md` (the 44px touch targets and every fact stay — names and
               state lines never truncate, per the rcn-2e/repo-chain-r4 rule
               this keeps). */}
-          <header
-            className="shrink-0 border-b border-line-strong bg-surface px-5 pt-[10px] pb-[12px] max-md:pt-[4px] max-md:pb-[6px] lg:px-6"
-            data-testid="conversation-header"
-          >
-            <Link
-              to={routes.threads()}
-              className="mb-2 inline-block font-mono text-[11px] text-accent-text hover:text-ink max-md:mb-[3px] lg:hidden"
-              data-testid="threads-back"
+            <header
+              className="shrink-0 border-b border-line-strong bg-surface px-5 pt-[10px] pb-[12px] max-md:pt-[4px] max-md:pb-[6px] lg:px-6"
+              data-testid="conversation-header"
             >
-              ← Threads
-            </Link>
-            <div className="flex min-w-0 items-center justify-between gap-2">
-              {breadcrumb}
-              {/* rcn-chat-rail-390: at 390 the side panel has no visible
+              <Link
+                to={routes.threads()}
+                className="mb-2 inline-block font-mono text-[11px] text-accent-text hover:text-ink max-md:mb-[3px] lg:hidden"
+                data-testid="threads-back"
+              >
+                ← Threads
+              </Link>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                {breadcrumb}
+                {/* rcn-chat-rail-390: at 390 the side panel has no visible
                   column, so the header carries the door to it — the same
                   panel content opens as a right-side sheet. `lg:hidden` is
                   what hides it at desktop, where the panel is a column. */}
-              <button
-                ref={detailsToggleRef}
-                type="button"
-                data-testid="chat-details-toggle"
-                aria-label="Thread details"
-                aria-expanded={detailsOpen}
-                onClick={() => setDetailsOpen((open) => !open)}
-                className="inline-flex shrink-0 items-center gap-[6px] rounded-[3px] px-2 py-[3px] font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent lg:hidden"
-              >
-                <PanelRight className="h-[14px] w-[14px]" aria-hidden="true" />
-                Details
-              </button>
-            </div>
-            {/* Below the pane's `lg` stack breakpoint the header is a
+                <button
+                  ref={detailsToggleRef}
+                  type="button"
+                  data-testid="chat-details-toggle"
+                  aria-label="Thread details"
+                  aria-expanded={detailsOpen}
+                  onClick={() => setDetailsOpen((open) => !open)}
+                  className="inline-flex shrink-0 items-center gap-[6px] rounded-[3px] px-2 py-[3px] font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent lg:hidden"
+                >
+                  <PanelRight className="h-[14px] w-[14px]" aria-hidden="true" />
+                  Details
+                </button>
+              </div>
+              {/* Below the pane's `lg` stack breakpoint the header is a
                 column: title (full width, wrapping rather than truncating to
                 a word), then the pill and the acts on their own row. At
                 `lg+` they share one row again — the design's shape.
@@ -876,32 +880,32 @@ export default function ConversationPage({
                 so the H1 WRAPS (`wrap-anywhere` = overflow-wrap:anywhere, so
                 a long unbroken slug stays inside the box at a phone's 390 as
                 well) and no `truncate`/`whitespace-nowrap` rides it. */}
-            <div className="mt-[2px] flex flex-col gap-x-4 max-md:mt-0 lg:flex-row lg:flex-wrap lg:items-center">
-              <h1
-                data-testid="conversation-title"
-                className="min-w-0 wrap-anywhere text-title-m font-semibold max-md:leading-[1.25] lg:min-w-0 lg:basis-[16rem] lg:grow"
-              >
-                {data.title}
-              </h1>
-              {participantsLine}
-              {/* The control line (1g): only the pill and the acts ride the
+              <div className="mt-[2px] flex flex-col gap-x-4 max-md:mt-0 lg:flex-row lg:flex-wrap lg:items-center">
+                <h1
+                  data-testid="conversation-title"
+                  className="min-w-0 wrap-anywhere text-title-m font-semibold max-md:leading-[1.25] lg:min-w-0 lg:basis-[16rem] lg:grow"
+                >
+                  {data.title}
+                </h1>
+                {participantsLine}
+                {/* The control line (1g): only the pill and the acts ride the
                   title row — the pill is the design's own `you're in control`,
                   and Stop (danger) appears only while a turn runs. */}
-              <div
-                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-start gap-[6px] max-md:mt-[3px] lg:mt-0 lg:shrink-0 lg:justify-end`}
-              >
-                <AgentConversationControls
-                  session={session}
-                  ids={{
-                    badge: "controller-badge",
-                    takeControl: "take-control",
-                    returnControl: "return-control",
-                    stopTurn: "stop-turn",
-                  }}
-                />
+                <div
+                  className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-start gap-[6px] max-md:mt-[3px] lg:mt-0 lg:shrink-0 lg:justify-end`}
+                >
+                  <AgentConversationControls
+                    session={session}
+                    ids={{
+                      badge: "controller-badge",
+                      takeControl: "take-control",
+                      returnControl: "return-control",
+                      stopTurn: "stop-turn",
+                    }}
+                  />
+                </div>
               </div>
-            </div>
-            {/* The meta line is ONE row at `lg+`, and it WRAPS onto a second
+              {/* The meta line is ONE row at `lg+`, and it WRAPS onto a second
                 row instead of ellipsising (rcn-2e review defect 1): the old
                 `lg:truncate` cut the whole line to “C…” once the Threads list
                 and the 280px rail narrowed the pane, hiding the agent and the
@@ -915,64 +919,64 @@ export default function ConversationPage({
                 readout keeps its place at the line's right (`lg:flex-wrap`
                 already on the pair), so the narrowest pane drops it to its own
                 row rather than clipping either half. */}
-            <div className="mt-[2px] max-md:mt-[1px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
-              <p
-                className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] max-md:leading-[1.35] text-muted lg:min-w-0 lg:flex-1 lg:order-1"
-                data-testid="conversation-meta"
-              >
-                <span>{repoLabel}</span>
-                <span className="px-2" aria-hidden="true">
-                  ·
-                </span>
-                {/* A real branch name keeps the design's `branch <name>`
+              <div className="mt-[2px] max-md:mt-[1px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
+                <p
+                  className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] max-md:leading-[1.35] text-muted lg:min-w-0 lg:flex-1 lg:order-1"
+                  data-testid="conversation-meta"
+                >
+                  <span>{repoLabel}</span>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  {/* A real branch name keeps the design's `branch <name>`
                     prefix; "no branch yet" / "no branch recorded" is a state
                     sentence and wears no prefix (rcn-2e review defect 2). */}
-                <span data-testid="thread-branch">
-                  {threadBranchLabel === null
-                    ? "no branch recorded"
-                    : threadBranchLabel === NO_BRANCH_YET
-                      ? NO_BRANCH_YET
-                      : `branch ${threadBranchLabel}`}
-                </span>
-                <span className="px-2" aria-hidden="true">
-                  ·
-                </span>
-                <span>{data.agent_profile_name ?? "agent"}</span>
-                <span className="px-2" aria-hidden="true">
-                  ·
-                </span>
-                <span data-testid="thread-age">{formatAge(data.created_at)}</span>
-              </p>
-              {/* The two CONDITIONAL facts ride their own row (rcn-2e review
+                  <span data-testid="thread-branch">
+                    {threadBranchLabel === null
+                      ? "no branch recorded"
+                      : threadBranchLabel === NO_BRANCH_YET
+                        ? NO_BRANCH_YET
+                        : `branch ${threadBranchLabel}`}
+                  </span>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  <span>{data.agent_profile_name ?? "agent"}</span>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  <span data-testid="thread-age">{formatAge(data.created_at)}</span>
+                </p>
+                {/* The two CONDITIONAL facts ride their own row (rcn-2e review
                   defect 2: with the workspace ref, the automation line and the
                   session line all in one paragraph, this meta block wrapped to
                   FIVE lines beside the status). Repo · branch · agent · age is
                   the fixed line the design draws and always fits; who a turn
                   runs for, and what session is attached, are the thread's
                   context — a second short line, never a fifth wrap. */}
-              {turnOrigin || data.agent_session ? (
-                <p
-                  className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] max-md:leading-[1.35] text-muted lg:order-3 lg:basis-full"
-                  data-testid="conversation-context"
-                >
-                  {turnOrigin ? <span data-testid="turn-origin">{turnOrigin}</span> : null}
-                  {turnOrigin && data.agent_session ? (
-                    <span className="px-2" aria-hidden="true">
-                      ·
-                    </span>
-                  ) : null}
-                  {data.agent_session ? (
-                    <span data-testid="agent-session">
-                      agent: {data.agent_session.launcher_id} (
-                      {data.agent_session.session_origin === "resumed"
-                        ? "resumed session"
-                        : "new session"}
-                      )
-                    </span>
-                  ) : null}
-                </p>
-              ) : null}
-              {/* The quiet state readout (1g), pass review defect 2: no
+                {turnOrigin || data.agent_session ? (
+                  <p
+                    className="min-w-0 wrap-anywhere font-mono text-[10.5px] leading-[1.6] max-md:leading-[1.35] text-muted lg:order-3 lg:basis-full"
+                    data-testid="conversation-context"
+                  >
+                    {turnOrigin ? <span data-testid="turn-origin">{turnOrigin}</span> : null}
+                    {turnOrigin && data.agent_session ? (
+                      <span className="px-2" aria-hidden="true">
+                        ·
+                      </span>
+                    ) : null}
+                    {data.agent_session ? (
+                      <span data-testid="agent-session">
+                        agent: {data.agent_session.launcher_id} (
+                        {data.agent_session.session_origin === "resumed"
+                          ? "resumed session"
+                          : "new session"}
+                        )
+                      </span>
+                    ) : null}
+                  </p>
+                ) : null}
+                {/* The quiet state readout (1g), pass review defect 2: no
                   leading, trailing or empty dot-segments. It reads as the
                   turn's word with its state glyph — the glyph hidden for
                   `queued` (its handoff glyph is a bare `·`, indistinguishable
@@ -983,38 +987,38 @@ export default function ConversationPage({
                   stream has no word to print after a separator, and "word · •"
                   was exactly the stray tail the review named — its `role=
                   "status"` element stays for announcements, read-only. */}
-              <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] max-md:mt-[1px] lg:order-2 lg:mt-0 lg:shrink-0">
-                {turnHasGlyph ? (
-                  <span aria-hidden="true" className={turnSpec.tagFg}>
-                    {turnSpec.glyph}
+                <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] max-md:mt-[1px] lg:order-2 lg:mt-0 lg:shrink-0">
+                  {turnHasGlyph ? (
+                    <span aria-hidden="true" className={turnSpec.tagFg}>
+                      {turnSpec.glyph}
+                    </span>
+                  ) : null}
+                  <span
+                    data-testid="turn-status"
+                    title={turnStatusRaw ?? undefined}
+                    className="text-faint"
+                  >
+                    {turnStatus}
                   </span>
-                ) : null}
-                <span
-                  data-testid="turn-status"
-                  title={turnStatusRaw ?? undefined}
-                  className="text-faint"
-                >
-                  {turnStatus}
+                  {status === "live" ? (
+                    <span data-testid="stream-status" role="status" className="sr-only">
+                      live
+                    </span>
+                  ) : (
+                    <>
+                      <span aria-hidden="true" className="px-1 text-faint">
+                        ·
+                      </span>
+                      <span data-testid="stream-status" role="status" className={streamSpec.tagFg}>
+                        <span aria-hidden="true">{streamSpec.glyph}</span>
+                        <span> {status}</span>
+                      </span>
+                    </>
+                  )}
                 </span>
-                {status === "live" ? (
-                  <span data-testid="stream-status" role="status" className="sr-only">
-                    live
-                  </span>
-                ) : (
-                  <>
-                    <span aria-hidden="true" className="px-1 text-faint">
-                      ·
-                    </span>
-                    <span data-testid="stream-status" role="status" className={streamSpec.tagFg}>
-                      <span aria-hidden="true">{streamSpec.glyph}</span>
-                      <span> {status}</span>
-                    </span>
-                  </>
-                )}
-              </span>
-            </div>
-          </header>
-          {/* The transcript column (max 720px) is the pane's only scroller.
+              </div>
+            </header>
+            {/* The transcript column (max 720px) is the pane's only scroller.
               Pass review defect 6: design 1g's thread view holds the
               TRANSCRIPT alone — WORKSPACE / ARTIFACTS / NEXT are not inline
               copy — so the thread context now rides the column's end behind
@@ -1022,26 +1026,26 @@ export default function ConversationPage({
               context is a click away at every width, and every rail testid is
               unchanged. (1280 shows it collapsed; an expanded proof is the
               disclosure opened, never the default.) */}
-          <div
-            className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-6 lg:px-6"
-            data-capture-keep-scroll
-          >
             <div
-              className="w-full min-w-0 max-w-[720px] space-y-3 [&_li.ml-auto]:border-0 [&_li.ml-auto>span.font-semibold]:sr-only"
-              data-testid="conversation-main"
+              className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-6 lg:px-6"
+              data-capture-keep-scroll
             >
-              {interrupted ? (
-                <Alert
-                  state="interrupted"
-                  testid="interrupted-notice"
-                  meta="you can send a new prompt"
-                >
-                  {interruptedCopy(described.record?.interruptReason ?? null)}
-                </Alert>
-              ) : null}
-              <ConversationTranscript session={session} />
-            </div>
-            {/* Pass-4 review: the rail's collapsed form was a BOXED mono-caps
+              <div
+                className="w-full min-w-0 max-w-[720px] space-y-3 [&_li.ml-auto]:border-0 [&_li.ml-auto>span.font-semibold]:sr-only"
+                data-testid="conversation-main"
+              >
+                {interrupted ? (
+                  <Alert
+                    state="interrupted"
+                    testid="interrupted-notice"
+                    meta="you can send a new prompt"
+                  >
+                    {interruptedCopy(described.record?.interruptReason ?? null)}
+                  </Alert>
+                ) : null}
+                <ConversationTranscript session={session} />
+              </div>
+              {/* Pass-4 review: the rail's collapsed form was a BOXED mono-caps
                 bar (`THREAD DETAILS — WORKSPACE, ARTIFACTS, NEXT`) sitting
                 between the transcript and the composer — not in design 1g, and
                 reading like a developer label. The design's thread column is
@@ -1065,224 +1069,227 @@ export default function ConversationPage({
                 names what is BEHIND the door — the rail's interactive parts —
                 instead of the header meta line's facts, and the 44px tap
                 height at phone widths is unchanged. */}
-            <details
-              className="group mt-4 min-w-0 max-w-[720px]"
-              data-testid="thread-context-block"
-            >
-              <summary
-                className="flex min-h-[44px] cursor-pointer items-center gap-[6px] text-[11.5px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent min-[560px]:min-h-[24px]"
-                data-testid="thread-context-disclosure"
+              <details
+                className="group mt-4 min-w-0 max-w-[720px]"
+                data-testid="thread-context-block"
               >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"
-                  className="shrink-0 -rotate-90 transition-transform group-open:rotate-0"
+                <summary
+                  className="flex min-h-[44px] cursor-pointer items-center gap-[6px] text-[11.5px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent min-[560px]:min-h-[24px]"
+                  data-testid="thread-context-disclosure"
                 >
-                  <path
-                    d="M3 4.5l3 3 3-3"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-                <span>Thread details — handoff, artifacts and draft PR</span>
-              </summary>
-              <div className="mt-[8px] border-t border-line pt-[10px]">{rail}</div>
-            </details>
-            {/* rcn-review14: the inline transcript copy of the side panel
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 12 12"
+                    aria-hidden="true"
+                    className="shrink-0 -rotate-90 transition-transform group-open:rotate-0"
+                  >
+                    <path
+                      d="M3 4.5l3 3 3-3"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span>Thread details — handoff, artifacts and draft PR</span>
+                </summary>
+                <div className="mt-[8px] border-t border-line pt-[10px]">{rail}</div>
+              </details>
+              {/* rcn-review14: the inline transcript copy of the side panel
                 (`thread-side-panel-stack`) is gone — at narrow widths the
                 panel's one place is the header's Details sheet
                 (`ChatDetailsSheet`, one tap away in the header), the same
                 panel content mounted once. */}
-          </div>
-          {/* The composer pins to the bottom of the pane (1g): the last thing
+            </div>
+            {/* The composer pins to the bottom of the pane (1g): the last thing
               on the column, visible without scrolling at any width, the ink
               box with the hard shadow riding above the transcript. */}
-          <div
-            className="shrink-0 bg-paper px-5 pt-2 pb-4 lg:px-6 [&_form]:flex [&_form]:flex-wrap [&_form]:items-center [&_form]:gap-2 [&_form]:rounded-[3px] [&_form]:border [&_form]:border-ink [&_form]:bg-surface [&_form]:p-2 [&_form]:shadow-(--shadow-raised) [&_textarea]:min-w-[180px] [&_textarea]:flex-1 [&_textarea]:resize-none [&_textarea]:border-0 [&_textarea]:bg-transparent [&_textarea]:px-1"
-            data-testid="thread-composer-pin"
-          >
-            <div className="w-full max-w-[720px]">
-              <AgentConversationComposer
-                session={session}
-                ids={{
-                  composerInput: "composer-input",
-                  composerSend: "composer-send",
-                  composerExplainer: "composer-explainer",
-                }}
-                inputId="conversation-prompt"
-                rows={1}
-                nonControllerPlaceholder="Only the controller can prompt."
-                agentPicker={agentPicker}
-              />
+            <div
+              className="shrink-0 bg-paper px-5 pt-2 pb-4 lg:px-6 [&_form]:flex [&_form]:flex-wrap [&_form]:items-center [&_form]:gap-2 [&_form]:rounded-[3px] [&_form]:border [&_form]:border-ink [&_form]:bg-surface [&_form]:p-2 [&_form]:shadow-(--shadow-raised) [&_textarea]:min-w-[180px] [&_textarea]:flex-1 [&_textarea]:resize-none [&_textarea]:border-0 [&_textarea]:bg-transparent [&_textarea]:px-1"
+              data-testid="thread-composer-pin"
+            >
+              <div className="w-full max-w-[720px]">
+                <AgentConversationComposer
+                  session={session}
+                  ids={{
+                    composerInput: "composer-input",
+                    composerSend: "composer-send",
+                    composerExplainer: "composer-explainer",
+                  }}
+                  inputId="conversation-prompt"
+                  rows={1}
+                  nonControllerPlaceholder="Only the controller can prompt."
+                  agentPicker={agentPicker}
+                />
+              </div>
             </div>
           </div>
-        </div>
-        {/* 2e's side panel: 280px, white, left border, at `lg+` its own
+          {/* 2e's side panel: 280px, white, left border, at `lg+` its own
             column beside the thread; below `lg` it lives in the Details
             sheet instead, never both. */}
-        {narrow ? null : (
-          <aside
-            className="min-h-0 w-full shrink-0 overflow-y-auto border-t border-line-strong bg-surface lg:h-full lg:w-[280px] lg:border-t-0 lg:border-l"
-            aria-label="Thread context panel"
-            data-testid="thread-side-panel-aside"
-          >
-            {sidePanel}
-          </aside>
-        )}
-        {/* rcn-chat-rail-390: the phone's Details sheet — the SAME panel
+          {narrow ? null : (
+            <aside
+              className="min-h-0 w-full shrink-0 overflow-y-auto border-t border-line-strong bg-surface lg:h-full lg:w-[280px] lg:border-t-0 lg:border-l"
+              aria-label="Thread context panel"
+              data-testid="thread-side-panel-aside"
+            >
+              {sidePanel}
+            </aside>
+          )}
+          {/* rcn-chat-rail-390: the phone's Details sheet — the SAME panel
             content, full height, at the right edge. The open state is the
             page's; closeDetails returns focus to the header's toggle, and
             the sheet's own close button, backdrop and Esc all land there.
             Mounted only below `lg`, where its toggle exists. */}
-        <ChatDetailsSheet open={narrow && detailsOpen} onClose={closeDetails}>
-          {sidePanel}
-        </ChatDetailsSheet>
-      </div>
+          <ChatDetailsSheet open={narrow && detailsOpen} onClose={closeDetails}>
+            {sidePanel}
+          </ChatDetailsSheet>
+        </div>
+      </Page>
     );
   }
 
   return (
-    <div className="grid min-w-0 gap-x-6 gap-y-4 xl:grid-cols-[minmax(0,1fr)_300px]">
-      {/* 6d: the transcript is the reading surface and owns the column; the
+    <Page layout="reading">
+      <div className="grid min-w-0 gap-x-6 gap-y-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+        {/* 6d: the transcript is the reading surface and owns the column; the
           context that explains it sits in a narrow rail beside it. */}
-      <div className="min-w-0 max-w-[820px] space-y-4" data-testid="conversation-main">
-        <header className="space-y-2">
-          {breadcrumb}
-          {participantsLine}
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 data-testid="conversation-title" className="text-title-l font-bold">
-              {data.title}
-            </h1>
-            {/* 4f: the control line lives with the title — the "You are in
+        <div className="min-w-0 max-w-[820px] space-y-4" data-testid="conversation-main">
+          <header className="space-y-2">
+            {breadcrumb}
+            {participantsLine}
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 data-testid="conversation-title" className="text-title-l font-bold">
+                {data.title}
+              </h1>
+              {/* 4f: the control line lives with the title — the "You are in
                 control" pill and the danger Stop sit in the header, and the
                 same shared controls (take / return / stop) render there with
                 the page's historical testids. */}
-            <AgentConversationControls
-              session={session}
-              ids={{
-                badge: "controller-badge",
-                takeControl: "take-control",
-                returnControl: "return-control",
-                stopTurn: "stop-turn",
-              }}
-              showVersionLine
-            />
-          </div>
-          <p className="font-mono text-[11px] text-muted" data-testid="conversation-meta">
-            <span>thread</span>
-            <span className="px-2" aria-hidden="true">
-              ·
-            </span>
-            <span>{project.data?.name ?? (project.isPending ? "…" : projectId)}</span>
-            <span className="px-2" aria-hidden="true">
-              ·
-            </span>
-            <span>{data.agent_profile_name ?? data.agent_profile_id}</span>
-            <span className="px-2" aria-hidden="true">
-              ·
-            </span>
-            <span data-testid="thread-age">{formatAge(data.created_at)}</span>
-            <span className="px-2" aria-hidden="true">
-              ·
-            </span>
-            <span>status: {data.status}</span>
-            <span className="px-2" aria-hidden="true">
-              ·
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              stream:
-              <StatusChip
-                state={stateOf(STREAM_STATE[status])}
-                label={status}
-                labelProps={{ "data-testid": "stream-status", role: "status" }}
+              <AgentConversationControls
+                session={session}
+                ids={{
+                  badge: "controller-badge",
+                  takeControl: "take-control",
+                  returnControl: "return-control",
+                  stopTurn: "stop-turn",
+                }}
+                showVersionLine
               />
-            </span>
-            <span className="px-2" aria-hidden="true">
-              ·
-            </span>
-            {/* The legacy page labels its chips (`turn:`), so the raw stop
+            </div>
+            <p className="font-mono text-[11px] text-muted" data-testid="conversation-meta">
+              <span>thread</span>
+              <span className="px-2" aria-hidden="true">
+                ·
+              </span>
+              <span>{project.data?.name ?? (project.isPending ? "…" : projectId)}</span>
+              <span className="px-2" aria-hidden="true">
+                ·
+              </span>
+              <span>{data.agent_profile_name ?? data.agent_profile_id}</span>
+              <span className="px-2" aria-hidden="true">
+                ·
+              </span>
+              <span data-testid="thread-age">{formatAge(data.created_at)}</span>
+              <span className="px-2" aria-hidden="true">
+                ·
+              </span>
+              <span>status: {data.status}</span>
+              <span className="px-2" aria-hidden="true">
+                ·
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                stream:
+                <StatusChip
+                  state={stateOf(STREAM_STATE[status])}
+                  label={status}
+                  labelProps={{ "data-testid": "stream-status", role: "status" }}
+                />
+              </span>
+              <span className="px-2" aria-hidden="true">
+                ·
+              </span>
+              {/* The legacy page labels its chips (`turn:`), so the raw stop
                 reason rides the pair's own span — `StatusChip`'s labelProps is
                 a narrow set of attributes and not this task's file. */}
-            <span className="inline-flex items-center gap-1.5" title={turnStatusRaw ?? undefined}>
-              turn:
-              <StatusChip
-                state={stateOf(TURN_STATE[described.status])}
-                label={turnStatus}
-                labelProps={{ "data-testid": "turn-status" }}
-              />
-            </span>
-            {turnOrigin ? (
-              <>
-                <span className="px-2" aria-hidden="true">
-                  ·
-                </span>
-                <span data-testid="turn-origin">{turnOrigin}</span>
-              </>
-            ) : null}
-            {data.origin === "manual" ? (
-              <span
-                className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
-                data-testid="conversation-manual-label"
-              >
-                One-off thread
+              <span className="inline-flex items-center gap-1.5" title={turnStatusRaw ?? undefined}>
+                turn:
+                <StatusChip
+                  state={stateOf(TURN_STATE[described.status])}
+                  label={turnStatus}
+                  labelProps={{ "data-testid": "turn-status" }}
+                />
               </span>
-            ) : null}
-            {data.agent_session ? (
-              <>
-                <span className="px-2" aria-hidden="true">
-                  ·
+              {turnOrigin ? (
+                <>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  <span data-testid="turn-origin">{turnOrigin}</span>
+                </>
+              ) : null}
+              {data.origin === "manual" ? (
+                <span
+                  className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
+                  data-testid="conversation-manual-label"
+                >
+                  One-off thread
                 </span>
-                <span data-testid="agent-session">
-                  agent: {data.agent_session.launcher_id} (
-                  {data.agent_session.session_origin === "resumed"
-                    ? "resumed session"
-                    : "new session"}
-                  )
-                </span>
-              </>
-            ) : null}
-          </p>
-        </header>
+              ) : null}
+              {data.agent_session ? (
+                <>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  <span data-testid="agent-session">
+                    agent: {data.agent_session.launcher_id} (
+                    {data.agent_session.session_origin === "resumed"
+                      ? "resumed session"
+                      : "new session"}
+                    )
+                  </span>
+                </>
+              ) : null}
+            </p>
+          </header>
 
-        {interrupted ? (
-          <Alert state="interrupted" testid="interrupted-notice" meta="you can send a new prompt">
-            {interruptedCopy(described.record?.interruptReason ?? null)}
-          </Alert>
-        ) : null}
+          {interrupted ? (
+            <Alert state="interrupted" testid="interrupted-notice" meta="you can send a new prompt">
+              {interruptedCopy(described.record?.interruptReason ?? null)}
+            </Alert>
+          ) : null}
 
-        {/* The shared surface: the transcript (permission cards and the
+          {/* The shared surface: the transcript (permission cards and the
             ADR-0068 switch dividers included) and the composer with its
             agent chip. The controller line stays in the rail below. */}
-        <ConversationTranscript session={session} />
-        <AgentConversationComposer
-          session={session}
-          ids={{
-            composerInput: "composer-input",
-            composerSend: "composer-send",
-            composerExplainer: "composer-explainer",
-          }}
-          inputId="conversation-prompt"
-          rows={3}
-          nonControllerPlaceholder="Only the controller can prompt."
-          heading
-          agentPicker={agentPicker}
-        />
-      </div>
+          <ConversationTranscript session={session} />
+          <AgentConversationComposer
+            session={session}
+            ids={{
+              composerInput: "composer-input",
+              composerSend: "composer-send",
+              composerExplainer: "composer-explainer",
+            }}
+            inputId="conversation-prompt"
+            rows={3}
+            nonControllerPlaceholder="Only the controller can prompt."
+            heading
+            agentPicker={agentPicker}
+          />
+        </div>
 
-      {/* 2e's rail column, legacy page: the side panel (every section only
+        {/* 2e's rail column, legacy page: the side panel (every section only
           with real data) rides above the thread's working rail in the one
           narrow column; below `xl` the grid stacks, so the panel lands
           under the transcript — the same collapse the pane mode mounts. */}
-      <div className="min-w-0 space-y-3">
-        {sidePanel}
-        {rail}
+        <div className="min-w-0 space-y-3">
+          {sidePanel}
+          {rail}
+        </div>
       </div>
-    </div>
+    </Page>
   );
 }
 

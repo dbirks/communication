@@ -28,6 +28,7 @@ import type { Project } from "../../api/types";
 import NewConversationDialog from "../NewConversationDialog";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { ProjectUnavailable, projectAccessRefused } from "../ProjectUnavailable";
+import Page from "../ds/Page";
 import { routes } from "../../lib/routes";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPageShell } from "./ProjectPageShell";
@@ -154,7 +155,10 @@ export function ProjectFrame({
 
   const data = project.data;
   return (
-    <div className="flex min-h-full flex-col bg-paper" data-testid={testid}>
+    // Finding 07: the 1b frame is a `canvas` page — ProjectHeader draws the
+    // shared band (same left edge and title baseline, `PROJECT_PAGE_PAD` =
+    // `PAGE_BAND_PAD`) and the tab body owns the rest of the column.
+    <Page layout="canvas" testid={testid}>
       <ProjectHeader project={data} active={active} onNewThread={openThread} />
       <div className={bodyClassName}>{children(data, openThread)}</div>
       <NewConversationDialog
@@ -163,6 +167,6 @@ export function ProjectFrame({
         projectId={data.id}
         project={data}
       />
-    </div>
+    </Page>
   );
 }

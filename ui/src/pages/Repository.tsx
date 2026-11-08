@@ -40,6 +40,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { useAgentProfiles, useMe, useProject, useRepositories } from "../api/queries";
 import { useProjectRuns } from "../api/runs";
+import Page from "../components/ds/Page";
 import { useAssignments, usePipelines } from "../api/pipelines";
 import { useProjectApprovals } from "../api/approvals";
 import { isGitHubRepository, useRepoIssues } from "../api/issues";
@@ -394,107 +395,73 @@ export default function Repository() {
   const profileDefaultId = profiles.data?.items?.[0]?.id ?? null;
 
   return (
-    <div className="min-w-0 space-y-4" data-testid="repo-page">
-      <header
-        className="flex flex-col gap-2 min-[640px]:flex-row min-[640px]:flex-wrap min-[640px]:items-start min-[640px]:gap-x-4"
-        data-testid="repo-header"
-      >
-        <div className="min-w-0 flex-1 space-y-1">
-          <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
-            <Link to={routes.project(id)} data-testid="repo-breadcrumb">
-              {projectData.name}
-            </Link>
-            <span aria-hidden="true" className="px-1.5">
-              /
-            </span>
-            <span data-testid="repo-breadcrumb-repo">{repositoryData.name}</span>
-          </nav>
-          <h1 data-testid="repo-name" className="text-[22px] leading-[28px] font-semibold">
-            {repositoryData.name}
-          </h1>
-          <div className="flex flex-wrap items-center gap-x-2 font-mono text-[11px] text-muted">
-            {/^https?:\/\//i.test(repositoryData.git_url.trim()) ? (
-              <a
-                href={repositoryData.git_url}
-                target="_blank"
-                rel="noreferrer"
-                data-testid="repo-git-url"
-                className="break-all underline"
-              >
-                {repositoryData.git_url}
-              </a>
-            ) : (
-              <span className="break-all">{repositoryData.git_url}</span>
-            )}
-            <span aria-hidden="true">·</span>
-            <span data-testid="repo-default-branch">{repositoryData.default_branch}</span>
+    // Finding 07: a `wide` page — the repo header is its own band, the
+    // lanes/feed below run the full content column.
+    <Page layout="wide" testid="repo-page">
+      <div className="min-w-0 space-y-4" data-testid="repo-page-body">
+        <header
+          className="flex flex-col gap-2 min-[640px]:flex-row min-[640px]:flex-wrap min-[640px]:items-start min-[640px]:gap-x-4"
+          data-testid="repo-header"
+        >
+          <div className="min-w-0 flex-1 space-y-1">
+            <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+              <Link to={routes.project(id)} data-testid="repo-breadcrumb">
+                {projectData.name}
+              </Link>
+              <span aria-hidden="true" className="px-1.5">
+                /
+              </span>
+              <span data-testid="repo-breadcrumb-repo">{repositoryData.name}</span>
+            </nav>
+            <h1 data-testid="repo-name" className="text-[22px] leading-[28px] font-semibold">
+              {repositoryData.name}
+            </h1>
+            <div className="flex flex-wrap items-center gap-x-2 font-mono text-[11px] text-muted">
+              {/^https?:\/\//i.test(repositoryData.git_url.trim()) ? (
+                <a
+                  href={repositoryData.git_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid="repo-git-url"
+                  className="break-all underline"
+                >
+                  {repositoryData.git_url}
+                </a>
+              ) : (
+                <span className="break-all">{repositoryData.git_url}</span>
+              )}
+              <span aria-hidden="true">·</span>
+              <span data-testid="repo-default-branch">{repositoryData.default_branch}</span>
+            </div>
+            <GitHubAccess ref={ghAccess} project={projectData} repository={repositoryData} />
           </div>
-          <GitHubAccess ref={ghAccess} project={projectData} repository={repositoryData} />
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <RepoViewToggle repositoryName={repositoryData.name} />
-          {/* Lanes mode has no left-column chat box — its New chat opens the
+          <div className="flex shrink-0 items-center gap-2">
+            <RepoViewToggle repositoryName={repositoryData.name} />
+            {/* Lanes mode has no left-column chat box — its New chat opens the
               same RepoChatBox in a modal (design 3b header). */}
-          {view === "lanes" ? (
-            <Button
-              variant="primary"
-              onClick={() => setChatFormOpen(true)}
-              data-testid="repo-new-chat"
-            >
-              New thread
-            </Button>
-          ) : null}
-        </div>
-      </header>
+            {view === "lanes" ? (
+              <Button
+                variant="primary"
+                onClick={() => setChatFormOpen(true)}
+                data-testid="repo-new-chat"
+              >
+                New thread
+              </Button>
+            ) : null}
+          </div>
+        </header>
 
-      {view === "lanes" ? (
-        /* Design 3b: the WORKFLOWS chip row over the four lanes. */
-        <div className="min-w-0 space-y-4">
-          <RepoWorkflowChips projectId={id} assignments={enabledAssignments} names={names} />
-          <RepoLanes
-            projectId={id}
-            repositoryName={repositoryData.name}
-            issues={issues}
-            githubHosted={githubHosted}
-            runs={repoRuns}
-            conversations={conversations.data?.items ?? []}
-            runsPending={runs.isPending}
-            runsError={runs.error}
-            onRetryRuns={() => void runs.refetch()}
-            retryingRuns={runs.isFetching}
-            chatsPending={conversations.isPending}
-            chatsError={conversations.error}
-            onRetryChats={() => void conversations.refetch()}
-            retryingChats={conversations.isFetching}
-            gateFor={(runId) => pendingGateByRun.get(runId) ?? null}
-            assignments={enabledAssignments}
-            names={names}
-            profileDefaultId={profileDefaultId}
-            profilesPending={profiles.isPending}
-            onOpenRunForm={(issue, assignment) => {
-              setRunFormAssignment(assignment);
-              setRunFormIssue(issue);
-              setRunFormOpen(true);
-            }}
-          />
-        </div>
-      ) : (
-        /* The design's two columns: chat + activity left, side panel right;
-           they stack below 1024px so a 390px viewport never scrolls sideways. */
-        <div className="grid grid-cols-1 items-start gap-5 min-[1024px]:grid-cols-[minmax(0,1fr)_290px]">
+        {view === "lanes" ? (
+          /* Design 3b: the WORKFLOWS chip row over the four lanes. */
           <div className="min-w-0 space-y-4">
-            <RepoChatBox
+            <RepoWorkflowChips projectId={id} assignments={enabledAssignments} names={names} />
+            <RepoLanes
               projectId={id}
               repositoryName={repositoryData.name}
-              prefill={chatPrefill ?? undefined}
-            />
-            <RepoActivity
-              rows={activityRows}
-              nameFor={(pipelineId) => names.get(pipelineId) ?? null}
-              profileNameFor={(agentProfileId) => profileNames.get(agentProfileId) ?? null}
-              meId={me.data?.id ?? null}
-              repositoryName={repositoryData.name}
-              projectId={id}
+              issues={issues}
+              githubHosted={githubHosted}
+              runs={repoRuns}
+              conversations={conversations.data?.items ?? []}
               runsPending={runs.isPending}
               runsError={runs.error}
               onRetryRuns={() => void runs.refetch()}
@@ -503,61 +470,99 @@ export default function Repository() {
               chatsError={conversations.error}
               onRetryChats={() => void conversations.refetch()}
               retryingChats={conversations.isFetching}
-              showProjectNote={repoRuns.length > 0 && !attributable}
-            />
-          </div>
-          <div className="min-w-0 space-y-4">
-            {/* Design 3a's side panel order: WORKFLOWS, OPEN ISSUES, and
-                ASSISTANT NOTICED at the BOTTOM (rcn-review14, item 3). */}
-            <RepoWorkflowPanel
-              projectId={id}
-              project={projectData}
-              repository={repositoryData}
-              runs={runs.data?.runs}
-              runsPending={runs.isPending}
-              runsError={runs.error}
-              onRun={(assignment) => {
+              gateFor={(runId) => pendingGateByRun.get(runId) ?? null}
+              assignments={enabledAssignments}
+              names={names}
+              profileDefaultId={profileDefaultId}
+              profilesPending={profiles.isPending}
+              onOpenRunForm={(issue, assignment) => {
                 setRunFormAssignment(assignment);
-                setRunFormIssue(null);
+                setRunFormIssue(issue);
                 setRunFormOpen(true);
               }}
             />
-            <RepoIssuesPanel
-              repository={repositoryData}
-              projectId={id}
-              issues={issues}
-              githubHosted={githubHosted}
-              assignments={usableAssignments}
-              names={names}
-              activeRunsByIssue={activeIssueRuns(runs.data, issues.data)}
-              expandedIssue={expandedIssue}
-              onExpand={setExpandedIssue}
-              canManageGitHub={projectData.my_role === "maintainer"}
-              onAddGitHubAccess={() => ghAccess.current?.open()}
-            />
-            <AssistantNotes notes={assistantNotes} onDismiss={dismissAssistantNote} />
           </div>
-        </div>
-      )}
+        ) : (
+          /* The design's two columns: chat + activity left, side panel right;
+           they stack below 1024px so a 390px viewport never scrolls sideways. */
+          <div className="grid grid-cols-1 items-start gap-5 min-[1024px]:grid-cols-[minmax(0,1fr)_290px]">
+            <div className="min-w-0 space-y-4">
+              <RepoChatBox
+                projectId={id}
+                repositoryName={repositoryData.name}
+                prefill={chatPrefill ?? undefined}
+              />
+              <RepoActivity
+                rows={activityRows}
+                nameFor={(pipelineId) => names.get(pipelineId) ?? null}
+                profileNameFor={(agentProfileId) => profileNames.get(agentProfileId) ?? null}
+                meId={me.data?.id ?? null}
+                repositoryName={repositoryData.name}
+                projectId={id}
+                runsPending={runs.isPending}
+                runsError={runs.error}
+                onRetryRuns={() => void runs.refetch()}
+                retryingRuns={runs.isFetching}
+                chatsPending={conversations.isPending}
+                chatsError={conversations.error}
+                onRetryChats={() => void conversations.refetch()}
+                retryingChats={conversations.isFetching}
+                showProjectNote={repoRuns.length > 0 && !attributable}
+              />
+            </div>
+            <div className="min-w-0 space-y-4">
+              {/* Design 3a's side panel order: WORKFLOWS, OPEN ISSUES, and
+                ASSISTANT NOTICED at the BOTTOM (rcn-review14, item 3). */}
+              <RepoWorkflowPanel
+                projectId={id}
+                project={projectData}
+                repository={repositoryData}
+                runs={runs.data?.runs}
+                runsPending={runs.isPending}
+                runsError={runs.error}
+                onRun={(assignment) => {
+                  setRunFormAssignment(assignment);
+                  setRunFormIssue(null);
+                  setRunFormOpen(true);
+                }}
+              />
+              <RepoIssuesPanel
+                repository={repositoryData}
+                projectId={id}
+                issues={issues}
+                githubHosted={githubHosted}
+                assignments={usableAssignments}
+                names={names}
+                activeRunsByIssue={activeIssueRuns(runs.data, issues.data)}
+                expandedIssue={expandedIssue}
+                onExpand={setExpandedIssue}
+                canManageGitHub={projectData.my_role === "maintainer"}
+                onAddGitHubAccess={() => ghAccess.current?.open()}
+              />
+              <AssistantNotes notes={assistantNotes} onDismiss={dismissAssistantNote} />
+            </div>
+          </div>
+        )}
 
-      {runFormOpen ? (
-        <RunFormModal
-          projectId={id}
-          issue={runFormIssue}
-          assignment={runFormAssignment}
-          repository={{ id: repositoryData.id, name: repositoryData.name }}
-          onClose={() => setRunFormOpen(false)}
-        />
-      ) : null}
-      {chatFormOpen ? (
-        <ChatFormModal
-          projectId={id}
-          repositoryName={repositoryData.name}
-          prefill={chatPrefill ?? undefined}
-          onClose={() => setChatFormOpen(false)}
-        />
-      ) : null}
-    </div>
+        {runFormOpen ? (
+          <RunFormModal
+            projectId={id}
+            issue={runFormIssue}
+            assignment={runFormAssignment}
+            repository={{ id: repositoryData.id, name: repositoryData.name }}
+            onClose={() => setRunFormOpen(false)}
+          />
+        ) : null}
+        {chatFormOpen ? (
+          <ChatFormModal
+            projectId={id}
+            repositoryName={repositoryData.name}
+            prefill={chatPrefill ?? undefined}
+            onClose={() => setChatFormOpen(false)}
+          />
+        ) : null}
+      </div>
+    </Page>
   );
 }
 

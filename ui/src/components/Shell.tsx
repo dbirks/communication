@@ -38,64 +38,86 @@ export function sectionOf(pathname: string): string {
 
 export interface ShellProps {
   children: ReactNode;
-  /** Routes that own the whole viewport (the Run Workbench) drop the
-   * content column's width cap and padding; they pad themselves. */
-  fullBleed?: boolean;
 }
 
-/** Handoff 2c/3c: below this width the shell is the phone frame (drawer +
- * top strip); at or above it the sidebar owns the left edge and there is no
- * top bar at all. The same cut the design's own reflow notes use (1024px). */
-export const PHONE_MAX_WIDTH_PX = 1023.98;
+/** Finding 07: the phone frame (drawer + top strip) only starts below 768px —
+ * a half-split laptop window is a tablet, not a phone. From 768px the sidebar
+ * owns the left edge and there is no top bar at all; between 768px and the
+ * full column's 1024px the shell forces the collapsed RAIL (below) whatever
+ * the saved `sidebarCollapsed` preference says. */
+export const PHONE_MAX_WIDTH_PX = 767.98;
+
+/** Above this width the full 220px column may show (honouring the preference);
+ * from `PHONE_MAX_WIDTH_PX + 0.02` up to here the rail is forced. */
+export const RAIL_MAX_WIDTH_PX = 1023.98;
 
 const NARROW_QUERY = `(max-width: ${PHONE_MAX_WIDTH_PX}px)`;
+const RAIL_QUERY = `(min-width: ${PHONE_MAX_WIDTH_PX + 0.02}px) and (max-width: ${RAIL_MAX_WIDTH_PX}px)`;
 
 /**
- * Does the viewport ask for the phone frame? The answer drives what MOUNTS,
- * not what a stylesheet hides: an app bar that exists at desktop width and is
- * only `display:none`d is still an app bar in the accessibility tree, still
- * steals the Ask box's one safe anchor, and still has to be re-hidden by every
- * descendant rule. `matchMedia` is the same question the CSS media query asks,
- * so one source of truth moves the chrome. Where `matchMedia` is missing (a
- * server render, a jsdom without it) the shell is the desktop one — the wider
+ * Does the viewport match `query`? The answer drives what MOUNTS, not what a
+ * stylesheet hides: an app bar that exists at desktop width and is only
+ * `display:none`d is still an app bar in the accessibility tree, still steals
+ * the Ask box's one safe anchor, and still has to be re-hidden by every
+ * descendant rule. `matchMedia` is the same question the CSS media query
+ * asks, so one source of truth moves the chrome. Where `matchMedia` is
+ * missing (a server render, a jsdom without it) the answer is no — the wider
  * layout is the one the app is designed for.
  */
-export function useIsNarrow(): boolean {
-  const [narrow, setNarrow] = useState(() =>
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia(NARROW_QUERY).matches
+      ? window.matchMedia(query).matches
       : false,
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia(NARROW_QUERY);
-    const onChange = () => setNarrow(query.matches);
+    const media = window.matchMedia(query);
+    const onChange = () => setMatches(media.matches);
     onChange();
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-  return narrow;
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
+/** Phone frame (drawer + top strip)? */
+export function useIsNarrow(): boolean {
+  return useMediaQuery(NARROW_QUERY);
+}
+
+/** Rail-only width (768–1023px): the collapsed rail shows regardless of the
+ * saved preference — the preference itself is never overwritten. */
+export function useIsRailWidth(): boolean {
+  return useMediaQuery(RAIL_QUERY);
 }
 
 /**
  * App shell — handoff 2c/3c: one left column and no top bar on desktop. The
  * 220px white column (collapsible to a 52px rail — see `Sidebar.tsx`) carries
  * the mark, New thread + `⌘K`, Today/Threads, the project tree, the library and
- * the identity footer. Below `PHONE_MAX_WIDTH_PX` the column is an off-canvas
- * drawer opened from a slim top strip (the phone keeps today's hamburger); the
- * content column then owns the full width, and that strip is the only place
- * the palette's `Ask… Ctrl K` box may render (see `CommandPalette.tsx`).
+ * the identity footer. Between `PHONE_MAX_WIDTH_PX` and `RAIL_MAX_WIDTH_PX`
+ * (768–1023px) the rail is FORCED — a window that narrow cannot also carry
+ * 220px of labels, and the rail exists already. Below `PHONE_MAX_WIDTH_PX` the
+ * column is an off-canvas drawer opened from a slim top strip (the phone keeps
+ * today's hamburger); the content column then owns the full width, and that
+ * strip is the only place the palette's `Ask… Ctrl K` box may render (see
+ * `CommandPalette.tsx`). `<main>` no longer decides width (finding 07): pages
+ * do, through `ds/Page`.
  */
-export default function Shell({ children, fullBleed = false }: ShellProps) {
+export default function Shell({ children }: ShellProps) {
   const { prefs } = useLayoutPrefs();
   const location = useLocation();
   const narrow = useIsNarrow();
+  const railWidth = useIsRailWidth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
 
-  // The column's width is a saved preference: the floating Ask box parks
-  // beside whichever one is showing.
-  const columnWidth = prefs.sidebarCollapsed ? SIDEBAR_RAIL_WIDTH_PX : SIDEBAR_WIDTH_PX;
+  // The column's width is a saved preference — except between the phone cut
+  // and 1024px, where the rail is forced without touching the preference.
+  // The floating Ask box parks beside whichever one is showing.
+  const railShown = railWidth || prefs.sidebarCollapsed;
+  const columnWidth = railShown ? SIDEBAR_RAIL_WIDTH_PX : SIDEBAR_WIDTH_PX;
 
   // Content changed = the phone drawer has delivered its link.
   useEffect(() => {
@@ -138,12 +160,12 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
           is the shell's only chrome at this width — the top bar is gone. */}
       {narrow ? null : (
         <div className="sticky top-0 h-screen shrink-0">
-          <Sidebar />
+          <Sidebar forceCollapsed={railWidth} />
         </div>
       )}
 
       <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-        {/* Phone top strip (below 1024px only): the 44px menu button, the mark,
+        {/* Phone top strip (below 768px only): the 44px menu button, the mark,
             and the Ask box. The palette's trigger lives *here* and nowhere else:
             the pass-2
             review caught the same box parked on a fixed bottom-right anchor,
@@ -201,7 +223,9 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
           <CommandPalette context={sectionOf(location.pathname)} className="hidden" />
         )}
 
-        <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
+        {/* Finding 07: the shell never caps or pads the content column —
+            every page declares its layout through `ds/Page`. */}
+        <main className="w-full flex-1">
           {/* gh-69: navigation clears a caught render error through `resetKey`
               instead of a `key={location.pathname}` remount — keying the
               subtree threw away every already-painted page (skeleton flash on

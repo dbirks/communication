@@ -1,19 +1,22 @@
 /**
- * The shell's signed-in chrome (`components/Shell.tsx`) after handoff 2c/3c:
- * the left column is the desktop chrome and there is NO top bar at 1024px and
- * above — the phone strip (hamburger, brand, Ask box) is a *phone* frame that
- * below that width owns the drawer. `New chat` starts things, so it only exists
- * for a member that is actually signed in; the identity row the old bar carried
- * (`user-badge`) sits in the sidebar footer as the account menu trigger; and the
- * Ask placement preference moves the Ask button between the sidebar row and a
- * fixed corner button. The API is mocked at the fetch boundary; the page content
- * under the shell is not the subject here.
+ * The shell's signed-in chrome (`components/Shell.tsx`) after handoff 2c/3c
+ * and finding 07: the left column is the desktop chrome and there is NO top
+ * bar at 768px and above — the phone strip (hamburger, brand, Ask box) is a
+ * *phone* frame that below 768px owns the drawer. Between 768 and 1023px the
+ * collapsed rail is FORCED (the saved preference is not touched); from 1024px
+ * up the preference decides between the 220px column and the rail. `New chat`
+ * starts things, so it only exists for a member that is actually signed in;
+ * the identity row the old bar carried (`user-badge`) sits in the sidebar
+ * footer as the account menu trigger; and the Ask placement preference moves
+ * the Ask button between the sidebar row and a fixed corner button. The API is
+ * mocked at the fetch boundary; the page content under the shell is not the
+ * subject here.
  *
- * Which frame mounts is a `matchMedia` question (see `useIsNarrow`), so each
- * test states the viewport it means. jsdom's own `matchMedia` never matches, so
- * the desktop tests need no stub and the phone tests stub the narrow answer.
+ * Which frame mounts is a `matchMedia` question (see `useMediaQuery` /
+ * `useIsNarrow`), so each test states the viewport it means; the stub answers
+ * the shell's real queries from the width.
  */
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { meFixture, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
@@ -41,19 +44,26 @@ const notSignedIn: RouteStub[] = [
   { path: "/api/v1/projects", body: { items: [] } },
 ];
 
-/** Answer the shell's narrow query as a `width` px viewport would. */
+/** Answer the shell's frame queries (phone <768, rail 768–1023) as a
+ * `width` px viewport would. */
 function stubViewport(width: number): void {
-  const narrow = width < 1024;
-  vi.stubGlobal("matchMedia", (query: string) => ({
-    matches: narrow && query.includes("max-width"),
-    media: query,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    onchange: null,
-    dispatchEvent: () => false,
-  }));
+  vi.stubGlobal("matchMedia", (query: string) => {
+    const max = /\(max-width: ([\d.]+)px\)/.exec(query);
+    const min = /\(min-width: ([\d.]+)px\)/.exec(query);
+    let matches = true;
+    if (min) matches = matches && width >= Number(min[1]);
+    if (max) matches = matches && width <= Number(max[1]);
+    return {
+      matches,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    };
+  });
 }
 
 describe("the shell's New thread follows the session", () => {
@@ -153,7 +163,62 @@ describe("the sidebar is the whole desktop chrome (2c/3c)", () => {
   });
 });
 
-describe("the phone frame (<1024px) keeps the hamburger and the drawer", () => {
+describe("the rail is forced between 768 and 1024px (finding 07)", () => {
+  it("shows the collapsed rail even though the preference says expanded", async () => {
+    stubViewport(900);
+    renderApp({ path: "/", routes: signedIn });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    // The rail, not the column: the expand control is the rail's, and the
+    // expanded column's collapse control and labels are not there.
+    expect(within(sidebar).getByTestId("sidebar-expand")).toBeTruthy();
+    expect(within(sidebar).queryByTestId("sidebar-collapse")).toBeNull();
+    // The phone frame does not mount here: 768–1023 is a tablet, not a phone.
+    expect(screen.queryByTestId("phone-top-strip")).toBeNull();
+    // The preference itself is not touched: nothing PATCHed the rail flag.
+    expect(within(sidebar).queryByText("Threads")).toBeNull();
+  });
+});
+
+describe("the saved preference decides at desktop width (≥1024px)", () => {
+  it("shows the rail when `sidebar:collapsed` is saved", async () => {
+    stubViewport(1280);
+    renderApp({
+      path: "/",
+      routes: [
+        ...signedIn,
+        {
+          path: "/api/v1/me/preferences",
+          body: {
+            layout: {
+              projects_mode: "tree",
+              ask_placement: "sidebar",
+              show_workflow_folders: true,
+              expanded: { "sidebar:collapsed": true },
+            },
+            assistant: { trust_level: "ask_risky" },
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        },
+      ],
+    });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    expect(sidebar).toBeTruthy();
+    // Query the live document: when the saved prefs land, the Rail REPLACES
+    // the expanded column's node, so a captured `within(sidebar)` scope
+    // would poll a detached element.
+    await waitFor(() => expect(screen.getByTestId("sidebar-expand")).toBeTruthy());
+    expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
+  });
+
+  it("shows the expanded column when the preference is not collapsed", async () => {
+    stubViewport(1280);
+    renderApp({ path: "/", routes: signedIn });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    expect(within(sidebar).getByTestId("sidebar-collapse")).toBeTruthy();
+  });
+});
+
+describe("the phone frame (<768px) keeps the hamburger and the drawer", () => {
   it("mounts the strip with the palette trigger, never over the page", async () => {
     stubViewport(390);
     renderApp({ path: "/", routes: signedIn });

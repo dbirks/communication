@@ -201,9 +201,21 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     // breakpoint questions live and hands the test the `change` handlers.
     let width = 390;
     const change: Record<string, Array<() => void>> = {};
+    // Answer every shell query from the width (finding 07 moved the phone cut
+    // to `max-width: 767.98px` and added the rail window up to 1023.98px),
+    // parsing the thresholds out of the query so no breakpoint string is
+    // hard-coded here beyond the width the test crosses to.
+    const answer = (query: string) => {
+      const min = /\(min-width: ([\d.]+)px\)/.exec(query);
+      const max = /\(max-width: ([\d.]+)px\)/.exec(query);
+      let matches = true;
+      if (min) matches = matches && width >= Number(min[1]);
+      if (max) matches = matches && width <= Number(max[1]);
+      return matches;
+    };
     vi.stubGlobal("matchMedia", (query: string) => ({
       get matches() {
-        return query.includes("min-width") ? width >= 1024 : width < 1024;
+        return answer(query);
       },
       media: query,
       addEventListener: (type: string, handler: () => void) => {
@@ -211,6 +223,7 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
       },
       removeEventListener: () => {},
     }));
+    const cross = () => Object.values(change).forEach((handlers) => handlers.forEach((h) => h()));
     renderApp({ path: `/threads/${conversationId}`, routes: threadRoutes });
     const toggle = await screen.findByTestId("chat-details-toggle");
     fireEvent.click(toggle);
@@ -220,8 +233,7 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     // NOT cleared (the toggle still reports it).
     act(() => {
       width = 1280;
-      (change["(min-width: 1024px)"] ?? []).forEach((handler) => handler());
-      (change["(max-width: 1023.98px)"] ?? []).forEach((handler) => handler());
+      cross();
     });
     expect(screen.queryByTestId("chat-details-sheet")).toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
@@ -229,8 +241,7 @@ describe("the phone's chat details sheet (rcn-chat-rail-390)", () => {
     // toggle: the state survived the crossing.
     act(() => {
       width = 390;
-      (change["(min-width: 1024px)"] ?? []).forEach((handler) => handler());
-      (change["(max-width: 1023.98px)"] ?? []).forEach((handler) => handler());
+      cross();
     });
     expect(await screen.findByTestId("chat-details-sheet")).toBeTruthy();
     // Esc at the phone width closes it for real — the state clears, not

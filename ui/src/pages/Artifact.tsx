@@ -25,6 +25,7 @@ import { ApiError } from "../api/client";
 import { useArtifact, useProject } from "../api/queries";
 import { shortId } from "../api/names";
 import { ArtifactDetail } from "../components/Artifacts";
+import Page from "../components/ds/Page";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { formatAge } from "../lib/format";
 import { routes } from "../lib/routes";
@@ -61,29 +62,23 @@ export default function ArtifactPage() {
 
   if (artifact.error instanceof ApiError && artifact.error.status === 404) {
     return (
-      <section aria-labelledby="artifact-missing-heading">
-        <h1 id="artifact-missing-heading" className="text-title-l font-bold">
-          Artifact
-        </h1>
-        <p className="mt-2 text-st-failed-tag-fg" role="alert">
+      <Page layout="reading" title={<span id="artifact-missing-heading">Artifact</span>}>
+        <p className="text-st-failed-tag-fg" role="alert">
           <span aria-hidden="true">× </span>
           <span data-testid="artifact-not-found">
             Artifact not found, or your role may not see it — a row hidden by the sensitivity table
             and a row that does not exist answer identically
           </span>
         </p>
-      </section>
+      </Page>
     );
   }
 
   if (artifact.error || !artifact.data) {
     return (
-      <section aria-labelledby="artifact-error-heading">
-        <h1 id="artifact-error-heading" className="text-title-l font-bold">
-          Artifact
-        </h1>
+      <Page layout="reading" title={<span id="artifact-error-heading">Artifact</span>}>
         <ProblemBanner error={artifact.error} fallback="The artifact could not be loaded." />
-      </section>
+      </Page>
     );
   }
 
@@ -105,36 +100,38 @@ function ArtifactHeader({ artifact: data }: { artifact: Artifact }) {
   const created = `${formatAge(data.created_at)} ago`;
 
   return (
-    <div className="space-y-4">
-      <h1 className="sr-only" data-testid="artifact-page-title">
-        Artifact {data.name}
-      </h1>
-      <p className="font-mono text-[11px] text-muted">
-        <Link
-          to={routes.project(data.project_id)}
-          className="text-accent-text hover:text-ink"
-          data-testid="artifact-breadcrumb-project"
-        >
-          {/* The breadcrumb names the project, not the word "Project" — the
-           * reader is standing inside one, and the pass-2 review asked what it
-           * is called. The generic word is only the loading/unknown arm. */}
-          {project.data?.name ?? "Project"}
-        </Link>
-        <span aria-hidden="true"> / </span>
-        <Link
-          to={routes.projectTab(data.project_id, "artifacts")}
-          className="text-accent-text hover:text-ink"
-        >
-          Artifacts
-        </Link>
-        <span aria-hidden="true"> / </span>
-        <span>{data.name}</span>
-      </p>
-      <ArtifactDetail
-        artifact={data}
-        createdByName={() => artifactCreator(data, actors)}
-        createdLabel={() => created}
-      />
-    </div>
+    <Page layout="reading">
+      <div className="space-y-4">
+        <h1 className="sr-only" data-testid="artifact-page-title">
+          Artifact {data.name}
+        </h1>
+        <p className="font-mono text-[11px] text-muted">
+          <Link
+            to={routes.project(data.project_id)}
+            className="text-accent-text hover:text-ink"
+            data-testid="artifact-breadcrumb-project"
+          >
+            {/* The breadcrumb names the project, not the word "Project" — the
+             * reader is standing inside one, and the pass-2 review asked what it
+             * is called. The generic word is only the loading/unknown arm. */}
+            {project.data?.name ?? "Project"}
+          </Link>
+          <span aria-hidden="true"> / </span>
+          <Link
+            to={routes.projectTab(data.project_id, "artifacts")}
+            className="text-accent-text hover:text-ink"
+          >
+            Artifacts
+          </Link>
+          <span aria-hidden="true"> / </span>
+          <span>{data.name}</span>
+        </p>
+        <ArtifactDetail
+          artifact={data}
+          createdByName={() => artifactCreator(data, actors)}
+          createdLabel={() => created}
+        />
+      </div>
+    </Page>
   );
 }

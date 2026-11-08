@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
+import Page from "../components/ds/Page";
 import { REVISION_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
@@ -323,77 +324,10 @@ export function PipelinePage() {
         ? "inputs"
         : "overview";
 
-  // Same bleed as `pages/RunInspector.tsx`: the shell's centred reading
-  // column is ~64rem, and a graph plus a 300px rail squeezed into it clips
-  // everything. This page bleeds out to the shell's content column —
-  // `<main>`'s parent: the flex-1 region right of the 240px sticky sidebar —
-  // never under the sidebar.
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const [bleed, setBleed] = useState<{ offset: number; width: number } | null>(null);
-  const measureBleed = useCallback(() => {
-    const el = rootRef.current;
-    const parent = el?.parentElement;
-    if (!el || !parent) return;
-    const main = el.closest("main");
-    const column = main?.parentElement ?? null;
-    const staticLeft =
-      parent.getBoundingClientRect().left +
-      parseFloat(window.getComputedStyle(parent).paddingLeft || "0");
-    const offset = column ? staticLeft - column.getBoundingClientRect().left : 0;
-    const columnStyle = column ? window.getComputedStyle(column) : null;
-    const columnWidth = column
-      ? column.clientWidth -
-        parseFloat(columnStyle?.paddingLeft || "0") -
-        parseFloat(columnStyle?.paddingRight || "0")
-      : 0;
-    const width =
-      columnWidth > 0
-        ? columnWidth
-        : document.documentElement.clientWidth || window.innerWidth || el.offsetWidth;
-    // Equal values do not re-render: this runs from a ref callback, and a new
-    // object every time would be a render loop with a measurement in it.
-    setBleed((current) =>
-      current && current.offset === offset && current.width === width ? current : { offset, width },
-    );
-  }, []);
-  // A window resize is NOT the only thing that changes this column: the
-  // 220px sidebar mounts/unmounts with the phone frame and collapses to the
-  // 52px rail (handoff 2c/3c), and the `window` resize event can land while
-  // the shell still has the width of the OTHER frame (measured live: a
-  // 390→1280 viewport change pinned the page at `width:1280` left of a
-  // remounted sidebar — scrollWidth 1500 in a 1280 window, emulator
-  // #125–#127). So the column itself is watched, exactly as
-  // `pages/RunInspector.tsx` watches its host — the column is `flex-1`
-  // (basis 0, `min-w-0`), never content-sized, so measuring it cannot feed
-  // back into its own width.
-  const spaceWatcher = useRef<ResizeObserver | null>(null);
-  const attachRoot = useCallback(
-    (node: HTMLDivElement | null) => {
-      rootRef.current = node;
-      spaceWatcher.current?.disconnect();
-      spaceWatcher.current = null;
-      if (!node) return;
-      measureBleed();
-      const column = node.closest("main")?.parentElement ?? null;
-      if (column && typeof ResizeObserver !== "undefined") {
-        const watcher = new ResizeObserver(() => measureBleed());
-        watcher.observe(column);
-        spaceWatcher.current = watcher;
-      }
-    },
-    [measureBleed],
-  );
-  useEffect(
-    () => () => {
-      spaceWatcher.current?.disconnect();
-      spaceWatcher.current = null;
-    },
-    [],
-  );
-  useEffect(() => {
-    window.addEventListener("resize", measureBleed);
-    return () => window.removeEventListener("resize", measureBleed);
-  }, [measureBleed]);
+  // Finding 07: the old viewport-bleed machinery is gone. `<main>` is now
+  // exactly the content column (the shell stopped capping it), so this page —
+  // a `canvas` page drawing its own band — already starts at the shared left
+  // edge; there is nothing to bleed out to.
 
   const me = useMe();
   const actors = useActorNames();
@@ -526,85 +460,89 @@ export function PipelinePage() {
     const notFound = pipeline.error instanceof ApiError && pipeline.error.status === 404;
     if (notFound) {
       return (
-        <div data-testid="pipeline-page" className="min-h-[calc(100dvh-44px)] bg-paper">
-          <div className="px-[22px] pt-[20px] md:px-[28px]">
-            <ProjectUnavailable
-              heading="Workflow"
-              headingId="pipeline-load-error-heading"
-              testid="pipeline-page-failure"
-              copy="Workflow not found or you do not have access."
-              hint="Check the link, or go back to Workflows and open it from the library list — a workflow you cannot see reads exactly like one that is not there."
-              back={{
-                to: routes.workflows(),
-                label: "Workflows",
-                testid: "workflow-load-breadcrumb",
-              }}
-            />
-            {/* A refusal is not a break, so there is nothing to retry — but the
+        <Page layout="canvas" testid="pipeline-page">
+          <div className="min-h-[calc(100dvh-44px)] bg-paper">
+            <div className="px-[22px] pt-[20px] md:px-[28px]">
+              <ProjectUnavailable
+                heading="Workflow"
+                headingId="pipeline-load-error-heading"
+                testid="pipeline-page-failure"
+                copy="Workflow not found or you do not have access."
+                hint="Check the link, or go back to Workflows and open it from the library list — a workflow you cannot see reads exactly like one that is not there."
+                back={{
+                  to: routes.workflows(),
+                  label: "Workflows",
+                  testid: "workflow-load-breadcrumb",
+                }}
+              />
+              {/* A refusal is not a break, so there is nothing to retry — but the
                 reader still has to leave. The load-failure block's shared verb
                 sits under the sentence (review3 item 3, the precedent being this
                 page's own server-error state): the breadcrumb is the trail, this
                 is the button. */}
-            <div className="mt-[12px] flex flex-wrap items-center gap-[6px]">
-              <Link
-                to={routes.workflows()}
-                className="ds-btn ds-btn--secondary ds-btn--compact inline-flex items-center rounded-[4px]"
-                data-testid="workflow-back-to-list"
-              >
-                ← Back to workflows
-              </Link>
+              <div className="mt-[12px] flex flex-wrap items-center gap-[6px]">
+                <Link
+                  to={routes.workflows()}
+                  className="ds-btn ds-btn--secondary ds-btn--compact inline-flex items-center rounded-[4px]"
+                  data-testid="workflow-back-to-list"
+                >
+                  ← Back to workflows
+                </Link>
+              </div>
             </div>
           </div>
-        </div>
+        </Page>
       );
     }
     return (
-      <div data-testid="pipeline-page" className="min-h-[calc(100dvh-44px)] bg-paper">
-        <section
-          aria-labelledby="pipeline-load-error-heading"
-          className="px-[22px] pt-[20px] md:px-[28px]"
-        >
-          <header className="flex flex-col gap-[6px] border-b border-line pb-[12px]">
-            <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
-              <Link
-                to={routes.workflows()}
-                className="text-accent-text hover:text-ink"
-                data-testid="workflow-load-breadcrumb"
+      <Page layout="canvas" testid="pipeline-page">
+        <div className="min-h-[calc(100dvh-44px)] bg-paper">
+          <section
+            aria-labelledby="pipeline-load-error-heading"
+            className="px-[22px] pt-[20px] md:px-[28px]"
+          >
+            <header className="flex flex-col gap-[6px] border-b border-line pb-[12px]">
+              <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+                <Link
+                  to={routes.workflows()}
+                  className="text-accent-text hover:text-ink"
+                  data-testid="workflow-load-breadcrumb"
+                >
+                  Workflows
+                </Link>
+                <span aria-hidden="true" className="px-1.5">
+                  /
+                </span>
+              </nav>
+              <h1
+                id="pipeline-load-error-heading"
+                className="text-[22px] leading-[28px] font-semibold"
               >
-                Workflows
-              </Link>
-              <span aria-hidden="true" className="px-1.5">
-                /
-              </span>
-            </nav>
-            <h1
-              id="pipeline-load-error-heading"
-              className="text-[22px] leading-[28px] font-semibold"
-            >
-              Workflow
-            </h1>
-          </header>
-          <div className="mt-[12px] max-w-[70ch]">
-            <ProblemBanner
-              error={pipeline.error}
-              fallback="The workflow could not be loaded."
-              subject="the workflow"
-              hint="Nothing is shown until the workflow loads."
-              retry={{
-                onClick: () => void pipeline.refetch(),
-                pending: pipeline.isFetching,
-                testid: "workflow-load-retry",
-              }}
-              back={{
-                to: routes.workflows(),
-                label: "← Back to workflows",
-                testid: "workflow-back-to-list",
-              }}
-              testid="pipeline-page-failure"
-            />
-          </div>
-        </section>
-      </div>
+                Workflow
+              </h1>
+            </header>
+            <div className="mt-[12px] max-w-[70ch]">
+              <ProblemBanner
+                error={pipeline.error}
+                fallback="The workflow could not be loaded."
+                subject="the workflow"
+                hint="Nothing is shown until the workflow loads."
+                retry={{
+                  onClick: () => void pipeline.refetch(),
+                  pending: pipeline.isFetching,
+                  testid: "workflow-load-retry",
+                }}
+                back={{
+                  to: routes.workflows(),
+                  label: "← Back to workflows",
+                  testid: "workflow-back-to-list",
+                }}
+                testid="pipeline-page-failure"
+              />
+            </div>
+          </section>
+        </div>
+      </Page>
     );
   }
 
@@ -629,75 +567,66 @@ export function PipelinePage() {
   }
 
   return (
-    <div
-      ref={attachRoot}
-      data-testid="pipeline-page"
-      data-full-width={bleed ? bleed.width : "unmeasured"}
-      className="flex min-h-[calc(100dvh-44px)] flex-col bg-paper md:min-h-dvh"
-      style={
-        bleed
-          ? { width: bleed.width || undefined, marginLeft: -bleed.offset, maxWidth: "none" }
-          : { maxWidth: "none" }
-      }
-    >
-      {/* ------------------------------------------------------- header band */}
-      <header className="flex flex-col gap-[12px] border-b border-line-strong bg-surface px-[28px] pt-[20px]">
-        {/* Header rows stack on phones (390px): breadcrumb, title + chip,
+    <Page layout="canvas" testid="pipeline-page">
+      <div className="flex min-h-[calc(100dvh-44px)] flex-col bg-paper md:min-h-dvh">
+        {/* ------------------------------------------------------- header band */}
+        <header className="flex flex-col gap-[12px] border-b border-line-strong bg-surface px-[28px] pt-[20px]">
+          {/* Header rows stack on phones (390px): breadcrumb, title + chip,
             description, then the actions in their own row — never beside the
             title, which squeezed the description into a 100px column. */}
-        <div
-          className="flex flex-col gap-[12px] md:flex-row md:flex-wrap md:items-start md:gap-[16px]"
-          data-testid="workflow-header-top"
-        >
-          <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
-            <nav
-              aria-label="Breadcrumb"
-              className="font-mono text-[11px] text-muted"
-              data-testid="workflow-breadcrumb"
-            >
-              <Link
-                to={routes.workflows()}
-                className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          <div
+            className="flex flex-col gap-[12px] md:flex-row md:flex-wrap md:items-start md:gap-[16px]"
+            data-testid="workflow-header-top"
+          >
+            <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
+              <nav
+                aria-label="Breadcrumb"
+                className="font-mono text-[11px] text-muted"
+                data-testid="workflow-breadcrumb"
               >
-                Workflows
-              </Link>
-              {pipeline.data?.folder ? (
-                <>
-                  {" / "}
-                  <Link
-                    to={`${routes.workflows()}?folder=${encodeURIComponent(pipeline.data.folder)}`}
-                    className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  >
-                    {pipeline.data.folder}
-                  </Link>
-                </>
-              ) : null}
-              {" /"}
-            </nav>
-            <div className="flex flex-wrap items-center gap-[10px]">
-              <h1
-                className="text-[22px] leading-[28px] font-semibold"
-                id="pipeline-heading"
-                data-testid="pipeline-header-meta"
-              >
-                {summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
-              </h1>
-              {revisionRows[0] ? (
-                <StatusChip
-                  state={stateOf(REVISION_STATE[revisionRows[0].status])}
-                  label={`${revisionRows[0].status} r${revisionRows[0].revision_number}`}
-                  labelProps={{ "data-testid": "workflow-revision-chip" }}
-                />
-              ) : (
-                <span
-                  className="font-mono text-[10.5px] text-muted"
-                  data-testid="workflow-revision-chip"
+                <Link
+                  to={routes.workflows()}
+                  className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                 >
-                  · draft · not published
-                </span>
-              )}
-            </div>
-            {/* One subtitle, two sources (2a/1e): the workflow's own
+                  Workflows
+                </Link>
+                {pipeline.data?.folder ? (
+                  <>
+                    {" / "}
+                    <Link
+                      to={`${routes.workflows()}?folder=${encodeURIComponent(pipeline.data.folder)}`}
+                      className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    >
+                      {pipeline.data.folder}
+                    </Link>
+                  </>
+                ) : null}
+                {" /"}
+              </nav>
+              <div className="flex flex-wrap items-center gap-[10px]">
+                <h1
+                  className="text-[22px] leading-[28px] font-semibold"
+                  id="pipeline-heading"
+                  data-testid="pipeline-header-meta"
+                >
+                  {summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
+                </h1>
+                {revisionRows[0] ? (
+                  <StatusChip
+                    state={stateOf(REVISION_STATE[revisionRows[0].status])}
+                    label={`${revisionRows[0].status} r${revisionRows[0].revision_number}`}
+                    labelProps={{ "data-testid": "workflow-revision-chip" }}
+                  />
+                ) : (
+                  <span
+                    className="font-mono text-[10.5px] text-muted"
+                    data-testid="workflow-revision-chip"
+                  >
+                    · draft · not published
+                  </span>
+                )}
+              </div>
+              {/* One subtitle, two sources (2a/1e): the workflow's own
                 description when it has one (the design shows the description
                 in full — it caps nothing), the library sentence only when it
                 does not.
@@ -706,11 +635,11 @@ export function PipelinePage() {
                 import or a starter workflow writes) — and the review's 1e
                 item is exactly the second one: a workflow WITH a description
                 showed the generic sentence because only the row was read. */}
-            <p className="max-w-[70ch] text-[13px] text-muted" data-testid="workflow-kind-line">
-              {workflowDescription ||
-                "Library workflow. It runs only in the repos that use it, and triggers are set up there."}
-            </p>
-            {/* No third header line. Design 1e/2a names the band as the
+              <p className="max-w-[70ch] text-[13px] text-muted" data-testid="workflow-kind-line">
+                {workflowDescription ||
+                  "Library workflow. It runs only in the repos that use it, and triggers are set up there."}
+              </p>
+              {/* No third header line. Design 1e/2a names the band as the
                 breadcrumb, the H1 + revision chip and ONE sentence about the
                 workflow; the `· 1 revision` half went (2026-10-30 copy review,
                 1e item 2) and the `id: <slug>` half goes now (pass-1 review,
@@ -723,263 +652,264 @@ export function PipelinePage() {
                 to know which workflow opened (issue2-studio, shell-journey),
                 and the H1 already carries the slug whenever the workflow has
                 no other name. */}
-          </div>
-          {/* `md:ml-auto` on top of `justify-end`: the header row wraps at
+            </div>
+            {/* `md:ml-auto` on top of `justify-end`: the header row wraps at
               `md`, and if the action group ever drops onto a row of its own,
               auto-margin keeps it flush right instead of drifting to the
               middle of the header (pass-2 review, 1e MINOR). */}
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-[8px] md:ml-auto">
-            {/* The draft state, in the design's own words (1j): `draft r5 ·
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-[8px] md:ml-auto">
+              {/* The draft state, in the design's own words (1j): `draft r5 ·
                 unpublished` beside the one verb that ends it. Publish keeps
                 the Studio's gate — the server's `valid` verdict, not the
                 editor's hope — and a refusal lands in the page's own failure
                 banner with the server's words. */}
-            {openDraft ? (
-              <>
-                <span
-                  className="font-mono text-[11px] text-faint"
-                  data-testid="workflow-draft-state"
-                  title="the newest open draft — nothing it contains runs until it publishes"
-                >
-                  {`draft r${draftRevisionNumber} · unpublished`}
-                </span>
-                {canAuthor ? (
-                  <Button
-                    variant="primary"
-                    compact
-                    className="h-[30px]"
-                    disabled={openDraft.status !== "valid" || publishDraft.isPending}
-                    title={
-                      openDraft.status === "valid"
-                        ? "publish the open draft as a new immutable revision"
-                        : `the server reports this draft as “${openDraft.status}” — publish needs a valid draft`
-                    }
-                    onClick={() =>
-                      publishDraft.mutate(
-                        { version: openDraft.version },
-                        {
-                          onSuccess: () => setFailure(null),
-                          onError: (error) => setFailure(error),
-                        },
-                      )
-                    }
-                    data-testid="workflow-publish-draft"
+              {openDraft ? (
+                <>
+                  <span
+                    className="font-mono text-[11px] text-faint"
+                    data-testid="workflow-draft-state"
+                    title="the newest open draft — nothing it contains runs until it publishes"
                   >
-                    {publishDraft.isPending ? "Publishing…" : `Publish r${draftRevisionNumber}`}
-                  </Button>
-                ) : null}
-              </>
-            ) : null}
-            {newestPublished ? (
-              <Button
-                variant="secondary"
-                compact
-                className="h-[30px]"
-                onClick={() => {
-                  setFailure(null);
-                  setUseDialogOpen(true);
-                }}
-                data-testid="assign-open"
-                title="Pin the newest published revision to a repo (or a whole project)"
-              >
-                Use in a repo…
-              </Button>
-            ) : null}
-            {canAuthor ? (
-              // The one primary verb (1e): reopen the open draft, or create one
-              // from the newest revision — the old “Customize”, named for what
-              // it does now. The test id stays for the e2e suites.
-              <Button
-                variant="primary"
-                compact
-                className="h-[30px]"
-                onClick={editWorkflow}
-                disabled={createDraft.isPending || draftCreating}
-                data-testid="pipeline-customize"
-                title={
-                  openDraft
-                    ? "continue the newest open draft in the Studio"
-                    : "new draft from the newest revision — opens the Studio canvas"
-                }
-              >
-                {createDraft.isPending || draftCreating ? "Opening…" : "Edit workflow"}
-              </Button>
-            ) : (
-              // Pass-8 review, item 7: a disabled primary verb with its reason
-              // only in a `title` and an `sr-only` span is a button that cannot
-              // be pressed and says nothing. The verb stays where the design
-              // puts it, disabled, and the reason is now the muted line under
-              // the actions in plain words — reachable by eye, by keyboard
-              // (`aria-describedby`) and by the pointer's tooltip.
-              <>
+                    {`draft r${draftRevisionNumber} · unpublished`}
+                  </span>
+                  {canAuthor ? (
+                    <Button
+                      variant="primary"
+                      compact
+                      className="h-[30px]"
+                      disabled={openDraft.status !== "valid" || publishDraft.isPending}
+                      title={
+                        openDraft.status === "valid"
+                          ? "publish the open draft as a new immutable revision"
+                          : `the server reports this draft as “${openDraft.status}” — publish needs a valid draft`
+                      }
+                      onClick={() =>
+                        publishDraft.mutate(
+                          { version: openDraft.version },
+                          {
+                            onSuccess: () => setFailure(null),
+                            onError: (error) => setFailure(error),
+                          },
+                        )
+                      }
+                      data-testid="workflow-publish-draft"
+                    >
+                      {publishDraft.isPending ? "Publishing…" : `Publish r${draftRevisionNumber}`}
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
+              {newestPublished ? (
+                <Button
+                  variant="secondary"
+                  compact
+                  className="h-[30px]"
+                  onClick={() => {
+                    setFailure(null);
+                    setUseDialogOpen(true);
+                  }}
+                  data-testid="assign-open"
+                  title="Pin the newest published revision to a repo (or a whole project)"
+                >
+                  Use in a repo…
+                </Button>
+              ) : null}
+              {canAuthor ? (
+                // The one primary verb (1e): reopen the open draft, or create one
+                // from the newest revision — the old “Customize”, named for what
+                // it does now. The test id stays for the e2e suites.
                 <Button
                   variant="primary"
                   compact
                   className="h-[30px]"
-                  disabled
+                  onClick={editWorkflow}
+                  disabled={createDraft.isPending || draftCreating}
                   data-testid="pipeline-customize"
-                  title={LIBRARY_AUTHORING_HINT}
-                  aria-describedby="workflow-author-hint"
+                  title={
+                    openDraft
+                      ? "continue the newest open draft in the Studio"
+                      : "new draft from the newest revision — opens the Studio canvas"
+                  }
                 >
-                  Edit workflow
+                  {createDraft.isPending || draftCreating ? "Opening…" : "Edit workflow"}
                 </Button>
-                <p
-                  className="w-full basis-full text-right font-mono text-[10.5px] leading-[14px] text-faint"
-                  data-testid="workflow-author-hint"
-                >
-                  You can view this workflow, not edit it.
-                </p>
-              </>
-            )}
+              ) : (
+                // Pass-8 review, item 7: a disabled primary verb with its reason
+                // only in a `title` and an `sr-only` span is a button that cannot
+                // be pressed and says nothing. The verb stays where the design
+                // puts it, disabled, and the reason is now the muted line under
+                // the actions in plain words — reachable by eye, by keyboard
+                // (`aria-describedby`) and by the pointer's tooltip.
+                <>
+                  <Button
+                    variant="primary"
+                    compact
+                    className="h-[30px]"
+                    disabled
+                    data-testid="pipeline-customize"
+                    title={LIBRARY_AUTHORING_HINT}
+                    aria-describedby="workflow-author-hint"
+                  >
+                    Edit workflow
+                  </Button>
+                  <p
+                    className="w-full basis-full text-right font-mono text-[10.5px] leading-[14px] text-faint"
+                    data-testid="workflow-author-hint"
+                  >
+                    You can view this workflow, not edit it.
+                  </p>
+                </>
+              )}
+            </div>
           </div>
-        </div>
-        {/* Header tabs are routes: links that sit on the band's bottom border
+          {/* Header tabs are routes: links that sit on the band's bottom border
             (13px, `6px 12px 7px`; the active one gets the ink border, paper
             bottom, `bg-paper`, weight 600). At 390px the five labels do not
             all fit — the strip scrolls inside its own row with in-flow cue
             lanes beside it, and the page's own tab is kept WHOLE (the
             project tab strip's pattern, design 1j). */}
-        <WorkflowTabStrip
-          pipelineId={pipelineId}
-          tab={tab}
-          usedInLoading={usedIn.loading}
-          usedInError={usedIn.error}
-          usedInCount={usedIn.groups.length}
-        />
-      </header>
+          <WorkflowTabStrip
+            pipelineId={pipelineId}
+            tab={tab}
+            usedInLoading={usedIn.loading}
+            usedInError={usedIn.error}
+            usedInCount={usedIn.groups.length}
+          />
+        </header>
 
-      {/* -------------------------------------------------------------- body */}
-      {/* The failure banner rides above every tab. Overview is edge to edge
+        {/* -------------------------------------------------------------- body */}
+        {/* The failure banner rides above every tab. Overview is edge to edge
           (the dotted canvas runs to the rail, the rail to the page edge —
           design 1e); the other tabs keep the pattern's `22px 28px` padding. */}
-      {failure ? (
-        <div className="px-[22px] pt-[10px] md:px-[28px]">
-          <ProblemBanner
-            error={failure}
-            fallback="The draft could not be created."
-            testid="pipeline-page-failure"
-          />
-        </div>
-      ) : null}
-      {/* Overview body: block-level wrapper on purpose (pass-3) — a row
+        {failure ? (
+          <div className="px-[22px] pt-[10px] md:px-[28px]">
+            <ProblemBanner
+              error={failure}
+              fallback="The draft could not be created."
+              testid="pipeline-page-failure"
+            />
+          </div>
+        ) : null}
+        {/* Overview body: block-level wrapper on purpose (pass-3) — a row
           flex would content-size the grid and collapse the canvas to the
           dagre box width. As a block child the grid fills the page column:
           canvas = flex-1, rail = 285px. */}
-      {tab === "overview" ? (
-        <div className="flex min-w-0 flex-1 flex-col">
-          <WorkflowOverview
-            pipelineId={pipelineId}
-            revision={revision.data}
-            revisionLoading={revision.isPending && selectedRevisionKey !== null}
-            revisionError={revision.isError ? revision.error : null}
-            groups={usedIn.groups}
-            usedInLoading={usedIn.loading}
-            runs={runs}
-            openDraft={openDraft}
-            actorName={actors.nameOf}
-            canEdit={canAuthor}
-            onAssign={() => {
-              setFailure(null);
-              setUseDialogOpen(true);
-            }}
-          />
-        </div>
-      ) : null}
-      {tab !== "overview" ? (
-        <div className="flex-1 px-[22px] py-[22px] md:px-[28px]">
-          {tab === "yaml" ? (
-            <div className="space-y-[10px]">
-              <WorkflowYamlTab
-                slug={pipeline.data?.slug ?? pipelineId}
-                revisions={usedInRevisions}
-                // W8’s home (contract § 7.2: “the YAML viewer’s ‘Validate’ panel”)
-                // — the authoring surface, so only a caller with the library role
-                // (the same check as `Edit workflow`) ever sees the line. The tab
-                // draws it only over a revision it read (pass-8 review, item 4).
-                validate={
-                  canAuthor ? (
-                    <YamlValidateDisclosure
-                      pipelineId={pipelineId}
-                      slug={pipeline.data?.slug ?? pipelineId}
-                      displayName={summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
-                      initialText={revision.data?.document_text ?? ""}
-                    />
-                  ) : null
-                }
-              />
-            </div>
-          ) : null}
-          {tab === "inputs" ? (
-            <div className="mx-auto w-full max-w-[1120px]">
-              <InputsTab
-                pipelineId={pipelineId}
-                slug={pipeline.data?.slug ?? pipelineId}
-                canAuthor={canAuthor}
-                revision={revision.data}
-                revisionLoading={revision.isPending && selectedRevisionKey !== null}
-                revisionError={revision.isError ? revision.error : null}
-                onRevisionRetry={() => void revision.refetch()}
-                openDraft={openDraft}
-                groups={usedIn.groups}
-                groupsLoading={usedIn.loading}
-                groupsError={usedIn.error}
-              />
-            </div>
-          ) : null}
-          {tab === "used-in" ? (
-            <div className="max-w-[980px]">
-              <UsedInPanel
-                groups={usedIn.groups}
-                loading={usedIn.loading}
-                error={usedIn.error}
-                failure={usedIn.failure}
-                onRetry={usedIn.retry}
-                retrying={usedIn.fetching}
-                revisions={usedInRevisions}
-                newestPublished={
-                  newestPublished
-                    ? (usedInRevisions.find((r) => r.id === newestPublished.id) ?? null)
-                    : null
-                }
-                newestPublishedId={newestPublishedRevision.data?.id ?? null}
-              />
-            </div>
-          ) : null}
-          {tab === "history" ? (
-            <WorkflowHistoryTab
+        {tab === "overview" ? (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <WorkflowOverview
               pipelineId={pipelineId}
-              revisionRows={revisionRows}
-              revisionsPending={revisions.isPending}
-              revisionsError={revisions.isError ? revisions.error : null}
-              sortedDrafts={sortedDrafts}
-              draftsPending={drafts.isPending}
-              draftsError={drafts.isError ? drafts.error : null}
-              canAuthor={canAuthor}
-              createDraftPending={createDraft.isPending || draftCreating}
+              revision={revision.data}
+              revisionLoading={revision.isPending && selectedRevisionKey !== null}
+              revisionError={revision.isError ? revision.error : null}
+              groups={usedIn.groups}
+              usedInLoading={usedIn.loading}
+              runs={runs}
+              openDraft={openDraft}
               actorName={actors.nameOf}
-              onNewDraft={() => {
+              canEdit={canAuthor}
+              onAssign={() => {
                 setFailure(null);
-                setDraftCreating(true);
+                setUseDialogOpen(true);
               }}
             />
-          ) : null}
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+        {tab !== "overview" ? (
+          <div className="flex-1 px-[22px] py-[22px] md:px-[28px]">
+            {tab === "yaml" ? (
+              <div className="space-y-[10px]">
+                <WorkflowYamlTab
+                  slug={pipeline.data?.slug ?? pipelineId}
+                  revisions={usedInRevisions}
+                  // W8’s home (contract § 7.2: “the YAML viewer’s ‘Validate’ panel”)
+                  // — the authoring surface, so only a caller with the library role
+                  // (the same check as `Edit workflow`) ever sees the line. The tab
+                  // draws it only over a revision it read (pass-8 review, item 4).
+                  validate={
+                    canAuthor ? (
+                      <YamlValidateDisclosure
+                        pipelineId={pipelineId}
+                        slug={pipeline.data?.slug ?? pipelineId}
+                        displayName={summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
+                        initialText={revision.data?.document_text ?? ""}
+                      />
+                    ) : null
+                  }
+                />
+              </div>
+            ) : null}
+            {tab === "inputs" ? (
+              <div className="mx-auto w-full max-w-[1120px]">
+                <InputsTab
+                  pipelineId={pipelineId}
+                  slug={pipeline.data?.slug ?? pipelineId}
+                  canAuthor={canAuthor}
+                  revision={revision.data}
+                  revisionLoading={revision.isPending && selectedRevisionKey !== null}
+                  revisionError={revision.isError ? revision.error : null}
+                  onRevisionRetry={() => void revision.refetch()}
+                  openDraft={openDraft}
+                  groups={usedIn.groups}
+                  groupsLoading={usedIn.loading}
+                  groupsError={usedIn.error}
+                />
+              </div>
+            ) : null}
+            {tab === "used-in" ? (
+              <div className="max-w-[980px]">
+                <UsedInPanel
+                  groups={usedIn.groups}
+                  loading={usedIn.loading}
+                  error={usedIn.error}
+                  failure={usedIn.failure}
+                  onRetry={usedIn.retry}
+                  retrying={usedIn.fetching}
+                  revisions={usedInRevisions}
+                  newestPublished={
+                    newestPublished
+                      ? (usedInRevisions.find((r) => r.id === newestPublished.id) ?? null)
+                      : null
+                  }
+                  newestPublishedId={newestPublishedRevision.data?.id ?? null}
+                />
+              </div>
+            ) : null}
+            {tab === "history" ? (
+              <WorkflowHistoryTab
+                pipelineId={pipelineId}
+                revisionRows={revisionRows}
+                revisionsPending={revisions.isPending}
+                revisionsError={revisions.isError ? revisions.error : null}
+                sortedDrafts={sortedDrafts}
+                draftsPending={drafts.isPending}
+                draftsError={drafts.isError ? drafts.error : null}
+                canAuthor={canAuthor}
+                createDraftPending={createDraft.isPending || draftCreating}
+                actorName={actors.nameOf}
+                onNewDraft={() => {
+                  setFailure(null);
+                  setDraftCreating(true);
+                }}
+              />
+            ) : null}
+          </div>
+        ) : null}
 
-      <UseInRepoDialog
-        open={useDialogOpen}
-        onClose={() => setUseDialogOpen(false)}
-        pipelineId={pipelineId}
-        workflowName={summary?.display_name ?? pipeline.data?.slug ?? ""}
-        newestPublished={
-          newestPublished
-            ? (usedInRevisions.find((row) => row.id === newestPublished.id) ?? null)
-            : null
-        }
-        revisions={usedInRevisions}
-        onAssigned={() => navigate(routes.workflowTab(pipelineId, "used-in"))}
-      />
-    </div>
+        <UseInRepoDialog
+          open={useDialogOpen}
+          onClose={() => setUseDialogOpen(false)}
+          pipelineId={pipelineId}
+          workflowName={summary?.display_name ?? pipeline.data?.slug ?? ""}
+          newestPublished={
+            newestPublished
+              ? (usedInRevisions.find((row) => row.id === newestPublished.id) ?? null)
+              : null
+          }
+          revisions={usedInRevisions}
+          onAssigned={() => navigate(routes.workflowTab(pipelineId, "used-in"))}
+        />
+      </div>
+    </Page>
   );
 }
 

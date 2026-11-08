@@ -55,6 +55,7 @@ import { SelectionToolbar, type ScopeKind } from "../components/studio/Selection
 import { DiffPanel } from "../components/studio/DiffPanel";
 import { StudioHeader, type StudioView } from "../components/studio/StudioHeader";
 import { AmbiguityDialog } from "../components/studio/AmbiguityDialog";
+import Page from "../components/ds/Page";
 import { StepOutline } from "../components/studio/StepOutline";
 import {
   AssistantProposalBox,
@@ -695,10 +696,9 @@ export function StudioPage() {
   );
 
   return (
-    // Full-bleed route (App.tsx): the page owns the whole viewport — the
-    // studio's header, palette/canvas/inspector and status bar fill it, so
-    // the sticky app chrome can never scroll over the canvas and intercept
-    // its controls.
+    // Finding 07: a `canvas` page — it owns the whole viewport (its header,
+    // palette/canvas/inspector and status bar fill the content column; the
+    // shell caps nothing). The old "full-bleed route (App.tsx)" list is gone.
     //
     // The phone (design 1g 390 reflow) is the ONE case that does not: a fixed
     // `h-screen` + `overflow-hidden` root plus an inner scroll box clipped the
@@ -708,252 +708,254 @@ export function StudioPage() {
     // 1g-inspector-edit). Below 768px the page scrolls as a document instead:
     // canvas, palette and inspector each get their full height in one column
     // and everything is reachable.
-    <div
-      className={
-        phone
-          ? "flex min-h-[calc(100dvh-44px)] flex-col bg-paper"
-          : "flex h-screen flex-col overflow-hidden bg-paper"
-      }
-      data-testid="studio-page"
-      data-phone={phone ? "true" : "false"}
-    >
-      <StudioHeader
-        pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
-        pipelineFolder={pipeline.data?.folder ?? null}
-        savedVersion={studio.savedVersion || null}
-        readOnly={readOnly}
-        canUndo={studio.canUndo}
-        canRedo={studio.canRedo}
-        onUndo={studio.undo}
-        onRedo={studio.redo}
-        onSave={() => void studio.save()}
-        saving={studio.saving}
-        dirty={studio.dirty}
-        onValidate={() => void runValidate()}
-        validatePending={validate.isPending}
-        onPublish={() => void onPublish()}
-        publishPending={publish.isPending}
-        publishReason={publishReason}
-        view={view}
-        onViewChange={setView}
-        phoneToggles={
+    <Page layout="canvas">
+      <div
+        className={
           phone
-            ? {
-                paletteOpen: phonePaletteOpen,
-                inspectorOpen: phoneInspectorOpen,
-                onTogglePalette: () => {
-                  setPhonePaletteOpen((open) => !open);
-                  setPhoneInspectorOpen(false);
-                  phonePaletteRef.current?.scrollIntoView({ block: "start" });
-                },
-                onToggleInspector: () => {
-                  setPhoneInspectorOpen((open) => !open);
-                  setPhonePaletteOpen(false);
-                  phoneInspectorRef.current?.scrollIntoView({ block: "start" });
-                },
-              }
-            : null
+            ? "flex min-h-[calc(100dvh-44px)] flex-col bg-paper"
+            : "flex h-screen flex-col overflow-hidden bg-paper"
         }
-      />
-      {studio.guard.pending !== null ? (
-        <div
-          className="flex flex-wrap items-center gap-[8px] border-b border-line bg-st-waiting-pale-body px-4 py-2"
-          data-testid="studio-leave-guard"
-        >
-          <span className="font-mono text-[11px] text-st-waiting-pale-fg">
-            unsaved changes — leaving the studio discards the local edit the server never saw
-          </span>
-          <Button
-            variant="secondary"
-            compact
-            data-testid="studio-leave-discard"
-            onClick={studio.guard.proceed}
-          >
-            Discard and leave
-          </Button>
-          <Button
-            variant="ghost"
-            compact
-            data-testid="studio-leave-stay"
-            onClick={studio.guard.cancel}
-          >
-            Stay
-          </Button>
-        </div>
-      ) : null}
-      {studio.conflict !== null ? (
-        <div
-          className="flex flex-wrap items-center gap-[8px] border-b border-line bg-st-failed-pale-body px-4 py-2"
-          data-testid="studio-conflict-banner"
-        >
-          <span className="font-mono text-[11px] text-st-failed-pale-fg">
-            stale draft: the server is at v{studio.conflict.currentVersion}, your save targeted v
-            {studio.savedVersion}
-          </span>
-          <Button
-            variant="secondary"
-            compact
-            data-testid="studio-conflict-reload"
-            onClick={studio.reloadTheirs}
-          >
-            Reload theirs
-          </Button>
-          <Button
-            variant="secondary"
-            compact
-            data-testid="studio-conflict-overwrite"
-            onClick={() => void studio.overwrite()}
-          >
-            Keep mine and overwrite
-          </Button>
-        </div>
-      ) : null}
-      {studio.saveError ? (
-        <ProblemBanner
-          error={studio.saveError}
-          fallback="The draft could not be saved."
-          testid="studio-save-error"
+        data-testid="studio-page"
+        data-phone={phone ? "true" : "false"}
+      >
+        <StudioHeader
+          pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
+          pipelineFolder={pipeline.data?.folder ?? null}
+          savedVersion={studio.savedVersion || null}
+          readOnly={readOnly}
+          canUndo={studio.canUndo}
+          canRedo={studio.canRedo}
+          onUndo={studio.undo}
+          onRedo={studio.redo}
+          onSave={() => void studio.save()}
+          saving={studio.saving}
+          dirty={studio.dirty}
+          onValidate={() => void runValidate()}
+          validatePending={validate.isPending}
+          onPublish={() => void onPublish()}
+          publishPending={publish.isPending}
+          publishReason={publishReason}
+          view={view}
+          onViewChange={setView}
+          phoneToggles={
+            phone
+              ? {
+                  paletteOpen: phonePaletteOpen,
+                  inspectorOpen: phoneInspectorOpen,
+                  onTogglePalette: () => {
+                    setPhonePaletteOpen((open) => !open);
+                    setPhoneInspectorOpen(false);
+                    phonePaletteRef.current?.scrollIntoView({ block: "start" });
+                  },
+                  onToggleInspector: () => {
+                    setPhoneInspectorOpen((open) => !open);
+                    setPhonePaletteOpen(false);
+                    phoneInspectorRef.current?.scrollIntoView({ block: "start" });
+                  },
+                }
+              : null
+          }
         />
-      ) : null}
-      {opError !== null ? (
-        <div
-          role="alert"
-          className="border-b border-line bg-st-failed-pale-body px-4 py-1.5 font-mono text-[11px] text-st-failed-pale-fg"
-          data-testid="studio-op-error"
-        >
-          {opError}
-        </div>
-      ) : null}
-      {publishNote !== null ? (
-        <p
-          className="border-b border-line px-4 py-1.5 font-mono text-[11px] text-muted"
-          data-testid="studio-published"
-        >
-          {publishNote}
-        </p>
-      ) : null}
-      {publishFailure !== null ? (
-        <FormError error={publishFailure} testid="studio-publish-error" />
-      ) : null}
+        {studio.guard.pending !== null ? (
+          <div
+            className="flex flex-wrap items-center gap-[8px] border-b border-line bg-st-waiting-pale-body px-4 py-2"
+            data-testid="studio-leave-guard"
+          >
+            <span className="font-mono text-[11px] text-st-waiting-pale-fg">
+              unsaved changes — leaving the studio discards the local edit the server never saw
+            </span>
+            <Button
+              variant="secondary"
+              compact
+              data-testid="studio-leave-discard"
+              onClick={studio.guard.proceed}
+            >
+              Discard and leave
+            </Button>
+            <Button
+              variant="ghost"
+              compact
+              data-testid="studio-leave-stay"
+              onClick={studio.guard.cancel}
+            >
+              Stay
+            </Button>
+          </div>
+        ) : null}
+        {studio.conflict !== null ? (
+          <div
+            className="flex flex-wrap items-center gap-[8px] border-b border-line bg-st-failed-pale-body px-4 py-2"
+            data-testid="studio-conflict-banner"
+          >
+            <span className="font-mono text-[11px] text-st-failed-pale-fg">
+              stale draft: the server is at v{studio.conflict.currentVersion}, your save targeted v
+              {studio.savedVersion}
+            </span>
+            <Button
+              variant="secondary"
+              compact
+              data-testid="studio-conflict-reload"
+              onClick={studio.reloadTheirs}
+            >
+              Reload theirs
+            </Button>
+            <Button
+              variant="secondary"
+              compact
+              data-testid="studio-conflict-overwrite"
+              onClick={() => void studio.overwrite()}
+            >
+              Keep mine and overwrite
+            </Button>
+          </div>
+        ) : null}
+        {studio.saveError ? (
+          <ProblemBanner
+            error={studio.saveError}
+            fallback="The draft could not be saved."
+            testid="studio-save-error"
+          />
+        ) : null}
+        {opError !== null ? (
+          <div
+            role="alert"
+            className="border-b border-line bg-st-failed-pale-body px-4 py-1.5 font-mono text-[11px] text-st-failed-pale-fg"
+            data-testid="studio-op-error"
+          >
+            {opError}
+          </div>
+        ) : null}
+        {publishNote !== null ? (
+          <p
+            className="border-b border-line px-4 py-1.5 font-mono text-[11px] text-muted"
+            data-testid="studio-published"
+          >
+            {publishNote}
+          </p>
+        ) : null}
+        {publishFailure !== null ? (
+          <FormError error={publishFailure} testid="studio-publish-error" />
+        ) : null}
 
-      {phone ? (
-        /* Design 1g phone (390 reflow): one scrolling document — canvas, then
+        {phone ? (
+          /* Design 1g phone (390 reflow): one scrolling document — canvas, then
            the palette, then the inspector — and NOTHING hidden behind a closed
            drawer, so every step of the palette and the selected node's form are
            simply there. The header's Steps / Inspect toggles jump to those
            panes; the panes never unmount. */
-        <div className="flex-1" data-testid="studio-phone-column">
-          <SelectionToolbar
-            variant="toolbar"
-            selectedIds={selectedIds}
-            model={model}
-            readOnly={readOnly}
-            onWrap={handleWrap}
-            onUnwrap={handleUnwrap}
-          />
-          <div className="relative h-[46vh] min-h-[320px] overflow-hidden border-b border-line">
-            {view === "yaml" ? yaml : canvas}
-            {drawers}
-          </div>
-          <div
-            ref={phonePaletteRef}
-            className="border-b border-line bg-surface"
-            data-testid="studio-phone-palette-pane"
-          >
-            <StudioPalette
-              selectedId={selectedId}
-              selectedKind={selectedKind}
+          <div className="flex-1" data-testid="studio-phone-column">
+            <SelectionToolbar
+              variant="toolbar"
+              selectedIds={selectedIds}
+              model={model}
               readOnly={readOnly}
-              stale={!parseOk}
-              onAddAfter={readOnly ? undefined : handleAddAfter}
+              onWrap={handleWrap}
+              onUnwrap={handleUnwrap}
             />
-          </div>
-          <div
-            ref={phoneInspectorRef}
-            className="bg-surface"
-            data-testid="studio-phone-inspector-pane"
-          >
-            {inspector}
-          </div>
-        </div>
-      ) : narrow ? (
-        <div className="grid flex-1 grid-cols-1 grid-rows-2 gap-3 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1">
-          <div className="min-w-0 overflow-auto rounded-[3px] border border-line bg-surface p-3">
-            {view === "yaml" ? (
-              yaml
-            ) : (
-              <StepOutline
-                model={model}
+            <div className="relative h-[46vh] min-h-[320px] overflow-hidden border-b border-line">
+              {view === "yaml" ? yaml : canvas}
+              {drawers}
+            </div>
+            <div
+              ref={phonePaletteRef}
+              className="border-b border-line bg-surface"
+              data-testid="studio-phone-palette-pane"
+            >
+              <StudioPalette
                 selectedId={selectedId}
-                selectedIds={selectedIds}
-                onToggleSelect={readOnly ? undefined : toggleSelect}
+                selectedKind={selectedKind}
                 readOnly={readOnly}
-                onSelect={selectOne}
-                onAddAfter={handleAddAfter}
-                onWrap={readOnly ? undefined : handleWrap}
-                onUnwrap={readOnly ? undefined : handleUnwrap}
+                stale={!parseOk}
+                onAddAfter={readOnly ? undefined : handleAddAfter}
               />
-            )}
+            </div>
+            <div
+              ref={phoneInspectorRef}
+              className="bg-surface"
+              data-testid="studio-phone-inspector-pane"
+            >
+              {inspector}
+            </div>
           </div>
-          <div className="min-w-0 overflow-auto rounded-[3px] border border-line bg-surface p-3">
-            {inspector}
-          </div>
-          {drawers}
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1">
-          <aside className="w-[200px] shrink-0 overflow-auto border-r border-line bg-surface">
-            <StudioPalette
-              selectedId={selectedId}
-              selectedKind={selectedKind}
-              readOnly={readOnly}
-              stale={!parseOk}
-              onAddAfter={readOnly ? undefined : handleAddAfter}
-            />
-          </aside>
-          <main className="flex min-w-0 flex-1 flex-col">
-            <div className="relative min-h-[480px] flex-1 overflow-hidden">
+        ) : narrow ? (
+          <div className="grid flex-1 grid-cols-1 grid-rows-2 gap-3 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1">
+            <div className="min-w-0 overflow-auto rounded-[3px] border border-line bg-surface p-3">
               {view === "yaml" ? (
                 yaml
               ) : (
-                <div className="flex h-full min-h-0 flex-col">
-                  <SelectionToolbar
-                    variant="toolbar"
-                    selectedIds={selectedIds}
-                    model={model}
-                    readOnly={readOnly}
-                    onWrap={handleWrap}
-                    onUnwrap={handleUnwrap}
-                  />
-                  <div className="min-h-0 flex-1">{canvas}</div>
-                </div>
+                <StepOutline
+                  model={model}
+                  selectedId={selectedId}
+                  selectedIds={selectedIds}
+                  onToggleSelect={readOnly ? undefined : toggleSelect}
+                  readOnly={readOnly}
+                  onSelect={selectOne}
+                  onAddAfter={handleAddAfter}
+                  onWrap={readOnly ? undefined : handleWrap}
+                  onUnwrap={readOnly ? undefined : handleUnwrap}
+                />
               )}
             </div>
+            <div className="min-w-0 overflow-auto rounded-[3px] border border-line bg-surface p-3">
+              {inspector}
+            </div>
             {drawers}
-          </main>
-          <aside className="w-[320px] shrink-0 overflow-auto border-l border-line bg-surface">
-            {inspector}
-          </aside>
-        </div>
-      )}
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1">
+            <aside className="w-[200px] shrink-0 overflow-auto border-r border-line bg-surface">
+              <StudioPalette
+                selectedId={selectedId}
+                selectedKind={selectedKind}
+                readOnly={readOnly}
+                stale={!parseOk}
+                onAddAfter={readOnly ? undefined : handleAddAfter}
+              />
+            </aside>
+            <main className="flex min-w-0 flex-1 flex-col">
+              <div className="relative min-h-[480px] flex-1 overflow-hidden">
+                {view === "yaml" ? (
+                  yaml
+                ) : (
+                  <div className="flex h-full min-h-0 flex-col">
+                    <SelectionToolbar
+                      variant="toolbar"
+                      selectedIds={selectedIds}
+                      model={model}
+                      readOnly={readOnly}
+                      onWrap={handleWrap}
+                      onUnwrap={handleUnwrap}
+                    />
+                    <div className="min-h-0 flex-1">{canvas}</div>
+                  </div>
+                )}
+              </div>
+              {drawers}
+            </main>
+            <aside className="w-[320px] shrink-0 overflow-auto border-l border-line bg-surface">
+              {inspector}
+            </aside>
+          </div>
+        )}
 
-      <StudioStatusBar
-        stepCount={model.nodes.length}
-        validation={validationChip}
-        diffLabel={newestSummary === null ? null : `diff vs r${newestSummary.revision_number}`}
-        onDiff={() => setDiffOpen((open) => !open)}
-        publishReason={shortPublishReason}
-      />
-
-      {ambiguity !== null ? (
-        <AmbiguityDialog
-          title={ambiguity.title}
-          reasons={ambiguity.reasons}
-          onInsertAnyway={ambiguity.rerun}
-          onCancel={() => setAmbiguity(null)}
+        <StudioStatusBar
+          stepCount={model.nodes.length}
+          validation={validationChip}
+          diffLabel={newestSummary === null ? null : `diff vs r${newestSummary.revision_number}`}
+          onDiff={() => setDiffOpen((open) => !open)}
+          publishReason={shortPublishReason}
         />
-      ) : null}
-    </div>
+
+        {ambiguity !== null ? (
+          <AmbiguityDialog
+            title={ambiguity.title}
+            reasons={ambiguity.reasons}
+            onInsertAnyway={ambiguity.rerun}
+            onCancel={() => setAmbiguity(null)}
+          />
+        ) : null}
+      </div>
+    </Page>
   );
 }
 

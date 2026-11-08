@@ -59,23 +59,16 @@ const Threads = lazy(() => import("./pages/Threads"));
 
 /**
  * The route chunk's loading state is the line every page already prints while
- * its own reads are pending (`Spinner`, ADR-free and announced), not a skeleton
- * of the page that has not arrived. It occupies the first line of the content
- * column — the shell and the sidebar are outside the boundary and never move,
- * and the page lands where its own header begins.
+ * its own reads are pending (`Spinner`, ADR-free and announced), not a
+ * skeleton of the page that has not arrived. It sits at the shared page band's
+ * inset (`ds/Page`'s `PAGE_BAND_PAD`) so the column does not jump when the
+ * page lands — the shell and the sidebar are outside the boundary and never
+ * move (finding 07: the shell no longer guesses widths from a regex list;
+ * every page declares its layout itself).
  */
-function RouteFallback({
-  fullBleed,
-  label = "Loading the page",
-}: {
-  fullBleed: boolean;
-  label?: string;
-}) {
-  if (!fullBleed) return <Spinner label={label} />;
-  // Full-bleed routes pad themselves (the shared page band's `20px 28px`);
-  // the fallback holds the same inset so the column does not jump.
+function RouteFallback({ label = "Loading the page" }: { label?: string }) {
   return (
-    <div className="px-7 py-5">
+    <div className="px-[22px] pt-[20px] md:px-[28px]">
       <Spinner label={label} />
     </div>
   );
@@ -124,40 +117,9 @@ export default function App() {
   const { pathname, search } = useLocation();
   const me = useMe({ enabled: !(M4PreviewPage && pathname === "/__m4-preview") });
 
-  // The Run Workbench and the Workflow Studio own the whole viewport: no
-  // 1000px content column around them — the studio's palette | canvas |
-  // inspector runs edge to edge, canvas-sized to the viewport height.
-  const workbenchBleed =
-    /^\/runs\/[^/]+$/.test(pathname) ||
-    /^\/projects\/[^/]+\/runs\/[^/]+$/.test(pathname) ||
-    /^\/(workflows|library)\/[^/]+\/drafts\/[^/]+$/.test(pathname) ||
-    // The Workflows index (design 1b) uses the full content column, not the
-    // capped page column the other library screens keep.
-    /^\/(workflows|library)$/.test(pathname) ||
-    // The workflow page and its tabs own the viewport too (design 1e): the
-    // shell's `py-6` would band the header with 24px of empty paper.
-    /^\/(workflows|library)\/[^/]+(\/(yaml|used-in|history))?$/.test(pathname) ||
-    // The project overview (Projects Review design 1b) is the shared page
-    // pattern: a header band across the whole content column, `20px 28px` of
-    // padding and tabs sitting on the band's bottom border — none of which
-    // survives inside a centred 64rem reading column. The overview, the
-    // members/activity page, and the Runs, Threads and Workflows tabs that
-    // draw the same 1b frame are all full-bleed: one header band, one body
-    // width, whatever tab you land on (pass-2 review: the centred column
-    // shifted the band's title ~8px and capped the body below 1208px, while
-    // the README says these bodies are not capped).
-    /^\/p\/[^/]+$/.test(pathname) ||
-    /^\/p\/[^/]+\/members$/.test(pathname) ||
-    /^\/p\/[^/]+\/(runs|threads|conversations|pipelines|workflows)$/.test(pathname) ||
-    // Steps is a tab of the Workflows page (finding 02): both step routes
-    // draw the Workflows page's full-width frame.
-    /^\/(workflows|library)\/steps(\/[^/]+)?$/.test(pathname) ||
-    // Threads (Projects Review design 1g) is the same shared page pattern:
-    // the 320px list pane plus the open thread own the whole content column
-    // at full height — a centred 64rem column would squeeze the pane header
-    // and float the composer mid-page.
-    pathname === "/threads" ||
-    /^\/threads\/[^/]+$/.test(pathname);
+  // Finding 07: the shell's route-regex width list is gone. The shell gives
+  // every route the bare content column; each page declares its width through
+  // `ds/Page` (`reading` / `wide` / `canvas`).
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not
@@ -200,8 +162,8 @@ export default function App() {
   }
 
   return (
-    <Shell fullBleed={workbenchBleed}>
-      <Suspense fallback={<RouteFallback fullBleed={workbenchBleed} />}>
+    <Shell>
+      <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/login" element={<Login />} />
 
@@ -390,7 +352,7 @@ export default function App() {
             path="/workflows/:pipelineId/drafts/:draftId"
             element={
               <RequireAuth>
-                <Suspense fallback={<RouteFallback fullBleed label="Loading the studio" />}>
+                <Suspense fallback={<RouteFallback label="Loading the studio" />}>
                   <StudioPage />
                 </Suspense>
               </RequireAuth>

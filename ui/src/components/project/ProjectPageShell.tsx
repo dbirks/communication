@@ -20,6 +20,7 @@
  * shell artefact this fixes rather than a design element.
  */
 import type { ReactNode } from "react";
+import Page from "../ds/Page";
 
 /**
  * The header band's padding, in one place: `ProjectHeader`'s band, the members
@@ -36,8 +37,8 @@ export interface ProjectPageShellProps {
 
 export function ProjectPageShell({ testid, children }: ProjectPageShellProps) {
   return (
-    <div className="flex min-h-full flex-col bg-paper" data-testid={testid}>
+    <Page layout="canvas" testid={testid}>
       <div className={`${PROJECT_PAGE_PAD} pb-[22px]`}>{children}</div>
-    </div>
+    </Page>
   );
 }

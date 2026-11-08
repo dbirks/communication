@@ -19,6 +19,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { Alert } from "../components/ds/Alert";
+import Page from "../components/ds/Page";
 import { DuplicateDialog } from "../components/steps/DuplicateDialog";
 import { EditForAllDialog } from "../components/steps/EditForAllDialog";
 import { StepDetailPanel } from "../components/steps/StepDetailPanel";
@@ -42,18 +43,18 @@ export default function Steps() {
   const latest = detail?.revisions[0];
 
   return (
-    <section
-      data-testid="steps-page"
-      className="flex min-h-full flex-col gap-[14px] px-7 py-[22px]"
-    >
-      <header>
-        <h1 className="text-[22px] leading-[28px] font-semibold">Steps</h1>
-        <p className="mt-1 text-[12px] text-muted">
+    <Page
+      layout="wide"
+      testid="steps-page"
+      title="Steps"
+      subtitle={
+        <span>
           Saved node templates in YAML — kind: NodeTemplate. A step can be edited for every workflow
           that uses it, or duplicated into a new step.
-        </p>
-      </header>
-      <WorkflowsTabs active="steps" />
+        </span>
+      }
+      band={<WorkflowsTabs active="steps" />}
+    >
       <div className="flex min-h-0 flex-1 flex-col gap-[14px] lg:flex-row">
         <div className="min-w-0 flex-1" data-testid="steps-list">
           {listQuery.isPending ? (
@@ -132,6 +133,6 @@ export default function Steps() {
           />
         </>
       ) : null}
-    </section>
+    </Page>
   );
 }

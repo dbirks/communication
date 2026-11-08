@@ -12,6 +12,7 @@ import { routes } from "../lib/routes";
 import LayoutSettings from "./settings/Layout";
 import AssistantSettings from "./settings/Assistant";
 import { OperationsBody } from "../components/ops/OperationsBody";
+import Page from "../components/ds/Page";
 
 type SettingsTab = "layout" | "assistant" | "operations";
 
@@ -40,9 +41,8 @@ export default function Settings() {
     tab === "assistant" ? "assistant" : tab === "operations" ? "operations" : "layout";
 
   return (
-    <section data-testid="settings-page">
-      <h1 className="text-title-l font-bold">Settings</h1>
-      <nav aria-label="Settings" className="mt-3 flex items-end gap-4 border-b border-line-soft">
+    <Page layout="reading" testid="settings-page" title="Settings">
+      <nav aria-label="Settings" className="flex items-end gap-4 border-b border-line-soft">
         {TABS.map((item) =>
           item.key === "operations" ? (
             <NavLink
@@ -94,6 +94,6 @@ export default function Settings() {
           replica: {replica}
         </p>
       </section>
-    </section>
+    </Page>
   );
 }
