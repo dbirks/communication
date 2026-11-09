@@ -599,7 +599,9 @@ test.describe("gate-decision-conflict (alice holds Approve; the other maintainer
         // the directory's name (upper-cased only because the subject opens the
         // sentence), the winner's verb, the age the body serves, and the honest
         // tail. The conflict summary carries no timestamp, so the age is the
-        // component's own “a moment”; a body that did serve one prints `12s`.
+        // component's own “a moment”; a body that did serve one prints
+        // `12 seconds ago` under a minute and the compact `12m` from a minute up
+        // (DecisionBar's conflictAge, finding 12's exact wording).
         expect(conflictText, "the loser's line is the conflict sentence").toContain(
           "approved this",
         );
@@ -611,7 +613,7 @@ test.describe("gate-decision-conflict (alice holds Approve; the other maintainer
           `…and it names the winner exactly as GET /api/v1/users shows him (${winnerName})`,
         ).toMatch(new RegExp(`\\b${escapeForRegex(winnerName)}\\s+approved\\b`, "i"));
         expect(conflictText, "the age is a human age, never an empty span").toMatch(
-          /approved this (\d+[smhd]|a moment) ago\./,
+          /approved this (\d+ seconds?|\d+[mhd]|a moment) ago\./,
         );
         expect(
           conflictText,
