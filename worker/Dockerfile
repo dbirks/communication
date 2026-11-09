@@ -89,6 +89,15 @@ ARG GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
+# Offline release-asset cache: scripts/fetch-release-assets.sh pre-populates
+# .release-assets/ at the repo root (git-ignored except the committed .keep, so
+# this COPY succeeds even on a checkout that never ran the script, and the
+# .dockerignore deliberately does NOT exclude the directory). Every asset the
+# fetch lands here is used INSTEAD of the release-CDN download below — and the
+# download was never trusted anyway: the same `sha256sum -c` verification runs
+# over the cached file, so a corrupt or substituted copy fails the build
+# exactly like a bad download. Keyed by hashFiles('worker/Dockerfile') in CI.
+COPY .release-assets/ /tmp/release-assets/
 # Every release fetch below carries the retry flag set because GitHub's
 # release-asset CDN returns 504 Gateway Time-outs intermittently (observed on
 # the nono v0.80.0 tarball: the same URL alternating 200/504, three image
@@ -99,12 +108,20 @@ RUN apt-get update \
 RUN set -eu; \
     mkdir -p /out; \
     cd /tmp; \
-    curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o nono.tgz \
+    fetch() { \
+      if [ -s "/tmp/release-assets/$2" ]; then \
+        echo "release-assets: using build-context copy of $2"; \
+        cp "/tmp/release-assets/$2" "$1"; \
+      else \
+        curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$1" "$3"; \
+      fi; \
+    }; \
+    fetch nono.tgz "nono-v${NONO_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
       "https://github.com/nolabs-ai/nono/releases/download/v${NONO_VERSION}/nono-v${NONO_VERSION}-x86_64-unknown-linux-gnu.tar.gz"; \
     printf '%s  nono.tgz\n' "${NONO_SHA256}" | sha256sum -c -; \
     tar -xzf nono.tgz; \
     install -m 0755 "$(find . -type f -name nono | head -n1)" /out/nono; \
-    curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o apm.tgz \
+    fetch apm.tgz "apm-linux-x86_64.tar.gz" \
       "https://github.com/microsoft/apm/releases/download/v${APM_VERSION}/apm-linux-x86_64.tar.gz"; \
     printf '%s  apm.tgz\n' "${APM_SHA256}" | sha256sum -c -; \
     # The apm tarball carries a top-level directory (apm-linux-x86_64/), so it is
@@ -114,7 +131,7 @@ RUN set -eu; \
     # nested copy would look for templates one level too deep.
     mkdir -p /out/apm && tar -xzf apm.tgz -C /out/apm --strip-components=1; \
     test -x /out/apm/apm; test -d /out/apm/_internal; \
-    curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o gh.tgz \
+    fetch gh.tgz "gh_${GH_VERSION}_linux_amd64.tar.gz" \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
     printf '%s  gh.tgz\n' "${GH_SHA256}" | sha256sum -c -; \
     # The gh release tarball carries a top-level directory (gh_2.103.0_linux_amd64/),

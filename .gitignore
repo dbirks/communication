@@ -32,3 +32,10 @@ test-results/
 
 # Emulator pass output (e2e/emulator): screenshots, results.json, reports
 e2e/emulator/out/
+
+# Pre-fetched GitHub release tarballs for worker image builds
+# (scripts/fetch-release-assets.sh -> worker/Dockerfile's build-context copy).
+# The .keep stays committed so the Dockerfile COPY never fails on a fresh
+# checkout; the tarballs themselves are cache material, never source.
+.release-assets/*
+!.release-assets/.keep

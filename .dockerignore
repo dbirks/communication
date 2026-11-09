@@ -13,3 +13,7 @@ communication-spec/
 communication-ui-brief/
 COMMUNICATION_MASTER_SPEC.md
 docs/
+# .release-assets/ is deliberately NOT ignored: worker/Dockerfile's executionbin
+# stage COPYs it from the build context as the offline cache for the nono/apm/gh
+# release downloads (scripts/fetch-release-assets.sh populates it; every file is
+# sha256-verified against the Dockerfile pin before use).

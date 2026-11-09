@@ -197,6 +197,19 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
+      # Worker-image build hardening: worker/Dockerfile's executionbin stage
+      # uses .release-assets/ from the build context when present and only
+      # falls back to the GitHub release CDN (which intermittently 504s for
+      # minutes); either way every tarball passes the same pinned
+      # `sha256sum -c`. On a cache hit the fetch step is a no-op, and the key
+      # IS the pins (any version bump in worker/Dockerfile changes it).
+      - name: cache release assets
+        uses: actions/cache@v4
+        with:
+          path: .release-assets
+          key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
+      - name: fetch release assets
+        run: bash scripts/fetch-release-assets.sh
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
@@ -359,6 +372,17 @@ jobs:
       GATES: ${{ matrix.gates }}
     steps:
       - uses: actions/checkout@v7
+      # Worker-image build hardening (see lab-e2e's identical step): the m4
+      # driver's `--up` builds worker/Dockerfile from this checkout, so the
+      # .release-assets cache keeps its nono/apm/gh fetches off the flaky
+      # GitHub release CDN. Verification (sha256sum -c) is unchanged.
+      - name: cache release assets
+        uses: actions/cache@v4
+        with:
+          path: .release-assets
+          key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
+      - name: fetch release assets
+        run: bash scripts/fetch-release-assets.sh
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
@@ -609,6 +633,17 @@ jobs:
       LAB_RESET_CMD: bash scripts/lab-up.sh && bash docs/compatibility/probes/m4/seed.sh
     steps:
       - uses: actions/checkout@v7
+      # Worker-image build hardening (see lab-e2e's identical step): every
+      # LAB_RESET_CMD pass rebuilds through scripts/lab-up.sh from the repo
+      # root, so .release-assets is in the compose build context for all of
+      # them — a CDN 504 mid-loop no longer resets a pass's clock.
+      - name: cache release assets
+        uses: actions/cache@v4
+        with:
+          path: .release-assets
+          key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
+      - name: fetch release assets
+        run: bash scripts/fetch-release-assets.sh
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
@@ -716,6 +751,14 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
+      # Worker-image build hardening (see lab-e2e's identical step).
+      - name: cache release assets
+        uses: actions/cache@v4
+        with:
+          path: .release-assets
+          key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
+      - name: fetch release assets
+        run: bash scripts/fetch-release-assets.sh
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json

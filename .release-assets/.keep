@@ -1,0 +1,6 @@
+# Keeps .release-assets/ committable so worker/Dockerfile's
+# `COPY .release-assets/` succeeds on a checkout that never ran
+# scripts/fetch-release-assets.sh. The tarballs themselves are git-ignored
+# cache material (fetched by that script, cached in CI keyed on
+# hashFiles('worker/Dockerfile')) and every one of them must pass the
+# Dockerfile's pinned sha256 before it is used.

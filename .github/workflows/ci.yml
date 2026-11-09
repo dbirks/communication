@@ -625,6 +625,19 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
+      # Same CDN hardening as the acceptance jobs: on a GHA layer-cache miss
+      # for the executionbin stage, worker/Dockerfile takes nono/apm/gh from
+      # .release-assets/ in the build context instead of the flaky GitHub
+      # release CDN (sha256 verification unchanged). The compose job is not
+      # touched: it only validates config (`config -q`) and the e2e job puts
+      # worker behind a profile, so neither builds the worker image.
+      - name: cache release assets
+        uses: actions/cache@v4
+        with:
+          path: .release-assets
+          key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
+      - name: fetch release assets
+        run: bash scripts/fetch-release-assets.sh
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
