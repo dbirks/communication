@@ -115,11 +115,18 @@ services:
       # longer than the wait: one failed attempt would block the retry past the
       # spec's deadline. Same parser as above; see serveCatchUpGenCooldown.
       COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
-      # The per-replica global cap on generation model calls per 10 minutes
+      # The per-replica VISIT budget on generation model calls per 10 minutes
       # (shipped default 6; 0 disables generation). Spelled out here because
       # the lab's gateway is rate-limited and acceptance 42452527578 watched a
       # page-load storm spend its whole budget; see serveCatchUpGenPer10M.
       COMMUNICATION_CATCHUP_GEN_PER_10M: "6"
+      # The completion sweep's OWN budget, separate from the visit cap above:
+      # acceptance 42570366079 watched the shared purse let the sweep spend 36
+      # generation calls in ~28 min (the cap refused 62 times) and push a live
+      # assistant turn past its 200s bound. The lab gives the background sweep
+      # 2 calls per 10 min so a person opening Catch up is never starved by
+      # the backlog; see serveCatchUpSweepPer10M.
+      COMMUNICATION_CATCHUP_SWEEP_PER_10M: "2"
       # ADR-0078 § Trigger: how often this replica's completion sweep tells
       # the runs that finished untoured (shipped default 2m; 0 disables). The
       # lab shortens it so an acceptance spec can watch a finished run get its
@@ -138,9 +145,11 @@ services:
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
       COMMUNICATION_ASSISTANT_TIMEOUT: 180s
       # See api-a: the tour generator's per-run cooldown, shortened for the lab,
-      # and its per-replica global model-call cap, explicit for the rate-limited
-      # gateway.
+      # and its per-replica VISIT model-call cap, explicit for the rate-limited
+      # gateway, and the sweep's OWN budget so background sweeping cannot spend
+      # it.
       COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
       COMMUNICATION_CATCHUP_GEN_PER_10M: "6"
+      COMMUNICATION_CATCHUP_SWEEP_PER_10M: "2"
       # See api-a: the completion sweep's cadence, shortened for the lab.
       COMMUNICATION_CATCHUP_GEN_SWEEP: 30s

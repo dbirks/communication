@@ -894,10 +894,13 @@ func TestCatchUpCompletionSweepWritesWithoutAVisit(t *testing.T) {
 	}
 }
 
-// The sweep spends from the ONE per-replica purse: a visit pass that filled
-// the cap starves the sweep, and past the window the sweep refills it — the
-// triggers mix, the deployment's cap is the cap.
-func TestCatchUpSweepSharesTheModelCallCap(t *testing.T) {
+// The two budgets are INDEPENDENT purses (ADR-0078 § Trigger, the lab's
+// acceptance 42570366079): one shared cap let the 30s sweep spend the
+// gateway's whole budget and push a live assistant turn past its bound. The
+// sweep exhausting its own budget must never starve a visit, the visit cap
+// being shut must never silence the sweep, and each budget refills on its own
+// stamps.
+func TestCatchUpSweepAndVisitBudgetsAreIndependent(t *testing.T) {
 	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
 	model := &fakeNotesModel{answer: answer}
 	source := &fakeCatchUpSource{facts: catchUpTestFacts(),
@@ -905,38 +908,142 @@ func TestCatchUpSweepSharesTheModelCallCap(t *testing.T) {
 		sweep: []CatchUpSweepCandidate{catchUpSweepCandidate("sweep-run")}}
 	writer := &fakeCatchUpTourWriter{}
 	clock := &notesClock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)}
-	perWindow := 1
+	visitCap, sweepCap := 1, 2
 	var logs bytes.Buffer
 	gen := NewCatchUpGenerator(CatchUpDeps{
 		Model: model, Source: source, Writer: writer,
 		Now: clock.Now, Spawn: func(f func()) { f() },
 		Cooldown:               2 * time.Minute,
 		Log:                    slog.New(slog.NewTextHandler(&logs, nil)),
-		MaxModelCallsPerWindow: &perWindow,
+		MaxModelCallsPerWindow: &visitCap,
+		MaxSweepCallsPerWindow: &sweepCap,
 	})
-	// The visit pass spends the only slot the window allows…
-	gen.Pass(context.Background(), Caller{UserID: "u1", OrganizationID: "o1"}, nil)
-	// …and the sweep, minutes later, is refused by the SAME cap: no second
-	// completion, one honest log line.
+	// The sweep spends one completion…
 	gen.CatchUpCompletionSweep(context.Background())
-	if calls := model.callCount(); calls != 1 {
-		t.Fatalf("model calls = %d, want 1: the sweep must spend from the shared cap", calls)
+	// …and the VISIT still gets its model call with the sweep budget only
+	// half-spent and the visit budget untouched: a person opening Catch up is
+	// never starved by background sweeping.
+	gen.Pass(context.Background(), Caller{UserID: "u1", OrganizationID: "o1"}, nil)
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want 2: the visit pays from its own purse", calls)
 	}
-	if !strings.Contains(logs.String(), "skipped by the model-call cap") {
-		t.Fatalf("the cap refused the sweep silently:\n%s", logs.String())
+	// The visit cap (1) is now shut — the sweep does not care: it still has
+	// its own slot and spends it on the next swept run.
+	source.sweep = []CatchUpSweepCandidate{catchUpSweepCandidate("sweep-run-2")}
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 3 {
+		t.Fatalf("model calls = %d, want the sweep served from its own budget with the visit cap shut", calls)
 	}
-	// Past the window the budget refills and the sweep pays for it.
+	// The sweep's OWN budget (2) is now exhausted: the next sweep is refused
+	// by the sweep's purse — and the log names which budget said no. The
+	// visit pass is refused too, by the visit's own cap; neither refusal
+	// touches the other's refill.
+	logs.Reset()
+	source.sweep = []CatchUpSweepCandidate{catchUpSweepCandidate("sweep-run-3")}
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 3 {
+		t.Fatalf("model calls = %d, want the exhausted sweep budget to refuse", calls)
+	}
+	if msg := logs.String(); !strings.Contains(msg, "skipped by the model-call cap") ||
+		!strings.Contains(msg, "budget=sweep") {
+		t.Fatalf("the exhausted sweep budget refused silently:\n%s", msg)
+	}
+	// Past the window BOTH budgets refill, each from its own stamps.
 	clock.Advance(CatchUpGenModelCallWindow + time.Minute)
 	gen.CatchUpCompletionSweep(context.Background())
-	if calls := model.callCount(); calls != 2 {
+	if calls := model.callCount(); calls != 4 {
 		t.Fatalf("model calls = %d, want the sweep served after the window rolled", calls)
 	}
-	// And two sweeps on one beat do not duplicate inside the replica either:
-	// the per-run cooldown is shared with the pass, so the second sweep asks
-	// about "sweep-run" not at all.
+	source.cands = []CatchUpCandidate{{RunID: "visit-run-2", ProjectID: "p1"}}
+	gen.Pass(context.Background(), Caller{UserID: "u1", OrganizationID: "o1"}, nil)
+	if calls := model.callCount(); calls != 5 {
+		t.Fatalf("model calls = %d, want the visit served after the window rolled", calls)
+	}
+	// The per-run cooldown stays SHARED between the triggers: "sweep-run-3"
+	// was just attempted (the claim is stamped even when the budget refuses),
+	// so an immediate re-sweep of it asks not at all, however the triggers mix.
+	source.sweep = []CatchUpSweepCandidate{catchUpSweepCandidate("sweep-run-3")}
 	gen.CatchUpCompletionSweep(context.Background())
-	if calls := model.callCount(); calls != 2 {
-		t.Fatalf("model calls = %d, want the second sweep cooled down", calls)
+	if calls := model.callCount(); calls != 5 {
+		t.Fatalf("model calls = %d, want the shared per-run cooldown to hold", calls)
+	}
+}
+
+// The sweep spends its (possibly smaller) budget in candidate-list order, and
+// the store's sweep read is newest-finished-first: when the budget only
+// covers part of the backlog, the JUST-finished run is the one told — it is
+// never stuck behind the backlog the lab's own specs made.
+func TestCatchUpSweepSpendsNewestFinishedFirst(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	model := &fakeNotesModel{answer: answer}
+	// The store's contract: the list is newest-finished-first. The backlog is
+	// three deep and the sweep's budget is one call.
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(), sweep: []CatchUpSweepCandidate{
+		catchUpSweepCandidate("newest"), catchUpSweepCandidate("older"),
+		catchUpSweepCandidate("oldest"),
+	}}
+	writer := &fakeCatchUpTourWriter{}
+	clock := &notesClock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)}
+	sweepCap := 1
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Now: clock.Now, Spawn: func(f func()) { f() },
+		Cooldown:               2 * time.Minute,
+		MaxSweepCallsPerWindow: &sweepCap,
+	})
+	gen.CatchUpCompletionSweep(context.Background())
+	writes := writer.snapshot()
+	if len(writes) != 1 || writes[0].RunID != "newest" {
+		t.Fatalf("writes = %+v, want the newest-finished run told first", writes)
+	}
+	// A just-finished run joins the head of the list: next tick it is the one
+	// told, not the older backlog.
+	source.sweep = []CatchUpSweepCandidate{
+		catchUpSweepCandidate("just-finished"),
+		catchUpSweepCandidate("older"), catchUpSweepCandidate("oldest"),
+	}
+	clock.Advance(CatchUpGenModelCallWindow + time.Minute)
+	gen.CatchUpCompletionSweep(context.Background())
+	writes = writer.snapshot()
+	if len(writes) != 2 || writes[1].RunID != "just-finished" {
+		t.Fatalf("writes = %d (%+v), want the just-finished run served ahead of the backlog",
+			len(writes), writes)
+	}
+}
+
+// The sweep's own budget of 0 means "no BACKGROUND generation": the sweep is
+// silent without even reading candidates, and the visit trigger keeps working
+// from its own (default) budget. The visit cap of 0 remains the knob that
+// means "generate nothing at all" (TestCatchUpSweepRespectsZeroCap).
+func TestCatchUpSweepBudgetZeroSilencesOnlyTheSweep(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	model := &fakeNotesModel{answer: answer}
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(),
+		sweep: []CatchUpSweepCandidate{catchUpSweepCandidate("r1")},
+		cands: []CatchUpCandidate{{RunID: "v1", ProjectID: "p1"}}}
+	writer := &fakeCatchUpTourWriter{}
+	var logs bytes.Buffer
+	off := 0
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Spawn:                  func(f func()) { f() },
+		Log:                    slog.New(slog.NewTextHandler(&logs, nil)),
+		MaxSweepCallsPerWindow: &off,
+	})
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 0 || len(writer.snapshot()) != 0 {
+		t.Fatalf("sweep budget 0 swept: calls=%d writes=%d", calls, len(writer.snapshot()))
+	}
+	if got := source.snapshotSweepCalls(); got != 0 {
+		t.Fatalf("sweep candidate read = %d, want 0 with the sweep budget disabled", got)
+	}
+	if msg := logs.String(); !strings.Contains(msg, "budget=sweep") {
+		t.Fatalf("the disabled sweep budget did not name itself:\n%s", msg)
+	}
+	// The visits are untouched by the sweep's zero.
+	gen.Pass(context.Background(), Caller{}, nil)
+	if calls := model.callCount(); calls != 1 {
+		t.Fatalf("model calls = %d, want the visit trigger unaffected by the sweep's zero", calls)
 	}
 }
 

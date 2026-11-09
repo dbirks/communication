@@ -758,6 +758,34 @@ func TestCatchUpExistingItemCarriesThePriorFailure(t *testing.T) {
 	}
 }
 
+// The store's sweep read is newest-finished-first (its ORDER BY is pinned in
+// internal/store/postgres), and the generator's pass spends its budget in
+// list order — so the reader must hand the candidates over in exactly the
+// order the store returned them. A just-finished run that loses its place on
+// the way across the boundary is a run stuck behind the backlog.
+func TestCatchUpSweepReaderKeepsNewestFirstOrder(t *testing.T) {
+	t.Parallel()
+	store := &fakeCatchUpGenStore{sweep: []CatchUpSweepCandidateView{
+		{Candidate: CatchUpCandidateView{RunID: "newest", ProjectID: "p1"}},
+		{Candidate: CatchUpCandidateView{RunID: "middle", ProjectID: "p1"}},
+		{Candidate: CatchUpCandidateView{RunID: "oldest", ProjectID: "p1"}},
+	}}
+	r := &catchUpGenReader{store: store, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	cands, err := r.SweepCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("SweepCandidates: %v", err)
+	}
+	if len(cands) != 3 {
+		t.Fatalf("candidates = %d, want 3", len(cands))
+	}
+	for i, want := range []string{"newest", "middle", "oldest"} {
+		if cands[i].Candidate.RunID != want {
+			t.Fatalf("candidate %d = %q, want %q: the reader reordered the sweep",
+				i, cands[i].Candidate.RunID, want)
+		}
+	}
+}
+
 // The built generator answers the sweep face — serve's ticker type-asserts
 // for exactly this, and the builder is the only place the assertion's
 // subject is made.
@@ -779,5 +807,46 @@ func TestBuildCatchUpGeneratorCarriesTheSweepFace(t *testing.T) {
 	}
 	if _, ok := gen.(CatchUpSweeper); !ok {
 		t.Fatal("the built generator has no sweep face")
+	}
+}
+
+// The sweep's OWN budget crosses the builder boundary: at zero the sweep is
+// silent without ever asking the store for candidates (no read, no model
+// call), while the same deployment with nobody's say gets its normal
+// candidate read. The visit face's budget is a different knob and is not
+// consulted on this path.
+func TestBuildCatchUpGeneratorHonoursTheSweepBudget(t *testing.T) {
+	t.Parallel()
+	configured, err := assistant.NewTextOnly(assistant.Config{BaseURL: "http://127.0.0.1:1/v1"})
+	if err != nil {
+		t.Fatalf("NewTextOnly: %v", err)
+	}
+	build := func(sweep *int, store *fakeCatchUpGenStore) CatchUpSweeper {
+		gen := BuildCatchUpGenerator(CatchUpGenDeps{
+			Broker: configured, CatchUp: store,
+			Runs: &fakeCatchUpRuns{}, Pipelines: &fakeCatchUpPipelines{},
+			Chats: &fakeCatchUpChats{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			MaxSweepCallsPerWindow: sweep,
+		})
+		if gen == nil {
+			t.Fatal("fully wired deps built no generator")
+		}
+		sw, ok := gen.(CatchUpSweeper)
+		if !ok {
+			t.Fatal("the built generator has no sweep face")
+		}
+		return sw
+	}
+	off := 0
+	quiet := &fakeCatchUpGenStore{}
+	build(&off, quiet).CatchUpCompletionSweep(context.Background())
+	if quiet.sweepLimit != 0 {
+		t.Fatalf("sweep read candidates (limit %d) with its budget at zero", quiet.sweepLimit)
+	}
+	open := &fakeCatchUpGenStore{}
+	build(nil, open).CatchUpCompletionSweep(context.Background())
+	if open.sweepLimit != 4*assistant.CatchUpGenMaxPerPass {
+		t.Fatalf("sweep read limit = %d, want the generator's own number with a default budget",
+			open.sweepLimit)
 	}
 }

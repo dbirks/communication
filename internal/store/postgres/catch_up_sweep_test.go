@@ -192,6 +192,54 @@ func TestCatchUpSweepCandidatesAndClaimRead(t *testing.T) {
 	}
 }
 
+// TestCatchUpSweepCandidatesNewestFirst pins § Trigger's ordering rule on
+// real PostgreSQL: the sweep read returns the backlog NEWEST-finished first,
+// and its LIMIT trims the OLDEST end — so when the sweep's model-call budget
+// covers only part of the backlog, the run that just finished is the one told,
+// never a run stuck behind the queue. The rows are inserted oldest-first so a
+// read that merely echoed insertion order could not pass.
+func TestCatchUpSweepCandidatesNewestFirst(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	gen := APICatchUpGenerator{S: &CatchUpStore{Pool: f.pool}}
+	move := func(runID string, ago string) {
+		if _, err := f.pool.Exec(ctx, `UPDATE runs SET finished_at = now() - $2::interval WHERE id = $1::uuid`,
+			runID, ago); err != nil {
+			t.Fatalf("move %s's finish: %v", runID, err)
+		}
+	}
+	oldest := cuSweepRun(t, f, "completed", f.userID, "") // inserted first, finished longest ago
+	middle := cuSweepRun(t, f, "completed", f.userID, "")
+	newest := cuSweepRun(t, f, "completed", f.userID, "") // inserted last, finished most recently
+	move(oldest, "2 hours")
+	move(middle, "1 hour")
+	move(newest, "5 minutes")
+
+	order := func(limit int) []string {
+		rows, err := gen.CatchUpSweepCandidates(ctx, 7*24*time.Hour, limit)
+		if err != nil {
+			t.Fatalf("sweep candidates (limit %d): %v", limit, err)
+		}
+		want := map[string]bool{oldest: true, middle: true, newest: true}
+		out := []string{}
+		for _, row := range rows {
+			if want[row.Candidate.RunID] {
+				out = append(out, row.Candidate.RunID)
+			}
+		}
+		return out
+	}
+	if got := order(10); len(got) != 3 || got[0] != newest || got[1] != middle || got[2] != oldest {
+		t.Fatalf("sweep order = %v, want newest, middle, oldest", got)
+	}
+	// The LIMIT bites at the OLD end: a budget of two reaches the two most
+	// recently finished runs, and the oldest waits for the next tick — the
+	// just-finished run is never stuck behind the backlog.
+	if got := order(2); len(got) != 2 || got[0] != newest || got[1] != middle {
+		t.Fatalf("limited sweep order = %v, want the newest two kept and the oldest dropped", got)
+	}
+}
+
 func keysOf(m map[string]api.CatchUpSweepCandidateView) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

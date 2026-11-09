@@ -24,9 +24,12 @@ package assistant
 // terminal status and were never told, each GENERATED AS ITS OWN SUBMITTER
 // (the ADR-0062 attribution rule, resolved by the store read: a run whose
 // human cannot be named is not swept, never swept under a forged one), and
-// the pass spends from the SAME per-replica model-call cap and the SAME
-// per-run cooldown as a visit pass, so total model spend is bounded however
-// the triggers mix. `GET /catch-up/items` schedules nothing;
+// the pass spends from the sweep's OWN per-replica model-call budget and the
+// SAME per-run cooldown as a visit pass. The budgets are separate on purpose
+// (the lab's acceptance 42570366079): background sweeping that filled the
+// shared cap starved the person who had just opened Catch up — an interactive
+// intent must never queue behind the backlog — while each budget still bounds
+// its own trigger's total spend. `GET /catch-up/items` schedules nothing;
 // since the sidebar badge reads the list on every page of the app, a list
 // trigger was a model call per page load, and the lab's rate-limited gateway
 // showed what that costs (ADR-0078 § Migration, Trigger note). Two replicas
@@ -108,15 +111,25 @@ const (
 	// numbers the block enforces.
 	CatchUpGenMaxDiffHunks     = 3
 	CatchUpGenDiffHunkMaxLines = 60
-	// CatchUpGenModelCallWindow / CatchUpGenMaxModelCallsPerWindow are the
-	// per-REPLICA global cap: generation spends at most six model calls per
+	// CatchUpGenModelCallWindow is the window BOTH per-replica budgets slide
+	// over. CatchUpGenMaxModelCallsPerWindow is the VISIT budget: a person
+	// opening the Catch up page spends at most six generation model calls per
 	// ten minutes, wherever the visits came from. The per-run cooldown stops
 	// one run from being asked about twice; this stops a fleet of page loads
 	// (and a lab full of specs) from spending the gateway's whole budget —
 	// 429s on the assistant and the agents were the symptom. Overridable per
-	// deployment by COMMUNICATION_CATCHUP_GEN_PER_10M; 0 disables.
+	// deployment by COMMUNICATION_CATCHUP_GEN_PER_10M; 0 disables generation
+	// entirely.
 	CatchUpGenModelCallWindow        = 10 * time.Minute
 	CatchUpGenMaxModelCallsPerWindow = 6
+	// CatchUpGenMaxSweepCallsPerWindow is the completion sweep's OWN
+	// per-replica budget, deliberately smaller than the visit budget: the lab
+	// showed what one purse costs when the triggers share it (36 generation
+	// calls in ~28 min hit the cap 62 times, and an assistant navigation turn
+	// then missed its bound). Overridable by
+	// COMMUNICATION_CATCHUP_SWEEP_PER_10M; 0 disables the sweep's model calls
+	// while the visit trigger keeps working.
+	CatchUpGenMaxSweepCallsPerWindow = 3
 	// The field caps mirror internal/domain/catchup.go, the contract owner.
 	CatchUpGenTitleMaxChars      = 200
 	CatchUpGenSummaryMaxChars    = 500
@@ -319,6 +332,10 @@ type CatchUpSweepCandidate struct {
 // the schedule tick, and its per-candidate caller (CatchUpSweepCandidate) is
 // what every fact read and write is then issued as.
 type CatchUpSweepSource interface {
+	// SweepCandidates returns the runs still owed a tour across the server,
+	// NEWEST-finished first — the sweep spends its budget in list order, so
+	// the ordering is what keeps a just-finished run from queueing behind the
+	// backlog when the budget covers only part of it.
 	SweepCandidates(ctx context.Context) ([]CatchUpSweepCandidate, error)
 }
 
@@ -400,12 +417,20 @@ type CatchUpDeps struct {
 	// Spawn runs one pass off the request path; nil means a goroutine.
 	Spawn    func(func())
 	Cooldown time.Duration
-	// MaxModelCallsPerWindow is the per-replica global cap above. nil means
-	// the shipped default (CatchUpGenMaxModelCallsPerWindow); a pointer so
-	// the honest "the deployment said zero" is distinguishable from "nobody
+	// MaxModelCallsPerWindow is the VISIT budget above (the shared cap until
+	// the lab proved the two triggers must not spend from one purse). nil
+	// means the shipped default (CatchUpGenMaxModelCallsPerWindow); a pointer
+	// so the honest "the deployment said zero" is distinguishable from "nobody
 	// said anything" — 0 disables generation entirely, negative is the
 	// default again.
 	MaxModelCallsPerWindow *int
+	// MaxSweepCallsPerWindow is the completion sweep's OWN per-replica budget.
+	// nil means the shipped default (CatchUpGenMaxSweepCallsPerWindow — three
+	// per ten minutes); 0 disables the SWEEP's model calls and leaves visits
+	// working; negative is the default again. A VISIT budget of 0 still
+	// disables everything: that knob is the deployment saying "generate
+	// nothing at all", this one only "no background generation".
+	MaxSweepCallsPerWindow *int
 }
 
 // CatchUpGenerator is the run-tour writer: trigger, per-run cooldown, one
@@ -419,14 +444,18 @@ type CatchUpGenerator struct {
 	now      func() time.Time
 	spawn    func(func())
 	cooldown time.Duration
-	// maxCallsPerWindow is CatchUpDeps.MaxModelCallsPerWindow resolved; the
-	// window is the CatchUpGenModelCallWindow constant. callTimes is the
-	// sliding-window stamp list under mu.
-	maxCallsPerWindow int
+	// maxCallsPerWindow / maxSweepCallsPerWindow are CatchUpDeps'
+	// MaxModelCallsPerWindow / MaxSweepCallsPerWindow resolved; the window is
+	// the CatchUpGenModelCallWindow constant. callTimes and sweepCallTimes are
+	// the two sliding-window stamp lists under mu — two independent purses,
+	// one per trigger.
+	maxCallsPerWindow      int
+	maxSweepCallsPerWindow int
 
-	mu        sync.Mutex
-	attempts  map[string]time.Time
-	callTimes []time.Time
+	mu             sync.Mutex
+	attempts       map[string]time.Time
+	callTimes      []time.Time
+	sweepCallTimes []time.Time
 }
 
 // NewCatchUpGenerator returns nil (a no-op trigger) when there is no model,
@@ -452,6 +481,10 @@ func NewCatchUpGenerator(deps CatchUpDeps) *CatchUpGenerator {
 	g.maxCallsPerWindow = CatchUpGenMaxModelCallsPerWindow
 	if deps.MaxModelCallsPerWindow != nil && *deps.MaxModelCallsPerWindow >= 0 {
 		g.maxCallsPerWindow = *deps.MaxModelCallsPerWindow
+	}
+	g.maxSweepCallsPerWindow = CatchUpGenMaxSweepCallsPerWindow
+	if deps.MaxSweepCallsPerWindow != nil && *deps.MaxSweepCallsPerWindow >= 0 {
+		g.maxSweepCallsPerWindow = *deps.MaxSweepCallsPerWindow
 	}
 	if g.spawn == nil {
 		g.spawn = func(f func()) { go f() }
@@ -481,7 +514,7 @@ func (g *CatchUpGenerator) CatchUpVisitRecorded(ctx context.Context, c Caller, p
 		return
 	}
 	if g.maxCallsPerWindow <= 0 {
-		logCatchUpGenCapSkipped(g.logger(), "")
+		logCatchUpGenCapSkipped(g.logger(), "visit", "")
 		return // the deployment said no generation at all
 	}
 	// The request's context dies with the response; the pass must outlive it
@@ -505,7 +538,7 @@ func (g *CatchUpGenerator) Pass(ctx context.Context, c Caller, projectIDs []stri
 		return
 	}
 	if g.maxCallsPerWindow <= 0 {
-		logCatchUpGenCapSkipped(g.logger(), "")
+		logCatchUpGenCapSkipped(g.logger(), "visit", "")
 		return // cap 0: disabled entirely — don't even read candidates
 	}
 	cands, err := g.source.CandidateRuns(ctx, c, projectIDs)
@@ -518,16 +551,21 @@ func (g *CatchUpGenerator) Pass(ctx context.Context, c Caller, projectIDs []stri
 	for _, cand := range cands {
 		planned = append(planned, catchUpPlanned{caller: c, cand: cand})
 	}
-	g.runPlanned(ctx, planned)
+	g.runPlanned(ctx, planned, false)
 }
 
 // CatchUpCompletionSweep is the serve ticker's hook (ADR-0078 § Trigger): the
 // runs that reached a terminal status and were never told get their tours
 // without anybody opening the page. It reads the sweep's own candidate list
-// (server-owned, each candidate carrying the caller it is generated AS) and
-// then runs the EXACT pass loop a visit runs — same per-run cooldown, same
-// per-replica model-call cap, same per-pass cap — so visit and sweep together
-// can never spend more than the deployment's cap. Two replicas sweeping the
+// (server-owned, newest-finished first, each candidate carrying the caller it
+// is generated AS) and then runs the EXACT pass loop a visit runs — same
+// per-run cooldown, same per-pass cap — but it spends from the sweep's OWN
+// per-replica model-call budget (CatchUpGenMaxSweepCallsPerWindow,
+// COMMUNICATION_CATCHUP_SWEEP_PER_10M): the lab's acceptance 42570366079
+// watched one shared purse let the sweep spend the gateway's whole rate limit
+// and push a live assistant turn past its bound, so a person visiting Catch up
+// (interactive intent) never queues behind the backlog any more, and a visit
+// storm never silences the sweep either. Two replicas sweeping the
 // same beat: both see the unclaimed run, both ask RunAlreadyToured before the
 // completion (usually both still spend, the race is the model-call window),
 // but the loser's re-check before the write skips it — one tour, not two.
@@ -541,9 +579,17 @@ func (g *CatchUpGenerator) CatchUpCompletionSweep(ctx context.Context) {
 	if !ok {
 		return
 	}
-	if g.maxCallsPerWindow <= 0 {
-		logCatchUpGenCapSkipped(g.logger(), "")
-		return // cap 0: disabled entirely — don't even read candidates
+	if g.maxCallsPerWindow <= 0 || g.maxSweepCallsPerWindow <= 0 {
+		// Either purse shut means the sweep spends nothing: the visit cap of 0
+		// is the deployment saying "no generation at all", the sweep cap of 0
+		// says "no BACKGROUND generation". Both skip without even reading
+		// candidates.
+		budget := "sweep"
+		if g.maxCallsPerWindow <= 0 {
+			budget = "visit"
+		}
+		logCatchUpGenCapSkipped(g.logger(), budget, "")
+		return
 	}
 	cands, err := ss.SweepCandidates(ctx)
 	if err != nil {
@@ -555,7 +601,10 @@ func (g *CatchUpGenerator) CatchUpCompletionSweep(ctx context.Context) {
 	for _, sc := range cands {
 		planned = append(planned, catchUpPlanned{caller: sc.Caller, cand: sc.Candidate})
 	}
-	g.runPlanned(ctx, planned)
+	// The store's sweep read is newest-finished-first, and this loop spends
+	// its budget in list order — so when the budget only covers part of the
+	// backlog, the just-finished run is the one told, not the oldest.
+	g.runPlanned(ctx, planned, true)
 }
 
 // catchUpPlanned is one candidate with the caller the pass must act as — the
@@ -566,9 +615,12 @@ type catchUpPlanned struct {
 }
 
 // runPlanned is the pass loop both triggers share: the per-pass cap, the
-// per-run cooldown and the per-replica cap all sit here, so whichever
-// trigger fires, one purse pays for it.
-func (g *CatchUpGenerator) runPlanned(ctx context.Context, planned []catchUpPlanned) {
+// per-run cooldown and the per-replica model-call budget all sit here. The
+// budget is chosen by trigger (sweep spends the sweep's own, the visit pass
+// the visit's) — two independent purses, one loop; the cooldown and the
+// per-pass cap stay shared, because those guard the RUN and the PASS, not the
+// gateway.
+func (g *CatchUpGenerator) runPlanned(ctx context.Context, planned []catchUpPlanned, sweep bool) {
 	made := 0
 	for _, p := range planned {
 		if made >= CatchUpGenMaxPerPass {
@@ -593,10 +645,10 @@ func (g *CatchUpGenerator) runPlanned(ctx context.Context, planned []catchUpPlan
 				slog.String("outcome", "already told"))
 			continue
 		}
-		if !g.takeModelCall(g.now()) {
-			// The per-replica global cap is shut: log the skip and stop this
+		if !g.takeModelCall(g.now(), sweep) {
+			// The trigger's own budget is shut: log the skip and stop this
 			// pass rather than queueing the model calls the gateway refused.
-			logCatchUpGenCapSkipped(g.logger(), p.cand.RunID)
+			logCatchUpGenCapSkipped(g.logger(), catchUpBudgetName(sweep), p.cand.RunID)
 			return
 		}
 		made++
@@ -621,39 +673,61 @@ func (g *CatchUpGenerator) runPlanned(ctx context.Context, planned []catchUpPlan
 	}
 }
 
+// catchUpBudgetName says which of the two per-replica purses a log line is
+// about, so the lab's log names the knob an operator would change.
+func catchUpBudgetName(sweep bool) string {
+	if sweep {
+		return "sweep"
+	}
+	return "visit"
+}
+
 // logCatchUpGenCapSkipped is the one line the brief demands when the cap
 // skips a pass, so the lab's log says WHY the tour did not appear rather than
-// leaving the wait unexplained.
-func logCatchUpGenCapSkipped(log *slog.Logger, runID string) {
+// leaving the wait unexplained. The budget attribute says WHICH cap refused:
+// the visit's or the sweep's.
+func logCatchUpGenCapSkipped(log *slog.Logger, budget, runID string) {
 	log.Info("catch up: generation pass skipped by the model-call cap",
 		slog.String("run_id", runID),
+		slog.String("budget", budget),
 		slog.String("window", CatchUpGenModelCallWindow.String()))
 }
 
-// takeModelCall spends one generation model call against the per-replica
-// sliding-window cap, reporting whether it fits. Stamps older than the window
-// fall off; the list never exceeds the cap in length, so it stays bounded
-// without its own eviction rule. Like tryRun, the claim is written before the
-// call so two page loads cannot spend one slot.
-func (g *CatchUpGenerator) takeModelCall(now time.Time) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.maxCallsPerWindow <= 0 {
-		return false
+// takeFromCallWindow is the sliding-window purse: stamps older than the
+// window fall off, the claim is written before the call so two triggers
+// cannot spend one slot, and the list never exceeds the cap in length.
+func takeFromCallWindow(max int, times []time.Time, now time.Time) ([]time.Time, bool) {
+	if max <= 0 {
+		return times, false
 	}
 	cutoff := now.Add(-CatchUpGenModelCallWindow)
-	kept := g.callTimes[:0]
-	for _, t := range g.callTimes {
+	kept := times[:0]
+	for _, t := range times {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
 	}
-	g.callTimes = kept
-	if len(g.callTimes) >= g.maxCallsPerWindow {
-		return false
+	if len(kept) >= max {
+		return kept, false
 	}
-	g.callTimes = append(g.callTimes, now)
-	return true
+	return append(kept, now), true
+}
+
+// takeModelCall spends one generation model call against the calling
+// trigger's OWN per-replica sliding-window cap — the sweep's budget when
+// sweep is true, the visit pass's otherwise — reporting whether it fits. The
+// two lists are independent: emptying one never refuses the other's pass.
+func (g *CatchUpGenerator) takeModelCall(now time.Time, sweep bool) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if sweep {
+		var ok bool
+		g.sweepCallTimes, ok = takeFromCallWindow(g.maxSweepCallsPerWindow, g.sweepCallTimes, now)
+		return ok
+	}
+	var ok bool
+	g.callTimes, ok = takeFromCallWindow(g.maxCallsPerWindow, g.callTimes, now)
+	return ok
 }
 
 // tryRun claims one generation for a run under the cooldown. The map is

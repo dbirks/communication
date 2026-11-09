@@ -285,10 +285,23 @@ wait". The trigger is now TWO things, and the list read is still neither:
    default, the never-refuse rule the generator's other knobs state, because a
    mistyped cadence costs a slower tour, never a wrong answer). Each tick
    reads the sweep's candidate list — the same terminal/recent/unclaimed-or-
-   -moved predicate the caller-scoped read uses, applied server-wide — and
-   runs the EXACT pass loop a visit runs: same per-run cooldown, same
-   per-replica `COMMUNICATION_CATCHUP_GEN_PER_10M` cap, same per-pass cap.
-   One purse pays for both triggers however they mix.
+   -moved predicate the caller-scoped read uses, applied server-wide, ordered
+   NEWEST-finished first (so a run that just finished is the first candidate
+   the budget reaches, never stuck behind a backlog the lab's own specs made)
+   — and runs the EXACT pass loop a visit runs: same per-run cooldown, same
+   per-pass cap — but it spends from its OWN per-replica budget,
+   `COMMUNICATION_CATCHUP_SWEEP_PER_10M` (default `3`, `0` disables the
+   sweep's model calls and leaves visits generating; negative/unparseable fall
+   back to the default, the same never-refuse hammer-guard rule). The budgets
+   were ONE purse until the lab's acceptance 42570366079: two replicas' 30s
+   sweep made 36 generation model calls in ~28 minutes and hit the shared cap
+   62 times, and a person's assistant navigation turn then missed its 200s
+   bound. A person visiting Catch up is interactive intent — the visit budget
+   (`COMMUNICATION_CATCHUP_GEN_PER_10M`, unchanged, default 6; its `0` still
+   means "generate nothing at all") must not be starved by background
+   sweeping, and the sweep's smaller allowance must not be starved by a visit
+   storm. Two purses, each bounded; the per-run cooldown stays shared because
+   it guards the run, not the gateway.
    *The sweep has no browser caller, and it does not invent a powerful one.*
    Every sweep read and write is issued **as the run's own attributed human**
    — `triggered_by`, else the author of the schedule/issue-trigger row that
@@ -485,12 +498,16 @@ prompt block carried the previous stops' titles, kinds and importance and NOT
 their narrative; a first telling carries no `previous_tour` at all and stamps
 version 1. § Trigger as a data rule, on the same fake clock: the completion
 sweep writes a finished run's tour with NO visit recorded and without ever
-using the caller-scoped candidate read; the sweep and the visit pass spend
-from one shared model-call cap (a cap the visit filled starves the sweep until
-the window rolls, and the refusal logs); two replica generators sweeping the
+using the caller-scoped candidate read; the sweep and the visit pass spend from
+TWO INDEPENDENT model-call budgets (an exhausted sweep budget still lets a
+visit generate, an exhausted visit cap still lets the sweep run, each refusal
+logs which budget said no, and each budget refills on its own stamps); a
+sweep whose budget covers only part of the backlog spends newest-finished
+first, so the just-finished run is told and the older candidates wait; two
+replica generators sweeping the
 same beat tell one story, because the loser's claim re-read skips it; a source
 with no sweep face sweeps to nothing; cap 0 silences the sweep without reading
-candidates. § Structure: a fake model whose bug-story beats come back out of
+candidates, and sweep budget 0 silences the sweep while visits keep working. § Structure: a fake model whose bug-story beats come back out of
 order is re-asked EXACTLY once with a turn naming the defect and its repaired
 tour lands in story order; the same beats written right are accepted with no
 re-ask; a non-bug run is under no constraint (one call, no repair text); a
@@ -568,8 +585,10 @@ still at most two generations with the per-run cooldown
 bounds it too: at most `COMMUNICATION_CATCHUP_GEN_PER_10M` (default 6, 0
 disables generation entirely) generation model calls per ten minutes, a pass
 the cap refuses logged rather than left silent. What this note predates is
-T13's completion sweep: the second trigger, the shared cap and the
-claim-idempotent write are § Trigger's rules now.
+T13's completion sweep and the
+claim-idempotent write, § Trigger's rules now; T13 first gave the sweep the
+visit's cap as a shared purse, and acceptance 42570366079 is why § Trigger
+says TWO budgets and newest-finished-first order.
 
 ## Patch artifacts (T16 "diffs": a stop can now point at the hunk it describes)
 

@@ -122,6 +122,85 @@ func TestServeCatchUpGenPer10MStackField(t *testing.T) {
 	}
 }
 
+// The sweep's OWN budget (the lab's acceptance 42570366079: one shared purse
+// let background sweeping spend the visit trigger's model calls): same
+// never-refuse family rule as its sibling knobs, the default is the sweep's
+// own smaller number (3), and 0 means "no BACKGROUND generation" — the visit
+// budget above keeps the sole "generate nothing at all" meaning.
+func TestServeCatchUpSweepPer10MParse(t *testing.T) {
+	env := func(value string) func(string) string {
+		return func(name string) string {
+			if name != envCatchUpSweepPer10M {
+				return ""
+			}
+			return value
+		}
+	}
+	for _, tt := range []struct {
+		raw  string
+		want int
+	}{
+		{"", assistant.CatchUpGenMaxSweepCallsPerWindow},    // unset: the three default
+		{"   ", assistant.CatchUpGenMaxSweepCallsPerWindow}, // whitespace is unset
+		{"2", 2},   // the lab's explicit value
+		{"0", 0},   // 0 is the off switch for the sweep's model calls
+		{"00", 0},  // and so is its padded spelling
+		{" 1 ", 1}, // padded but valid
+		{"-1", assistant.CatchUpGenMaxSweepCallsPerWindow},  // negative: the default, not off
+		{"two", assistant.CatchUpGenMaxSweepCallsPerWindow}, // unparseable: the default
+		{"10m", assistant.CatchUpGenMaxSweepCallsPerWindow}, // a duration is not a count
+		{"1.5", assistant.CatchUpGenMaxSweepCallsPerWindow}, // fractional calls are not calls
+		{"6", 6},     // any positive count
+		{"999", 999}, // the knob does not argue
+	} {
+		if got := serveCatchUpSweepPer10M(env(tt.raw)); got != tt.want {
+			t.Errorf("%s=%q -> %d, want %d", envCatchUpSweepPer10M, tt.raw, got, tt.want)
+		}
+	}
+	// The two budgets parse independently of each other: a value on one knob
+	// never leaks onto the other.
+	both := func(name, value string) func(string) string {
+		return func(n string) string {
+			if n == name {
+				return value
+			}
+			return ""
+		}
+	}
+	if got := serveCatchUpGenPer10M(both(envCatchUpSweepPer10M, "0")); got != assistant.CatchUpGenMaxModelCallsPerWindow {
+		t.Errorf("sweep budget 0 leaked into the visit budget: got %d, want the visit default %d",
+			got, assistant.CatchUpGenMaxModelCallsPerWindow)
+	}
+	if got := serveCatchUpSweepPer10M(both(envCatchUpGenPer10M, "0")); got != assistant.CatchUpGenMaxSweepCallsPerWindow {
+		t.Errorf("visit budget 0 leaked into the sweep budget: got %d, want the sweep default %d",
+			got, assistant.CatchUpGenMaxSweepCallsPerWindow)
+	}
+}
+
+// The zero-value stack carries nil for the sweep budget too ("nobody said
+// anything" — the generator's own default), and runServe hands the resolved
+// int's address so an explicit 0 reaches the generator as 0. The knob is
+// documented in --help like its siblings.
+func TestServeCatchUpSweepPer10MStackField(t *testing.T) {
+	var d serveStackDeps
+	if d.CatchUpSweepPer10M != nil {
+		t.Fatalf("a zero-value stack said %d, want nil (the sweep's default)", *d.CatchUpSweepPer10M)
+	}
+	if got := serveCatchUpSweepPer10M(func(string) string { return "" }); got != assistant.CatchUpGenMaxSweepCallsPerWindow {
+		t.Errorf("unset -> %d, want the sweep's own %d", got, assistant.CatchUpGenMaxSweepCallsPerWindow)
+	}
+	if got := serveCatchUpSweepPer10M(func(string) string { return "0" }); got != 0 {
+		t.Errorf("0 -> %d, want 0 (background generation disabled)", got)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runServe(context.Background(), []string{"--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("runServe(--help) = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), envCatchUpSweepPer10M) {
+		t.Errorf("usage text does not document %s", envCatchUpSweepPer10M)
+	}
+}
+
 // --- the completion sweep (ADR-0078 § Trigger) ---------------------------
 
 func TestServeCatchUpGenSweepParse(t *testing.T) {

@@ -113,18 +113,36 @@ environment:
                                         typo in it costs a slower retry, not
                                         a wrong answer.
   COMMUNICATION_CATCHUP_GEN_PER_10M     ADR-0078 catch-up tour generator's
-                                        PER-REPLICA global cap: at most this
-                                        many generation model calls per ten
-                                        minutes (default "6"). The per-run
-                                        cooldown guards one run; this guards
-                                        the model gateway from the whole
-                                        replica — a lab full of page loads
-                                        spent its rate limit and 429'd the
-                                        assistant and the agents. "0"
+                                        VISIT budget: at most this many
+                                        generation model calls per ten
+                                        minutes from the replica's person-
+                                        triggered passes (default "6"). The
+                                        per-run cooldown guards one run; this
+                                        guards the model gateway from the
+                                        whole replica — a lab full of page
+                                        loads spent its rate limit and 429'd
+                                        the assistant and the agents. "0"
                                         disables catch-up generation
                                         entirely. A whole number; negative
                                         and unparseable text fall back to the
                                         default rather than refusing startup,
+                                        the same hammer-guard rule as above.
+  COMMUNICATION_CATCHUP_SWEEP_PER_10M   ADR-0078 § Trigger: the completion
+                                        sweep's OWN per-replica model-call
+                                        budget, separate from
+                                        COMMUNICATION_CATCHUP_GEN_PER_10M so
+                                        background sweeping can never starve
+                                        a person opening Catch up (the lab's
+                                        shared purse let a sweep spend the
+                                        gateway's whole rate limit and push a
+                                        live assistant turn past its bound).
+                                        Default "3" per ten minutes; "0"
+                                        disables the sweep's model calls while
+                                        the visit trigger keeps generating (a
+                                        visit budget of 0 is the knob that
+                                        means "generate nothing at all").
+                                        Negative and unparseable fall back to
+                                        the default, never a startup refusal —
                                         the same hammer-guard rule as above.
   COMMUNICATION_CATCHUP_GEN_SWEEP       ADR-0078 § Trigger: how often this
                                         replica's completion sweep looks for
@@ -133,8 +151,8 @@ environment:
                                         "2m"; TASK T13 — "when a run finishes,
                                         write its tour", not only when a
                                         person asks). One goroutine per
-                                        replica; the sweep spends from the
-                                        SAME COMMUNICATION_CATCHUP_GEN_PER_10M
+                                        replica; the sweep spends its OWN
+                                        COMMUNICATION_CATCHUP_SWEEP_PER_10M
                                         budget and the SAME per-run cooldown
                                         as a visit pass, and the tour write
                                         is idempotent on the run claim, so two
@@ -286,13 +304,23 @@ const (
 	// negative number and unparseable text all fall back to the default.
 	envCatchUpGenCooldown = "COMMUNICATION_CATCHUP_GEN_COOLDOWN"
 
-	// envCatchUpGenPer10M is the catch-up generator's PER-REPLICA global cap
-	// on generation model calls per assistant.CatchUpGenModelCallWindow
+	// envCatchUpGenPer10M is the catch-up generator's VISIT-trigger cap on
+	// generation model calls per assistant.CatchUpGenModelCallWindow
 	// (ten minutes). Same never-refuse rule as the cooldown: it is a
 	// hammer-guard. Unset, negative or unparseable fall back to the shipped
 	// default (assistant.CatchUpGenMaxModelCallsPerWindow); 0 is the one
 	// reading that means something, and it means "generate nothing".
 	envCatchUpGenPer10M = "COMMUNICATION_CATCHUP_GEN_PER_10M"
+
+	// envCatchUpSweepPer10M is the completion sweep's OWN per-replica
+	// model-call budget, deliberately separate from the visit cap: the lab's
+	// acceptance 42570366079 watched one shared purse let the sweep spend the
+	// gateway's whole rate limit and push a live assistant turn past its
+	// bound, so background sweeping now draws its own smaller allowance and a
+	// person opening Catch up is never starved by the backlog. Same
+	// never-refuse hammer-guard rule; 0 means "no background generation",
+	// which is NOT the same as the visit knob's 0 ("no generation at all").
+	envCatchUpSweepPer10M = "COMMUNICATION_CATCHUP_SWEEP_PER_10M"
 
 	// envCatchUpGenSweep is how often the serve-side completion sweep tick
 	// looks for terminal runs that were never told (ADR-0078 § Trigger).
@@ -362,10 +390,10 @@ func serveCatchUpGenCooldown(getenv func(string) string) time.Duration {
 }
 
 // serveCatchUpGenPer10M reads COMMUNICATION_CATCHUP_GEN_PER_10M for the
-// catch-up generator's per-replica global cap above. Unset, negative or
-// unparseable is the generator's own default (six calls per ten minutes);
-// "0" is the deliberate off switch — a deployment that wants tours from no
-// model says so with zero, not with a typo. Never a startup refusal, the
+// catch-up generator's VISIT budget above. Unset, negative or unparseable is
+// the generator's own default (six calls per ten minutes); "0" is the
+// deliberate off switch — a deployment that wants tours from no model says so
+// with zero, not with a typo. Never a startup refusal, the
 // cooldown's own rule: the worst outcome of a mistyped hammer-guard is the
 // shipped guard, never a wrong answer.
 func serveCatchUpGenPer10M(getenv func(string) string) int {
@@ -376,6 +404,24 @@ func serveCatchUpGenPer10M(getenv func(string) string) int {
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
 		return assistant.CatchUpGenMaxModelCallsPerWindow
+	}
+	return n
+}
+
+// serveCatchUpSweepPer10M reads COMMUNICATION_CATCHUP_SWEEP_PER_10M for the
+// completion sweep's OWN per-replica budget. The family rule of every other
+// catch-up knob: unset, negative or unparseable is the generator's own default
+// (assistant.CatchUpGenMaxSweepCallsPerWindow — three per ten minutes); "0"
+// is the deliberate off switch for BACKGROUND generation only — the visit
+// trigger keeps its own budget and keeps generating. Never a startup refusal.
+func serveCatchUpSweepPer10M(getenv func(string) string) int {
+	raw := strings.TrimSpace(getenv(envCatchUpSweepPer10M))
+	if raw == "" {
+		return assistant.CatchUpGenMaxSweepCallsPerWindow
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return assistant.CatchUpGenMaxSweepCallsPerWindow
 	}
 	return n
 }
@@ -511,9 +557,12 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	// The catch-up generator's per-run cooldown: never a startup refusal, so
 	// there is no error to handle here (see serveCatchUpGenCooldown). Its
-	// per-replica global cap follows the same rule (see serveCatchUpGenPer10M).
+	// per-replica global cap follows the same rule (see serveCatchUpGenPer10M),
+	// and so does the completion sweep's own budget (see
+	// serveCatchUpSweepPer10M).
 	catchUpGenCooldown := serveCatchUpGenCooldown(os.Getenv)
 	catchUpGenPer10M := serveCatchUpGenPer10M(os.Getenv)
+	catchUpSweepPer10M := serveCatchUpSweepPer10M(os.Getenv)
 	catchUpGenSweep := serveCatchUpGenSweep(os.Getenv)
 	rateLimits, err := serveRateLimits(os.Getenv)
 	if err != nil {
@@ -589,6 +638,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		SessionPurgeInterval: sessionPurge,
 		CatchUpGenCooldown:   catchUpGenCooldown,
 		CatchUpGenPer10M:     &catchUpGenPer10M,
+		CatchUpSweepPer10M:   &catchUpSweepPer10M,
 		CatchUpGenSweep:      catchUpGenSweep,
 		API: api.Config{
 			ReplicaName:      replica,
@@ -849,12 +899,21 @@ type serveStackDeps struct {
 	CatchUpGenCooldown time.Duration
 
 	// CatchUpGenPer10M is COMMUNICATION_CATCHUP_GEN_PER_10M resolved
-	// (serveCatchUpGenPer10M): the ADR-0078 tour generator's PER-REPLICA
-	// global cap on generation model calls per ten minutes. A pointer so the
-	// zero-value stack every existing test carries means "nobody said
+	// (serveCatchUpGenPer10M): the ADR-0078 tour generator's VISIT-trigger cap
+	// on generation model calls per ten minutes. A pointer so the zero-value
+	// stack every existing test carries means "nobody said
 	// anything" (the generator's own default of six), while an explicit 0 —
 	// which runServe resolves — means "generate nothing at all".
 	CatchUpGenPer10M *int
+
+	// CatchUpSweepPer10M is COMMUNICATION_CATCHUP_SWEEP_PER_10M resolved
+	// (serveCatchUpSweepPer10M): the completion sweep's OWN per-replica
+	// model-call budget, independent of the visit cap above — the sweep
+	// exhausting it never starves a Catch up visit, and vice versa. A pointer
+	// for the same reason: the zero-value stack means "nobody said anything"
+	// (the sweep's own default of three), an explicit 0 means "no background
+	// generation".
+	CatchUpSweepPer10M *int
 
 	// CatchUpGenSweep is COMMUNICATION_CATCHUP_GEN_SWEEP resolved
 	// (serveCatchUpGenSweep): how often this replica's completion sweep tells
@@ -1628,6 +1687,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		Logger:                 d.API.Logger,
 		Cooldown:               d.CatchUpGenCooldown,
 		MaxModelCallsPerWindow: d.CatchUpGenPer10M,
+		MaxSweepCallsPerWindow: d.CatchUpSweepPer10M,
 	})
 	api.RegisterCatchUp(handler,
 		postgres.APICatchUpStore{
@@ -1786,9 +1846,12 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// alone). It needs no lock between replicas and no gate on the pipeline
 	// scheduler: the tour write is idempotent on the run's claim (the
 	// generator re-reads CatchUpRunAlreadyToured before spending a completion
-	// and again before writing), and the sweep's pass shares the generator's
-	// one per-replica model-call cap and one per-run cooldown with the visit
-	// pass — whatever the mix of triggers, the deployment's cap is the cap.
+	// and again before writing), and the sweep spends its OWN per-replica
+	// model-call budget (COMMUNICATION_CATCHUP_SWEEP_PER_10M, default 3) —
+	// separate from the visit pass's COMMUNICATION_CATCHUP_GEN_PER_10M purse
+	// precisely so background sweeping can never spend the budget a person
+	// opening Catch up is waiting on — while the per-run cooldown stays
+	// shared between the triggers.
 	sweepCtx, stopSweep := context.WithCancel(context.Background())
 	if d.CatchUpGenSweep > 0 && catchUpGen != nil {
 		runSweep := d.catchUpGenSweepRunner

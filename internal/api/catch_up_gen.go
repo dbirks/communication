@@ -207,12 +207,19 @@ type CatchUpGenDeps struct {
 	// runs the generator against a real model in a short-lived lab may shorten
 	// it — see COMMUNICATION_CATCHUP_GEN_COOLDOWN in `serve`'s environment.
 	Cooldown time.Duration
-	// MaxModelCallsPerWindow overrides the PER-REPLICA global cap on
+	// MaxModelCallsPerWindow overrides the VISIT trigger's per-replica cap on
 	// generation model calls per assistant.CatchUpGenModelCallWindow (ten
 	// minutes). nil means the shipped default (six); 0 disables generation
 	// entirely — see COMMUNICATION_CATCHUP_GEN_PER_10M in `serve`'s
 	// environment.
 	MaxModelCallsPerWindow *int
+	// MaxSweepCallsPerWindow overrides the completion sweep's OWN per-replica
+	// budget, separate from the visit cap so background sweeping can never
+	// starve a person opening Catch up (and a visit storm can never silence
+	// the sweep). nil means the shipped default (three per ten minutes); 0
+	// disables the sweep's model calls while visits keep generating — see
+	// COMMUNICATION_CATCHUP_SWEEP_PER_10M in `serve`'s environment.
+	MaxSweepCallsPerWindow *int
 }
 
 // CatchUpGeneratorTrigger is the seam the visits route calls once it has
@@ -258,6 +265,7 @@ func BuildCatchUpGenerator(deps CatchUpGenDeps) CatchUpGeneratorTrigger {
 		Log:                    log,
 		Cooldown:               deps.Cooldown,
 		MaxModelCallsPerWindow: deps.MaxModelCallsPerWindow,
+		MaxSweepCallsPerWindow: deps.MaxSweepCallsPerWindow,
 	})
 	if g == nil {
 		return nil

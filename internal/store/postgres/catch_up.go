@@ -2096,6 +2096,10 @@ func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller
 // ADR-0062 attribution rule, flattened into the statement). A run whose human
 // cannot be named drops out at the users JOIN: the generator refuses to forge
 // a submitter, exactly as agentturn_seams does for agent turns.
+// ORDERED NEWEST-FINISHED FIRST, and the LIMIT trims at the OLD end: the
+// sweep spends its (smaller, own) model-call budget in this order, so a run
+// that just finished is the first candidate the budget reaches — never stuck
+// behind a backlog the deployment's own specs made (ADR-0078 § Trigger).
 const catchUpSweepCandidatesSQL = `
 	WITH cands AS (
 		SELECT r.id, r.project_id, r.organization_id, w.id AS item_id,
