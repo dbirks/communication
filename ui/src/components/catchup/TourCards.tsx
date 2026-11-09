@@ -11,6 +11,11 @@
  * Below 768px the row becomes a horizontal strip: the cards keep a 260px
  * minimum width (180px for "See more") and scroll-snap along the strip
  * instead of squashing into one-word columns.
+ *
+ * A card whose piece wears UPDATED (this reader saw an OLDER version of that
+ * piece's story — the list read's `updated`, same badge the rest rows draw)
+ * shows the tag too: UPDATED marks a changed piece wherever it appears, so
+ * the card surface must not hide the fact the rest row would print.
  */
 import { Link } from "react-router";
 import { CircleDot, GitCommitHorizontal, GitPullRequest, Plus } from "lucide-react";
@@ -33,19 +38,26 @@ export function TourCards({
   moreAvailable,
   loadingMore,
   onSeeMore,
+  updatedWorkItemIds = [],
 }: {
   stops: CatchUpTourEntry[];
   remaining: number;
   moreAvailable: boolean;
   loadingMore: boolean;
   onSeeMore: () => void;
+  /** Work-item ids the list read flags `updated` — the reader saw an older
+   * version of the piece. Every card of one wears the UPDATED tag, the same
+   * badge `RestList.tsx` prints beside a row's title. */
+  updatedWorkItemIds?: readonly string[];
 }) {
+  const updated = new Set(updatedWorkItemIds);
   return (
     <div className="flex gap-[10px] max-md:snap-x max-md:snap-mandatory max-md:overflow-x-auto">
       {stops.map((entry, index) => {
         const importance = IMPORTANCE[entry.stop.importance] ?? IMPORTANCE.routine;
         const ref = refLabel(entry.refs);
         const focused = index === 0;
+        const pieceUpdated = updated.has(entry.work_item_id);
         return (
           <article
             key={`${entry.work_item_id}:${entry.stop.id}`}
@@ -80,7 +92,14 @@ export function TourCards({
                 {entry.stop.kind}
               </span>
             ) : null}
-            <h3 className="text-[14.5px] leading-[1.3] font-semibold">{entry.stop.title}</h3>
+            <h3 className="text-[14.5px] leading-[1.3] font-semibold">
+              {entry.stop.title}{" "}
+              {pieceUpdated ? (
+                <span className="inline-flex items-center rounded-tag bg-imp-look-tag-bg px-[5px] py-[1px] align-[1px] font-mono text-[9.5px] font-semibold text-imp-look-tag-fg">
+                  UPDATED
+                </span>
+              ) : null}
+            </h3>
             <p className="text-[12.5px] leading-[1.45] text-ink-2">
               {firstSentence(entry.stop.narrative)}
             </p>

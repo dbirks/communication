@@ -153,7 +153,10 @@ const GH_READ_SLUG = `emu-gh-read-${EMU_PASS_ID}`.toLowerCase();
  * prove it every pass. */
 const FILE_REPO_BRANCH = "main";
 const EMU_LABEL = `emu-rcn-${EMU_PASS_ID}`;
-const SEED_CHAT_TITLE = `Emu rcn chat ${EMU_PASS_ID}`;
+// The word is THREAD, never the retired noun: the screen-guard (screen-guard.ts)
+// scans every captured screen's chrome text and the lab's own sidebar shows this
+// seeded title on screens this journey does not capture (threads-1g included).
+const SEED_CHAT_TITLE = `Emu rcn thread ${EMU_PASS_ID}`;
 /** The chat-box prompt: its first line becomes the thread's title. */
 const CHAT_PROMPT = `EMU-RCN ${EMU_PASS_ID} — reply with exactly OK`;
 // Agent mail (design 3d, ADR-0072). The token rides INSIDE the question the
@@ -819,7 +822,7 @@ async function ensureWorkflow(page: Page): Promise<void> {
   const pipeline = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/pipelines`, {
     slug: WF_SLUG,
     display_name: WF_NAME,
-    description: "emulator repo-chat-nav journey workflow",
+    description: "emulator rcn journey workflow",
   });
   const pipelineBody = await pipeline.text();
   expect(
@@ -892,7 +895,7 @@ async function ensureDragWorkflow(page: Page): Promise<void> {
   const pipeline = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/pipelines`, {
     slug: DRAG_WF_SLUG,
     display_name: DRAG_WF_NAME,
-    description: "emulator repo-chat-nav lanes-drag journey workflow",
+    description: "emulator rcn lanes-drag journey workflow",
   });
   const pipelineBody = await pipeline.text();
   expect(
@@ -1058,7 +1061,7 @@ async function ensureProject(page: Page): Promise<void> {
   const project = await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/projects`, {
     name: PROJECT_NAME,
     slug: PROJECT_SLUG,
-    description: "emulator repo-chat-nav journey project",
+    description: "emulator rcn journey project",
   });
   const projectBody = await project.text();
   expect(

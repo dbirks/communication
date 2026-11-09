@@ -16,7 +16,12 @@
 // `artifact-preview-prose`, the rest list's `catchup-row-<id>` — so a rename of
 // one of those testids shows up HERE rather than as a screen full of defects.
 import { expect, test } from "./fixtures.js";
-import { screenGuardFind, screenGuardInput, type ScreenGuardHit } from "./screen-guard.js";
+import {
+  screenGuardDetail,
+  screenGuardFind,
+  screenGuardInput,
+  type ScreenGuardHit,
+} from "./screen-guard.js";
 
 /** The guard, run over the page exactly as `fixtures.ts` runs it in a capture. */
 async function guard(page: import("@playwright/test").Page): Promise<ScreenGuardHit> {
@@ -134,5 +139,46 @@ test.describe("the IA screen-guard (T1/T3)", () => {
     const clean = await guard(page);
     expect(clean.words, "the redesigned vocabulary files nothing").toEqual([]);
     expect(clean.routes, "the canonical routes file nothing").toEqual([]);
+    expect(clean.snippets, "a clean page has nothing to show around a word").toEqual([]);
+  });
+
+  test("(g6) a filed word carries its context, so the defect says WHERE it printed", async ({
+    page,
+  }) => {
+    // The acceptance 42558168285 lesson: `visible chrome text: chat` on 24
+    // screens named the word but not the source. Each hit now travels with a
+    // ±30-char window of the rendered chrome around it (first 3, whitespace
+    // collapsed), and the defect detail prints those windows.
+    await page.setContent(
+      DOC(
+        `<aside><span>Emu rcn chat 4255 — a seeded thread title</span></aside>` +
+          `<p>Description: draft a plan for a goal with a chat model, hold it.</p>`,
+      ),
+    );
+    const hit = await guard(page);
+    expect(hit.words).toEqual(["chat"]);
+    // Both rendered windows show the word and the words printed beside it.
+    expect(hit.snippets.length, "one window per hit, capped at 3").toBeLessThanOrEqual(3);
+    expect(hit.snippets.length, "each of the two hits keeps its own window").toBeGreaterThanOrEqual(
+      2,
+    );
+    for (const snippet of hit.snippets) {
+      expect(snippet.toLowerCase(), `“${snippet}” is the chrome around a hit`).toContain("chat");
+    }
+    expect(
+      hit.snippets.some((s) => s.includes("Emu rcn chat")),
+      `a window names the seeded title: ${JSON.stringify(hit.snippets)}`,
+    ).toBe(true);
+    expect(
+      hit.snippets.some((s) => s.includes("with a chat model")),
+      `a window names the shipped description: ${JSON.stringify(hit.snippets)}`,
+    ).toBe(true);
+    const detail = screenGuardDetail(hit);
+    expect(detail, "the detail prints the matched windows").toContain("matched in:");
+    expect(detail).toContain("Emu rcn chat");
+    expect(
+      detail.length,
+      "one defect detail stays inside the fixture's MAX_DETAIL",
+    ).toBeLessThanOrEqual(500);
   });
 });

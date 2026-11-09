@@ -142,6 +142,14 @@ export default function CatchUp() {
     return counts;
   }, [stops]);
 
+  /* Pieces the list read flags `updated` (this reader saw an older version of
+   * their story). UPDATED marks a changed piece WHEREVER it appears, so the
+   * cards wear the same badge the rest rows print (TourCards.tsx). */
+  const updatedWorkItemIds = useMemo(
+    () => (items.data?.items ?? []).filter((item) => item.updated).map((item) => item.id),
+    [items.data],
+  );
+
   const subline = (
     <>
       {totalUnseen} unseen
@@ -240,6 +248,7 @@ export default function CatchUp() {
                   remaining={remaining}
                   moreAvailable={Boolean(tour.data?.more_available)}
                   loadingMore={tour.isFetching && offset > 0}
+                  updatedWorkItemIds={updatedWorkItemIds}
                   onSeeMore={() => setOffset((prev) => prev + CATCH_UP_TOUR_LIMIT)}
                 />
               ) : tour.isError ? (

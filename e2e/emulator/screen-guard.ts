@@ -41,6 +41,11 @@ export interface ScreenGuardHit {
   words: string[];
   /** The retired destination hrefs found on the page (rule b). */
   routes: string[];
+  /** The rendered text AROUND each word hit (≤ 3, ±30 chars, whitespace
+   * collapsed) — the diagnosis the word alone never gives: a seed's thread
+   * title, a shipped template's description and a stray nav row all print
+   * `chat`, and only the context tells them apart. */
+  snippets: string[];
 }
 
 /** The retired nouns, word-bounded and case-insensitive. */
@@ -170,6 +175,13 @@ export function screenGuardFind(input: ScreenGuardInput): ScreenGuardHit {
   const wordChar = (ch: string | undefined): boolean =>
     ch !== undefined && ch !== "" && /[A-Za-z0-9_]/.test(ch);
   const words: string[] = [];
+  // The context around each hit (first 3, ± SNIPPET_CONTEXT chars): the
+  // defect detail is read by whoever fixes the copy, and `visible chrome
+  // text: chat` on its own cannot say WHICH chat — a seeded thread title in
+  // the sidebar, a shipped template's description, or a real nav row.
+  const SNIPPET_CONTEXT = 30;
+  const snippets: string[] = [];
+  const collapse = (value: string): string => value.replace(/\s+/g, " ").trim();
   const lowered = text.toLowerCase();
   for (const word of input.words) {
     const needle = word.toLowerCase();
@@ -181,7 +193,15 @@ export function screenGuardFind(input: ScreenGuardInput): ScreenGuardHit {
       const after = at + needle.length < text.length ? text.charAt(at + needle.length) : "";
       if (!wordChar(before) && !wordChar(after)) {
         if (!words.includes(word)) words.push(word);
-        break;
+        if (snippets.length < 3) {
+          const window = collapse(
+            text.slice(
+              Math.max(0, at - SNIPPET_CONTEXT),
+              Math.min(text.length, at + needle.length + SNIPPET_CONTEXT),
+            ),
+          );
+          if (window && !snippets.includes(window)) snippets.push(window);
+        }
       }
       from = at + 1;
     }
@@ -208,7 +228,7 @@ export function screenGuardFind(input: ScreenGuardInput): ScreenGuardHit {
     }
   }
 
-  return { words, routes };
+  return { words, routes, snippets };
 }
 
 /** One defect detail for a screen's hits — the `; ` join keeps each hit on its
@@ -216,10 +236,17 @@ export function screenGuardFind(input: ScreenGuardInput): ScreenGuardHit {
 export function screenGuardDetail(hit: ScreenGuardHit): string {
   const parts: string[] = [];
   if (hit.words.length > 0) {
+    // The first 3 matched snippets travel with the words so the filing is
+    // diagnosable without a rerun: each window is ±30 chars of the rendered
+    // chrome around a hit, collapsed to one line.
+    const where =
+      hit.snippets.length > 0
+        ? ` — matched in: ${hit.snippets.slice(0, 3).map((s) => `“${s}”`).join(" ; ")}`
+        : "";
     parts.push(
       `retired IA word in visible chrome text: ${hit.words
         .slice(0, 5)
-        .join(", ")} — the surface says thread / Today, not this`,
+        .join(", ")}${where} — the surface says thread / Today, not this`,
     );
   }
   if (hit.routes.length > 0) {

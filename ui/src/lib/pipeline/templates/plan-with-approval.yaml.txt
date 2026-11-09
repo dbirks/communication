@@ -15,7 +15,7 @@ kind: Pipeline
 metadata:
   name: plan-with-approval
   description: >-
-    Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan.
+    Survey a repository checkout, draft an implementation plan for a goal with a model call, hold it behind a maintainer approval, and publish the approved-shape plan.
 spec:
   inputs:
     type: object
@@ -102,7 +102,7 @@ spec:
             type: integer
           stdout_preview:
             type: string
-    # 2. The plan. One chat completion; the survey text is interpolated with the same
+    # 2. The plan. One model completion; the survey text is interpolated with the same
     #    ${{ nodes.<id>.outputs.<name> }} binding the approval summary below uses
     #    (docs/compatibility/probes/m4/pipeline.yaml: ${{ nodes.plan.outputs.plan }}).
     #    stdout_preview is the worker's bounded 8 KiB capture of the survey (contract § 6).

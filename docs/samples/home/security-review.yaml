@@ -1,5 +1,5 @@
 # docs/samples/home/security-review.yaml — a first-pass secret/-dangerous-pattern
-# sweep over a real repository checkout, summarised by a chat model and published.
+# sweep over a real repository checkout, summarised by a model and published.
 #
 # Runs on the home-cluster worker with no agent.acp node and no ACP credentials:
 # the sweep is process.exec (sh, git, grep, find — the only tools worker/Dockerfile's
@@ -19,7 +19,7 @@ kind: Pipeline
 metadata:
   name: security-review
   description: >-
-    Grep a repository checkout for credential-shaped literals, secret-looking assignments, dangerous exec patterns and committed key material, grade the findings by severity with a chat model, and publish the report.
+    Grep a repository checkout for credential-shaped literals, secret-looking assignments, dangerous exec patterns and committed key material, grade the findings by severity with a model, and publish the report.
 spec:
   inputs:
     type: object

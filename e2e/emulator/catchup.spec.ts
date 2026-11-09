@@ -325,7 +325,7 @@ interface ItemWire {
   seen_by?: { id: string; name: string; seen_at: string }[];
 }
 interface ListWire {
-  items: { id: string; unseen_stops: number }[];
+  items: { id: string; unseen_stops: number; updated: boolean }[];
   total_unseen: number;
   oldest_unseen_at: string | null;
 }
@@ -1709,8 +1709,32 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
           candidates.length,
           "at least two of the pass's seeded pile pieces are still owed, so one can be rewritten and another paid",
         ).toBeGreaterThanOrEqual(2);
-        const [movedTitle, movedId] = candidates[0] as [string, string];
-        const [paidTitle, paidId] = candidates[1] as [string, string];
+        // Take the first piece that still STARTS at version 1: a later pass over
+        // the same lab can find a piece an earlier pass already rewrote still
+        // owed (the v2 append below is `WHERE NOT EXISTS`-guarded, so the ONLY
+        // clean "saw v1, never saw v2" starting state is a never-rewritten
+        // piece — acceptance 42558168285's pass-1 shape).
+        let movedTitle = "";
+        let movedId = "";
+        for (const [title, id] of candidates) {
+          if ((await getItem(page, id)).latest?.version === 1) {
+            movedTitle = title;
+            movedId = id;
+            break;
+          }
+        }
+        expect(
+          movedId,
+          "one of the owed pile pieces still starts at tour version 1",
+        ).not.toBe("");
+        const [paidTitle, paidId] = (candidates.find(([, id]) => id !== movedId) ?? [
+          "",
+          "",
+        ]) as [string, string];
+        expect(
+          paidId,
+          "a second owed pile piece is left for the show-seen half",
+        ).not.toBe("");
 
         /* ---- (1) the story moves: seen at v1, then a second version ---- */
         const movedItem = await getItem(page, movedId);
@@ -1776,7 +1800,15 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
             `WHERE v.work_item_id = ${sqlQuote(movedId)}::uuid AND v.version = 2); ` +
             // A real append bumps the work item in the SAME statement that writes
             // the version (ADR-0078: `updated_at` is the clock `since` filters on).
-            `UPDATE catchup_work_items SET updated_at = now() ` +
+            // The fixture stamps it TWO HOURS back rather than at now(): it stays
+            // inside any 24 h window a reader may set, and the tour ranks equal-
+            // importance pieces newest-first — a now()-stamped routine beat would
+            // lead page 1 of the cards, and the rest list then honestly DROPS the
+            // piece (RestList's `tourStopsByItem` exclusion, mock 8a). This proof
+            // asserts UPDATED where the rest rows print it, so the piece must not
+            // be carded; with twelve fresher routine pieces of the pile ahead of
+            // it on a four-stop page, it cannot be.
+            `UPDATE catchup_work_items SET updated_at = now() - interval '2 hours' ` +
             `WHERE id = ${sqlQuote(movedId)}::uuid; ` +
             `SELECT 'versions|' || count(*) FROM catchup_tour_versions v ` +
             `WHERE v.work_item_id = ${sqlQuote(movedId)}::uuid;`,
@@ -1788,7 +1820,31 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
 
         // Back on the page: the piece is OWED again (the new beat) and it wears
         // UPDATED — the badge a story earns only when this reader saw an older
-        // version of it.
+        // version of it. The WIRE is read first: unseen_stops > 0, updated true,
+        // and none of its beats on page 1 of the cards — a carded piece is
+        // correctly absent from the rest, and that exclusion (not the badge) is
+        // what a failing toBeVisible here would otherwise blame the store for
+        // (acceptance 42558168285, pass 1: the rewrite's now() bump carded the
+        // piece; pass 2: the rest briefly drew it before the tour load excluded
+        // it, and the badge check raced that exclusion).
+        await expect
+          .poll(
+            async () => {
+              const list = await getList(page);
+              const row = list.items.find((item) => item.id === movedId);
+              const tour = await getTour(page);
+              return (
+                (row?.unseen_stops ?? 0) > 0 &&
+                row?.updated === true &&
+                !tour.stops.some((stop) => stop.work_item_id === movedId)
+              );
+            },
+            {
+              message: `the wire owes ${movedTitle} again as UPDATED, on the rest's side (not the cards')`,
+              timeout: 60_000,
+            },
+          )
+          .toBe(true);
         await page.goto("/catch-up");
         const movedRow = page.getByTestId("catchup-rest").getByTestId(`catchup-row-${movedId}`);
         await expect(

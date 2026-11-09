@@ -34,7 +34,11 @@ function entry(id: string, evidence: Record<string, unknown>[]): CatchUpTourEntr
 
 afterEach(cleanup);
 
-function mount(stops: CatchUpTourEntry[], more?: { remaining?: number; moreAvailable?: boolean }) {
+function mount(
+  stops: CatchUpTourEntry[],
+  more?: { remaining?: number; moreAvailable?: boolean },
+  updatedWorkItemIds?: readonly string[],
+) {
   render(
     <MemoryRouter>
       <TourCards
@@ -42,6 +46,7 @@ function mount(stops: CatchUpTourEntry[], more?: { remaining?: number; moreAvail
         remaining={more?.remaining ?? 3}
         moreAvailable={more?.moreAvailable ?? false}
         loadingMore={false}
+        updatedWorkItemIds={updatedWorkItemIds}
         onSeeMore={() => undefined}
       />
     </MemoryRouter>,
@@ -86,5 +91,36 @@ describe("catch-up tour cards", () => {
     expect(more.textContent).toContain(
       "The assistant picks up to 4 more from the remaining 5 unseen stops.",
     );
+  });
+
+  it("marks a card of an UPDATED piece — the badge rides the piece, not the surface", () => {
+    // UPDATED marks a piece whose story moved AFTER this reader saw it. The
+    // rest rows have always printed it; a carded piece is the SAME fact about
+    // the SAME piece, so hiding it there would let the redesign's own story
+    // (acceptance 42558168285: the tour card swallowed the UPDATED proof)
+    // recur silently. `entry()` ids work items as `w-<id>`.
+    mount([entry("s1", []), entry("s2", [])], undefined, ["w-s2"]);
+    const card1 = screen.getByTestId("catchup-card-1");
+    const card2 = screen.getByTestId("catchup-card-2");
+    expect(card1.textContent, "a piece nobody has read an older version of").not.toContain(
+      "UPDATED",
+    );
+    expect(card2.textContent).toContain("UPDATED");
+    // The tag is the rest row's tag: same wording, same importance-look skin,
+    // printed beside the beat's own title.
+    const tag = card2.querySelector('h3 [class*="imp-look-tag-bg"]');
+    expect(tag, "the UPDATED chip is a tag on the title line").toBeTruthy();
+    expect(tag!.textContent).toBe("UPDATED");
+    expect(card2.querySelector("h3")?.textContent).toContain("Stop s2");
+  });
+
+  it("carries the UPDATED tag on EVERY stop card of the moved piece", () => {
+    // A round-2 card is the piece's SECOND beat; the piece moved, so both
+    // cards wear the badge — a reader who opens the tour mid-story still
+    // learns this story is not the one they read.
+    mount([entry("a", []), entry("b", [])], undefined, ["w-a", "w-b"]);
+    for (const index of [1, 2]) {
+      expect(screen.getByTestId(`catchup-card-${index}`).textContent).toContain("UPDATED");
+    }
   });
 });

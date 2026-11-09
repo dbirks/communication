@@ -433,14 +433,22 @@ test.describe("run-gate-artifacts (alice)", () => {
           await expect(fact, `T8: the facts row carries a ${label} field`).toBeVisible({
             timeout: 30_000,
           });
-          const rendered = ((await fact.innerText()) ?? "").replace(/\s+/g, " ").trim();
-          expect(rendered, `T8: the ${label} fact shows its label`).toContain(label);
-          // The value is the label's own words minus the label — non-empty means
-          // a real Workflow / Repository / Started / Pinned digest value landed.
-          const value = rendered.replace(label, "").replace(/^[:\s]+|[:\s]+$/g, "").trim();
+          // The fact is a <dt>/<dd> pair (RunHeader.tsx's `Fact`): the label
+          // lives in the dt, the value in the dd beside it. `innerText` applies
+          // the dt's CSS `uppercase` transform — asserting the authored label
+          // over the joined innerText is what failed acceptance 42558168285
+          // ("Workflow fact shows its label": innerText reads WORKFLOW) — so
+          // the label is checked on the dt's own textContent and the value on
+          // the dd's, each with the same strictness as before: label present,
+          // value non-empty.
+          const dtText = (await fact.locator("dt").textContent()) ?? "";
+          const labelText = dtText.replace(/\s+/g, " ").trim();
+          expect(labelText, `T8: the ${label} fact shows its label`).toBe(label);
+          const ddText = (await fact.locator("dd").textContent()) ?? "";
+          const value = ddText.replace(/\s+/g, " ").trim();
           expect(
             value,
-            `T8: the ${label} fact carries a value (rendered ${JSON.stringify(rendered)})`,
+            `T8: the ${label} fact carries a value (dd reads ${JSON.stringify(value)})`,
           ).not.toBe("");
         }
       });

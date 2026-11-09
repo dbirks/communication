@@ -579,7 +579,7 @@ class EmuRecorder {
         const iaDedupeKey = `${iaHit.words.slice().sort().join(",")}|${iaHit.routes
           .slice()
           .sort()
-          .join(",")}`;
+          .join(",")}|${iaHit.snippets.slice(0, 3).join("‡")}`;
         if (!reportedIaHits.has(iaDedupeKey)) {
           reportedIaHits.add(iaDedupeKey);
           recordOnce("retired-ia", `retired IA on this screen — ${screenGuardDetail(iaHit)}`);
