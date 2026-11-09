@@ -276,8 +276,14 @@ describe("/catch-up/:workId", () => {
 
   it("?stop= selects the beat and clicking another stop marks the previous seen", async () => {
     const { requests } = mount(detail(), `/catch-up/${workId}?stop=s2`);
-    const current = await screen.findByTestId("catchup-item-current");
-    expect(current.textContent).toContain("Cause: PR #417 dropped the key");
+    await screen.findByTestId("catchup-item-current");
+    // The `?stop=` pick lands with the read's own paint; wait for the beat the
+    // parameter names rather than trusting the first frame after the mount.
+    await waitFor(() =>
+      expect(screen.getByTestId("catchup-item-current").textContent).toContain(
+        "Cause: PR #417 dropped the key",
+      ),
+    );
     // s2 was already seen at the reader's version: moving off it posts nothing.
     fireEvent.click(screen.getByTestId("catchup-item-back"));
     await waitFor(() =>
@@ -442,7 +448,9 @@ describe("/catch-up/:workId", () => {
     const history = await screen.findByTestId("catchup-item-history");
     // Newest version first.
     expect(history.textContent).toContain("Fix landed, stop 3 added");
-    const slot = screen.getByText(/Stop 1 of 2/);
+    // The slot line is the OTHER read (the reader's own page tour): it arrives
+    // in its own commit, so it is found, not read inline off the item page.
+    const slot = await screen.findByText(/Stop 1 of 2/);
     expect(slot.closest("section")).toBeTruthy();
   });
 

@@ -287,9 +287,14 @@ describe("/catch-up", () => {
         platformId,
       ]);
     });
-    expect(
-      screen.getByTestId(`catchup-project-chip-${paymentsId}`).getAttribute("aria-pressed"),
-    ).toBe("false");
+    // The chip's own state is what the click changed; the read is what the
+    // waitFor proved. Under CI load the repaint and the refetch are separate
+    // commits, so the pressed state is waited for too.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`catchup-project-chip-${paymentsId}`).getAttribute("aria-pressed"),
+      ).toBe("false"),
+    );
 
     // Choosing it back is the same answer as choosing nothing: no scope at all.
     fireEvent.click(screen.getByTestId(`catchup-project-chip-${paymentsId}`));
@@ -313,8 +318,13 @@ describe("/catch-up", () => {
         },
       },
     ]);
-    const block = await screen.findByTestId("catchup-recap");
-    expect(block.textContent).toContain("ASSISTANT RECAP · WRITTEN");
+    // The block mounts while its recap read is still answering, so the
+    // written-at line is waited for, not read off the first frame.
+    await waitFor(() =>
+      expect(screen.getByTestId("catchup-recap").textContent).toContain(
+        "ASSISTANT RECAP · WRITTEN",
+      ),
+    );
     fireEvent.click(screen.getByTestId("catchup-recap-regenerate"));
     await waitFor(() => {
       const post = requests.find(
@@ -328,14 +338,17 @@ describe("/catch-up", () => {
       "The assistant isn't set up on this server. Ask an admin to configure it.",
     );
     // The recap that was there is still shown: a refusal stored nothing.
-    expect(block.textContent).toContain("Start with the refund bug");
+    expect(screen.getByTestId("catchup-recap").textContent).toContain("Start with the refund bug");
   });
 
   it("states the unseen tally and the waiting-on-you count in the subline", async () => {
     const { fetchMock } = mount();
-    const page = await screen.findByTestId("catchup-page");
-    expect(page.textContent).toContain("2 unseen");
-    expect(page.textContent).toContain("2 waiting on you on Today");
+    // The shell paints before the list and the sidebar pair answer, so both
+    // counts in the subline are waited into place rather than read inline.
+    await waitFor(() => {
+      expect(screen.getByTestId("catchup-page").textContent).toContain("2 unseen");
+      expect(screen.getByTestId("catchup-page").textContent).toContain("2 waiting on you on Today");
+    });
     // The number is the sidebar's, from the sidebar's own pair of reads — not
     // a second approvals count the page could drift away from.
     expect(urlsFor(fetchMock, "/api/v1/approvals?status=pending").length).toBeGreaterThan(0);
@@ -375,7 +388,10 @@ describe("/catch-up", () => {
     expect(second.className).not.toContain("shadow-[2px_2px_0");
     const start = screen.getByTestId("catchup-start-tour");
     expect(start.getAttribute("href")).toBe("/catch-up/tour");
-    expect(start.textContent).toContain("2 stops");
+    // The stop count rides the tour read's own commit.
+    await waitFor(() =>
+      expect(screen.getByTestId("catchup-start-tour").textContent).toContain("2 stops"),
+    );
   });
 
   it("See more asks the tour for the next four stops", async () => {
@@ -458,7 +474,7 @@ describe("/catch-up", () => {
     expect(first.querySelector('[class*="124px"]')).toBeNull();
     // …and the footer is pushed to the bottom so the row stays aligned.
     expect(first.querySelector("a")?.className).toContain("mt-auto");
-    const second = screen.getByTestId("catchup-card-2");
+    const second = await screen.findByTestId("catchup-card-2");
     expect(second.querySelector('[class*="124px"]')).not.toBeNull();
   });
 
