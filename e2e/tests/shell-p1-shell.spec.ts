@@ -4,7 +4,8 @@
 // routes (contract C1), every legacy URL redirects, the tree expansion is a
 // persisted preference (contract C2), the Settings → Layout page states the
 // shell's fixed behaviour (finding 10: the sidebar is always the project
-// tree), the first ⌘K opens the jump palette and ⌘J opens Ask (finding 08,
+// tree) and a stored OLD preferences document — one still carrying the three
+// retired keys — loads the same shell with no error (T7), the first ⌘K opens the jump palette and ⌘J opens Ask (finding 08,
 // superseding ADR-0050's first-press-opens-Ask toggle), and at phone width
 // (below 768px, finding 07) the sidebar is a drawer that Escape closes. Between 768px and
 // 1024px the shell forces the collapsed rail — no drawer, no labels — without
@@ -16,10 +17,11 @@
 // evidence() screenshot + log line.
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
-import { expectNoLegacyAppBar, signIn } from "./helpers.js";
+import { expectNoLegacyAppBar, gotoApp, signIn } from "./helpers.js";
 import {
   SHELL_ENABLED,
   SHELL_GATE,
+  apiCsrf,
   apiPipelines,
   apiPreferences,
   apiProjects,
@@ -111,6 +113,15 @@ async function restoreColumnState(page: Page, want: "rail" | "column"): Promise<
   } catch {
     // The next shell test's own settle point reports a stranded preference.
   }
+}
+
+/** The library's folder labels as the Workflows page reads them (the filter's
+ * own source: the wire's distinct non-empty `folder` values). */
+async function apiPipelineFolders(request: APIRequestContext): Promise<string[]> {
+  const res = await request.get(BASE_URL + "/api/v1/pipelines");
+  if (!res.ok()) throw new Error(`GET /pipelines -> ${res.status()}`);
+  const body = (await res.json()) as { pipelines?: { folder?: string | null }[] };
+  return (body.pipelines ?? []).map((row) => row.folder ?? "");
 }
 
 /** The sidebar's nav rows and the canonical route each must point at.
@@ -325,6 +336,159 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       "shell-p1-ask-floating",
       "the sidebar shows the project tree and the floating Ask button (ask-fab) renders on the home page with no preference to set",
     );
+  });
+
+  // T7: the client's three removed layout settings (finding 10) still live in
+  // rows the server saved BEFORE the cut — `GET /me/preferences` answers them
+  // and `parseLayout` (ui/src/lib/prefs.ts) drops them. A stored OLD document
+  // must therefore cost nothing: the shell loads clean, with the answers the
+  // 08/10 decisions fixed (always the project tree, always the floating Ask,
+  // folders as a Workflows filter).
+  test("T7 — an OLD stored preferences document (the retired layout keys) still loads today's shell", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    const request = page.request;
+    const csrf = await apiCsrf(request);
+    const stopWatching = watchPageErrors(page);
+    // Every console error the OLD document can cause, collected across the
+    // reloads below: a client that still reads `projects_mode` (or trips on a
+    // document carrying it) shows up here, not only as a wrong pixel.
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() !== "error") return;
+      // The one documented exemption, shared with m5-layout's ledger: an
+      // UPSTREAM (502/503/504) failure of the model-backed approval summary is
+      // the gateway's outcome, not this shell's, and the page shows it honestly.
+      const url = message.location()?.url ?? "";
+      if (
+        /\/api\/v1\/approvals\/[^/?#]+\/summary(?:[?#]|$)/.test(url) &&
+        /status of 50[234]\b/.test(message.text())
+      ) {
+        return;
+      }
+      consoleErrors.push(`${message.text()} @ ${url || "?"}`);
+    });
+    // The document BEFORE the write, restored in the `finally` — the lab's
+    // admin is shared state and the next shell test reads this document too.
+    const before = await apiPreferences(request);
+    // The rail is the one OTHER preference this test must not fight: the tree
+    // assertions need the expanded column, and an expanded rail is restored
+    // through the UI's own door below (same state, the user's own toggle).
+    const railWasStored = await storedRailState(request);
+    let railTouched = false;
+    try {
+      // Write an OLD payload — the three keys finding 10 removed from the
+      // client, through the same /me/preferences API the app uses. The
+      // server's `layout` section still stores them (its shape is unchanged),
+      // so this is a real pre-finding-10 row, not a made-up document.
+      const written = await request.patch(BASE_URL + "/api/v1/me/preferences", {
+        data: {
+          layout: {
+            projects_mode: "switcher",
+            ask_placement: "sidebar",
+            show_workflow_folders: true,
+          },
+        },
+        headers: { Origin: csrf.origin, "X-CSRF-Token": csrf.token },
+      });
+      expect(
+        written.status(),
+        `PATCH /me/preferences (old payload) -> ${written.status()}: ${await written
+          .text()
+          .catch(() => "?")}`,
+      ).toBe(200);
+      const stored = await apiPreferences(request);
+      // The row really is an OLD one — otherwise the reload below proves nothing.
+      expect(stored.layout.projects_mode).toBe("switcher");
+      expect(stored.layout.ask_placement).toBe("sidebar");
+      expect(stored.layout.show_workflow_folders).toBe(true);
+
+      // Fresh document load: the client must read it and IGNORE the three keys.
+      await gotoApp(page, "/");
+      await expect(page.getByTestId("home-page")).toBeVisible({ timeout: 30_000 });
+      if (await storedRailState(request)) {
+        await page.getByTestId("sidebar-expand").click({ timeout: 10_000 });
+        railTouched = true;
+        await expect(page.getByTestId("sidebar-collapse")).toBeVisible({ timeout: 15_000 });
+      }
+      const project = (await apiProjects(request))[0];
+      expect(project, "the lab seeds at least one project").toBeTruthy();
+      // `projects_mode: "switcher"` is gone: the sidebar is the project TREE
+      // and the deleted switcher does not mount.
+      await expect(
+        page.getByTestId(`sidebar-project-toggle-${project.id}`),
+        "an old projects_mode does not put the switcher back",
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByTestId("project-switcher")).toHaveCount(0);
+      // `ask_placement: "sidebar"` is gone: Ask floats on every page.
+      await expect(
+        page.getByTestId("ask-fab"),
+        "an old ask_placement does not move Ask back into the sidebar",
+      ).toBeVisible();
+      // `show_workflow_folders` is gone: the sidebar has no folder rows.
+      await expect(page.locator('[data-testid^="sidebar-workflow-folder-"]')).toHaveCount(0);
+
+      // The Workflows list: the folder FILTER (when the library carries
+      // folders), never the retired grouped folder rows.
+      await gotoApp(page, "/workflows");
+      await expect(page.getByTestId("workflows-list")).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('[data-testid^="workflow-folder-header-"]')).toHaveCount(0);
+      const folders = (await apiPipelineFolders(request)).filter((name) => name !== "");
+      if (folders.length > 0) {
+        await expect(
+          page.getByTestId("workflows-folder-filter"),
+          `the library carries folders [${folders.join(", ")}]; an old show_workflow_folders may not hide the filter`,
+        ).toBeVisible();
+      } else {
+        // The design's own rule: an all-unfiled library carries no select
+        // (Workflows.tsx), so the honest proof here is the flat list plus the
+        // absence of the retired grouped rows asserted above.
+        await expect(page.getByTestId("workflows-folder-filter")).toHaveCount(0);
+      }
+
+      // No console error survived the old document (and no uncaught one).
+      // And the retired keys are READ AND IGNORED, not silently rewritten:
+      // the client owns only `expanded`, so the old row is still the old row.
+      const afterLoad = await apiPreferences(request);
+      expect(afterLoad.layout.projects_mode, "the client rewrote a key it no longer owns").toBe(
+        "switcher",
+      );
+      expect(consoleErrors, "console errors under an old preferences row").toEqual([]);
+      stopWatching();
+      await checkShellScreen(page, "home under an old preferences row", undefined);
+      await evidence(
+        page,
+        "shell-p1-old-prefs",
+        `a stored document still carrying projects_mode=switcher / ask_placement=sidebar / show_workflow_folders=true loads with no console error: the sidebar shows the project tree (no project-switcher, no folder rows), Ask floats (ask-fab), the Workflows list is flat with ${folders.length} folder name(s) behind the toolbar filter and no grouped folder rows`,
+      );
+    } finally {
+      // Restore the document (best effort: a restore failure must not bury the
+      // real one — the next shell test's own settle point reports a stranded
+      // preference).
+      await request
+        .patch(BASE_URL + "/api/v1/me/preferences", {
+          data: {
+            layout: {
+              projects_mode: before.layout.projects_mode,
+              ask_placement: before.layout.ask_placement,
+              show_workflow_folders: before.layout.show_workflow_folders,
+            },
+          },
+          headers: { Origin: csrf.origin, "X-CSRF-Token": csrf.token },
+        })
+        .catch(() => undefined);
+      if (railTouched && railWasStored) {
+        await page
+          .getByTestId("sidebar-collapse")
+          .click({ timeout: 10_000 })
+          .catch(() => undefined);
+      }
+      await expect
+        .poll(async () => await storedRailState(request), { timeout: 15_000 })
+        .toBe(railWasStored)
+        .catch(() => undefined);
+    }
   });
 
   test("⌘K opens the palette; ⌘J and the Ask button open the assistant; esc closes both", async ({
@@ -778,6 +942,12 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await page.getByTestId("rail-item-projects").click({ timeout: 10_000 });
     const popover = page.getByTestId("rail-projects-popover");
     await expect(popover, "the Projects tile opens the popover").toBeVisible({ timeout: 10_000 });
+    // T11's visual bit: the popover points at its tile — the shared
+    // `ds/Popover` arrow square on the edge facing the trigger.
+    await expect(
+      popover.getByTestId("menu-arrow"),
+      "T11: the rail Projects popover carries its arrow",
+    ).toBeVisible({ timeout: 10_000 });
     const firstRow = popover.locator('[data-testid^="rail-project-"]').first();
     await expect(firstRow, "on open the caret parks on the popover's first item").toBeFocused({
       timeout: 10_000,

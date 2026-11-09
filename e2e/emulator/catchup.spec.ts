@@ -794,6 +794,12 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       });
       await expect(page.getByTestId("tour-progress")).toBeVisible();
       await expect(page.getByTestId("tour-current")).toBeVisible();
+      // T16: the progress bar's segments carry the walk — the current stop's
+      // segment is the accent fill, the ones ahead are the plain line
+      // (TourPlayer.tsx: `bg-imp-must-fill` vs `bg-line`; a done segment turns
+      // `bg-ink`, proven on the NEXT leg below after `Next stop ›` pays).
+      await expect(page.getByTestId("tour-progress-seg-0")).toHaveClass(/bg-imp-must-fill/);
+      await expect(page.getByTestId("tour-progress-seg-1")).toHaveClass(/bg-line/);
       // The player is the one page OUTSIDE the shell: no sidebar at all.
       await expect(page.getByTestId("sidebar"), "design 7b: the player is full screen").toHaveCount(
         0,
@@ -821,6 +827,17 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
           { message: "Next did not mark the stop it left behind seen", timeout: 30_000 },
         )
         .toBe(true);
+      // The walk the progress bar shows: the stop `Next stop ›` just paid is
+      // done (`bg-ink`), the one the player stands on is current
+      // (`bg-imp-must-fill`).
+      await expect(
+        page.getByTestId("tour-progress-seg-0"),
+        "T16: the segment behind the current stop is done",
+      ).toHaveClass(/bg-ink/);
+      await expect(
+        page.getByTestId("tour-progress-seg-1"),
+        "T16: the segment the player stands on is current",
+      ).toHaveClass(/bg-imp-must-fill/);
 
       // The decision beat through the player too (no click — the click was
       // proven on the piece page; this proves the render at 390 as well).
@@ -833,6 +850,88 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         timeout: 30_000,
       });
       await emu.screen("cu-7b", "decision");
+    });
+
+    await test.step("T14 — the rail's Catch up badge carries the expanded column's unseen count", async () => {
+      // The pass's own pieces are still unseen HERE (the mark-all-seen step
+      // below spends that debt), so both badge surfaces are reading a live,
+      // non-zero number the seed just wrote.
+      await page.goto("/catch-up");
+      await expect(page.getByTestId("catchup-page")).toBeVisible({ timeout: 30_000 });
+      // Start from the expanded column (the preference is alice's account
+      // state; the rail step below restores it too — do not depend on it).
+      const collapse = page.getByTestId("sidebar-collapse");
+      const startedCollapsed = !(await collapse.isVisible().catch(() => false));
+      if (startedCollapsed) {
+        await page.getByTestId("sidebar-expand").click({ timeout: 10_000 });
+      }
+      await expect(collapse, "the expanded column carries its own collapse button").toBeVisible({
+        timeout: 10_000,
+      });
+      // The expanded column's number: the Catch up row's `{n} unseen` span
+      // (Sidebar.tsx), which is the reader's own `total_unseen` read.
+      const row = page.getByTestId("sidebar-link-catch-up");
+      await expect(
+        row,
+        "the expanded column shows its unseen count before the rail does",
+      ).toContainText(/([1-9][0-9]*) unseen/, { timeout: 30_000 });
+      const expandedCount = Number(
+        /([0-9]+) unseen/.exec(normText(await row.innerText()))?.[1] ?? "0",
+      );
+      expect(expandedCount, "the expanded column's unseen count is a number").toBeGreaterThan(0);
+      // The wire's own number backs the badge: `total_unseen` counts the
+      // ITEMS still owed (internal/api/catch_up.go) and the sidebar reads that
+      // same endpoint. A real lab run's tour can land between the DOM read and
+      // this one (ADR-0078's calm), so the honest bound is the leg-2 one: 1 ≤
+      // badge ≤ what the unseen read answers now.
+      const list = await getList(page);
+      expect(
+        list.total_unseen,
+        `the sidebar prints ${expandedCount} unseen but GET /catch-up/items owes less`,
+      ).toBeGreaterThanOrEqual(expandedCount);
+
+      try {
+        await collapse.click({ timeout: 10_000 });
+        await expect(page.getByTestId("sidebar-rail")).toBeVisible({ timeout: 10_000 });
+        const badge = page.getByTestId("rail-badge-catch-up");
+        await expect(
+          badge,
+          "design 3a: the rail's Catch up tile wears the same number the column printed",
+        ).toBeVisible({ timeout: 10_000 });
+        const badgeText = (await badge.innerText()).trim();
+        expect(
+          badgeText,
+          `rail badge ${badgeText} ≠ the expanded column's ${expandedCount} unseen`,
+        ).toBe(expandedCount > 99 ? "99+" : String(expandedCount));
+        // And the tile says so out loud, not only in pixels.
+        if (expandedCount <= 99) {
+          await expect(page.getByTestId("rail-item-catch-up")).toHaveAttribute(
+            "aria-label",
+            `Catch up · ${expandedCount} unseen`,
+          );
+        }
+      } finally {
+        // The preference is shared account state: put it back whatever the
+        // read above concluded — expanded if the column was expanded when the
+        // step started, the rail if it started as the rail (best effort: a
+        // restore failure must not bury the real one).
+        await page
+          .getByTestId("sidebar-expand")
+          .click({ timeout: 10_000 })
+          .catch(() => undefined);
+        if (startedCollapsed) {
+          await page
+            .getByTestId("sidebar-collapse")
+            .click({ timeout: 10_000 })
+            .catch(() => undefined);
+        }
+      }
+      await expect(
+        startedCollapsed ? page.getByTestId("sidebar-expand") : collapse,
+        startedCollapsed
+          ? "the rail is back, exactly as this step found it"
+          : "the column is expanded again for whoever plays next",
+      ).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step("8a — mark all seen empties the pass's debt from the rest list", async () => {
@@ -910,6 +1009,12 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
       await expect(popover, "design 3a: Projects opens the popover").toBeVisible({
         timeout: 5_000,
       });
+      // T11: the popover points at its tile — the arrow square the shared
+      // `ds/Popover` renders on the edge facing the trigger (design 3a/4a).
+      await expect(
+        popover.getByTestId("menu-arrow"),
+        "design T11: the Projects popover carries its arrow",
+      ).toBeVisible({ timeout: 5_000 });
       await page.keyboard.press("Escape");
       await expect(popover, "design 3a: Esc closes the popover").toBeHidden({ timeout: 5_000 });
 

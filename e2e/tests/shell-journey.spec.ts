@@ -6,7 +6,8 @@
 //      takeover hand-back — see authorStepRetryPolicy);
 //   b. Validate + Publish, and the published revision number increments;
 //   c. start a run of the new revision from the project's new-run form;
-//   d. approve the run's human gate from the Inbox at PHONE width (390x844);
+//   d. approve the run's human gate from the project overview's Needs-You fan
+//      at PHONE width (390x844), through the shared DecisionBar (finding 05);
 //   e. the Run Workbench: a live agent step, Take control (confirm card with
 //      its truthful copy, ADR-0043), one prompt, hand back — a new attempt of
 //      the step is queued (ADR-0043/ADR-0055 semantics, asserted via API);
@@ -37,7 +38,14 @@
 // honest and are never weakened.
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { BASE_URL, AGENT_TURN_TIMEOUT_MS } from "./env.js";
-import { expectNoLegacyAppBar, gotoApp, repinAssignment, signIn, testidOf } from "./helpers.js";
+import {
+  decideGate,
+  expectNoLegacyAppBar,
+  gotoApp,
+  repinAssignment,
+  signIn,
+  testidOf,
+} from "./helpers.js";
 import {
   IS_PI_LAUNCHER,
   LAB_LAUNCHER,
@@ -1292,21 +1300,26 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     const card = page.getByTestId(`project-attention-decision-${tid}`);
     await expect(card).toBeVisible({ timeout: 30_000 });
 
-    // The card's Approve action, then its confirm step (the callout asks
-    // before it posts — a gate is a business decision).
-    await card.getByTestId(`project-approve-${tid}`).click();
-    const confirm = page.getByTestId(`project-approve-confirm-${tid}`);
-    await expect(confirm).toBeVisible();
+    // The card decides through the ONE decision path (finding 04/05: the
+    // project overview carries the shared `DecisionBar`, not its own
+    // Approve→Confirm callout). The helper is the proof: the click holds ~5s
+    // behind Undo instead of POSTing, the decide POST rides the wire once with
+    // `{decision: "approved"}` and the row's CAS version, and no second POST
+    // follows.
+    await expect(
+      card.getByTestId("decision-bar"),
+      "finding 05: the project overview's gate card decides through the shared DecisionBar",
+    ).toBeVisible({ timeout: 30_000 });
     await checkShellScreen(page, "overview-phone-approval", stopWatching ?? undefined);
     await evidence(
       page,
       `journey-d-decision-${STAMP}`,
-      `at 390x844 the project overview decision callout for the run's gate is open with its confirm step armed (approval …${state.approvalId.slice(-8)})`,
+      `at 390x844 the project overview decision callout for the run's gate shows the shared decision bar with its fixed verbs (approval …${state.approvalId.slice(-8)})`,
     );
 
-    // The confirm button records the approval — the same decision the old
-    // Inbox card's Confirm approve made.
-    await confirm.click();
+    // Approve through the bar — the same decision the old Inbox card's Confirm
+    // approve made.
+    await decideGate(card, "approve", undefined, { timeoutMs: 60_000 });
 
     // Asserted via the API: the approval is decided and the run moves on.
     await waitForApprovalDecided(page.request, state.runId);
