@@ -13,6 +13,7 @@ import Page, {
   PAGE_BAND_HEIGHT_PX,
   PAGE_BAND_PAD,
   PAGE_BREADCRUMB_CLASS,
+  PAGE_BREADCRUMB_LINK_CLASS,
   CrumbSep,
   PageBand,
 } from "./Page";
@@ -175,7 +176,9 @@ describe("PageBand — the shared band outside <Page>", () => {
 describe("PageBand breadcrumb — above the title, off the baseline", () => {
   const trail = (name: string) => (
     <>
-      <a href="/workflows">Workflows</a>
+      <a href="/workflows" className={PAGE_BREADCRUMB_LINK_CLASS}>
+        Workflows
+      </a>
       <CrumbSep />
       <span aria-current="page">{name}</span>
     </>
@@ -213,6 +216,30 @@ describe("PageBand breadcrumb — above the title, off the baseline", () => {
     const band = screen.getByTestId("page-band");
     expect(band.className.trim().split(/ +/)).toEqual(PAGE_BAND_PAD.split(/ +/));
     expect(within(band).queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
+  });
+
+  /**
+   * axe `link-in-text-block` (lab-e2e a11y): a trail is running text, so a link
+   * inside the slot cannot be distinguished by colour alone (the workflow page's
+   * `Workflows` crumb failed at #2a43b8 against muted #6b675e, 1.43:1). The slot
+   * ships `PAGE_BREADCRUMB_LINK_CLASS` — the app's inline-link underline, the
+   * same cue RunHeader's breadcrumb carries.
+   */
+  it("ships an underline for links in the slot, not colour alone", () => {
+    const tokens = PAGE_BREADCRUMB_LINK_CLASS.split(/ +/);
+    expect(tokens).toContain("underline");
+    expect(tokens).toContain("underline-offset-2");
+    render(<PageBand title="Review gate" breadcrumb={trail("Review gate")} />);
+    const crumb = within(screen.getByTestId("page-band")).getByRole("navigation", {
+      name: "Breadcrumb",
+    });
+    const links = Array.from(crumb.querySelectorAll("a"));
+    expect(links).toHaveLength(1);
+    for (const link of links) {
+      expect(link.className.split(/ +/)).toContain("underline");
+    }
+    // The current page is a leaf, so it needs no cue of its own.
+    expect(crumb.querySelector('[aria-current="page"]')?.tagName).toBe("SPAN");
   });
 
   it("<Page> hands the slot to its band", () => {

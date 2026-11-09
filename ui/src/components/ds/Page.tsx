@@ -53,6 +53,21 @@ export const PAGE_BAND_HEIGHT_PX = 48;
 export const PAGE_BREADCRUMB_CLASS =
   "absolute inset-x-[22px] top-[4px] truncate font-mono text-[11px] leading-[14px] text-muted md:inset-x-[28px]";
 
+/**
+ * The treatment for a LINK inside a breadcrumb trail (axe `link-in-text-block`,
+ * WCAG 1.4.1, lab-e2e a11y). A trail is running text: a crumb that differs from
+ * the muted words around it only by colour (#2a43b8 on #6b675e is 1.43:1) is not
+ * distinguishable, so every crumb that is a link carries the app's inline-link
+ * UNDERLINE — the same convention the run workbench breadcrumb got in 19ff7c1 and
+ * the inline links on Today, Projects, Steps and Catch up carry. `underline` must
+ * be its own class token (`underline-offset-2` alone is not a cue).
+ *
+ * The current page is a leaf (`<span aria-current="page">`), not a link, so it
+ * needs none of this.
+ */
+export const PAGE_BREADCRUMB_LINK_CLASS =
+  "underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+
 export interface PageBreadcrumbProps {
   /** Trail content: linked steps plus the current page, separated by `›`. */
   children: ReactNode;
@@ -61,7 +76,11 @@ export interface PageBreadcrumbProps {
   className?: string;
 }
 
-/** The one `Breadcrumb` landmark every band draws (see `PAGE_BREADCRUMB_CLASS`). */
+/**
+ * The one `Breadcrumb` landmark every band draws (see `PAGE_BREADCRUMB_CLASS`).
+ * Linked crumbs in the slot carry `PAGE_BREADCRUMB_LINK_CLASS`; the current page
+ * is a leaf.
+ */
 export function PageBreadcrumb({ children, testid, className = "" }: PageBreadcrumbProps) {
   return (
     <nav

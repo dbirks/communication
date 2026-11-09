@@ -337,6 +337,26 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     expect(crumbInBand & Node.DOCUMENT_POSITION_PRECEDING).toBeFalsy();
   });
 
+  // axe `link-in-text-block` (lab-e2e a11y, serious): the trail is running
+  // text, so a crumb that differs from the muted words around it only by colour
+  // (#2a43b8 on #6b675e — 1.43:1) is not distinguishable. Every linked crumb
+  // carries the app's inline-link underline, the same cue RunHeader's breadcrumb
+  // got; `underline` must be its own class token (`underline-offset-2` alone is
+  // not a cue).
+  it("underlines the breadcrumb's links instead of distinguishing them by colour", async () => {
+    mount(detail);
+    // Wait for the folder read so the trail is complete before counting links.
+    await screen.findByTestId("workflow-revision-chip");
+    const crumb = screen.getByTestId("workflow-breadcrumb");
+    const links = Array.from(crumb.querySelectorAll("a"));
+    expect(links.map((link) => link.textContent)).toEqual(["Workflows", "Delivery"]);
+    for (const link of links) {
+      expect(link.className.split(/\s+/)).toContain("underline");
+    }
+    // The workflow's own name is the current page: a leaf, not a link.
+    expect(crumb.querySelector('[aria-current="page"]')?.tagName).toBe("SPAN");
+  });
+
   it("with no description anywhere the header carries the library sentence instead", async () => {
     mount(detail, [
       {

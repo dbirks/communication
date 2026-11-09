@@ -32,7 +32,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
-import Page, { CrumbSep, PAGE_BAND_PAD, PageBreadcrumb } from "../components/ds/Page";
+import Page, {
+  CrumbSep,
+  PAGE_BAND_PAD,
+  PAGE_BREADCRUMB_LINK_CLASS,
+  PageBreadcrumb,
+} from "../components/ds/Page";
 import { REVISION_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
@@ -585,12 +590,12 @@ export function PipelinePage() {
         >
           {/* Trail above the title, no dangling separator (finding 11): the
             folder step rides between the library and the workflow's own name,
-            and the name is the current page, so it is a leaf, not a link. */}
+            and the name is the current page, so it is a leaf, not a link. The
+            linked crumbs carry the app's inline-link underline
+            (`PAGE_BREADCRUMB_LINK_CLASS`): the trail is running text and axe's
+            `link-in-text-block` rejects colour-only links. */}
           <PageBreadcrumb testid="workflow-breadcrumb">
-            <Link
-              to={routes.workflows()}
-              className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-            >
+            <Link to={routes.workflows()} className={PAGE_BREADCRUMB_LINK_CLASS}>
               Workflows
             </Link>
             {pipeline.data?.folder ? (
@@ -598,7 +603,7 @@ export function PipelinePage() {
                 <CrumbSep />
                 <Link
                   to={`${routes.workflows()}?folder=${encodeURIComponent(pipeline.data.folder)}`}
-                  className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  className={PAGE_BREADCRUMB_LINK_CLASS}
                 >
                   {pipeline.data.folder}
                 </Link>
