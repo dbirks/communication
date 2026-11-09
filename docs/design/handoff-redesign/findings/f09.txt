@@ -1,0 +1,16 @@
+id="f09" data-screen-label="09 Hidden menu" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 09 Project actions only appear on hover
+ SIDEBAR QUICK FIX 
+ ✓ DECIDED "+ Repository" and "Settings" move to the project header. The hover ⋯ comes off the sidebar. 
+ Project settings, Members, Add repository and Workflows in use are in a ⋯ button that stays at opacity-0 until you hover over or focus the project row. On touch screens and in the rail it's never visible. "Add repository" doesn't open the form; it navigates to the project overview, where you have to find the + add link.
+ TODAY · Sidebar.tsx ProjectTree (resting / hovered)
+ ⌄ payments ! 1 
+ ⌄ payments ! 1 ⋯ 
+ PROPOSED · actions live on the project page
+ payments 
+ + Repository 
+ Settings 
+ Move them to the project header RECOMMENDED . Put "+ Repository" (opening AddRepositoryDialog directly) and "Settings" (with Members as a tab) next to the existing New thread and Start run buttons. Remove the ⋯ from the sidebar.
+ Keep the ⋯ but always show it on the active project , and on touch devices. Wire "Add repository" to the dialog.
+ Right-click menu on the row in addition to option 1, for power users.
+ <section

@@ -1,0 +1,15 @@
+id="f07" data-screen-label="07 Widths" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 07 Page width changes from route to route
+ LAYOUT STRUCTURAL 
+ ✓ DECIDED Every page declares reading , wide or canvas , with one shared header band. The regex list goes away. 
+ App.tsx decides each page's width from a list of 13 regular expressions ( workbenchBleed ), each with a comment about a past review. Today nests a 960px column inside a 64rem column with two sets of padding. Threads, project pages and Workflows run full-bleed with their own 20px 28px band. Everything else gets the default max-w-5xl px-4 py-6 . Moving between sidebar items shifts the content's left edge and title position. Separately, the phone layout (drawer plus 44px top strip) starts below 1024px, so a laptop window split in half gets the phone UI.
+ TODAY · content left edge at 1440px viewport (after 220px sidebar)
+ Today 
+ Projects 
+ Project · Threads 
+ Workflow page 
+ Settings 
+ Every page declares a layout RECOMMENDED . Pages pick &lt;Page layout="reading|wide|canvas"&gt; with one shared header band. Delete the regex list. All pages start at the same left edge with the same title baseline.
+ Make everything full-bleed with the band. Simplest, but prose pages (settings, approval detail) end up with long lines.
+ Move the phone cutoff to 768px on its own, whichever of the above you pick. Between 768 and 1024px, show the 52px rail in place of the drawer. The rail exists already.
+ <section

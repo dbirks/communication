@@ -1,0 +1,23 @@
+id="f02" data-screen-label="02 Naming workflows" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 02 Workflows, Library, Pipelines
+ NAMING · NAV MEDIUM 
+ ✓ DECIDED Split them. Workflows and Agents become top-level rows, Steps becomes a tab inside Workflows, and the route becomes /workflows . 
+ The sidebar puts Workflows under a LIBRARY label, the collapsed rail calls the same destination "Library", the project menu says "Workflows in use", and that item links to /p/:id/pipelines . Steps and Agent profiles sit under Library too, but they are a different kind of thing: building blocks, not things you run.
+ TODAY · Sidebar.tsx LibrarySection + Rail
+ LIBRARY 
+ Workflows 7 
+ Steps 
+ Agent profiles 4 
+ Rail tile: Library 
+ Project ⋯ menu: Workflows in use 
+ Route: /p/:id/pipelines 
+ Spec + code: pipeline 
+ PROPOSED · split the things you run from their parts
+ Workflows 7 
+ Agents 4 
+ Steps (inside Workflows) 
+ /p/:id/workflows , rail tile "Workflows" 
+ Drop the Library label RECOMMENDED . Make Workflows and Agents top-level rows and move Steps to a tab inside Workflows, where they are used. Rename the project tab route to /workflows .
+ Keep Library and use it everywhere. The rail and the sidebar both say Library, and Workflows, Steps and Agents become tabs on one Library page.
+ Bring "pipeline" up to the UI. This matches the spec and the API, but "workflow" has been the user-facing word since issue #2. Not worth the churn.
+ <section

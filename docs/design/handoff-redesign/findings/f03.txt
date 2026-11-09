@@ -1,0 +1,20 @@
+id="f03" data-screen-label="03 Orphaned links" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 03 Today links to pages that left the nav
+ TODAY · NAV QUICK FIX 
+ ✓ DECIDED Expand in place. "Show n more" on Today, drop "open board ›", and Start run opens the run form. 
+ Shell.tsx says Board and Inbox "are not nav rows any more" because their content moved into Today and the repository Lanes view. Today still sends people to both: the decision panel ends with " n more in Inbox ›" and Running now links "open board ›". Neither page appears in the sidebar, so after one click you're on a page you can't find again. And when the page is empty, the Start run button goes to /projects , not to a run form.
+ TODAY · DecisionCallout.tsx, RunningNow.tsx, Home.tsx
+ ! NEEDS YOUR DECISION 5 
+ … 3 callouts …
+ 2 more in Inbox › 
+ RUNNING NOW open board › 
+ Nothing is running and nothing is waiting on you. Start run 
+ PROPOSED · expand in place, real start
+ Waiting on you 5 
+ … 3 rows …
+ Show 2 more 
+ Nothing is waiting on you. Start run… opens NewRunForm 
+ Expand in place RECOMMENDED . Remove the three-callout cap and add "Show n more" on Today itself. Drop "open board ›". Point Start run at the same dialog the New ▾ menu uses.
+ Put Board back in the nav and make it the Running section's destination. See option 1b , which goes further and makes it the home page.
+ Delete /inbox and /board and redirect both to / , the way /ops already redirects.
+ <section

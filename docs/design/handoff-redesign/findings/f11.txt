@@ -1,0 +1,28 @@
+id="f11" data-screen-label="11 Run header" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 11 The run header packs everything into one line
+ RUN WORKBENCH MEDIUM 
+ ✓ DECIDED A labeled facts row and one primary action chosen by run state. The other actions go in a ⋯ menu. 
+ RunHeader puts the workflow slug, repository, revision number, a 12-character digest, "(pinned)", start age and actor into one 11px mono sentence. The stream status ("live") sits next to the state chip in the same weight as the title row. Up to five buttons share the right side: Open pinned workflow, Fix the workflow…, and RunActions' Pause, Cancel and Retry. Nothing in that layout says which button matters for this run's state.
+ TODAY · workbench/RunHeader.tsx
+ payments / Runs / run
+ Add retry budget to webhook sender ! NEED YOU live 
+ feature-development · payments-api · revision r3 8f2c1a9e0b7d (pinned) · started 14m ago by Priya Natarajan
+ Open pinned workflow Fix the workflow… 
+ Pause Cancel 
+ PROPOSED · title, state-driven primary action, facts row
+ payments › Runs 
+ Add retry budget to webhook sender 
+ ! needs your review 
+ Review plan ⋯ 
+ Workflow
+ Feature development · rev 3
+ Repository
+ payments-api
+ Started
+ 14 min ago by Priya
+ Pinned digest
+ 8f2c1a9e0b7d
+ Labeled facts row and one primary action chosen by state RECOMMENDED . Waiting runs get "Review plan", failed runs get "Retry step", running runs get "Pause". Everything else goes in a ⋯ menu. Show stream status only when it isn't live (for example "↻ reconnecting").
+ Keep the sentence, split it in two. Line 1 for workflow and repo, line 2 for revision and start. A smaller change with the same density.
+ Move the facts to the side dock. The header becomes title, state and action, and the facts go in WorkbenchDock's details. This gives the graph the most room.
+ <section

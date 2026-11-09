@@ -1,0 +1,16 @@
+id="f08" data-screen-label="08 Cmd K" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 08 ⌘K opens two different things
+ INTERACTION QUICK FIX 
+ ✓ DECIDED ⌘K for search and jump, ⌘J for Ask, each with its own labeled button in the sidebar. 
+ The first press of ⌘K opens the assistant popover. A second press, from inside the popover, passes to the jump palette (ADR-0050). The sidebar button is labeled only ⌘K , so it doesn't say what it opens. openAsk() works by sending a fake keydown event, and the Studio needed a capture-phase workaround so its own ⌘K handler didn't take the shortcut.
+ TODAY · Sidebar.tsx NewChatRow
+ New chat ⌘K 
+ ⌘K → assistant
+⌘K again → jump palette
+ PROPOSED · two labeled entries
+ Search or jump… ⌘K 
+ Ask the assistant ⌘J 
+ ⌘K for search/jump, ⌘J for Ask RECOMMENDED . Two labeled buttons with one shortcut each. People will expect ⌘K to search. Replace the synthetic keydown with an explicit open function.
+ Merge them into one box. Typing searches, and Enter on "Ask about '…'" sends the text to the assistant. One shortcut, a clear mental model, more work in the palette.
+ Keep the toggle and add words. Label the button "Ask ⌘K" and show "⌘K again to jump" in the popover footer. Lowest effort.
+ <section

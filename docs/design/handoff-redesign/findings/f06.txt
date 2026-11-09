@@ -1,0 +1,21 @@
+id="f06" data-screen-label="06 Mono and caps" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 06 Mono and caps flatten the hierarchy
+ VISUAL MEDIUM 
+ = KEEPING AS IS The compact, tactile feel stays: mono meta, uppercase panel bars and offset shadows. One change that doesn't alter the look: put the agent's last line second in thread rows (route 3). Tell me if you want it. 
+ The identity rule says "mono = anything a machine produced". In practice that covers most of the UI: panel titles, section labels, counts, ages, project names, profile names, error lines and filter chips. When the 10px uppercase panel bar, the meta line and the run digest all use the same face, the only remaining signal is weight. Section headings also don't look like headings, even though Panel renders them as h2 .
+ TODAY · Panel.tsx bars + ThreadListPane row
+ RECENT THREADS all threads › 
+ LIVE
+ ● Why is the ledger reconciliation job slow? 8m 
+ payments / ledger-worker · Claude reviewer 
+ The nightly job scans every ledger entry because… 
+ PROPOSED · mono only for identifiers
+ Recent threads All threads 
+ Live
+ ● Why is the ledger reconciliation job slow? 8 min 
+ The nightly job scans every ledger entry because… 
+ payments / ledger-worker · Claude reviewer 
+ Narrow the mono rule to identifiers RECOMMENDED . Use mono for ids, digests, paths, slugs, repo names and code. Sentence-case UI text for headings, names and ages. Keep the filled panel bar only for state panels (waiting, failed), which is where it carries meaning.
+ Keep mono, drop the caps. Smaller change: sentence-case mono headings at 12px. Better than today, but the meta lines still blend together.
+ Put the agent's last line second in thread rows, above the project and agent line, as shown on the right. People are scanning for what the agent said.
+ <section

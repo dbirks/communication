@@ -147,6 +147,22 @@ function holdWord(decision: DecisionWord, comments?: string): string {
   return comments ? "Changes requested" : "Rejected";
 }
 
+/**
+ * The conflict's age in the reading voice finding 12 asked for. `formatAge` is
+ * the compact column format (`20s`, `4m`) built for a scannable table; the
+ * conflict line is a sentence that answers "when did this happen", and
+ * `20s ago` reads like a log line, so a sub-minute age is spelled out
+ * (`20 seconds ago`). From a minute up the compact form stays — a dense row
+ * and the sentence under it must not print the same number two ways.
+ */
+function conflictAge(decidedAt: string | null): string {
+  if (!decidedAt) return "a moment ago";
+  const at = new Date(decidedAt).valueOf();
+  const seconds = Number.isNaN(at) ? -1 : Math.round((Date.now() - at) / 1000);
+  if (seconds < 0 || seconds >= 60) return `${formatAge(decidedAt)} ago`;
+  return `${seconds} second${seconds === 1 ? "" : "s"} ago`;
+}
+
 function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).length;
 }
@@ -680,8 +696,7 @@ export default function DecisionBar({
           data-testid="decision-conflict"
         >
           × {conflictSubject(phase.deciderId, lookup)} {phase.verb} this{" "}
-          {phase.decidedAt ? `${formatAge(phase.decidedAt)} ago` : "a moment ago"}. Your decision
-          wasn&apos;t recorded.
+          {conflictAge(phase.decidedAt)}. Your decision wasn&apos;t recorded.{" "}
           {approval.run_id ? (
             /* Finding 12: the sentence says the click did not land; this is the way
                to the decision that did. A plain anchor, not a router `Link`: this bar

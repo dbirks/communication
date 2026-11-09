@@ -1,0 +1,20 @@
+id="f04" data-screen-label="04 Approvals" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 04 Two different ways to approve a gate
+ INTERACTION MEDIUM 
+ ✓ DECIDED One DecisionBar with an undo window. Approve, Request changes and Reject, used on Today, Inbox, the Approval page and the run workbench. 
+ The same decision has two flows. On Today, Approve turns into an inline "approve this gate?" with Confirm and Cancel, and there is no way to reject. The Inbox card shows labels the model wrote, and if a label isn't a decision word it asks you to pick one: “Ship it” is not a decision word — choose the decision to record: . Either way, every approval takes two clicks, and the second click teaches people to stop reading.
+ TODAY A · DecisionCallout.tsx
+ Read plan 
+ approve this gate? 
+ Confirm 
+ Cancel 
+ TODAY B · InboxCard.tsx
+ “Ship it” is not a decision word — choose the decision to record:
+ Approve Reject 
+ PROPOSED · one decision bar + undo
+ Approve Request changes Reject 
+ ✓ Approved. The run continues in 5s. Undo 
+ One DecisionBar component with an undo window RECOMMENDED . Fixed verbs: Approve, Request changes, Reject. Hold the POST for about 5 seconds behind an Undo toast. Model-written text can go in the summary, not in the buttons. Use the bar on Today, Inbox, the Approval page and the run workbench.
+ Keep the confirm step but make it consistent. Same two-step flow everywhere, with Reject always shown. This is safer if the gate can't be paused server-side.
+ Confirm only risky gates. One click for most gates. Ask for typed confirmation only when the gate is marked destructive, which riskStyle already knows.
+ <section

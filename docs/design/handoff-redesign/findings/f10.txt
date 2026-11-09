@@ -1,0 +1,32 @@
+id="f10" data-screen-label="10 Prefs" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 10 Four layout preferences, each a second UI
+ SIDEBAR · MAINTENANCE MEDIUM 
+ ✓ DECIDED Projects stay as a tree (option A), and the switcher is removed. Ask becomes a floating button over the page (option B, opened with ⌘J), so the sidebar only has the ⌘K search entry. Workflow folders stay off and the setting is removed. The sidebar is expanded by default. The collapsed rail needs a redesign, probably with icons instead of initials. 
+ The app has four saved settings that change how the sidebar looks ( lib/prefs.ts ). Each one gives the sidebar a second layout. Below, each setting is shown in both states.
+ projectsMode How projects appear in the sidebar. 
+ OPTION A · tree (default) PROJECTS ⌄ payments ! 1 payments-api ledger-worker › web-console × 1 › platform ● 2 
+ OPTION B · switcher PROJECT payments ▾ All projects payments web-console platform 
+ payments-api 
+ Option B swaps the tree for a dropdown that shows one project at a time. It has its own keyboard handling and an "All projects" entry, so it is effectively a second project navigator.
+ askPlacement Where the assistant button lives. 
+ OPTION A · in the sidebar New chat ⌘K 
+ Today My chats 
+ OPTION B · floating New chat 
+ Today My chats 
+ Ask ⌘K 
+ Option B removes ⌘K from the sidebar and adds a floating button over the page. It has to move whenever the sidebar is resized or collapsed. With the 08 decision (separate ⌘J Ask button in the sidebar), this setting no longer has a purpose.
+ showWorkflowFolders Whether workflow folders show in the sidebar. 
+ OFF LIBRARY Workflows 7 Steps Agent profiles 4 
+ ON LIBRARY ⌄ Workflows 7 release/ · 3 triage/ · 2 unfiled · 2 Steps Agent profiles 4 
+ With the 02 decision, Workflows becomes its own page with a Steps tab. Folders fit better as a filter on that page than as extra sidebar rows.
+ sidebarCollapsed Full sidebar or a narrow icon rail. 
+ EXPANDED · 220px New chat ⌘K 
+ Today ! 2 My chats 3 PROJECTS › payments ! 1 › web-console × 1 › platform ● 2 
+ RAIL · 52px + T Ch Pa We Pl 
+ The rail needs its own tiles, hover flyouts, and an initials algorithm so similar project names don't show the same two letters. This one is common in tools like this and worth keeping.
+ Why this matters
+ Four on/off settings make 16 possible sidebars. Every sidebar change you just approved (01 renaming, 02 the split, 08 the two buttons, 09 removing ⋯) has to be built and checked in each layout it touches. Cutting three settings leaves 2 layouts instead of 16.
+ Keep collapse, cut the rest RECOMMENDED . The tree is the default, and Ask placement becomes moot with finding 08. Folder filtering moves to the Workflows page, where there's room for it.
+ Keep them all, but test them as product. Each preference becomes a documented mode with its own visual acceptance pass. This is expensive.
+ Promote them to a first-class layout schema on the server (one ADR) so they stop riding on expanded . This fixes the storage but not the surface area.
+ <section

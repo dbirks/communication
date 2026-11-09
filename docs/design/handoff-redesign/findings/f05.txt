@@ -1,0 +1,21 @@
+id="f05" data-screen-label="05 Type floor" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 05 Too much important text is under 11px
+ VISUAL · A11Y MEDIUM 
+ = KEEPING AS IS The type scale stays as it is for now. 
+ The scale in tokens.css runs 22 / 19 / 15 / 13.5 / 13 / 12.5 / 11 / 10.5 / 10, and components go smaller still: status chips are 9.5px. Body text is 13.5px. The run meta line, each thread's project and agent, ages, step names and every panel title are 10–11px mono. These are the facts someone supervising agents scans all day, so the most-read text is also the smallest.
+ TODAY · sizes in use
+ 9.5 ● RUNNING ! NEED YOU status chip 
+ 10 RUNNING NOW panel bar 
+ 10.5 feature-development #01a1a992 · payments 
+ 11 revision r3 8f2c1a9e0b7d (pinned) · started 4m ago 
+ 13 Fix flaky checkout e2e 
+ PROPOSED · 12px floor, 14px body
+ 11.5 ● running ! needs you chip 
+ 15 Running now section heading 
+ 12 Feature development · payments · #01a1a9 
+ 12 Revision 3 · started 4 min ago by Priya 
+ 14 Fix flaky checkout e2e 
+ Raise the floor to 12px and set body to 14px RECOMMENDED . Collapse the nine steps to six: 24 / 18 / 15 / 14 / 13 / 12. Keep 11.5px mono only for chips and digests. Add a check:tokens rule that rejects literal text-[9.5px] -style sizes.
+ Offer a density setting (Comfortable and Compact) that scales the root size. This is cheap if every size goes through the tokens, but today many are written inline.
+ Leave it and fix contrast only. The faint token was already darkened for AA. This doesn't address size.
+ <section

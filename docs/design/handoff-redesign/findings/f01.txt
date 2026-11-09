@@ -1,0 +1,20 @@
+id="f01" data-screen-label="01 Naming threads" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 01 One object has five names
+ NAMING QUICK FIX 
+ ✓ DECIDED “Thread” everywhere: sidebar row, button, page, New menu and the /threads route. Old URLs redirect. 
+ A conversation with an agent is called "My chats" in the sidebar, "New chat" on its button, "Threads" and "New thread" on its page, "New conversation" in the New menu, and /conversations in project URLs. Shell.tsx's NAV_ITEMS still says "Threads" for the same row the sidebar renders as "My chats". You can't tell from the UI whether a chat and a thread are the same thing.
+ TODAY · Sidebar.tsx, ThreadListPane.tsx, NewMenu.tsx
+ New chat sidebar 
+ My chats 3 sidebar nav 
+ Threads New thread /threads page 
+ New conversation New ▾ menu 
+ /p/payments/conversations URL 
+ PROPOSED · one word, everywhere
+ New thread 
+ Threads 3 
+ Threads New thread 
+ /p/payments/threads old URL redirects 
+ “Thread” everywhere RECOMMENDED . "Thread" already works for both a one-off chat and a run's agent transcript. Keep Conversation as the API name and use "thread" for every visible word, the project tab URL included (the app already redirects legacy routes).
+ “Chat” everywhere. Friendlier, but it reads poorly for a run's transcript ("Controlled by a pipeline run" inside a chat).
+ Split them on purpose. "Chats" for ones you start, "Run threads" for ones a workflow starts. This is closer to origin=manual|run , but it doubles the vocabulary.
+ <section

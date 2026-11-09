@@ -1,0 +1,38 @@
+id="f12" data-screen-label="12 Copy" style="display:flex;flex-direction:column;gap:18px;border-top:1px solid #1e1d1a;padding-top:22px">
+ 12 Copy written for the reviewer, not the user
+ COPY QUICK FIX 
+ ✓ DECIDED One copy pass using the rulebook, with the rewrites shown below. 
+ The app never invents data: when something can't load, it says so. That rule is right and should stay. The issue is how those messages are worded. Many read like an explanation of the code for whoever reviews the pull request, and the same careful reasoning that sits in the code comments has ended up on screen.
+ Jargon on its own is fine for engineers supervising agents. What's missing is that most of these messages don't answer the three questions someone has when something goes wrong: what happened , is my work safe , and what should I do now . Below, four real strings are scored against those questions, with the internal words highlighted.
+ TODAY PAGE · when a section can't load
+ ! not available yet — this server build predates the cross-project reads the briefing uses; the sections it can read still update live.
+ ~ What happened ✓ Is my work safe × What to do next 
+ It explains the cause in implementation terms and never says what the user can do. "Cross-project reads" is the name of an API, not something the user knows about.
+ REWRITE Approvals from other projects can't load on this server version. The rest of Today is up to date. Ask an admin to update 
+ RUN PAGE · run not found
+ Run 01a1… is not visible to you, or does not exist. The control plane answered 404 — this page shows no scaffold for a run it cannot see.
+ ✓ What happened ~ Is my work safe × What to do next 
+ The second sentence is a note to developers: why the page is empty is an internal design decision. The status code and "scaffold" don't help the user find the run.
+ REWRITE This run doesn't exist or you don't have access to it. Back to Runs · Ask for access 
+ INBOX · gate with model-written buttons
+ “Ship it” is not a decision word — choose the decision to record:
+ ~ What happened ~ Is my work safe ✓ What to do next 
+ The agent wrote a button label the app couldn't interpret, and the user is asked to sort that out. The message describes a parsing problem. With the 04 DecisionBar it goes away: the buttons always say Approve, Request changes or Reject.
+ REWRITE (no message: fixed buttons)
+ APPROVAL · two people decided at once
+ × someone decided this gate first — what you see now is the winner's 
+ ~ What happened × Is my work safe × What to do next 
+ It doesn't say who, when, or whether your click counted. "Winner" frames it as a race the user lost. The data includes the decider, so the message can name them.
+ REWRITE Priya approved this 20 seconds ago. Your decision wasn't recorded. See the run 
+ A short rulebook for on-screen text
+ Answer the three questions: what happened, is my work safe, what to do next.
+ No API, component, ADR or status-code names in visible text. Repo, branch and step names are fine, because users chose them.
+ Name the person and the time when the data has them.
+ End every error with an action: a link, a button, or who to ask.
+ The why goes in code comments, which already cover it in detail.
+ One copy pass using the rulebook RECOMMENDED . Search ui/src for empty, error and conflict strings, rewrite them, and add the rulebook to docs/design/design-system.md so new strings follow it.
+ Same, plus a "Details" disclosure on errors. The plain line shows by default, and the technical sentence and status code are one click away for whoever operates the server.
+ Leave the copy as is. This is the cheapest option, but every new feature will add strings in the same voice.
+ Decision log
+ Decided: 01, 02, 03, 04, 07, 08, 09, 10, 11, 12. Keeping as is: 05, 06. Still to design: the collapsed rail (10).
+ The Today options were drawn with the larger type and sentence-case headings from 05 and 06, so they need to be redrawn in the current compact style.
