@@ -85,5 +85,5 @@ Final round on 861deef captures (fresh reviewer): **Catch up PASS (and with the 
 
 ## Known, recorded limits
 - Request changes records a rejection with comments (the decide API knows approved | rejected).
-- Tour evidence is logs + file lists; no server-readable diff source exists.
+- Tour evidence is logs + file lists + the run's `patch` artifacts (worker unit captures and node-attempt boundaries file them; the server reads them through `api.NewCatchUpPatchSource`, ADR-0078 § Patch artifacts).
 - Out of scope per the goal: Phase 5 (Today layout, ranked diff).

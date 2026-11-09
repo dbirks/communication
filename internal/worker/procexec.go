@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/sandbox/nono"
@@ -183,6 +184,14 @@ type ProcExec struct {
 	// CheckpointRestorer reset a worktree; the launched command stays under
 	// nono either way. Tests inject a fake.
 	BoundaryGit BoundaryGit
+
+	// PatchBytes and PatchRows are the ADR-0078 § Patch artifacts pair for a
+	// command boundary: the artifact byte backend and the attempt-fenced row
+	// writer (the same seams agent.acp's attempt patch filing and
+	// artifact.publish use). Either one nil means this worker files no
+	// attempt patches — the honest pre-patch state, never an invented hunk.
+	PatchBytes artifacts.Store
+	PatchRows  AttemptArtifactWriter
 
 	gitOnce   sync.Once
 	gitReader BoundaryGit

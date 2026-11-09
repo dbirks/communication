@@ -83,6 +83,12 @@ func (p *ProcExec) captureBoundary(ctx context.Context, c AttemptClaim, material
 		p.logger().Warn("process.exec boundary capture failed; the boundary stays un-captured",
 			slog.String("attempt_id", c.AttemptID), slog.String("error", p.redact(err.Error())))
 	}
+	// ADR-0078 § Patch artifacts: the command node's reviewable diff files
+	// beside its checkpoint row, through the attempt-fenced artifact seams.
+	// It runs whether or not the checkpoint write above succeeded: the two
+	// artifacts are independent records, each best-effort by the docblock's
+	// rule — a failed row write must not also cost the tour its diff.
+	p.captureBoundaryPatch(ctx, c, ref, excluded, materialized)
 }
 
 // boundaryGit is the capture's reader: the injected seam in tests, otherwise
@@ -111,6 +117,19 @@ func (p *ProcExec) boundaryGit() (BoundaryGit, error) {
 // are excluded from checkpoints, which for process.exec matters because the
 // deferred secret cleanup runs AFTER the boundary is captured.
 func (p *ProcExec) boundaryExclusions(refRepos []BoundaryRepo, m *Materialized) []string {
+	return attemptBoundaryExclusions(refRepos, m)
+}
+
+// attemptBoundaryExclusions is the node-boundary capture's declared set: the
+// per-repository exclusions the rows carry (ADR-0017 D6) plus THIS attempt's
+// materialized secret trees, made checkout-relative exactly as
+// Unit.secretRelative does it — ADR-0018's contract that materialized paths
+// never enter a checkpoint or a patch, which for an attempt matters because
+// the deferred secret cleanup runs AFTER the boundary is captured. Shared by
+// ProcExec's checkpoint capture and the agent-turn patch filing
+// (agentturn_patch.go): one exclusion rule for every node boundary a run
+// crosses, or one node's artifact leaks another's .env.
+func attemptBoundaryExclusions(refRepos []BoundaryRepo, m *Materialized) []string {
 	sets := make([][]string, 0, len(refRepos)+1)
 	for _, r := range refRepos {
 		sets = append(sets, r.ExcludedPaths)

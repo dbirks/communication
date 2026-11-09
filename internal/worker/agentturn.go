@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/pipelines/runtime"
@@ -220,6 +221,30 @@ type AgentTurn struct {
 	// seam is wired, unit.go's precedent for "nothing materialized" rather than
 	// a refusal of every attempt.
 	Secrets AttemptSecrets
+
+	// PatchBytes and PatchRows are the ADR-0078 § Patch artifacts pair for a
+	// node boundary: the artifact byte backend to put the diff in and the
+	// attempt-fenced row writer beside it — the SAME seams artifact.publish
+	// uses, so the patch carries the attempt's own scoping and a stale fence
+	// cannot publish it. Either one nil means this worker files no attempt
+	// patches: tours read logs and file lists, the honest pre-patch absence,
+	// never an invented hunk.
+	PatchBytes artifacts.Store
+	PatchRows  AttemptArtifactWriter
+	// PatchRedact optionally overrides the attempt's own materialized-secret
+	// scanner for the patch artifact (the wiring wave may hand in a run-scoped
+	// one, modelled on postgres.ArtifactPublishSecretScan). Nil means the
+	// attempt's own materialized values when it had any — and when it had none,
+	// the patch is protected by the exclusion set alone, unit_patch's rule.
+	PatchRedact func(text string) (string, int)
+	// PatchGit is the diff reader seam: nil builds one unsandboxed read-only
+	// manager from WorkspaceRoot (the worker's own git plumbing is never put
+	// under Landlock — AGENTS.md; the agent's children are sandboxed), a test
+	// hands in its own reader.
+	PatchGit       PatchReader
+	patchGitOnce   sync.Once
+	patchGitReader PatchReader
+	patchGitErr    error
 
 	// AckGrace bounds the wait for the ACP turn to land after session/cancel
 	// (§ 4 step 11's grace window); zero takes agentAckGrace.
@@ -942,6 +967,13 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// did — under its own 2 s bound, and it can cost a label but never a turn.
 	a.journalEgressAudit(dctx, sink, c, workspaceID, chain)
 	dcancel()
+	// ADR-0078 § Patch artifacts: the attempt's reviewable diff files beside
+	// its checkpoint — the same bounded, scanned, redacted document the M3
+	// unit capture publishes, now scoped to this node attempt. It runs on
+	// EVERY terminal (success and failure alike: an attempt that died
+	// mid-edit is exactly the story a tour must quote) and best-effort by
+	// D9's rule: a capture failure warns, it never changes the terminal.
+	a.captureAttemptPatch(ctx, c, repos, materialized)
 	return res, nil
 }
 

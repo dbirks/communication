@@ -399,6 +399,16 @@ func serveCatchUpGenSweep(getenv func(string) string) time.Duration {
 	return d // 0 is the honest "no sweep"
 }
 
+// catchUpPatchSource wires the tour generator's diff reader (ADR-0078
+// § Patch artifacts) onto the artifact list and byte backend the API routes
+// already serve. It is one call wide so the wiring itself is testable: a
+// deployment with an artifact byte backend gets a non-nil source, and one
+// without gets nil — the builder's own rule that an absent source means tours
+// without diff excerpts, never invented hunks.
+func catchUpPatchSource(store postgres.APIArtifactStore, bytes artifacts.Store) api.CatchUpPatchSource {
+	return api.NewCatchUpPatchSource(store, bytes)
+}
+
 // newServeServer builds the process's http.Server. ReadTimeout bounds only
 // reading a request (headers + body), which is safe for SSE: the long-lived
 // part of a stream is the response, and a stream GET finishes reading its
@@ -1605,6 +1615,13 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		CatchUp:   postgres.APICatchUpGenerator{S: &postgres.CatchUpStore{Pool: d.Pool}},
 		Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 		Pipelines: postgres.APIPipelineStore{S: pipelineStore},
+		// ADR-0078 § Patch artifacts: the tour's diff excerpts read the SAME
+		// artifact list and byte backend the download routes use, so the
+		// generator can open exactly what this caller could open in the
+		// artifacts tab — and nothing when no byte backend is mounted (the
+		// honest "this deployment records no patches", never an invented
+		// hunk).
+		Patches: catchUpPatchSource(apiArtifacts, d.M3.ArtifactBytes),
 		Chats: api.NewAssistantChatTranscript(apiConversations,
 			postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
 			apiProjects),

@@ -14,12 +14,17 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/dbirks/communication/internal/api"
+	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/assistant"
+	"github.com/dbirks/communication/internal/store/postgres"
 )
 
 func TestServeCatchUpGenCooldownParse(t *testing.T) {
@@ -201,7 +206,53 @@ func (r *recordingSweeper) count() int {
 	return r.calls
 }
 
+// --- the patch-artifact source (ADR-0078 § Patch artifacts wiring) ------
+
+// TestServeCatchUpPatchSourceNeedsAnArtifactBackend pins the serve wiring call
+// site: the tour generator's diff reader is built from the SAME artifact list
+// store the routes use and the process's artifact byte backend. With a
+// backend mounted the generator gets a non-nil source (the tour may cite
+// diffs); with none it gets nil — the honest "this deployment records no
+// patches", never a tour that invents a hunk.
+func TestServeCatchUpPatchSourceNeedsAnArtifactBackend(t *testing.T) {
+	// The backend refuses an agent-writable $TMPDIR root (ADR-0019 P9), so the
+	// test root lives in the same lab scratch the workspace git fixtures use.
+	scratch := os.Getenv("COMMUNICATION_LAB_SCRATCH")
+	if scratch == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("no home directory for lab scratch: %v", err)
+		}
+		scratch = filepath.Join(home, ".cache", "communication-lab", "go-test")
+	}
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(scratch, t.Name()+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	local, err := artifacts.NewLocal(artifacts.LocalConfig{Root: root, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("local artifact backend: %v", err)
+	}
+	// The zero-value store is enough to prove the call's shape: the wiring
+	// compiles against the same concrete type runServe builds (postgres.
+	// APIArtifactStore) and the seam accepts it.
+	var store postgres.APIArtifactStore
+	var src api.CatchUpPatchSource = catchUpPatchSource(store, local)
+	if src == nil {
+		t.Fatal("a configured artifact backend produced a nil patch source")
+	}
+	var none artifacts.Store
+	if src := catchUpPatchSource(store, none); src != nil {
+		t.Fatalf("a deployment with no artifact byte backend got a patch source (%v), want nil", src)
+	}
+}
+
 // TestRunCatchUpGenSweeperKeepsTickingThroughPanics: the loop's whole contract
+
 // against a recorder — it beats, it survives a panicking pass, and ctx
 // cancellation ends it cleanly. A sweep loop that died quietly is the T13 bug
 // wearing new clothes: finished runs silently never get stories.

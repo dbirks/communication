@@ -601,6 +601,11 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid artifact byte backend", slog.String("error", err.Error()))
 		return 2
 	}
+	// One attempt-fenced row writer for the whole worker: artifact.publish and
+	// both work kinds' patch filing share THIS instance, so a run's evidence
+	// goes through one transaction path under one fence, never two copies that
+	// can drift (ADR-0016 § 9.2; ADR-0020 D2's dedupe rules live in that type).
+	attemptArtifactRows := &postgres.AttemptArtifacts{Pool: pool}
 	// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
 	// others: a workspace_path publish reads the run tree, so that tree
 	// has to exist first even when this worker only publishes.
@@ -618,12 +623,20 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	artifactPublish := worker.AttemptExecutor(&postgres.ArtifactPublishSecretScan{
 		Publish: &worker.ArtifactPublish{
 			Bytes:      attemptArtifactBytes,
-			Rows:       &postgres.AttemptArtifacts{Pool: pool},
+			Rows:       attemptArtifactRows,
 			Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
 			Logger:     log,
 		},
 		Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
 	})
+	// ADR-0078 § Patch artifacts: the two kinds that actually edit the run tree
+	// — agent.acp and process.exec — get the SAME pair artifact.publish writes
+	// through above. Before this call neither executor had a patch seam, so a
+	// live pipeline run filed logs and file lists and never one line of real
+	// code (internal/worker/attempt_patch.go). The filing stays best-effort
+	// inside internal/worker: after this line the executors' behaviour is
+	// unchanged for every attempt that has no workspace to diff.
+	wireAttemptPatches(attemptArtifactBytes, attemptArtifactRows, procExec, agentTurn)
 	// § 4 step 8's model.chat is registered ONLY when an endpoint is configured.
 	// With no base URL the kind stays unregistered, so refusalExecutor's honest
 	// "no executor for node kind model.chat on this worker" remains the answer —
@@ -1605,6 +1618,33 @@ func newBoundaryResolver(pool *pgxpool.Pool) worker.BoundaryResolver {
 	return func(ctx context.Context, c worker.AttemptClaim) (worker.RestoreBoundary, bool, error) {
 		return runs.RestoreBoundary(ctx, c.RunID, c.NodeExecutionID)
 	}
+}
+
+// wireAttemptPatches installs the ADR-0078 § Patch artifacts seams on the two
+// kinds that do the run's work, agent.acp and process.exec. It is one call in
+// runWorker and it is the whole of this binary's patch responsibility: the
+// diff base, the secret scan, the hunk-bound cut and the best-effort rule all
+// live in internal/worker/attempt_patch.go.
+//
+// The arguments are the same pair artifact.publish is built from — one byte
+// backend, one attempt-fenced row writer — because a patch is an artifact like
+// any other: its row and its artifact.created must land in the same fenced
+// transaction, and a stale fence must lose the artifact, not the turn. No new
+// sandbox opens here either: the diff read is internal/worker's own
+// unsandboxed git read over its workspace, and this process's sandboxing is
+// untouched (AGENTS.md: never Landlock the main process).
+//
+// A nil seam means this worker files no attempt patches — internal/worker's
+// own silent pre-patch rule — so the nil case installs nothing and logs
+// nothing: that is the state every run was in before this feature existed, not
+// a boot-time fault.
+func wireAttemptPatches(bytesStore artifacts.Store, rows worker.AttemptArtifactWriter,
+	procExec *worker.ProcExec, agentTurn *worker.AgentTurn) {
+	if bytesStore == nil || rows == nil || procExec == nil || agentTurn == nil {
+		return
+	}
+	procExec.PatchBytes, procExec.PatchRows = bytesStore, rows
+	agentTurn.PatchBytes, agentTurn.PatchRows = bytesStore, rows
 }
 
 // newAttemptExecutors routes every wired kind through the same chain, so no

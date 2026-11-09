@@ -182,27 +182,104 @@ func (u *Unit) patchReader() PatchReader {
 	return r
 }
 
+// patchRepoDiff is one repository's already-read diff feeding the shared
+// assembler. The READ stays with the caller (the unit knows its prepared
+// checkouts and the capture outcome's base; the agent-node boundary knows the
+// run workspace rows and the commit its attempt started from); everything
+// after the read — scan, assemble, name — is this file's one implementation.
+type patchRepoDiff struct {
+	RepositoryID string
+	RepoName     string
+	// Raw is the repository's unified diff against its base. Blank means this
+	// repository changed nothing and contributes no section.
+	Raw      string
+	Manifest []string
+	Summary  string
+}
+
+// patchAssembly is the shared assembler's output: ONE artifact's content,
+// named, scanned and concatenated. The unit capture publishes it through the
+// turn-fenced ArtifactCapturer (this file); the agent-node boundary publishes
+// it through the attempt-fenced artifact seams (agentturn_patch.go) — one
+// document builder, two fences, one redaction rule.
+type patchAssembly struct {
+	Document string
+	Name     string
+	// RepositoryID and Summary come from the FIRST contributing repository,
+	// the same anchor the turn capture's artifact row has always used.
+	RepositoryID string
+	Summary      string
+	Manifest     []string
+	Redactions   int
+}
+
+// assemblePatch is the shared half of every patch artifact: it drops the
+// repositories that changed nothing, runs the secret scan on EACH repository's
+// hunks BEFORE the document is assembled and before the size bound (bytes that
+// survive into the artifact are bytes that were scanned — truncation can never
+// be the reason a value went out whole), joins the survivors into one document
+// with the multi-repository headers, and names the artifact. The single-
+// repository case — every run this platform has shown a human — is named
+// `patch-<repo>`; more than one says how many it holds. ok=false is the
+// absence of anything to publish: no repository said anything new.
+func assemblePatch(redact func(string) (string, int), diffs []patchRepoDiff) (patchAssembly, bool) {
+	var (
+		a       patchAssembly
+		doc     strings.Builder
+		first   string
+		counted int
+	)
+	for _, d := range diffs {
+		raw := d.Raw
+		if strings.TrimSpace(raw) == "" {
+			continue // this repository's tree says nothing the base did not
+		}
+		if redact != nil {
+			n := 0
+			if raw, n = redact(raw); n < 0 {
+				n = 0
+			}
+			a.Redactions += n
+		}
+		if counted > 0 {
+			doc.WriteString(fmt.Sprintf("# repository %s\n", d.RepoName))
+		} else {
+			first = d.RepoName
+			a.RepositoryID = d.RepositoryID
+			a.Summary = d.Summary
+		}
+		doc.WriteString(raw)
+		if !strings.HasSuffix(raw, "\n") {
+			doc.WriteString("\n")
+		}
+		a.Manifest = append(a.Manifest, d.Manifest...)
+		counted++
+	}
+	if counted == 0 {
+		return patchAssembly{}, false
+	}
+	a.Name = "patch-" + first
+	if counted > 1 {
+		a.Name = fmt.Sprintf("patch-%d-repositories", counted)
+	}
+	a.Document = doc.String()
+	return a, true
+}
+
 // capturePatches publishes the unit's ONE patch artifact for a finished
 // capture: every repository the unit moved in one document, because a reader of
 // a tour wants "what this attempt changed", not one artifact per repository.
-// The single-repository case — every run this platform has shown a human — is
-// named `patch-<repo>`; more than one says how many it holds.
-//
-// Best-effort by the checkpoint's own rule: the caller warns on an error and
-// the turn still ends. The edits live in git either way.
+// The reading of each repository is the unit's own (checkouts and bases come
+// from its capture); the assembling is the shared one every patch artifact
+// gets. Best-effort by the checkpoint's own rule: the caller warns on an error
+// and the turn still ends. The edits live in git either way.
 func (u *Unit) capturePatches(ctx context.Context, outcomes []CaptureOutcome) (string, error) {
 	p := u.unitPatchCapture()
 	if p == nil {
 		return "", nil
 	}
 	git := u.patchReader()
-	var (
-		document   strings.Builder
-		manifest   []string
-		repos      []string
-		scope      PatchRequest
-		redactions int
-	)
+	var diffs []patchRepoDiff
 	for _, res := range outcomes {
 		repo := repoFor(u.Repos, res.RepositoryID)
 		if repo.CheckoutPath == "" {
@@ -212,54 +289,31 @@ func (u *Unit) capturePatches(ctx context.Context, outcomes []CaptureOutcome) (s
 		if err != nil {
 			return "", err
 		}
-		if strings.TrimSpace(raw) == "" {
-			continue // this repository's tree says nothing the base did not
-		}
-		// The scan runs on each repository's hunks BEFORE the document is
-		// assembled and before the size bound: bytes that survive into the
-		// artifact are the bytes that were scanned, and truncation can never be
-		// the reason a value went out whole.
-		if p.Redact != nil {
-			n := 0
-			if raw, n = p.Redact(raw); n < 0 {
-				n = 0
-			}
-			redactions += n
-		}
-		if len(repos) > 0 {
-			document.WriteString(fmt.Sprintf("# repository %s\n", res.RepoName))
-		} else {
-			scope = PatchRequest{
-				OrganizationID: u.OrganizationID, ProjectID: u.ProjectID,
-				WorkspaceID: u.WorkspaceID, ConversationID: u.ConversationID,
-				TurnID: u.TurnID, RepositoryID: res.RepositoryID,
-				WorkerID: u.WorkerID, FencingToken: u.FencingToken,
-				Summary:       res.Summary,
-				ExcludedPaths: u.ExcludedPaths,
-			}
-		}
-		document.WriteString(raw)
-		if !strings.HasSuffix(raw, "\n") {
-			document.WriteString("\n")
-		}
-		manifest = append(manifest, res.Manifest...)
-		repos = append(repos, res.RepoName)
+		diffs = append(diffs, patchRepoDiff{
+			RepositoryID: res.RepositoryID, RepoName: res.RepoName, Raw: raw,
+			Manifest: res.Manifest, Summary: res.Summary,
+		})
 	}
-	if len(repos) == 0 {
+	assembled, ok := assemblePatch(p.Redact, diffs)
+	if !ok {
 		return "", nil
 	}
-	scope.Name = "patch-" + repos[0]
-	if len(repos) > 1 {
-		scope.Name = fmt.Sprintf("patch-%d-repositories", len(repos))
-	}
-	scope.Manifest = manifest
-	if redactions > 0 {
+	if assembled.Redactions > 0 {
 		// Out loud, because the store's redaction_count counts the exclusion
 		// filter and cannot see this one: a materialized value the agent echoed
 		// into a tracked file. "The scanner ran and fired" stays
 		// distinguishable from "there was nothing to find" (ADR-0020 D4).
 		p.logger().Warn("the patch artifact was redacted before storage",
-			slog.String("name", scope.Name), slog.Int("redactions", redactions))
+			slog.String("name", assembled.Name), slog.Int("redactions", assembled.Redactions))
 	}
-	return p.Capture(ctx, scope, document.String())
+	return p.Capture(ctx, PatchRequest{
+		OrganizationID: u.OrganizationID, ProjectID: u.ProjectID,
+		WorkspaceID: u.WorkspaceID, ConversationID: u.ConversationID,
+		TurnID: u.TurnID, RepositoryID: assembled.RepositoryID,
+		WorkerID: u.WorkerID, FencingToken: u.FencingToken,
+		Name:          assembled.Name,
+		Summary:       assembled.Summary,
+		Manifest:      assembled.Manifest,
+		ExcludedPaths: u.ExcludedPaths,
+	}, assembled.Document)
 }

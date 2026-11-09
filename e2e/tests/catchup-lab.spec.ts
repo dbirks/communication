@@ -74,7 +74,7 @@ const REPO_BINDING = "app";
 const PROFILE = "m4-implementer";
 const PONG = "Reply with exactly the word: pong";
 
-/** A worker prepare plus one printf node is minutes, not seconds; bounded. */
+/** A worker prepare plus the two process.exec nodes is minutes, not seconds; bounded. */
 const RUN_TIMEOUT_MS = Number(process.env.E2E_CATCHUP_RUN_TIMEOUT_MS ?? 420_000);
 /** The brief's own bound on the generator: poll every 10s for up to 6 min. */
 const TOUR_TIMEOUT_MS = Number(process.env.E2E_CATCHUP_TOUR_TIMEOUT_MS ?? 360_000);
@@ -238,15 +238,18 @@ async function postJson<T>(
 const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled", "interrupted"];
 
 /**
- * The run the generator owes a tour for: one deterministic `process.exec` node
- * (the same twin trick every lab suite uses — no model endpoint on the worker,
- * no real agent turn), so the cheapest thing that still MOVES A RUN TO A
- * TERMINAL STATUS is what the tour is written about. `goal` is the sentence
- * the DATA block quotes, so the story has something true to say.
+ * The run the generator owes a tour for: one deterministic `process.exec` note
+ * node plus one deterministic `process.exec` EDIT node (the same twin trick
+ * every lab suite uses — no model endpoint on the worker, no real agent turn),
+ * so the cheapest thing that still MOVES A RUN TO A TERMINAL STATUS *and moves
+ * the workspace* is what the tour is written about. The edit is what makes the
+ * run's node boundary file a `patch` artifact (ADR-0078 § Patch artifacts),
+ * which leg 1 then asserts; `goal` is the sentence the DATA block quotes, so
+ * the story has something true to say.
  */
 const SCRATCH_YAML = (
   slug: string,
-): string => `# catchup-lab scratch run: one deterministic process.exec node.
+): string => `# catchup-lab scratch run: a deterministic process.exec note + one workspace edit.
 apiVersion: communication.dev/v1alpha1
 kind: Pipeline
 metadata:
@@ -295,6 +298,31 @@ spec:
       required: [note]
       properties:
         note: {type: string}
+  - id: edit
+    kind: process.exec
+    dependsOn: [note]
+    timeoutSeconds: 120
+    retry:
+      maxAttempts: 1
+    config:
+      executable: sh
+      args:
+      - -c
+      - |
+        for d in "repos/$REPO" "../repos/$REPO"; do
+          test -d "$d" && { REPO_DIR="$d"; break; }
+        done
+        test -n "$REPO_DIR" || { echo "no checkout for $REPO in the run workspace" >&2; exit 1; }
+        printf 'print("edited by ${STAMP}")\\n' >> "$REPO_DIR/hello.py"
+        tail -n 1 "$REPO_DIR/hello.py"
+      env:
+        REPO: \${{ inputs.repository }}
+      outputExtraction: {mode: none}
+    outputs:
+      type: object
+      required: [exit_code]
+      properties:
+        exit_code: {type: integer}
   resultBindings:
     note: \${{ nodes.note.outputs.note }}
 `;
@@ -490,11 +518,13 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
     }
 
     // --- the diff half (T16 "diffs", ADR-0078 § Patch artifacts). ----------
-    // The worker files ONE bounded `patch` artifact per unit capture and the
-    // tour may cite a hunk of it. The two are not equally assertable: the
-    // artifact is the worker's own doing, while a cited hunk depends on a model
-    // choosing the excerpt — so the artifact is asserted and the evidence is
-    // logged, then checked for the one thing that must hold either way.
+    // The worker files ONE bounded `patch` artifact per unit capture AND per
+    // finished node attempt whose workspace moved (internal/worker/attempt_patch.go),
+    // and the tour may cite a hunk of one. The two are not equally assertable:
+    // the artifact is the worker's own doing — asserted below against the
+    // edited workspace — while a cited hunk depends on a model choosing the
+    // excerpt, so the citation is logged and then checked for the one thing
+    // that must hold either way.
     const artifactList = await getJson<{
       artifacts: {
         id: string;
@@ -510,6 +540,24 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
     const diffEvidence = latest.stops.flatMap((stop) =>
       (stop.evidence ?? []).filter((entry) => entry["type"] === "diff"),
     );
+    // The scratch run now EDITS its workspace: the `edit` node appends a line
+    // to hello.py in the repository checkout, and a COMPLETED run means that
+    // node completed — its boundary capture files the attempt's patch artifact
+    // BEFORE the run turns terminal (the capture runs inside the executor, the
+    // terminal row after it), so ≥1 is a deterministic floor for this run, not
+    // a variance. A run that failed may have died before the edit ever ran:
+    // nothing was changed then, and nothing may be claimed.
+    if (runStatus === "completed") {
+      expect(
+        runPatches.length,
+        `run ${runId} completed after editing the workspace but filed no patch artifact — ` +
+          `the node-boundary capture (ADR-0078 § Patch artifacts) never landed; the run's ` +
+          `artifact kinds are [${artifactList.artifacts
+            .filter((a) => a.run_id === runId)
+            .map((a) => a.kind)
+            .join(", ")}]`,
+      ).toBeGreaterThanOrEqual(1);
+    }
     console.log(
       `catchup-lab: run ${runId} filed ${runPatches.length} patch artifact(s) ` +
         `(${runPatches.map((p) => `${p.id.slice(0, 8)}/${p.size_bytes}B`).join(", ") || "none"}) ` +
