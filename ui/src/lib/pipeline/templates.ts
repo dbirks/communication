@@ -85,7 +85,7 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
     id: "plan-with-approval",
     label: "Plan with approval",
     description:
-      "inputs goal, repository: survey the checkout, plan with a chat model, hold behind a maintainer approval, publish plan.md",
+      "inputs goal, repository: survey the checkout, plan with a model call, hold behind a maintainer approval, publish plan.md",
     source: "docs/samples/home",
     documentYaml: planWithApprovalYaml,
     stepCount: stepCountOf(planWithApprovalYaml),

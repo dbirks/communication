@@ -417,9 +417,9 @@ describe("approval detail (4g)", () => {
     expect(copy).toContain("Approval not found");
     expect(copy.toLowerCase()).toContain("not found");
     expect(copy).toContain("This approval doesn't exist, or you don't have access to it.");
-    // The way back is the reader's own Inbox, not a scaffold for the gate.
-    const back = within(notFound).getByRole("link", { name: "Back to Inbox" });
-    expect(back.getAttribute("href")).toBe("/inbox");
+    // The way back is Today, not a scaffold for the gate (finding 03).
+    const back = within(notFound).getByRole("link", { name: "Back to Today" });
+    expect(back.getAttribute("href")).toBe("/");
     // The gate's own scaffold is gone: no strip, no summary, no decide rail.
     expect(screen.queryByTestId(`approval-detail-strip-${T}`)).toBeNull();
     expect(screen.queryByTestId(`approval-detail-loading`)).toBeNull();

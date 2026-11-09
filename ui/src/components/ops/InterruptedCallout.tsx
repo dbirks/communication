@@ -11,7 +11,7 @@
  * - otherwise `SchedulerStatus.lease_expirations` > 0: the reconciler
  *   observed N attempt leases die mid-flight since this replica started, but
  *   no endpoint lists those attempts by name, so the callout says exactly
- *   that and links to the board instead of inventing rows.
+ *   that and links to Today instead of inventing rows.
  *
  * Zero interrupted runs and zero lease expirations → nothing renders: empty
  * is healthy, and a stale heartbeat must never fabricate a finding.
@@ -121,9 +121,9 @@ export function InterruptedCallout({ leaseExpirations }: InterruptedCalloutProps
             ))}
             {named.length > 5 ? (
               <li className="text-[12.5px] text-muted">
-                … and {named.length - 5} more on the{" "}
-                <Link to={routes.board()} className="underline">
-                  board
+                … and {named.length - 5} more{" "}
+                <Link to={routes.home()} className="underline">
+                  on Today
                 </Link>
               </li>
             ) : null}
@@ -141,9 +141,9 @@ export function InterruptedCallout({ leaseExpirations }: InterruptedCalloutProps
           <p className="mt-2 font-mono text-[11px] text-ink-2" data-testid="ops-interrupted-leases">
             ⊘ {leaseExpirations} lease expiration(s) since replica start — each one is a node
             attempt the reconciler observed die mid-flight
-            {leaseClause}; see the{" "}
-            <Link to={routes.board()} className="underline">
-              board
+            {leaseClause}; see{" "}
+            <Link to={routes.home()} className="underline">
+              Today
             </Link>
           </p>
         ) : null}

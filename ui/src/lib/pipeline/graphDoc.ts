@@ -90,7 +90,7 @@ export const STEP_LIBRARY: {
   {
     kind: "model.chat",
     label: "Ask a model",
-    description: "Send messages to a chat model and capture its reply.",
+    description: "Send prompts to a model and capture its reply.",
     runnable: true,
   },
   {

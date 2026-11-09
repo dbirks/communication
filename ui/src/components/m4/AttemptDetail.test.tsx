@@ -293,7 +293,7 @@ describe("the pane's own behaviour (run-view-3b/4a)", () => {
     expect(screen.queryByTestId("attempt-stdout")).toBeNull();
   });
 
-  it("says plainly when an attempt owns no conversation", () => {
+  it("says plainly when an attempt owns no agent session", () => {
     render(
       <AttemptDetail
         attempt={{ ...implementAttempts[1], conversation_id: null, turn_id: null }}
@@ -308,7 +308,7 @@ describe("the pane's own behaviour (run-view-3b/4a)", () => {
       />,
     );
     expect(screen.getByTestId("attempt-no-conversation").textContent).toContain(
-      "reports no conversation",
+      "reports no agent session",
     );
   });
 });

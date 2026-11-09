@@ -456,7 +456,7 @@ function DialogBody({ conversation, onClose, onStarted }: DialogBodyProps) {
           </section>
 
           <p className="font-mono text-[11.5px] text-muted" data-testid="handoff-fresh-sessions">
-            The run starts fresh agent sessions; the thread's conversation is not replayed.
+            The run starts fresh agent sessions; the thread's transcript is not replayed.
           </p>
 
           {submitError ? (

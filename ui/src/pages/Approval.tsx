@@ -72,7 +72,8 @@ export default function ApprovalPage() {
   if (gate.isError) {
     // The outsider's deep link (contract § 7.2 W9): the control plane answered
     // 404 for a gate they cannot see — say so in plain words, name no project,
-    // show no scaffold, and offer the way back to their own Inbox.
+    // show no scaffold, and offer the way back to Today (finding 03: the Inbox
+    // is gone; `/inbox` only redirects).
     if (problemOf(gate.error).status === 404) {
       return (
         <Page layout="reading" title="Approval not found" testid="approval-not-found">
@@ -81,8 +82,8 @@ export default function ApprovalPage() {
               This approval doesn't exist, or you don't have access to it.
             </p>
             <p className="text-[13.5px]">
-              <Link to={routes.inbox()} className="text-accent-text hover:text-ink">
-                Back to Inbox
+              <Link to={routes.home()} className="text-accent-text hover:text-ink">
+                Back to Today
               </Link>
             </p>
           </section>

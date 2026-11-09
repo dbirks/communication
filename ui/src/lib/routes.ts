@@ -38,8 +38,9 @@ export const routes = {
   home: (): string => "/",
   /** Legacy addresses (finding 03): `/inbox` and `/board` are no longer
    * mounted pages — `App.tsx` redirects both to `/` the way `/ops` redirects
-   * to Settings. The builders stay so the pages that still link them compile
-   * until their copy is rebuilt. */
+   * to Settings. No surface links them any more (the interrupted-run callout
+   * and the approval 404 page both send the reader to Today); the builders
+   * stay because they are the addresses the redirect answers. */
   inbox: (): string => "/inbox",
   board: (): string => "/board",
   threads: (): string => "/threads",

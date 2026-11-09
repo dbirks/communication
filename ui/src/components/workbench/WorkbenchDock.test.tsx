@@ -162,7 +162,7 @@ describe("WorkbenchDock", () => {
     expect(screen.getByTestId("node-pane-crumb").textContent).toContain("plan");
   });
 
-  it("rides the shared conversation when a takeover re-run is not stamped yet, and says the factory took the conversation back", async () => {
+  it("rides the shared agent session when a takeover re-run is not stamped yet, and says the factory took the thread back", async () => {
     const prior: Attempt = {
       ...wireAttempt,
       id: "01987b25-000a-7000-8000-abcdef012345",
@@ -197,7 +197,7 @@ describe("WorkbenchDock", () => {
     ]);
     const note = await screen.findByTestId("dock-attempt-restarting");
     expect(note.textContent).toContain("Attempt 2 is starting");
-    expect(note.textContent).toContain("the factory took the conversation back");
+    expect(note.textContent).toContain("the factory took this thread back");
     expect(note.textContent).toContain("attempt 1 opened");
     // The SAME conversation the interrupted attempt opened: its control
     // badge is live on this pane, not an empty dock.
@@ -269,7 +269,7 @@ describe("WorkbenchDock", () => {
     // conversation back and the panel keeps attempt 1's conversation.
     const note = await screen.findByTestId("dock-attempt-restarting");
     expect(note.textContent).toContain("Attempt 2 is starting");
-    expect(note.textContent).toContain("the factory took the conversation back");
+    expect(note.textContent).toContain("the factory took this thread back");
   });
 
   it("renders the conversation panel for an agent.acp attempt, as the main content", async () => {

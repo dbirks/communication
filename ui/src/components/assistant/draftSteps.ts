@@ -124,10 +124,11 @@ export function humanRouteLabel(route: string): string {
       return withId("Artifact", second);
     case "settings":
       return second.length > 0 ? `Settings · ${humanizeSegment(second)}` : "Settings";
+    /* Finding 03: Inbox and Board left the nav — `/inbox` and `/board` only
+       redirect to Today, so the chip names where the reader actually lands. */
     case "inbox":
-      return "Inbox";
     case "board":
-      return "Board";
+      return "Today";
     case "login":
       return "Sign in";
   }

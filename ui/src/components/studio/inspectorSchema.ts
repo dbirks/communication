@@ -397,7 +397,7 @@ function configSections(kind: string): InspectorSection[] {
 
 const KIND_WORD: Record<string, string> = {
   "agent.acp": "Coding agent",
-  "model.chat": "Model chat",
+  "model.chat": "Ask a model",
   "process.exec": "Command",
   condition: "Condition",
   "human.approval": "Human approval",

@@ -707,6 +707,15 @@ describe("the collapsed rail (redesign 3a/4a)", () => {
     expect(tip.getAttribute("role")).toBe("tooltip");
     expect(tip.textContent).toContain("Projects");
     expect(tile.getAttribute("aria-describedby")).toBe("rail-tooltip");
+    // 3a: the label is the DARK fill (the ink token, never a grey panel) and it
+    // points back at the rail with its own rotated-square arrow.
+    expect(tip.className).toContain("bg-ink");
+    expect(tip.className).toContain("text-surface");
+    const arrow = tip.querySelector('[data-testid="rail-tooltip-arrow"]') as HTMLElement;
+    expect(arrow).toBeTruthy();
+    expect(arrow.getAttribute("aria-hidden")).toBe("true");
+    expect(arrow.className).toContain("bg-ink");
+    expect(arrow.className).toContain("rotate-45");
     fireEvent.pointerOut(tile, { pointerType: "mouse" });
     await waitFor(() => expect(screen.queryByTestId("rail-tooltip")).toBeNull(), {
       timeout: READ_MS,

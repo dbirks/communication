@@ -155,7 +155,7 @@ export function WorkbenchDock({
     return (
       <p className="font-mono text-[11px] text-muted" data-testid="workbench-dock-empty">
         Select a node on the graph — or a row on the timeline or the tree — to read its attempts,
-        conversation and gates here.
+        agent session and gates here.
       </p>
     );
   }
@@ -467,8 +467,8 @@ function AgentDock({
       <div className="space-y-[10px]" data-testid="dock-conversation">
         <p className="text-[12px] text-muted" data-testid="dock-attempt-restarting">
           {tookBack
-            ? `Attempt ${attempt.attempt_number} is starting — the factory took the conversation back; its new turn continues in the conversation attempt ${fallback.attemptNumber} opened.`
-            : `Attempt ${attempt.attempt_number} is starting — the factory re-ran this node; its new turn continues in the conversation attempt ${fallback.attemptNumber} opened.`}
+            ? `Attempt ${attempt.attempt_number} is starting — the factory took this thread back; its new turn continues in the agent session attempt ${fallback.attemptNumber} opened.`
+            : `Attempt ${attempt.attempt_number} is starting — the factory re-ran this node; its new turn continues in the agent session attempt ${fallback.attemptNumber} opened.`}
         </p>
         <AgentConversationPanel
           conversationId={fallback.conversationId}
@@ -493,7 +493,7 @@ function AgentDock({
             testid: "dock-work-empty",
             copy: "Nothing here yet — the agent has not answered.",
           }}
-          errorFallback="The agent's conversation for this attempt could not be read."
+          errorFallback="The agent's session for this attempt could not be read."
           composer={{
             inputId: `workbench-prompt-${attempt.id}`,
             rows: 3,
@@ -535,7 +535,7 @@ function AgentDock({
           testid: "dock-work-empty",
           copy: "Nothing here yet — the agent has not answered.",
         }}
-        errorFallback="The agent's conversation for this attempt could not be read."
+        errorFallback="The agent's session for this attempt could not be read."
         composer={{
           inputId: `workbench-prompt-${attempt.id}`,
           rows: 3,

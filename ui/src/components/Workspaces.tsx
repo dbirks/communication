@@ -258,7 +258,7 @@ export function WorkspaceWidget({ projectId, conversationId }: WorkspaceWidgetPr
   if (workspaces.isPending) {
     return (
       <p className="font-mono text-[11px] text-muted" role="status">
-        · checking this conversation's workspace…
+        · checking this thread's workspace…
       </p>
     );
   }

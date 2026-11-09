@@ -638,7 +638,7 @@ function continuityCopy(attempt: Attempt): ContinuityCopy | null {
   switch (context.mode) {
     case "continue_workspace":
       return {
-        body: "the worktree keeps the previous attempt's uncommitted edits, and the next attempt runs a new agent turn in that same workspace. The conversation is not continued — the agent starts fresh with what is on disk.",
+        body: "the worktree keeps the previous attempt's uncommitted edits, and the next attempt runs a new agent turn in that same workspace. The agent session is not continued — the agent starts fresh with what is on disk.",
         degraded,
       };
     case "restart_turn":
@@ -719,7 +719,7 @@ export function AttemptAgentWork({ attempt, projectId, node = null }: AttemptAge
   if (!attempt.conversation_id) {
     return (
       <p className="text-[12px] text-muted" data-testid="attempt-no-conversation">
-        This attempt reports no conversation, so there is no agent work to read here — only its
+        This attempt reports no agent session, so there is no agent work to read here — only its
         outputs and evidence below.
       </p>
     );
@@ -794,7 +794,7 @@ function AttemptConversationWork({
               testid: "attempt-work-empty",
               copy: "Nothing here yet for this turn — the agent has not answered.",
             }}
-            errorFallback="The agent's conversation for this attempt could not be read."
+            errorFallback="The agent's session for this attempt could not be read."
             composer={{
               inputId: `attempt-prompt-${attempt.id}`,
               rows: 2,

@@ -360,6 +360,54 @@ describe("DecisionBar", () => {
     );
     expect(screen.queryByText(/Your decision is recorded/)).toBeNull();
   });
+  it("the conflict sentence has the finding-12 shape: who, what, and the way out", async () => {
+    // Exact copy (finding 12): `{name} {verb} this {age} ago. Your decision
+    // wasn't recorded.` — the person, the moment, and (with a run on the row)
+    // the door to the decision that did land. No build words, no "winner".
+    const winner = {
+      id: "01987a63-7777-7000-8000-cccc00000006",
+      display_name: "Priya N.",
+      email: null,
+    };
+    const { wrapper } = harness([
+      { path: "/api/v1/users", body: { items: [winner] } },
+      { path: `/api/v1/projects/${approval.project_id}/members`, body: { items: [] } },
+      {
+        path: decidePath,
+        method: "POST",
+        status: 409,
+        body: {
+          type: "https://communication.dev/problems/approval-already-decided",
+          title: "already decided",
+          status: 409,
+          approval_id: approval.id,
+          approval: {
+            state: "decided",
+            decision: "approved",
+            decided_by: winner.id,
+            decided_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+            version: 4,
+          },
+        },
+      },
+    ]);
+    render(
+      <DecisionBar approval={{ ...approval, run_id: "01987b00-2222-7000-8000-bbbbbbbbbbbb" }} />,
+      { wrapper },
+    );
+
+    fireEvent.click(screen.getByTestId("decision-approve"));
+    await vi.advanceTimersByTimeAsync(6000);
+    const line = screen.getByTestId("decision-conflict");
+    expect(line.textContent).toContain(
+      "Priya N. approved this 4m ago. Your decision wasn't recorded.",
+    );
+    // The sentence ends in an action, and names no internal vocabulary.
+    expect(line.getAttribute("role")).toBe("alert");
+    expect(screen.getByTestId("decision-conflict-run").textContent).toBe("See the run");
+    expect(line.textContent?.toLowerCase()).not.toMatch(/409|conflict|winner|cas|version/);
+  });
+
   it("a plain error restores the bar with a Try again line", async () => {
     const { wrapper, requests } = harness([
       { path: decidePath, method: "POST", status: 500, body: { title: "boom", status: 500 } },

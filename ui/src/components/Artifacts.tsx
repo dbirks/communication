@@ -609,7 +609,7 @@ export function ArtifactDetail({
                 className="font-mono text-[11px] text-accent-text hover:text-ink"
                 data-testid="artifact-conversation-link"
               >
-                from conversation {shortId(artifact.conversation_id)}
+                from thread {shortId(artifact.conversation_id)}
               </Link>
             ) : null}
           </div>

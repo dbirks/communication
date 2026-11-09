@@ -844,6 +844,7 @@ function Rail({
         >
           <span
             aria-hidden="true"
+            data-testid="rail-tooltip-arrow"
             className="absolute -left-[4px] top-1/2 h-[8px] w-[8px] -translate-y-1/2 rotate-45 bg-ink"
           />
           {tip.label}

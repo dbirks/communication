@@ -108,8 +108,8 @@ describe("readableLinkLabel / humanRouteLabel (rcn-review13-2f: no raw-path chip
   });
 
   it("never prints a raw path: an empty or path label gets a humanised route", () => {
-    expect(readableLinkLabel({ label: "", route: "/inbox" })).toBe("Inbox");
-    expect(readableLinkLabel({ label: "/inbox", route: "/inbox" })).toBe("Inbox");
+    expect(readableLinkLabel({ label: "", route: "/inbox" })).toBe("Today");
+    expect(readableLinkLabel({ label: "/inbox", route: "/inbox" })).toBe("Today");
     expect(readableLinkLabel({ label: "/workflows/pl-9", route: "/workflows/pl-9" })).toBe(
       "Workflow pl-9",
     );
@@ -127,7 +127,7 @@ describe("readableLinkLabel / humanRouteLabel (rcn-review13-2f: no raw-path chip
 
   it("humanises the common app routes with a short id", () => {
     expect(humanRouteLabel("/")).toBe("Home");
-    expect(humanRouteLabel("/board")).toBe("Board");
+    expect(humanRouteLabel("/board")).toBe("Today");
     expect(humanRouteLabel("/threads/01TABCDEF")).toBe("Thread 01TABCDE…");
     expect(humanRouteLabel("/p/prj-1/runs")).toBe("Project prj-1");
     expect(humanRouteLabel("/runs/r-1")).toBe("Run r-1");
@@ -211,7 +211,7 @@ describe("readableLinkLabel — no raw id in a link label (rcn-review17-2f)", ()
         route: "/workflows/pl-9",
       }),
     ).toBe("Workflow pl-9");
-    expect(readableLinkLabel({ label: "(01a1aa60…)", route: "/inbox" })).toBe("Inbox");
+    expect(readableLinkLabel({ label: "(01a1aa60…)", route: "/inbox" })).toBe("Today");
   });
 });
 
