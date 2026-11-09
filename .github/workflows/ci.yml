@@ -111,8 +111,13 @@ jobs:
       # .release-assets cache (restore → fetch → save-immediately), so the
       # install steps below read a verified local copy instead of hitting the
       # intermittently-504ing release CDN directly. Their own curl downloads
-      # remain as the fallback path, and EVERY checksum check in those steps
-      # runs unchanged either way (the cache file is re-verified in-place).
+      # remain as the fallback path, and the PINNED checksum checks in those
+      # steps run unchanged either way (the cache file is re-verified
+      # in-place). Only the release's own checksum sidecar — the second,
+      # same-channel witness — is now fetched on the network path alone: it
+      # verifies nothing on its own, and curling it while the tarball came from
+      # the verified cache red this job on a 504 (CI run 42570366041, step
+      # "Install pinned apm (real APM resolve tests)").
       - name: restore release assets cache
         id: release_assets_cache
         uses: actions/cache/restore@v4
@@ -140,9 +145,10 @@ jobs:
       # docs/compatibility/SANDBOX.md.
       # The digest is pinned *here* rather than read from the release's own
       # SHA256SUMS.txt, because that file arrives over the same channel as the
-      # tarball and verifies nothing on its own; it is checked as a second,
-      # independent witness all the same, and the *extracted* binary is checked
-      # too so the hash that fails names the layer that drifted.
+      # tarball and verifies nothing on its own; it is fetched and checked as a
+      # second, independent witness on the network-download path only, and the
+      # *extracted* binary is checked too (unconditionally, like the pinned
+      # digest above) so the hash that fails names the layer that drifted.
       # A failed fetch or a hash mismatch fails this step loudly rather than
       # degrading to a skip: a silently absent sandbox binary is how these tests
       # stop being evidence without anyone noticing (AGENTS.md: the compatibility
@@ -171,18 +177,27 @@ jobs:
           dl="$RUNNER_TEMP/nono-dl"; bin="$RUNNER_TEMP/nono-bin"
           mkdir -p "$dl" "$bin"
           cached="$GITHUB_WORKSPACE/.release-assets/$asset.tar.gz"
+          sidecar=""
           if [ -s "$cached" ]; then
-            echo "using cached release asset $cached (verified by the checks below)"
+            echo "using cached release asset $cached (verified by the pinned checks below)"
             cp "$cached" "$dl/$asset.tar.gz"
           else
             curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/$asset.tar.gz" \
               "https://github.com/nolabs-ai/nono/releases/download/v${ver}/$asset.tar.gz"
+            # The release's own SHA256SUMS.txt is fetched only alongside a
+            # network download: it arrives over the same channel as the
+            # tarball, so it is a second witness, never the authority (the
+            # pinned $tarsum / $binsum checks below run unconditionally either
+            # way). Skipping it on the cache path is what keeps a CDN 504 on
+            # this URL from failing a run whose tarball was already verified
+            # locally.
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/SHA256SUMS.txt" \
+              "https://github.com/nolabs-ai/nono/releases/download/v${ver}/SHA256SUMS.txt"
+            sidecar=SHA256SUMS.txt
           fi
-          curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/SHA256SUMS.txt" \
-            "https://github.com/nolabs-ai/nono/releases/download/v${ver}/SHA256SUMS.txt"
           ( cd "$dl"
             printf '%s  %s.tar.gz\n' "$tarsum" "$asset" | sha256sum --strict --check -
-            sha256sum --ignore-missing --check SHA256SUMS.txt
+            [ -z "$sidecar" ] || sha256sum --ignore-missing --check "$sidecar"
             tar -xzf "$asset.tar.gz" -C "$bin" )
           printf '%s  %s/nono\n' "$binsum" "$bin" | sha256sum --strict --check -
           chmod 0755 "$bin/nono"
@@ -194,10 +209,12 @@ jobs:
       # docs/compatibility/APM.md pin. This is worker/Dockerfile's `executionbin`
       # apm leg verbatim: same release, same tarball digest, same
       # `sha256sum --strict --check`. The release's own `.sha256` sidecar is
-      # fetched and checked as a second, independent witness (it arrives over the
-      # same channel as the tarball, so it verifies nothing alone — the pin above
-      # is the authority), and the version the binary reports is checked too, so
-      # a failing step names the layer that drifted. A mismatch fails loudly:
+      # fetched and checked as a second, independent witness ON THE NETWORK
+      # DOWNLOAD PATH ONLY (it arrives over the same channel as the tarball, so
+      # it verifies nothing alone — the pinned $apmsum check below is the
+      # authority and runs on every path), and the version the binary reports
+      # is checked too, so a failing step names the layer that drifted. A
+      # mismatch fails loudly:
       # digest-comparison evidence produced by a different apm build is not
       # evidence about the pinned one.
       #
@@ -234,18 +251,27 @@ jobs:
           dl="$RUNNER_TEMP/apm-dl"; bin="$RUNNER_TEMP/apm-bin"
           mkdir -p "$dl" "$bin"
           cached="$GITHUB_WORKSPACE/.release-assets/$asset"
+          sidecar=""
           if [ -s "$cached" ]; then
-            echo "using cached release asset $cached (verified by the checks below)"
+            echo "using cached release asset $cached (verified by the pinned check below)"
             cp "$cached" "$dl/$asset"
           else
             curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/$asset" \
               "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}"
+            # The release's own .sha256 sidecar is fetched only alongside a
+            # network download: it arrives over the same channel as the
+            # tarball, so it is a second witness, never the authority (the
+            # pinned $apmsum check below runs unconditionally either way, and
+            # so do the extracted-binary and version checks). Skipping it on
+            # the cache path is what keeps a CDN 504 on the sidecar URL from
+            # failing a run whose tarball was already verified locally.
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/${asset}.sha256" \
+              "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}.sha256"
+            sidecar="$asset.sha256"
           fi
-          curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/${asset}.sha256" \
-            "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}.sha256"
           ( cd "$dl"
             printf '%s  %s\n' "$apmsum" "$asset" | sha256sum --strict --check -
-            sha256sum --strict --check "$asset.sha256"
+            [ -z "$sidecar" ] || sha256sum --strict --check "$sidecar"
             tar -xzf "$asset" -C "$bin" --strip-components=1 )
           test -x "$bin/apm"; test -d "$bin/_internal"
           chmod 0755 "$bin/apm"
