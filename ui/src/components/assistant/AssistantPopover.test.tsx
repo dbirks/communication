@@ -18,6 +18,8 @@ import { openAsk } from "./askControl";
 import { sectionOf } from "../Shell";
 
 const CONV = "conv-1";
+/** m5-assistant.spec.ts's verbatim ask (the e2e replica below posts it). */
+const QUESTION = "Which projects can I see, and is anything waiting for approval?";
 const OLD_CONV = "conv-old";
 const UNDATED_CONV = "conv-untitled";
 const NEW_CONV = "conv-new";
@@ -929,5 +931,41 @@ describe("a mount that names its own ask context (T16)", () => {
     expect(stub.posted).toHaveLength(0);
     // With nothing named, the chip stays what it always was: the page section.
     expect(screen.getByTestId("assistant-context-chip").textContent).toBe(sectionOf("/"));
+  });
+});
+
+/**
+ * m5-assistant:278 replica — the exact e2e ask path on the T16 build: Ctrl+J
+ * opens the popover (a bare chord ask: NOTHING posts), the question is typed
+ * into the composer and Enter sends it. The 8f6f378 context change rides only
+ * `openAsk()` and the header chip; this proves a typed ask still reaches the
+ * conversation's message route with the same body (`{text, context.route}`)
+ * the lab POST must answer — the e2e's failed run was a server-side 503
+ * `model_unreachable` on that POST (the question WAS sent), not a UI change.
+ */
+describe("the typed composer ask still posts (m5 ask path)", () => {
+  it("Ctrl+J opens without posting; Enter in the composer posts the question to the messages route", async () => {
+    const stub = stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "J", ctrlKey: true })));
+    await screen.findByTestId("assistant-popover");
+    // The bare chord sends nothing (no page askContext at a Shell mount).
+    expect(stub.posted).toHaveLength(0);
+    // The popover adopts the caller's newest conversation — conv-1, whose
+    // pending approval row is on screen (the m5 POST will carry that id).
+    await screen.findByTestId("assistant-approval-confirm");
+    const input = screen.getByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: QUESTION } });
+    // Enter (no Shift) is the composer's own send key (AssistantPanel).
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    // The popover adopted the caller's newest conversation — the m5 POST
+    // goes to ITS messages route, exactly as the e2e's response listener
+    // (`POST …/assistant/conversations/<id>/messages`) expects.
+    expect(stub.posted[0].conversationId).toBe(CONV);
+    expect(JSON.parse(stub.posted[0].body)).toEqual({
+      text: QUESTION,
+      context: { route: "/" },
+    });
   });
 });

@@ -493,7 +493,17 @@ function AnswerProse({
     />
   );
   return (
-    <div data-testid="assistant-answer" className="space-y-[6px]">
+    // a11y (axe link-in-text-block, WCAG 1.4.1): an inline link in the
+    // answer's running text must not rely on colour alone. The app's base
+    // rule underlines links inside `<p>` (`tokens.css`); a markdown LIST
+    // item is not a `<p>`, so its links ride no cue at all. The utility
+    // below extends the app's inline-link underline to EVERY link the
+    // reader draws in this answer — paragraphs keep the same treatment,
+    // list/quote links gain the one they were missing.
+    <div
+      data-testid="assistant-answer"
+      className="space-y-[6px] [&_a]:underline [&_a]:underline-offset-2"
+    >
       {chunks.map((chunk, index) => {
         if (chunk.type === "steps") {
           if (draftId === null) return <StepList key={index} lines={modelLines} />;

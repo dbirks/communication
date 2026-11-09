@@ -239,6 +239,46 @@ describe("MessageList", () => {
     expect(prose.querySelector("code")?.textContent).toBe("web");
   });
 
+  /**
+   * a11y (axe `link-in-text-block`, lab acceptance 42547338029): an inline
+   * link inside the answer's running text must carry a non-colour cue. The
+   * app's convention is an underline: the base rule draws it for links
+   * inside `<p>`, and the answer's root carries `[&_a]:underline` so links
+   * in blocks the paragraph rule cannot reach — a markdown LIST item — get
+   * the same cue. A colour-only link (accent on ink, 1.43:1 against the
+   * words around it) fails the gate for the whole screen.
+   */
+  it("underlines inline links in the answer — in a paragraph and in a list item", () => {
+    const message: AssistantMessage = {
+      ...assistantMessage(),
+      payload: {
+        ...assistantMessage().payload,
+        answer_markdown:
+          "See [M4 Exit](https://lab.test/p/01J) for the board.\n\n- Waiting: [the run](https://lab.test/p/01J/runs/4f2a) on its gate",
+        links: [],
+      } as AssistantMessage["payload"],
+    };
+    render(
+      <MessageList
+        messages={[message]}
+        onAnswerQuestion={() => {}}
+        onConfirmApproval={() => {}}
+        onDismissApproval={() => {}}
+        onGo={() => {}}
+      />,
+    );
+    const prose = screen.getByTestId("assistant-answer");
+    const paragraphLink = prose.querySelector("[data-testid='markdown-paragraph'] a");
+    const listLink = prose.querySelector("[data-testid='markdown-list'] a");
+    expect(paragraphLink?.getAttribute("href")).toBe("https://lab.test/p/01J");
+    expect(listLink?.getAttribute("href")).toBe("https://lab.test/p/01J/runs/4f2a");
+    // The underline class rides the answer's root, so every link under it —
+    // paragraph or list — is cued, and the offset matches the app's inline
+    // links (QuestionCard's convention).
+    expect(prose.className).toContain("[&_a]:underline");
+    expect(prose.className).toContain("[&_a]:underline-offset-2");
+  });
+
   it("renders a draft step list with its progress glyphs (2f)", () => {
     const steps = (): AssistantMessage => ({
       id: "m-steps",
