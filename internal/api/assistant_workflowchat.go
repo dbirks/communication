@@ -306,7 +306,7 @@ func (s *assistantLibraryDraftService) CreateLibraryDraft(ctx context.Context, c
 			"%w: the shared pipeline library needs the organization's library role", assistant.ErrForbidden)
 	}
 	pipe, err := s.store.CreatePipeline(ctx, caller, in.Slug, in.DisplayName,
-		"Drafted from a chat by the assistant (thread → workflow).")
+		"Drafted from a thread by the assistant.")
 	if err != nil {
 		return assistant.LibraryDraftResult{}, fmt.Errorf("assistant library draft: %w", err)
 	}
