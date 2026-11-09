@@ -238,7 +238,8 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     // Design 2c copy (pass-2 review): ONE verb for both arms — the schedule
     // arm's primary button reads `Add trigger`, not `Add schedule`.
     await expect(confirm).toHaveText("Add trigger");
-    await confirm.click();
+    // Register the wait BEFORE the click: a fast POST /schedules answer can
+    // land between the click and a late listener, hanging the wait.
     const post = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/projects/") &&
@@ -246,6 +247,7 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
         response.request().method() === "POST",
       { timeout: 30_000 },
     );
+    await confirm.click();
     const postResponse = await post;
     expect(
       postResponse.status(),
