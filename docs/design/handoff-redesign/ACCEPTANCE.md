@@ -1,6 +1,6 @@
 # Redesign handoff — TASKS.md acceptance checklist with evidence
 
-Evidence below was first gathered on **6727bc0**; the final SHA and its run are recorded at the end. CI 42516428780 success. Acceptance **42516428819 success on first attempt** (all jobs: lab-e2e 150 passed / 0 failed; verification two clean passes, final pass 162 screens 0 defects; m4 core-a/core-b/fence/fanout/watch/restore + regrade; github-loop).
+Evidence below was gathered on 6727bc0 → b430e61. **The final word is the Acceptance run on the commit that introduced this line** (it also closes a verification-loop hole: before it, a failed test that wrote no defect row could still count as a clean pass, which hid one failing proof on b430e61). CI 42516428780 success. Acceptance **42516428819 success on first attempt** (all jobs: lab-e2e 150 passed / 0 failed; verification two clean passes, final pass 162 screens 0 defects; m4 core-a/core-b/fence/fanout/watch/restore + regrade; github-loop).
 Specs below are in `e2e/`; "lab" = Acceptance lab-e2e job, "verif" = verification (emulator loop) job, "unit" = `pnpm --dir ui test` / `go test` in CI.
 
 ## Phase 1

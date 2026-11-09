@@ -10,7 +10,7 @@
 // instead of y=11..34, and rows 0..43 came back empty, i.e. the band painted
 // over the overview's own content. `scrollToTopForCapture` puts every scroll
 // container back at the top and waits two animation frames before the capture.
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 import { scrollToTopForCapture } from "../tests/helpers.js";
 

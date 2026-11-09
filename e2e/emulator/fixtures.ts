@@ -35,6 +35,11 @@
 // defect to out/<passId>/results.json. A journey that FAILS records a
 // kind=assertion defect (the failure is a real defect, not a harness
 // failure), so a red journey still lands in the report and the issue filer.
+// Recording that failure is NOT tied to asking for the `emu` handle: an
+// auto-instantiated `emuOutcome` fixture writes the assertion line for every
+// test built on this `test` — including the ones that only drive `browser`
+// (acceptance 42535038297: a `browser`-only test failed and recorded nothing,
+// so the suite went green around its own corpse).
 import { existsSync, statSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -143,6 +148,33 @@ export async function apiMutate(
 }
 
 const resultsFile = path.join(EMU_OUT_DIR, "results.json");
+
+/** The failure's first lines, flattened to one detail string (the shape
+ * both `emu.finish()` and the auto `emuOutcome` fixture record). */
+function errorHeadline(error: unknown, status: string): string {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : error != null && typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : String(error ?? status);
+  // eslint-disable-next-line no-control-regex -- intentional: strip ANSI escapes
+  return raw
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .split("\n")
+    .slice(0, 3)
+    .join(" ")
+    .trim();
+}
+
+/** Append JSONL lines to the pass's results.json, creating the pass dir. */
+async function appendResults(lines: string[]): Promise<void> {
+  if (lines.length === 0) return;
+  await mkdir(EMU_OUT_DIR, { recursive: true });
+  await appendFile(resultsFile, `${lines.join("\n")}\n`);
+}
 
 /**
  * The stable defect fingerprint: a hash of kind + journey + screen +
@@ -623,20 +655,13 @@ class EmuRecorder {
    * element is a real defect), then everything is appended to
    * results.json, one JSON object per line.
    */
-  async finish(status: string, error: unknown): Promise<void> {
+  async finish(status: string, error: unknown, outcome: EmuOutcome): Promise<void> {
     if (status !== "passed" && status !== "skipped") {
-      const raw =
-        error instanceof Error
-          ? error.message
-          : typeof error === "string"
-            ? error
-            : error != null && typeof (error as { message?: unknown }).message === "string"
-              ? (error as { message: string }).message
-              : String(error ?? status);
-      const message = raw.split("\n").slice(0, 3).join(" ").trim();
-      this.record("assertion", `assertion: ${message}`);
+      this.record("assertion", `assertion: ${errorHeadline(error, status)}`);
+      // This test's failure is now on the books — the auto `emuOutcome`
+      // fixture must not file a second assertion line for the same test.
+      outcome.assertionRecorded = true;
     }
-    await mkdir(EMU_OUT_DIR, { recursive: true });
     const lines = [
       ...this.screens.map((screen) =>
         JSON.stringify({ type: "screen", pass: EMU_PASS_ID, ...screen }),
@@ -648,9 +673,7 @@ class EmuRecorder {
         JSON.stringify({ type: "defect", pass: EMU_PASS_ID, ...defect }),
       ),
     ];
-    if (lines.length > 0) {
-      await appendFile(resultsFile, `${lines.join("\n")}\n`);
-    }
+    await appendResults(lines);
     if (this.defects.length > 0) {
       console.log(`[emu] ${this.journey}: ${this.defects.length} defect(s) recorded`);
       for (const defect of this.defects) {
@@ -665,15 +688,56 @@ function journeyOf(titlePath: readonly string[]): string {
   return titlePath[1] ?? titlePath[0];
 }
 
-export const test = base.extend<{ emu: Emu }>({
-  emu: async ({ page }, use, testInfo) => {
+/** Per-test note shared between the `emu` recorder and the auto
+ * `emuOutcome` fixture: `finish()` sets `assertionRecorded` when it wrote the
+ * test's assertion defect, so a failure is recorded exactly once — by the
+ * recorder when the journey asked for `emu`, by `emuOutcome` otherwise. */
+interface EmuOutcome {
+  assertionRecorded: boolean;
+}
+
+export const test = base.extend<{ emu: Emu; emuOutcome: EmuOutcome }>({
+  // Auto fixture: instantiated for EVERY test built on this `test`, whether
+  // or not it names `emu` — a test that only drives `browser`/`request`
+  // failed silently before acceptance 42535038297. Its teardown writes the
+  // kind=assertion line (journey = the test title) when the test did not
+  // pass and `emu.finish()` did not already record it. `emu` declares a
+  // dependency on `emuOutcome`, so THIS teardown runs last and always sees
+  // the recorder's marker.
+  emuOutcome: [
+    async ({}, use, testInfo) => {
+      const outcome: EmuOutcome = { assertionRecorded: false };
+      await use(outcome);
+      const status = testInfo.status ?? "failed";
+      if (status === "passed" || status === "skipped" || outcome.assertionRecorded) return;
+      const journey = testInfo.title;
+      const screen = "(no screen recorded)";
+      const detail = `assertion: ${errorHeadline(testInfo.error, status)}`;
+      await appendResults([
+        JSON.stringify({
+          type: "defect",
+          pass: EMU_PASS_ID,
+          kind: "assertion",
+          journey,
+          screen,
+          viewport: "(test level)",
+          detail,
+          fingerprint: fingerprintOf("assertion", journey, screen, detail),
+          screenshot: null,
+        }),
+      ]);
+      console.log(`[emu] ${journey}: assertion defect recorded (test failed, no emu run)`);
+    },
+    { auto: true },
+  ],
+  emu: async ({ page, emuOutcome }, use, testInfo) => {
     const recorder = new EmuRecorder(page, journeyOf(testInfo.titlePath));
     const emu: Emu = {
       expectFailure: (re, status) => recorder.expectFailure(re, status),
       screen: (badge, name) => recorder.screen(badge, name),
     };
     await use(emu);
-    await recorder.finish(testInfo.status ?? "failed", testInfo.error);
+    await recorder.finish(testInfo.status ?? "failed", testInfo.error, emuOutcome);
   },
 });
 

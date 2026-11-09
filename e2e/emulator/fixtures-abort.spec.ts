@@ -19,8 +19,7 @@
 // a pure function, no page, no server.
 //
 //   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts emulator/fixtures-abort.spec.ts
-import { test } from "@playwright/test";
-import { isBenignStreamAbort } from "./fixtures.js";
+import { isBenignStreamAbort, test } from "./fixtures.js";
 
 const input = (over: Partial<Parameters<typeof isBenignStreamAbort>[0]>) => ({
   errorText: "net::ERR_ABORTED",

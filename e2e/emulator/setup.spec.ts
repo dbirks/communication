@@ -1,8 +1,9 @@
 // Setup project (runs first, once per pass): sign the lab's identities in
 // through the mock IdP and save each browser's storage state, so the
 // journey tests start signed-in and never pay the OIDC redirect chain
-// twice. No journey logic here — the emu fixture is not used, so nothing
-// is recorded.
+// twice. No journey logic here — the `emu` recorder is not used, but the
+// extended fixture's auto `emuOutcome` still files an assertion defect if a
+// sign-in test fails (a broken setup must never look like a clean pass).
 //
 // admin  — the org admin (bootstrap subject, COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS)
 //          with the library role; plays the workflows journeys.
@@ -10,7 +11,7 @@
 //          probes/m4/seed.sh); the only seeded identity that owns a project,
 //          so the thread journey (New thread needs a writable project) is
 //          hers, not the org admin's.
-import { test } from "@playwright/test";
+import { test } from "./fixtures.js";
 import { mkdir } from "node:fs/promises";
 import { signIn } from "../tests/helpers.js";
 import { EMU_ALICE_STATE, EMU_OUT_DIR, EMU_ADMIN_STATE } from "./env.js";

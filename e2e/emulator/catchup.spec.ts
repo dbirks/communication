@@ -1081,11 +1081,21 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         ).toBeVisible({ timeout: 30_000 });
         await expect(empty).toContainText(/Nothing is running and nothing is waiting on you/i);
         await nobody.getByTestId("home-start-run").click({ timeout: 15_000 });
+        // `home-start-run-dialog` is a bare wrapper whose only child is
+        // RunFormDialog's `fixed inset-0` overlay — the wrapper's own box is
+        // empty, so Playwright calls it HIDDEN even though the dialog opened
+        // (acceptance 42535038297: 34 polls all "resolved to the div"; the
+        // same bug `palette-root` had, see the ⌘K step above). Assert the
+        // dialog's REAL content: its role=dialog box and its heading.
         const dialog = nobody.getByTestId("home-start-run-dialog");
         await expect(
-          dialog,
+          dialog.getByRole("dialog"),
           "design finding 03: Start run opens the run form in place, not a route",
         ).toBeVisible({ timeout: 15_000 });
+        await expect(
+          dialog.getByTestId("run-form-title"),
+          "the dialog that opened is the run form",
+        ).toHaveText("Start a run", { timeout: 15_000 });
         // For THIS reader the form honestly says why there is nothing to pick
         // (StartRunDialog's no-projects line) — the dialog opened, and it is
         // the run form's own chrome rather than a silent no-op.

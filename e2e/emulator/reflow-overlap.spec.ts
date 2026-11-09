@@ -18,7 +18,7 @@
 // `journeys`) has no `setup` dependency.
 //
 //   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts emulator/reflow-overlap.spec.ts
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures.js";
 import { findOverlaps } from "./reflow.js";
 
 /** A document whose MAIN holds `body`; the mono font keeps fixture widths stable. */

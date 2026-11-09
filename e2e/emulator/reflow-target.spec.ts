@@ -45,7 +45,7 @@
 // The last describe block is the other pass-1 checker fix and lives here for
 // the same reason: `plan-steps.ts` (the gate card's “the steps are numbered in
 // order” rule) needs a browser and no lab, and this is the no-lab project.
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures.js";
 import {
   collectPlanNumbering,
   judgePlanNumbering,
@@ -123,6 +123,15 @@ function ownerAbove(pair: [testid: string, offset: number]): string {
   return hit.getAttribute("data-testid") ?? hit.tagName.toLowerCase();
 }
 
+/** A TYPED pair for `page.evaluate(ownerAbove, …)`: a bare array literal at a
+ * call site infers as `(string | number)[]`, which `ownerAbove`'s tuple
+ * parameter cannot receive (contravariant parameter — TS2769 under the
+ * standalone tsc). This names the tuple; the values are unchanged. */
+const abovePair = (testid: string, offset: number): [testid: string, offset: number] => [
+  testid,
+  offset,
+];
+
 /** What `elementFromPoint` says owns the centre of `testid` (walking up to the
  * nearest `data-testid`): the fixture's own proof that the control really is
  * behind the scrim — and that a control in the dialog really answers to a
@@ -155,7 +164,7 @@ test.describe("findSmallTargets and the real hit area", () => {
     expect(box.top).toBeGreaterThan(9);
     // …and the band above it answers to a touch: the ::after is 9px of nothing
     // but hit area, and it wins the hit test where it is laid out.
-    expect(await page.evaluate(ownerAbove, ["edit-a", -8])).toBe("edit-a");
+    expect(await page.evaluate(ownerAbove, abovePair("edit-a", -8))).toBe("edit-a");
     expect(await page.evaluate(findSmallTargets)).toEqual([]);
   });
 
@@ -171,8 +180,8 @@ test.describe("findSmallTargets and the real hit area", () => {
         '<div style="padding-top:60px"><button data-testid="edit-a2" class="bordered hit" aria-label="edit-a2"></button></div>',
       ),
     );
-    expect(await page.evaluate(ownerAbove, ["edit-a2", -8])).toBe("edit-a2");
-    expect(await page.evaluate(ownerAbove, ["edit-a2", -9])).not.toBe("edit-a2");
+    expect(await page.evaluate(ownerAbove, abovePair("edit-a2", -8))).toBe("edit-a2");
+    expect(await page.evaluate(ownerAbove, abovePair("edit-a2", -9))).not.toBe("edit-a2");
     const hits = await page.evaluate(findSmallTargets);
     expect(hitFor("edit-a2", hits)).toEqual({ name: "edit-a2", height: 42 });
   });
@@ -207,7 +216,7 @@ test.describe("findSmallTargets and the real hit area", () => {
     );
     // The overlay (offsets come off the container's padding box, which starts at
     // y=8) really does own the extension band.
-    expect(await page.evaluate(ownerAbove, ["covered-c", -7])).toBe("overlay-c");
+    expect(await page.evaluate(ownerAbove, abovePair("covered-c", -7))).toBe("overlay-c");
     const hits = await page.evaluate(findSmallTargets);
     expect(hitFor("covered-c", hits)).toEqual({ name: "covered-c", height: 26 });
   });

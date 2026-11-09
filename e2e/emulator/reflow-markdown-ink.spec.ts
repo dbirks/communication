@@ -20,7 +20,7 @@
 // `reflow` project — the same no-lab home `plan-steps.ts` judges live in.
 //
 //   pnpm --dir e2e exec playwright test -c emulator/playwright.config.ts --project=reflow
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures.js";
 import { collectDocumentProse, escapedMarkdownFault } from "./markdown-ink.js";
 
 /** The artifact preview's own markup: `markdown-paragraph` blocks whose inline
