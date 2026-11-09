@@ -1121,11 +1121,14 @@ function ChatLaneCard({ conversation }: { conversation: ConversationSummary }) {
         <span aria-hidden="true" className={spec.tagFg}>
           {spec.glyph}
         </span>{" "}
-        CHAT
-        {/* The word beside the glyph, not behind `sr-only`: a chat card under
+        THREAD
+        {/* The word beside the glyph, not behind `sr-only`: a thread card under
             RUNNING has to say whether the session is attached (`running`) or
-            the chat is merely open (`idle`). `idle`, not `pending` — an open
-            chat with no turn queued is not waiting work (rcn-6 review 1). */}
+            the thread is merely open (`idle`). `idle`, not `pending` — an open
+            thread with no turn queued is not waiting work (rcn-6 review 1).
+            The kind label says THREAD, the product's visible word for a
+            conversation (the feed row in RepoActivity.tsx says the same) — the
+            wire kind, the ids and every testid keep saying `chat`. */}
         <span className="ml-1 font-normal">· {conversationWord(conversation, state)}</span>
       </div>
       <div className="mt-1 flex items-start gap-2">

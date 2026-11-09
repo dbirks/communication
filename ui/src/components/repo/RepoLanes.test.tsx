@@ -616,6 +616,38 @@ describe("RepoLanes — a long unbreakable title stays in its own column (rcn-3b
     expect(title.className).toContain("min-w-0");
     expect(age?.className, "the age stamp never shrinks").toContain("flex-none");
   });
+
+  it("names a thread card's kind THREAD — the visible word, not the retired CHAT", async () => {
+    // The lane card and the feed row say the same kind word (RepoActivity.tsx
+    // prints `THREAD` too, and Repository.test.tsx pins it): the product's
+    // visible word for a conversation is THREAD. The WIRE kind, the route and
+    // every `repo-lane-chat-*` testid keep their old names — only the ink the
+    // reader sees changed, so no testid retires with it.
+    const live: ConversationSummary = {
+      ...conversationSummaryFixture,
+      id: "01a19c01-0000-7000-8000-0000000000c1",
+      title: "Discuss the flaky checkout test",
+      status: "active",
+      updated_at: new Date(NOW - 60_000).toISOString(),
+    };
+    const open: ConversationSummary = {
+      ...conversationSummaryFixture,
+      id: "01a19c02-0000-7000-8000-0000000000c2",
+      title: "Try the new picker",
+      status: "idle",
+      updated_at: new Date(NOW - 120_000).toISOString(),
+    };
+    mount([], [], [live, open]);
+
+    const liveCard = screen.getByTestId(`repo-lane-chat-${testidOf(live.id)}`);
+    const openCard = screen.getByTestId(`repo-lane-chat-${testidOf(open.id)}`);
+    // The kind label AND the state word beside it, in one read — a card that
+    // said `THREAD` but lost its word would still be a poor answer.
+    expect(liveCard.textContent).toContain("THREAD· running");
+    expect(openCard.textContent).toContain("THREAD· idle");
+    expect(liveCard.textContent).not.toContain("CHAT");
+    expect(openCard.textContent).not.toContain("CHAT");
+  });
 });
 
 /**

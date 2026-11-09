@@ -228,7 +228,7 @@ func TestChatTranscriptReadAsCaller(t *testing.T) {
 	}
 	payload := string(raw)
 	for _, want := range []string{
-		"CHAT TRANSCRIPT", // the untrusted-data envelope is in the model's face
+		"THREAD TRANSCRIPT", // the untrusted-data envelope is in the model's face
 		"Dana:", "Search revamp spike", "storefront",
 	} {
 		if !strings.Contains(payload, want) {
@@ -640,7 +640,7 @@ func TestConversationEntityKindIsAcceptedAsDataOnly(t *testing.T) {
 // save-a-draft-never-publish rule and the transcript-is-data rule.
 func TestDraftingRulesInTheSystemPrompt(t *testing.T) {
 	for _, want := range []string{
-		"Turning a chat into a workflow",
+		"Turning a thread into a workflow",
 		"chat.transcript first",
 		"STEP LIST",
 		"ONE question per turn",
@@ -714,7 +714,7 @@ func TestDraftingRulesPutTheListBeforeTheQuestionAndNeverRepeatIt(t *testing.T) 
 func TestDraftingRulesNeverAnnounceAQuestionCount(t *testing.T) {
 	for _, want := range []string{
 		"Never announce a COUNT of questions",
-		`"Two things the chat leaves open:"`,
+		`"Two things the thread leaves open:"`,
 		"ONE question per turn",
 		"ask the one the next step waits on",
 	} {
@@ -728,7 +728,7 @@ func TestDraftingRulesNeverAnnounceAQuestionCount(t *testing.T) {
 		t.Fatalf("the drafting few-shot is gone:\n%s", conversationSystemPrompt)
 	}
 	shot := conversationSystemPrompt[mark:]
-	if strings.Contains(strings.ToLower(shot), "things the chat leaves open") ||
+	if strings.Contains(strings.ToLower(shot), "things the thread leaves open") ||
 		strings.Contains(strings.ToLower(shot), "a few questions") {
 		t.Fatalf("the few-shot models the count the rules forbid:\n%s", shot)
 	}
@@ -747,7 +747,7 @@ func TestDraftingRulesStepLineNamesAnAgentProfileOrOwner(t *testing.T) {
 			t.Fatalf("the conversation system prompt must carry the step-owner rule %q", want)
 		}
 	}
-	mark := strings.Index(conversationSystemPrompt, "I read the chat. Drafting")
+	mark := strings.Index(conversationSystemPrompt, "I read the thread. Drafting")
 	if mark < 0 {
 		t.Fatalf("the drafting few-shot lost its step list:\n%s", conversationSystemPrompt)
 	}

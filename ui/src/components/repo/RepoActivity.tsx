@@ -3,8 +3,9 @@
  * · Mine) over ONE panel of runs and chats mixed, newest activity first.
  *
  * Row grid `16px 44px minmax(0,1fr) 120px 36px`: state glyph (states.ts —
- * glyph + sr-only word, never color alone) · kind (`RUN` muted / `CHAT` in
- * accent text, mono 10) · title + short status · the workflow name or the
+ * glyph + sr-only word, never color alone) · kind (`RUN` muted / `THREAD` in
+ * accent text, mono 10 — the lane card in RepoLanes.tsx says the same word)
+ * · title + short status · the workflow name or the
  * chat's agent profile (mono 10.5) · age. A waiting row gets the waiting pale
  * body background. A running run shows the ds ProgressStrip under its title
  * ONLY when the run data really carries per-step states — nothing is ever

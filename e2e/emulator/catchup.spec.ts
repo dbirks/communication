@@ -365,6 +365,48 @@ async function getTour(page: Page): Promise<TourWire> {
   return (await res.json()) as TourWire;
 }
 
+/**
+ * The seeded pieces the SERVER put in "the rest" — read the way the page reads.
+ *
+ * Design 8a keeps a piece with ANY stop on the served tour page out of the rest
+ * (`RestList.tsx`'s `tourStopsByItem` filter), and the tour ranks EVERY unseen
+ * piece in the lab, so which seeded pieces land below the cards is the server's
+ * opinion rather than this file's index: the completion sweep writes tours for
+ * real lab runs, so the composition shifts pass to pass (acceptance
+ * 42570366079 — a seeded piece the test addressed by index had been carded, and
+ * its rest row never drew). Every rest-row proof therefore picks its row from
+ * this answer, and `composition` is what a failure prints when the server gave
+ * nothing to pick from.
+ */
+async function servedRestPieces(
+  page: Page,
+  seeded: Map<string, string>,
+): Promise<{ inRest: [string, string][]; composition: string }> {
+  const list = await getList(page);
+  const tour = await getTour(page);
+  const carded = new Set(tour.stops.map((one) => one.work_item_id));
+  const owed = new Map(
+    list.items.filter((item) => item.unseen_stops > 0).map((item) => [item.id, item]),
+  );
+  const inRest: [string, string][] = [];
+  const cardedTitles: string[] = [];
+  const notOwed: string[] = [];
+  for (const [title, id] of seeded) {
+    if (!owed.has(id)) notOwed.push(title);
+    else if (carded.has(id)) cardedTitles.push(title);
+    else inRest.push([title, id]);
+  }
+  return {
+    inRest,
+    composition:
+      `served tour page: ${tour.stops.length} stop(s) of ${tour.total_unseen_stops} unseen ` +
+      `(built_from ${tour.built_from}, more_available ${tour.more_available}); list read: ` +
+      `${list.items.length} row(s) / ${list.total_unseen} unseen; of the ${seeded.size} seeded ` +
+      `pieces: ${inRest.length} in the rest, ${cardedTitles.length} carded ` +
+      `[${cardedTitles.join(" | ")}], ${notOwed.length} not owed [${notOwed.join(" | ")}]`,
+  };
+}
+
 /* ------------------------------------------- the surface a piece shows in
  * Design 8a: "the rest" LEAVES OUT any piece with a stop in the tour cards
  * above it — the rest holds only the pieces the cards do not touch at all
@@ -1568,11 +1610,23 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
           no_code: "no code",
         };
 
+        // WHICH seeded pieces belong in the rest is the server's answer, not this
+        // file's index: design 8a drops a piece with any stop on the served tour
+        // page, and the tour ranks every unseen piece in the lab — the completion
+        // sweep writes tours for real lab runs, so the composition moves pass to
+        // pass (acceptance 42570366079). The same two reads the page makes decide
+        // what this step may require of the screen.
+        const served = await servedRestPieces(page, seeded);
+        expect(
+          served.inRest.length,
+          `design 8a: the server serves at least one seeded pile piece in the rest — ` +
+            served.composition,
+        ).toBeGreaterThanOrEqual(1);
         // Assert the RENDERED rows, not a pick this file hoped would be on screen:
         // a piece with a stop in the tour cards is excluded from the rest (8a),
         // and which pieces those are is the tour's ranking, not this journey's.
         // Enumerating what is actually painted also proves the count: every row
-        // has a wire item, and every landing label the pile seeds appears.
+        // has a wire item, and every landing label the served rest owes appears.
         const rest = page.getByTestId("catchup-rest");
         const rowLocators = rest.locator('[data-testid^="catchup-row-"]');
         await expect
@@ -1668,27 +1722,57 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
           expect(painted.height, `the project square is 8px tall (${id.slice(0, 8)}…)`).toBe("8px");
         }
 
-        // The seeded pile cycles all three shapes and all three resolutions, so
-        // a rest list that never showed one of them proved nothing about it.
-        for (const landing of Object.values(LANDING)) {
-          expect(
-            labelsSeen.has(landing),
-            `design 8a: the rest list showed a "${landing}" row (labels seen: ${[
-              ...labelsSeen,
-            ].join(", ")})`,
-          ).toBe(true);
-        }
-        for (const chip of ["merged", "branch ready", "open"]) {
-          expect(
-            resolutionsSeen.has(chip),
-            `design 8a: the rest list showed a "${chip}" resolution chip (chips seen: ${[
-              ...resolutionsSeen,
-            ].join(", ")})`,
-          ).toBe(true);
-        }
+        // The OTHER direction, and the one that used to assume a seeded index:
+        // every piece the server puts in the rest is painted there, and says its
+        // OWN landing label and resolution chip. Both sides are read in the same
+        // tick — the wire because the completion sweep moves the tour ranking
+        // under the page, the DOM because React draws when its reads land — so a
+        // composition that shifts mid-step moves the requirement, never the
+        // proof. The shapes/chips no seeded piece served in the rest are still
+        // covered by the loop above, which checks EVERY painted row (seeded or
+        // not) against its own wire item.
+        await expect
+          .poll(
+            async () => {
+              const now = await servedRestPieces(page, seeded);
+              if (now.inRest.length === 0) {
+                return `no seeded pile piece is in the rest at all — ${now.composition}`;
+              }
+              const problems: string[] = [];
+              for (const [title, id] of now.inRest) {
+                const piece = byId.get(id);
+                if (piece === undefined) {
+                  problems.push(`${title}: the list read stopped serving it`);
+                  continue;
+                }
+                const text = normText(
+                  await rest
+                    .getByTestId(`catchup-row-${id}`)
+                    .innerText()
+                    .catch(() => ""),
+                );
+                if (text === "") {
+                  problems.push(`catchup-row-${id} (${title}) is owed in the rest and not painted`);
+                  continue;
+                }
+                const landing = LANDING[piece.shape] ?? `?(${piece.shape})`;
+                const chip = RESOLUTION[piece.resolution] ?? `?(${piece.resolution})`;
+                if (!text.includes(landing)) problems.push(`${title}: no "${landing}" label`);
+                if (!text.includes(chip)) problems.push(`${title}: no "${chip}" chip`);
+              }
+              return problems.length === 0 ? "" : `${problems.join("; ")} — ${now.composition}`;
+            },
+            {
+              message:
+                "design 8a: every seeded piece the server serves in the rest draws there, labelled from its own wire row",
+              timeout: 45_000,
+            },
+          )
+          .toBe("");
         console.log(
           `catch-up T14 rest rows (pass ${EMU_PASS_ID}): ${count} row(s), labels ` +
-            `${[...labelsSeen].join("/")}, chips ${[...resolutionsSeen].join("/")}`,
+            `${[...labelsSeen].join("/")}, chips ${[...resolutionsSeen].join("/")} — ` +
+            served.composition,
         );
       });
 
@@ -1702,21 +1786,27 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
          *      A rewrite before the seen-mark would only show a new piece.
          *  (2) show seen: a piece the reader paid leaves the list, and the
          *      checkbox brings the SAME row (same testid, same piece) back. */
-        const wire0 = await getList(page);
-        const owed = new Set(wire0.items.map((item) => item.id));
-        const candidates = [...seeded.entries()].filter(([, id]) => owed.has(id));
+        /* Choose from what the SERVER served, not from a seeded index: 8a keeps
+         * a piece with any stop on the served tour page out of the rest, and the
+         * tour ranks every unseen piece in the lab — with the completion sweep
+         * writing tours for real lab runs, a seeded piece can be carded (the
+         * acceptance 42570366079 failure: `… starts in the rest list` on a piece
+         * the tour had taken). Both halves below address a row the wire says the
+         * rest owes. */
+        const served = await servedRestPieces(page, seeded);
         expect(
-          candidates.length,
-          "at least two of the pass's seeded pile pieces are still owed, so one can be rewritten and another paid",
+          served.inRest.length,
+          `at least two of the pass's seeded pile pieces are in the rest as the server ` +
+            `served it, so one can be rewritten and another paid — ${served.composition}`,
         ).toBeGreaterThanOrEqual(2);
-        // Take the first piece that still STARTS at version 1: a later pass over
-        // the same lab can find a piece an earlier pass already rewrote still
-        // owed (the v2 append below is `WHERE NOT EXISTS`-guarded, so the ONLY
-        // clean "saw v1, never saw v2" starting state is a never-rewritten
-        // piece — acceptance 42558168285's pass-1 shape).
+        // Take the first piece the rest owes that still STARTS at version 1: a
+        // later pass over the same lab can find a piece an earlier pass already
+        // rewrote still owed (the v2 append below is `WHERE NOT EXISTS`-guarded,
+        // so the ONLY clean "saw v1, never saw v2" starting state is a
+        // never-rewritten piece — acceptance 42558168285's pass-1 shape).
         let movedTitle = "";
         let movedId = "";
-        for (const [title, id] of candidates) {
+        for (const [title, id] of served.inRest) {
           if ((await getItem(page, id)).latest?.version === 1) {
             movedTitle = title;
             movedId = id;
@@ -1725,15 +1815,8 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
         }
         expect(
           movedId,
-          "one of the owed pile pieces still starts at tour version 1",
-        ).not.toBe("");
-        const [paidTitle, paidId] = (candidates.find(([, id]) => id !== movedId) ?? [
-          "",
-          "",
-        ]) as [string, string];
-        expect(
-          paidId,
-          "a second owed pile piece is left for the show-seen half",
+          `one of the pile pieces the server served in the rest still starts at tour ` +
+            `version 1 — ${served.composition}`,
         ).not.toBe("");
 
         /* ---- (1) the story moves: seen at v1, then a second version ---- */
@@ -1857,10 +1940,45 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
         ).toContainText("UPDATED");
 
         /* ---- (2) show seen: a paid piece leaves, and the same row returns ---- */
-        await expect(
-          page.getByTestId("catchup-rest").getByTestId(`catchup-row-${paidId}`),
-          `design 8a: ${paidTitle} starts in the rest list`,
-        ).toBeVisible({ timeout: 30_000 });
+        // Re-read the surface HERE, every tick: the rewrite above back-dated the
+        // moved piece and the sweep writes tours of its own, so the piece this
+        // half pays is whatever the rest owes NOW (the very row it goes on to
+        // assert), never the index the seed happened to use.
+        let paidTitle = "";
+        let paidId = "";
+        await expect
+          .poll(
+            async () => {
+              // Re-pick EVERY tick: the tour's ranking moves under the page (the
+              // completion sweep writes tours for real lab runs), so a piece that
+              // was carded a moment ago can be the rest's own row now, and a row
+              // the page has not drawn yet lands a moment later. The pick and the
+              // paint are read in the same tick, and this half pays whichever
+              // piece the server actually served — never the seeded index.
+              const now = await servedRestPieces(page, seeded);
+              const pick = now.inRest.find(([, id]) => id !== movedId);
+              if (pick === undefined) {
+                return `no second pile piece is in the rest as the server serves it — ${now.composition}`;
+              }
+              const [title, id] = pick;
+              const painted = await page
+                .getByTestId("catchup-rest")
+                .getByTestId(`catchup-row-${id}`)
+                .count();
+              if (painted === 0) {
+                return `the wire owes ${title} in the rest and its row is not painted — ${now.composition}`;
+              }
+              paidTitle = title;
+              paidId = id;
+              return "";
+            },
+            {
+              message:
+                "design 8a: a second seeded pile piece the server serves in the rest draws there",
+              timeout: 45_000,
+            },
+          )
+          .toBe("");
         const paidItem = await getItem(page, paidId);
         const paidStops = (paidItem.latest?.stops ?? []).map((one) => one.id);
         expect(paidStops.length, `${paidTitle} carries at least one beat`).toBeGreaterThan(0);
