@@ -106,6 +106,31 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # Same CDN hardening as the worker-image and acceptance jobs: the pinned
+      # nono/apm tarballs come from scripts/fetch-release-assets.sh behind the
+      # .release-assets cache (restore → fetch → save-immediately), so the
+      # install steps below read a verified local copy instead of hitting the
+      # intermittently-504ing release CDN directly. Their own curl downloads
+      # remain as the fallback path, and EVERY checksum check in those steps
+      # runs unchanged either way (the cache file is re-verified in-place).
+      - name: restore release assets cache
+        id: release_assets_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .release-assets
+          key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
+      - name: fetch release assets
+        run: bash scripts/fetch-release-assets.sh
+      # Save IMMEDIATELY after a successful fetch (same key as the restore),
+      # BEFORE any step that can still go red, so a cold-cache run that
+      # finally beats a CDN outage still warms the cache. Skipped on a
+      # restore hit (the cache already has these bytes).
+      - name: save release assets cache
+        if: steps.release_assets_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .release-assets
+          key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
       # The real-nono tests (internal/sandbox/nono) skip when the binary is not
       # on PATH — an honest gap, never a mock (AGENTS.md). This job is where that
       # gap is meant to close, so install the pinned build the same way the
@@ -128,6 +153,11 @@ jobs:
       # answers 504 (observed on the nono tarball: one URL alternating 200/504,
       # three image builds red on it). --retry-all-errors is what lets `-f`
       # retry a 504 at all; digests and every sha256sum check are untouched.
+      # With the cache + fetch steps above in place, the release-URL curls in
+      # the two install steps below are now the FALLBACK for when
+      # .release-assets/ lacks the asset; the fetch script is what outlasts a
+      # long outage, retrying each asset with backoff for up to
+      # FETCH_RELEASE_MAX_SECONDS (default 20 min).
       # The script body below is the one that was run for real before it was
       # committed: verified fetch + both hashes + `nono 0.80.0` executing out of
       # $RUNNER_TEMP/nono-bin on the lab host.
@@ -140,8 +170,14 @@ jobs:
           binsum=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
           dl="$RUNNER_TEMP/nono-dl"; bin="$RUNNER_TEMP/nono-bin"
           mkdir -p "$dl" "$bin"
-          curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/$asset.tar.gz" \
-            "https://github.com/nolabs-ai/nono/releases/download/v${ver}/$asset.tar.gz"
+          cached="$GITHUB_WORKSPACE/.release-assets/$asset.tar.gz"
+          if [ -s "$cached" ]; then
+            echo "using cached release asset $cached (verified by the checks below)"
+            cp "$cached" "$dl/$asset.tar.gz"
+          else
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/$asset.tar.gz" \
+              "https://github.com/nolabs-ai/nono/releases/download/v${ver}/$asset.tar.gz"
+          fi
           curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/SHA256SUMS.txt" \
             "https://github.com/nolabs-ai/nono/releases/download/v${ver}/SHA256SUMS.txt"
           ( cd "$dl"
@@ -197,8 +233,14 @@ jobs:
           apmsum=4487af55604b4fa6f4587f3ee6e833b44ce99c491f11069790e4e13e297cde8c
           dl="$RUNNER_TEMP/apm-dl"; bin="$RUNNER_TEMP/apm-bin"
           mkdir -p "$dl" "$bin"
-          curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/$asset" \
-            "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}"
+          cached="$GITHUB_WORKSPACE/.release-assets/$asset"
+          if [ -s "$cached" ]; then
+            echo "using cached release asset $cached (verified by the checks below)"
+            cp "$cached" "$dl/$asset"
+          else
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/$asset" \
+              "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}"
+          fi
           curl -fsSL --retry 8 --retry-all-errors --retry-delay 15 --retry-max-time 600 --connect-timeout 20 -o "$dl/${asset}.sha256" \
             "https://github.com/microsoft/apm/releases/download/v${ver}/${asset}.sha256"
           ( cd "$dl"
@@ -631,13 +673,24 @@ jobs:
       # release CDN (sha256 verification unchanged). The compose job is not
       # touched: it only validates config (`config -q`) and the e2e job puts
       # worker behind a profile, so neither builds the worker image.
-      - name: cache release assets
-        uses: actions/cache@v4
+      - name: restore release assets cache
+        id: release_assets_cache
+        uses: actions/cache/restore@v4
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
       - name: fetch release assets
         run: bash scripts/fetch-release-assets.sh
+      # Save IMMEDIATELY after a successful fetch (same key as the restore),
+      # BEFORE any step that can still go red, so a cold-cache run that
+      # finally beats a CDN outage still warms the cache. Skipped on a
+      # restore hit (the cache already has these bytes).
+      - name: save release assets cache
+        if: steps.release_assets_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .release-assets
+          key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:

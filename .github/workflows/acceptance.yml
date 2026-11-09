@@ -203,13 +203,24 @@ jobs:
       # minutes); either way every tarball passes the same pinned
       # `sha256sum -c`. On a cache hit the fetch step is a no-op, and the key
       # IS the pins (any version bump in worker/Dockerfile changes it).
-      - name: cache release assets
-        uses: actions/cache@v4
+      - name: restore release assets cache
+        id: release_assets_cache
+        uses: actions/cache/restore@v4
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
       - name: fetch release assets
         run: bash scripts/fetch-release-assets.sh
+      # Save IMMEDIATELY after a successful fetch (same key as the restore),
+      # BEFORE any step that can still go red, so a cold-cache run that
+      # finally beats a CDN outage still warms the cache. Skipped on a
+      # restore hit (the cache already has these bytes).
+      - name: save release assets cache
+        if: steps.release_assets_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .release-assets
+          key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
@@ -376,13 +387,24 @@ jobs:
       # driver's `--up` builds worker/Dockerfile from this checkout, so the
       # .release-assets cache keeps its nono/apm/gh fetches off the flaky
       # GitHub release CDN. Verification (sha256sum -c) is unchanged.
-      - name: cache release assets
-        uses: actions/cache@v4
+      - name: restore release assets cache
+        id: release_assets_cache
+        uses: actions/cache/restore@v4
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
       - name: fetch release assets
         run: bash scripts/fetch-release-assets.sh
+      # Save IMMEDIATELY after a successful fetch (same key as the restore),
+      # BEFORE any step that can still go red, so a cold-cache run that
+      # finally beats a CDN outage still warms the cache. Skipped on a
+      # restore hit (the cache already has these bytes).
+      - name: save release assets cache
+        if: steps.release_assets_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .release-assets
+          key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
@@ -637,13 +659,24 @@ jobs:
       # LAB_RESET_CMD pass rebuilds through scripts/lab-up.sh from the repo
       # root, so .release-assets is in the compose build context for all of
       # them — a CDN 504 mid-loop no longer resets a pass's clock.
-      - name: cache release assets
-        uses: actions/cache@v4
+      - name: restore release assets cache
+        id: release_assets_cache
+        uses: actions/cache/restore@v4
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
       - name: fetch release assets
         run: bash scripts/fetch-release-assets.sh
+      # Save IMMEDIATELY after a successful fetch (same key as the restore),
+      # BEFORE any step that can still go red, so a cold-cache run that
+      # finally beats a CDN outage still warms the cache. Skipped on a
+      # restore hit (the cache already has these bytes).
+      - name: save release assets cache
+        if: steps.release_assets_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .release-assets
+          key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
@@ -752,13 +785,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Worker-image build hardening (see lab-e2e's identical step).
-      - name: cache release assets
-        uses: actions/cache@v4
+      - name: restore release assets cache
+        id: release_assets_cache
+        uses: actions/cache/restore@v4
         with:
           path: .release-assets
           key: release-assets-${{ runner.os }}-${{ hashFiles('worker/Dockerfile') }}
       - name: fetch release assets
         run: bash scripts/fetch-release-assets.sh
+      # Save IMMEDIATELY after a successful fetch (same key as the restore),
+      # BEFORE any step that can still go red, so a cold-cache run that
+      # finally beats a CDN outage still warms the cache. Skipped on a
+      # restore hit (the cache already has these bytes).
+      - name: save release assets cache
+        if: steps.release_assets_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .release-assets
+          key: ${{ steps.release_assets_cache.outputs.cache-primary-key }}
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
