@@ -139,4 +139,63 @@ test.describe("empty-and-error (admin: 1b no-match, 1e not-found)", () => {
       await emu.screen("1e", "not-found");
     });
   });
+
+  // Acceptance T9 (finding 12's copy pass): the run surface's ONE answer for a
+  // run the reader cannot read used to be a note to the reviewer — it named the
+  // control plane and quoted the status code. The rewrite states what happened
+  // and the way out, and the box was only proven by unit tests on the component
+  // plus the m4 exit driver reading the wire copy. This is the browser proof: a
+  // random UUID on the project-less deep link, the exact sentence, the two exits.
+  test("T9 — /runs/<random uuid> shows the RunNotFound copy with its two exits", async ({
+    page,
+    emu,
+  }) => {
+    test.setTimeout(180_000);
+    const missing = randomUUID();
+    // The 404 this page provokes IS the state under test — declared so it is not
+    // counted as a defect. The `$` bounds it to the run read itself: a page that
+    // fanned out to `/nodes` or `/events` for a run the run read already refused
+    // would be real noise the pass must catch.
+    emu.expectFailure(/\/api\/v1\/runs\/[0-9a-f-]{36}$/, 404);
+    await page.goto(`/runs/${missing}`);
+
+    const notFound = page.getByTestId("run-not-found");
+    await expect(
+      notFound,
+      "finding 12: a run read that came back 404 renders the not-found state, not an empty workbench",
+    ).toBeVisible({ timeout: 30_000 });
+
+    // The sentence, verbatim. `RunNotFound.tsx` writes the apostrophes as
+    // `&apos;`, which renders as the ASCII ' — so the assertion asks for exactly
+    // that rather than a typographic ’ it does not print.
+    await expect(
+      page.getByTestId("run-not-found-summary"),
+      "finding 12: the exact RunNotFound copy",
+    ).toHaveText("This run doesn't exist or you don't have access to it.", {
+      timeout: 30_000,
+    });
+    // The id the reader followed stays quotable on its own muted line.
+    await expect(
+      page.getByTestId("run-not-found-id"),
+      "finding 12: the id the reader followed is printed for them to quote",
+    ).toHaveText(`run ${missing}`);
+
+    // Both exits, and on this project-less deep link "Back to Runs" is the way
+    // out of the dead page (the briefing's home). The access affordance carries
+    // the `run-not-found-access` id in both shapes; here there is no project to
+    // name, so it is the honest sentence naming who to ask rather than a link to
+    // a members page that may not exist for this reader.
+    const back = page.getByTestId("run-not-found-runs");
+    await expect(back, "finding 12: every error ends in an action — Back to Runs").toBeVisible();
+    await expect(back).toHaveText("Back to Runs");
+    const access = page.getByTestId("run-not-found-access");
+    await expect(access, "finding 12: and the way to ask for access").toBeVisible();
+    await expect(access).toContainText(/ask\b.*access/i);
+    // No retry affordance: a 404 is a refusal, not a break.
+    await expect(
+      page.getByRole("button", { name: /retry/i }),
+      "finding 12: a 404 offers no Retry — re-asking answers the same",
+    ).toHaveCount(0);
+    await emu.screen("run-not-found", "t9");
+  });
 });

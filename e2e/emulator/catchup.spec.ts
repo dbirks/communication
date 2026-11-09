@@ -58,7 +58,7 @@
 import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
 import { signIn } from "../tests/helpers.js";
 import { apiMutate, expect, test } from "./fixtures.js";
-import type { Locator, Page } from "@playwright/test";
+import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 
 /** The lab's seeded project (docs/compatibility/probes/m4/seed.sh). */
@@ -192,6 +192,21 @@ const PUSH_STOPS = [
 /** A uuid as postgres prints it — the seed's proof a row landed. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * `#rrggbb` → the `rgb(r, g, b)` string a browser reports for it.
+ *
+ * The catch-up project square is painted with the API's own palette entry
+ * (`ui/src/components/catchup/RestList.tsx` → `projectColor(item.project.color)`),
+ * and `getComputedStyle().backgroundColor` reports a resolved `rgb(…)`, never the
+ * hex the source wrote. Comparing the row's painted colour to the API's colour
+ * therefore needs this one conversion — the same arithmetic the browser does.
+ */
+function hexToRgb(hex: string): string {
+  const digits = hex.replace(/^#/, "");
+  const [r, g, b] = [0, 2, 4].map((at) => parseInt(digits.slice(at, at + 2), 16));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
 /** The uuid the seed stamps into every title, so passes never collide. */
 const SEED_SUMMARY =
   `Seeded fixture for the emulator's Catch up screens (${EMU_PASS_ID}) — ` +
@@ -304,7 +319,10 @@ interface StopWire {
 interface ItemWire {
   id: string;
   title: string;
-  latest: { version: number; stops: StopWire[] } | null;
+  latest: { version: number; stops: StopWire[]; created_at?: string } | null;
+  /** The members who finished the NEWEST version — the roster `CatchUpItem.tsx`
+   * draws as initials plus a named line (acceptance T15). */
+  seen_by?: { id: string; name: string; seen_at: string }[];
 }
 interface ListWire {
   items: { id: string; unseen_stops: number }[];
@@ -495,6 +513,76 @@ async function seedKeyboardPiece(page: Page): Promise<string> {
     "both keyboard beats are unseen when the leg opens (a replay after a mid-leg failure owes this leg a fresh read)",
   ).toBe(2);
   return keysId;
+}
+
+/**
+ * The lab's seeded project (docs/compatibility/probes/m4/seed.sh), read from
+ * the caller's OWN list — never a hard-coded uuid. Every catch-up read here is
+ * project-scoped, so a proof that wants the seeded rows needs this id.
+ */
+async function m4ExitProjectId(page: Page): Promise<string> {
+  const res = await page.request.get(`${EMU_BASE_URL}/api/v1/projects`);
+  expect(res.status(), "GET /api/v1/projects answers").toBe(200);
+  const body = (await res.json()) as { items?: { id: string; slug: string }[] };
+  const id = body.items?.find((project) => project.slug === PROJECT_SLUG)?.id ?? "";
+  expect(id, `the seeded '${PROJECT_SLUG}' project exists`).toMatch(/^[0-9a-f-]{36}$/);
+  return id;
+}
+
+/**
+ * The TWO strings `ui/src/pages/CatchUpItem.tsx` computes from a reader's
+ * display name — the seen line's first name (`firstName`) and the avatar's
+ * initials (`SeenByAvatars`). Reproduced here (rather than imported, since the
+ * emulator must not depend on the app's bundle) so the browser proof compares
+ * the page against the rule the design states instead of against a hard-coded
+ * "BB" that would silently rot the day a seeded subject's name changes.
+ */
+function firstNameOf(name: string): string {
+  return name.trim().split(/\s+/)[0] ?? name;
+}
+
+function initialsOf(name: string): string {
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "?"
+  ).slice(0, 2);
+}
+
+/**
+ * Sign the lab's seeded `bob` in through the mock IdP in HIS OWN browser
+ * context and read the display name the directory holds for him. The context is
+ * an EXPLICIT empty state: this file's describes carry alice's `storageState`,
+ * and @playwright/test merges it into every `browser.newContext()` that does not
+ * name one, so the unnamed default is born signed in and `signIn` can never
+ * reach the IdP door (acceptance 42524332059 — the same reason
+ * `gate-decision-conflict.spec.ts` opens its second identity this way). The
+ * claims are the seed's own shape (`docs/compatibility/probes/m4/seed.sh`
+ * `login()`: `{"email":"<subject>@example.test"}`), so the profile row this
+ * proof reads is the row the lab wrote.
+ */
+async function signInSecondReader(
+  browser: Browser,
+): Promise<{ page: Page; context: BrowserContext; name: string }> {
+  const context = await browser.newContext({
+    baseURL: EMU_BASE_URL,
+    storageState: { cookies: [], origins: [] },
+  });
+  try {
+    const page = await context.newPage();
+    await signIn(page, "bob", { email: "bob@example.test" });
+    const me = await page.request.get(`${EMU_BASE_URL}/api/v1/me`);
+    expect(me.status(), "GET /api/v1/me as the second reader answers").toBe(200);
+    const name = String(((await me.json()) as { display_name?: string }).display_name ?? "").trim();
+    expect(name, "the second reader has a display name for the roster to print").not.toBe("");
+    return { page, context, name };
+  } catch (error) {
+    await context.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, the rail, Today's Ask)", () => {
@@ -1172,6 +1260,46 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
   }
 
   /**
+   * The pile's SHAPES and RESOLUTIONS, cycled across the seeded pieces so the
+   * rest list is not one undifferentiated column (acceptance T14 asserts a row's
+   * how-it-landed label and its resolution chip against the row's own seeded
+   * shape). Both vocabularies are closed (`catchup_work_items` CHECKs them: shape
+   * `issue|pr|push`, resolution `merged|branch_ready|open|run_failed|no_code`),
+   * so cycling across 13 phrases lands every value of both and keeps the
+   * `ShapeLabel`/`RESOLUTION_WORD` mapping exercised on every label.
+   *
+   * The refs follow the shape the way `refLabel` expects (an issue number for
+   * `issue`, a PR for `pr`, a commit for `push`); the commit shas are 40-hex
+   * values that are NOT one of the design mocks' invented ids (mockdata.ts:
+   * 9c1e04, a7f310, e02b9a, …), so the no-made-up-data screen check cannot
+   * confuse seeded lab data with a mock leak.
+   */
+  const PILE_SHAPES = ["issue", "pr", "push"] as const;
+  const PILE_RESOLUTIONS = ["merged", "branch_ready", "open"] as const;
+
+  /** One seeded piece: the row's shape, resolution and the ref the shape names. */
+  function pileShape(index: number): {
+    shape: (typeof PILE_SHAPES)[number];
+    resolution: (typeof PILE_RESOLUTIONS)[number];
+    refs: Record<string, unknown>;
+  } {
+    const shape = PILE_SHAPES[index % PILE_SHAPES.length];
+    const resolution = PILE_RESOLUTIONS[index % PILE_RESOLUTIONS.length];
+    if (shape === "pr")
+      return { shape, resolution, refs: { pr_numbers: [940 + index] } };
+    if (shape === "push")
+      // A sha no real run wrote and no design mock invented (see the note above).
+      return {
+        shape,
+        resolution,
+        refs: {
+          commit_shas: [`c0${String(index).padStart(2, "0")}d1e2f3a4b5c6d7e8f90123456789abcdef01`],
+        },
+      };
+    return { shape, resolution, refs: { issue_numbers: [940 + index] } };
+  }
+
+  /**
    * Seed the pile and the rhythm in ONE psql session and read the ids back from
    * the same call. Resolve-or-create per title (a worker restarted after a
    * failure reuses the dead one's rows); the visit insert is guarded so a replay
@@ -1182,7 +1310,7 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
    * is all `now()` would pin only the singular form of a word the design wrote
    * plural.
    */
-  function seedBacklogPile(): string[] {
+  function seedBacklogPile(): Map<string, string> {
     const titles = BACKLOG_PHRASES.map(
       (phrase, index) => `${BACKLOG_PREFIX} ${index + 1}: ${phrase}`,
     );
@@ -1191,8 +1319,9 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
       `WHERE oi.subject = 'alice' LIMIT 1)`;
     const statements: string[] = [];
     titles.forEach((title, index) => {
+      const { shape, resolution, refs } = pileShape(index);
       statements.push(
-        upsertItemSql(title, "issue", "merged", { issue_numbers: [940 + index] }),
+        upsertItemSql(title, shape, resolution, refs),
         tourVersionSql(title, [
           stop(`pile${index + 1}`, {
             kind: "ROUTINE",
@@ -1217,15 +1346,21 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
         `SELECT ${alice}, now() - (g.n * interval '1 day') FROM generate_series(1, 5) AS g(n) ` +
         `WHERE ${alice} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM catchup_visits v2 ` +
         `WHERE v2.user_id = ${alice} AND v2.visited_at < now() - interval '36 hours');`,
-      `SELECT 'pile|' || id::text FROM catchup_work_items ` +
+      // The ids come back PAIRED with the title, not as a bare list: the T14
+      // rest-row assertions below address a row by its seeded piece, and a
+      // `LIKE`-ordered SELECT does not promise the insertion order.
+      `SELECT 'pile|' || id::text || '|' || title FROM catchup_work_items ` +
         `WHERE title LIKE ${sqlQuote(`${BACKLOG_PREFIX}%`)};`,
     );
     const out = labSql(statements.join(" "));
-    const ids = out
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("pile|"))
-      .map((line) => line.slice("pile|".length));
+    const byTitle = new Map<string, string>();
+    for (const line of out.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("pile|")) continue;
+      const [, id, ...rest] = trimmed.split("|");
+      if (id) byTitle.set(rest.join("|"), id);
+    }
+    const ids = [...byTitle.values()];
     expect(
       ids.length,
       `the big-backlog seed came back with ${ids.length} of ${titles.length} ids ` +
@@ -1238,7 +1373,7 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
       `catch-up big-backlog fixture seeded: ${ids.length} unseen pieces + a daily rhythm ` +
         `(pass ${EMU_PASS_ID}; marked seen again in this test's finally)`,
     );
-    return ids;
+    return byTitle;
   }
 
   test("8a big backlog — the banner names the pile, the click sets the window, Keep all dismisses", async ({
@@ -1250,7 +1385,7 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
     test.setTimeout(360_000);
 
     let projectId = "";
-    let seeded: string[] = [];
+    let seeded = new Map<string, string>();
     let bodyPassed = false;
     try {
       await test.step("seed the pile and the reader's rhythm (SEEDED FIXTURE)", async () => {
@@ -1288,7 +1423,7 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
         const banner = page.getByTestId("catchup-banner");
         await expect(
           banner,
-          `design 8a: a pile past 12 unseen gets the big-backlog banner (${seeded.length} seeded)`,
+          `design 8a: a pile past 12 unseen gets the big-backlog banner (${seeded.size} seeded)`,
         ).toBeVisible({ timeout: 45_000 });
         // The two numbers are the list read's, not the seed's: the banner prints
         // `total_unseen` and `daysSince(oldest_unseen_at)`, and a generator pass
@@ -1377,11 +1512,367 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
           "design 8a: the dismissal holds for the session, not just the paint it happened on",
         ).toHaveCount(0);
       });
+
+      /* ------------------------------------------------ acceptance T14
+       * What the rest list actually SHOWS. The box was proven by unit tests only
+       * (RestList.test.tsx / CatchUp.test.tsx): a row's how-it-landed label, its
+       * resolution chip and its project colour square are all rendered from the
+       * row's OWN seeded fields, and none of that had a browser proof. The pile
+       * cycles shape (`issue|pr|push`) and resolution across its pieces, so the
+       * three landing labels and the chips are all on screen at once.
+       */
+      await test.step("T14 — every rest row says how the work landed, its resolution, and paints its project colour", async () => {
+        // A fresh view of the WIDE window: the Keep-all dismissal above was
+        // session state, and the show-seen checkbox must start OFF for the
+        // leave/return leg below.
+        await page.goto("/catch-up");
+        await expect(page.getByTestId("catchup-page"), "design 8a: the page renders").toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(
+          page.getByTestId("catchup-rest"),
+          "design 8a: the rest panel carries the pieces the cards do not touch",
+        ).toBeVisible({ timeout: 45_000 });
+
+        // The wire is the source of truth for what a row OWES to say — the same
+        // read the page made, so every assertion below compares the screen to
+        // the server rather than to a constant this file picked.
+        const wire = await page.request.get(`${EMU_BASE_URL}/api/v1/catch-up/items`);
+        expect(wire.status(), "GET /catch-up/items answers for the row check").toBe(200);
+        const wireItems =
+          (
+            (await wire.json()) as {
+              items?: {
+                id: string;
+                shape: string;
+                resolution: string;
+                project: { name: string; color: string };
+              }[];
+            }
+          ).items ?? [];
+        const byId = new Map(wireItems.map((item) => [item.id, item]));
+
+        // The landing label the shape earns — `ShapeLabel`'s table.
+        const LANDING: Record<string, string> = {
+          issue: "Issue",
+          pr: "PR only",
+          push: "Push to main",
+        };
+        // `RESOLUTION_WORD` (ui/src/components/catchup/importance.ts) — the
+        // vocabulary's own lowercase word, colour-coded but NEVER colour alone.
+        const RESOLUTION: Record<string, string> = {
+          merged: "merged",
+          branch_ready: "branch ready",
+          open: "open",
+          run_failed: "run failed",
+          no_code: "no code",
+        };
+
+        // Assert the RENDERED rows, not a pick this file hoped would be on screen:
+        // a piece with a stop in the tour cards is excluded from the rest (8a),
+        // and which pieces those are is the tour's ranking, not this journey's.
+        // Enumerating what is actually painted also proves the count: every row
+        // has a wire item, and every landing label the pile seeds appears.
+        const rest = page.getByTestId("catchup-rest");
+        const rowLocators = rest.locator('[data-testid^="catchup-row-"]');
+        await expect
+          .poll(async () => rowLocators.count(), {
+            message: "design 8a: the rest list drew its rows",
+            timeout: 45_000,
+          })
+          .toBeGreaterThan(0);
+        const count = await rowLocators.count();
+
+        const labelsSeen = new Set<string>();
+        const resolutionsSeen = new Set<string>();
+        for (let at = 0; at < count; at += 1) {
+          const row = rowLocators.nth(at);
+          const testid = (await row.getAttribute("data-testid")) ?? "";
+          const id = testid.slice("catchup-row-".length);
+          const piece = byId.get(id);
+          expect(
+            piece,
+            `the rendered rest row ${testid} names a piece GET /catch-up/items served`,
+          ).toBeTruthy();
+          const { shape, resolution, project } = piece as {
+            shape: string;
+            resolution: string;
+            project: { name: string; color: string };
+          };
+          const landing = LANDING[shape];
+          expect(landing, `${shape} is a shape the rest list knows how to label`).toBeTruthy();
+          await expect(
+            row,
+            `design 8a: a ${shape} row names how the code landed (${landing})`,
+          ).toContainText(landing);
+          labelsSeen.add(landing);
+          // The other two labels belong to the other two shapes — a row that
+          // renders a second one is a mis-mapped shape, which is the whole defect
+          // this box exists to catch.
+          await expect(
+            row,
+            `design 8a: a ${shape} row wears no other shape's landing label`,
+          ).not.toContainText(
+            new RegExp(
+              `\\b(${Object.entries(LANDING)
+                .filter(([key]) => key !== shape)
+                .map(([, word]) => word.replace(/ /g, "\\s"))
+                .join("|")})\\b`,
+            ),
+          );
+
+          const chip = RESOLUTION[resolution];
+          expect(chip, `${resolution} is a resolution the rest list knows how to word`).toBeTruthy();
+          await expect(
+            row,
+            `design 8a: a ${resolution} row's chip reads "${chip}"`,
+          ).toContainText(chip);
+          resolutionsSeen.add(chip);
+
+          // The project chip's colour square: `RestList.tsx` paints the square
+          // with `projectColor(item.project.color)`, so the pixel a reader sees
+          // must BE the colour the API served for this piece's project. The
+          // browser resolves any CSS colour to `rgb(…)`, so both sides of the
+          // comparison go through the same arithmetic.
+          const square = row.locator('span[aria-hidden="true"][style*="background"]').first();
+          await expect(square, `design 8a: ${id.slice(0, 8)}… draws a project square`).toHaveCount(
+            1,
+          );
+          const painted = await square.evaluate((el: HTMLElement) => {
+            const style = getComputedStyle(el);
+            return {
+              background: style.backgroundColor,
+              width: style.width,
+              height: style.height,
+              // The fallback the component uses for a project with no stored
+              // colour — read from the document so this check never hardcodes it.
+              quiet: getComputedStyle(document.documentElement)
+                .getPropertyValue("--color-project-quiet")
+                .trim(),
+            };
+          });
+          const wantColor = project.color.length > 0 ? project.color : painted.quiet;
+          expect(
+            wantColor,
+            `the API serves a chip colour for ${project.name} (or the document a quiet fallback)`,
+          ).toMatch(/^#[0-9a-f]{6}$/i);
+          expect(
+            painted.background,
+            `design 8a: the project square on the ${shape} row paints the API colour ${wantColor} ` +
+              `(project ${project.name})`,
+          ).toBe(hexToRgb(wantColor));
+          // The design owns the size (README-catchup Part C: an 8px square); the
+          // colour assertion alone would also pass on a 1px dot or a full-width
+          // banner, which is not the chip the mock drew.
+          expect(painted.width, `the project square is 8px wide (${id.slice(0, 8)}…)`).toBe("8px");
+          expect(painted.height, `the project square is 8px tall (${id.slice(0, 8)}…)`).toBe("8px");
+        }
+
+        // The seeded pile cycles all three shapes and all three resolutions, so
+        // a rest list that never showed one of them proved nothing about it.
+        for (const landing of Object.values(LANDING)) {
+          expect(
+            labelsSeen.has(landing),
+            `design 8a: the rest list showed a "${landing}" row (labels seen: ${[
+              ...labelsSeen,
+            ].join(", ")})`,
+          ).toBe(true);
+        }
+        for (const chip of ["merged", "branch ready", "open"]) {
+          expect(
+            resolutionsSeen.has(chip),
+            `design 8a: the rest list showed a "${chip}" resolution chip (chips seen: ${[
+              ...resolutionsSeen,
+            ].join(", ")})`,
+          ).toBe(true);
+        }
+        console.log(
+          `catch-up T14 rest rows (pass ${EMU_PASS_ID}): ${count} row(s), labels ` +
+            `${[...labelsSeen].join("/")}, chips ${[...resolutionsSeen].join("/")}`,
+        );
+      });
+
+      await test.step("T14 — a piece whose story moved wears UPDATED, and show seen brings a paid piece back", async () => {
+        /* Two halves, both on the same rows:
+         *  (1) UPDATED is NOT `unseen_stops > 0`. The store answers it from a seen
+         *      row at an OLDER tour version (`catchUpUnseenSQL`'s EXISTS over
+         *      catchup_seen_stops with `tour_version < l.version`), which is why
+         *      the order below is the proof: mark every v1 beat seen (the piece
+         *      LEAVES the list), then append v2 (it comes BACK, wearing UPDATED).
+         *      A rewrite before the seen-mark would only show a new piece.
+         *  (2) show seen: a piece the reader paid leaves the list, and the
+         *      checkbox brings the SAME row (same testid, same piece) back. */
+        const wire0 = await getList(page);
+        const owed = new Set(wire0.items.map((item) => item.id));
+        const candidates = [...seeded.entries()].filter(([, id]) => owed.has(id));
+        expect(
+          candidates.length,
+          "at least two of the pass's seeded pile pieces are still owed, so one can be rewritten and another paid",
+        ).toBeGreaterThanOrEqual(2);
+        const [movedTitle, movedId] = candidates[0] as [string, string];
+        const [paidTitle, paidId] = candidates[1] as [string, string];
+
+        /* ---- (1) the story moves: seen at v1, then a second version ---- */
+        const movedItem = await getItem(page, movedId);
+        expect(movedItem.latest?.version, `${movedTitle} starts at tour version 1`).toBe(1);
+        const movedStops = (movedItem.latest?.stops ?? []).map((one) => one.id);
+        expect(movedStops.length, `${movedTitle} carries at least one beat`).toBeGreaterThan(0);
+        const markedSeen = await apiMutate(
+          page,
+          "POST",
+          `${EMU_BASE_URL}/api/v1/catch-up/items/${movedId}/seen`,
+          { version: 1, stop_ids: movedStops },
+        );
+        expect(
+          markedSeen.status(),
+          `POST /catch-up/items/${movedId}/seen answers 204 for every v1 beat`,
+        ).toBe(204);
+        // Paid, so owed on nothing — the list read proves it before the rewrite.
+        await expect
+          .poll(
+            async () => {
+              const list = await getList(page);
+              return list.items.some((item) => item.id === movedId);
+            },
+            {
+              message: `${movedTitle} is still owed after every v1 beat was marked seen`,
+              timeout: 60_000,
+            },
+          )
+          .toBe(false);
+
+        // The rewrite. There is NO product route that writes a tour (ADR-0078
+        // § Decision 7 — the generator is the server's own assistant), so this
+        // goes through the store's own table like every other seeded row in this
+        // file: v1's beat carried forward with its id and origin, plus one beat
+        // the reader has never seen (`added_in_version: 2`).
+        const appendOut = labSql(
+          `INSERT INTO catchup_tour_versions (work_item_id, version, reason, stops) ` +
+            `SELECT ${sqlQuote(movedId)}::uuid, 2, ` +
+            `${sqlQuote("Seeded rewrite for the emulator's UPDATED badge (e2e/emulator/catchup.spec.ts)")}, ` +
+            `${sqlQuote(
+              JSON.stringify([
+                {
+                  id: movedStops[0],
+                  title: `Pile beat carried: ${movedTitle}`,
+                  narrative:
+                    "The beat this piece already told — carried forward with its own id, so a reader who saw it stays read.",
+                  kind: "ROUTINE",
+                  importance: "routine",
+                  added_in_version: 1,
+                },
+                {
+                  id: STOP_ID("t14-new"),
+                  title: "Pile beat new: the fix needs a regression test",
+                  narrative:
+                    "The seeded rewrite: a beat this reader has never seen, which is what turns the piece from read to UPDATED.",
+                  kind: "ROUTINE",
+                  importance: "routine",
+                  added_in_version: 2,
+                },
+              ]),
+            )}::jsonb ` +
+            `WHERE NOT EXISTS (SELECT 1 FROM catchup_tour_versions v ` +
+            `WHERE v.work_item_id = ${sqlQuote(movedId)}::uuid AND v.version = 2); ` +
+            // A real append bumps the work item in the SAME statement that writes
+            // the version (ADR-0078: `updated_at` is the clock `since` filters on).
+            `UPDATE catchup_work_items SET updated_at = now() ` +
+            `WHERE id = ${sqlQuote(movedId)}::uuid; ` +
+            `SELECT 'versions|' || count(*) FROM catchup_tour_versions v ` +
+            `WHERE v.work_item_id = ${sqlQuote(movedId)}::uuid;`,
+        );
+        expect(
+          /versions\|2/.test(appendOut),
+          `the seeded piece ${movedTitle} grew a second tour version (psql printed [${appendOut}])`,
+        ).toBe(true);
+
+        // Back on the page: the piece is OWED again (the new beat) and it wears
+        // UPDATED — the badge a story earns only when this reader saw an older
+        // version of it.
+        await page.goto("/catch-up");
+        const movedRow = page.getByTestId("catchup-rest").getByTestId(`catchup-row-${movedId}`);
+        await expect(
+          movedRow,
+          `design 8a: ${movedTitle} is owed again once its story grew a second version`,
+        ).toBeVisible({ timeout: 45_000 });
+        await expect(
+          movedRow,
+          "design 8a: a piece whose story moved AFTER this reader saw it is UPDATED",
+        ).toContainText("UPDATED");
+
+        /* ---- (2) show seen: a paid piece leaves, and the same row returns ---- */
+        await expect(
+          page.getByTestId("catchup-rest").getByTestId(`catchup-row-${paidId}`),
+          `design 8a: ${paidTitle} starts in the rest list`,
+        ).toBeVisible({ timeout: 30_000 });
+        const paidItem = await getItem(page, paidId);
+        const paidStops = (paidItem.latest?.stops ?? []).map((one) => one.id);
+        expect(paidStops.length, `${paidTitle} carries at least one beat`).toBeGreaterThan(0);
+        const paidSeen = await apiMutate(
+          page,
+          "POST",
+          `${EMU_BASE_URL}/api/v1/catch-up/items/${paidId}/seen`,
+          { version: paidItem.latest?.version ?? 1, stop_ids: paidStops },
+        );
+        expect(
+          paidSeen.status(),
+          `POST /catch-up/items/${paidId}/seen answers 204 for every beat`,
+        ).toBe(204);
+        await expect
+          .poll(
+            async () => {
+              const list = await getList(page);
+              return list.items.some((item) => item.id === paidId);
+            },
+            {
+              message: `${paidTitle} is still owed on the wire after its beats were marked seen`,
+              timeout: 60_000,
+            },
+          )
+          .toBe(false);
+        // The reload is the point: with the checkbox OFF a paid piece is gone
+        // from the list, and it is the checkbox that brings it back — not a
+        // cached render.
+        await page.goto("/catch-up");
+        await expect(page.getByTestId("catchup-rest")).toBeVisible({ timeout: 45_000 });
+        await expect(
+          page.getByTestId(`catchup-row-${paidId}`),
+          `design 8a: a piece the reader has paid is gone from the rest`,
+        ).toHaveCount(0);
+
+        const showSeen = page.getByTestId("catchup-show-seen");
+        await expect(showSeen, "the rest list carries the show-seen checkbox").toBeVisible({
+          timeout: 15_000,
+        });
+        const seenRequest = page.waitForRequest(
+          (request) =>
+            request.method() === "GET" &&
+            request.url().includes("/api/v1/catch-up/items") &&
+            new URL(request.url()).searchParams.get("include_seen") === "true",
+          { timeout: 30_000 },
+        );
+        await showSeen.click({ timeout: 15_000 });
+        await seenRequest;
+        await expect(
+          page.getByTestId("catchup-rest").getByTestId(`catchup-row-${paidId}`),
+          `design 8a: show seen brings ${paidTitle} back — the same row, the same piece`,
+        ).toBeVisible({ timeout: 30_000 });
+        // And it reads as paid: the row's own checkbox is what says "this reader
+        // owes nothing here" (RestList.tsx checks it at unseen_stops === 0).
+        await expect(
+          page
+            .getByTestId(`catchup-row-${paidId}`)
+            .locator('input[type="checkbox"]')
+            .first(),
+          `design 8a: the brought-back ${paidTitle} row reads as seen`,
+        ).toBeChecked();
+        await emu.screen("cu-8a-backlog", "updated-and-show-seen");
+      });
       bodyPassed = true;
     } finally {
       await test.step("clean up — the pass's pile is marked seen (scoped to this project)", async () => {
         try {
-          await cleanUpBacklogPile(page, projectId, seeded);
+          await cleanUpBacklogPile(page, projectId, [...seeded.values()]);
         } catch (error) {
           if (bodyPassed) throw error;
           // A dead page must not bury the leg's real failure under a second one.
@@ -1389,7 +1880,7 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
           // next pass would otherwise debug without this line.
           console.log(
             `catch-up CLEANUP problem after an already-failing leg (seed ${EMU_PASS_ID}, ` +
-              `project ${PROJECT_SLUG}): ${String(error)} — ${seeded.length} seeded pieces ` +
+              `project ${PROJECT_SLUG}): ${String(error)} — ${seeded.size} seeded pieces ` +
               `may still read unseen`,
           );
         }
@@ -1429,4 +1920,319 @@ test.describe("catch-up big backlog (alice: mock 8a's pile and the window it pro
       )
       .toBe(0);
   }
+
+  /* ------------------------------------------------- acceptance T15 (piece page)
+   * The piece page's seen-by roster, the "you have not seen the {time} update"
+   * sentence, and Copy link — three things the box rested on
+   * `ui/src/pages/CatchUpItem.test.tsx` for.
+   *
+   * The roster is a fact about OTHER readers, so it needs a second identity: a
+   * fresh browser context with an EXPLICIT empty storage state (this describe
+   * carries alice's, and @playwright/test merges it into every `browser.newContext`
+   * that does not name one — the acceptance 42524332059 hang `gate-decision-conflict
+   * .spec.ts` documents), signed in through the mock IdP exactly as the lab's seed
+   * did (`{"email":"<subject>@example.test"}`, docs/compatibility/probes/m4/seed.sh
+   * `login()`). The app derives his display name from those claims
+   * (ADR-0012 § 4: name → preferred_username → subject — none here but the
+   * subject), so his row is `bob`, and the avatar's initials and the seen line's
+   * name are both computed from THAT string by the component.
+   *
+   * The ordering is the proof, not decoration. `CatchUpItem.tsx` renders
+   * `seen by {names} · you have not seen the {updateClock} update` only when
+   * `updated` (this reader's recorded version < the newest) AND the roster is
+   * non-empty — i.e. somebody finished the NEWEST version while alice stopped at
+   * an older one. So: bob finishes v1 (the roster names him) → alice finishes v1
+   * too → the story is rewritten → bob finishes the new version (the roster still
+   * names him) → alice, who saw v1, reads the update sentence.
+   *
+   * The rewrite goes through the store's own table: ADR-0078 § Decision 7 gives
+   * the product no route that writes a tour, which is why every tour row in this
+   * file is seeded.
+   */
+  test("T15 piece page — seen-by names the other reader, the update sentence fires, Copy link copies", async ({
+    browser,
+    page,
+    emu,
+  }) => {
+    // Its own budget, like this file's other proofs: one seed, two sign-ins,
+    // three seen writes, one rewrite and a page load or two.
+    test.setTimeout(300_000);
+
+    const T15_TITLE = `Emu catch-up t15 ${EMU_PASS_ID}: the seen-by roster names the other reader`;
+
+    await test.step("T15 — seed the pass's own piece (two unseen beats)", async () => {
+      const out = labSql(
+        upsertItemSql(T15_TITLE, "pr", "branch_ready", { pr_numbers: [990] }) +
+          " " +
+          tourVersionSql(T15_TITLE, [
+            stop("t15-a", {
+              kind: "UI CHANGE",
+              title: "T15 beat one: the roster line and the avatar",
+              narrative:
+                "The seeded fixture: the first beat of the piece this proof reads. Nothing asks anything here.",
+              importance: "worth_a_look",
+            }),
+            stop("t15-b", {
+              kind: "UI CHANGE",
+              title: "T15 beat two: the story that moves",
+              narrative:
+                "The seeded fixture: the second beat. Finishing the newest version is what puts a name in the roster.",
+              importance: "worth_a_look",
+            }),
+          ]) +
+          ` SELECT 't15|' || id::text FROM catchup_work_items WHERE title = ${sqlQuote(T15_TITLE)};`,
+      );
+      const id = /t15\|([0-9a-fA-F-]{36})/.exec(out)?.[1] ?? "";
+      expect(
+        id,
+        `the T15 fixture piece did not come back with a uuid (psql printed [${out}])`,
+      ).toMatch(UUID_RE);
+      const fresh = await getItem(page, id);
+      expect(
+        (fresh.latest?.stops ?? []).filter((one) => !one.seen).length,
+        "both T15 beats are unseen when the leg opens (a replay after a mid-leg failure owes this leg a fresh read)",
+      ).toBe(2);
+    });
+
+    // Resolved from the wire, not from the seed: the id every step below acts on.
+    const pieceList = await page.request.get(`${EMU_BASE_URL}/api/v1/catch-up/items`, {
+      params: { include_seen: "true" },
+    });
+    expect(pieceList.status(), "GET /catch-up/items (include_seen) answers").toBe(200);
+    const pieceId =
+      (
+        (await pieceList.json()) as { items?: { id: string; title: string }[] }
+      ).items?.find((item) => item.title === T15_TITLE)?.id ?? "";
+    expect(pieceId, "the T15 fixture piece is in alice's list").toMatch(UUID_RE);
+
+    /** Mark every beat of the piece's NEWEST tour version seen through the
+     * product's own route, as the caller whose session `mutatePage` carries.
+     * The stop ids come from the read (the store admits only ids the NAMED
+     * version carries, so guessing one would mark nothing and the roster would
+     * honestly stay empty — a silent red rather than a loud one). */
+    const finishLatest = async (mutatePage: Page): Promise<number> => {
+      const me = await mutatePage.request.get(`${EMU_BASE_URL}/api/v1/catch-up/items/${pieceId}`);
+      expect(me.status(), "GET /catch-up/items/{id} answers for the finisher").toBe(200);
+      const item = (await me.json()) as { latest?: { version: number; stops: { id: string }[] } };
+      const version = item.latest?.version ?? 0;
+      const stopIds = (item.latest?.stops ?? []).map((one) => one.id);
+      expect(version, "the piece has a tour version to finish").toBeGreaterThan(0);
+      expect(stopIds.length, "the piece's newest tour has beats to finish").toBeGreaterThan(0);
+      const seen = await apiMutate(
+        mutatePage,
+        "POST",
+        `${EMU_BASE_URL}/api/v1/catch-up/items/${pieceId}/seen`,
+        { version, stop_ids: stopIds },
+      );
+      expect(
+        seen.status(),
+        `POST /catch-up/items/${pieceId}/seen answers 204 at version ${version}`,
+      ).toBe(204);
+      return version;
+    };
+
+    let second: { page: Page; context: BrowserContext; name: string } | null = null;
+    try {
+      await test.step("T15 — a second seeded reader finishes the newest version", async () => {
+        const reader = await signInSecondReader(browser);
+        second = reader;
+        await finishLatest(reader.page);
+        // Proven on the wire before the browser is asked to show it: alice's own
+        // read lists him, so a missing avatar is the UI's fault, not a write that
+        // never landed.
+        await expect
+          .poll(
+            async () => {
+              const item = await getItem(page, pieceId);
+              return (item.seen_by ?? []).map((seen) => seen.name).join(", ");
+            },
+            {
+              message: "GET /catch-up/items/{id} does not list the second reader in seen_by",
+              timeout: 60_000,
+            },
+          )
+          .toMatch(/bob/i);
+      });
+
+      await test.step("T15 — as alice the roster shows his initials and names him", async () => {
+        // The closure inside `expect.poll`/`toContainText` may run after the
+        // outer `second` is reassigned or nulled by a failure path, so this step
+        // works from a bound copy of what it needs.
+        const secondReader = second as {
+          page: Page;
+          context: BrowserContext;
+          name: string;
+        };
+        const secondName = secondReader.name;
+        await page.goto(`/catch-up/${pieceId}`);
+        await expect(
+          page.getByTestId("catchup-item"),
+          "design 8b: the piece page renders",
+        ).toBeVisible({ timeout: 30_000 });
+        const roster = page.getByTestId("catchup-item-seen-by");
+        await expect(roster, "design 8b: the seen-by avatar strip is drawn").toBeVisible({
+          timeout: 30_000,
+        });
+        // The initials the component computes from his display name (`bob` →
+        // first letter of each of up to two words, upper-cased).
+        const expected = initialsOf(secondName);
+        const avatars = roster.locator("> span");
+        await expect
+          .poll(async () => avatars.count(), {
+            message: "the seen-by strip drew an avatar per reader",
+            timeout: 30_000,
+          })
+          .toBeGreaterThanOrEqual(1);
+        const shown: string[] = [];
+        for (let at = 0; at < (await avatars.count()); at += 1) {
+          shown.push(((await avatars.nth(at).textContent()) ?? "").trim());
+        }
+        expect(
+          shown,
+          `design 8b: the roster carries ${secondName}'s initials (${expected}); avatars read ${JSON.stringify(shown)}`,
+        ).toContain(expected);
+        const line = page.getByTestId("catchup-item-seen-line");
+        await expect(line, "design 8b: the seen line names the reader").toContainText("seen by", {
+          timeout: 30_000,
+        });
+        await expect(line, `design 8b: the seen line names ${secondName}`).toContainText(
+          firstNameOf(secondName),
+        );
+        // The sentence's TAIL is not this step's claim (phase 2 pins the update
+        // form the brief asks for); the roster and the name are.
+        // Same page, same landmark set as the screen journey's 8b capture — the
+        // roster is a fact about this screen, not a new screen.
+        await emu.screen("cu-8b", "piece");
+      });
+
+      await test.step("T15 — alice saw v1, the story moved, and he saw that too", async () => {
+        // Alice finishes what she is looking at: version 1.
+        await finishLatest(page);
+        // The rewrite: v1's two beats carried forward with their ids and their
+        // origin, plus one beat nobody has seen. `added_in_version` is the store's
+        // own rule for what a reader still owes (ADR-0078 § Decision 3), so the
+        // carried beats stay read and the new one is owed.
+        const rewritten = labSql(
+          `INSERT INTO catchup_tour_versions (work_item_id, version, reason, stops) ` +
+            `SELECT ${sqlQuote(pieceId)}::uuid, 2, ` +
+            `${sqlQuote("Seeded T15 rewrite for the update sentence (e2e/emulator/catchup.spec.ts)")}, ` +
+            `${sqlQuote(
+              JSON.stringify([
+                {
+                  id: STOP_ID("t15-a"),
+                  title: "T15 beat one: the roster line and the avatar",
+                  narrative: "Carried forward with its id, so the reader who saw it stays read.",
+                  kind: "UI CHANGE",
+                  importance: "worth_a_look",
+                  added_in_version: 1,
+                },
+                {
+                  id: STOP_ID("t15-b"),
+                  title: "T15 beat two: the story that moves",
+                  narrative: "Carried forward too.",
+                  kind: "UI CHANGE",
+                  importance: "worth_a_look",
+                  added_in_version: 1,
+                },
+                {
+                  id: STOP_ID("t15-c"),
+                  title: "T15 beat new: the second version's own beat",
+                  narrative:
+                    "The seeded rewrite: the beat that makes the piece UPDATED for a reader who stopped at version 1.",
+                  kind: "UI CHANGE",
+                  importance: "must_know",
+                  added_in_version: 2,
+                },
+              ]),
+            )}::jsonb ` +
+            `WHERE NOT EXISTS (SELECT 1 FROM catchup_tour_versions v ` +
+            `WHERE v.work_item_id = ${sqlQuote(pieceId)}::uuid AND v.version = 2); ` +
+            `UPDATE catchup_work_items SET updated_at = now() WHERE id = ${sqlQuote(pieceId)}::uuid; ` +
+            `SELECT 'versions|' || count(*) FROM catchup_tour_versions v ` +
+            `WHERE v.work_item_id = ${sqlQuote(pieceId)}::uuid;`,
+        );
+        expect(
+          /versions\|2/.test(rewritten),
+          `the T15 piece grew a second tour version (psql printed [${rewritten}])`,
+        ).toBe(true);
+        // The second reader finishes the NEW version too: the roster only lists
+        // readers who finished the newest one, and the update sentence needs a
+        // non-empty roster to print a name at all.
+        await finishLatest((second as { page: Page }).page);
+      });
+
+      await test.step("T15 — alice reads 'you have not seen the {time} update'", async () => {
+        const secondName = (second as { name: string }).name;
+        await page.goto(`/catch-up/${pieceId}`);
+        const line = page.getByTestId("catchup-item-seen-line");
+        await expect(
+          line,
+          `design 8b: alice saw version 1, the story moved, so the line says so and names ${secondName}`,
+        ).toContainText(/you have not seen the .* update/, { timeout: 30_000 });
+        await expect(line, "design 8b: …and the line still names the reader who finished it").toContainText(
+          firstNameOf((second as { name: string }).name),
+        );
+        // The clock in the sentence is the component's own `clockOf` of the
+        // newest version's created_at — compared to the SAME Intl call run in the
+        // page, so no hard-coded HH:MM and no timezone assumption.
+        const item = await getItem(page, pieceId);
+        const latestCreated = item.latest?.created_at;
+        expect(latestCreated, "the piece's newest version carries its created_at").toBeTruthy();
+        const wantClock = await page.evaluate((iso: string) => {
+          return new Intl.DateTimeFormat(undefined, {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).format(new Date(iso));
+        }, String(latestCreated));
+        await expect(
+          line,
+          `design 8b: the sentence names the newest version's own clock (${wantClock})`,
+        ).toContainText(`you have not seen the ${wantClock} update`);
+        // And the roster still draws his initials on the rewritten page.
+        await expect(
+          page.getByTestId("catchup-item-seen-by").locator("> span"),
+          `design 8b: the initials of ${secondName} are still drawn after the rewrite`,
+        ).toHaveText(new RegExp(initialsOf(secondName)));
+      });
+
+      await test.step("T15 — Copy link puts the piece's own URL on the clipboard", async () => {
+        // The clipboard is a permissioned API: Chromium refuses the read without
+        // both halves, and Playwright's headless context starts with neither.
+        const context = page.context();
+        await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+        await page.bringToFront();
+        const copy = page.getByTestId("catchup-item-copy");
+        await expect(copy, "design 8b: the piece offers Copy link").toBeVisible({
+          timeout: 30_000,
+        });
+        await copy.click({ timeout: 15_000 });
+        // The button's own confirmation (it flips to "Copied" and back on a
+        // 2 s timer) is the UI's half of the claim…
+        await expect(copy, "design 8b: the verb confirms the copy").toContainText(/copied/i, {
+          timeout: 1_500,
+        });
+        // …and the clipboard is the proof: exactly the piece's address, off the
+        // origin the page is served from (the component writes
+        // `${window.location.origin}/catch-up/${workId}`).
+        const origin = new URL(EMU_BASE_URL).origin;
+        await expect
+          .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+            message: "the clipboard does not hold the piece's own URL",
+            timeout: 15_000,
+          })
+          .toBe(`${origin}/catch-up/${pieceId}`);
+      });
+    } finally {
+      // The second context is the journey's own, closed under a catch like the
+      // empty-Today proof's (a dead page must not bury the real failure).
+      const held = second as { context: BrowserContext } | null;
+      if (held !== null) await held.context.close().catch(() => undefined);
+      // Leave no debt behind: the pass's own T15 piece is marked seen, scoped to
+      // the one project it was seeded in, so a later pass's badge never reads it.
+      await apiMutate(page, "POST", `${EMU_BASE_URL}/api/v1/catch-up/seen-all`, {
+        projects: [await m4ExitProjectId(page)],
+      }).catch(() => undefined);
+    }
+  });
 });

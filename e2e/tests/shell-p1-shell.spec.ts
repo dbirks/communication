@@ -199,6 +199,21 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
         old: `/projects/${project.id}/conversations/${conversation.id}`,
         canonical: `/threads/${conversation.id}`,
       });
+    // Acceptance T1: the project-scoped Threads tab is `/p/:id/threads`; the
+    // old `conversations` spelling of BOTH the tab and a single thread stays
+    // alive as a redirect (App.tsx), and the redirect must land on the
+    // project-scoped `/p/:id/threads[/:cid]` address, not the global one. This
+    // is the URL proof — the browser assertion the box rested on a unit test for.
+    if (project)
+      rows.push({
+        old: `/p/${project.id}/conversations`,
+        canonical: `/p/${project.id}/threads`,
+      });
+    if (project && conversation)
+      rows.push({
+        old: `/p/${project.id}/conversations/${conversation.id}`,
+        canonical: `/p/${project.id}/threads/${conversation.id}`,
+      });
     expect(rows.length).toBeGreaterThanOrEqual(4);
     for (const row of rows) {
       await page.goto(BASE_URL + row.old, { waitUntil: "domcontentloaded" });
@@ -211,7 +226,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     await evidence(
       page,
       "shell-p1-redirects",
-      `all ${rows.length} legacy URLs (library, agents, steps, inbox, board, p/<id>/pipelines, projects/<id>, projects/<id>/runs/<run>?view=timeline, projects/<id>/conversations/<c>) land on their canonical URLs with query state preserved — /inbox and /board land on Today`,
+      `all ${rows.length} legacy URLs (library, agents, steps, inbox, board, p/<id>/pipelines, projects/<id>, projects/<id>/runs/<run>?view=timeline, projects/<id>/conversations/<c>, p/<id>/conversations, p/<id>/conversations/<c>) land on their canonical URLs with query state preserved — /inbox and /board land on Today, and the project-scoped p/<id>/conversations[/] lands on p/<id>/threads[/] (T1)`,
     );
   });
 
@@ -509,6 +524,22 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     });
     await expect(tip).toHaveRole("tooltip");
     await expect(tip, "the label carries the tile's word").toContainText("Today");
+    // Acceptance T11 (the box rested on Sidebar.test.tsx): the label is the
+    // design's ONE dark chip. Prove it ON THE RENDERED PAGE — the computed
+    // background is the ink colour (`--color-ink: #1e1d1a` = rgb(30, 29, 26),
+    // asserted as rgb so it holds whatever the token's spelling is), and the
+    // chip points back at the tile with its arrow (`rail-tooltip-arrow`, the
+    // 8px ink square rotated 45° onto the tooltip's left edge).
+    await expect(tip, "the dark label paints in the ink colour (design 3a/4a)").toHaveCSS(
+      "background-color",
+      "rgb(30, 29, 26)",
+    );
+    const arrow = page.getByTestId("rail-tooltip-arrow");
+    await expect(arrow, "the label carries the arrow pointing back at the tile").toHaveCount(1);
+    await expect(arrow, "…and the arrow is the same ink").toHaveCSS(
+      "background-color",
+      "rgb(30, 29, 26)",
+    );
     await page.mouse.move(600, 400); // leave the rail entirely
     await expect(tip, "leaving the rail takes the label with it").toBeHidden({ timeout: 5_000 });
 
@@ -560,7 +591,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       await evidence(
         page,
         "shell-p1-rail-label-chord",
-        "hovering the rail's Today tile prints the rail-tooltip label 'Today' (and leaving takes it), and the ⌘\\ chord (Control+\\ on this lab) collapses the column to the rail and re-expands it at 1500px, restoring the saved preference (redesign 4a)",
+        "hovering the rail's Today tile prints the rail-tooltip label 'Today' in the ink colour rgb(30, 29, 26) with its rail-tooltip-arrow (and leaving takes it), and the ⌘\\ chord (Control+\\ on this lab) collapses the column to the rail and re-expands it at 1500px, restoring the saved preference (redesign 4a)",
       );
     } finally {
       await restoreColumnState(page, found);

@@ -346,6 +346,105 @@ test.describe("run-gate-artifacts (alice)", () => {
         page.getByTestId("run-header-actions").getByTestId("run-pause"),
         "a run parked at a gate does not get Pause inline",
       ).toHaveCount(0);
+
+      // Acceptance T8, the parts that were only unit-proven (RunHeader.test.tsx,
+      // lab shell-p3-workbench.spec.ts): the header's OTHER two rows, read in
+      // the browser on this real waiting run. Row 1 is the way back —
+      // `{project} › Runs`, both crumbs real links. Row 2 keeps the run's title
+      // and its state chip on ONE row. Row 3 spells the run's facts as four
+      // labelled values, each carrying a value. The run is already reloaded
+      // above, so the header is the API's `waiting_human` state.
+      await test.step("T8 — the header's breadcrumb, its title+chip row and the facts row", async () => {
+        // The project the run lives in, named the way the header names it
+        // (RunHeader reads `useProject(projectId)`, so the crumb is the API's
+        // own name — read from the wire, never hard-coded).
+        const projectRes = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${projectId}`);
+        expect(projectRes.status(), "GET /projects/{id} answers for the run's project").toBe(200);
+        const projectName = String(
+          ((await projectRes.json()) as { name?: string }).name ?? "",
+        ).trim();
+        expect(projectName, "the project has a name for the crumb").not.toBe("");
+
+        const crumb = page.getByTestId("run-breadcrumb");
+        await expect(crumb, "T8 row 1: the header carries the breadcrumb").toBeVisible({
+          timeout: 30_000,
+        });
+        // Both crumbs are links, in the design's order, with the separator
+        // (aria-hidden) between them.
+        const crumbLinks = crumb.locator("a");
+        await expect(crumbLinks, "T8: the breadcrumb is exactly the two links").toHaveCount(2);
+        // `toHaveText` compares a trimmed string, so this asserts the crumb IS
+        // the project's API name (the fallback to the raw id would fail it).
+        await expect(crumbLinks.nth(0)).toHaveText(projectName);
+        await expect(crumbLinks.nth(0)).toHaveAttribute("href", new RegExp(`/p/${projectId}$`));
+        await expect(crumbLinks.nth(1), "T8: the second crumb says Runs").toHaveText(/Runs/);
+        await expect(crumbLinks.nth(1)).toHaveAttribute(
+          "href",
+          new RegExp(`/p/${projectId}/runs$`),
+        );
+
+        // Row 2 — the title and the state chip share ONE row. `run-header-title`
+        // is that row's box; the chip rides inside it beside the H1, so the two
+        // are proven on one row by both being in that box and their vertical
+        // centres agreeing within the row's own height.
+        const title = page.getByTestId("run-title");
+        const chip = page.getByTestId("run-header-status");
+        await expect(title, "T8 row 2: the run carries its title").toBeVisible({
+          timeout: 30_000,
+        });
+        const titleText = ((await title.textContent()) ?? "").trim();
+        expect(titleText, "T8: the title is not empty").not.toBe("");
+        await expect(
+          chip,
+          "T8 row 2: the state chip sits on the title's row",
+        ).toBeVisible();
+        expect(((await chip.textContent()) ?? "").trim(), "T8: the chip carries a word").not.toBe(
+          "",
+        );
+        await expect(
+          page.getByTestId("run-header-title"),
+          "T8 row 2: the title and the chip are in the header's ONE title row",
+        ).toContainText(titleText);
+        const titleBox = await title.boundingBox();
+        const chipBox = await chip.boundingBox();
+        expect(titleBox, "T8: the title is laid out").not.toBeNull();
+        expect(chipBox, "T8: the chip is laid out").not.toBeNull();
+        // The chip follows the title on the same row: their vertical centres are
+        // within the taller box's height of one another (the row wraps only at
+        // phone width; this capture is 1280).
+        expect(
+          Math.abs(chipBox!.y + chipBox!.height / 2 - (titleBox!.y + titleBox!.height / 2)),
+          `T8: the title and the state chip are on ONE row (title y=${titleBox!.y} h=${titleBox!.height}, chip y=${chipBox!.y} h=${chipBox!.height})`,
+        ).toBeLessThanOrEqual(Math.max(titleBox!.height, chipBox!.height));
+
+        // Row 3 — the facts. Each label must be present with a non-empty value.
+        // `Repository` only mounts when the project names one repository (the
+        // run-gate project pins a single `app` repo), so it is required here.
+        const facts: readonly [testid: string, label: string][] = [
+          ["workflow", "Workflow"],
+          ["repository", "Repository"],
+          ["started", "Started"],
+          ["digest", "Pinned digest"],
+        ];
+        const meta = page.getByTestId("run-header-meta");
+        await expect(meta, "T8 row 3: the header carries the facts row").toBeVisible();
+        for (const [testid, label] of facts) {
+          const fact = page.getByTestId(`run-fact-${testid}`);
+          await expect(fact, `T8: the facts row carries a ${label} field`).toBeVisible({
+            timeout: 30_000,
+          });
+          const rendered = ((await fact.innerText()) ?? "").replace(/\s+/g, " ").trim();
+          expect(rendered, `T8: the ${label} fact shows its label`).toContain(label);
+          // The value is the label's own words minus the label — non-empty means
+          // a real Workflow / Repository / Started / Pinned digest value landed.
+          const value = rendered.replace(label, "").replace(/^[:\s]+|[:\s]+$/g, "").trim();
+          expect(
+            value,
+            `T8: the ${label} fact carries a value (rendered ${JSON.stringify(rendered)})`,
+          ).not.toBe("");
+        }
+      });
+
       await emu.screen("run-gate", "waiting");
     });
 

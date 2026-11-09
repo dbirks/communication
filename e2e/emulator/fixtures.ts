@@ -26,7 +26,12 @@
 //     BOTH widths it also runs the NO-MADE-UP-DATA check (mockdata.ts): none
 //     of the design mock's invented people, repo/workflow names, issue titles,
 //     ids or amounts may appear in the page's visible text (kind
-//     made-up-data). A
+//     made-up-data). At BOTH widths it also runs the IA SCREEN-GUARD
+//     (screen-guard.ts): the page's chrome text may not say the redesign's
+//     retired nouns (chat / chats / conversation / conversations) and it may
+//     not link a retired destination (/inbox or /board) — a hit is a
+//     `retired-ia` defect. This is the browser proof for T1/T3 across every
+//     screen, not just the pages the shell spec visits. A
 //     badge with a design render and no landmark entry is itself a defect
 //     (coverage cannot lapse silently); a badge with no design render
 //     (`run-gate`, `artifact`) is exempt.
@@ -62,6 +67,12 @@ import {
 } from "./reflow.js";
 import { landmarksFor, missingLandmarks, type Landmark } from "./design.js";
 import { findMockTexts, MOCK_DATA_TEXTS, sourcesFor } from "./mockdata.js";
+import {
+  screenGuardFind,
+  screenGuardInput,
+  screenGuardDetail,
+  type ScreenGuardHit,
+} from "./screen-guard.js";
 
 /** A defect kind, as reported in results.json and the issue title. */
 export type EmuDefectKind =
@@ -75,7 +86,8 @@ export type EmuDefectKind =
   | "target"
   | "overlap"
   | "design"
-  | "made-up-data";
+  | "made-up-data"
+  | "retired-ia";
 
 export interface EmuDefect {
   kind: EmuDefectKind;
@@ -111,6 +123,9 @@ export interface EmuScreenChecks extends EmuChecks {
   /** False when a MOCK_DATA string appears in the page's visible text — the
    * mock's sample data, which the app must never show. */
   data: boolean;
+  /** False when the redesign's retired IA copy (chat / conversation) or a dead
+   * /inbox or /board link is visible on the screen — screen-guard.ts. */
+  ia: boolean;
 }
 
 /** The recording handle the fixture hands to a journey. */
@@ -431,6 +446,10 @@ class EmuRecorder {
     // Same dedupe rule for made-up-data hits: one string on the page at both
     // widths is one problem, filed once.
     const reportedMockHits = new Set<string>();
+    // The IA screen-guard files one defect per distinct set of words/routes per
+    // SCREEN (not per width): the fingerprint is kind + journey + screen +
+    // normalised detail, so the same dead link at both widths is one problem.
+    const reportedIaHits = new Set<string>();
     // A state re-capture (see below) re-runs one width's checks on the SAME
     // screen: a finding already recorded for this kind+viewport+detail must
     // not file twice, so every width check records through this dedupe.
@@ -469,6 +488,7 @@ class EmuRecorder {
         overlap: true,
         design: true,
         data: true,
+        ia: true,
       };
       const shot = `${badge}-${name}-${width}.png`;
       // The capture goes from the TOP. A journey that clicked its way down a
@@ -542,6 +562,28 @@ class EmuRecorder {
           `made-up data: the mock's sample value "${hit}" is visible on this screen ` +
             `— mock source: ${sourcesFor(hit)}`,
         );
+      }
+      // (g) the IA screen-guard (screen-guard.ts): the redesign renamed the
+      // surface ("conversation" → "thread", the Inbox folded into Today, the
+      // Board into the repository's Lanes view) and finding 03 unmounted
+      // /inbox and /board. A per-page unit test cannot prove the WHOLE pass is
+      // clean, so every captured screen files a `retired-ia` defect when its
+      // chrome text (body.innerText, with <code>/<pre> and the model-/user-
+      // written content regions removed) still says chat / chats / conversation
+      // / conversations — the node-kind ids (`model.chat`, …) are allow-listed
+      // as real product nouns — or links to a retired /inbox or /board address.
+      // This is the browser proof for T1/T3 across all 160+ screens.
+      const iaHit: ScreenGuardHit = await this.page.evaluate(screenGuardFind, screenGuardInput());
+      checks.ia = iaHit.words.length === 0 && iaHit.routes.length === 0;
+      if (!checks.ia) {
+        const iaDedupeKey = `${iaHit.words.slice().sort().join(",")}|${iaHit.routes
+          .slice()
+          .sort()
+          .join(",")}`;
+        if (!reportedIaHits.has(iaDedupeKey)) {
+          reportedIaHits.add(iaDedupeKey);
+          recordOnce("retired-ia", `retired IA on this screen — ${screenGuardDetail(iaHit)}`);
+        }
       }
       if (landmarks !== null) {
         const absent = await missingLandmarks(this.page, landmarks, width);

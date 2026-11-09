@@ -84,6 +84,21 @@ const dataCell = (widths) => {
     : '<span class="bad">FAIL</span> <span class="muted">see the made-up-data defects</span>';
 };
 
+/** The IA screen-guard (screen-guard.ts) — the redesign's retired copy
+ * (chat / conversation) and dead /inbox / board links — evaluated at both
+ * widths like design and data; a FAIL names the strings in the retired-ia
+ * defects below. Passes recorded before the check existed have no `ia` key —
+ * `n/a`, not a failure. */
+const iaCell = (widths) => {
+  const records = [widths[1280], widths[390]].filter(
+    (screen) => screen && screen.checks && screen.checks.ia !== undefined,
+  );
+  if (records.length === 0) return '<span class="muted">n/a</span>';
+  return records.every((screen) => screen.checks.ia === true)
+    ? '<span class="ok">PASS</span>'
+    : '<span class="bad">FAIL</span> <span class="muted">see the retired-ia defects</span>';
+};
+
 // Rows of the per-screen table: one per badge+name, a column per width.
 const resultOrder = [];
 const widthsByScreen = new Map();
@@ -114,6 +129,7 @@ const resultRows = resultOrder
       <td>${checkCell(widths[390])}</td>
       <td>${designCell(widths)}</td>
       <td>${dataCell(widths)}</td>
+      <td>${iaCell(widths)}</td>
     </tr>`;
   })
   .join("\n");
@@ -185,7 +201,7 @@ const html = `<!doctype html>
   <h2>Per-screen results</h2>
   <table>
     <thead>
-      <tr><th>screen</th><th>1280</th><th>390</th><th>design</th><th>data</th></tr>
+      <tr><th>screen</th><th>1280</th><th>390</th><th>design</th><th>data</th><th>ia</th></tr>
     </thead>
     <tbody>
 ${resultRows.length > 0 ? resultRows : '    <tr><td colspan="5" class="muted">no screens recorded</td></tr>'}
