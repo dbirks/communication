@@ -350,6 +350,7 @@ export function WorkbenchDock({
           verdictReason={verdict.show && verdict.reason ? verdict.reason : null}
           checkpoint={checkpoint}
           nodeKey={execution.node_instance_key}
+          runId={run.id}
         />
       ) : null}
     </div>
@@ -546,7 +547,9 @@ function AgentDock({
   );
 }
 
-/** The failed/interrupted block — the inspector's words, kept verbatim. */
+/** The failed/interrupted block. Finding 12: the no-attempt line speaks the
+ * reader's words (what happened, what to do next) and points at the run
+ * workbench's own Diagnostics tab instead of naming the control plane. */
 function FailureBlock({
   errorClass,
   failedCause,
@@ -555,6 +558,7 @@ function FailureBlock({
   verdictReason,
   checkpoint,
   nodeKey,
+  runId,
 }: {
   errorClass: string | null;
   failedCause: string | null;
@@ -563,6 +567,8 @@ function FailureBlock({
   verdictReason: string | null;
   checkpoint: RunCheckpoint | null;
   nodeKey: string;
+  /** The run this dock is open on — the Diagnostics link's target. */
+  runId: string;
 }) {
   return (
     <div className="rounded-[3px] border border-line bg-surface p-[8px]" data-testid="dock-failure">
@@ -588,7 +594,12 @@ function FailureBlock({
       </dl>
       {attemptNumber === 0 ? (
         <p className="mt-[6px] font-mono text-[11px] text-muted" data-testid="dock-no-attempt">
-          no worker attempt — the engine recorded this failure on the control plane
+          This step failed before an agent started, so there&apos;s no attempt to show. The
+          run&apos;s{" "}
+          <Link to={routes.run(runId, { view: "diagnostics" })} className="underline">
+            Diagnostics tab
+          </Link>{" "}
+          has the details.
         </p>
       ) : null}
       {verdictReason ? (

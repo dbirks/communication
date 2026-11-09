@@ -634,7 +634,7 @@ describe("/p/:projectId — running now", () => {
       },
     ]);
     expect((await screen.findByTestId("running-now-unavailable")).textContent).toContain(
-      "not available",
+      "can't load on this server version",
     );
     expect(screen.queryByTestId("running-now-empty")).toBeNull();
   });

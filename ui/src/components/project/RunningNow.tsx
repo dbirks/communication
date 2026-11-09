@@ -126,8 +126,8 @@ export function RunningNow({ project, limit = 6 }: RunningNowProps) {
             className="p-[10px] font-mono text-[11px] text-muted"
             data-testid="running-now-unavailable"
           >
-            · step progress is not available — this server build predates the cross-project run read
-            this panel reads.{" "}
+            · Step progress can&apos;t load on this server version — the runs themselves are up to
+            date. Ask an admin to update.{" "}
             <Link to={routes.projectTab(project.id, "runs")} className="underline">
               all runs ›
             </Link>

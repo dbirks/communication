@@ -684,7 +684,9 @@ describe("WorkbenchDock", () => {
       "child_run_failed:node_execution_failed:/implement",
     );
     expect(screen.getByTestId("dock-attempt-count").textContent).toBe("attempt 0 of 1");
-    expect(screen.getByTestId("dock-no-attempt").textContent).toContain("no worker attempt");
+    expect(screen.getByTestId("dock-no-attempt").textContent).toContain(
+      "failed before an agent started",
+    );
     expect(screen.getByTestId("dock-child-run-link").textContent).toBe("Open child run");
   });
 });
