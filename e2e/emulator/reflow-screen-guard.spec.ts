@@ -15,6 +15,11 @@
 // transcript's `transcript-item` rows, the artifact preview's
 // `artifact-preview-prose`, the rest list's `catchup-row-<id>` — so a rename of
 // one of those testids shows up HERE rather than as a screen full of defects.
+// (g7)–(g9) judge the guard's SECOND phrase list (rule c, acceptance T9/T10):
+// finding 12's implementation words — "control plane", "server build",
+// "scaffold", "decision word", "winner", and a bare 404/409/500/503 read as
+// prose — over the same exclusions, with the numbers-in-data refusals the
+// rule depends on.
 import { expect, test } from "./fixtures.js";
 import {
   screenGuardDetail,
@@ -181,4 +186,121 @@ test.describe("the IA screen-guard (T1/T3)", () => {
       "one defect detail stays inside the fixture's MAX_DETAIL",
     ).toBeLessThanOrEqual(500);
   });
+
+  test("(g7) the implementation words in the app's own chrome file (rule c, T9/T10)", async ({
+    page,
+  }) => {
+    // The strings finding 12 rewrote word for word, and the "decision word"
+    // sentence the closed-button DecisionBar deleted (T10). Each is said here
+    // the way the OLD copy said it, in plain app chrome.
+    for (const [label, body] of [
+      ["server build", `<p>! not available yet — this server build predates the reads</p>`],
+      ["control plane", `<p>The control plane answered and this page shows no more.</p>`],
+      ["scaffold", `<p>this page shows no scaffold for a run it cannot see</p>`],
+      ["decision word", `<p>“Ship it” is not a decision word — choose the decision:</p>`],
+      ["winner", `<p>someone decided this gate first — what you see now is the winner's</p>`],
+      ["bare 404 in prose", `<p>The control plane answered 404 — this page shows nothing.</p>`],
+      ["bare 409 in prose", `<p>Your decision hit a 409 conflict; the gate is already decided.</p>`],
+      ["bare 500 mid-sentence", `<p>The server gave a 500 and stopped.</p>`],
+      ["bare 503 at the end", `<p>The assistant is not reachable right now: 503</p>`],
+    ] as const) {
+      await page.setContent(DOC(body));
+      const hit = await guard(page);
+      expect(hit.implementation, `${label} must file under rule (c)`).not.toHaveLength(0);
+    }
+    // The rule (c) hit is its own line in the defect detail, worded so a
+    // reader of the report knows WHICH rule broke (finding 12, not the IA
+    // rename) and can see the chrome around it.
+    await page.setContent(DOC(`<p>The control plane answered 404 here.</p>`));
+    const hit = await guard(page);
+    expect(hit.implementation).toContain("control plane");
+    expect(hit.implementation, "the prose 404 files beside the phrase").toContain("404");
+    expect(hit.words, "rule (c) does not leak into the retired-words list").toEqual([]);
+    const detail = screenGuardDetail(hit);
+    expect(detail).toContain("implementation words in visible chrome text");
+    expect(detail).toContain("finding 12");
+    expect(
+      detail.length,
+      "a rule-(c) detail stays inside the fixture's MAX_DETAIL",
+    ).toBeLessThanOrEqual(500);
+  });
+
+  test("(g8) rule (c) shares rule (a)'s exclusions — and numbers inside data never file",
+    async ({ page }) => {
+      const sentence = `<p>The control plane answered 404 — no scaffold, the server build is old.</p>`;
+      // Same structural cut as the chat scan: code font and the written regions
+      // are not the app's chrome (a template YAML comment, a model-written
+      // thread title, a seeded piece's narrative).
+      for (const region of [
+        `<div>${sentence}</div>`, // control: OUTSIDE every exclusion, it files
+      ]) {
+        await page.setContent(DOC(region));
+        expect((await guard(page)).implementation).not.toHaveLength(0);
+      }
+      for (const region of [
+        `<code>${sentence}</code>`,
+        `<pre>${sentence}</pre>`,
+        `<textarea>${sentence}</textarea>`,
+      ]) {
+        await page.setContent(DOC(region));
+        expect(
+          (await guard(page)).implementation,
+          `${region.slice(0, 24)}… is code or a written region, not chrome copy`,
+        ).toEqual([]);
+      }
+      for (const testid of ["transcript-item", "artifact-preview-prose", "catchup-row-7", "tour-current"]) {
+        await page.setContent(DOC(`<div data-testid="${testid}">${sentence}</div>`));
+        expect(
+          (await guard(page)).implementation,
+          `${testid} holds model/user text`,
+        ).toEqual([]);
+      }
+      // Numbers inside DATA are not prose: the word-bounds refuse ids, digests
+      // and units, and the letter/space flank refuses machine shapes — while
+      // the SAME digits as a word of the sentence do file (checked in g7).
+      for (const body of [
+        `<p>run 01a1b404c7d2 is not visible to you</p>`,
+        `<p>digest 404abcd deadbeef</p>`,
+        `<p>the timeout was 500ms, not a status</p>`,
+        `<p>worker on port 4040 answered fine</p>`,
+        `<p>value 1404 and 25033 round the column</p>`,
+        `<p>{"status":500,"type":"about:blank"} stayed collapsed raw text</p>`,
+        `<p>build v1.404.2 shipped quietly</p>`,
+        // Word-bounded phrases too: a stem inside a longer word is not the word.
+        `<p>the scheduler scaffolded the tree in 12ms</p>`,
+        `<p>winners never cry</p>`,
+      ]) {
+        await page.setContent(DOC(body));
+        const hit = await guard(page);
+        expect(hit.implementation, `${body} is data or a longer word, not prose`).toEqual([]);
+      }
+    });
+
+  test("(g9) a clean page files nothing under either rule, and the two rules file alone",
+    async ({ page }) => {
+      // The REWRITTEN chrome (what shipped): the reader's words, no numbers.
+      await page.setContent(
+        DOC(
+          `<p>This run doesn't exist or you don't have access to it.</p>` +
+            `<p>Priya approved this 20 seconds ago. Your decision wasn't recorded.</p>`,
+        ),
+      );
+      const clean = await guard(page);
+      expect(clean.words).toEqual([]);
+      expect(clean.implementation).toEqual([]);
+      expect(clean.implementationSnippets).toEqual([]);
+      // A retired-words hit alone still files only rule (a)…
+      await page.setContent(DOC(`<nav><a href="/chat">Chat</a></nav>`));
+      const iaOnly = await guard(page);
+      expect(iaOnly.words).toEqual(["chat"]);
+      expect(iaOnly.implementation).toEqual([]);
+      // …and an implementation word alone files only rule (c), each with its
+      // own context windows (dedupe reads them separately in fixtures.ts).
+      await page.setContent(DOC(`<p>This server build predates the cross-project reads.</p>`));
+      const implOnly = await guard(page);
+      expect(implOnly.words).toEqual([]);
+      expect(implOnly.implementation).toEqual(["server build"]);
+      expect(implOnly.implementationSnippets.length).toBeGreaterThan(0);
+      expect(implOnly.implementationSnippets[0].toLowerCase()).toContain("server build");
+    });
 });

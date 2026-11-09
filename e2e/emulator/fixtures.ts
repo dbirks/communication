@@ -28,9 +28,12 @@
 //     ids or amounts may appear in the page's visible text (kind
 //     made-up-data). At BOTH widths it also runs the IA SCREEN-GUARD
 //     (screen-guard.ts): the page's chrome text may not say the redesign's
-//     retired nouns (chat / chats / conversation / conversations) and it may
-//     not link a retired destination (/inbox or /board) — a hit is a
-//     `retired-ia` defect. This is the browser proof for T1/T3 across every
+//     retired nouns (chat / chats / conversation / conversations), may not
+//     link a retired destination (/inbox or /board), and may not speak finding
+//     12's implementation words (T9/T10: control plane, server build,
+//     scaffold, decision word, winner, a bare 404 read as prose) — a hit is a
+//     `retired-ia` defect. This is the browser proof for T1/T3 (and the T9/
+//     T10 copy rules) across every
 //     screen, not just the pages the shell spec visits. A
 //     badge with a design render and no landmark entry is itself a defect
 //     (coverage cannot lapse silently); a badge with no design render
@@ -123,8 +126,10 @@ export interface EmuScreenChecks extends EmuChecks {
   /** False when a MOCK_DATA string appears in the page's visible text — the
    * mock's sample data, which the app must never show. */
   data: boolean;
-  /** False when the redesign's retired IA copy (chat / conversation) or a dead
-   * /inbox or /board link is visible on the screen — screen-guard.ts. */
+  /** False when the redesign's retired IA copy (chat / conversation), a dead
+   * /inbox or /board link, or a finding-12 implementation word (control plane
+   * / server build / scaffold / decision word / winner / a bare 404 in prose)
+   * is visible on the screen — screen-guard.ts. */
   ia: boolean;
 }
 
@@ -572,14 +577,23 @@ class EmuRecorder {
       // written content regions removed) still says chat / chats / conversation
       // / conversations — the node-kind ids (`model.chat`, …) are allow-listed
       // as real product nouns — or links to a retired /inbox or /board address.
-      // This is the browser proof for T1/T3 across all 160+ screens.
+      // This is the browser proof for T1/T3 across all 160+ screens. The same
+      // stripped chrome also carries rule (c), the browser proof for T9/T10:
+      // finding 12's implementation words (control plane / server build /
+      // scaffold / decision word / winner, and a bare 404/409/500/503 read as
+      // prose) file the same `retired-ia` kind with their own detail line —
+      // nothing is allow-listed for that family.
       const iaHit: ScreenGuardHit = await this.page.evaluate(screenGuardFind, screenGuardInput());
-      checks.ia = iaHit.words.length === 0 && iaHit.routes.length === 0;
+      checks.ia =
+        iaHit.words.length === 0 && iaHit.routes.length === 0 && iaHit.implementation.length === 0;
       if (!checks.ia) {
         const iaDedupeKey = `${iaHit.words.slice().sort().join(",")}|${iaHit.routes
           .slice()
           .sort()
-          .join(",")}|${iaHit.snippets.slice(0, 3).join("‡")}`;
+          .join(",")}|${iaHit.snippets.slice(0, 3).join("‡")}|${iaHit.implementation
+          .slice()
+          .sort()
+          .join(",")}|${iaHit.implementationSnippets.slice(0, 3).join("‡")}`;
         if (!reportedIaHits.has(iaDedupeKey)) {
           reportedIaHits.add(iaDedupeKey);
           recordOnce("retired-ia", `retired IA on this screen — ${screenGuardDetail(iaHit)}`);

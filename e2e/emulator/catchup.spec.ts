@@ -55,11 +55,14 @@
 // close. The serial order keeps each test's server-side precondition (the
 // journey's mark-all-seen still runs before the dials; the keyboard piece's
 // seed is resolve-or-create and every test that needs it re-reads it).
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { seedSqlInProject, sqlQuote } from "../tests/lab-launcher.js";
 import { signIn } from "../tests/helpers.js";
 import { apiMutate, expect, test } from "./fixtures.js";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
-import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
+import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID, EMU_REPO_ROOT } from "./env.js";
 
 /** The lab's seeded project (docs/compatibility/probes/m4/seed.sh). */
 const PROJECT_SLUG = "m4-exit";
@@ -87,9 +90,10 @@ function labSql(sql: string): string {
  * CatchUpStop; `catchup_tour_versions.stops` jsonb), the same document
  * `catchup-lab.spec.ts` leg 4 seeds for its decision beat. `importance` is
  * the server's closed vocabulary (must_know / worth_a_look / routine); the
- * log/files evidence payloads are the shape internal/assistant/catchup_gen.go
- * stamps (a `source` plus the excerpt), and ui/src/components/catchup/
- * Evidence.tsx draws them as the dark log block and the mono file list.
+ * log/files/diff evidence payloads are the shape internal/assistant/
+ * catchup_gen.go stamps (a `source` plus the excerpt / hunk), and ui/src/
+ * components/catchup/Evidence.tsx draws them as the dark log block, the mono
+ * file list and the tinted diff.
  */
 const BUG_TITLE = `Emu catch-up bug ${EMU_PASS_ID}: the cart timer skipped empty carts`;
 const PR_TITLE = `Emu catch-up UI ${EMU_PASS_ID}: roomier rows in the run list`;
@@ -141,13 +145,18 @@ const BUG_STOPS = [
     kind: "FIXED",
     title: "Bug fixed: arm first, then guard",
     narrative:
-      "The fix moves the guard after the arming call and covers the empty-cart path in the table test. It merged through the pass's pinned pipeline.\nThe file list is the second evidence kind the screen must draw honestly.",
+      "The fix moves the guard after the arming call and covers the empty-cart path in the table test. It merged through the pass's pinned pipeline.\nThe file list and the diff below are the evidence kinds the screen must draw honestly.",
     importance: "must_know",
     evidence: [
       {
         type: "files",
         source: "workspace",
         files: ["internal/cart/timer.go", "internal/cart/timer_test.go"],
+      },
+      {
+        type: "diff",
+        source: "internal/cart/timer.go",
+        text: "@@ -41,6 +41,7 @@ func (c *Cart) Refresh() {\n \tctx := c.snapshot()\n-\treturn afterGuard(ctx)\n+\tarmRefreshTimer()\n+\treturn afterGuard(ctx)",
       },
     ],
   }),
@@ -191,6 +200,58 @@ const PUSH_STOPS = [
 
 /** A uuid as postgres prints it — the seed's proof a row landed. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The seeded FIXED stop's own diff payload, counted: the tinted-row proofs
+ * ask the seeded DOCUMENT how many `+` / `-` lines exist rather than
+ * hard-coding a count the seed may later drift from.
+ */
+function bugStoryDiffCounts(): { added: number; removed: number } {
+  const fixedStop = BUG_STOPS.find((entry) => entry.kind === "FIXED");
+  const evidence = (fixedStop?.evidence ?? []) as Record<string, unknown>[];
+  const diff = evidence.find((entry) => entry.type === "diff");
+  const text = typeof diff?.text === "string" ? diff.text : "";
+  if (!text) throw new Error("the seeded FIXED stop carries no diff evidence");
+  const lines = text.split("\n");
+  return {
+    added: lines.filter((line) => line.startsWith("+")).length,
+    removed: lines.filter((line) => line.startsWith("-")).length,
+  };
+}
+
+/**
+ * The `#rrggbb` a design-system token carries, as the `rgb(…)` a browser
+ * reports for it — read out of `ui/src/styles/tokens.css` at run time, so the
+ * colour proofs assert the TOKEN VALUES and move with them (a token renamed
+ * or retinted moves tokens.css and these proofs together, never one alone).
+ */
+function tokenRgb(name: string): string {
+  const css = readFileSync(
+    path.join(EMU_REPO_ROOT, "ui", "src", "styles", "tokens.css"),
+    "utf8",
+  );
+  const hit = new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})\\b`).exec(css);
+  const hex = hit?.[1];
+  if (!hex) throw new Error(`ui/src/styles/tokens.css carries no hex --color-${name} token`);
+  return hexToRgb(hex);
+}
+
+/**
+ * One element's painted colours — what the badge and tint proofs assert: a
+ * computed `background-color` / `color`, not a class name (the class check is
+ * what the unit tests already make; only a browser can say what the token
+ * actually RESOLVED to).
+ */
+async function computedColors(
+  target: Locator,
+  label: string,
+): Promise<{ bg: string; fg: string }> {
+  await expect(target, `${label}: it paints`).toBeVisible({ timeout: 15_000 });
+  return target.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { bg: style.backgroundColor, fg: style.color };
+  });
+}
 
 /**
  * `#rrggbb` → the `rgb(r, g, b)` string a browser reports for it.
@@ -1345,6 +1406,300 @@ test.describe("catch-up (alice: 8a the pile, 8b piece + decision, 7b the tour, t
         await context.close().catch(() => undefined);
       }
     });
+  });
+
+  /* ---------------------------------------- T16/T11 browser proofs (colours, not classes)
+   * The unit suites already pin the CLASS NAMES these surfaces put on their
+   * elements (Evidence.test.tsx, Sidebar.test.tsx). What only a browser can
+   * say is what those classes RESOLVED to — the token's actual rgb, painted
+   * by the real stylesheet — which is exactly what acceptance boxes T16
+   * ("state tints, a dark log block, and diffs") and T11 ("badges use the
+   * state colors") promise. Both therefore compare `getComputedStyle` values
+   * against hexes read out of tokens.css at run time (`tokenRgb` above), and
+   * both keep the file's seeded-fixture honesty: anything the lab cannot
+   * promise at this point in the pass is ANSWERED through `page.route` — the
+   * same emulated-server door server-error.spec.ts uses — never faked into a
+   * captured screen.
+   */
+  test("T16 — the bug chain's tints, the ink log block and the diff, painted in token colours", async ({
+    page,
+    emu,
+  }) => {
+    // The seeded FIXED stop now carries a `diff` evidence entry (the tour
+    // document's own shape, internal/domain/catchup.go CatchUpEvidence) next
+    // to its files list, so the SAME beat chain that already proved the dark
+    // log block proves the tinted `+` / `-` lines too — on the player (7b)
+    // and on the piece page (8b).
+    test.setTimeout(300_000);
+
+    const ink = tokenRgb("ink");
+    const paleDone = tokenRgb("st-done-pale-body");
+    const paleFailed = tokenRgb("st-failed-pale-body");
+    // TourPlayer.tsx's STEP_DEFS: FOUND is the failed state, CAUSE waiting,
+    // FIXED done, FOLLOW-UP queued — the label tints are those states' tag
+    // tokens (states.ts's tagBg, which the browser resolves to rgb).
+    const stepTagToken: Record<string, string> = {
+      found: "st-failed-tag",
+      cause: "st-waiting-tag",
+      fixed: "st-done-tag",
+      "follow-up": "st-queued-tag",
+    };
+    const stepTint: Record<string, string> = Object.fromEntries(
+      Object.entries(stepTagToken).map(([key, token]) => [key, tokenRgb(token)]),
+    );
+    const diffWanted = bugStoryDiffCounts();
+    expect(diffWanted.added, "the seeded diff carries + lines to tint").toBeGreaterThan(0);
+    expect(diffWanted.removed, "the seeded diff carries - lines to tint").toBeGreaterThan(0);
+    const ids = seedCatchUpFixture();
+
+    await test.step("7b — the player: four tinted beat labels, one ink log block, one tinted diff", async () => {
+      await page.goto(`/catch-up/tour?item=${ids["bug"]}`);
+      await expect(page.getByTestId("tour-player"), "design 7b: the player opens").toBeVisible({
+        timeout: 30_000,
+      });
+      // The bug chain is one screen: all four beats, each carrying its own
+      // narrative and (where the seed wrote one) its evidence.
+      for (const [key, label] of [
+        ["found", "FOUND"],
+        ["cause", "CAUSE"],
+        ["fixed", "FIXED"],
+        ["follow-up", "FOLLOW-UP"],
+      ] as const) {
+        const chip = page.locator(`[data-testid="tour-step-${key}"] > span`).first();
+        await expect(chip, `design 7b: the ${label} beat label is on screen`).toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(chip).toHaveText(label);
+        const { bg } = await computedColors(chip, `design 7b: the ${label} label`);
+        expect(
+          bg,
+          `T16: the ${label} label's background is the ${stepTagToken[key]} tag token`,
+        ).toBe(stepTint[key]);
+      }
+      // The CAUSE beat's log evidence: the dark block on the ink ground.
+      const logBlock = page.locator(`[data-testid="tour-step-cause"] .bg-ink`).first();
+      const { bg: logBg } = await computedColors(logBlock, "design 7b: the dark log block");
+      expect(logBg, `T16: the log block's ground is the ink token (${ink})`).toBe(ink);
+      // The FIXED beat's diff: `+` rows on the done-pale tint, `-` rows on
+      // the failed-pale one (Evidence.tsx's DiffBlock) — every line the
+      // seeded document carries, and the sign glyph stays visible beside
+      // the colour (never colour alone).
+      const added = page.locator(
+        `[data-testid="tour-step-fixed"] .bg-st-done-pale-body`,
+      );
+      const removed = page.locator(
+        `[data-testid="tour-step-fixed"] .bg-st-failed-pale-body`,
+      );
+      await expect(
+        added,
+        `T16: the diff's ${diffWanted.added} + line(s) ride the done-pale tint`,
+      ).toHaveCount(diffWanted.added, { timeout: 30_000 });
+      await expect(
+        removed,
+        `T16: the diff's ${diffWanted.removed} − line(s) ride the failed-pale tint`,
+      ).toHaveCount(diffWanted.removed, { timeout: 30_000 });
+      const { bg: addedBg } = await computedColors(added.first(), "the + diff row");
+      expect(addedBg, `T16: + rows are the st-done-pale-body token (${paleDone})`).toBe(paleDone);
+      const { bg: removedBg } = await computedColors(removed.first(), "the − diff row");
+      expect(removedBg, `T16: − rows are the st-failed-pale-body token (${paleFailed})`).toBe(
+        paleFailed,
+      );
+      await expect(added.first(), "the + row keeps its sign glyph").toContainText("+");
+      await expect(removed.first(), "the − row keeps its sign glyph").toContainText("-");
+      await emu.screen("cu-7b", "diff");
+    });
+
+    await test.step("8b — the piece page paints the same ink block and the same diff tints", async () => {
+      // The piece page shows ONE beat at a time (8b's middle column), so the
+      // two evidence-carrying beats are opened through the stop list the page
+      // itself draws — clicks, not a hand-written url.
+      await page.goto(`/catch-up/${ids["bug"]}`);
+      await expect(page.getByTestId("catchup-item"), "design 8b: the piece renders").toBeVisible({
+        timeout: 30_000,
+      });
+      await page.getByTestId(`catchup-item-stop-${STOP_ID("cause")}`).click({ timeout: 15_000 });
+      await expect(
+        page.getByTestId("catchup-item-current"),
+        "design 8b: the stop list opens the CAUSE beat",
+      ).toContainText("Bug cause:", { timeout: 15_000 });
+      const pieceLog = page.locator(`[data-testid="catchup-item-current"] .bg-ink`).first();
+      const { bg: pieceLogBg } = await computedColors(pieceLog, "design 8b: the opened log block");
+      expect(pieceLogBg, "T16: 8b paints the same ink ground as 7b").toBe(ink);
+
+      await page.getByTestId(`catchup-item-stop-${STOP_ID("fixed")}`).click({ timeout: 15_000 });
+      await expect(
+        page.getByTestId("catchup-item-current"),
+        "design 8b: the stop list opens the FIXED beat",
+      ).toContainText("Bug fixed:", { timeout: 15_000 });
+      const pieceAdded = page.locator(
+        `[data-testid="catchup-item-current"] .bg-st-done-pale-body`,
+      );
+      const pieceRemoved = page.locator(
+        `[data-testid="catchup-item-current"] .bg-st-failed-pale-body`,
+      );
+      await expect(pieceAdded, "T16: 8b tints every + row").toHaveCount(diffWanted.added, {
+        timeout: 15_000,
+      });
+      await expect(pieceRemoved, "T16: 8b tints every − row").toHaveCount(diffWanted.removed, {
+        timeout: 15_000,
+      });
+      const { bg: pieceAddedBg } = await computedColors(pieceAdded.first(), "8b's + row");
+      expect(pieceAddedBg, `T16: 8b's + rows ride the done-pale token (${paleDone})`).toBe(
+        paleDone,
+      );
+      const { bg: pieceRemovedBg } = await computedColors(pieceRemoved.first(), "8b's − row");
+      expect(
+        pieceRemovedBg,
+        `T16: 8b's − rows ride the failed-pale token (${paleFailed})`,
+      ).toBe(paleFailed);
+    });
+  });
+
+  test("T11 — the collapsed rail's badges are painted in the state token colours", async ({
+    page,
+    emu,
+  }) => {
+    test.setTimeout(240_000);
+    // No screen is captured: the claim is the computed pixels of a live
+    // badge, not a frame. The SEEDS for the two badges the rail must show:
+    // a badge paints only over zero (RailBadge.tsx), and the lab cannot
+    // promise a pending gate or an unseen piece at this point in the pass,
+    // so the sidebar's own two reads are ANSWERED through page.route — the
+    // emulated-server door, as server-error.spec.ts uses it. Nothing is
+    // captured, nothing is mutated, and `/threads` is the one shell page
+    // that draws neither the approvals payload (Home's callouts) nor the
+    // catch-up rows (8a), so only the badge arithmetic reads these bodies.
+    void emu;
+
+    const waitingTag = tokenRgb("st-waiting-tag");
+    const waitingFg = tokenRgb("st-waiting-tag-fg");
+    const accentTint = tokenRgb("accent-tint");
+    const accentEdge = tokenRgb("accent-edge");
+    const runningTag = tokenRgb("st-running-tag");
+    const runningFg = tokenRgb("st-running-tag-fg");
+
+    const projectId = await m4ExitProjectId(page);
+    const approvalsRoute = /\/api\/v1\/approvals\?status=pending$/;
+    const itemsRoute = /\/api\/v1\/catch-up\/items$/;
+    await page.route(approvalsRoute, (route) => {
+      if (route.request().method() !== "GET") {
+        void route.continue();
+        return;
+      }
+      // One pending gate in the seeded project — the shape the sidebar's
+      // `flagsFromCrossProject` reads (state / run_id / project_id).
+      void route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          approvals: [
+            {
+              id: randomUUID(),
+              run_id: randomUUID(),
+              project_id: projectId,
+              state: "pending",
+              decision: null,
+              node_instance_key: "review",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              version: 1,
+            },
+          ],
+        }),
+      });
+    });
+    await page.route(itemsRoute, (route) => {
+      if (route.request().method() !== "GET") {
+        void route.continue();
+        return;
+      }
+      // The badge reads ONLY `total_unseen` off the list read (Sidebar.tsx).
+      void route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [],
+          total_unseen: 2,
+          oldest_unseen_at: new Date().toISOString(),
+        }),
+      });
+    });
+
+    // Start from the expanded column (the preference is alice's account
+    // state; the steps above restore it — do not depend on it).
+    const collapse = page.getByTestId("sidebar-collapse");
+    let startedCollapsed = false;
+    try {
+      await page.goto("/threads");
+      await expect(page.getByTestId("sidebar")).toBeVisible({ timeout: 30_000 });
+      startedCollapsed = !(await collapse.isVisible().catch(() => false));
+      if (startedCollapsed) {
+        await page.getByTestId("sidebar-expand").click({ timeout: 10_000 });
+      }
+      await expect(collapse, "the expanded column carries its own collapse button").toBeVisible({
+        timeout: 10_000,
+      });
+      // Collapse through the UI's own button, exactly as the rail steps do.
+      await collapse.click({ timeout: 10_000 });
+      await expect(
+        page.getByTestId("sidebar-rail"),
+        "design 3a: the rail replaces the column",
+      ).toBeVisible({ timeout: 10_000 });
+
+      // Today: the waiting tint (Sidebar.tsx's RAIL_BADGE_TONE.waiting).
+      const today = await computedColors(
+        page.getByTestId("rail-badge-today"),
+        "design 3a: the Today tile's waiting badge",
+      );
+      expect(today.bg, `T11: the Today badge's ground is st-waiting-tag (${waitingTag})`).toBe(
+        waitingTag,
+      );
+      expect(today.fg, `T11: and its ink st-waiting-tag-fg (${waitingFg})`).toBe(waitingFg);
+
+      // Catch up: the accent pair the handoff names for the unseen count.
+      const catchUp = await computedColors(
+        page.getByTestId("rail-badge-catch-up"),
+        "design 3a: the Catch up tile's unseen badge",
+      );
+      expect(
+        catchUp.bg,
+        `T11: the Catch up badge's ground is accent-tint (${accentTint})`,
+      ).toBe(accentTint);
+      expect(catchUp.fg, `T11: and its ink accent-edge (${accentEdge})`).toBe(accentEdge);
+
+      // Threads: the running tint — IF the tile speaks at all. On the
+      // cross-project C3 reads the thread count is honestly NULL (the read
+      // does not serve it — lib/sidebarFlags.ts), and a count that was never
+      // counted paints no badge. Where a pass lands on the per-project
+      // fallback the badge draws; there, it wears the running tokens.
+      const threadsBadge = page.getByTestId("rail-badge-threads");
+      if (await threadsBadge.isVisible().catch(() => false)) {
+        const threads = await computedColors(threadsBadge, "design 3a: the Threads tile's badge");
+        expect(
+          threads.bg,
+          `T11: the Threads badge's ground is st-running-tag (${runningTag})`,
+        ).toBe(runningTag);
+        expect(threads.fg, `T11: and its ink st-running-tag-fg (${runningFg})`).toBe(runningFg);
+      } else {
+        await expect(
+          threadsBadge,
+          "T11: with no served thread count the tile says nothing (no badge is drawn at all)",
+        ).toHaveCount(0);
+      }
+    } finally {
+      // Restore whatever this test found — the shared-account preference
+      // lesson the rail steps already learned.
+      await page
+        .getByTestId("sidebar-expand")
+        .click({ timeout: 10_000 })
+        .catch(() => undefined);
+      if (startedCollapsed) {
+        await page
+          .getByTestId("sidebar-collapse")
+          .click({ timeout: 10_000 })
+          .catch(() => undefined);
+      }
+      await page.unroute(approvalsRoute).catch(() => undefined);
+      await page.unroute(itemsRoute).catch(() => undefined);
+    }
   });
 });
 

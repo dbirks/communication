@@ -30,6 +30,22 @@
 //       `/board?tab=…`). Both are unmounted (finding 03) and redirect to `/`,
 //       so a link still drawing one is a dead-end the reader can click.
 //
+//   (c) The chrome may not speak the IMPLEMENTATION's words. Finding 12's
+//       copy pass (acceptance T9) retired "control plane", "server build",
+//       "scaffold", "decision word" and "winner" (the 04 DecisionBar made the
+//       "not a decision word" path — and T10's box — dead), and it retired
+//       quoting a bare HTTP status in prose (`The control plane answered 404`).
+//       These phrases run over the SAME stripped chrome text as rule (a):
+//       `<code>`/`<pre>` and the model-/person-written regions are cut the
+//       same way, because a YAML comment saying "the control plane" inside a
+//       template preview is still code. The rulebook allow-lists NOTHING for
+//       this family — no product noun is called "winner" — so unlike rule (a)
+//       there is no token list to punch through. A bare status code
+//       (404/409/500/503) is only a hit when it reads as PROSE: word-bounded
+//       exactly like a word (so a run id, a digest or `404ms` never hit) and
+//       flanked on at least one side by a letter or a space (so a JSON body's
+//       `"status":500,` or a dotted version `1.404.2` never hit either).
+//
 // WHAT THE COLLECTORS MAY NOT DO: they are serialized by `page.evaluate` like
 // every emulator collector (`collectReflowItems.toString()`-style), so each
 // references nothing but its own argument and the page. The exclusions travel
@@ -39,6 +55,12 @@
 export interface ScreenGuardHit {
   /** The retired word found in the chrome text (rule a), lower-cased. */
   words: string[];
+  /** The implementation words found in the chrome text (rule c): each
+   * IMPLEMENTATION_PHRASES entry matched, plus each bare BARE_STATUS_CODES
+   * prose hit as the digits found (e.g. `"404"`). */
+  implementation: string[];
+  /** The rendered text AROUND each rule-(c) hit (≤ 3, ±30 chars). */
+  implementationSnippets: string[];
   /** The retired destination hrefs found on the page (rule b). */
   routes: string[];
   /** The rendered text AROUND each word hit (≤ 3, ±30 chars, whitespace
@@ -50,6 +72,29 @@ export interface ScreenGuardHit {
 
 /** The retired nouns, word-bounded and case-insensitive. */
 const RETIRED_WORDS = ["chat", "chats", "conversation", "conversations"];
+
+/**
+ * The implementation words finding 12 retired from visible copy (T9), plus
+ * the "decision word" sentence the closed-button DecisionBar deleted (T10).
+ * Matched case-insensitively with the same word boundaries as rule (a)
+ * ("Scaffolded" is not "scaffold"), and allow-listed by NOTHING.
+ */
+const IMPLEMENTATION_PHRASES = [
+  "control plane",
+  "server build",
+  "scaffold",
+  "decision word",
+  "winner",
+];
+
+/**
+ * The bare HTTP statuses f12 called out ("The control plane answered 404").
+ * Only PROSE hits count: word-bounded (no digit/hex neighbour — a run id,
+ * digest or port can never match) AND at least one side a letter, a space or
+ * the text's edge — the JSON `"status":500,` sits between a colon and a
+ * comma and is data, not a sentence.
+ */
+const BARE_STATUS_CODES = ["404", "409", "500", "503"];
 
 /**
  * The product nouns the chrome legitimately keeps. Each is matched as the WHOLE
@@ -123,6 +168,10 @@ export interface ScreenGuardInput {
   allowedTokens: string[];
   /** The retired word list (word-bounded, case-insensitive). */
   words: string[];
+  /** The implementation phrases (rule c; word-bounded, case-insensitive). */
+  phrases: string[];
+  /** The bare status codes rule (c) reads as prose. */
+  codes: string[];
   /** The retired destination prefixes. */
   routePrefixes: string[];
 }
@@ -140,6 +189,8 @@ export function screenGuardInput(): ScreenGuardInput {
     excludeSelectors,
     allowedTokens: ALLOWED_PRODUCT_TOKENS,
     words: RETIRED_WORDS,
+    phrases: IMPLEMENTATION_PHRASES,
+    codes: BARE_STATUS_CODES,
     routePrefixes: ["/inbox", "/board"],
   };
 }
@@ -207,6 +258,53 @@ export function screenGuardFind(input: ScreenGuardInput): ScreenGuardHit {
     }
   }
 
+  // (c) The implementation words, over the SAME stripped chrome text. The
+  // phrases match exactly like rule (a)'s words. A bare status code must read
+  // as prose: word-bounded (wordChar already refuses digits and hex letters,
+  // so ids, digests, `4040`, `404ms` and `1404` cannot hit) and flanked on at
+  // least one side by a letter, a space or the text's edge — the extra arm is
+  // what keeps machine data (`"status":500,`, `v1.404.2`) out of the filing.
+  const implementation: string[] = [];
+  const implSnippets: string[] = [];
+  const pushImpl = (label: string, at: number, length: number): void => {
+    if (!implementation.includes(label)) implementation.push(label);
+    if (implSnippets.length < 3) {
+      const window = collapse(
+        text.slice(
+          Math.max(0, at - SNIPPET_CONTEXT),
+          Math.min(text.length, at + length + SNIPPET_CONTEXT),
+        ),
+      );
+      if (window && !implSnippets.includes(window)) implSnippets.push(window);
+    }
+  };
+  for (const phrase of input.phrases) {
+    const needle = phrase.toLowerCase();
+    let from = 0;
+    for (;;) {
+      const at = lowered.indexOf(needle, from);
+      if (at < 0) break;
+      const before = at > 0 ? text.charAt(at - 1) : "";
+      const after = at + needle.length < text.length ? text.charAt(at + needle.length) : "";
+      if (!wordChar(before) && !wordChar(after)) pushImpl(phrase, at, needle.length);
+      from = at + 1;
+    }
+  }
+  const proseSide = (ch: string): boolean => ch === "" || ch === " " || /[A-Za-z]/.test(ch);
+  for (const code of input.codes) {
+    let from = 0;
+    for (;;) {
+      const at = lowered.indexOf(code, from);
+      if (at < 0) break;
+      const before = at > 0 ? text.charAt(at - 1) : "";
+      const after = at + code.length < text.length ? text.charAt(at + code.length) : "";
+      if (!wordChar(before) && !wordChar(after) && (proseSide(before) || proseSide(after))) {
+        pushImpl(code, at, code.length);
+      }
+      from = at + 1;
+    }
+  }
+
   // (b) The retired destinations, matched on the anchor's own href attribute
   // (react-router writes the `to` verbatim, so `/inbox` is exactly that): the
   // whole value or a value starting with the prefix plus a path/query boundary.
@@ -228,7 +326,7 @@ export function screenGuardFind(input: ScreenGuardInput): ScreenGuardHit {
     }
   }
 
-  return { words, routes, snippets };
+  return { words, routes, snippets, implementation, implementationSnippets: implSnippets };
 }
 
 /** One defect detail for a screen's hits — the `; ` join keeps each hit on its
@@ -247,6 +345,24 @@ export function screenGuardDetail(hit: ScreenGuardHit): string {
       `retired IA word in visible chrome text: ${hit.words
         .slice(0, 5)
         .join(", ")}${where} — the surface says thread / Today, not this`,
+    );
+  }
+  if (hit.implementation.length > 0) {
+    // Rule (c) files its own line: these are not retired IA nouns but the
+    // implementation words finding 12 cut from visible copy (T9) and the
+    // "decision word" sentence T10 deleted — the reader's words, not the
+    // code's.
+    const where =
+      hit.implementationSnippets.length > 0
+        ? ` — matched in: ${hit.implementationSnippets
+            .slice(0, 3)
+            .map((s) => `“${s}”`)
+            .join(" ; ")}`
+        : "";
+    parts.push(
+      `implementation words in visible chrome text: ${hit.implementation
+        .slice(0, 5)
+        .join(", ")}${where} — finding 12: name the reader's problem, not the build`,
     );
   }
   if (hit.routes.length > 0) {

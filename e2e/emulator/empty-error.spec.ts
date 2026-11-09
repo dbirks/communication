@@ -1,5 +1,5 @@
 // Journey: the honest empty and error states (design 1b, 2a, 2e; plus the
-// workflow-page 404).
+// workflow-page 404 and Today's finding-12 server-version note).
 //
 //   1b — a no-match search on /workflows says so plainly, no fake rows.
 //   2e — a repository that uses no workflow shows the
@@ -14,8 +14,16 @@
 //
 // 2a's empty state is covered in workflow-lifecycle.spec.ts.
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { expect, test, apiMutate } from "./fixtures.js";
-import { EMU_ALICE_STATE, EMU_ADMIN_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
+import {
+  EMU_ALICE_STATE,
+  EMU_ADMIN_STATE,
+  EMU_BASE_URL,
+  EMU_PASS_ID,
+  EMU_REPO_ROOT,
+} from "./env.js";
 
 const EMPTY_REPO = `emu-empty-${EMU_PASS_ID}`;
 const EMPTY_PROJECT_SLUG = `emu-proj-${EMU_PASS_ID}`.toLowerCase();
@@ -83,6 +91,112 @@ test.describe("empty-and-error (alice: 2e)", () => {
       ).toBeVisible();
       await emu.screen("2e", "repo-empty");
     });
+  });
+
+  // Acceptance T9 (finding 12): the TODAY string the copy pass rewrote was
+  // only proven by the unit test reading f12.txt against the rendered
+  // component. This is the browser proof: `page.route` answers the cross-
+  // project approvals read the way a server older than ADR-0047 does — a
+  // 404 problem+json, the same emulated-answer tool server-error.spec.ts
+  // uses for 500s — and Today must say finding 12's sentence EXACTLY, the
+  // four rewrites' Today one, printed from the finding's own REWRITE line
+  // (never retyped here, the same rule `finding12.copy.test.tsx` follows).
+  // The 404 the page provokes is the state under test — declared, not a
+  // defect — and unrouting + reloading must take the note away again,
+  // proving the note answers the server's version, not a stuck render.
+  test("T9 — Today's server-version note reads finding 12 word for word", async ({ page, emu }) => {
+    test.setTimeout(180_000);
+
+    // The finding's own Today rewrite, marker stripped, whitespace the file
+    // wraps on collapsed — zero or several matches kill the proof loudly.
+    const finding = readFileSync(
+      path.join(EMU_REPO_ROOT, "docs", "design", "handoff-redesign", "findings", "f12.txt"),
+      "utf8",
+    );
+    const rewrites = finding
+      .split(/\r?\n/)
+      .map((line) => /^\s*REWRITE\s+(.+?)\s*$/.exec(line)?.[1] ?? "")
+      .filter((line) => line !== "");
+    const todayRewrite = rewrites.filter((line) =>
+      line.startsWith("Approvals from other projects"),
+    );
+    expect(
+      todayRewrite.length,
+      `f12.txt must carry exactly one Today REWRITE line (found ${todayRewrite.length})`,
+    ).toBe(1);
+    const wanted = (todayRewrite[0] ?? "").replace(/\s+/g, " ").trim();
+    // The brief's shape check: the sentence answers all three rulebook
+    // questions, so the assertion can never pass against a truncated line.
+    expect(wanted).toContain("Ask an admin to update");
+
+    // The old server: GET /api/v1/approvals?status=pending (the cross-
+    // project read Home's note names — ui/src/pages/Home.tsx files the note
+    // for exactly this 404, see `notYet`) answers a 404 problem, the shape
+    // api/client.ts turns into an ApiError whose status is 404. GET only;
+    // anything else on that path continues to the lab.
+    emu.expectFailure(/\/api\/v1\/approvals\b/, 404);
+    const oldServer = /\/api\/v1\/approvals\?status=pending(?:&|$)/;
+    await page.route(oldServer, (route) => {
+      if (route.request().method() !== "GET") {
+        void route.continue();
+        return;
+      }
+      void route.fulfill({
+        status: 404,
+        contentType: "application/problem+json",
+        body: JSON.stringify({
+          type: "about:blank",
+          title: "Not Found",
+          status: 404,
+          detail: "this replica predates the cross-project approvals read",
+        }),
+      });
+    });
+
+    try {
+      await page.goto("/");
+      await expect(page.getByTestId("home-page"), "design 2a: Today renders").toBeVisible({
+        timeout: 30_000,
+      });
+      const note = page.getByTestId("home-not-available");
+      await expect(
+        note,
+        "finding 12: the cross-project read this server cannot answer is the honest note, not a silent hole",
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(note).toHaveAttribute("role", "note");
+      // Word for word: the finding's sentence, whitespace-collapsed as
+      // `toHaveText` reads the rendered one.
+      await expect(note, "finding 12: Today's note is the rewrite verbatim").toHaveText(wanted, {
+        timeout: 15_000,
+      });
+      // The note is a note, not a takeover: the count line the 404 did not
+      // break still reads ("The rest of Today is up to date").
+      await expect(
+        page.getByTestId("home-count-line"),
+        "finding 12: with one read 404 the rest of the briefing still speaks",
+      ).toBeVisible({ timeout: 30_000 });
+    } finally {
+      // The route never survives into another screen (the lab's real answer
+      // must be what the pass sees afterwards — and the check below reads
+      // it). The page fixture dies with the test either way; this is the
+      // brief's explicit unroute.
+      await page.unroute(oldServer).catch(() => undefined);
+    }
+
+    // And the note came from the server's version, not a stuck render: back
+    // on the lab's real answer, Today is plain again. (A lab whose image
+    // genuinely predates C3 would keep the note — the lab image serves the
+    // cross-project reads, proven by Home's own live callout proofs, so the
+    // disappearance is a real claim here, not luck.)
+    await page.reload();
+    await expect(
+      page.getByTestId("home-page"),
+      "the briefing is back on the lab's own reads",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.getByTestId("home-not-available"),
+      "unrouting took the note away: it answers the server's version, nothing else",
+    ).toHaveCount(0, { timeout: 30_000 });
   });
 });
 

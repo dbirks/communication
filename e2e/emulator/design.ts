@@ -2774,6 +2774,10 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   // The same player on the piece whose beat ASKS: the decision block is what
   // this capture exists to prove renders here too (journeys/catchup.spec.ts).
   "cu-7b decision": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT, CU_DECISION],
+  // The same player on the bug story's beat chain, captured for the T16
+  // colour proof (the tinted beat labels, the ink log block, the diff —
+  // e2e/emulator/catchup.spec.ts): the structure is the player's own.
+  "cu-7b diff": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT],
   "rail-3a rail": [RAIL_COLUMN, RAIL_TILES, RAIL_EXPAND, RAIL_BRAND],
   "today-ask today": [TODAY_PAGE, TODAY_GREETING, TODAY_ASK_FAB],
 };
