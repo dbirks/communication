@@ -100,6 +100,14 @@ const (
 	// the notes block is bounded (ADR-0063 applied to a prompt).
 	CatchUpGenMaxNodes = 20
 	CatchUpGenMaxLines = 20
+	// CatchUpGenMaxDiffHunks / CatchUpGenDiffHunkMaxLines bound the DIFF half
+	// of the block (ADR-0078 § Patch artifacts): three hunks of sixty lines
+	// each is a change a reader can see in one screen, and it is what keeps
+	// patch excerpts from crowding the node list and the thread out of the
+	// 24 KiB block. The reader bounds its own read the same way; these are the
+	// numbers the block enforces.
+	CatchUpGenMaxDiffHunks     = 3
+	CatchUpGenDiffHunkMaxLines = 60
 	// CatchUpGenModelCallWindow / CatchUpGenMaxModelCallsPerWindow are the
 	// per-REPLICA global cap: generation spends at most six model calls per
 	// ten minutes, wherever the visits came from. The per-run cooldown stops
@@ -130,13 +138,15 @@ const (
 )
 
 // Evidence kinds the generator may hand out. The closed vocabulary lives in
-// internal/domain (CatchUpEvidenceType); these are the two a run's DATA block
-// can honestly produce today — node/transcript text is a log, and the outputs
-// that name code are files. A diff or screenshot needs reads this generator
-// does not have, so it never emits those kinds.
+// internal/domain (CatchUpEvidenceType). These are the three a run's DATA block
+// can honestly produce: node/transcript text is a log, the outputs that name
+// code are files, and a `diff` excerpt is a hunk copied out of the `patch`
+// artifact the worker filed at the unit boundary (ADR-0078 § Patch artifacts).
+// A screenshot needs a read no server side has, so it is never emitted.
 const (
 	CatchUpEvidenceKindLog   = "log"
 	CatchUpEvidenceKindFiles = "files"
+	CatchUpEvidenceKindDiff  = "diff"
 )
 
 // CatchUpExistingStop is one stop of the item's PREVIOUS tour as the generator
@@ -244,6 +254,28 @@ type CatchUpRunFacts struct {
 	ConversationID string `json:"-"`
 	// Lines is the bounded tail of the run's agent conversation.
 	Lines []ChatLine `json:"-"`
+	// Diffs is the run's patch material: hunks copied out of the `patch`
+	// artifacts the worker filed for it (ADR-0078 § Patch artifacts). The
+	// reader bounds the read; catchUpDataBlock bounds what reaches the model.
+	// Empty when the run changed no tracked files, filed no patch, or the
+	// artifact read failed — every one of which leaves the tour as it was
+	// before diffs existed, never a story about a change nobody recorded.
+	Diffs []CatchUpDiffHunk `json:"-"`
+}
+
+// CatchUpDiffHunk is one hunk of one file, as the patch artifact held it. File
+// is the checkout-relative path the artifact's own header named — it becomes
+// the evidence object's `source`, which is how a reader gets to "which file is
+// this?" without the model ever writing a path (ADR-0078 § Decision 2's rule
+// that evidence text and type are the server's copies).
+type CatchUpDiffHunk struct {
+	File string
+	// Lines is the hunk body: its `@@` header and its +/-/context lines,
+	// exactly as the artifact stored them.
+	Lines string
+	// Bytes is the hunk's size, which is what makes the "largest hunks first"
+	// ordering the reader falls back to a stated fact rather than a re-scan.
+	Bytes int
 }
 
 // CatchUpSource is the reader the generator asks. Every read is issued AS THE
@@ -737,6 +769,11 @@ type catchUpExcerpt struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+	// Source names where a diff excerpt came from — the file the hunk is
+	// against. It is omitted for the kinds whose source is the run itself, so
+	// an answer that cites a log excerpt still gets `source: "run"` from the
+	// server rather than a string the model wrote (ADR-0078 § Decision 2).
+	Source string `json:"source,omitempty"`
 }
 
 type catchUpRunHeader struct {
@@ -796,16 +833,23 @@ func catchUpDataBlock(facts CatchUpRunFacts, cand CatchUpCandidate) (string, *ca
 		StartedAt: clip(facts.StartedAt, 40), FinishedAt: clip(facts.FinishedAt, 40),
 	}}
 	next := 1
-	add := func(kind, text string) {
+	addFrom := func(kind, source, text string) {
 		if strings.TrimSpace(text) == "" {
 			return
 		}
+		if kind != CatchUpEvidenceKindDiff {
+			// A diff excerpt arrives already bounded by clipCatchUpDiffHunk, on
+			// whole lines: `clip` would collapse its newlines into spaces, and a
+			// hunk on one line is no longer a hunk.
+			text = clip(text, CatchUpGenEvidenceMaxChars)
+		}
 		d.Excerpts = append(d.Excerpts, catchUpExcerpt{
-			ID: fmt.Sprintf("E%d", next), Kind: kind,
-			Text: clip(text, CatchUpGenEvidenceMaxChars),
+			ID: fmt.Sprintf("E%d", next), Kind: kind, Source: source,
+			Text: text,
 		})
 		next++
 	}
+	add := func(kind, text string) { addFrom(kind, "", text) }
 	if facts.HadCodeRefs {
 		var b strings.Builder
 		if facts.Branch != "" {
@@ -824,6 +868,12 @@ func catchUpDataBlock(facts CatchUpRunFacts, cand CatchUpCandidate) (string, *ca
 			fmt.Fprintf(&b, "commit %s; ", clip(sha, 40))
 		}
 		add(CatchUpEvidenceKindFiles, "this run's outputs name code: "+strings.TrimSuffix(b.String(), "; "))
+	}
+	// The diffs come next: they are the block's only reviewable evidence, so
+	// they are numbered ahead of the node list and the thread, which the byte
+	// cap trims from the end.
+	for _, h := range catchUpChooseDiffs(facts, cand) {
+		addFrom(CatchUpEvidenceKindDiff, h.File, h.Lines)
 	}
 	if len(cand.HeadStops) > 0 {
 		prev := &catchUpPrevTour{Version: cand.TourHead,
@@ -915,7 +965,10 @@ func CatchUpGenPrompt(block string) (string, string) {
 		"changes.\n" +
 		"evidence_ids may only name excerpt ids that appear in the DATA block (E1, E2, ...): an id " +
 		"not in the block is dropped by the server. Do not write evidence yourself — the server " +
-		"copies the cited excerpt. Never invent issue numbers, PR numbers, commit shas, file " +
+		"copies the cited excerpt. A `diff` excerpt is a hunk the worker recorded from the run's " +
+		"own workspace: cite it when a beat is about what changed, and do not retype its lines or " +
+		"name a file the excerpt does not name — the file travels with the evidence, set by the " +
+		"server. Never invent issue numbers, PR numbers, commit shas, file " +
 		"paths, branch names or people: if the block does not say it, do not say it. The work " +
 		"item's refs (issue, PR, commits, run) are taken from the run's outputs by the server, " +
 		"never from you, so a number you write in prose must still be a number the block shows.\n" +
@@ -1226,10 +1279,14 @@ func buildCatchUpTour(a catchUpAnswer, cand CatchUpCandidate, facts CatchUpRunFa
 			if !ok {
 				continue // unknown id dropped: the citation is the model's
 			}
+			source := ex.Source
+			if source == "" {
+				source = "run"
+			}
 			evidence = append(evidence, CatchUpEvidenceDraft{
 				Type: ex.Kind,
 				Payload: map[string]any{
-					"source": "run",
+					"source": source,
 					"text":   ex.Text,
 				},
 			})

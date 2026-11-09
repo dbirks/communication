@@ -75,6 +75,7 @@ Specs below are in `e2e/`; "lab" = Acceptance lab-e2e job, "verif" = verificatio
 ### T16 Tour player (ccfebe6, be5ce84, 8f6f378)
 - [x] Full screen, segmented progress with dashed see-more, stop list — verif cu-7b screens; unit TourPlayer.test.tsx (see-more segment in tour mode).
 - [x] Narrative steps, dark log, file list — verif cu-7b; final review "7b: PASS".
+- [x] A stop's `diff` evidence is a hunk of the worker's OWN `patch` artifact (the unit-boundary capture files one bounded, secret-scanned patch per capture; ADR-0078 § Patch artifacts) — lab catchup-lab leg 1 reads the run's artifacts for it; unit internal/worker/unit_patch_test.go + internal/assistant/catchup_diff_test.go.
 - [x] Decisions post plain text — lab catchup-lab leg 4; verif cu-8b/7b decision screens.
 - [x] Moving on marks seen; ⌘J asks with the stop as context — verif catchup.spec.ts "7b on the keyboard" (S marks seen via API, ⌘J opens Ask naming the stop).
 - [x] ←/→, S, Esc — same verif test.

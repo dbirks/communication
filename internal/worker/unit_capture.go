@@ -200,6 +200,16 @@ func (u *Unit) Capture(ctx context.Context) ([]CaptureOutcome, error) {
 			}
 		}
 	}
+	// The patch half rides the same capture and the same fence (ADR-0078 § Patch
+	// artifacts): one artifact naming what the tree now says against the base the
+	// rows already recorded. It is published after every repository has been
+	// read back, so one capture is one document, and it warns rather than fails
+	// for the checkpoint's own reason — the edits live in git, and a diff that
+	// will not store must not trade real work for a bookkeeping entry.
+	if _, patchErr := u.capturePatches(ctx, out); patchErr != nil {
+		u.logger.Warn("unit patch could not be published",
+			slog.String("error", patchErr.Error()))
+	}
 	return out, err
 }
 

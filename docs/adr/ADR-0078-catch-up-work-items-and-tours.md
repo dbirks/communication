@@ -516,11 +516,11 @@ claimed and re-arms it when the run moves, and the grouping read answers
 `PriorRunFailed` from the claimed runs (true for a group holding a failed run,
 false for a clean one).
 
-**Evidence is text the platform observed, not the change itself: a stop's
-evidence kinds are `log` and `files` only.** What the code actually changed is
-a separate step — a parallel task adds a diff/patch artifact to the evidence
-set so a stop can point at the hunk it describes; nothing here waits for it,
-and nothing here claims a diff was shown to the model or stored beside a beat.
+**Evidence is text the platform observed.** A stop's evidence kinds were `log`
+and `files` when this ADR was accepted, because no server-readable source held a
+run's diff. That gap is closed by § Patch artifacts below: a stop may now also
+carry `diff`, and the hunk beside it is a byte-for-byte copy of what the worker
+recorded, not something the model wrote.
 
 Plus `go build ./...`, `go vet ./internal/store/... ./internal/domain/...`,
 `gofmt -l internal/` (empty) and `go test ./internal/domain/...`.
@@ -570,3 +570,72 @@ disables generation entirely) generation model calls per ten minutes, a pass
 the cap refuses logged rather than left silent. What this note predates is
 T13's completion sweep: the second trigger, the shared cap and the
 claim-idempotent write are § Trigger's rules now.
+
+## Patch artifacts (T16 "diffs": a stop can now point at the hunk it describes)
+
+The accepted ADR said evidence was `log` and `files` because *"no server-readable
+source holds a run's diff"*. That sentence is now history, and this section is
+the source that replaced it.
+
+**Decision.** The worker files a `patch` artifact at the unit boundary, beside the
+`checkpoint` artifact it already filed there, and the tour generator may quote it.
+
+- **What it is.** ONE `patch` artifact per capture — the unified `git diff` of the
+  run's workspace against the base that capture already names
+  (`CaptureOutcome.BaseCommit`, the branch point the `workspace_repos` row recorded
+  when the attempt was prepared). `git diff <base>` compares the base commit to the
+  working tree, so a committed run ref, a staged edit and an uncommitted edit all
+  show up; a new untracked file is not in that output and is quoted as a
+  `new file mode` section instead, so "the agent wrote the feature as a new file"
+  produces a patch rather than silence (`internal/workspace/git/diff.go`).
+- **Size bound, honest truncation.** 64 KiB. Over the bound the artifact is cut at
+  a **hunk boundary** — never mid-hunk, which would make the file a fabricated
+  patch whose counts do not add up — with a trailing
+  `… (truncated, N files, M lines total)` line naming the WHOLE diff, so a reader
+  can judge what they are missing. `artifacts.kind` already allowed `patch`
+  (migration 00004, ADR-0020 D2's per-kind cap is the backend's own refusal);
+  nothing new is stored beside the row.
+- **Redaction.** Bytes are scanned by the SAME hook every other artifact path in
+  the worker uses — `Materialized.Redact` (worker/seams.go), the black box that
+  knows the unit's materialized values and replaces each occurrence while counting
+  replacements, which is also what `artifact.publish` and the turn sink scan with.
+  The scan runs BEFORE the size bound, so the bytes that survive into the artifact
+  are exactly the bytes that were scanned; a value that truncation would have cut
+  cannot be the reason another one went out whole. Excluded paths are subtracted
+  twice over, as ADR-0017 D6 requires: git pathspecs, then this code's filter on
+  the rendered text — a git-level exclusion must never be the only thing standing
+  between a secret and an artifact. A redaction that fired is logged, because the
+  row's `redaction_count` counts the exclusion filter and cannot see this one.
+- **Scoping.** Identical to the checkpoint artifact's: same organization, project,
+  workspace, conversation, turn, worker and fencing token, published through the
+  same capturer at the same sensitivity. The patch type carries no sensitivity or
+  role member, so a patch cannot drift into a wider audience than the manifest
+  next to it already has. A capture that cannot store is a warning and a missing
+  row, never a failed turn (deviation D9's rule, reused whole).
+- **Sandboxing unchanged.** The diff is the worker's own unsandboxed git plumbing
+  over its own workspace — the same read `Status` performs for the checkpoint's
+  summary line. No Landlock or nono profile is added to the worker process
+  (AGENTS.md); the agent's child processes stay exactly as sandboxed as they were.
+
+**And on the reading side.** The generator reads a run's `patch` artifacts AS ITS
+OWN CALLER (the same rule every other generator read carries — a generator that
+could open an artifact the browser could not is a hole), bounds the quote to 3
+hunks of 60 lines each, and numbers them as ordinary excerpt ids. Preference goes
+to a file the run's own words already name (the goal, a beat of the tour being
+rewritten, the thread's tail), then to the largest hunks; ties break on the path,
+so a re-told story keeps the proof its reader already saw. A cited hunk becomes
+`{type:"diff", source:<file>, text:<hunk>}` — the file travels with the excerpt,
+so the model never writes a path it was not shown, and an unknown or uncited id
+writes nothing. A clipped hunk carries its `… (N more lines not shown)` note into
+the evidence object: the bound is visible, never implied.
+
+**Verification.** `internal/workspace/git/diff_test.go` runs the real git binary:
+committed + uncommitted + new-file edits all appear, declared exclusions leave no
+trace (with the excluded paths kept TRACKED, the case git's own ignore machinery
+would not hide), and `BoundPatch` cuts between complete hunks with the counts of
+the whole. `internal/worker/unit_patch_test.go` publishes against a real checkout:
+one `patch` artifact per capture with the checkpoint's scoping, the bound enforced
+with no hunk split, and a planted secret stored only as `[REDACTED]`.
+`internal/assistant/catchup_diff_test.go` cites a diff excerpt through a fake
+model (evidence type `diff`, the hunk's own file as `source`) and shows an
+uncited or invented id producing nothing.

@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/assistant"
 	"github.com/dbirks/communication/internal/domain"
 )
@@ -194,6 +195,13 @@ type CatchUpGenDeps struct {
 	Pipelines catchUpGenPipelineReader
 	Chats     assistant.ChatTranscriptReader
 	Logger    *slog.Logger
+	// Patches reads the run's recorded diffs (ADR-0078 § Patch artifacts): the
+	// `patch` artifacts the worker filed at its unit boundaries. It is optional
+	// in the builder's own rule — a deployment that mounts no artifact backend
+	// generates tours without diff excerpts, which is the honest absence, never
+	// a invented hunk.
+	Patches CatchUpPatchSource
+
 	// Cooldown overrides the generator's per-RUN floor between two attempts.
 	// Zero means assistant.CatchUpGenCooldown (ten minutes); a deployment that
 	// runs the generator against a real model in a short-lived lab may shorten
@@ -241,7 +249,7 @@ func BuildCatchUpGenerator(deps CatchUpGenDeps) CatchUpGeneratorTrigger {
 	}
 	source := &catchUpGenReader{
 		store: deps.CatchUp, runs: deps.Runs, pipelines: deps.Pipelines,
-		chats: deps.Chats, log: log,
+		chats: deps.Chats, patches: deps.Patches, log: log,
 	}
 	g := assistant.NewCatchUpGenerator(assistant.CatchUpDeps{
 		Model:                  deps.Broker,
@@ -320,7 +328,24 @@ type catchUpGenReader struct {
 	runs      catchUpGenRunReader
 	pipelines catchUpGenPipelineReader
 	chats     assistant.ChatTranscriptReader
-	log       *slog.Logger
+	// patches is the optional diff read; nil means the block carries none.
+	patches CatchUpPatchSource
+	log     *slog.Logger
+}
+
+// CatchUpPatch is one recorded patch document: the artifact's name and its
+// bytes, already bounded by the caller's read.
+type CatchUpPatch struct {
+	Name    string
+	Content string
+}
+
+// CatchUpPatchSource reads one run's `patch` artifacts AS THE GENERATOR'S
+// CALLER — the same rule every other read here carries, so a tour can only
+// ever quote a diff the asking-side browser could have opened itself.
+type CatchUpPatchSource interface {
+	RunPatches(ctx context.Context, c assistant.Caller, projectID, runID,
+		conversationID string) ([]CatchUpPatch, error)
 }
 
 func (r *catchUpGenReader) CandidateRuns(ctx context.Context, c assistant.Caller,
@@ -451,6 +476,27 @@ func (r *catchUpGenReader) RunFacts(ctx context.Context, c assistant.Caller,
 	}
 	facts.HadCodeRefs = facts.Branch != "" || facts.PRNumber > 0 || facts.PRURL != "" ||
 		len(facts.Commits) > 0 || facts.IssueNumber > 0
+	// The run's recorded diffs (ADR-0078 § Patch artifacts): the `patch`
+	// artifacts the worker filed at its own unit boundaries, read AS THIS
+	// GENERATOR'S CALLER through the same artifact list the run page uses. A
+	// read that fails costs the tour its hunks and nothing else — the block
+	// stands on the run's own facts, exactly as a missing transcript tail does —
+	// and a deployment with no artifact backend reads nil here and generates the
+	// diffs-less tour it always generated.
+	if r.patches != nil {
+		patches, perr := r.patches.RunPatches(ctx, c, run.ProjectID, runID, derefString(run.SourceConversationID))
+		if perr != nil {
+			r.log.Warn("catch up: the run's patches are unavailable",
+				slog.String("run_id", runID), slog.String("error", perr.Error()))
+		} else {
+			for _, p := range patches {
+				facts.Diffs = append(facts.Diffs, catchUpPatchHunks(p.Name, p.Content)...)
+			}
+			if len(facts.Diffs) > catchUpGenMaxPatchHunks {
+				facts.Diffs = facts.Diffs[:catchUpGenMaxPatchHunks]
+			}
+		}
+	}
 	// The grouping key is derived from the SAME server-side read of the run's
 	// outputs that the refs come from (domain.CatchUpGroupKey: an issue names
 	// the piece of work, else a PR does, else the run is the piece of work),
@@ -475,6 +521,175 @@ func (r *catchUpGenReader) RunFacts(ctx context.Context, c assistant.Caller,
 	}
 	return facts, nil
 }
+
+// --- the run's recorded diffs (ADR-0078 § Patch artifacts) ---------------
+
+// catchUpGenMaxPatchHunks bounds how many hunks the reader hands the generator.
+// The block itself quotes at most assistant.CatchUpGenMaxDiffHunks of them; the
+// wider read is what lets the generator prefer the files a story is actually
+// about over whatever happened to be first in the artifact.
+const catchUpGenMaxPatchHunks = 12
+
+// catchUpPatchHunks splits one patch artifact into hunks, each with the file its
+// header named. It is a splitter, not a parser: it keeps git's own lines
+// verbatim, because the text that reaches the reader must be the text the worker
+// wrote (the same rule that keeps evidence a copy rather than a paraphrase). A
+// `# repository <name>` line, which is how a multi-repository capture marks its
+// sections, sets the file prefix so a reader can tell whose `hello.py` a hunk
+// came from.
+func catchUpPatchHunks(name, document string) []assistant.CatchUpDiffHunk {
+	var (
+		out       []assistant.CatchUpDiffHunk
+		file      = strings.TrimSpace(name)
+		prefix    string
+		hunk      []string
+		hunkBytes int
+	)
+	flush := func() {
+		if len(hunk) == 0 || file == "" {
+			hunk, hunkBytes = nil, 0
+			return
+		}
+		shown := file
+		if prefix != "" {
+			shown = prefix + "/" + file
+		}
+		text := strings.Join(hunk, "\n") + "\n"
+		out = append(out, assistant.CatchUpDiffHunk{File: shown, Lines: text, Bytes: len(text)})
+		hunk, hunkBytes = nil, 0
+	}
+	for _, line := range strings.Split(strings.TrimRight(document, "\n"), "\n") {
+		switch {
+		case strings.HasPrefix(line, "# repository "):
+			flush()
+			prefix = strings.TrimSpace(strings.TrimPrefix(line, "# repository "))
+		case strings.HasPrefix(line, "diff --git "):
+			flush()
+			file = catchUpHunkFile(line)
+		case strings.HasPrefix(line, "@@ "):
+			flush()
+			hunk = append(hunk, line)
+			hunkBytes += len(line) + 1
+		case len(hunk) > 0:
+			hunk = append(hunk, line)
+			hunkBytes += len(line) + 1
+		}
+		if len(out) >= catchUpGenMaxPatchHunks {
+			return out
+		}
+	}
+	flush()
+	return out
+}
+
+// catchUpHunkFile reads the b-side path out of a `diff --git a/<p> b/<p>`
+// header. "" when the header is not in that shape: a hunk whose file cannot be
+// named is dropped rather than filed under a guess.
+func catchUpHunkFile(header string) string {
+	const marker = " b/"
+	rest := strings.TrimPrefix(strings.TrimSpace(header), "diff --git ")
+	i := strings.LastIndex(rest, marker)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[i+len(marker):])
+}
+
+// catchUpPatchStore is the artifact read the patch source needs: the same
+// caller-scoped list the project's artifact page issues.
+type catchUpPatchStore interface {
+	ListArtifacts(ctx context.Context, c Caller, projectID string, conversationID string) ([]ArtifactView, error)
+}
+
+// catchUpPatchBytes is the byte backend's open, the same one the download
+// handler streams through.
+type catchUpPatchBytes interface {
+	Open(ctx context.Context, ref artifacts.Ref) (io.ReadCloser, int64, error)
+}
+
+// catchUpPatchReadMax bounds what one patch artifact contributes to the DATA
+// block: the worker's own artifact bound, so the whole stored document is
+// readable and nothing larger (a foreign artifact that happened to be named
+// `patch-*`) is buffered here.
+const catchUpPatchReadMax = 64 << 10
+
+// NewCatchUpPatchSource returns the generator's diff reader over the artifact
+// list and byte backend the routes already use. Passing nil to
+// CatchUpGenDeps.Patches is the honest "this deployment records no patches":
+// tours read logs and file lists, which is what they read before this existed.
+//
+// Every read is issued as the caller the generation runs as, and the list is
+// filtered to what belongs to the RUN (its own artifacts, or — for a capture
+// fenced on the turn rather than the run — the run's own thread). A generator
+// that could open an artifact the browser could not would be a hole, not a
+// feature.
+func NewCatchUpPatchSource(store catchUpPatchStore, bytes catchUpPatchBytes) CatchUpPatchSource {
+	if store == nil || bytes == nil {
+		return nil
+	}
+	return &catchUpPatchReader{store: store, bytes: bytes}
+}
+
+type catchUpPatchReader struct {
+	store catchUpPatchStore
+	bytes catchUpPatchBytes
+}
+
+var _ CatchUpPatchSource = (*catchUpPatchReader)(nil)
+
+func (r *catchUpPatchReader) RunPatches(ctx context.Context, c assistant.Caller,
+	projectID, runID, conversationID string) ([]CatchUpPatch, error) {
+	views, err := r.store.ListArtifacts(ctx, catchUpAPICaller(c), projectID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	var out []CatchUpPatch
+	for _, v := range views {
+		if v.Kind != artifacts.KindPatch || v.State != "ready" {
+			continue
+		}
+		mine := (v.RunID != nil && *v.RunID == runID) ||
+			(conversationID != "" && v.ConversationID != nil && *v.ConversationID == conversationID)
+		if !mine {
+			continue
+		}
+		body, ok := r.read(ctx, v)
+		if !ok {
+			continue
+		}
+		out = append(out, CatchUpPatch{Name: v.Name, Content: body})
+		if len(out) >= assistant.CatchUpGenMaxDiffHunks {
+			break
+		}
+	}
+	return out, nil
+}
+
+// read opens one artifact's bytes under the read bound. A failure is "this patch
+// is not available to the block", answered by no hunk at all: the generator has
+// no way to tell a truncated read from a small artifact, and guessing is how a
+// half a diff becomes an excerpt.
+func (r *catchUpPatchReader) read(ctx context.Context, v ArtifactView) (string, bool) {
+	if v.SizeBytes > catchUpPatchReadMax {
+		return "", false
+	}
+	rc, _, err := r.bytes.Open(ctx, artifacts.Ref{
+		ID: v.ID, ProjectID: v.ProjectID, StorageBackend: v.StorageBackend,
+		StorageKey: v.StorageKey, SHA256: v.SHA256, SizeBytes: v.SizeBytes,
+		MediaType: v.MediaType,
+	})
+	if err != nil || rc == nil {
+		return "", false
+	}
+	defer func() { _ = rc.Close() }()
+	body, err := io.ReadAll(io.LimitReader(rc, catchUpPatchReadMax+1))
+	if err != nil || len(body) == 0 || len(body) > catchUpPatchReadMax {
+		return "", false
+	}
+	return string(body), true
+}
+
+// --- the reader's existing reads ----------------------------------------
 
 func (r *catchUpGenReader) workflowName(ctx context.Context, c Caller, pipelineID string) string {
 	if r.pipelines == nil || pipelineID == "" {

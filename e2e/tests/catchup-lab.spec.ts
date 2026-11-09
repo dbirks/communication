@@ -489,6 +489,63 @@ test.describe("catch up in the lab (tour from a finished run → unseen → seen
       }
     }
 
+    // --- the diff half (T16 "diffs", ADR-0078 § Patch artifacts). ----------
+    // The worker files ONE bounded `patch` artifact per unit capture and the
+    // tour may cite a hunk of it. The two are not equally assertable: the
+    // artifact is the worker's own doing, while a cited hunk depends on a model
+    // choosing the excerpt — so the artifact is asserted and the evidence is
+    // logged, then checked for the one thing that must hold either way.
+    const artifactList = await getJson<{
+      artifacts: {
+        id: string;
+        run_id?: string | null;
+        kind: string;
+        media_type: string;
+        size_bytes: number;
+      }[];
+    }>(alice.request, `/api/v1/projects/${project.id}/artifacts`);
+    const runPatches = artifactList.artifacts.filter(
+      (a) => a.kind === "patch" && a.run_id === runId,
+    );
+    const diffEvidence = latest.stops.flatMap((stop) =>
+      (stop.evidence ?? []).filter((entry) => entry["type"] === "diff"),
+    );
+    console.log(
+      `catchup-lab: run ${runId} filed ${runPatches.length} patch artifact(s) ` +
+        `(${runPatches.map((p) => `${p.id.slice(0, 8)}/${p.size_bytes}B`).join(", ") || "none"}) ` +
+        `and the tour cites ${diffEvidence.length} diff excerpt(s)`,
+    );
+    // A diff a browser cannot open is a claim with no bytes behind it: the
+    // evidence object is the server's copy of an excerpt, and the excerpt came
+    // from a recorded patch. This direction holds whatever the model cited.
+    if (diffEvidence.length > 0) {
+      expect(
+        runPatches.length,
+        `the tour cites ${diffEvidence.length} diff excerpt(s) but run ${runId} filed no patch ` +
+          `artifact — the generator quoted a change nothing recorded`,
+      ).toBeGreaterThan(0);
+      for (const entry of diffEvidence) {
+        expect(
+          typeof entry["text"] === "string" && (entry["text"] as string).length > 0,
+          "a diff evidence entry carries no server-copied hunk",
+        ).toBe(true);
+        expect(
+          typeof entry["source"] === "string" && (entry["source"] as string).length > 0,
+          "a diff evidence entry names no file",
+        ).toBe(true);
+      }
+    }
+    // And a patch that WAS filed is the bounded, reviewable document the capture
+    // promised — never an empty row standing in for "we tried".
+    for (const patch of runPatches) {
+      expect(patch.size_bytes, `patch artifact ${patch.id} stores no bytes`).toBeGreaterThan(0);
+      expect(
+        patch.size_bytes,
+        `patch artifact ${patch.id} is over the 64 KiB capture bound`,
+      ).toBeLessThanOrEqual(64 * 1024);
+      expect(patch.media_type, `patch artifact ${patch.id} is not a diff`).toBe("text/x-diff");
+    }
+
     await gotoApp(alice, "/catch-up");
     await evidence(
       alice,
