@@ -1,6 +1,6 @@
 # Redesign handoff — TASKS.md acceptance checklist with evidence
 
-Evidence below was gathered on 6727bc0 → b430e61. **The final word is the Acceptance run on the commit that introduced this line** (it also closes a verification-loop hole: before it, a failed test that wrote no defect row could still count as a clean pass, which hid one failing proof on b430e61). CI 42516428780 success. Acceptance **42516428819 success on first attempt** (all jobs: lab-e2e 150 passed / 0 failed; verification two clean passes, final pass 162 screens 0 defects; m4 core-a/core-b/fence/fanout/watch/restore + regrade; github-loop).
+Evidence below was gathered on 6727bc0 → 861deef. **Final code SHA: 861deef** — CI 42541224464 success; Acceptance 42541224414 success on the first attempt (lab-e2e 150/150 incl. all four catchup-lab legs; verification 99/99 in both passes, 164 screens, 0 defects; every m4 shard + regrade; github-loop). The verification loop records every failed test as a defect since 907a578, so these greens cannot hide a failing test. Design parity on 861deef's own captures: Catch up, Catch up (big backlog), piece of work, tour player, rail, Today, Threads, Workflows index, workflow page, project header and run page all PASS — OVERALL PASS. The commit that updates this header changes only this file; its own CI/Acceptance runs are recorded in the commit history.
 Specs below are in `e2e/`; "lab" = Acceptance lab-e2e job, "verif" = verification (emulator loop) job, "unit" = `pnpm --dir ui test` / `go test` in CI.
 
 ## Phase 1
@@ -80,7 +80,7 @@ Specs below are in `e2e/`; "lab" = Acceptance lab-e2e job, "verif" = verificatio
 - [x] ←/→, S, Esc — same verif test.
 
 ## Design parity (fresh reviewers, design | 1280 | 390)
-Final round on 6727bc0 captures: **Catch up PASS, piece of work PASS, tour player PASS, rail PASS, Today PASS — OVERALL PASS.** Four earlier rounds' DEFECT and MINOR findings were fixed in 5da1b79, be5ce84, 8be6ef8, 6daca66, cd9dd6d, 8eb0f88.
+Final round on 861deef captures (fresh reviewer): **Catch up PASS (and with the big-backlog banner), piece of work PASS, tour player PASS, rail PASS, Today PASS, plus the Phase-1 Threads / Workflows / workflow page / project header / run page PASS — OVERALL PASS.** Four earlier rounds' DEFECT and MINOR findings were fixed in 5da1b79, be5ce84, 8be6ef8, 6daca66, cd9dd6d, 8eb0f88.
 
 ## Known, recorded limits
 - Request changes records a rejection with comments (the decide API knows approved | rejected).
