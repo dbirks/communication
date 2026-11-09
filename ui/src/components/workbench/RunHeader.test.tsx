@@ -208,6 +208,38 @@ describe("RunHeader row 2 — one primary action, chosen by the run's state", ()
     expect(screen.getByTestId("run-cancel")).toBeTruthy();
   });
 
+  // Finding 11, review pass on the 907a578 captures: row 2 is "the title,
+  // a state chip, and one primary action", and the chip was wrapping to a
+  // line BELOW the title at 1280. Flex line-breaking runs on each item's
+  // hypothetical size — the h1's `auto` basis is its max-content width, the
+  // whole sentence on one line — so a wrapping title column evicted the chip
+  // even where the title never needed the second line. The class tokens are
+  // the contract (the same reading the `NewRevisionNotice` test uses): the
+  // row refuses to wrap from `sm` up, so the h1 takes the shrink instead.
+  it("keeps the state chip on the title's own row, baseline-aligned (finding 11)", () => {
+    mountHeader({ run: viewRun({ ...wireRun, status: "waiting_human" }), nodes: waitingNodes });
+
+    const row = screen.getByTestId("run-header-title");
+    const title = screen.getByTestId("run-title");
+    // `run-header-status` is the chip's LABEL span; the chip box wraps it.
+    const chipBox = screen.getByTestId("run-header-status").parentElement;
+    expect(chipBox).not.toBeNull();
+
+    // The chip is the title's sibling in the title row, not a row of its own.
+    expect(title.parentElement).toBe(row);
+    expect(chipBox!.parentElement).toBe(row);
+    const tokens = row.className.split(/\s+/);
+    // Same row from `sm` up (only a phone's wrapping title may push it down),
+    // and the pair shares a baseline rather than a centred box.
+    expect(tokens).toContain("sm:flex-nowrap");
+    expect(tokens).toContain("items-baseline");
+    // For the h1 to shrink into the space beside the chip it must be allowed
+    // to go below its content width — and the chip must not be the thing that
+    // gets squeezed instead.
+    expect(title.className.split(/\s+/)).toContain("min-w-0");
+    expect(chipBox!.className.split(/\s+/)).toContain("shrink-0");
+  });
+
   it("a finished run has no primary at all — everything rides the menu", () => {
     mountHeader({ run: viewRun({ ...wireRun, status: "completed" }), nodes: NODES });
 

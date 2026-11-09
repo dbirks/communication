@@ -101,6 +101,28 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     const view = screen.getByTestId("threads-view");
     expect(band.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(view.className).toContain("overflow-hidden");
+    // Finding 07 DEFECT (the 907a578 captures, 1280 + 390): the list pane
+    // printed its own `Threads` H1 under this band, so the screen read the
+    // title twice. ONE `Threads` heading on the whole page, and it is the
+    // band's.
+    expect(screen.getAllByRole("heading", { level: 1, name: "Threads" })).toHaveLength(1);
+    expect(screen.getByTestId("threads-page").querySelector("h1")).toBeNull();
+    // The `New thread` verb that rode the removed heading rides the band's
+    // actions slot instead — same test id, so the emulator's `/threads`
+    // journey presses it where it always has.
+    const newThread = within(band).getByTestId("threads-new-open");
+    expect(newThread.textContent).toBe("New thread");
+    // It stays inside the band's 48px: `PAGE_BAND_HEIGHT_PX` is what
+    // `ThreadsView` subtracts from the viewport, so a tall button would push
+    // the panes past the fold.
+    expect(newThread.className.split(/\s+/)).toContain("ds-btn--compact");
+  });
+
+  it("opens the new-thread dialog from the band's action", async () => {
+    renderApp({ path: "/threads", routes: routes([liveManual]) });
+    await screen.findByTestId("threads-view");
+    fireEvent.click(screen.getByTestId("threads-new-open"));
+    expect(await screen.findByTestId("new-conversation-dialog")).toBeTruthy();
   });
 
   it("lists every thread grouped LIVE / EARLIER with project and profile names", async () => {

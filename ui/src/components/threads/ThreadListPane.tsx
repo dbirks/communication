@@ -381,6 +381,17 @@ export interface ThreadListPaneProps {
    * thread column).
    */
   ownsError?: boolean;
+  /**
+   * Whether this pane is the ONLY title on its column. The `/threads` list
+   * route draws the shared `PageBand` (`Threads`) above the two panes, so the
+   * pane must not print a second `Threads` heading under it (finding 07, review
+   * pass): the host passes `ownsTitle={false}` and puts the pane's `New thread`
+   * verb in the band's actions slot (`threads/NewThreadAction`). Hosts that
+   * give the column no band — the open thread at `/threads/:id`, the loading
+   * frame — leave this true, so the list column still names itself and still
+   * offers the verb.
+   */
+  ownsTitle?: boolean;
 }
 
 export function ThreadListPane({
@@ -388,6 +399,7 @@ export function ThreadListPane({
   selectedId = "",
   declaredScope,
   ownsError = false,
+  ownsTitle = true,
 }: ThreadListPaneProps) {
   const [search, setSearch] = useState("");
   const [chip, setChip] = useState<"all" | "mine" | "runs">("all");
@@ -451,14 +463,15 @@ export function ThreadListPane({
       aria-label="Threads"
     >
       <div className="flex flex-col gap-[10px] border-b border-line px-[14px] pb-[12px] pt-4">
-        {/* Pass-2 review (`project-1b-threads`): inside a project's Threads tab
-            the band above already prints the project H1 and its ONE `New
-            thread` verb (`ProjectHeader`), so the pane drew a second `Threads`
-            heading and a second primary button under it. Filtered to one
-            project, the pane is a TAB, not a page: the title and the verb
-            belong to the band. Standalone `/threads` keeps both — there the
-            pane IS the page (and the only `New thread` on screen). */}
-        {projectId ? null : (
+        {/* Pass-2 review (`project-1b-threads`) and the finding-07 review pass
+            use the same rule: whoever draws the band owns the title and the one
+            `New thread` verb, and the pane draws neither under it. Inside a
+            project's Threads tab that band is `ProjectHeader`'s; on `/threads`
+            it is the shared `PageBand` (`Threads` + `threads-new-open`). Where
+            no band stands above the column — the open thread at `/threads/:id`
+            and the loading frame — the pane is the column's only title, so it
+            keeps the heading and the verb. */}
+        {projectId || !ownsTitle ? null : (
           <div className="flex items-center gap-2">
             <h1 id="threads-heading" className="min-w-0 flex-1 text-[19px] font-semibold">
               Threads
@@ -622,11 +635,11 @@ export function ThreadListPane({
           )
         ) : null}
       </div>
-      {/* Only the standalone page opens a dialog from here: filtered to one
-          project, the band's own `New thread` is the page's one verb (its
-          dialog lives in `ProjectFrame`), and the pane's `dialogOpen` has no
-          trigger any more. */}
-      {projectId ? null : (
+      {/* Only where the pane still owns the verb does it open the dialog: with
+          the band holding `New thread` (`threads/NewThreadAction`) the pane's
+          `dialogOpen` has no trigger any more, and a project's Threads tab put
+          its verb — and its dialog — in `ProjectFrame`. */}
+      {projectId || !ownsTitle ? null : (
         <NewConversationDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
       )}
     </div>

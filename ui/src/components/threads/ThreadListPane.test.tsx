@@ -10,18 +10,22 @@
  * amendment) the row says `project / Whole project` — the scope is a fact the
  * wire states, not an absence. A bound chat prints the name the row carries.
  */
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import {
   claudeProfile,
   conversationFixture,
   conversationId,
   conversationSummaryFixture,
   meFixture,
+  mockFetch,
   projectFixture,
   type RouteStub,
 } from "../../test/fakes";
 import { renderApp } from "../../test/render";
+import { ThreadListPane } from "./ThreadListPane";
 import type { Conversation, ConversationSummary } from "../../api/types";
 
 const wholeProjectRow: ConversationSummary = {
@@ -420,6 +424,72 @@ describe("thread rows carry the state WORD, not only the glyph", () => {
       expect(row.querySelector('[aria-hidden="true"]')?.textContent).toBe("●");
       const idle = await screen.findByTestId(`thread-row-${idleRow.id}`);
       expect(idle.textContent).toMatch(/idle/);
+    },
+  );
+});
+
+/**
+ * Finding 07, review pass on the 907a578 captures (DEFECT at 1280 and 390):
+ * `/threads` draws the shared `PageBand` ("Threads"), and the pane printed a
+ * SECOND `Threads` H1 with the `New thread` button under it. Whoever draws the
+ * band owns the title and the one verb; the pane keeps its search, chips and
+ * rows. Where NO band stands above the column — the open thread at
+ * `/threads/:id`, which mounts this pane beside the transcript, and the
+ * loading frame — the pane is the column's only title, so it keeps both.
+ */
+describe("the pane's title belongs to whoever draws the band (finding 07)", () => {
+  /** The pane on its own, the way a host with no band mounts it. */
+  function mountPane(props: Parameters<typeof ThreadListPane>[0] = {}) {
+    mockFetch(routes());
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ThreadListPane {...props} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it(
+    "under the page band: the pane draws no heading, and the verb rides the band",
+    { timeout: 15_000 },
+    async () => {
+      renderApp({ path: "/threads", routes: routes() });
+      const pane = await screen.findByTestId("threads-page");
+      const band = screen.getByTestId("page-band");
+
+      // ONE `Threads` H1 on the screen, and it is the band's.
+      expect(screen.getAllByRole("heading", { level: 1, name: "Threads" })).toHaveLength(1);
+      expect(band.querySelector("h1")?.textContent).toBe("Threads");
+      expect(pane.querySelector("h1")).toBeNull();
+
+      // The button that used to ride the pane's heading moved with it, test id
+      // and all — the emulator still presses `threads-new-open` on `/threads`.
+      const verb = screen.getByTestId("threads-new-open");
+      expect(band.contains(verb)).toBe(true);
+      expect(pane.contains(verb)).toBe(false);
+      // …and it is still the verb that opens the shared dialog.
+      fireEvent.click(verb);
+      expect(await screen.findByTestId("new-conversation-dialog")).toBeTruthy();
+
+      // What the pane keeps: its search, its chips, its rows.
+      expect(screen.getByTestId("threads-search")).toBeTruthy();
+      expect(screen.getByTestId("threads-filters")).toBeTruthy();
+      expect(await screen.findByTestId(`thread-row-${boundRow.id}`)).toBeTruthy();
+    },
+  );
+
+  it(
+    "with no band above the column, the pane still names itself and offers the verb",
+    { timeout: 15_000 },
+    async () => {
+      mountPane();
+      const pane = await screen.findByTestId("threads-page");
+      expect(pane.querySelector("h1")?.textContent).toBe("Threads");
+      expect(pane.contains(screen.getByTestId("threads-new-open"))).toBe(true);
     },
   );
 });

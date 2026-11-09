@@ -51,6 +51,19 @@
  * below that floor the action column drops to its own line and `justify-end`
  * keeps it against the right edge where it already sat.
  *
+ * The chip belongs to the title, not to the row's leftovers (finding 11: row 2
+ * is "the title, A STATE CHIP, and one primary action"). Inside the title
+ * column the pair is `items-baseline` and does NOT wrap from `sm` up: flex
+ * line-breaking runs on each item's HYPOTHETICAL size (the h1's `auto` basis =
+ * its max-content width, the whole sentence on one line), so a wrapping title
+ * column used to measure the sentence + chip against the column, fail, and
+ * drop the chip to a line of its own at 1280 — where the title itself never
+ * needed a second line. `sm:flex-nowrap` makes the h1 take the shrink instead
+ * (it has `min-w-0`, the chip is `shrink-0`), so the chip rides the title's
+ * baseline at every width that has a row to ride. Below `sm` the wrap stays:
+ * that is the one place the title genuinely wraps, and a chip under it is
+ * honest stacking, not a squeezed sliver.
+ *
  * The verbs themselves are not this file's business: `useRunActionsModel`
  * (`pages/RunInspector.tsx`) owns the four run writes, their refusals and the
  * retriability rule, and the `⋯` menu and the inspector's own header both read
@@ -260,7 +273,7 @@ export function RunHeader({
       {/* Row 2 — the run's sentence, its state, and the one verb that matters. */}
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-2">
         <div
-          className="flex min-w-0 grow basis-[20rem] flex-wrap items-center gap-2"
+          className="flex min-w-0 grow basis-[20rem] flex-wrap items-baseline gap-2 sm:flex-nowrap"
           data-testid="run-header-title"
         >
           {/* The run's own title is NEVER the thing that gives way: the e2e
@@ -281,7 +294,10 @@ export function RunHeader({
             /* Liveness is a fact about this page, not the run: it stays quiet
                while the stream is live and says so, with the retrying glyph,
                the moment it is not. */
-            <span className="font-mono text-[11px] text-faint" data-testid="run-stream-status">
+            <span
+              className="shrink-0 font-mono text-[11px] text-faint"
+              data-testid="run-stream-status"
+            >
               {STATES[stateOf(STREAM_STATE[streamStatus])].glyph} {streamStatus}
             </span>
           )}

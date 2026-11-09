@@ -22,6 +22,7 @@ import { useConversation } from "../api/queries";
 import { Spinner } from "../components/Feedback";
 import Page, { PageBand } from "../components/ds/Page";
 import { ThreadListPane, useThreadList } from "../components/threads/ThreadListPane";
+import { NewThreadAction } from "../components/threads/NewThreadAction";
 
 /**
  * The open thread lives in its own chunk (shared with `App.tsx`'s
@@ -43,7 +44,12 @@ export interface ThreadsViewProps {
 }
 
 /**
- * The whole screen: list pane + the thread column. Selected thread lives in
+ * The whole screen: list pane + the thread column. The list column's pane
+ * holds NO title of its own (`ownsTitle={false}`) because the host draws the
+ * shared `PageBand` above this view — and the `New thread` verb that used to
+ * ride the pane's heading rides that band instead (`threads/NewThreadAction`
+ * in `ThreadScreen`'s `actions` prop). The two are one decision: a column
+ * whose pane prints no heading must not lose the button beside it. Selected thread lives in
  * the URL (`/threads/:id`), which is what marks a row selected. The routes
  * are full-bleed (App's predicate), so the screen owns the content column's
  * full height: the 320px list scrolls itself, the open thread (or this
@@ -118,7 +124,7 @@ export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
       data-testid="threads-view"
     >
       <div className="flex min-h-0 w-full flex-1 border-b border-line-strong bg-surface lg:w-[320px] lg:flex-none lg:border-b-0 lg:border-r">
-        <ThreadListPane projectId={projectId} ownsError={list.isError} />
+        <ThreadListPane projectId={projectId} ownsError={list.isError} ownsTitle={false} />
       </div>
       <ThreadsDetailColumn listError={list.isError} />
     </div>
@@ -181,7 +187,7 @@ export function ThreadScreen() {
   if (conversationId.length === 0)
     return (
       <Page layout="canvas">
-        <PageBand title="Threads" />
+        <PageBand title="Threads" actions={<NewThreadAction />} />
         <ThreadsView />
       </Page>
     );

@@ -1104,7 +1104,12 @@ const PROJECT_WORKFLOWS_LIBRARY: Landmark = {
 /** Threads (threads-1g). */
 const THREADS_HEADING: Landmark = {
   id: "threads-heading",
-  desc: "the 'Threads' heading (at 390, the '← Threads' back link that carries it)",
+  // Finding 07 review pass: on `/threads` the ONE `Threads` H1 is the shared
+  // `page-band`'s (the list pane's duplicate heading is gone), so the role
+  // match is the band's title; the testid arms remain the frames with no band
+  // above the column — the open thread's list pane, and at 390 its
+  // '← Threads' back link.
+  desc: "the 'Threads' heading (the page band's H1 on /threads; at 390, the '← Threads' back link)",
   any: [
     { role: "heading", level: 1, name: /^Threads$/ },
     { testid: "threads-page" },
