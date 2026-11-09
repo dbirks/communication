@@ -126,6 +126,25 @@ environment:
                                         and unparseable text fall back to the
                                         default rather than refusing startup,
                                         the same hammer-guard rule as above.
+  COMMUNICATION_CATCHUP_GEN_SWEEP       ADR-0078 § Trigger: how often this
+                                        replica's completion sweep looks for
+                                        runs that finished without anybody
+                                        opening the Catch up page (default
+                                        "2m"; TASK T13 — "when a run finishes,
+                                        write its tour", not only when a
+                                        person asks). One goroutine per
+                                        replica; the sweep spends from the
+                                        SAME COMMUNICATION_CATCHUP_GEN_PER_10M
+                                        budget and the SAME per-run cooldown
+                                        as a visit pass, and the tour write
+                                        is idempotent on the run claim, so two
+                                        replicas sweeping the same beat tell
+                                        the story once. "0" disables the sweep
+                                        (the visit trigger keeps working).
+                                        Negative and unparseable fall back to
+                                        the default, never a startup refusal —
+                                        the family rule of the two knobs
+                                        above.
   COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
   COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
@@ -274,6 +293,13 @@ const (
 	// default (assistant.CatchUpGenMaxModelCallsPerWindow); 0 is the one
 	// reading that means something, and it means "generate nothing".
 	envCatchUpGenPer10M = "COMMUNICATION_CATCHUP_GEN_PER_10M"
+
+	// envCatchUpGenSweep is how often the serve-side completion sweep tick
+	// looks for terminal runs that were never told (ADR-0078 § Trigger).
+	// defaultCatchUpGenSweep is its shipped cadence; 0 is the one literal that
+	// means something besides a cadence — "no sweep, the visit trigger only".
+	envCatchUpGenSweep      = "COMMUNICATION_CATCHUP_GEN_SWEEP"
+	defaultCatchUpGenSweepT = 2 * time.Minute
 )
 
 // serveServerTimeout parses one of the http.Server deadline variables with
@@ -352,6 +378,25 @@ func serveCatchUpGenPer10M(getenv func(string) string) int {
 		return assistant.CatchUpGenMaxModelCallsPerWindow
 	}
 	return n
+}
+
+// serveCatchUpGenSweep reads COMMUNICATION_CATCHUP_GEN_SWEEP: how often this
+// replica's completion sweep runs (ADR-0078 § Trigger). The family rule of
+// the other two catch-up knobs — unset, negative and unparseable fall back to
+// the 2m default, never a startup refusal — with the one deliberate
+// exception the purge tick also honours: 0 means "do not start the tick", the
+// deployment keeping the visit trigger alone. A mistyped cadence costs a
+// slower tour at worst, which is not a reason to refuse to serve.
+func serveCatchUpGenSweep(getenv func(string) string) time.Duration {
+	raw := strings.TrimSpace(getenv(envCatchUpGenSweep))
+	if raw == "" {
+		return defaultCatchUpGenSweepT
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return defaultCatchUpGenSweepT
+	}
+	return d // 0 is the honest "no sweep"
 }
 
 // newServeServer builds the process's http.Server. ReadTimeout bounds only
@@ -459,6 +504,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	// per-replica global cap follows the same rule (see serveCatchUpGenPer10M).
 	catchUpGenCooldown := serveCatchUpGenCooldown(os.Getenv)
 	catchUpGenPer10M := serveCatchUpGenPer10M(os.Getenv)
+	catchUpGenSweep := serveCatchUpGenSweep(os.Getenv)
 	rateLimits, err := serveRateLimits(os.Getenv)
 	if err != nil {
 		// A throttle the process cannot parse must be a startup refusal, not a
@@ -533,6 +579,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		SessionPurgeInterval: sessionPurge,
 		CatchUpGenCooldown:   catchUpGenCooldown,
 		CatchUpGenPer10M:     &catchUpGenPer10M,
+		CatchUpGenSweep:      catchUpGenSweep,
 		API: api.Config{
 			ReplicaName:      replica,
 			Version:          version,
@@ -798,6 +845,21 @@ type serveStackDeps struct {
 	// anything" (the generator's own default of six), while an explicit 0 —
 	// which runServe resolves — means "generate nothing at all".
 	CatchUpGenPer10M *int
+
+	// CatchUpGenSweep is COMMUNICATION_CATCHUP_GEN_SWEEP resolved
+	// (serveCatchUpGenSweep): how often this replica's completion sweep tells
+	// the runs that finished untoured (ADR-0078 § Trigger). Like
+	// SessionPurgeInterval, zero HERE means "do not start the tick" — runServe
+	// resolves the 2m default before building the stack, so the zero value
+	// every stack test carries is an explicit off, not a surprise timer on an
+	// unreachable pool.
+	CatchUpGenSweep time.Duration
+
+	// catchUpGenSweepRunner overrides the completion-sweep tick loop; nil
+	// means production's runCatchUpGenSweeper over the built generator. It
+	// exists so a test can observe whether the stack started the sweep at all
+	// without a database or a model to sweep against.
+	catchUpGenSweepRunner func(ctx context.Context) error
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -1155,6 +1217,53 @@ func runIssueTriggerTicker(ctx context.Context, st issueTriggerTicker, lister gi
 	}
 }
 
+// catchUpSweeper is the slice of the catch-up generator the completion-sweep
+// tick needs — one method, so the loop's logging and cancellation are
+// unit-testable against a recorder instead of a database or a model.
+type catchUpSweeper interface {
+	CatchUpCompletionSweep(ctx context.Context)
+}
+
+// runCatchUpGenSweeper is ADR-0078 § Trigger's serve-side tick: every
+// `every`, tell the runs that finished untoured. The sweep itself never
+// returns an error (a generation failure is the pass's own logged business,
+// and the model-call cap is a logged skip), so what this loop owns is the
+// beat and the survival: a sweep that PANICS is recovered, logged and
+// retried next beat, for the runSessionPurger reason — a loop that died
+// quietly turns "nobody opened the page" back into "runs get no tours", the
+// exact gap the tick exists to close. Cancellation is a clean return; the
+// pass holds the tick's own context, so closeStack drains it.
+func runCatchUpGenSweeper(ctx context.Context, sw catchUpSweeper, every time.Duration, log *slog.Logger) error {
+	if sw == nil {
+		return errors.New("serve: catch-up sweeper has no generator")
+	}
+	if every <= 0 {
+		every = defaultCatchUpGenSweepT
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.WarnContext(ctx, "catch-up sweep panicked; retrying next tick",
+							slog.Any("panic", r),
+							slog.String("stack", string(debug.Stack())))
+					}
+				}()
+				sw.CatchUpCompletionSweep(ctx)
+			}()
+		}
+	}
+}
+
 // m4RunTrigger returns the advancer trigger the run and approval routes fire
 // after a state write, or nil on a replica where the engine is off. A nil
 // trigger is legal by api.M4Trigger's own contract (the write is complete
@@ -1480,33 +1589,36 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// /catch-up/visits` (never by a list read; ADR-0078 § Migration, Trigger
 	// note), and nothing a browser
 	// sends belongs in a shared tour.
+	// The generator (ADR-0078 § Migration + Trigger note): the same broker
+	// the assistant speaks through, reading the caller's own run/node/pipeline/
+	// transcript reads and writing through the store's own upsert and
+	// append. `POST /catch-up/visits` schedules a pass after it answers —
+	// the list read does not, and neither does an item read; the sidebar
+	// badge reads the list on every page and a list trigger spent a model
+	// call per page load. The SECOND trigger is the completion sweep below
+	// (ADR-0078 § Trigger): a finished run gets its tour without anybody
+	// opening the page. With no egress triple the builder returns nil
+	// and the routes stay the pure reads they were — an empty page, never
+	// a stub narrative.
+	catchUpGen := api.BuildCatchUpGenerator(api.CatchUpGenDeps{
+		Broker:    asstBroker,
+		CatchUp:   postgres.APICatchUpGenerator{S: &postgres.CatchUpStore{Pool: d.Pool}},
+		Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
+		Pipelines: postgres.APIPipelineStore{S: pipelineStore},
+		Chats: api.NewAssistantChatTranscript(apiConversations,
+			postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
+			apiProjects),
+		Logger:                 d.API.Logger,
+		Cooldown:               d.CatchUpGenCooldown,
+		MaxModelCallsPerWindow: d.CatchUpGenPer10M,
+	})
 	api.RegisterCatchUp(handler,
 		postgres.APICatchUpStore{
 			S:       &postgres.CatchUpStore{Pool: d.Pool},
 			Denials: projectStore,
 		},
 		apiConversations,
-		// The generator (ADR-0078 § Migration + Trigger note): the same broker
-		// the assistant speaks through, reading the caller's own run/node/pipeline/
-		// transcript reads and writing through the store's own upsert and
-		// append. `POST /catch-up/visits` schedules a pass after it answers —
-		// the list read does not, and neither does an item read; the sidebar
-		// badge reads the list on every page and a list trigger spent a model
-		// call per page load. With no egress triple the builder returns nil
-		// and the routes stay the pure reads they were — an empty page, never
-		// a stub narrative.
-		api.WithTourGenerator(api.BuildCatchUpGenerator(api.CatchUpGenDeps{
-			Broker:    asstBroker,
-			CatchUp:   postgres.APICatchUpGenerator{S: &postgres.CatchUpStore{Pool: d.Pool}},
-			Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
-			Pipelines: postgres.APIPipelineStore{S: pipelineStore},
-			Chats: api.NewAssistantChatTranscript(apiConversations,
-				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
-				apiProjects),
-			Logger:                 d.API.Logger,
-			Cooldown:               d.CatchUpGenCooldown,
-			MaxModelCallsPerWindow: d.CatchUpGenPer10M,
-		})),
+		api.WithTourGenerator(catchUpGen),
 		// The recap (T13b): the same broker, asked once per request, behind
 		// the assistant's own per-principal throttle. A recap is one reader's
 		// own row, so a browser may ask for it; a tour is shared, so no
@@ -1650,6 +1762,39 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		}()
 	}
 
+	// ADR-0078 § Trigger, the completion sweep: a run that finishes gets its
+	// tour without anybody opening the Catch up page (TASK T13 — "when a run
+	// finishes… write or rewrite its tour"). One goroutine per replica, every
+	// COMMUNICATION_CATCHUP_GEN_SWEEP (2 m default, 0 = the visit trigger
+	// alone). It needs no lock between replicas and no gate on the pipeline
+	// scheduler: the tour write is idempotent on the run's claim (the
+	// generator re-reads CatchUpRunAlreadyToured before spending a completion
+	// and again before writing), and the sweep's pass shares the generator's
+	// one per-replica model-call cap and one per-run cooldown with the visit
+	// pass — whatever the mix of triggers, the deployment's cap is the cap.
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	if d.CatchUpGenSweep > 0 && catchUpGen != nil {
+		runSweep := d.catchUpGenSweepRunner
+		if runSweep == nil {
+			sweeper, every := catchUpGen, d.CatchUpGenSweep
+			runSweep = func(ctx context.Context) error {
+				sw, ok := sweeper.(catchUpSweeper)
+				if !ok {
+					return errors.New("serve: the catch-up generator has no sweep face")
+				}
+				return runCatchUpGenSweeper(ctx, sw, every,
+					log.With(slog.String("component", "catch-up-sweep")))
+			}
+		}
+		go func() {
+			if err := runSweep(sweepCtx); err != nil {
+				log.Error("catch-up sweep ticker stopped", slog.String("error", err.Error()))
+				return
+			}
+			log.Info("catch-up sweep ticker stopped")
+		}()
+	}
+
 	var closeOnce sync.Once
 	closeStack := func() {
 		closeOnce.Do(func() {
@@ -1657,6 +1802,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			stopDriver()
 			stopTick()
 			stopPurge()
+			stopSweep()
 			wakes.Close()
 		})
 	}

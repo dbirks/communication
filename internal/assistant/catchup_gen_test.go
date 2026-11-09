@@ -30,6 +30,10 @@ import (
 type fakeCatchUpSource struct {
 	mu          sync.Mutex
 	cands       []CatchUpCandidate
+	sweep       []CatchUpSweepCandidate
+	sweepErr    error
+	sweepCalls  int
+	toured      map[string]bool // run id -> a tour already claims it
 	facts       CatchUpRunFacts
 	existing    CatchUpExistingItem
 	candErr     error
@@ -38,6 +42,34 @@ type fakeCatchUpSource struct {
 	gotProjects []string
 	gotKeys     []string
 	calls       int
+}
+
+func (s *fakeCatchUpSource) RunAlreadyToured(_ context.Context, runID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toured[runID], nil
+}
+
+func (s *fakeCatchUpSource) markToured(runID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toured == nil {
+		s.toured = map[string]bool{}
+	}
+	s.toured[runID] = true
+}
+
+func (s *fakeCatchUpSource) SweepCandidates(context.Context) ([]CatchUpSweepCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepCalls++
+	return s.sweep, s.sweepErr
+}
+
+func (s *fakeCatchUpSource) snapshotSweepCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sweepCalls
 }
 
 func (s *fakeCatchUpSource) CandidateRuns(_ context.Context, _ Caller, projectIDs []string) ([]CatchUpCandidate, error) {
@@ -79,11 +111,15 @@ func (s *fakeCatchUpSource) RunFacts(_ context.Context, _ Caller, runID string) 
 	return f, nil
 }
 
-// fakeCatchUpTourWriter records every tour that survived validation.
+// fakeCatchUpTourWriter records every tour that survived validation. claimed
+// (optional) is told the run id of each tour that was written — the test
+// stand-in for the claim row a real append leaves behind, which is what the
+// NEXT generator instance (the sibling replica) reads as RunAlreadyToured.
 type fakeCatchUpTourWriter struct {
-	mu     sync.Mutex
-	writes []CatchUpTourWrite
-	err    error
+	mu      sync.Mutex
+	writes  []CatchUpTourWrite
+	err     error
+	claimed func(runID string)
 }
 
 func (w *fakeCatchUpTourWriter) WriteCatchUpTour(_ context.Context, _ Caller, tour CatchUpTourWrite) error {
@@ -93,6 +129,9 @@ func (w *fakeCatchUpTourWriter) WriteCatchUpTour(_ context.Context, _ Caller, to
 		return w.err
 	}
 	w.writes = append(w.writes, tour)
+	if w.claimed != nil {
+		w.claimed(tour.RunID)
+	}
 	return nil
 }
 
@@ -804,5 +843,470 @@ func TestCatchUpPromptNamesTheRules(t *testing.T) {
 	raw := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`, `"totally_new_member":1`)
 	if _, err := ParseCatchUpAnswer(raw); err != nil {
 		t.Fatalf("unknown member refused instead of ignored: %v", err)
+	}
+}
+
+// --- the completion sweep (ADR-0078 § Trigger) ---------------------------
+
+// catchUpSweepFixture wires a generator whose SOURCE has sweep candidates;
+// the visit path (CandidateRuns) is present but must stay untouched.
+func catchUpSweepFixture(t *testing.T, answer string, sweep ...CatchUpSweepCandidate) (*CatchUpGenerator, *fakeNotesModel, *fakeCatchUpSource, *fakeCatchUpTourWriter, *notesClock) {
+	t.Helper()
+	model := &fakeNotesModel{answer: answer}
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(), sweep: sweep}
+	writer := &fakeCatchUpTourWriter{}
+	clock := &notesClock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)}
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Now: clock.Now, Spawn: func(f func()) { f() },
+	})
+	if gen == nil {
+		t.Fatal("nil generator for fully wired sweep deps")
+	}
+	return gen, model, source, writer, clock
+}
+
+func catchUpSweepCandidate(runID string) CatchUpSweepCandidate {
+	return CatchUpSweepCandidate{
+		Caller:    Caller{UserID: "u-author", OrganizationID: "o1"},
+		Candidate: CatchUpCandidate{RunID: runID, ProjectID: "p1"},
+	}
+}
+
+// TASK T13: "When a run finishes… write its tour." A finished run gets its
+// story from the sweep alone — nobody opened the page, no visit was recorded,
+// and the caller-scoped candidate read is never asked.
+func TestCatchUpCompletionSweepWritesWithoutAVisit(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	gen, model, source, writer, _ := catchUpSweepFixture(t, answer, catchUpSweepCandidate("run-done"))
+	gen.CatchUpCompletionSweep(context.Background())
+	if got := len(writer.snapshot()); got != 1 {
+		t.Fatalf("writes = %d, want the finished run's tour", got)
+	}
+	if w := writer.snapshot()[0]; w.RunID != "run-done" {
+		t.Fatalf("write = %+v, want the swept run", w)
+	}
+	if calls := model.callCount(); calls != 1 {
+		t.Fatalf("model calls = %d, want 1", calls)
+	}
+	if source.calls != 0 {
+		t.Fatalf("the sweep used the visit candidate read %d times, want 0", source.calls)
+	}
+}
+
+// The sweep spends from the ONE per-replica purse: a visit pass that filled
+// the cap starves the sweep, and past the window the sweep refills it — the
+// triggers mix, the deployment's cap is the cap.
+func TestCatchUpSweepSharesTheModelCallCap(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	model := &fakeNotesModel{answer: answer}
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(),
+		cands: []CatchUpCandidate{{RunID: "visit-run", ProjectID: "p1"}},
+		sweep: []CatchUpSweepCandidate{catchUpSweepCandidate("sweep-run")}}
+	writer := &fakeCatchUpTourWriter{}
+	clock := &notesClock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)}
+	perWindow := 1
+	var logs bytes.Buffer
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Now: clock.Now, Spawn: func(f func()) { f() },
+		Cooldown:               2 * time.Minute,
+		Log:                    slog.New(slog.NewTextHandler(&logs, nil)),
+		MaxModelCallsPerWindow: &perWindow,
+	})
+	// The visit pass spends the only slot the window allows…
+	gen.Pass(context.Background(), Caller{UserID: "u1", OrganizationID: "o1"}, nil)
+	// …and the sweep, minutes later, is refused by the SAME cap: no second
+	// completion, one honest log line.
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 1 {
+		t.Fatalf("model calls = %d, want 1: the sweep must spend from the shared cap", calls)
+	}
+	if !strings.Contains(logs.String(), "skipped by the model-call cap") {
+		t.Fatalf("the cap refused the sweep silently:\n%s", logs.String())
+	}
+	// Past the window the budget refills and the sweep pays for it.
+	clock.Advance(CatchUpGenModelCallWindow + time.Minute)
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want the sweep served after the window rolled", calls)
+	}
+	// And two sweeps on one beat do not duplicate inside the replica either:
+	// the per-run cooldown is shared with the pass, so the second sweep asks
+	// about "sweep-run" not at all.
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want the second sweep cooled down", calls)
+	}
+}
+
+// Two replicas, one story. The tour write is idempotent on the claim: once
+// replica A's append has named the run, replica B's sweep reads
+// RunAlreadyToured and skips — no second completion, no second version,
+// nothing for the reader to have to choose between.
+func TestCatchUpTwoReplicaSweepsTellOneStory(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	source := &fakeCatchUpSource{facts: catchUpTestFacts()}
+	// The claim table both replicas share: an append marks the run told.
+	sharedWriter := &fakeCatchUpTourWriter{}
+	sharedWriter.claimed = func(runID string) { source.markToured(runID) }
+	newReplica := func() *CatchUpGenerator {
+		// Each replica gets its own cooldown map and cap list — the point is
+		// that NEITHER dedup state is shared; only the store's claim is.
+		return NewCatchUpGenerator(CatchUpDeps{
+			Model:  &fakeNotesModel{answer: answer},
+			Source: source, Writer: sharedWriter,
+			Spawn:    func(f func()) { f() },
+			Cooldown: time.Minute,
+		})
+	}
+	source.sweep = []CatchUpSweepCandidate{catchUpSweepCandidate("run-1")}
+	newReplica().CatchUpCompletionSweep(context.Background())
+	newReplica().CatchUpCompletionSweep(context.Background())
+	if got := len(sharedWriter.snapshot()); got != 1 {
+		t.Fatalf("writes = %d, want the ONE tour the claim allows", got)
+	}
+}
+
+// A source without the sweep face (the pre-T13 deployment) sweeps to nothing
+// without panicking; the visit trigger keeps working.
+func TestCatchUpSweepOnASourceWithoutTheFaceIsQuiet(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	_, model, _, writer, _ := catchUpSweepFixture(t, answer)
+	g := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: &catchUpSourceNoSweep{}, Writer: writer,
+		Spawn: func(f func()) { f() },
+	})
+	g.CatchUpCompletionSweep(context.Background()) // must not panic, must not call
+	if calls := model.callCount(); calls != 0 {
+		t.Fatalf("model calls = %d, want 0 without a sweep face", calls)
+	}
+	// The same generator still serves a visit pass.
+	g.source = &fakeCatchUpSource{facts: catchUpTestFacts(),
+		cands: []CatchUpCandidate{{RunID: "r1", ProjectID: "p1"}}}
+	g.Pass(context.Background(), Caller{}, nil)
+	if calls := model.callCount(); calls != 1 {
+		t.Fatalf("model calls = %d, want the visit trigger unaffected", calls)
+	}
+}
+
+// catchUpSourceNoSweep is the pre-T13 reader: every caller-facing method,
+// and no sweep face at all (not a panicking one — absence).
+type catchUpSourceNoSweep struct{}
+
+func (s *catchUpSourceNoSweep) CandidateRuns(context.Context, Caller, []string) ([]CatchUpCandidate, error) {
+	return nil, nil
+}
+func (s *catchUpSourceNoSweep) RunFacts(context.Context, Caller, string) (CatchUpRunFacts, error) {
+	return catchUpTestFacts(), nil
+}
+func (s *catchUpSourceNoSweep) ExistingItem(context.Context, Caller, string, string) (CatchUpExistingItem, error) {
+	return CatchUpExistingItem{}, nil
+}
+func (s *catchUpSourceNoSweep) RunAlreadyToured(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+// The no-generation deployment: cap 0 silences the sweep too, without even
+// reading candidates.
+func TestCatchUpSweepRespectsZeroCap(t *testing.T) {
+	answer := catchUpAnswerJSON(`[{"id":"a","title":"T","narrative":"N.","importance":"routine"}]`)
+	model := &fakeNotesModel{answer: answer}
+	source := &fakeCatchUpSource{facts: catchUpTestFacts(),
+		sweep: []CatchUpSweepCandidate{catchUpSweepCandidate("r1")}}
+	writer := &fakeCatchUpTourWriter{}
+	off := 0
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Spawn:                  func(f func()) { f() },
+		MaxModelCallsPerWindow: &off,
+	})
+	gen.CatchUpCompletionSweep(context.Background())
+	if calls := model.callCount(); calls != 0 || len(writer.snapshot()) != 0 {
+		t.Fatalf("cap 0 swept: calls=%d writes=%d", calls, len(writer.snapshot()))
+	}
+	if got := source.snapshotSweepCalls(); got != 0 {
+		t.Fatalf("sweep candidate read = %d, want 0 with generation disabled", got)
+	}
+}
+
+// --- the bug story (ADR-0078 § Structure and importance) -----------------
+
+func catchUpBugFacts() CatchUpRunFacts {
+	facts := catchUpTestFacts()
+	facts.Nodes = []CatchUpNodeFact{
+		{Key: "implement", Status: "succeeded"},
+		{Key: "tests", Status: "failed", ErrorClass: "test_failure", Error: "checkout timed out"},
+		{Key: "tests-retry", Status: "succeeded"},
+	}
+	return facts
+}
+
+func catchUpBeatAnswer(stops ...string) string {
+	return catchUpAnswerJSON("[" + strings.Join(stops, ",") + "]")
+}
+
+// The three beats of the failing model answer, out of story order.
+var (
+	catchUpFixStop   = `{"id":"fix","title":"The fix landed","kind":"FIX","narrative":"The retry guard shipped.","importance":"worth_a_look"}`
+	catchUpFoundStop = `{"id":"found","title":"How we found the crash","kind":"BUG \u00b7 FOUND","narrative":"The nightly went red.","importance":"worth_a_look"}`
+	catchUpCauseStop = `{"id":"cause","title":"Why the checkout broke","narrative":"A stale fixture token was the cause.","importance":"worth_a_look"}`
+)
+
+// When the tour a model wrote tells the fix before the finding, the generator
+// re-asks ONCE (the proposal.go pattern) naming the defect, and writes the
+// repaired tour.
+func TestCatchUpBugStoryReasksOnceWhenBeatsAreOutOfOrder(t *testing.T) {
+	bad := catchUpBeatAnswer(catchUpFixStop, catchUpFoundStop, catchUpCauseStop)
+	good := catchUpBeatAnswer(catchUpFoundStop, catchUpCauseStop, catchUpFixStop)
+	model := &fakeNotesModel{answer: bad}
+	model.delay = func() {
+		model.mu.Lock()
+		model.answer = good
+		model.mu.Unlock()
+	}
+	source := &fakeCatchUpSource{facts: catchUpBugFacts(), cands: []CatchUpCandidate{{RunID: "run-1", ProjectID: "p1"}}}
+	writer := &fakeCatchUpTourWriter{}
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Spawn: func(f func()) { f() },
+	})
+	cand := CatchUpCandidate{RunID: "run-1", ProjectID: "p1"}
+	if err := gen.GenerateRun(context.Background(), Caller{}, cand); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want the answer plus exactly one repair", calls)
+	}
+	_, user, _ := model.snapshot()
+	if !strings.Contains(user, "does not tell the bug story") || !strings.Contains(user, "out of order") {
+		t.Fatalf("the re-ask does not name the defect:\n%s", user)
+	}
+	w := writer.snapshot()[0]
+	if len(w.Stops) != 3 {
+		t.Fatalf("stops = %+v", w.Stops)
+	}
+	if w.Stops[0].ID != "found" || w.Stops[1].ID != "cause" || w.Stops[2].ID != "fix" {
+		t.Fatalf("the repaired tour is not in story order: %+v", w.Stops)
+	}
+	if strings.Contains(w.Reason, "beat structure incomplete") {
+		t.Fatalf("a repaired tour was marked as incomplete: %q", w.Reason)
+	}
+}
+
+// The correct beats are accepted as-is: enforcement must cost nothing when
+// the model already told the story right.
+func TestCatchUpBugStoryAcceptedWhenToldRight(t *testing.T) {
+	good := catchUpBeatAnswer(catchUpFoundStop, catchUpCauseStop, catchUpFixStop)
+	f := newCatchUpFixture(t, good, CatchUpCandidate{RunID: "run-1", ProjectID: "p1"}, catchUpBugFacts())
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, CatchUpCandidate{RunID: "run-1", ProjectID: "p1"}); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	if calls := f.model.callCount(); calls != 1 {
+		t.Fatalf("model calls = %d, want no re-ask for a tour already in order", calls)
+	}
+}
+
+// A run whose facts show no failure→fix earns no constraint at all: the same
+// single shapeless beat is accepted with zero re-asks.
+func TestCatchUpNonBugRunHasNoBeatConstraint(t *testing.T) {
+	plain := catchUpBeatAnswer(`{"id":"docs","title":"README refreshed","narrative":"Copy edit.","importance":"routine"}`)
+	facts := catchUpTestFacts() // implement succeeded, tests failed LAST: no later success
+	f := newCatchUpFixture(t, plain, catchUpTestCandidate(), facts)
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	if calls := f.model.callCount(); calls != 1 {
+		t.Fatalf("model calls = %d, want 1: non-bug runs are not policed", calls)
+	}
+	if w := f.writer.snapshot()[0]; strings.Contains(w.Reason, "beat structure incomplete") {
+		t.Fatalf("a non-bug run was marked for beats: %q", w.Reason)
+	}
+}
+
+// If even the re-ask does not tell the story, the tour is written anyway —
+// the version reason says the structure is incomplete, and the log says so.
+func TestCatchUpBugStoryMarkedWhenTheRepairFails(t *testing.T) {
+	bad := catchUpBeatAnswer(catchUpFixStop, catchUpFoundStop, catchUpCauseStop)
+	var logs bytes.Buffer
+	model := &fakeNotesModel{answer: bad}
+	source := &fakeCatchUpSource{facts: catchUpBugFacts(), cands: []CatchUpCandidate{{RunID: "run-1", ProjectID: "p1"}}}
+	writer := &fakeCatchUpTourWriter{}
+	gen := NewCatchUpGenerator(CatchUpDeps{
+		Model: model, Source: source, Writer: writer,
+		Spawn: func(f func()) { f() },
+		Log:   slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err := gen.GenerateRun(context.Background(), Caller{}, CatchUpCandidate{RunID: "run-1", ProjectID: "p1"}); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	if calls := model.callCount(); calls != 2 {
+		t.Fatalf("model calls = %d, want exactly one repair and no more", calls)
+	}
+	if got := len(writer.snapshot()); got != 1 {
+		t.Fatalf("writes = %d, want the tour still written (better incomplete than absent)", got)
+	}
+	w := writer.snapshot()[0]
+	if !strings.Contains(w.Reason, "beat structure incomplete") {
+		t.Fatalf("reason does not mark the honest state: %q", w.Reason)
+	}
+	if len(w.Reason) > CatchUpGenReasonMaxChars {
+		t.Fatalf("marked reason over the bound: %d", len(w.Reason))
+	}
+	if !strings.Contains(logs.String(), "beats still incomplete") {
+		t.Fatalf("the write was not logged honestly:\n%s", logs.String())
+	}
+}
+
+// The detection rule and the beat rule as units: which facts are a bug story
+// (failed→succeeded nodes, or a prior failed run in the group — never a run
+// that is still only the failure), and which beat lists satisfy it.
+func TestCatchUpBugStoryDetectionAndBeats(t *testing.T) {
+	failedThenSuccess := catchUpBugFacts()
+	stillBroken := catchUpTestFacts() // tests failed with nothing after
+	allGreen := catchUpBugFacts()
+	allGreen.Nodes = []CatchUpNodeFact{{Key: "implement", Status: "succeeded"}}
+	for _, tc := range []struct {
+		name string
+		f    CatchUpRunFacts
+		c    CatchUpCandidate
+		want bool
+	}{
+		{"failed node then success", failedThenSuccess, CatchUpCandidate{}, true},
+		{"failed node last", stillBroken, CatchUpCandidate{}, false},
+		{"no failure at all", allGreen, CatchUpCandidate{}, false},
+		{"prior failed run, this one completed", allGreen, CatchUpCandidate{PriorRunFailed: true}, true},
+		{"prior failed run, this one failed too", func() CatchUpRunFacts { f := allGreen; f.Status = "failed"; return f }(),
+			CatchUpCandidate{PriorRunFailed: true}, false},
+		{"failed run with no prior, cancelled", func() CatchUpRunFacts { f := allGreen; f.Status = "cancelled"; return f }(),
+			CatchUpCandidate{PriorRunFailed: true}, false},
+	} {
+		if got := catchUpBugStoryFacts(tc.f, tc.c); got != tc.want {
+			t.Errorf("%s: required = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	stop := func(id, kind, title string) CatchUpStopDraft {
+		return CatchUpStopDraft{ID: id, Kind: kind, Title: title, Importance: "worth_a_look"}
+	}
+	inOrder := []CatchUpStopDraft{
+		stop("found", "BUG \u00b7 FOUND", "How we found the crash"),
+		stop("cause", "CAUSE", "Why the checkout broke"),
+		stop("fixed", "BUG \u00b7 FIXED", "The fix landed"),
+	}
+	if d := catchUpBeatDefect(inOrder, false); d != "" {
+		t.Errorf("in-order story reported a defect: %q", d)
+	}
+	if d := catchUpBeatDefect([]CatchUpStopDraft{inOrder[2], inOrder[0], inOrder[1]}, false); !strings.Contains(d, "out of order") {
+		t.Errorf("shuffled beats: %q, want out of order", d)
+	}
+	if d := catchUpBeatDefect([]CatchUpStopDraft{inOrder[0], inOrder[2]}, false); !strings.Contains(d, "no cause beat") {
+		t.Errorf("missing cause: %q", d)
+	}
+	// The follow-up beat is owed exactly when the facts carry one.
+	left := catchUpBugFacts()
+	left.Lines = []ChatLine{{Author: "dev", Text: "follow-up: wire the alert rule next week"}}
+	if !catchUpFactsCarryFollowUp(left) {
+		t.Error("a thread naming the follow-up did not carry one")
+	}
+	if catchUpFactsCarryFollowUp(catchUpBugFacts()) {
+		t.Error("a run with no follow-up material was told it owed a follow-up beat")
+	}
+	if d := catchUpBeatDefect(inOrder, true); !strings.Contains(d, "no follow-up beat") {
+		t.Errorf("facts with a follow-up, tour without one: %q", d)
+	}
+	// A skipped node is follow-up material the server can see without prose.
+	skipped := catchUpBugFacts()
+	skipped.Nodes = append(skipped.Nodes, CatchUpNodeFact{Key: "deploy", Status: "skipped"})
+	if !catchUpFactsCarryFollowUp(skipped) {
+		t.Error("a skipped node did not count as work left open")
+	}
+}
+
+// --- the importance floor (ADR-0078 § Structure and importance) ----------
+
+// Each README signal, detected from the facts the server holds, must raise a
+// must_know even when the model ranked everything routine — and say which
+// signal it did it for.
+func TestCatchUpImportanceFloorPerSignal(t *testing.T) {
+	answer := catchUpBeatAnswer(
+		`{"id":"work","title":"The change landed","narrative":"It is done.","importance":"routine"}`,
+		`{"id":"side","title":"A small rename","narrative":"Cosmetic.","importance":"routine"}`)
+	for _, tc := range []struct {
+		name    string
+		line    string
+		mutate  func(*CatchUpRunFacts)
+		wantSig string
+	}{
+		{"migration", "created db/migrations/0030_catchup.sql", nil, "data migration"},
+		{"migrations root", "touched migrations/00031_tours.sql", nil, "data migration"},
+		{"auth path", "moved internal/auth/session.go handlers", nil, "auth/security path"},
+		{"security path", "rewrote docs/security/threat-model.md", nil, "auth/security path"},
+		{"secrets path", "rotated keys under worker/secrets/ mount", nil, "auth/security path"},
+		{"api spec", "regenerated api/openapi.yaml", nil, "public API spec"},
+		{"dependency", "bumped go.mod and pnpm-lock.yaml", nil, "new dependency"},
+		{"skipped test", `wrapped the flaky case in t.Skip("timeout")`, nil, "tests skipped or deleted"},
+		{"skipped ui test", "the suite now uses case.skip( for it", nil, "tests skipped or deleted"},
+		{"push to main", "", func(f *CatchUpRunFacts) { f.Branch = "main" }, "push straight to main"},
+		{"revert", "the bad commit was reverted", nil, "reverted failed run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := catchUpBugFacts()
+			if tc.line != "" {
+				facts.Lines = []ChatLine{{Author: "ci", Text: tc.line}}
+			}
+			if tc.mutate != nil {
+				tc.mutate(&facts)
+			}
+			f := newCatchUpFixture(t, answer, catchUpTestCandidate(), facts)
+			if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+				t.Fatalf("GenerateRun: %v", err)
+			}
+			w := f.writer.snapshot()[0]
+			if w.Stops[0].Importance != "must_know" {
+				t.Fatalf("floor did not raise the stop: %+v", w.Stops)
+			}
+			if w.Stops[1].Importance != "routine" {
+				t.Fatalf("floor raised more than the most relevant stop: %+v", w.Stops)
+			}
+			if !strings.Contains(w.Reason, "importance floor") || !strings.Contains(w.Reason, tc.wantSig) {
+				t.Fatalf("reason does not name the signal: %q (want %s)", w.Reason, tc.wantSig)
+			}
+			if len(w.Reason) > CatchUpGenReasonMaxChars {
+				t.Fatalf("reason over bound: %d", len(w.Reason))
+			}
+		})
+	}
+}
+
+// The floor is a floor, not a veto and not a hair-trigger: a tour that
+// already ranks something must_know keeps the model's judgement, and a run
+// whose facts carry no signal is left exactly as written.
+func TestCatchUpImportanceFloorHoldsWhenNotNeeded(t *testing.T) {
+	// The model already ranked a must_know.
+	ranked := catchUpBeatAnswer(
+		`{"id":"work","title":"The change landed","narrative":"It is done.","importance":"must_know"}`,
+		`{"id":"side","title":"A small rename","narrative":"Cosmetic.","importance":"routine"}`)
+	facts := catchUpBugFacts()
+	facts.Lines = []ChatLine{{Author: "ci", Text: "created db/migrations/0030_catchup.sql"}}
+	f := newCatchUpFixture(t, ranked, catchUpTestCandidate(), facts)
+	if err := f.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	w := f.writer.snapshot()[0]
+	if strings.Contains(w.Reason, "importance floor") {
+		t.Fatalf("the floor fired over a model that had already ranked: %q", w.Reason)
+	}
+	// No signal, no promotion: the plain facts carry none of the README set.
+	plain := catchUpBeatAnswer(
+		`{"id":"work","title":"The change landed","narrative":"It is done.","importance":"routine"}`)
+	boring := catchUpBugFacts()
+	f2 := newCatchUpFixture(t, plain, catchUpTestCandidate(), boring)
+	if err := f2.gen.GenerateRun(context.Background(), Caller{}, catchUpTestCandidate()); err != nil {
+		t.Fatalf("GenerateRun: %v", err)
+	}
+	w2 := f2.writer.snapshot()[0]
+	if w2.Stops[0].Importance != "routine" || strings.Contains(w2.Reason, "importance floor") {
+		t.Fatalf("a signal-free run was floored: %+v %q", w2.Stops, w2.Reason)
 	}
 }

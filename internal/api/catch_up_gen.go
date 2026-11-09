@@ -77,6 +77,24 @@ type CatchUpGroupView struct {
 	TourHead       int
 	Reason         string
 	HeadStops      []CatchUpHeadStopView
+	// PriorRunFailed is § Structure's failure fact as the store reads it: a
+	// run this item carries ended failed, or the item's own resolution says
+	// run_failed. The generator cannot see it anywhere else — it is the
+	// difference between "a rewrite" and "the fix landing after the failure".
+	PriorRunFailed bool
+}
+
+// CatchUpSweepCandidateView is one run the completion sweep owes a tour, with
+// the caller the generator must act as: the human the run's own row
+// attributes — triggered_by, else the author of the schedule or issue-trigger
+// row that fired it, else the same walk up the bounded parent chain (the
+// ADR-0062 attribution rule, resolved in the sweep read). A run whose human
+// cannot be named is not swept at all: the generator will not forge a
+// submitter to hang a write on, the same refusal agentturn_seams states for
+// agent turns.
+type CatchUpSweepCandidateView struct {
+	Candidate CatchUpCandidateView
+	Caller    Caller
 }
 
 // CatchUpRefsWrite is the generator's claim set: the numbers and SHAs the
@@ -129,6 +147,20 @@ type CatchUpStopWrite struct {
 type CatchUpGenStore interface {
 	CatchUpCandidates(ctx context.Context, c Caller, projectIDs []string,
 		window time.Duration, limit int) ([]CatchUpCandidateView, error)
+	// CatchUpSweepCandidates is the completion sweep's server-owned candidate
+	// read (ADR-0078 § Trigger): the same window, limit and unclaimed rules as
+	// CatchUpCandidates, applied to every project rather than one caller's —
+	// which is sound for the sweep and only for the sweep, because the read
+	// hands back, per candidate, the attributed human every later read and
+	// write is issued as. The caller-scoped rule every browser-facing read
+	// carries is not replaced here, it is PERSONALISED.
+	CatchUpSweepCandidates(ctx context.Context, window time.Duration, limit int) ([]CatchUpSweepCandidateView, error)
+	// CatchUpRunAlreadyToured reports whether a tour version claiming the run
+	// was written after the run's newest move — the idempotency question two
+	// replicas ask before either tells one story twice. It answers a boolean
+	// about a run id the asking side already proved visible; it returns no
+	// rows of anybody's data.
+	CatchUpRunAlreadyToured(ctx context.Context, runID string) (bool, error)
 	// CatchUpItemForGroup reads the work item a grouping key names; the
 	// boolean is false when no piece of work carries it (yet).
 	CatchUpItemForGroup(ctx context.Context, c Caller, projectID,
@@ -185,6 +217,16 @@ type CatchUpGeneratorTrigger interface {
 	CatchUpVisitRecorded(ctx context.Context, c Caller, projectIDs []string)
 }
 
+// CatchUpSweeper is the other trigger — not a route's, but the serve
+// ticker's (ADR-0078 § Trigger): one goroutine per replica calls it every
+// COMMUNICATION_CATCHUP_GEN_SWEEP, and the runs that finished untoured get
+// their stories without anybody opening the page. It is a separate interface
+// from the visit trigger on purpose: nothing a browser route holds gains the
+// power to run the whole fleet's backlog by asking.
+type CatchUpSweeper interface {
+	CatchUpCompletionSweep(ctx context.Context)
+}
+
 // BuildCatchUpGenerator returns the trigger, or nil when this deployment
 // cannot generate. A nil trigger is the honest absence, not a failure — the
 // same rule BuildAssistantNotesGenerator states.
@@ -223,6 +265,19 @@ func (t *catchUpTrigger) CatchUpVisitRecorded(ctx context.Context, c Caller, pro
 	t.gen.CatchUpVisitRecorded(ctx, catchUpAsstCaller(c), projectIDs)
 }
 
+// The built generator carries the sweep face — that is how serve's ticker
+// reaches it (see CatchUpSweeper); the compile-time proof lives here because
+// a silently-missing method would only surface as a serve-side type-assert
+// failure at runtime.
+var _ CatchUpSweeper = (*catchUpTrigger)(nil)
+
+// CatchUpCompletionSweep runs one sweep synchronously — the serve ticker IS
+// the background already; spawning here would only let beats pile up on a
+// slow model. The pass itself caps what one tick spends.
+func (t *catchUpTrigger) CatchUpCompletionSweep(ctx context.Context) {
+	t.gen.CatchUpCompletionSweep(ctx)
+}
+
 // --- the recap generator (POST /catch-up/recap) --------------------------
 
 // CatchUpRecapDeps is the recap route's wiring. Broker is the SAME egress the
@@ -254,6 +309,11 @@ func BuildCatchUpRecapGenerator(deps CatchUpRecapDeps) CatchUpRecapGenerator {
 }
 
 // --- the reader ----------------------------------------------------------
+
+// catchUpGenReader is the generator's reader. It implements both faces the
+// generator knows: the caller-scoped CatchUpSource and the sweep's
+// CatchUpSweepSource.
+var _ assistant.CatchUpSweepSource = (*catchUpGenReader)(nil)
 
 type catchUpGenReader struct {
 	store     CatchUpGenStore
@@ -305,6 +365,7 @@ func (r *catchUpGenReader) ExistingItem(ctx context.Context, c assistant.Caller,
 	item := assistant.CatchUpExistingItem{
 		ItemID: row.ItemID, ConversationID: row.ConversationID,
 		TourHead: row.TourHead, HeadReason: row.Reason,
+		PriorRunFailed: row.PriorRunFailed,
 	}
 	for _, st := range row.HeadStops {
 		item.HeadStops = append(item.HeadStops, assistant.CatchUpExistingStop{
@@ -313,6 +374,44 @@ func (r *catchUpGenReader) ExistingItem(ctx context.Context, c assistant.Caller,
 		})
 	}
 	return item, nil
+}
+
+// SweepCandidates serves the completion sweep's candidate read, mapping each
+// store row to an assistant candidate plus the caller it is generated AS (the
+// attributed human the sweep read resolved).
+func (r *catchUpGenReader) SweepCandidates(ctx context.Context) ([]assistant.CatchUpSweepCandidate, error) {
+	rows, err := r.store.CatchUpSweepCandidates(ctx, assistant.CatchUpGenWindow,
+		4*assistant.CatchUpGenMaxPerPass)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]assistant.CatchUpSweepCandidate, 0, len(rows))
+	for _, row := range rows {
+		cand := assistant.CatchUpCandidate{
+			RunID: row.Candidate.RunID, ProjectID: row.Candidate.ProjectID,
+			ItemID: row.Candidate.ItemID, ConversationID: row.Candidate.ConversationID,
+			TourHead: row.Candidate.TourHead, HeadReason: row.Candidate.HeadReason,
+		}
+		for _, st := range row.Candidate.HeadStops {
+			cand.HeadStops = append(cand.HeadStops, assistant.CatchUpExistingStop{
+				ID: st.ID, Title: st.Title, Kind: st.Kind, Importance: st.Importance,
+				AddedInVersion: st.AddedInVersion,
+			})
+		}
+		out = append(out, assistant.CatchUpSweepCandidate{
+			Caller:    catchUpAsstCaller(row.Caller),
+			Candidate: cand,
+		})
+	}
+	return out, nil
+}
+
+// RunAlreadyToured is the two-replica idempotency question, answered by the
+// claim table the tour append itself writes. It carries no caller: the answer
+// is one boolean about a run the asking side already proved visible, and the
+// store read joins nothing else.
+func (r *catchUpGenReader) RunAlreadyToured(ctx context.Context, runID string) (bool, error) {
+	return r.store.CatchUpRunAlreadyToured(ctx, runID)
 }
 
 // RunFacts folds one run into the generator's factual summary. A transcript

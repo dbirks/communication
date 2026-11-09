@@ -596,18 +596,36 @@ func TestCatchUpStopMinutesCountsReadableEvidence(t *testing.T) {
 // fakeCatchUpGenStore records what the generator's write path asked the store
 // to do, and serves the one grouped item its read path looks up.
 type fakeCatchUpGenStore struct {
-	mu       sync.Mutex
-	group    CatchUpGroupView
-	found    bool
-	item     CatchUpWorkItemWrite
-	runs     []string
-	appended []CatchUpStopWrite
-	itemID   string
+	mu          sync.Mutex
+	group       CatchUpGroupView
+	found       bool
+	item        CatchUpWorkItemWrite
+	runs        []string
+	appended    []CatchUpStopWrite
+	itemID      string
+	sweep       []CatchUpSweepCandidateView
+	sweepErr    error
+	sweepWindow time.Duration
+	sweepLimit  int
+	toured      map[string]bool
 }
 
 func (f *fakeCatchUpGenStore) CatchUpCandidates(context.Context, Caller, []string,
 	time.Duration, int) ([]CatchUpCandidateView, error) {
 	return nil, nil
+}
+func (f *fakeCatchUpGenStore) CatchUpSweepCandidates(_ context.Context,
+	window time.Duration, limit int) ([]CatchUpSweepCandidateView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sweepWindow, f.sweepLimit = window, limit
+	return f.sweep, f.sweepErr
+}
+func (f *fakeCatchUpGenStore) CatchUpRunAlreadyToured(_ context.Context,
+	runID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.toured[runID], nil
 }
 func (f *fakeCatchUpGenStore) CatchUpItemForGroup(_ context.Context, _ Caller,
 	_, groupKey string) (CatchUpGroupView, bool, error) {
@@ -666,4 +684,100 @@ type fakeCatchUpChats struct{}
 func (f *fakeCatchUpChats) ReadChatTranscript(context.Context, assistant.Caller,
 	string) (assistant.ChatTranscript, error) {
 	return assistant.ChatTranscript{}, nil
+}
+
+// --- the completion sweep's reader face (ADR-0078 § Trigger) -------------
+
+// The sweep read hands each candidate the attributed human it is generated
+// as; the reader must carry that caller across the boundary whole (user,
+// organization, admin flag) or the pass would run as the wrong person — or,
+// worse, as nobody.
+func TestCatchUpSweepReaderCarriesTheAttributedCaller(t *testing.T) {
+	t.Parallel()
+	store := &fakeCatchUpGenStore{sweep: []CatchUpSweepCandidateView{{
+		Candidate: CatchUpCandidateView{
+			RunID: "run-9", ProjectID: "proj-1", TourHead: 2,
+			HeadStops: []CatchUpHeadStopView{{ID: "s1", Title: "Beat", AddedInVersion: 1}},
+		},
+		Caller: Caller{UserID: "u-author", OrganizationID: "o-1", IsOrgAdmin: true},
+	}}}
+	r := &catchUpGenReader{store: store, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	cands, err := r.SweepCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("SweepCandidates: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(cands))
+	}
+	got := cands[0]
+	if got.Caller.UserID != "u-author" || got.Caller.OrganizationID != "o-1" || !got.Caller.IsOrgAdmin {
+		t.Fatalf("caller = %+v, want the store's attributed human whole", got.Caller)
+	}
+	if got.Candidate.RunID != "run-9" || got.Candidate.TourHead != 2 ||
+		len(got.Candidate.HeadStops) != 1 || got.Candidate.HeadStops[0].ID != "s1" {
+		t.Fatalf("candidate = %+v, want the head the rewrite must inherit", got.Candidate)
+	}
+	if store.sweepWindow != assistant.CatchUpGenWindow ||
+		store.sweepLimit != 4*assistant.CatchUpGenMaxPerPass {
+		t.Fatalf("sweep read used window=%s limit=%d, want the generator's own numbers",
+			store.sweepWindow, store.sweepLimit)
+	}
+}
+
+// RunAlreadyToured is the two-replica idempotency question; the reader answers
+// it from the claim table without a caller (the answer is a bool about a run
+// the asking side already proved visible).
+func TestCatchUpSweepReaderAnswersTheClaimQuestion(t *testing.T) {
+	t.Parallel()
+	store := &fakeCatchUpGenStore{toured: map[string]bool{"told": true}}
+	r := &catchUpGenReader{store: store, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if ok, err := r.RunAlreadyToured(context.Background(), "told"); err != nil || !ok {
+		t.Fatalf("RunAlreadyToured(told) = %v, %v; want true", ok, err)
+	}
+	if ok, err := r.RunAlreadyToured(context.Background(), "untold"); err != nil || ok {
+		t.Fatalf("RunAlreadyToured(untold) = %v, %v; want false", ok, err)
+	}
+}
+
+// The grouped item read carries the failure fact the bug story is keyed on: a
+// prior failed run in the group is the store's sentence, not the model's.
+func TestCatchUpExistingItemCarriesThePriorFailure(t *testing.T) {
+	t.Parallel()
+	store := &fakeCatchUpGenStore{
+		found: true,
+		group: CatchUpGroupView{ItemID: "item-9", TourHead: 1, PriorRunFailed: true},
+	}
+	r := &catchUpGenReader{store: store, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	item, err := r.ExistingItem(context.Background(), assistant.Caller{UserID: "u1"},
+		"proj-1", "issue:repo-1:42")
+	if err != nil {
+		t.Fatalf("ExistingItem: %v", err)
+	}
+	if !item.PriorRunFailed || item.ItemID != "item-9" {
+		t.Fatalf("item = %+v, want the prior-failure fact carried", item)
+	}
+}
+
+// The built generator answers the sweep face — serve's ticker type-asserts
+// for exactly this, and the builder is the only place the assertion's
+// subject is made.
+func TestBuildCatchUpGeneratorCarriesTheSweepFace(t *testing.T) {
+	t.Parallel()
+	configured, err := assistant.NewTextOnly(assistant.Config{BaseURL: "http://127.0.0.1:1/v1"})
+	if err != nil {
+		t.Fatalf("NewTextOnly: %v", err)
+	}
+	gen := BuildCatchUpGenerator(CatchUpGenDeps{
+		Broker:    configured,
+		CatchUp:   &fakeCatchUpGenStore{},
+		Runs:      &fakeCatchUpRuns{},
+		Pipelines: &fakeCatchUpPipelines{},
+		Chats:     &fakeCatchUpChats{},
+	})
+	if gen == nil {
+		t.Fatal("fully wired deps built no generator")
+	}
+	if _, ok := gen.(CatchUpSweeper); !ok {
+		t.Fatal("the built generator has no sweep face")
+	}
 }

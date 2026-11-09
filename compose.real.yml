@@ -120,6 +120,13 @@ services:
       # the lab's gateway is rate-limited and acceptance 42452527578 watched a
       # page-load storm spend its whole budget; see serveCatchUpGenPer10M.
       COMMUNICATION_CATCHUP_GEN_PER_10M: "6"
+      # ADR-0078 § Trigger: how often this replica's completion sweep tells
+      # the runs that finished untoured (shipped default 2m; 0 disables). The
+      # lab shortens it so an acceptance spec can watch a finished run get its
+      # tour without anybody opening the Catch up page. Both replicas tick —
+      # the tour write is idempotent on the run's claim, so a swept-twice run
+      # is told once. See serveCatchUpGenSweep.
+      COMMUNICATION_CATCHUP_GEN_SWEEP: 30s
 
   api-b:
     volumes:
@@ -135,3 +142,5 @@ services:
       # gateway.
       COMMUNICATION_CATCHUP_GEN_COOLDOWN: 20s
       COMMUNICATION_CATCHUP_GEN_PER_10M: "6"
+      # See api-a: the completion sweep's cadence, shortened for the lab.
+      COMMUNICATION_CATCHUP_GEN_SWEEP: 30s

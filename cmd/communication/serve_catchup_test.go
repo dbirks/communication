@@ -11,6 +11,11 @@ package main
 // stack fields they feed.
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,5 +114,128 @@ func TestServeCatchUpGenPer10MStackField(t *testing.T) {
 	}
 	if got := serveCatchUpGenPer10M(func(string) string { return "0" }); got != 0 {
 		t.Errorf("0 -> %d, want 0 (generation disabled)", got)
+	}
+}
+
+// --- the completion sweep (ADR-0078 § Trigger) ---------------------------
+
+func TestServeCatchUpGenSweepParse(t *testing.T) {
+	env := func(value string) func(string) string {
+		return func(name string) string {
+			if name != envCatchUpGenSweep {
+				return ""
+			}
+			return value
+		}
+	}
+	for _, tt := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", 2 * time.Minute},       // unset: the 2m default
+		{"   ", 2 * time.Minute},    // whitespace is unset
+		{"30s", 30 * time.Second},   // the lab's cadence
+		{"0", 0},                    // 0 disables the sweep, visits still generate
+		{"0s", 0},                   // and so does the duration spelling
+		{" 5m ", 5 * time.Minute},   // padded but valid
+		{"-5s", 2 * time.Minute},    // negative: the default, not a refusal
+		{"hourly", 2 * time.Minute}, // unparseable: the default
+		{"10", 2 * time.Minute},     // a bare number has no unit: the default
+	} {
+		if got := serveCatchUpGenSweep(env(tt.raw)); got != tt.want {
+			t.Errorf("%s=%q -> %s, want %s", envCatchUpGenSweep, tt.raw, got, tt.want)
+		}
+	}
+}
+
+// A zero-value stack never sweeps: every existing stack test carries the
+// zero, and runServe resolves the default (or the explicit 0) BEFORE building
+// the stack — the purge tick's rule, reused because the reason is the same
+// (no surprise timer against a pool a test cannot reach).
+func TestServeCatchUpGenSweepDefaultsStackField(t *testing.T) {
+	var d serveStackDeps
+	if d.CatchUpGenSweep != 0 {
+		t.Fatalf("a zero-value stack asked for %s", d.CatchUpGenSweep)
+	}
+	if got := serveCatchUpGenSweep(func(string) string { return "" }); got != defaultCatchUpGenSweepT {
+		t.Errorf("unset -> %s, want the 2m default", got)
+	}
+	var stdout, stderr bytes.Buffer
+	if got := runServe(context.Background(), []string{"--help"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("runServe(--help) = %d, want 0", got)
+	}
+	if !strings.Contains(stdout.String(), envCatchUpGenSweep) {
+		t.Errorf("usage text does not document %s", envCatchUpGenSweep)
+	}
+}
+
+// recordingSweeper is the catchUpSweeper double: it counts sweeps, can panic
+// on schedule, and signals each call.
+type recordingSweeper struct {
+	mu      sync.Mutex
+	calls   int
+	panics  map[int]bool
+	called  chan struct{}
+	lastCtx context.Context
+}
+
+func (r *recordingSweeper) CatchUpCompletionSweep(ctx context.Context) {
+	r.mu.Lock()
+	r.calls++
+	n := r.calls
+	r.lastCtx = ctx
+	p := r.panics[n]
+	r.mu.Unlock()
+	select {
+	case r.called <- struct{}{}:
+	default:
+	}
+	if p {
+		panic("sweep exploded")
+	}
+}
+
+func (r *recordingSweeper) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// TestRunCatchUpGenSweeperKeepsTickingThroughPanics: the loop's whole contract
+// against a recorder — it beats, it survives a panicking pass, and ctx
+// cancellation ends it cleanly. A sweep loop that died quietly is the T13 bug
+// wearing new clothes: finished runs silently never get stories.
+func TestRunCatchUpGenSweeperKeepsTickingThroughPanics(t *testing.T) {
+	var logs bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logs, nil))
+	sw := &recordingSweeper{panics: map[int]bool{2: true}, called: make(chan struct{}, 16)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runCatchUpGenSweeper(ctx, sw, 5*time.Millisecond, log) }()
+	for i := 0; i < 3; i++ {
+		select {
+		case <-sw.called:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("sweep %d never happened (calls=%d)", i+1, sw.count())
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runCatchUpGenSweeper after cancel = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runCatchUpGenSweeper did not return after cancel")
+	}
+	if !strings.Contains(logs.String(), "catch-up sweep panicked") {
+		t.Errorf("the panic was not logged:\n%s", logs.String())
+	}
+	if sw.count() < 3 {
+		t.Errorf("sweeps = %d, want the loop to tick past the panic", sw.count())
+	}
+	if err := runCatchUpGenSweeper(context.Background(), nil, time.Minute, nil); err == nil ||
+		!strings.Contains(err.Error(), "no generator") {
+		t.Fatalf("runCatchUpGenSweeper(nil) = %v, want a refusal naming the missing generator", err)
 	}
 }

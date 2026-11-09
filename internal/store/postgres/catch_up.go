@@ -2085,6 +2085,174 @@ func (g APICatchUpGenerator) CatchUpCandidates(ctx context.Context, c api.Caller
 	return out, nil
 }
 
+// catchUpSweepCandidatesSQL is the completion sweep's candidate read
+// (ADR-0078 § Trigger): the same terminal-and-recent, same unclaimed-or-moved
+// rules as catchUpCandidatesSQL, over every project rather than one caller's.
+// That is sound here and only here because the read does not hand back data
+// to a browser — it hands back work for the server's own assistant, and every
+// row carries the ATTRIBUTED human the generation is issued as: this run's
+// triggered_by, else the author of the schedule/issue-trigger row that fired
+// it, else the same walk up the parent chain 00005 bounds at depth 2 (the
+// ADR-0062 attribution rule, flattened into the statement). A run whose human
+// cannot be named drops out at the users JOIN: the generator refuses to forge
+// a submitter, exactly as agentturn_seams does for agent turns.
+const catchUpSweepCandidatesSQL = `
+	WITH cands AS (
+		SELECT r.id, r.project_id, r.organization_id, w.id AS item_id,
+		       COALESCE (w.conversation_id, r.source_conversation_id) AS conversation_id,
+		       r.finished_at,
+		       COALESCE (
+				   r.triggered_by, ta.created_by,
+				   p1.triggered_by, ta1.created_by,
+				   p2.triggered_by, ta2.created_by
+			       ) AS caller_id
+		FROM runs r
+		-- One claim per run: the newest one (the caller-scoped read says why).
+		LEFT JOIN LATERAL (
+			SELECT l.work_item_id
+			FROM catchup_work_item_runs l
+			WHERE l.run_id = r.id
+			ORDER BY l.added_at DESC, l.work_item_id
+			LIMIT 1
+		) AS l ON TRUE
+		LEFT JOIN catchup_work_items w
+			ON w.id = l.work_item_id AND w.project_id = r.project_id
+		LEFT JOIN runs p1 ON p1.id = r.parent_run_id
+		LEFT JOIN runs p2 ON p2.id = p1.parent_run_id
+		LEFT JOIN LATERAL (
+			SELECT CASE x.kind
+				WHEN 'schedule' THEN (SELECT s.created_by FROM schedules s WHERE s.id = x.tid)
+				WHEN 'issue' THEN (SELECT i.created_by FROM issue_triggers i WHERE i.id = x.tid)
+				END AS created_by
+			FROM (SELECT r.trigger_kind AS kind, r.trigger_id AS tid) x
+			WHERE x.tid IS NOT NULL
+		) ta ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT CASE x.kind
+				WHEN 'schedule' THEN (SELECT s.created_by FROM schedules s WHERE s.id = x.tid)
+				WHEN 'issue' THEN (SELECT i.created_by FROM issue_triggers i WHERE i.id = x.tid)
+				END AS created_by
+			FROM (SELECT p1.trigger_kind AS kind, p1.trigger_id AS tid) x
+			WHERE x.tid IS NOT NULL
+		) ta1 ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT CASE x.kind
+				WHEN 'schedule' THEN (SELECT s.created_by FROM schedules s WHERE s.id = x.tid)
+				WHEN 'issue' THEN (SELECT i.created_by FROM issue_triggers i WHERE i.id = x.tid)
+				END AS created_by
+			FROM (SELECT p2.trigger_kind AS kind, p2.trigger_id AS tid) x
+			WHERE x.tid IS NOT NULL
+		) ta2 ON TRUE
+		WHERE r.status IN ('completed','failed','cancelled','interrupted')
+		  AND r.finished_at >= now() - $1::interval
+		  AND (l.work_item_id IS NULL OR NOT EXISTS (
+			      SELECT 1 FROM catchup_tour_versions tv
+			      WHERE tv.work_item_id = w.id
+			        AND tv.created_at >= r.finished_at))
+		ORDER BY r.finished_at DESC, r.id DESC
+		LIMIT $2::int
+	)
+	SELECT c.id::text, c.project_id::text, c.item_id::text, c.conversation_id::text,
+	       COALESCE (h.version, 0)::integer,
+	       COALESCE (h.stops, '[]'::jsonb), COALESCE (h.reason, ''),
+	       u.id::text, c.organization_id::text, u.is_org_admin
+	FROM cands c
+	JOIN users u ON u.id = c.caller_id AND u.organization_id = c.organization_id
+	LEFT JOIN LATERAL (
+		SELECT tv.version, tv.stops, tv.reason
+		FROM catchup_tour_versions tv
+		WHERE tv.work_item_id = c.item_id
+		ORDER BY tv.version DESC
+		LIMIT 1
+	) AS h ON TRUE
+	ORDER BY c.finished_at DESC, c.id DESC`
+
+func (g APICatchUpGenerator) CatchUpSweepCandidates(ctx context.Context,
+	window time.Duration, limit int) ([]api.CatchUpSweepCandidateView, error) {
+	s, err := g.store()
+	if err != nil {
+		return nil, err
+	}
+	if window <= 0 {
+		window = 7 * 24 * time.Hour
+	}
+	if limit < 1 || limit > catchUpCandidateRunsMax {
+		limit = catchUpCandidateRunsMax
+	}
+	iv := fmt.Sprintf("%d seconds", int64(window.Seconds()))
+	rows, err := s.Pool.Query(ctx, catchUpSweepCandidatesSQL, iv, limit)
+	if err != nil {
+		return nil, catchUpQueryErr(err, "read catchup sweep candidates")
+	}
+	defer rows.Close()
+	out := []api.CatchUpSweepCandidateView{}
+	for rows.Next() {
+		var (
+			sweep    api.CatchUpSweepCandidateView
+			itemID   *string
+			convID   *string
+			stopsRaw []byte
+		)
+		if err := rows.Scan(&sweep.Candidate.RunID, &sweep.Candidate.ProjectID,
+			&itemID, &convID, &sweep.Candidate.TourHead, &stopsRaw,
+			&sweep.Candidate.HeadReason, &sweep.Caller.UserID,
+			&sweep.Caller.OrganizationID, &sweep.Caller.IsOrgAdmin); err != nil {
+			return nil, catchUpQueryErr(err, "scan catchup sweep candidate")
+		}
+		if itemID != nil {
+			sweep.Candidate.ItemID = *itemID
+		}
+		if convID != nil {
+			sweep.Candidate.ConversationID = *convID
+		}
+		stops, derr := decodeCatchUpStops(stopsRaw)
+		if derr != nil && len(stopsRaw) > 2 {
+			return nil, derr
+		}
+		for _, st := range stops {
+			sweep.Candidate.HeadStops = append(sweep.Candidate.HeadStops,
+				api.CatchUpHeadStopView{
+					ID: st.ID, Title: st.Title, Kind: st.Kind,
+					Importance:     string(st.Importance),
+					AddedInVersion: st.AddedInVersion,
+				})
+		}
+		out = append(out, sweep)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, catchUpQueryErr(err, "read catchup sweep candidates")
+	}
+	return out, nil
+}
+
+// catchUpRunAlreadyTouredSQL answers the sweep's idempotency question in one
+// statement, and it is deliberately the SAME predicate the candidate read
+// uses for "this run has been told": a claim row whose tour version was
+// written at or after the run's newest finish. Two replicas racing on one
+// candidate therefore answer different versions of the question only inside
+// the model-call window; the loser of that race is the replica whose sibling
+// appended first, and the loser writes nothing.
+const catchUpRunAlreadyTouredSQL = `
+	SELECT EXISTS (
+		SELECT 1
+		FROM catchup_work_item_runs l
+		JOIN runs r ON r.id = l.run_id
+		JOIN catchup_tour_versions tv ON tv.work_item_id = l.work_item_id
+		WHERE l.run_id = $1::uuid
+		  AND tv.created_at >= r.finished_at)`
+
+func (g APICatchUpGenerator) CatchUpRunAlreadyToured(ctx context.Context, runID string) (bool, error) {
+	s, err := g.store()
+	if err != nil {
+		return false, err
+	}
+	var toured bool
+	if err := s.Pool.QueryRow(ctx, catchUpRunAlreadyTouredSQL, runID).Scan(&toured); err != nil {
+		return false, catchUpQueryErr(err, "read catchup tour claim")
+	}
+	return toured, nil
+}
+
 // UpsertCatchUpWorkItem delegates to the store's keyed upsert: an explicit id
 // revises that item, a group key revises the item the PIECE OF WORK has (the
 // second run on an issue rewrites the first run's item rather than writing a
@@ -2140,6 +2308,22 @@ func (g APICatchUpGenerator) CatchUpItemForGroup(ctx context.Context, c api.Call
 	}
 	view := api.CatchUpGroupView{ItemID: item.ItemID, ConversationID: item.ConversationID,
 		TourHead: item.TourHead, Reason: item.Reason}
+	// § Structure's failure fact, read from the rows the server owns (never
+	// from the story's prose): a run this piece of work already carries ended
+	// failed, OR the item's own resolution — a server-derived fact at write
+	// time — says run_failed. A completed run folding into THAT item is a fix
+	// landing after a failure, and its tour is held to the bug story.
+	var priorFailed bool
+	if err := s.Pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM catchup_work_item_runs l
+			JOIN runs r ON r.id = l.run_id
+			WHERE l.work_item_id = $1::uuid AND r.status = 'failed')
+		   OR COALESCE ((SELECT resolution = 'run_failed' FROM catchup_work_items
+			              WHERE id = $1::uuid), false)`, item.ItemID).Scan(&priorFailed); err != nil {
+		return api.CatchUpGroupView{}, false, catchUpQueryErr(err, "read catchup group run history")
+	}
+	view.PriorRunFailed = priorFailed
 	for _, st := range item.Stops {
 		view.HeadStops = append(view.HeadStops, api.CatchUpHeadStopView{
 			ID: st.ID, Title: st.Title, Kind: st.Kind,

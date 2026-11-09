@@ -15,12 +15,33 @@ package assistant
 // the prompt is ever built, and an answer that invents a PR number changes
 // nothing, because the answer has nowhere to put one.
 //
-// The trigger is lazy, like notes — but it is the VISIT, not the list read:
-// `CatchUpVisitRecorded` is what `POST /catch-up/visits` (opening the Catch up
-// page) calls once it has answered. `GET /catch-up/items` schedules nothing;
+// There are TWO triggers, and neither is the list read. The first is lazy,
+// like notes: `CatchUpVisitRecorded` is what `POST /catch-up/visits` (opening
+// the Catch up page) calls once it has answered. The second is the completion
+// sweep — `CatchUpCompletionSweep`, the serve ticker's hook (TASK T13: "when
+// a run finishes… write or rewrite its tour", not only when somebody asks):
+// one goroutine per replica asks the store for the runs that reached a
+// terminal status and were never told, each GENERATED AS ITS OWN SUBMITTER
+// (the ADR-0062 attribution rule, resolved by the store read: a run whose
+// human cannot be named is not swept, never swept under a forged one), and
+// the pass spends from the SAME per-replica model-call cap and the SAME
+// per-run cooldown as a visit pass, so total model spend is bounded however
+// the triggers mix. `GET /catch-up/items` schedules nothing;
 // since the sidebar badge reads the list on every page of the app, a list
 // trigger was a model call per page load, and the lab's rate-limited gateway
-// showed what that costs (ADR-0078 § Migration, Trigger note). The trigger
+// showed what that costs (ADR-0078 § Migration, Trigger note). Two replicas
+// must not tell one story twice: the tour write is idempotent on the claim —
+// `RunAlreadyToured` is checked before the completion is spent AND again
+// before the write, so the sibling replica's tour (it upserts by group key)
+// makes the second generation a skip, not a duplicate version. On top of the
+// skip, a generation that names the beats wrong is repaired, not laundered:
+// when the run's FACTS show a failure that later work fixed, the tour must
+// carry the beats found → cause → fixed in that order (structure enforced
+// server-side with ONE corrective re-ask, the proposal.go pattern), and when
+// the facts carry a must-know signal (a migration, an auth path, the public
+// API spec, a dependency manifest, a skipped test, a push straight to main,
+// a reverted failed run) at least one stop is ranked must_know — the floor
+// is the server's, whatever the model's answer ranked.
 // only ever schedules. A pass looks at the caller's projects, takes the runs
 // that reached a terminal status recently and have no tour (or whose run
 // moved after the item's latest tour version), and generates for AT MOST
@@ -144,6 +165,12 @@ type CatchUpExistingItem struct {
 	// block so the rewrite knows what it is superseding rather than guessing.
 	HeadReason string
 	HeadStops  []CatchUpExistingStop
+	// PriorRunFailed is the store's own read of § Structure's first fact: a
+	// run this item already carries ended failed (or the item's own
+	// resolution says run_failed). A completed run folding into such an item
+	// is a fix landing after a failure — the bug story the tour must then
+	// tell, whatever the model would rather write.
+	PriorRunFailed bool
 }
 
 // CatchUpCandidate is one run a tour is owed: its terminal result already
@@ -163,6 +190,10 @@ type CatchUpCandidate struct {
 	HeadStops []CatchUpExistingStop
 	// HeadReason is why that newest version was written.
 	HeadReason string
+	// PriorRunFailed says a run of this item's group already ended failed —
+	// the failure half of the failure→fix facts that make the tour a bug
+	// story (CatchUpExistingItem.PriorRunFailed; set when the item is read).
+	PriorRunFailed bool
 }
 
 // CatchUpNodeFact is one node execution as the DATA block states it. Error is
@@ -216,8 +247,9 @@ type CatchUpRunFacts struct {
 }
 
 // CatchUpSource is the reader the generator asks. Every read is issued AS THE
-// CALLER who opened the page: a generator that could see more than the
-// browser would be a hole, not a feature.
+// CALLER who opened the page — or, for the sweep, as the run's own submitter,
+// which the store's sweep read names per candidate: a generator that could
+// see more than the browser would be a hole, not a feature.
 type CatchUpSource interface {
 	// CandidateRuns returns the caller's runs still owed a tour, newest
 	// first, already bounded by the window and by the store's own LIMIT.
@@ -228,6 +260,34 @@ type CatchUpSource interface {
 	// this run must be folded INTO. The zero value ("no such item") is the
 	// answer for a piece of work nobody has described yet.
 	ExistingItem(ctx context.Context, c Caller, projectID, groupKey string) (CatchUpExistingItem, error)
+	// RunAlreadyToured asks the store whether a tour version claiming this
+	// run was written after the run's newest move — i.e. whether the story is
+	// already told. The completion sweep's cross-replica idempotency check:
+	// two replicas that read the same unclaimed candidate both ask before the
+	// completion (so the loser spends nothing) and the answer is re-checked
+	// before the write (so the loser writes nothing).
+	RunAlreadyToured(ctx context.Context, runID string) (bool, error)
+}
+
+// CatchUpSweepCandidate is one run the completion sweep owes a tour, with the
+// caller the generator must act AS: the human the run's own row attributes
+// (ADR-0062's rule — triggered_by, else the author of the trigger row that
+// fired it, up the bounded parent chain), resolved by the store's sweep read
+// so the generator never guesses an identity. A run whose human cannot be
+// named is absent from the list rather than swept under a synthetic one.
+type CatchUpSweepCandidate struct {
+	Caller    Caller
+	Candidate CatchUpCandidate
+}
+
+// CatchUpSweepSource is the optional second face of a CatchUpSource: the
+// completion sweep's candidate read. The store applies the same window,
+// limit and "no tour since the run's newest move" rules as the caller-scoped
+// read; what differs is WHOSE projects — the sweep is server-owned work like
+// the schedule tick, and its per-candidate caller (CatchUpSweepCandidate) is
+// what every fact read and write is then issued as.
+type CatchUpSweepSource interface {
+	SweepCandidates(ctx context.Context) ([]CatchUpSweepCandidate, error)
 }
 
 // CatchUpDecisionDraft is one stop's question as the generator validated it.
@@ -398,6 +458,13 @@ func (g *CatchUpGenerator) CatchUpVisitRecorded(ctx context.Context, c Caller, p
 	g.spawn(func() { g.Pass(run, c, projectIDs) })
 }
 
+// ErrCatchUpAlreadyToured is what GenerateRun reports when the store says a
+// tour version already claims the run since its newest move — a sibling
+// replica's sweep (or a concurrent visit pass) told the story between this
+// pass's candidate read and now. It is a skip, not a failure: no duplicate
+// version is appended, and the pass logs the outcome as "already told".
+var ErrCatchUpAlreadyToured = errors.New("catch up: a tour already claims this run")
+
 // Pass runs one generation sweep: at most CatchUpGenMaxPerPass runs get a
 // completion, each only if its per-run cooldown is open. Every attempt logs
 // one line (run id + outcome), like notes.
@@ -415,30 +482,110 @@ func (g *CatchUpGenerator) Pass(ctx context.Context, c Caller, projectIDs []stri
 			slog.String("user_id", c.UserID), slog.String("error", err.Error()))
 		return
 	}
-	made := 0
+	planned := make([]catchUpPlanned, 0, len(cands))
 	for _, cand := range cands {
+		planned = append(planned, catchUpPlanned{caller: c, cand: cand})
+	}
+	g.runPlanned(ctx, planned)
+}
+
+// CatchUpCompletionSweep is the serve ticker's hook (ADR-0078 § Trigger): the
+// runs that reached a terminal status and were never told get their tours
+// without anybody opening the page. It reads the sweep's own candidate list
+// (server-owned, each candidate carrying the caller it is generated AS) and
+// then runs the EXACT pass loop a visit runs — same per-run cooldown, same
+// per-replica model-call cap, same per-pass cap — so visit and sweep together
+// can never spend more than the deployment's cap. Two replicas sweeping the
+// same beat: both see the unclaimed run, both ask RunAlreadyToured before the
+// completion (usually both still spend, the race is the model-call window),
+// but the loser's re-check before the write skips it — one tour, not two.
+// A source without the sweep face has no sweep: the visit trigger is all it
+// has, which is exactly the pre-T13 deployment.
+func (g *CatchUpGenerator) CatchUpCompletionSweep(ctx context.Context) {
+	if g == nil || g.model == nil {
+		return
+	}
+	ss, ok := g.source.(CatchUpSweepSource)
+	if !ok {
+		return
+	}
+	if g.maxCallsPerWindow <= 0 {
+		logCatchUpGenCapSkipped(g.logger(), "")
+		return // cap 0: disabled entirely — don't even read candidates
+	}
+	cands, err := ss.SweepCandidates(ctx)
+	if err != nil {
+		g.logger().Warn("catch up: sweep candidate read failed",
+			slog.String("error", err.Error()))
+		return
+	}
+	planned := make([]catchUpPlanned, 0, len(cands))
+	for _, sc := range cands {
+		planned = append(planned, catchUpPlanned{caller: sc.Caller, cand: sc.Candidate})
+	}
+	g.runPlanned(ctx, planned)
+}
+
+// catchUpPlanned is one candidate with the caller the pass must act as — the
+// visiting user for a Pass, the run's own attributed human for the sweep.
+type catchUpPlanned struct {
+	caller Caller
+	cand   CatchUpCandidate
+}
+
+// runPlanned is the pass loop both triggers share: the per-pass cap, the
+// per-run cooldown and the per-replica cap all sit here, so whichever
+// trigger fires, one purse pays for it.
+func (g *CatchUpGenerator) runPlanned(ctx context.Context, planned []catchUpPlanned) {
+	made := 0
+	for _, p := range planned {
 		if made >= CatchUpGenMaxPerPass {
 			return
 		}
-		if !g.tryRun(cand.RunID, g.now()) {
+		if !g.tryRun(p.cand.RunID, g.now()) {
 			continue // cooldown: this run was asked about moments ago
+		}
+		// The idempotency read BEFORE the cap is spent and before the
+		// completion (ADR-0078 § Trigger): a tour already claiming this run
+		// since its newest move means a sibling replica (or a visit pass racing
+		// the sweep) told the story. Skipping here spends neither a cap slot
+		// nor a completion. A read that fails proceeds — the pre-write re-check
+		// and the store's versioned append remain the arbiters, and losing a
+		// convenience check must not cost the run its story.
+		if toured, terr := g.source.RunAlreadyToured(ctx, p.cand.RunID); terr != nil {
+			g.logger().Warn("catch up: the already-toured read failed; proceeding",
+				slog.String("run_id", p.cand.RunID), slog.String("error", terr.Error()))
+		} else if toured {
+			g.logger().Info("catch up: generation attempt",
+				slog.String("run_id", p.cand.RunID),
+				slog.String("outcome", "already told"))
+			continue
 		}
 		if !g.takeModelCall(g.now()) {
 			// The per-replica global cap is shut: log the skip and stop this
 			// pass rather than queueing the model calls the gateway refused.
-			logCatchUpGenCapSkipped(g.logger(), cand.RunID)
+			logCatchUpGenCapSkipped(g.logger(), p.cand.RunID)
 			return
 		}
 		made++
-		if err := g.GenerateRun(ctx, c, cand); err != nil {
+		if err := g.GenerateRun(ctx, p.caller, p.cand); err != nil {
+			if errors.Is(err, ErrCatchUpAlreadyToured) {
+				// A sibling replica told the story between the candidate read
+				// and the write. Nothing failed; the line says why no new tour
+				// appeared.
+				g.logger().Info("catch up: generation attempt",
+					slog.String("run_id", p.cand.RunID),
+					slog.String("outcome", "already told"))
+				continue
+			}
 			g.logger().Warn("catch up: generation attempt",
-				slog.String("run_id", cand.RunID),
+				slog.String("run_id", p.cand.RunID),
 				slog.String("outcome", "failed"),
 				slog.String("error", err.Error()))
 			continue
 		}
 		g.logger().Info("catch up: generation attempt",
-			slog.String("run_id", cand.RunID), slog.String("outcome", "wrote tour"))
+			slog.String("run_id", p.cand.RunID), slog.String("outcome", "wrote tour"))
 	}
 }
 
@@ -536,6 +683,7 @@ func (g *CatchUpGenerator) GenerateRun(ctx context.Context, c Caller, cand Catch
 			cand.TourHead = existing.TourHead
 			cand.HeadStops = existing.HeadStops
 			cand.HeadReason = existing.HeadReason
+			cand.PriorRunFailed = existing.PriorRunFailed
 			// A decision is answered in the thread the WORK was born in, not
 			// the thread the newest run happened to come from.
 			if existing.ConversationID != "" {
@@ -568,6 +716,17 @@ func (g *CatchUpGenerator) GenerateRun(ctx context.Context, c Caller, cand Catch
 	w, err := buildCatchUpTour(answer, cand, facts, truth, g.logger())
 	if err != nil {
 		return err
+	}
+	w = g.catchUpEnsureBugStory(ctx, w, cand, facts, truth, system, user, raw)
+	// And the same question one last time, immediately before the write: the
+	// completion took seconds, a sibling replica may have claimed the run in
+	// that window. The loser writes nothing (the upsert is already keyed to
+	// the same item; it is the APPENDED version duplication this closes).
+	if toured, terr := g.source.RunAlreadyToured(ctx, cand.RunID); terr != nil {
+		g.logger().Warn("catch up: the pre-write already-toured read failed; proceeding",
+			slog.String("run_id", cand.RunID), slog.String("error", terr.Error()))
+	} else if toured {
+		return ErrCatchUpAlreadyToured
 	}
 	return g.writer.WriteCatchUpTour(ctx, c, w)
 }
@@ -745,7 +904,10 @@ func CatchUpGenPrompt(block string) (string, string) {
 		"most 64 or omit it, importance exactly one of must_know / worth_a_look / routine.\n" +
 		"Write plain language, the way an engineer tells a colleague what happened. A bug story " +
 		"is separate beats when the data shows the steps: how it was found, what the cause was, " +
-		"what fixed it, and the follow-up left. " +
+		"what fixed it, and the follow-up left. When the data shows a failure that later work " +
+		"fixed, the server CHECKS the tour carries those beats in that order (found, then cause, " +
+		"then fixed, then the follow-up if the work left one) and re-asks once when it does not — " +
+		"so label each bug beat's kind or title with its step: FOUND, CAUSE, FIXED, FOLLOW-UP. " +
 		"Rank a beat must_know when it touches auth or security, a data migration, a public API, " +
 		"a UI change users will notice, a new dependency, tests weakened or skipped, a commit " +
 		"straight to the main branch, a bug introduced by earlier work, or a deviation from the " +
@@ -1113,7 +1275,315 @@ func buildCatchUpTour(a catchUpAnswer, cand CatchUpCandidate, facts CatchUpRunFa
 	if len(w.Stops) == 0 {
 		return CatchUpTourWrite{}, errors.New("catch up: no stop of the answer survived validation")
 	}
+	catchUpApplyImportanceFloor(&w, facts, cand, truth, log)
 	return w, nil
+}
+
+// --- the bug story (ADR-0078 § Structure and importance) ----------------
+
+// catchUpBugStoryFacts reports whether the run's FACTS — not the model's
+// prose — show a failure that this run's work then fixed: a run of the same
+// piece of work already ended failed (the store's read: a claimed run whose
+// status is failed, or an item whose own resolution says run_failed) and this
+// run completed; or the run's own node list shows a failure with a later
+// success (a retried node, a fix step after the red one).
+func catchUpBugStoryFacts(facts CatchUpRunFacts, cand CatchUpCandidate) bool {
+	if facts.Status != "completed" {
+		return false // the fix has not landed yet; nothing is enforced on a run that is still the failure
+	}
+	if cand.PriorRunFailed {
+		return true
+	}
+	failedSeen := false
+	for _, n := range facts.Nodes {
+		switch strings.ToLower(n.Status) {
+		case "failed", "cancelled", "interrupted":
+			failedSeen = true
+		case "succeeded", "completed", "success":
+			if failedSeen {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// catchUpFactsCarryFollowUp: the fourth beat is owed only when the facts
+// actually carry work left open — a node the run skipped past, or a line in
+// the thread naming the remainder. A tour is not forced to invent one.
+var catchUpFollowUpRe = regexp.MustCompile(`(?i)follow-?up|\bTODO\b|remaining|next step|left (open|to do)|still needs`)
+
+func catchUpFactsCarryFollowUp(facts CatchUpRunFacts) bool {
+	for _, n := range facts.Nodes {
+		if strings.EqualFold(n.Status, "skipped") {
+			return true
+		}
+	}
+	for _, l := range facts.Lines {
+		if catchUpFollowUpRe.MatchString(l.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// The beats the bug story is made of, in the order the story tells them. A
+// stop is CLASSIFIED (once, by its first beat word) from the server's own
+// fields — the model's id, kind and title — never from its narrative, which
+// is prose and prose mentions things. The prompt already asks for the beats;
+// this is the half that makes the ask a contract.
+var catchUpStoryBeats = []struct {
+	Name  string
+	Match *regexp.Regexp
+}{
+	{"follow-up", regexp.MustCompile(`(?i)\b(follow-?ups?|follow up|remaining|left open|left over|next steps?|to-?do)\b`)},
+	{"found", regexp.MustCompile(`(?i)\b(found|discovers?d?|notices?d?|reports?|reported|surfaced|reproduces?d?|caught|blew up|crash\w*|went red|was red|kept failing)\b`)},
+	{"cause", regexp.MustCompile(`(?i)\b(cause[sd]?|caused|because|why|root cause|culprit|stems?|stemmed|traced)\b`)},
+	{"fixed", regexp.MustCompile(`(?i)\b(fix(?:es|ed|ing)?|resolv\w*|repair\w*|patch\w*|landed|shipped|made green)\b`)},
+}
+
+func catchUpStopBeat(st CatchUpStopDraft) string {
+	hay := st.ID + " " + st.Kind + " " + st.Title
+	for _, b := range catchUpStoryBeats {
+		if b.Match.MatchString(hay) {
+			return b.Name
+		}
+	}
+	return ""
+}
+
+// catchUpBeatDefect names what the tour is missing, or "" when the bug story
+// is told: every required beat present, and the beats' stops in story order
+// (found before cause before fixed, the follow-up last).
+func catchUpBeatDefect(stops []CatchUpStopDraft, wantFollowUp bool) string {
+	want := []string{"found", "cause", "fixed"}
+	if wantFollowUp {
+		want = append(want, "follow-up")
+	}
+	at := map[string]int{}
+	for i, st := range stops {
+		if role := catchUpStopBeat(st); role != "" {
+			if _, seen := at[role]; !seen {
+				at[role] = i
+			}
+		}
+	}
+	var problems []string
+	present := make([]int, 0, len(want))
+	for _, w := range want {
+		i, ok := at[w]
+		if !ok {
+			problems = append(problems, "no "+w+" beat")
+			continue
+		}
+		present = append(present, i)
+	}
+	if len(problems) == 0 {
+		for i := 1; i < len(present); i++ {
+			if present[i] < present[i-1] {
+				problems = append(problems, "the beats are out of order (want found \u2192 cause \u2192 fixed)")
+				break
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return ""
+	}
+	return strings.Join(problems, "; ")
+}
+
+// catchUpBeatRepairTurn is the ONE corrective re-ask (proposal.go's pattern:
+// echo the bad answer, name the exact defect, restate the shape). The echo
+// rides inside the user turn because the generator's completion seam is a
+// (system, user) pair, not a message list — the same single corrective turn,
+// wearing the transport the notes' model interface has.
+func catchUpBeatRepairTurn(user, raw, defect string, wantFollowUp bool) string {
+	order := "found \u2192 cause \u2192 fixed"
+	tail := "a beat for how the failure was found, a beat naming the cause, and a beat for what fixed it"
+	if wantFollowUp {
+		order += " \u2192 follow-up"
+		tail += ", and a beat for the follow-up the work left open"
+	}
+	return user + "\n\nYour previous answer:\n" + clip(raw, 4000) +
+		"\n\nThat tour does not tell the bug story the DATA block's facts show: " + defect +
+		". Answer again with the WHOLE tour as exactly one JSON object, the beats in this order: " + order +
+		" — " + tail + ". Give each bug beat a kind or title naming its step (FOUND, CAUSE, FIXED, FOLLOW-UP)."
+}
+
+// catchUpMarkReason is the honest mark the version carries when even the
+// re-ask did not fix the story: the reader is told the structure is
+// incomplete rather than shown a silently-broken bug tale.
+func catchUpMarkReason(reason, defect string) string {
+	return clip(strings.Join(strings.Fields(reason+"; beat structure incomplete: "+defect), " "),
+		CatchUpGenReasonMaxChars)
+}
+
+// catchUpEnsureBugStory enforces the structure the facts demand. Required by
+// facts, not by taste; re-asked once; and if the answer still misses the
+// story the tour is WRITTEN anyway (a tour missing the cause beats no tour at
+// all) with the version reason saying so and a WARN line saying it out loud.
+func (g *CatchUpGenerator) catchUpEnsureBugStory(ctx context.Context, w CatchUpTourWrite,
+	cand CatchUpCandidate, facts CatchUpRunFacts, truth *catchUpTruth,
+	system, user, raw string) CatchUpTourWrite {
+	if !catchUpBugStoryFacts(facts, cand) {
+		return w // no failure→fix in the facts: no constraint to enforce
+	}
+	wantFollowUp := catchUpFactsCarryFollowUp(facts)
+	defect := catchUpBeatDefect(w.Stops, wantFollowUp)
+	if defect == "" {
+		return w
+	}
+	log := g.logger()
+	log.Warn("catch up: the facts show a failure that was fixed and the tour does not tell it that way; re-asking once",
+		slog.String("run_id", cand.RunID), slog.String("defect", defect))
+	repairUser := catchUpBeatRepairTurn(user, raw, defect, wantFollowUp)
+	// The echo is model prose about scanned data, but ADR-0018's gate does not
+	// take "should be clean": the repair pair is scanned like the original.
+	if fail := scanForSecrets(chatRequest{Messages: []chatMessage{
+		{Role: "system", Content: text(system)},
+		{Role: "user", Content: text(repairUser)},
+	}}); fail != nil {
+		w.Reason = catchUpMarkReason(w.Reason, defect)
+		return w
+	}
+	raw2, mfail := g.model.CompleteText(ctx, system, repairUser)
+	if mfail == nil {
+		if answer2, perr := ParseCatchUpAnswer(raw2); perr == nil {
+			if w2, berr := buildCatchUpTour(answer2, cand, facts, truth, log); berr == nil {
+				d2 := catchUpBeatDefect(w2.Stops, wantFollowUp)
+				if d2 == "" {
+					return w2 // the repair worked; this is the tour the reader gets
+				}
+				w = w2 // the re-ask's answer is still the better tour to mark
+				defect = d2
+			}
+		}
+	}
+	log.Warn("catch up: tour written with the beats still incomplete; the version reason says so",
+		slog.String("run_id", cand.RunID), slog.String("defect", defect))
+	w.Reason = catchUpMarkReason(w.Reason, defect)
+	return w
+}
+
+// --- the importance floor (ADR-0078 § Structure and importance) ----------
+
+// The signals the README names, detected from the facts the SERVER holds —
+// the excerpt texts (node errors, transcript lines, the outputs line), the
+// run's own fields and the head reason. None of them asks the model whether
+// the work mattered: the floor is what the deployment's own records say.
+type catchUpImportanceSignal struct {
+	name  string
+	re    *regexp.Regexp
+	guard func(facts CatchUpRunFacts, cand CatchUpCandidate) bool
+}
+
+var catchUpImportanceSignals = []catchUpImportanceSignal{
+	{name: "data migration",
+		re: regexp.MustCompile(`(?i)([\w.\-/]*/)?migrations/[\w.\-]+`)},
+	{name: "auth/security path",
+		re: regexp.MustCompile(`(?i)([\w.\-]+/)+(auth|authz|security|credentials?|secrets?|permissions?)(/[\w.\-]+)*|\b(auth|security|credential|permission|secret)[\w.\-]*\.(go|py|rb|ts|tsx|js|jsx|java|sql|ya?ml|json)\b`)},
+	{name: "public API spec",
+		re: regexp.MustCompile(`(?i)([\w.\-/]*/)?openapi\.(ya?ml|json)\b`)},
+	{name: "new dependency",
+		re: regexp.MustCompile(`(?i)\b(go\.mod|go\.sum|package\.json|package-lock\.json|pnpm-lock\.(?:ya?ml|json)|yarn\.lock|cargo\.(toml|lock)|requirements\.txt|pyproject\.toml)\b`)},
+	{name: "tests skipped or deleted",
+		re: regexp.MustCompile(`(?i)(t\.Skip\s*\(|\.skip\s*\(|\bxit\s*\(|\bxtest\s*\(|pytest\.skip|@Ignore\b|(deleted|removed)[^.\n]{0,40}\btests?\b|\btests?\b[^.\n]{0,40}(deleted|removed))`)},
+	{name: "push straight to main",
+		guard: func(f CatchUpRunFacts, _ CatchUpCandidate) bool {
+			return (strings.EqualFold(f.Branch, "main") || strings.EqualFold(f.Branch, "master")) &&
+				len(f.Commits) > 0
+		}},
+	{name: "reverted failed run",
+		re: regexp.MustCompile(`(?i)\brevert(?:ed|ing|s)?\b`),
+		guard: func(f CatchUpRunFacts, cand CatchUpCandidate) bool {
+			if cand.PriorRunFailed || catchUpBugStoryFacts(f, cand) {
+				return true
+			}
+			for _, n := range f.Nodes {
+				switch strings.ToLower(n.Status) {
+				case "failed", "cancelled", "interrupted":
+					return true
+				}
+			}
+			return false
+		}},
+}
+
+// catchUpSignalsInFacts reads the signals off every string the server holds
+// for the run: the citable excerpts exactly as they were sent (so a signal
+// that lived only in a byte-capped-away excerpt is honestly gone), the run's
+// own fields and its node list, and the head reason of a rewrite.
+func catchUpSignalsInFacts(facts CatchUpRunFacts, cand CatchUpCandidate, truth *catchUpTruth) []catchUpImportanceSignal {
+	var hay strings.Builder
+	fmt.Fprintf(&hay, "%s\n%s\n%s\n%s\n", facts.Title, facts.Goal, facts.Branch, facts.PRURL)
+	for _, n := range facts.Nodes {
+		fmt.Fprintf(&hay, "%s\n%s\n%s\n", n.Key, n.ErrorClass, n.Error)
+	}
+	if truth != nil {
+		for _, e := range truth.excerpts {
+			hay.WriteString(e.Text)
+			hay.WriteByte('\n')
+		}
+	}
+	hay.WriteString(cand.HeadReason)
+	blob := hay.String()
+	var hits []catchUpImportanceSignal
+	for _, s := range catchUpImportanceSignals {
+		if s.re != nil && !s.re.MatchString(blob) {
+			continue
+		}
+		if s.guard != nil && !s.guard(facts, cand) {
+			continue
+		}
+		hits = append(hits, s)
+	}
+	return hits
+}
+
+// catchUpApplyImportanceFloor is the floor: a real signal present and the
+// model ranked NOTHING must_know — the page would then bury a migration or
+// an auth change under "routine", so the server raises the most relevant stop
+// (the beat whose own text speaks to a signal; the first, when none does)
+// and says so in the version reason. If the model already ranked one
+// must_know its judgement stands: the floor is a floor, not a veto.
+func catchUpApplyImportanceFloor(w *CatchUpTourWrite, facts CatchUpRunFacts,
+	cand CatchUpCandidate, truth *catchUpTruth, log *slog.Logger) {
+	signals := catchUpSignalsInFacts(facts, cand, truth)
+	if len(signals) == 0 {
+		return
+	}
+	for _, st := range w.Stops {
+		if st.Importance == "must_know" {
+			return
+		}
+	}
+	best := 0
+	bestScore := -1
+	for i, st := range w.Stops {
+		score := 0
+		hay := st.ID + " " + st.Kind + " " + st.Title + " " + st.Narrative
+		for _, s := range signals {
+			if s.re != nil && s.re.MatchString(hay) {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore, best = score, i
+		}
+	}
+	names := make([]string, 0, len(signals))
+	for _, s := range signals {
+		names = append(names, s.name)
+	}
+	w.Stops[best].Importance = "must_know"
+	w.Reason = clip(strings.Join(strings.Fields(w.Reason+
+		"; importance floor: "+strings.Join(names, ", ")+" signal in the facts"), " "),
+		CatchUpGenReasonMaxChars)
+	if log != nil {
+		log.Info("catch up: importance floor raised a stop to must_know",
+			slog.String("run_id", w.RunID), slog.String("stop_id", w.Stops[best].ID),
+			slog.String("signals", strings.Join(names, ", ")))
+	}
 }
 
 // catchUpStableID is the hinge: title matched against the previous tour, the

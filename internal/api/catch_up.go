@@ -698,11 +698,14 @@ func (h *catchUpHandlers) recordVisit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
 	// The generator hook, fired exactly like the notes' NotesListed: after the
-	// answer, off the request path, never changing it. Opening the Catch up
-	// page is now the ONE thing that schedules a tour pass — the visit says a
-	// human is actually waiting for tours, which a badge's list read never
-	// said (ADR-0078 § Migration, Trigger note). A visit carries no project
-	// scope, so the pass runs over all of the caller's projects.
+	// answer, off the request path, never changing it. A visit is ONE of the
+	// tour pass's two triggers — the human-facing one, saying somebody is
+	// actually waiting for tours. The other is the serve-side completion sweep
+	// (ADR-0078 § Trigger), which tells finished runs without waiting for
+	// anybody; the list and item reads remain pure, because the sidebar badge
+	// calls them on every page and a list trigger spent a model call per page
+	// load. A visit carries no project scope, so the pass runs over all of the
+	// caller's projects.
 	if h.gen != nil {
 		h.gen.CatchUpVisitRecorded(r.Context(), c, nil)
 	}
