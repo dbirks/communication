@@ -2,8 +2,15 @@
  * "Needs your decision" and "failed" callouts (Projects Review design 1b).
  *
  * One callout per item that asks something of a person, in the ALERT pale set:
- * an open gate (Read plan · Approve) or a run that stopped (Open run · Retry
- * from <step>). The list is the inbox's own read (`lib/attention.ts`) narrowed
+ * an open gate (Read plan + the shared `DecisionBar`) or a run that stopped
+ * (Open run · Retry from <step>). Deciding a gate is the SAME bar the briefing,
+ * the approval page and the run workbench render (finding 04): fixed verbs
+ * (Approve / Request changes / Reject), a 5s Undo window instead of a confirm
+ * step, and a conflict sentence that names who beat the click — so the
+ * overview teaches nothing the other screens do not. A gate the overview's list
+ * drops while its bar still holds the click stays on screen as a "lost" row
+ * until dismissed, exactly as `components/home/DecisionCallout.tsx` keeps it.
+ * The list is the inbox's own read (`lib/attention.ts`) narrowed
  * to this project, so a stalled run can never read as fine here and urgent
  * there, and a `waiting_human` run whose gate is still open appears once — as
  * the decision — not twice.
@@ -27,10 +34,8 @@
  * phone, where side-by-side squeezed both. From `md` up the body and the
  * actions share the row, as the design draws it.
  */
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
-import { adoptApprovalConflict, approvalConflictOf, useDecideApproval } from "../../api/approvals";
-import { useQueryClient } from "@tanstack/react-query";
 import { problemOf } from "../../api/client";
 import { usePipelines } from "../../api/pipelines";
 import { useProjectRuns } from "../../api/runs";
@@ -39,6 +44,8 @@ import { useAttentionForProject } from "../../lib/attention";
 import type { Approval, Project, RunSummary } from "../../api/types";
 import { Alert } from "../ds/Alert";
 import { Button } from "../ds/Button";
+import DecisionBar from "../ds/DecisionBar";
+import type { DecisionConflict } from "../ds/DecisionBar";
 import { Spinner } from "../Feedback";
 import { RUN_STATE, SHORT_WORD, stateOf } from "../ds/states";
 import { ATTENTION_TITLE_CLAMP, attentionTitle } from "../../lib/attention";
@@ -119,6 +126,20 @@ export function NeedsYou({ project }: NeedsYouProps) {
     () => new Map((runs.data?.runs ?? []).map((run) => [run.id, run] as const)),
     [runs.data],
   );
+  // A gate whose bar reported "someone else decided" lives here — outside the
+  // pending read, which has already dropped it — until the person dismisses it,
+  // so the news never vanishes with the row that carried it (finding 04).
+  const [lost, setLost] = useState<LostDecision[]>([]);
+  const rememberLost = useCallback((row: Approval, conflict: DecisionConflict) => {
+    setLost((current) => {
+      const rest = current.filter((entry) => entry.conflict.approvalId !== conflict.approvalId);
+      return [...rest, { approval: row, conflict }];
+    });
+  }, []);
+  const dismissLost = useCallback((approvalId: string) => {
+    setLost((current) => current.filter((entry) => entry.conflict.approvalId !== approvalId));
+  }, []);
+  const lostIds = new Set(lost.map((entry) => entry.conflict.approvalId));
   const total = attention.decisions.length + attention.stalled.length;
 
   return (
@@ -134,7 +155,7 @@ export function NeedsYou({ project }: NeedsYouProps) {
           × {title}
         </p>
       ))}
-      {!attention.pending && total === 0 ? (
+      {!attention.pending && total === 0 && lost.length === 0 ? (
         <p
           className="flex items-center gap-[6px] rounded-[3px] border border-st-done-pale-edge bg-st-done-pale-body px-[12px] py-[8px] text-[13px] text-st-done-pale-fg"
           data-testid="project-attention-empty"
@@ -143,18 +164,37 @@ export function NeedsYou({ project }: NeedsYouProps) {
           Nothing needs attention in this project.
         </p>
       ) : null}
-      {attention.decisions.map(({ approval }) => (
+      {/* Lost gates ride above the live list: the pending read no longer
+          carries them, and the sentence is the news still to be dismissed. */}
+      {lost.map((entry) => (
         <DecisionCallout
-          key={approval.id}
-          approval={approval}
+          key={`lost-${entry.approval.id}`}
+          approval={entry.approval}
           workflowSlug={
-            runsById.get(approval.run_id)
-              ? (slugs.get(runsById.get(approval.run_id)!.pipeline_id) ?? null)
+            runsById.get(entry.approval.run_id)
+              ? (slugs.get(runsById.get(entry.approval.run_id)!.pipeline_id) ?? null)
               : null
           }
           slugKnown={runs.data !== undefined && pipelines.data !== undefined}
+          conflict={entry.conflict}
+          onDismiss={() => dismissLost(entry.conflict.approvalId)}
         />
       ))}
+      {attention.decisions
+        .filter(({ approval }) => !lostIds.has(approval.id))
+        .map(({ approval }) => (
+          <DecisionCallout
+            key={approval.id}
+            approval={approval}
+            workflowSlug={
+              runsById.get(approval.run_id)
+                ? (slugs.get(runsById.get(approval.run_id)!.pipeline_id) ?? null)
+                : null
+            }
+            slugKnown={runs.data !== undefined && pipelines.data !== undefined}
+            onLost={rememberLost}
+          />
+        ))}
       {attention.stalled.map(({ run }) => (
         <StoppedRunCallout
           key={run.id}
@@ -167,48 +207,40 @@ export function NeedsYou({ project }: NeedsYouProps) {
   );
 }
 
-/** A gate that is still open. `Approve` asks first — a gate is a business
- * outcome, not a click — then posts the row's own `version` as the CAS token;
- * a `409` adopts the winner rather than pretending the click was lost. */
+/** A row whose decision lost the race: the gate as last seen (for the callout's
+ * own header and title) plus the facts its bar reported. */
+interface LostDecision {
+  approval: Approval;
+  conflict: DecisionConflict;
+}
+
+/** A gate that is still open — or one the viewer just lost. Deciding is the
+ * shared `DecisionBar`: it holds the POST for 5s behind an Undo, sends the
+ * row's own `version` as the CAS token, adopts the winner on a `409` and says
+ * who beat the click. `initialConflict` is the shape of a lost gate: the bar
+ * boots straight into the conflict sentence, with no verbs left to click. */
 function DecisionCallout({
   approval,
   workflowSlug,
   slugKnown,
+  conflict = null,
+  onLost,
+  onDismiss,
 }: {
   approval: Approval;
   workflowSlug: string | null;
   slugKnown: boolean;
+  /** Set when this row is a just-decided-elsewhere gate: the bar renders the
+   * sticky conflict sentence and the callout offers a Dismiss. */
+  conflict?: DecisionConflict | null;
+  onLost?: (approval: Approval, conflict: DecisionConflict) => void;
+  onDismiss?: () => void;
 }) {
-  const decide = useDecideApproval(approval.project_id);
-  const queryClient = useQueryClient();
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const key = testidOf(approval.id);
   const meta = [
     slugKnown ? (workflowSlug ?? "workflow unknown") : "…",
     formatAge(approval.created_at),
   ].join(" · ");
-
-  const submit = () => {
-    setConfirming(false);
-    setError(null);
-    decide.mutate(
-      { approvalId: approval.id, body: { decision: "approved", version: approval.version } },
-      {
-        onSuccess: () => setError(null),
-        onError: (err) => {
-          if (approvalConflictOf(err)) {
-            adoptApprovalConflict(queryClient, err);
-            // Finding 12: no race metaphor, and the card keeps its `Read plan`
-            // link as the way to the decision that did land.
-            setError("Someone already decided this gate. Your decision wasn't recorded.");
-          } else {
-            setError(problemOf(err).detail || problemOf(err).title);
-          }
-        },
-      },
-    );
-  };
 
   return (
     <Alert
@@ -227,15 +259,6 @@ function DecisionCallout({
           >
             {attentionTitle(approval.summary)}
           </p>
-          {error ? (
-            <p
-              className="mt-[6px] font-mono text-[10.5px] text-st-failed-pale-fg"
-              role="alert"
-              data-testid={`project-attention-decision-error-${key}`}
-            >
-              × {error}
-            </p>
-          ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-[8px]">
           <Link
@@ -245,40 +268,26 @@ function DecisionCallout({
           >
             Read plan
           </Link>
-          {confirming ? (
-            <>
-              <span className="font-mono text-[10.5px] text-st-waiting-pale-fg" role="status">
-                approve this gate?
-              </span>
-              <Button
-                variant="primary"
-                compact
-                disabled={decide.isPending}
-                onClick={submit}
-                data-testid={`project-approve-confirm-${key}`}
-              >
-                {decide.isPending ? "Posting…" : "Confirm"}
-              </Button>
-              <Button
-                variant="ghost"
-                compact
-                data-testid={`project-approve-cancel-${key}`}
-                onClick={() => setConfirming(false)}
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
+          <DecisionBar
+            approval={approval}
+            compact
+            initialConflict={conflict}
+            onConflict={
+              onLost && conflict === null
+                ? (info: DecisionConflict) => onLost(approval, info)
+                : undefined
+            }
+          />
+          {conflict !== null && onDismiss ? (
             <Button
-              variant="primary"
+              variant="secondary"
               compact
-              disabled={decide.isPending}
-              onClick={() => setConfirming(true)}
-              data-testid={`project-approve-${key}`}
+              data-testid={`project-decision-dismiss-${key}`}
+              onClick={onDismiss}
             >
-              {decide.isPending ? "Posting…" : "Approve"}
+              Dismiss
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
     </Alert>

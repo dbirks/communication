@@ -12,8 +12,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "../api/client";
 
-export type ProjectsMode = "tree" | "switcher";
-export type AskPlacement = "sidebar" | "floating";
 export type TrustLevel = "ask_all" | "ask_risky" | "no_ask";
 
 /**

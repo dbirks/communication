@@ -11,7 +11,7 @@
  * own GitHub route, count included, with `50+` honesty at the page cap.
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
 import type { GitHubIssue } from "../api/issues";
 import {
@@ -45,6 +45,7 @@ const projectPath = `/api/v1/projects/${projectId}`;
 const reposPath = `${projectPath}/repos`;
 const membersPath = `${projectPath}/members`;
 const approvalsPath = `${projectPath}/approvals`;
+const decidePath = `/api/v1/approvals/${WIRE_APPROVAL_ID}/decide`;
 const runsPath = `${projectPath}/runs`;
 const crossRunsPath = "/api/v1/runs";
 const conversationsPath = `${projectPath}/conversations`;
@@ -295,9 +296,16 @@ describe("/p/:projectId — what needs you", () => {
     );
   });
 
-  it("turns an open gate into a callout with Read plan and Approve", async () => {
+  it("turns an open gate into a callout with Read plan and the fixed decision verbs", async () => {
+    const decided = {
+      ...wireApproval,
+      state: "decided",
+      decision: "approved",
+      version: 2,
+    };
     const { requests } = mounted([
       { path: approvalsPath, method: "GET", body: { approvals: [wireApproval] } },
+      { path: decidePath, method: "POST", body: decided },
     ]);
 
     const key = testidOf(WIRE_APPROVAL_ID);
@@ -319,22 +327,93 @@ describe("/p/:projectId — what needs you", () => {
     expect(within(callout).getByTestId(`project-read-plan-${key}`).getAttribute("href")).toBe(
       `/approvals/${WIRE_APPROVAL_ID}`,
     );
-    expect(within(callout).getByTestId(`project-approve-${key}`).textContent).toBe("Approve");
+    // Finding 04: deciding is the shared bar, so the overview shows the SAME
+    // three fixed verbs as every other gate surface — and no confirm step.
+    expect(within(callout).getByTestId("decision-approve").textContent).toBe("Approve");
+    expect(within(callout).getByTestId("decision-request-changes").textContent).toBe(
+      "Request changes",
+    );
+    expect(within(callout).getByTestId("decision-reject").textContent).toBe("Reject");
 
-    // Approve asks first: a gate is a business outcome, not a click.
-    fireEvent.click(within(callout).getByTestId(`project-approve-${key}`));
-    expect(within(callout).getByRole("status").textContent).toContain("approve this gate?");
-    fireEvent.click(within(callout).getByTestId(`project-approve-confirm-${key}`));
-    await waitFor(() => {
-      const [request] = requestsTo(
-        requests,
-        `/api/v1/approvals/${WIRE_APPROVAL_ID}/decide`,
-        "POST",
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(within(callout).getByTestId("decision-approve"));
+      expect(within(callout).getByRole("status").textContent).toContain(
+        "Approved. The run continues in 5s.",
       );
+      expect(requestsTo(requests, decidePath, "POST")).toHaveLength(0);
+      // Undo closes the window without deciding.
+      fireEvent.click(within(callout).getByTestId("decision-undo"));
+      await vi.advanceTimersByTimeAsync(6100);
+      expect(requestsTo(requests, decidePath, "POST")).toHaveLength(0);
+
+      // Letting the window expire posts the row's own `version` as the CAS
+      // token, with the CSRF header.
+      fireEvent.click(within(callout).getByTestId("decision-approve"));
+      await vi.advanceTimersByTimeAsync(5000);
+      const [request] = requestsTo(requests, decidePath, "POST");
       expect(request.headers.get("x-csrf-token")).toBe(meFixture.csrf_token);
-      // The row's own `version` is the CAS token.
       expect(JSON.parse(request.body ?? "{}")).toEqual({ decision: "approved", version: 1 });
-    });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a gate decided elsewhere on screen, naming who decided it", async () => {
+    const decidedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const { requests } = mounted([
+      { path: approvalsPath, method: "GET", body: { approvals: [wireApproval] } },
+      // The winner's row: the click loses, and the adoption re-reads the gate.
+      {
+        path: decidePath,
+        method: "POST",
+        status: 409,
+        body: {
+          type: "https://communication.dev/errors/approval-already-decided",
+          title: "Approval Already Decided",
+          status: 409,
+          detail: "someone else won the click",
+          approval_id: WIRE_APPROVAL_ID,
+          approval: {
+            state: "decided",
+            decision: "approved",
+            decided_by: directoryUser.id,
+            decided_at: decidedAt,
+            version: 2,
+          },
+        },
+      },
+    ]);
+
+    const key = testidOf(WIRE_APPROVAL_ID);
+    const callout = await screen.findByTestId(`project-attention-decision-${key}`);
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(within(callout).getByTestId("decision-reject"));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(requestsTo(requests, decidePath, "POST")).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(500);
+
+      // Finding 04/12: no race metaphor and no unnamed line — the callout
+      // stays (the host keeps the row it lost outside the pending read) and
+      // names the winner, with the way to the decision that did land.
+      const lost = screen.getByTestId("decision-conflict");
+      expect(lost.textContent).toContain("Grace Hopper approved this 2m ago.");
+      expect(lost.textContent).toContain("Your decision wasn't recorded.");
+      expect(screen.queryByTestId("decision-approve")).toBeNull();
+      expect(screen.getByTestId("decision-conflict-run").getAttribute("href")).toBe(
+        `/runs/${WIRE_RUN_ID}`,
+      );
+      expect(screen.getByTestId(`project-attention-decision-${key}`)).toBeTruthy();
+
+      // Dismiss clears the sentence.
+      fireEvent.click(screen.getByTestId(`project-decision-dismiss-${key}`));
+      expect(screen.queryByTestId("decision-conflict")).toBeNull();
+      expect(screen.queryByTestId(`project-decision-dismiss-${key}`)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("names a step failure by the step, and retries that step", async () => {

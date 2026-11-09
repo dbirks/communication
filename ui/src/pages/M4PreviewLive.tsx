@@ -71,8 +71,8 @@ export function M4LivePreview({ projectId, runId }: M4LivePreviewProps) {
           <Alert state="info" label="LIVE, FROM /api/v1" barTone="pale" testid="m4-live-notice">
             Every value below is a response from the frozen M4 routes (OpenAPI 0.4.0-m4) and, when a
             run is open, frames from <code className="font-mono">/runs/{"{runId}"}/events</code>. No
-            fixture shapes this page; if the control plane is not serving a route, the block that
-            needs it says so instead of pretending.
+            fixture shapes this page; if a part of the app is not answering, the block that needs it
+            says so instead of pretending.
           </Alert>
         </header>
         <LivePipelineLibrary />
