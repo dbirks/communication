@@ -280,20 +280,26 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     // Finding 07: the header IS the shared band — the `page-band` handle, the
     // band's own inset, and the H1 as the first thing in the title column, so
     // the title's left edge and baseline are the ones every other route
-    // measures at 1440. The breadcrumb reads under the title for the same
-    // reason (it is the band's mono subline).
+    // measures at 1440. Finding 11: the breadcrumb reads ABOVE the title — it
+    // rides the band's `pt-[20px]` padding absolutely, so neither finding
+    // costs the other anything.
     const band = screen.getByTestId("page-band");
     expect(band.className).toContain(PAGE_BAND_PAD);
+    expect(band.className).toContain("pt-[20px]");
+    expect(PAGE_BAND_PAD.split(" ")).toEqual(["px-[22px]", "pt-[20px]", "md:px-[28px]"]);
     expect(within(band).getAllByRole("heading", { level: 1 })).toHaveLength(1);
-    // Breadcrumb `Workflows / Delivery /` — the folder comes from the pipeline
-    // read, so wait for a control that arrives WITH that read (the revision
-    // chip; `pipeline-header-meta` rides the H1 and is drawn from the first
-    // frame) before reading the row.
+    // Breadcrumb `Workflows › Delivery › <name>` — no dangling separator; the
+    // folder comes from the pipeline read, so wait for a control that arrives
+    // WITH that read (the revision chip; `pipeline-header-meta` rides the H1
+    // and is drawn from the first frame) before reading the row.
     await screen.findByTestId("workflow-revision-chip");
     const crumb = within(header).getByTestId("workflow-breadcrumb");
     expect(crumb.textContent).toContain("Workflows");
     expect(crumb.textContent).toContain("Delivery");
-    expect(crumb.textContent).toMatch(/\/$/);
+    expect(crumb.textContent).toContain(wirePipeline.display_name);
+    expect(crumb.textContent).not.toMatch(/[\u2039\u203a/]$/);
+    expect(crumb.getAttribute("class")).toContain("absolute");
+    expect(crumb.getAttribute("class")).toContain("top-[4px]");
     // H1 + chip.
     expect(within(header).getByRole("heading", { level: 1 }).textContent).toBe(
       wirePipeline.display_name,
@@ -318,14 +324,17 @@ describe("/workflows/:pipelineId — the header (1e)", () => {
     expect(within(header).getByTestId("pipeline-customize").textContent).toBe("Edit workflow");
     expect(within(header).queryByText(/Start run/i)).toBeNull();
     expect(within(header).queryByTestId(/trigger-add/)).toBeNull();
-    // 390px: the header stacks (breadcrumb, title + chip, description, then
-    // the actions in their own row) and only goes beside the title from `md`.
+    // 390px: the header stacks (title + chip, description, then the actions
+    // in their own row) and only goes beside the title from `md`.
     expect(within(header).getByTestId("workflow-header-top").className).toContain("md:flex-row");
-    // …and the trail rides below the title, in the band's mono subline slot.
+    // …and the trail comes BEFORE the H1 in DOM order (finding 11) — it is
+    // positioned in the band's own top padding, so the title still holds the
+    // shared baseline (finding 07).
     const crumbInBand = within(band)
       .getByTestId("workflow-breadcrumb")
       .compareDocumentPosition(within(band).getByRole("heading", { level: 1 }));
-    expect(crumbInBand & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(crumbInBand & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(crumbInBand & Node.DOCUMENT_POSITION_PRECEDING).toBeFalsy();
   });
 
   it("with no description anywhere the header carries the library sentence instead", async () => {

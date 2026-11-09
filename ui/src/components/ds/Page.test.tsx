@@ -7,9 +7,15 @@
  * the full column; `canvas` adds no padding and no band — the page draws its
  * own.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import Page, { PAGE_BAND_HEIGHT_PX, PAGE_BAND_PAD, PageBand } from "./Page";
+import Page, {
+  PAGE_BAND_HEIGHT_PX,
+  PAGE_BAND_PAD,
+  PAGE_BREADCRUMB_CLASS,
+  CrumbSep,
+  PageBand,
+} from "./Page";
 
 afterEach(cleanup);
 
@@ -157,5 +163,70 @@ describe("PageBand — the shared band outside <Page>", () => {
     // The height a full-height canvas page takes off the viewport under the
     // band: the 20px above the title plus the 28px title line.
     expect(PAGE_BAND_HEIGHT_PX).toBe(20 + 28);
+  });
+});
+
+/**
+ * The `breadcrumb` slot (finding 11: trails read ABOVE titles) must not move
+ * the title (finding 07: one baseline). It buys its room by sitting absolutely
+ * inside the band's own `pt-[20px]`, so the band's padding classes stay exactly
+ * what the e2e ruler computes from.
+ */
+describe("PageBand breadcrumb — above the title, off the baseline", () => {
+  const trail = (name: string) => (
+    <>
+      <a href="/workflows">Workflows</a>
+      <CrumbSep />
+      <span aria-current="page">{name}</span>
+    </>
+  );
+
+  it("renders the trail BEFORE the H1 in DOM order and leaves the band's padding alone", () => {
+    render(<PageBand title="Review gate" breadcrumb={trail("Review gate")} />);
+    const band = screen.getByTestId("page-band");
+    // The inset is byte-for-byte `PAGE_BAND_PAD` plus the positioning context —
+    // nothing is added above the title, so the H1's baseline cannot move.
+    expect(band.className.trim().split(/ +/)).toEqual([...PAGE_BAND_PAD.split(/ +/), "relative"]);
+    expect(band.className).toContain("pt-[20px]");
+    const h1 = band.querySelector("h1") as HTMLElement;
+    const crumb = within(band).getByRole("navigation", { name: "Breadcrumb" });
+    expect(crumb.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 11px mono in a 14px line, parked in the 20px above the title.
+    expect(PAGE_BREADCRUMB_CLASS.split(/ +/)).toEqual(
+      expect.arrayContaining([
+        "absolute",
+        "top-[4px]",
+        "font-mono",
+        "text-[11px]",
+        "leading-[14px]",
+        "truncate",
+      ]),
+    );
+    expect(crumb.className).toContain(PAGE_BREADCRUMB_CLASS.split(/ +/)[0]);
+    // The trail ends on the current page — a leaf, not a dangling separator.
+    expect(crumb.textContent).toBe("Workflows›Review gate");
+    expect(crumb.textContent).not.toMatch(/[\u2039\u203a/]$/);
+  });
+
+  it("adds nothing at all to a band that passes no breadcrumb", () => {
+    render(<PageBand title="Projects" />);
+    const band = screen.getByTestId("page-band");
+    expect(band.className.trim().split(/ +/)).toEqual(PAGE_BAND_PAD.split(/ +/));
+    expect(within(band).queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
+  });
+
+  it("<Page> hands the slot to its band", () => {
+    render(
+      <Page layout="reading" title="Settings" breadcrumb={trail("Settings")}>
+        <p>body</p>
+      </Page>,
+    );
+    const band = screen.getByTestId("page-band");
+    const crumb = within(band).getByRole("navigation", { name: "Breadcrumb" });
+    expect(
+      crumb.compareDocumentPosition(band.querySelector("h1") as HTMLElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(band.className).toContain("pt-[20px]");
   });
 });

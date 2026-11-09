@@ -21,9 +21,11 @@
  *
  * The shared band: title 22px/600 (today's page titles), a mono subline
  * below, actions on the right, optional tab strip (`band`) sitting under the
- * title row. The inset is the value the project frame already used
- * (`22px` sides, `20px` above, `28px` from `md` up) — the type scale is
- * unchanged.
+ * title row, and an optional `breadcrumb` trail riding the band's TOP PADDING
+ * (finding 11: trails read above titles — it is absolutely positioned, so the
+ * title edge and baseline do not move). The inset is the value the project
+ * frame already used (`22px` sides, `20px` above, `28px` from `md` up) — the
+ * type scale is unchanged.
  */
 import type { ReactNode } from "react";
 
@@ -37,9 +39,56 @@ export const PAGE_BAND_PAD = "px-[22px] pt-[20px] md:px-[28px]";
  */
 export const PAGE_BAND_HEIGHT_PX = 48;
 
+/**
+ * A band's breadcrumb line (finding 11: trails read ABOVE titles). It is
+ * absolutely positioned inside the band's own `pt-[20px]` padding — `top:
+ * 4px` over a 14px mono line leaves 2px above the title — so the H1 keeps the
+ * ONE baseline every route measures at (finding 07) and a page that passes no
+ * breadcrumb is laid out exactly as before. One line, ellipsised: a trail that
+ * wrapped would sit on top of the title.
+ *
+ * A page that draws its OWN band (the workflow page) puts this as the band's
+ * FIRST child and adds `relative` to the band element.
+ */
+export const PAGE_BREADCRUMB_CLASS =
+  "absolute inset-x-[22px] top-[4px] truncate font-mono text-[11px] leading-[14px] text-muted md:inset-x-[28px]";
+
+export interface PageBreadcrumbProps {
+  /** Trail content: linked steps plus the current page, separated by `›`. */
+  children: ReactNode;
+  /** Root test handle. */
+  testid?: string;
+  className?: string;
+}
+
+/** The one `Breadcrumb` landmark every band draws (see `PAGE_BREADCRUMB_CLASS`). */
+export function PageBreadcrumb({ children, testid, className = "" }: PageBreadcrumbProps) {
+  return (
+    <nav
+      aria-label="Breadcrumb"
+      className={`${PAGE_BREADCRUMB_CLASS} ${className}`.trim()}
+      data-testid={testid}
+    >
+      {children}
+    </nav>
+  );
+}
+
+/** One `›` between trail steps. The trail never ends in a separator: a dangling
+ * `›`/`/` after the current page reads as a step that goes nowhere. */
+export function CrumbSep() {
+  return (
+    <span aria-hidden="true" className="px-[6px]">
+      ›
+    </span>
+  );
+}
+
 export interface PageBandProps {
   /** Band title — the page's one H1 (22px/600, `leading-[28px]`). */
   title: ReactNode;
+  /** Trail above the title, riding the band's top padding (never moves the H1). */
+  breadcrumb?: ReactNode;
   /** Mono subline under the title. */
   subtitle?: ReactNode;
   /** Right side of the title row. */
@@ -58,11 +107,23 @@ export interface PageBandProps {
  * `PAGE_BAND_PAD`). Pages that need a richer band than the four slots (the
  * workflow page, with its breadcrumb and tab strip) still use `PAGE_BAND_PAD`
  * and keep the H1 first in the column — the ruler is the contract, not the
- * prop list.
+ * prop list, and a page with more than the slots carries `PageBreadcrumb` as
+ * the band's FIRST child plus `relative` on the band element.
  */
-export function PageBand({ title, subtitle, actions, band, className = "" }: PageBandProps) {
+export function PageBand({
+  title,
+  subtitle,
+  actions,
+  band,
+  breadcrumb,
+  className = "",
+}: PageBandProps) {
   return (
-    <header className={`${PAGE_BAND_PAD} ${className}`.trim()} data-testid="page-band">
+    <header
+      className={`${PAGE_BAND_PAD} ${breadcrumb == null ? "" : "relative"} ${className}`.trim()}
+      data-testid="page-band"
+    >
+      {breadcrumb != null ? <PageBreadcrumb>{breadcrumb}</PageBreadcrumb> : null}
       <div className="flex flex-wrap items-start justify-between gap-x-[14px] gap-y-2">
         <div className="min-w-0 space-y-1">
           <h1 className="text-[22px] leading-[28px] font-semibold">{title}</h1>
@@ -86,6 +147,8 @@ export interface PageProps {
   /** Band title (22px/600). Pages that draw their own band (`canvas`, or a
    * `wide` page whose header carries breadcrumbs) omit it. */
   title?: ReactNode;
+  /** Trail above the title (rides the band's top padding; no layout shift). */
+  breadcrumb?: ReactNode;
   /** Mono subline under the title. */
   subtitle?: ReactNode;
   /** Right side of the title row. */
@@ -104,6 +167,7 @@ export function Page({
   subtitle,
   actions,
   band,
+  breadcrumb,
   testid,
   className = "",
   children,
@@ -128,7 +192,13 @@ export function Page({
   return (
     <div className={root} data-page-layout={layout} data-testid={testid}>
       {title == null ? null : (
-        <PageBand title={title} subtitle={subtitle} actions={actions} band={band} />
+        <PageBand
+          title={title}
+          subtitle={subtitle}
+          actions={actions}
+          band={band}
+          breadcrumb={breadcrumb}
+        />
       )}
       <div className={`flex flex-1 flex-col ${bodyPad}`}>
         {layout === "reading" && title != null ? (

@@ -32,7 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
-import Page, { PAGE_BAND_PAD } from "../components/ds/Page";
+import Page, { CrumbSep, PAGE_BAND_PAD, PageBreadcrumb } from "../components/ds/Page";
 import { REVISION_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable } from "../components/ProjectUnavailable";
@@ -510,9 +510,8 @@ export function PipelinePage() {
                 >
                   Workflows
                 </Link>
-                <span aria-hidden="true" className="px-1.5">
-                  /
-                </span>
+                {/* No dangling separator: the trail ends at the step it names,
+                  and this page has no name to name (finding 11). */}
               </nav>
               <h1
                 id="pipeline-load-error-heading"
@@ -547,6 +546,8 @@ export function PipelinePage() {
   }
 
   const summary = pipeline.data ? viewPipelineSummary(pipeline.data) : null;
+  // The band's title — the H1's words, and the leaf of the trail above it.
+  const workflowName = summary?.display_name ?? pipeline.data?.slug ?? "Workflow";
   const usedInRevisions = revisionRows.map((row) => ({
     id: row.id,
     revision_number: row.revision_number,
@@ -573,17 +574,44 @@ export function PipelinePage() {
         {/* Finding 07: this band IS the shared band — `PAGE_BAND_PAD` for the
           inset, `page-band` for the handle, and the H1 as the first thing in
           the title column, so its x and its baseline (y + height) are the
-          ones Today, Projects, Threads and Settings measure at. The
-          breadcrumb therefore reads UNDER the title (it is the mono subline
-          every other band carries), the revision chip rides the title row, and
-          the tabs stay the band's last row. */}
+          ones Today, Projects, Threads and Settings measure at. Finding 11:
+          the trail reads ABOVE the title — it rides the band's own `pt-[20px]`
+          padding absolutely (`PageBreadcrumb`), so it costs the H1 nothing.
+          The revision chip rides the title row and the tabs stay the band's
+          last row. */}
         <header
-          className={`${PAGE_BAND_PAD} flex flex-col gap-[12px] border-b border-line-strong bg-surface`}
+          className={`${PAGE_BAND_PAD} relative flex flex-col gap-[12px] border-b border-line-strong bg-surface`}
           data-testid="page-band"
         >
-          {/* Header rows stack on phones (390px): breadcrumb, title + chip,
-            description, then the actions in their own row — never beside the
-            title, which squeezed the description into a 100px column. */}
+          {/* Trail above the title, no dangling separator (finding 11): the
+            folder step rides between the library and the workflow's own name,
+            and the name is the current page, so it is a leaf, not a link. */}
+          <PageBreadcrumb testid="workflow-breadcrumb">
+            <Link
+              to={routes.workflows()}
+              className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            >
+              Workflows
+            </Link>
+            {pipeline.data?.folder ? (
+              <>
+                <CrumbSep />
+                <Link
+                  to={`${routes.workflows()}?folder=${encodeURIComponent(pipeline.data.folder)}`}
+                  className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                >
+                  {pipeline.data.folder}
+                </Link>
+              </>
+            ) : null}
+            <CrumbSep />
+            <span aria-current="page" className="text-ink-2">
+              {workflowName}
+            </span>
+          </PageBreadcrumb>
+          {/* Header rows stack on phones (390px): title + chip, description,
+            then the actions in their own row — never beside the title, which
+            squeezed the description into a 100px column. */}
           <div
             className="flex flex-col gap-[12px] md:flex-row md:flex-wrap md:items-start md:gap-[16px]"
             data-testid="workflow-header-top"
@@ -595,7 +623,7 @@ export function PipelinePage() {
                   id="pipeline-heading"
                   data-testid="pipeline-header-meta"
                 >
-                  {summary?.display_name ?? pipeline.data?.slug ?? "Workflow"}
+                  {workflowName}
                 </h1>
                 {revisionRows[0] ? (
                   <StatusChip
@@ -612,32 +640,6 @@ export function PipelinePage() {
                   </span>
                 )}
               </div>
-              {/* The trail under the title (finding 07: the title keeps the
-                band's baseline): the same mono 11px line every band carries. */}
-              <nav
-                aria-label="Breadcrumb"
-                className="font-mono text-[11px] text-muted"
-                data-testid="workflow-breadcrumb"
-              >
-                <Link
-                  to={routes.workflows()}
-                  className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                >
-                  Workflows
-                </Link>
-                {pipeline.data?.folder ? (
-                  <>
-                    {" / "}
-                    <Link
-                      to={`${routes.workflows()}?folder=${encodeURIComponent(pipeline.data.folder)}`}
-                      className="text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    >
-                      {pipeline.data.folder}
-                    </Link>
-                  </>
-                ) : null}
-                {" /"}
-              </nav>
               {/* One subtitle, two sources (2a/1e): the workflow's own
                 description when it has one (the design shows the description
                 in full — it caps nothing), the library sentence only when it
