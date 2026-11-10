@@ -392,6 +392,15 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   const [conversationId, setConversationId] = useState<string | null>(
     choice?.conversationId ?? null,
   );
+  /**
+   * Design (prototype `push({ kind: 'setup' })`): the system.status checklist
+   * is the FIRST message of a thread that started empty, so it stays above the
+   * conversation after the first send. Pinned for a new/empty thread, unpinned
+   * when the person switches to another existing thread.
+   */
+  const [setupPinned, setSetupPinned] = useState<boolean>(
+    (choice?.conversationId ?? null) === null,
+  );
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   /**
@@ -626,6 +635,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
    * docked draft ask was opened from goes with it: the header of the empty
    * thread reads "New thread", the page-context button still names the page. */
   const startNew = useCallback(() => {
+    setSetupPinned(true);
     setConversationId(null);
     setMessages([]);
     setSendError(null);
@@ -640,6 +650,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     (id: string) => {
       setThreadsMenuOpen(false);
       if (id === conversationId) return;
+      setSetupPinned(false);
       setMessages([]);
       setConversationId(id);
       setSendError(null);
@@ -936,6 +947,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     onDismissApproval: (messageId: string) => answerApproval(messageId, false),
     onGo: (route: string) => navigate(route),
     onNewConversation: startNew,
+    pinSetup: setupPinned,
     recentConversations,
     activeConversationId: conversationId,
     onSwitchConversation: switchConversation,

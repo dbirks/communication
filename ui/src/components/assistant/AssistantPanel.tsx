@@ -139,6 +139,9 @@ export interface AssistantPanelProps {
    * back through the normal send round-trip).
    */
   onNewConversation?: () => void;
+  /** Keep the setup checklist as the thread's first message after sends (a
+   * thread that started empty, design `push({ kind: 'setup' })`). */
+  pinSetup?: boolean;
   /** Caller's threads (newest first) for the Threads menu. */
   recentConversations?: RecentConversation[];
   /** The conversation currently displayed, if any (the menu's check mark). */
@@ -623,6 +626,7 @@ export function AssistantPanel({
   onDismissApproval,
   onGo,
   onNewConversation,
+  pinSetup = false,
   recentConversations = [],
   activeConversationId = null,
   onSwitchConversation,
@@ -901,7 +905,7 @@ export function AssistantPanel({
           onGo={onGo}
           openDraftHref={openDraftHref}
           onRetrySend={retrySend}
-          showSetup={messages.length === 0}
+          showSetup={messages.length === 0 || pinSetup}
           onSendPrompt={(text) => submit(text)}
         />
         {busy ? (

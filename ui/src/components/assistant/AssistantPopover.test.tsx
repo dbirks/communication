@@ -1215,7 +1215,7 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     return { chip, text: (chip.textContent ?? "").trim() };
   }
 
-  it("the click hides the checklist and shows the question as the person's bubble while thinking", async () => {
+  it("the click keeps the checklist as the thread's first message and shows the question as the person's bubble while thinking", async () => {
     let settleTurn: (value: Response) => void = () => {};
     const turn = new Promise<Response>((resolve) => {
       settleTurn = resolve;
@@ -1223,11 +1223,13 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     const { chip, text } = await openToFreshStarters(() => turn);
     expect(text.length).toBeGreaterThan(0);
     fireEvent.click(chip);
-    // Same instant: the checklist is gone and the clicked question is the
-    // person's own transcript row — exactly as if it had been typed+sent.
-    expect(screen.queryAllByTestId("assistant-setup")).toHaveLength(0);
-    expect(screen.queryAllByTestId("assistant-starter")).toHaveLength(0);
-    expect(screen.getByTestId("assistant-msg-user").textContent).toBe(text);
+    // Same instant: the clicked question is the person's own transcript row —
+    // exactly as if it had been typed+sent — and the checklist STAYS as the
+    // thread's first message above it (design: push({ kind: 'setup' })).
+    const setup = screen.getByTestId("assistant-setup");
+    const bubble = screen.getByTestId("assistant-msg-user");
+    expect(bubble.textContent).toBe(text);
+    expect(setup.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // `thinking…` follows the bubble; the composer locks with the turn.
     await screen.findByTestId("assistant-thinking");
     expect((screen.getByTestId("assistant-composer-input") as HTMLInputElement).disabled).toBe(
@@ -1244,9 +1246,9 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     expect((await screen.findByTestId("assistant-answer")).textContent).toContain(
       "Nothing is blocked on you right now.",
     );
-    // The transcript stays open: the checklist is the EMPTY thread's own
-    // message, so a live conversation shows no starters.
-    expect(screen.queryAllByTestId("assistant-starter")).toHaveLength(0);
+    // The transcript stays open and the checklist stays its FIRST message
+    // (design push({ kind: 'setup' })): one checklist, one user bubble.
+    expect(screen.getAllByTestId("assistant-setup")).toHaveLength(1);
   });
 
   it("a failed request keeps the message on screen, lines the error under it, and Retry sends the same words", async () => {
@@ -1283,7 +1285,7 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
     expect(await screen.findByTestId("assistant-answer")).toBeTruthy();
   });
 
-  it("a typed ask gets the same treatment: bubble first, then thinking, then the reply", async () => {
+  it("a typed ask gets the same treatment: checklist kept, bubble, then thinking, then the reply", async () => {
     let settleTurn: (value: Response) => void = () => {};
     const turn = new Promise<Response>((resolve) => {
       settleTurn = resolve;
@@ -1297,9 +1299,13 @@ describe("a clicked starter becomes the person's message (issue #63, handoff §2
       settleTurn(echoTurn("why is run 4f2a stuck?"));
     });
     await waitFor(() => expect(screen.getAllByTestId("assistant-msg-user")).toHaveLength(1));
-    // The checklist the person did not click is gone with the first message:
-    // the empty state only ever renders with an empty transcript.
-    expect(screen.queryAllByTestId("assistant-starter")).toHaveLength(0);
+    // The checklist stays as the thread's first message after a typed send too
+    // (design push({ kind: 'setup' })), ahead of the person's bubble.
+    const setup = screen.getByTestId("assistant-setup");
+    expect(
+      setup.compareDocumentPosition(screen.getByTestId("assistant-msg-user")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 
