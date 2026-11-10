@@ -171,13 +171,24 @@ The final SHA and its CI/Acceptance runs are recorded at the end.
 - **Every round's findings were fixed:** 789a59f, 8317844, 6f4c889, b0b31a3, 0bffcf8, 9442072, d5eae0f, a9aaab6.
 
 ## Final runs
-The final main SHA is the commit that adds this paragraph. It also carries the last code change, two assistant prompt rules:
-- Answer questions in words, and call `ui.navigate` only when the person asks to open or go to a page.
+The final main SHA is the docs-only commit that adds this paragraph. The two code commits before it are the last changes.
+
+**934d380 — two assistant prompt rules.**
+- Answer questions in words, and call `ui.navigate` only when asked to open a page.
 - Name each credential `credential.list` returned.
 
-Acceptance 42799969404 on ac88240 caught the model opening the secrets page instead of naming the credential, so lab leg AH:434 failed. With the new rules, that leg passed 3 of 3 on the local lab. The commit's own CI and Acceptance runs are the final word.
-- **Earlier on ac88240:** CI 42799969237 succeeded. Acceptance 42799969404 passed every m4 shard, the regrade and github-loop, and lab-e2e was 153 passed / 1 failed (the leg above).
-- **Local lab at d5eae0f:** `assistant-handoff.spec.ts`, `shell-p789.spec.ts` and `m5-assistant.spec.ts` gave **20 passed**.
+Acceptance 42799969404 caught the model opening the secrets page instead of naming the credential, so lab leg AH:434 failed. With the rules in place it passed 3 of 3 locally.
+
+**02e6508 — verification fixes found by Acceptance 42808462555.**
+- `REFLOW_ALLOWLIST` entries for the full page's thread and side columns, which hide on purpose at 390 per §1.
+- The IA screen guard no longer scans the assistant's own terms: the checklist's chat-model label, the `chat.transcript` tool name, and a /threads row's agent-written preview.
+- A guard spec proves the same words anywhere else still file.
+
+**Results recorded before this commit**
+- **934d380:** CI 42808462529 succeeded. Acceptance 42808462555 had lab-e2e green, all m4 shards, regrade and github-loop green, and verification red on the defects 02e6508 fixes.
+- **Local lab at d5eae0f:** the three assistant specs gave **20 passed**.
+
+The final SHA's own CI and Acceptance runs are the final word.
 
 ## Known, recorded limits
 - §4's decision model id and endpoint shape are still open in the handoff. ADR-0079 records the provisional OpenAI-compatible contract; the lab proves it against a deterministic stub, and any chat model can serve it.
