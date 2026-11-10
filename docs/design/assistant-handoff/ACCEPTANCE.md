@@ -171,9 +171,13 @@ The final SHA and its CI/Acceptance runs are recorded at the end.
 - **Every round's findings were fixed:** 789a59f, 8317844, 6f4c889, b0b31a3, 0bffcf8, 9442072, d5eae0f, a9aaab6.
 
 ## Final runs
-The final code SHA is **a9aaab6**. The docs-only commit that checks every TASKS.md box (after 3aff7a0) is the final main SHA, and its CI and Acceptance runs are the final word.
-- On the local lab at d5eae0f, `assistant-handoff.spec.ts`, `shell-p789.spec.ts` and `m5-assistant.spec.ts` gave **20 passed**.
-- Acceptance 42793809727 on 6f4c889 passed lab-e2e and every m4 shard, the regrade and github-loop.
+The final main SHA is the commit that adds this paragraph. It also carries the last code change, two assistant prompt rules:
+- Answer questions in words, and call `ui.navigate` only when the person asks to open or go to a page.
+- Name each credential `credential.list` returned.
+
+Acceptance 42799969404 on ac88240 caught the model opening the secrets page instead of naming the credential, so lab leg AH:434 failed. With the new rules, that leg passed 3 of 3 on the local lab. The commit's own CI and Acceptance runs are the final word.
+- **Earlier on ac88240:** CI 42799969237 succeeded. Acceptance 42799969404 passed every m4 shard, the regrade and github-loop, and lab-e2e was 153 passed / 1 failed (the leg above).
+- **Local lab at d5eae0f:** `assistant-handoff.spec.ts`, `shell-p789.spec.ts` and `m5-assistant.spec.ts` gave **20 passed**.
 
 ## Known, recorded limits
 - §4's decision model id and endpoint shape are still open in the handoff. ADR-0079 records the provisional OpenAI-compatible contract; the lab proves it against a deterministic stub, and any chat model can serve it.

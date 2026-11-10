@@ -106,7 +106,7 @@ func (r *ConversationRunner) registerSetupTools() {
 	}
 	r.regLocalTool(runnerTool{
 		name:  "credential.list",
-		desc:  "List the git/GitHub credentials the caller can see: name, kind, scope and which projects use each. Names only — a credential's value is never readable here, in a tool result or through any route (ADR-0018). Use it to answer \"which token is set up\"; to add one, point at the project's Secrets settings, never at this assistant. Read-only.",
+		desc:  "List the git/GitHub credentials the caller can see: name, kind, scope and which projects use each. Names only — a credential's value is never readable here, in a tool result or through any route (ADR-0018). Use it to answer \"which token is set up\" — name each credential it returns in the answer; to add one, point at the project's Secrets settings, never at this assistant. Read-only.",
 		props: map[string]any{},
 	})
 	r.regLocalTool(runnerTool{
