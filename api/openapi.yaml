@@ -6295,6 +6295,119 @@ paths:
               schema:
                 $ref: "#/components/schemas/AssistantProblem"
 
+  /api/v1/assistant/transcriptions:
+    post:
+      operationId: transcribeAssistantAudio
+      tags: [assistant]
+      summary: Transcribe one dictation clip with the deployment's speech model
+      description: >
+        ADR-0080's dictation proxy. The browser records; this route is the only
+        thing that ever sees the speech endpoint's key. The upload is forwarded
+        verbatim to `{COMMUNICATION_SPEECH_BASE_URL}/audio/transcriptions` as a
+        fresh multipart body carrying `file` (the caller's own filename and
+        media type) and `model` (`COMMUNICATION_SPEECH_MODEL`), with the key as a
+        Bearer token, and the endpoint's `{"text": …}` comes back trimmed and
+        clipped to 4000 characters.
+
+        * Audio is never stored: not in a table, not in the artifact store, not
+          in a temp file. It is held in memory for the one upstream call and
+          dropped, and neither the audio nor the transcript is ever logged.
+        * The transcript only lands in the composer, where the person edits or
+          sends it like typed text. There is no speech endpoint to read back.
+        * Allowed media types: `audio/webm` (the `audio/webm;codecs=opus` form
+          MediaRecorder sends counts), `audio/ogg`, `audio/wav`, `audio/x-wav`,
+          `audio/mp4`, `audio/mpeg`. At most 10 MiB of audio.
+        * Session + CSRF like every other mutation, and the assistant's own
+          per-principal rate limit — one recording is billed model work.
+        * With `COMMUNICATION_SPEECH_BASE_URL` or `COMMUNICATION_SPEECH_MODEL`
+          unset the deployment has no server-side speech: `503`
+          `speech_not_configured`. An unreachable endpoint, a deadline (30 s), a
+          non-2xx answer or an answer without `text` is `502`
+          `speech_unavailable`. The client falls back to the browser's Web
+          Speech API on either when its `speech_browser_fallback` preference is
+          on.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: >
+                    The recording, at most 10 MiB. Its part `Content-Type` must
+                    be one of the allowed audio media types.
+      responses:
+        "200":
+          description: >
+            The transcript. An empty `text` means the endpoint heard nothing;
+            the UI says so rather than filling the draft with nothing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantTranscription"
+        "400":
+          description: >
+            No `file` part (`code: audio_missing`) or a zero-byte recording
+            (`code: audio_empty`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantSpeechProblem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          description: "The recording is over 10 MiB (`code: audio_too_large`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantSpeechProblem"
+        "415":
+          description: "The recording's media type is not an allowed audio type (`code: audio_type_not_allowed`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantSpeechProblem"
+        "429":
+          description: >
+            The assistant throttle (ADR-0077): every recording is billed model
+            work, so dictation shares the assistant's per-principal budget.
+          headers:
+            Retry-After:
+              description: Whole seconds until a token refills.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "502":
+          description: >
+            The speech endpoint was unreachable, over its 30 s deadline, answered
+            non-2xx, or answered without a transcript (`code: speech_unavailable`).
+            The UI falls back to browser speech when its preference allows it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantSpeechProblem"
+        "503":
+          description: >
+            This deployment has no speech endpoint (`code:
+            speech_not_configured`) — `COMMUNICATION_SPEECH_BASE_URL` and
+            `COMMUNICATION_SPEECH_MODEL` are the variables to set.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantSpeechProblem"
+
   /api/v1/assistant/status:
     get:
       operationId: getAssistantSystemStatus
@@ -12923,6 +13036,18 @@ components:
             type: string
         ok:
           type: boolean
+        judge:
+          type: string
+          enum: [allowed, asked, unavailable]
+          description: >
+            ADR-0079: what the decision model did with this call. `allowed`
+            ran it, `asked` made it wait for a confirm, `unavailable` means
+            the judge was down, slow or malformed (a draft edit or risky call
+            then asks; a read or navigation falls back to the class table and
+            runs). Absent when this trust level never consulted the model:
+            `ask_all`, `no_ask`, or a deployment with no
+            `COMMUNICATION_DECISION_BASE_URL`/`_MODEL`. It records a verdict,
+            and authorizes nothing.
         reason:
           type: string
           enum: [unknown_tool, write_not_allowed, bad_arguments, not_found, forbidden, unavailable, tool_cap_exceeded]
@@ -13114,7 +13239,12 @@ components:
         tool-call summaries; `question` carries the model-written 2-4
         options with free text always on; `approval_request` carries the
         gated action, its replayable args and the pending/confirmed/
-        dismissed state); the shape of `payload` follows `kind` (a
+        dismissed state, plus `reason` — the card's "Why it asks" line
+        (ADR-0079): the decision model's one-sentence verdict, or one of the
+        server's own stable reasons ("Creates real state.", "Your level asks
+        before every change.", "Approving a gate always asks.", "Granting a
+        permission always asks.", "The decision model didn't answer, so this
+        waits for you."); the shape of `payload` follows `kind` (a
         discriminated object, rendered by the UI per kind).
       type: object
       required: [id, kind, payload, created_at]
@@ -13585,9 +13715,11 @@ components:
       description: >
         The assistant section. `trust_level` is enforced client-side in the
         assistant tool loop (ADR-0046); the server still caps every
-        assistant call at the caller's own role (ADR-0034).
+        assistant call at the caller's own role (ADR-0034). The two
+        `speech_*` members steer dictation (ADR-0080) and are UI behaviour
+        only: the server transcribes whatever it is handed.
       type: object
-      required: [trust_level]
+      required: [trust_level, speech_auto_send, speech_browser_fallback]
       additionalProperties: false
       properties:
         trust_level:
@@ -13597,6 +13729,20 @@ components:
           description: >
             How often the assistant asks before acting: always, only for
             risky operations (default), or never.
+        speech_auto_send:
+          type: boolean
+          default: false
+          description: >
+            Send the message the moment a dictated transcript lands, instead of
+            leaving it in the composer for the person to read and edit (off by
+            default).
+        speech_browser_fallback:
+          type: boolean
+          default: true
+          description: >
+            Fall back to the browser's own Web Speech API when the server's
+            speech endpoint is unset (`503`) or down (`502`). On by default;
+            with it off a failed recording is simply reported as one.
     UserPreferencesPatch:
       title: UserPreferencesPatch
       description: >
@@ -13635,6 +13781,42 @@ components:
             trust_level:
               type: string
               enum: [ask_all, ask_risky, no_ask]
+            speech_auto_send:
+              type: boolean
+            speech_browser_fallback:
+              type: boolean
+    AssistantTranscription:
+      title: AssistantTranscription
+      description: >
+        ADR-0080: the transcript of one dictation clip. It is the only answer
+        the speech route ever gives — nothing is stored, so there is nothing to
+        read back. `text` is trimmed and at most 4000 characters.
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          maxLength: 4000
+          description: >
+            What the speech model heard, or the empty string when it heard
+            nothing.
+    AssistantSpeechProblem:
+      title: AssistantSpeechProblem
+      description: >
+        The `Problem` shape plus the stable `code` member, so the UI branches on
+        a code rather than a sentence (ADR-0080).
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [code]
+          properties:
+            code:
+              type: string
+              description: >
+                Stable cause: `speech_not_configured`, `speech_unavailable`,
+                `audio_type_not_allowed`, `audio_too_large`, `audio_missing` or
+                `audio_empty`.
     AssistantNoteList:
       title: AssistantNoteList
       description: >

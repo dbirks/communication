@@ -73,6 +73,18 @@ func TestPreferencesGet(t *testing.T) {
 	if body["updated_at"] != nil {
 		t.Fatalf("updated_at = %v, want null for a never-saved user", body["updated_at"])
 	}
+	// ADR-0080: the speech switches are part of the defaults a never-saved
+	// user sees — auto-send off, browser fallback on.
+	asst := body["assistant"].(map[string]any)
+	if asst["trust_level"] != "ask_risky" {
+		t.Fatalf("trust_level = %v, want the default ask_risky", asst["trust_level"])
+	}
+	if asst["speech_auto_send"] != false {
+		t.Fatalf("speech_auto_send = %v, want the default false", asst["speech_auto_send"])
+	}
+	if asst["speech_browser_fallback"] != true {
+		t.Fatalf("speech_browser_fallback = %v, want the default true", asst["speech_browser_fallback"])
+	}
 	if store.gotID != oks.UserID {
 		t.Fatalf("store got user %q, want the caller's own id %q", store.gotID, oks.UserID)
 	}
@@ -116,6 +128,53 @@ func TestPreferencesPatchMergesAndReturnsFullDocument(t *testing.T) {
 		store.last.Layout.AskPlacement != nil || store.last.Assistant == nil ||
 		*store.last.Assistant.TrustLevel != "no_ask" {
 		t.Fatalf("store got patch %+v, want only the supplied members", store.last)
+	}
+}
+
+// ADR-0080's two speech switches travel through the same surface as the trust
+// level: they decode, they reach the store, and a non-boolean is the decoder's
+// 400 rather than a stored value.
+func TestPreferencesPatchSpeechSwitches(t *testing.T) {
+	t.Parallel()
+	oks := testPrincipal()
+	doc := DefaultUserPreferences()
+	doc.Assistant.SpeechAutoSend = true
+	doc.Assistant.SpeechBrowserFallback = false
+	store := &fakePrefsStore{doc: doc}
+	srv := newPrefsTestServer(t, store, principalAuth(oks, nil))
+	rec := do(t, srv, prefsRequest(t, http.MethodPatch,
+		"http://localhost:8080/api/v1/me/preferences",
+		map[string]string{HeaderCSRFToken: oks.CSRFToken},
+		`{"assistant":{"speech_auto_send":true,"speech_browser_fallback":false}}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	asst := store.last.Assistant
+	if asst == nil || asst.SpeechAutoSend == nil || !*asst.SpeechAutoSend ||
+		asst.SpeechBrowserFallback == nil || *asst.SpeechBrowserFallback {
+		t.Fatalf("store got patch %+v, want both switches with the sent values", store.last)
+	}
+	if asst.TrustLevel != nil {
+		t.Fatalf("trust_level = %v, want an untouched field", *asst.TrustLevel)
+	}
+	body := decodeBody(t, rec)
+	out := body["assistant"].(map[string]any)
+	if out["speech_auto_send"] != true || out["speech_browser_fallback"] != false {
+		t.Fatalf("answer assistant = %v, want the saved switches", out)
+	}
+
+	for name, patchBody := range map[string]string{
+		"not a bool":     `{"assistant":{"speech_auto_send":"yes"}}`,
+		"unknown switch": `{"assistant":{"speech_always_loud":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := do(t, srv, prefsRequest(t, http.MethodPatch,
+				"http://localhost:8080/api/v1/me/preferences",
+				map[string]string{HeaderCSRFToken: oks.CSRFToken}, patchBody))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body)
+			}
+		})
 	}
 }
 

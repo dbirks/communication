@@ -152,6 +152,12 @@ type ToolCall struct {
 	// row content — and every executed and refused call carries it, on the
 	// one-shot ask as on the conversation messages.
 	Summary string `json:"summary,omitempty"`
+	// Judge is ADR-0079's record of what the decision model did with this
+	// call: "allowed", "asked" or "unavailable". It is absent when the level
+	// never consulted the model (ask_all, no_ask, or a deployment with no
+	// COMMUNICATION_DECISION_* configured), which is why an empty value must
+	// never serialize as one of the three words.
+	Judge string `json:"judge,omitempty"`
 }
 
 // Answer is POST /api/v1/assistant/ask's 200 body.

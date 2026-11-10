@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -241,6 +242,58 @@ environment:
                                         raising this lengthens a slow turn
                                         instead of racing it. Unparseable or
                                         non-positive is a startup refusal.
+  COMMUNICATION_DECISION_BASE_URL       OpenAI-compatible server root for the
+                                        assistant's decision model (ADR-0079):
+                                        the judge the "Ask when it looks risky"
+                                        trust level consults before every tool
+                                        call. UNSET (or no _MODEL) means there is
+                                        no judge: the fixed ADR-0050 class table
+                                        decides, which asks MORE, never less, and
+                                        the setup checklist reports "No decision
+                                        model". Like the chat model, setting it
+                                        egresses bounded tool arguments to a third
+                                        party; must be an http(s) root with no
+                                        credentials, query or fragment — a
+                                        malformed one is reported as "no judge"
+                                        on the status row rather than refusing to
+                                        boot, because the gate falls back to the
+                                        table either way.
+  COMMUNICATION_DECISION_API_KEY        /…_API_KEY_FILE
+                                        bearer token for the judge. Never logged,
+                                        never placed in a prompt; the _FILE form
+                                        is trimmed of trailing whitespace.
+  COMMUNICATION_DECISION_MODEL          model name the judge sends (required
+                                        with the base URL for the judge to count
+                                        as configured).
+  COMMUNICATION_DECISION_TIMEOUT        per-decision deadline (Go duration, e.g.
+                                        "2s"; default 4s). A judge that is slow
+                                        is a judge that is DOWN: a draft edit or
+                                        risky call waits for the human rather
+                                        than stalling the turn, and a read runs.
+                                        Unparseable or non-positive is a startup
+                                        refusal, like the assistant's timeout.
+  COMMUNICATION_SPEECH_BASE_URL         OpenAI-compatible server root for
+                                        server-side dictation (ADR-0080). UNSET
+                                        (or no model) means the feature is
+                                        absent: POST /api/v1/assistant/transcriptions
+                                        answers 503 speech_not_configured and the
+                                        mic falls back to the browser's own speech
+                                        service. NOTE: pressing the mic makes this
+                                        replica send that recording to this
+                                        endpoint; audio is never stored, logged or
+                                        written to disk.
+  COMMUNICATION_SPEECH_API_KEY          /…_API_KEY_FILE
+                                        bearer token for the speech endpoint
+                                        (optional — an endpoint with no token
+                                        needs neither). Never logged; the _FILE
+                                        form is trimmed of trailing whitespace.
+  COMMUNICATION_SPEECH_MODEL            model name forwarded as the form field
+                                        "model" (e.g. "qwen3-asr-1-7b"). Base URL
+                                        and model together are what count as
+                                        configured.
+                                        (e.g. "qwen3-asr-1-7b"). Base URL and
+                                        model together are what count as
+                                        configured.
   COMMUNICATION_RATE_AUTH_PER_MIN       sustained /auth/login + /auth/callback
                                         requests per minute per client IP
                                         (default 10; 0 disables the limit,
@@ -555,6 +608,15 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	decisionCfg, err := serveDecisionConfig(os.Getenv)
+	if err != nil {
+		// ADR-0079's judge is a second egress site, so the one thing an
+		// operator can get wrong that would silently change what humans are
+		// asked about — how long they wait — is refused at startup with the
+		// assistant's own rule. An unusable BASE_URL is not: it means no judge.
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	// The catch-up generator's per-run cooldown: never a startup refusal, so
 	// there is no error to handle here (see serveCatchUpGenCooldown). Its
 	// per-replica global cap follows the same rule (see serveCatchUpGenPer10M),
@@ -654,6 +716,8 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		M3:              m3,
 		Assistant:       assistantCfg,
 		AssistantStatus: serveAssistantStatusConfig(os.Getenv),
+		Decision:        decisionCfg,
+		Speech:          serveSpeechConfig(os.Getenv),
 	})
 	if err != nil {
 		stop()
@@ -881,6 +945,23 @@ type serveStackDeps struct {
 	// on purpose — one process's endpoint must not silently become
 	// another's (serveAssistantConfig's rule, applied verbatim).
 	AssistantStatus api.AssistantStatusModels
+
+	// Speech is the resolved COMMUNICATION_SPEECH_* triple
+	// (serveSpeechConfig): ADR-0080's transcription egress, which
+	// POST /api/v1/assistant/transcriptions forwards recordings to. The zero
+	// value keeps the feature absent: the route answers 503
+	// speech_not_configured and the mic falls back to the browser (ADR-0080
+	// Migration/rollback: unset = browser speech only).
+	Speech api.SpeechConfig
+
+	// Decision is the resolved COMMUNICATION_DECISION_* quad
+	// (serveDecisionConfig): ADR-0079's decision model, the judge the
+	// "ask when it looks risky" trust level consults before every assistant
+	// tool call. The zero value means no judge: ADR-0050's fixed class table
+	// decides, the setup checklist reports "No decision model", and
+	// unsetting these variables returns every caller to the table
+	// (ADR-0079 Migration/rollback).
+	Decision serveDecision
 
 	// scheduleTickRunner overrides the schedule ticker loop; nil means
 	// production's runScheduleTicker over a postgres.ScheduleStore. Like
@@ -1174,6 +1255,107 @@ func serveAssistantStatusConfig(getenv func(string) string) api.AssistantStatusM
 		}
 	}
 	return out
+}
+
+// serveSpeechConfig resolves ADR-0080's transcription egress: the
+// COMMUNICATION_SPEECH_* triple. It mirrors serveAssistantConfig's rules and is
+// read from the same three variables the § 2 status row reports (one env read
+// each, so a _API_KEY_FILE is never opened twice for one boot):
+//
+//   - the base URL is a server root, trailing slash trimmed, because the
+//     client appends /audio/transcriptions to it;
+//   - the key comes from COMMUNICATION_SPEECH_API_KEY or, when that is empty,
+//     the trimmed contents of COMMUNICATION_SPEECH_API_KEY_FILE. It only ever
+//     reaches one request header — never a log line, a problem body or the
+//     status read, which reduces it to a `key_set` bool;
+//   - an unset base URL or model is not a failure: it is the honest absence,
+//     and the route says so with 503 speech_not_configured. A malformed URL is
+//     deliberately not a startup refusal here either — unlike the chat model
+//     the speech endpoint takes no traffic until someone presses the mic, and
+//     serveAssistantStatusConfig already documents that a typo belongs on the
+//     settings page (as configured: false / a 502), not in a refused boot.
+func serveSpeechConfig(getenv func(string) string) api.SpeechConfig {
+	out := api.SpeechConfig{
+		BaseURL: strings.TrimRight(strings.TrimSpace(getenv("COMMUNICATION_SPEECH_BASE_URL")), "/"),
+		Model:   strings.TrimSpace(getenv("COMMUNICATION_SPEECH_MODEL")),
+	}
+	out.APIKey = strings.TrimSpace(getenv("COMMUNICATION_SPEECH_API_KEY"))
+	if out.APIKey == "" {
+		if file := strings.TrimSpace(getenv("COMMUNICATION_SPEECH_API_KEY_FILE")); file != "" {
+			if raw, err := os.ReadFile(file); err == nil {
+				out.APIKey = string(trimSecret(raw))
+			}
+		}
+	}
+	return out
+}
+
+// envDecisionTimeout is ADR-0079's per-decision deadline.
+const envDecisionTimeout = "COMMUNICATION_DECISION_TIMEOUT"
+
+// serveDecision is the resolved COMMUNICATION_DECISION_* quad (ADR-0079):
+// the judge the "ask when it looks risky" level consults before every tool
+// call.
+type serveDecision struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+	// Timeout is the per-decision deadline; zero means the judge's own
+	// assistant.DefaultDecisionTimeout (4s) applies. A judge that is slow is a
+	// judge that is DOWN, so this stays short by design: the gate falls back to
+	// the fixed class table rather than stalling a turn.
+	Timeout time.Duration
+}
+
+// serveDecisionConfig reads the decision-model quad with the assistant's rules
+// mirrored verbatim: the base URL is a trailing-slash-trimmed server root, the
+// key comes from _API_KEY or (when that is empty) the trimmed contents of
+// _API_KEY_FILE, and the key only ever reaches one request header — never a
+// log line, a problem body or the § 2 status row, which reduces it to a
+// `key_set` bool.
+//
+// Unlike the chat model, an unusable base URL is NOT a startup refusal here: it
+// is a judge that does not count as configured, which ADR-0079 answers with the
+// fixed table (asks more, never less) and the setup checklist reports honestly.
+// A malformed TIMEOUT is a refusal, because it is a typo about how long a
+// human waits, not about which endpoint answers.
+func serveDecisionConfig(getenv func(string) string) (serveDecision, error) {
+	out := serveDecision{
+		BaseURL: strings.TrimRight(strings.TrimSpace(getenv("COMMUNICATION_DECISION_BASE_URL")), "/"),
+		Model:   strings.TrimSpace(getenv("COMMUNICATION_DECISION_MODEL")),
+	}
+	if raw := strings.TrimSpace(getenv(envDecisionTimeout)); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return out, fmt.Errorf("%s %q is not a duration: %w", envDecisionTimeout, raw, err)
+		}
+		if d <= 0 {
+			return out, fmt.Errorf("%s must be positive, got %s", envDecisionTimeout, d)
+		}
+		out.Timeout = d
+	}
+	out.APIKey = strings.TrimSpace(getenv("COMMUNICATION_DECISION_API_KEY"))
+	if out.APIKey == "" {
+		if file := strings.TrimSpace(getenv("COMMUNICATION_DECISION_API_KEY_FILE")); out.APIKey == "" && file != "" {
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				return out, fmt.Errorf("COMMUNICATION_DECISION_API_KEY_FILE %q is unreadable: %v", file, err)
+			}
+			out.APIKey = string(trimSecret(raw))
+		}
+	}
+	return out, nil
+}
+
+// decisionEndpointHost is the host half of a decision-model base URL for one
+// log line: scheme, path, query and any userinfo a key could hide in are all
+// dropped, exactly like the § 2 status row's `endpoint_host`.
+func decisionEndpointHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "the decision model"
+	}
+	return u.Host
 }
 
 // scheduleTicker is the slice of the schedule store the ticker loop needs —
@@ -1584,6 +1766,12 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		},
 	}
 	api.RegisterAssistant(handler, asstDeps)
+	// ADR-0080: server-side dictation. Mounted beside the assistant's own routes
+	// with the same session + CSRF + assistant-throttle contract; unset speech
+	// config answers 503 speech_not_configured and the mic falls back to the
+	// browser. Audio never touches disk and neither audio nor transcript is
+	// logged — see internal/api/assistant_speech.go.
+	api.RegisterAssistantSpeech(handler, d.Speech)
 	// The §2 setup read: the same object GET /api/v1/assistant/status serves
 	// and the system.status tool answers with. Every store below is the
 	// caller-scoped read an existing route already uses, so the checklist can
@@ -1622,9 +1810,26 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	var asstUndoer assistant.Undoer = assistant.UndoNotWired{}
 	if asstBroker != nil {
 		asstDraft := api.NewAssistantDraftService(postgres.APIPipelineStore{S: pipelineStore})
+		// ADR-0079: the judge is built only when the base URL and model are
+		// both set; anything else (including a base URL that is not an
+		// http(s) root) leaves it nil, which is the fixed table, not a
+		// half-wired model. It raises the gate, never lowers it, so a
+		// deployment that cannot reach it asks MORE than one that can.
+		var asstJudge assistant.Judge
+		if d.Decision.BaseURL != "" && d.Decision.Model != "" {
+			asstJudge = assistant.NewChatJudge(d.Decision.BaseURL, d.Decision.APIKey,
+				d.Decision.Model, d.Decision.Timeout, nil)
+			if asstJudge == nil {
+				// Named without being usable: say which, without the key or
+				// the userinfo a URL could hide.
+				d.API.Logger.Warn("assistant decision model is configured but unusable; the fixed tool-class table decides",
+					slog.String("endpoint_host", decisionEndpointHost(d.Decision.BaseURL)))
+			}
+		}
 		asstRunner = assistant.NewConversationRunner(assistant.ConversationRunnerDeps{
 			Broker: asstBroker,
 			Draft:  asstDraft,
+			Judge:  asstJudge,
 			// Thread → workflow (design 2f): the caller-checked chat read
 			// (the GET /conversations/{id} store read, the summary row's
 			// repository, the SSE stream's journal read, member names) and

@@ -64,10 +64,17 @@ type UserPreferencesLayout struct {
 	Expanded            map[string]bool `json:"expanded"`
 }
 
-// UserPreferencesAssistant is the assistant section. Default trust level:
-// ask_risky.
+// UserPreferencesAssistant is the assistant section. Defaults: trust level
+// ask_risky, dictation auto-send off, browser speech fallback on (ADR-0080).
 type UserPreferencesAssistant struct {
 	TrustLevel string `json:"trust_level"`
+	// SpeechAutoSend sends a dictated draft without waiting for the person to
+	// read it. It is off by default: the transcript always lands in the
+	// editable composer first.
+	SpeechAutoSend bool `json:"speech_auto_send"`
+	// SpeechBrowserFallback may the browser's own Web Speech service take over
+	// when the server's endpoint is unset or down. On by default.
+	SpeechBrowserFallback bool `json:"speech_browser_fallback"`
 }
 
 // DefaultUserPreferences is the document a never-saved user gets.
@@ -79,7 +86,11 @@ func DefaultUserPreferences() UserPreferences {
 			ShowWorkflowFolders: true,
 			Expanded:            map[string]bool{},
 		},
-		Assistant: UserPreferencesAssistant{TrustLevel: PrefTrustAskRisky},
+		Assistant: UserPreferencesAssistant{
+			TrustLevel:            PrefTrustAskRisky,
+			SpeechAutoSend:        false,
+			SpeechBrowserFallback: true,
+		},
 	}
 }
 
@@ -104,9 +115,12 @@ type UserPreferencesLayoutPatch struct {
 	Expanded            map[string]*bool `json:"expanded,omitempty"`
 }
 
-// UserPreferencesAssistantPatch is the assistant section of a patch.
+// UserPreferencesAssistantPatch is the assistant section of a patch; as in the
+// layout section, a nil member is an untouched field.
 type UserPreferencesAssistantPatch struct {
-	TrustLevel *string `json:"trust_level,omitempty"`
+	TrustLevel            *string `json:"trust_level,omitempty"`
+	SpeechAutoSend        *bool   `json:"speech_auto_send,omitempty"`
+	SpeechBrowserFallback *bool   `json:"speech_browser_fallback,omitempty"`
 }
 
 // UserPrefsValidationError is the store's 400: the patch (or the merged

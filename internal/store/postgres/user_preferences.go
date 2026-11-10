@@ -183,16 +183,27 @@ func prefsMergePatch(current *api.UserPreferences, patch api.UserPreferencesPatc
 			}
 		}
 	}
-	if patch.Assistant != nil && patch.Assistant.TrustLevel != nil {
-		t := *patch.Assistant.TrustLevel
-		if t != api.PrefTrustAskAll && t != api.PrefTrustAskRisky && t != api.PrefTrustNoAsk {
-			return &api.UserPrefsValidationError{
-				Field: "assistant.trust_level",
-				Detail: fmt.Sprintf("must be one of %q, %q or %q",
-					api.PrefTrustAskAll, api.PrefTrustAskRisky, api.PrefTrustNoAsk),
+	if patch.Assistant != nil {
+		a := patch.Assistant
+		if a.TrustLevel != nil {
+			t := *a.TrustLevel
+			if t != api.PrefTrustAskAll && t != api.PrefTrustAskRisky && t != api.PrefTrustNoAsk {
+				return &api.UserPrefsValidationError{
+					Field: "assistant.trust_level",
+					Detail: fmt.Sprintf("must be one of %q, %q or %q",
+						api.PrefTrustAskAll, api.PrefTrustAskRisky, api.PrefTrustNoAsk),
+				}
 			}
+			current.Assistant.TrustLevel = t
 		}
-		current.Assistant.TrustLevel = t
+		// The two ADR-0080 speech switches are plain booleans: the decoder's
+		// type check is the whole validation, so a merge is an assignment.
+		if a.SpeechAutoSend != nil {
+			current.Assistant.SpeechAutoSend = *a.SpeechAutoSend
+		}
+		if a.SpeechBrowserFallback != nil {
+			current.Assistant.SpeechBrowserFallback = *a.SpeechBrowserFallback
+		}
 	}
 	return nil
 }

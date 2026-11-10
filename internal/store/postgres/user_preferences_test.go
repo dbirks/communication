@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -128,7 +129,9 @@ func TestUserPrefsPatchMergesSectionsAndPersists(t *testing.T) {
 			ShowWorkflowFolders: prefsStrBool(false),
 		},
 		Assistant: &api.UserPreferencesAssistantPatch{
-			TrustLevel: prefsStr(api.PrefTrustNoAsk),
+			TrustLevel:            prefsStr(api.PrefTrustNoAsk),
+			SpeechAutoSend:        prefsBool(true),
+			SpeechBrowserFallback: prefsBool(false),
 		},
 	})
 	if err != nil {
@@ -145,6 +148,12 @@ func TestUserPrefsPatchMergesSectionsAndPersists(t *testing.T) {
 	}
 	if doc.Assistant.TrustLevel != api.PrefTrustNoAsk {
 		t.Fatalf("trust_level = %q, want no_ask", doc.Assistant.TrustLevel)
+	}
+	if !doc.Assistant.SpeechAutoSend {
+		t.Fatal("speech_auto_send = false, want the patch's true (ADR-0080)")
+	}
+	if doc.Assistant.SpeechBrowserFallback {
+		t.Fatal("speech_browser_fallback = true, want the patch's false (ADR-0080)")
 	}
 	if doc.UpdatedAt == nil {
 		t.Fatal("updated_at is nil after the first save")
@@ -369,5 +378,81 @@ func TestUserPrefsExpandedNullDeletesKey(t *testing.T) {
 	if !sameLayout(back.Layout, doc.Layout) {
 		t.Fatalf("stored expanded = %v, want the patch's answer %v",
 			back.Layout.Expanded, doc.Layout.Expanded)
+	}
+}
+
+// The merge itself needs no database: it is a pure function over the api
+// document, and ADR-0080's two speech switches are exactly the kind of member
+// whose default must survive an untouched patch and whose stored value must
+// win. This runs wherever the suite runs, DB or not.
+func TestUserPrefsMergeAppliesSpeechSwitches(t *testing.T) {
+	t.Parallel()
+	doc := api.DefaultUserPreferences()
+	if err := prefsMergePatch(&doc, api.UserPreferencesPatch{
+		Assistant: &api.UserPreferencesAssistantPatch{SpeechAutoSend: prefsBool(true)},
+	}); err != nil {
+		t.Fatalf("prefsMergePatch: %v", err)
+	}
+	if !doc.Assistant.SpeechAutoSend {
+		t.Fatal("speech_auto_send = false, want the patch's true")
+	}
+	if !doc.Assistant.SpeechBrowserFallback {
+		t.Fatal("speech_browser_fallback = false, want the untouched default true")
+	}
+	if doc.Assistant.TrustLevel != api.PrefTrustAskRisky {
+		t.Fatalf("trust_level = %q, want the untouched default", doc.Assistant.TrustLevel)
+	}
+
+	// A patch can turn the fallback off without touching anything else.
+	if err := prefsMergePatch(&doc, api.UserPreferencesPatch{
+		Assistant: &api.UserPreferencesAssistantPatch{SpeechBrowserFallback: prefsBool(false)},
+	}); err != nil {
+		t.Fatalf("prefsMergePatch: %v", err)
+	}
+	if doc.Assistant.SpeechBrowserFallback {
+		t.Fatal("speech_browser_fallback = true, want the second patch's false")
+	}
+	if !doc.Assistant.SpeechAutoSend {
+		t.Fatal("speech_auto_send = false, want the first patch's true kept")
+	}
+
+	// The empty patch and the bad-enum patch behave as before: absence changes
+	// nothing, and a wrong trust level is still the named field's error.
+	before := doc
+	if err := prefsMergePatch(&doc, api.UserPreferencesPatch{
+		Assistant: &api.UserPreferencesAssistantPatch{},
+	}); err != nil {
+		t.Fatalf("prefsMergePatch empty: %v", err)
+	}
+	if doc.Assistant != before.Assistant {
+		t.Fatalf("empty assistant patch changed the section: %+v vs %+v", doc.Assistant, before.Assistant)
+	}
+	var ve *api.UserPrefsValidationError
+	err := prefsMergePatch(&doc, api.UserPreferencesPatch{
+		Assistant: &api.UserPreferencesAssistantPatch{TrustLevel: prefsStr("yolo")},
+	})
+	if !errors.As(err, &ve) || ve.Field != "assistant.trust_level" {
+		t.Fatalf("err = %v, want assistant.trust_level validation", err)
+	}
+}
+
+// A stored row written before the speech switches existed still answers with
+// their defaults: the merge is json.Unmarshal over the default document, which
+// leaves an absent member at its default.
+func TestUserPrefsStoredRowWithoutSpeechKeysKeepsDefaults(t *testing.T) {
+	t.Parallel()
+	// The pre-ADR-0080 shape: the row only ever carried the trust level.
+	doc := api.DefaultUserPreferences()
+	if err := json.Unmarshal([]byte(`{"trust_level":"no_ask"}`), &doc.Assistant); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if doc.Assistant.TrustLevel != api.PrefTrustNoAsk {
+		t.Fatalf("trust_level = %q, want the stored no_ask", doc.Assistant.TrustLevel)
+	}
+	if doc.Assistant.SpeechAutoSend {
+		t.Fatal("speech_auto_send = true, want the default false for an old row")
+	}
+	if !doc.Assistant.SpeechBrowserFallback {
+		t.Fatal("speech_browser_fallback = false, want the default true for an old row")
 	}
 }

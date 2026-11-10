@@ -612,6 +612,7 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 			Args:    result.Approval.Args,
 			Summary: result.Approval.Summary,
 			Risk:    result.Approval.Risk,
+			Reason:  result.Approval.Reason,
 			State:   "pending",
 		})
 		if err != nil {
@@ -813,7 +814,12 @@ type approvalRequestPayload struct {
 	Args    map[string]string `json:"args"`
 	Summary string            `json:"summary"`
 	Risk    string            `json:"risk"`
-	State   string            `json:"state"`
+	// Reason is the card's "Why it asks" line (ADR-0079 / CONTRACT §3): the
+	// decision model's one-sentence verdict, or one of the server's own
+	// stable reasons. It is stored with the row, so a transcript read months
+	// later still says why that call waited.
+	Reason string `json:"reason"`
+	State  string `json:"state"`
 }
 
 // assistantApprovalProblem is assistantCodeProblem for the approval flow's

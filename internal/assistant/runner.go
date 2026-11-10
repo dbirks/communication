@@ -50,6 +50,11 @@ type TurnApproval struct {
 	Args    map[string]string `json:"args"`
 	Summary string            `json:"summary"`
 	Risk    string            `json:"risk"`
+	// Reason is the card's "Why it asks" line (CONTRACT §3): the judge's
+	// one-liner, or a server-written reason from the fixed table, ask_all or
+	// the always-ask floor. It is never model-authored for a server reason,
+	// and the server reason is never empty.
+	Reason string `json:"reason"`
 }
 
 // ChangeRecord is one assistant_changes row the turn's mutations produce
@@ -156,6 +161,11 @@ type ConversationRunner struct {
 	// the tool unannounced, the same honest-degradation rule as every other
 	// injected service.
 	status StatusReader
+	// judge is ADR-0079's decision model: consulted only at ask_risky, only
+	// to ADD a confirmation, never to remove one. nil (no
+	// COMMUNICATION_DECISION_* config) leaves ADR-0050's fixed table in
+	// charge.
+	judge Judge
 
 	wireToReg map[string]string
 	toolSpecs []toolSpec
@@ -178,6 +188,10 @@ type ConversationRunnerDeps struct {
 	// Status is the system.status face behind the setup checklist (§2).
 	// Optional; nil keeps the tool unannounced.
 	Status StatusReader
+	// Judge is ADR-0079's decision model behind the ask_risky level (§4).
+	// Optional and always a floor-raiser: nil, or a judge that errors,
+	// leaves the fixed class table in charge, which asks MORE, never less.
+	Judge Judge
 }
 
 // NewConversationRunner builds the runner over one broker.
@@ -189,6 +203,7 @@ func NewConversationRunner(d ConversationRunnerDeps) *ConversationRunner {
 		chats:   d.Chats,
 		library: d.Library,
 		status:  d.Status,
+		judge:   d.Judge,
 	}
 	// The workflow.draft lookup rides on the wired draft service when it
 	// carries the locator face (the api wiring's draft service does);
@@ -1017,64 +1032,144 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 	}
 	switch class {
 	case ClassRead:
-		if name == "draft.get" {
-			return r.execDraftGet(ctx, req.Caller, call, name)
+		// ADR-0079: at ask_risky with a judge configured, a READ can ask too
+		// (an oddly broad look-up is exactly what the fixed table cannot see).
+		// A gated read takes the same approval row a write does, and the
+		// confirm path re-runs it through ExecuteAction.
+		args := r.callArgsForClass(name, class, call)
+		gate, reason, tag := r.decideGate(ctx, trust, class, name, args, req)
+		if gate {
+			return r.gatedClass(name, class, args, reason, tag)
 		}
-		if name == "workflow.draft" {
-			return r.execWorkflowDraft(ctx, req.Caller, call, name)
-		}
-		if name == "chat.transcript" {
-			return r.execChatTranscript(ctx, req.Caller, call, name)
-		}
-		if name == "system.status" {
-			// No arguments: the answer is the caller's whole setup view, and
-			// there is nothing to narrow it by. A reader that was never wired
-			// answers the stable `unavailable` refusal the same way every
-			// absent service does, and the payload is the store's own bytes —
-			// setup facts the model reads as data, never as an instruction.
-			if r.status == nil {
-				return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unavailable"}}
-			}
-			raw, err := r.status(ctx, req.Caller)
-			if err != nil {
-				return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unavailable"}}
-			}
-			return execOutcome{
-				call:    ToolCall{Name: name, OK: true, Summary: "Read how this server is set up"},
-				payload: boundedJSON(raw),
-			}
-		}
-		// The v1 read registry: its own arg parsing, store call with the
-		// caller, links and 404 rule — unchanged.
-		t := &turn{b: r.b, ctx: ctx, caller: req.Caller, qc: QuestionContext{
-			Route:     req.Context.Route,
-			ProjectID: req.Context.ProjectID,
-		}}
-		t.exec(call)
-		return r.harvestRead(t, name)
+		out := r.runReadClass(ctx, req, name, call)
+		out.call.Judge = tag
+		return out
 	case ClassNavigate:
 		if name == "ui.question" {
+			// The question tool IS the human pause; gating it behind an
+			// approval would card a question with a question.
 			return r.execQuestion(name, call)
 		}
-		return r.execNavigate(name, call)
+		args := r.callArgsForClass(name, class, call)
+		gate, reason, tag := r.decideGate(ctx, trust, class, name, args, req)
+		if gate {
+			return r.gatedClass(name, class, args, reason, tag)
+		}
+		out := r.execNavigate(name, call)
+		out.call.Judge = tag
+		return out
 	case ClassDraftEdit:
+		gate, reason, tag := r.decideGate(ctx, trust, class, name,
+			r.callArgsForClass(name, class, call), req)
 		if name == "workflow.create_draft" {
-			if trust.Gates(class) {
-				return r.gatedWorkflowCreate(name, call)
+			if gate {
+				return r.gatedWorkflowCreate(name, call, reason, tag)
 			}
-			return r.execWorkflowCreateDraft(ctx, req.Caller, name, call)
+			out := r.execWorkflowCreateDraft(ctx, req.Caller, name, call)
+			out.call.Judge = tag
+			return out
 		}
-		if trust.Gates(class) {
-			return r.gatedDraftApply(ctx, req.Caller, name, call)
+		if gate {
+			return r.gatedDraftApply(ctx, req.Caller, name, call, reason, tag)
 		}
-		return r.runDraftApply(ctx, req.Caller, name, call)
+		out := r.runDraftApply(ctx, req.Caller, name, call)
+		out.call.Judge = tag
+		return out
 	case ClassRisky:
-		if trust.Gates(class) {
-			return r.gated(name, call)
+		gate, reason, tag := r.decideGate(ctx, trust, class, name,
+			r.callArgsForClass(name, class, call), req)
+		if gate {
+			return r.gatedClass(name, class, r.stringArgs(name, call), reason, tag)
 		}
-		return r.runRisky(ctx, req.Caller, name, call)
+		out := r.runRisky(ctx, req.Caller, name, call)
+		out.call.Judge = tag
+		return out
 	}
 	return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unknown_tool"}}
+}
+
+// runReadClass executes one read call that the gate let through: the four
+// runner-owned reads, then the v1 read registry (its own arg parsing, store
+// call with the caller, links and 404 rule — unchanged).
+func (r *ConversationRunner) runReadClass(ctx context.Context, req TurnRequest, name string, call toolCallRequest) execOutcome {
+	if name == "draft.get" {
+		return r.execDraftGet(ctx, req.Caller, call, name)
+	}
+	if name == "workflow.draft" {
+		return r.execWorkflowDraft(ctx, req.Caller, call, name)
+	}
+	if name == "chat.transcript" {
+		return r.execChatTranscript(ctx, req.Caller, call, name)
+	}
+	if name == "system.status" {
+		// No arguments: the answer is the caller's whole setup view, and
+		// there is nothing to narrow it by. A reader that was never wired
+		// answers the stable `unavailable` refusal the same way every
+		// absent service does, and the payload is the store's own bytes —
+		// setup facts the model reads as data, never as an instruction.
+		if r.status == nil {
+			return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unavailable"}}
+		}
+		raw, err := r.status(ctx, req.Caller)
+		if err != nil {
+			return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unavailable"}}
+		}
+		return execOutcome{
+			call:    ToolCall{Name: name, OK: true, Summary: "Read how this server is set up"},
+			payload: boundedJSON(raw),
+		}
+	}
+	t := &turn{b: r.b, ctx: ctx, caller: req.Caller, qc: QuestionContext{
+		Route:     req.Context.Route,
+		ProjectID: req.Context.ProjectID,
+	}}
+	t.exec(call)
+	return r.harvestRead(t, name)
+}
+
+// callArgsForClass is the bounded string view of one call's arguments for the
+// judge and the approval row: the runner tools parse with their own declared
+// props, the read registry with its props, and a call the parser refuses
+// contributes nothing (the judge then sees an empty arg object, never raw
+// model JSON).
+func (r *ConversationRunner) callArgsForClass(name string, class ToolClass, call toolCallRequest) map[string]string {
+	if name == "workflow.create_draft" {
+		// The document is huge by design and the standard argument bound
+		// would amputate it (or fail the parse outright); the judge only
+		// needs the call's shape, so the drafting tool's own parse supplies
+		// the slug, the name and the document's SIZE — never its text.
+		if wd, werr := parseWorkflowDraftArgs(call.Function.Arguments); werr == nil {
+			return map[string]string{
+				"slug": wd.slug, "display_name": wd.displayName,
+				"document_bytes": fmt.Sprint(len(wd.document)),
+			}
+		}
+		return map[string]string{}
+	}
+	if tl, ok := r.localTool(name); ok {
+		if args, err := parseToolArgs(tl, call.Function.Arguments); err == nil {
+			return args
+		}
+		return map[string]string{}
+	}
+	if class != ClassRead {
+		return map[string]string{}
+	}
+	tl, known := r.b.tools[name]
+	if !known {
+		return map[string]string{}
+	}
+	raw, err := parseArgs(tl, call.Function.Arguments)
+	if err != nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			out[k] = bounded(s, 200)
+		}
+	}
+	return out
 }
 
 // harvestRead lifts one v1 registry execution into this runner's records:
@@ -1098,8 +1193,10 @@ func (r *ConversationRunner) harvestRead(t *turn, name string) execOutcome {
 
 // gated is decision 4's gate mechanics for one refused call: it records
 // the call as awaiting_approval (never executed) and hands the turn the
-// approval_request row the client renders as the amber card.
-func (r *ConversationRunner) gated(name string, call toolCallRequest) execOutcome {
+// approval_request row the client renders as the amber card. `reason` is the
+// card's "Why it asks" line and `judgeTag` what the decision model did (if
+// this level consulted it at all).
+func (r *ConversationRunner) gated(name string, call toolCallRequest, reason, judgeTag string) execOutcome {
 	args := r.stringArgs(name, call)
 	if name == "workflow.create_draft" {
 		// The standard 200-char argument bound would amputate the pipeline
@@ -1112,21 +1209,73 @@ func (r *ConversationRunner) gated(name string, call toolCallRequest) execOutcom
 			}
 		}
 	}
+	return r.gatedClass(name, mustClass(name), args, reason, judgeTag)
+}
+
+// gatedClass builds the approval row for one gated call of a known class.
+func (r *ConversationRunner) gatedClass(name string, class ToolClass, args map[string]string, reason, judgeTag string) execOutcome {
 	summary := actionSummary(name, args)
+	if class := mustClass(name); class == ClassRead || class == ClassNavigate {
+		// A look-up card must not read like a change card: the write-tool
+		// verb table has no entry for a read, and "Run" alone would make the
+		// caller think something was about to happen.
+		summary = bounded(lookupSummary(class, name, args), 200)
+	}
 	approval := &TurnApproval{
 		Tool:    name,
 		Args:    args,
 		Summary: summary,
-		Risk:    riskText(name),
+		Risk:    gateRisk(name, class),
+		Reason:  fallback(reason, GateReasonFixedTable),
 	}
-	if name == "draft.apply" {
-		approval.Risk = "changes the pipeline draft's structure or a node's prompt; the draft's current version is re-checked when it runs"
-	}
-	r.b.logger().Info("assistant tool gated by trust level", "tool", name)
+	r.b.logger().Info("assistant tool gated by trust level", "tool", name, "reason", approval.Reason)
 	return execOutcome{
-		call:     ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "awaiting_approval"},
+		call:     ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "awaiting_approval", Judge: judgeTag},
 		approval: approval,
 	}
+}
+
+// lookupSummary names a gated read or navigation the way the card shows it.
+func lookupSummary(class ToolClass, name string, args map[string]string) string {
+	parts := make([]string, 0, len(args))
+	for _, k := range []string{"route", "project_id", "run_id", "pipeline_id", "draft_id", "query", "needle", "url"} {
+		if v := bounded(strings.TrimSpace(args[k]), 64); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	verb := "Look up " + name
+	if class == ClassNavigate {
+		verb = "Open"
+	}
+	if len(parts) == 0 {
+		return verb
+	}
+	return verb + " " + strings.Join(parts, " · ")
+}
+
+// gateRisk is the card's risk line: what the action will do to real state
+// (decision 3), server-written. A read or a navigation the judge flagged
+// changes nothing, and says so — the reason line above it is why it asked.
+func gateRisk(name string, class ToolClass) string {
+	switch class {
+	case ClassRead:
+		return "reads information you can already see; nothing in the app changes"
+	case ClassNavigate:
+		return "moves this page; nothing in the app changes"
+	}
+	if name == "draft.apply" {
+		return "changes the pipeline draft's structure or a node's prompt; the draft's current version is re-checked when it runs"
+	}
+	return riskText(name)
+}
+
+// mustClass names a registry tool's class (the table is the registry's source
+// of truth, so a registered name always has one).
+func mustClass(name string) ToolClass {
+	if c, ok := ClassOf(name); ok {
+		return c
+	}
+	return ClassRisky
 }
 
 // stringArgs pulls the known string args of one call for the approval row
@@ -1356,7 +1505,7 @@ func (r *ConversationRunner) draftApplyRefusal(name string, args map[string]stri
 // current version is gated. (Dress rehearsal shell-p789 T5: the invalid op
 // was carded unvalidated and Retry answered the generic "permissions" 409
 // forever.)
-func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name string, call toolCallRequest) execOutcome {
+func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name string, call toolCallRequest, reason, judgeTag string) execOutcome {
 	tl, _ := r.localTool(name)
 	args, err := parseToolArgs(tl, call.Function.Arguments)
 	if err != nil {
@@ -1366,7 +1515,7 @@ func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name
 	if _, perr := r.planDraftEdit(ctx, c, args); perr != nil {
 		return r.draftApplyRefusal(name, args, perr)
 	}
-	return r.gated(name, call)
+	return r.gated(name, call, reason, judgeTag)
 }
 
 // badArgumentsPayload is the model-facing detail for a call whose argument
@@ -1614,6 +1763,32 @@ func (r *ConversationRunner) runRisky(ctx context.Context, c Caller, name string
 // the acknowledgement text and the change row the action logged.
 func (r *ConversationRunner) ExecuteAction(ctx context.Context, c Caller,
 	tool string, args map[string]string) (string, *ChangeRecord, error) {
+	// ADR-0079: the judge can flag a look-up too, so a confirmed approval row
+	// whose tool is a read or a navigation re-runs THAT read as the caller and
+	// answers with its summary — the confirm is "yes, look at it", not a
+	// promise to change something.
+	if class, known := ClassOf(tool); known && (class == ClassRead || class == ClassNavigate) {
+		if class == ClassNavigate && tool != "ui.navigate" {
+			return "", nil, errors.New("this confirmation is not available on this deployment")
+		}
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return "", nil, err
+		}
+		call := toolCallRequest{ID: "confirm", Type: "function",
+			Function: functionCall{Name: tool, Arguments: string(raw)}}
+		var out execOutcome
+		if class == ClassNavigate {
+			out = r.execNavigate(tool, call)
+		} else {
+			out = r.runReadClass(ctx, TurnRequest{Caller: c}, tool, call)
+		}
+		if !out.call.OK {
+			return "", nil, fmt.Errorf("assistant: the confirmed look-up did not run (%s)", out.call.Reason)
+		}
+		ack := "Done — " + fallback(out.call.Summary, "read "+tool) + "."
+		return bounded(ack, 200), out.change, nil
+	}
 	if tool == "draft.apply" {
 		summary, change, err := r.applyDraft(ctx, c, args)
 		if err != nil {
@@ -1636,7 +1811,7 @@ func (r *ConversationRunner) ExecuteAction(ctx context.Context, c Caller,
 // gatedDraftApply rule) — a document the compiler would refuse earns a
 // refusal naming the diagnostic, never an approval card the caller can
 // never confirm.
-func (r *ConversationRunner) gatedWorkflowCreate(name string, call toolCallRequest) execOutcome {
+func (r *ConversationRunner) gatedWorkflowCreate(name string, call toolCallRequest, reason, judgeTag string) execOutcome {
 	wd, err := parseWorkflowDraftArgs(call.Function.Arguments)
 	if err != nil {
 		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"},
@@ -1650,7 +1825,7 @@ func (r *ConversationRunner) gatedWorkflowCreate(name string, call toolCallReque
 		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "proposal_invalid"},
 			payload: json.RawMessage(bounded(string(blob), maxDraftGetBytes))}
 	}
-	return r.gated(name, call)
+	return r.gated(name, call, reason, judgeTag)
 }
 
 // confirmWorkflowCreate re-runs one approved workflow.create_draft exactly
