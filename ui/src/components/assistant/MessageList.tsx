@@ -1,7 +1,6 @@
 import type { ReactElement } from "react";
 import {
   IconCheck,
-  IconChevronRight,
   IconCurrentLocation,
   IconMicrophone,
   IconPoint,
@@ -14,7 +13,7 @@ import { useDraft } from "../../api/pipelines";
 import { assumedOf, judgeOf, spokenOf } from "../../api/assistant";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
-import { SetupMessage } from "./SetupChecklist";
+import { SetupMessage, ToolRuleLine } from "./SetupChecklist";
 import { draftStepRows, openDraftIdOf } from "./draftSteps";
 import { AnswerLinks } from "./links";
 import type {
@@ -809,15 +808,12 @@ export function toolDisclosureLine(calls: AssistantAnswerPayload["tool_calls"]):
 function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"] }) {
   if (calls.length === 0) return null;
   return (
-    <details
-      data-testid="assistant-tools"
-      className="mt-[6px] border-t border-line pt-[4px]"
-      style={{ borderTopWidth: 1 }}
-    >
-      <summary className="inline-flex max-w-full cursor-pointer items-center gap-[4px] font-mono text-[10.5px] text-faint">
-        <span className="min-w-0 truncate">{toolDisclosureLine(calls)}</span>
-        <IconChevronRight size={11} stroke={2} aria-hidden className="shrink-0" />
-      </summary>
+    <details data-testid="assistant-tools" className="mt-[6px]">
+      {/* The same row as the setup checklist's `used system.status` line
+          (design L209–212 / L241–292): top rule, chevron FIRST, mono line. */}
+      <ToolRuleLine as="summary" className="max-w-full cursor-pointer">
+        {toolDisclosureLine(calls)}
+      </ToolRuleLine>
       <ul className="m-0 mt-[4px] list-none space-y-[2px] p-0">
         {calls.map((call, index) => (
           <ToolRow key={`${call.name}-${index}`} call={call} />

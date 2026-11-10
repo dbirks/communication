@@ -156,6 +156,9 @@ describe("SetupChecklist", () => {
     expect(starters.map((button) => button.textContent)).toEqual([...SETUP_STARTERS]);
     starters.forEach((button) => fireEvent.click(button));
     expect(onPrompt.mock.calls.map((call) => call[0])).toEqual([...SETUP_STARTERS]);
+    // §4: under the phone floor the starters are full 44px touch targets that
+    // never shrink narrower than one either.
+    starters.forEach((button) => expect(button.className).toContain("max-[559px]:min-w-[44px]"));
   });
 
   /**
@@ -177,6 +180,10 @@ describe("SetupChecklist", () => {
     const label = row.querySelector('[data-testid="assistant-setup-label"]') as HTMLElement;
     expect(label.textContent).toBe("GitHub credential");
     expect(label.className).not.toContain("truncate");
+    // §3: and it never WRAPS either. In page mode at 390 the label broke into
+    // two lines with a blank second one, so the row was ~54px while its
+    // neighbours stayed ~28px. One line, every row, every width/mode.
+    expect(label.className).toContain("whitespace-nowrap");
     // The mono meta is what shrinks/ellipsizes.
     const meta = row.querySelector('[data-testid="assistant-setup-meta"]') as HTMLElement;
     expect(meta.textContent).toContain(longName);
@@ -188,6 +195,13 @@ describe("SetupChecklist", () => {
     const action = screen.getByTestId("assistant-setup-action");
     expect(card.contains(action)).toBe(true);
     expect(action.className).toContain("shrink-0");
+    // Every row is the same single-line box: one shared padding class, no
+    // per-row height, nothing that could grow one row past the others.
+    for (const candidate of rows()) {
+      expect(candidate.className, candidate.textContent).toContain("items-center");
+      expect(candidate.className, candidate.textContent).toContain("py-[5px]");
+      expect(candidate.className, candidate.textContent).not.toMatch(/h-\[/);
+    }
   });
 
   /**

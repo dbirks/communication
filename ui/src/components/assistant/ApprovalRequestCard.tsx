@@ -105,9 +105,13 @@ function Banner({ tone, children }: { tone: "waiting" | "done" | "quiet"; childr
   return (
     <p
       data-testid="assistant-approval-header"
-      className={`m-0 flex items-center gap-[6px] px-[9px] py-[6px] font-mono text-[10px] font-semibold tracking-[.06em] ${
+      // §6: the waiting band is the design's PALE wash (mock L306:
+      // #fdf6e4 body / #e8cf94 rule / #5c3d00 text = the `st-waiting` pale
+      // tokens), never the saturated tag amber. `border-b border-transparent`
+      // keeps every tone the same height.
+      className={`m-0 flex items-center gap-[6px] border-b border-transparent px-[9px] py-[6px] font-mono text-[10px] font-semibold tracking-[.06em] ${
         tone === "waiting"
-          ? "bg-st-waiting-tag text-st-waiting-tag-fg"
+          ? "bg-st-waiting-pale-body border-st-waiting-pale-edge text-st-waiting-pale-fg"
           : tone === "done"
             ? "bg-st-done-tag text-st-done-tag-fg"
             : "bg-fill text-muted"

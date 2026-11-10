@@ -213,6 +213,19 @@ describe("the composer box (handoff §1)", () => {
     expect(screen.getByTestId("mic-button").className).toContain("h-[30px]");
     const send = screen.getByTestId("assistant-send") as HTMLButtonElement;
     expect(send.className).toContain("h-[30px]");
+    // Review §4: the phone touch-target floor (`main button` ≥ 44px below
+    // 560px) may not stretch these four. On the full page at 390px it turned
+    // the 26px context square into a 26×44 sliver; each one widens with it, so
+    // at phone width inside <main> (the full page) they are SQUARE 44px targets
+    // and the popover/side panel (outside <main>) keep the design's 26/30px.
+    for (const testid of [
+      "assistant-context-button",
+      "assistant-pill",
+      "mic-button",
+      "assistant-send",
+    ]) {
+      expect(screen.getByTestId(testid).className, testid).toContain("max-[559px]:min-w-[44px]");
+    }
     // Empty draft: Send is disabled, and it carries the disabled pair.
     expect(send.disabled).toBe(true);
     expect(send.className).toContain("bg-disabled-bg");

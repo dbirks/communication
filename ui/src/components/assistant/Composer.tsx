@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { IconArrowUp } from "@tabler/icons-react";
-import { ContextButton } from "./ContextButton";
+import { ContextButton, KEEP_COMPOSER_SIZE_PX } from "./ContextButton";
 import ListeningBar, { TranscribingRow } from "./ListeningBar";
 import MicButton from "./MicButton";
 import { pageContextPayload, usePageContext, usePageContextOn } from "./pageContext";
@@ -179,7 +179,7 @@ export function Composer({
             title="Send"
             disabled={!draft.trim() || busy || recording || transcribing}
             onClick={() => sendNow(draft, spokenDraftRef.current)}
-            className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[4px] border ${
+            className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[4px] border ${KEEP_COMPOSER_SIZE_PX} ${
               !draft.trim() || busy || recording || transcribing
                 ? "cursor-not-allowed border-line bg-disabled-bg text-disabled-fg"
                 : "cursor-pointer border-accent-edge bg-accent text-surface shadow-[2px_2px_0_var(--color-accent-shadow)] hover:brightness-95 active:translate-[2px_2px] active:shadow-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"

@@ -200,6 +200,14 @@ describe("ApprovalRequestCard proposal (A7 §6)", () => {
     expect(screen.getByTestId("assistant-approval-header").textContent).toBe(
       "NEEDS YOUR OK · CREATES REAL STATE",
     );
+    // Review §6: that band is the design's PALE waiting band (#fdf6e4 body /
+    // #e8cf94 rule / #5c3d00 text = the pale `st-waiting` tokens), not the
+    // saturated tag amber.
+    const band = screen.getByTestId("assistant-approval-header").className;
+    expect(band).toContain("bg-st-waiting-pale-body");
+    expect(band).toContain("border-st-waiting-pale-edge");
+    expect(band).toContain("text-st-waiting-pale-fg");
+    expect(band).not.toContain("bg-st-waiting-tag");
     expect(screen.getByTestId("assistant-proposal-project").textContent).toBe("home-lab (new)");
     expect(screen.getByTestId("assistant-proposal-repository").textContent).toBe(
       "dbirks/home-lab @ main",

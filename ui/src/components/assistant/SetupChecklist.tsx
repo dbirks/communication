@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
 import { IconAlertCircle, IconCheck, IconChevronRight, IconCircle } from "@tabler/icons-react";
 import { useSystemStatus, type AssistantSystemStatus } from "../../api/assistant";
+import { KEEP_COMPOSER_SIZE_PX } from "./ContextButton";
 
 /**
  * The setup checklist (handoff A3 §2 / design FIRST RUN 1f): what this server
@@ -157,6 +159,32 @@ export function SetupMessage({ onPrompt }: { onPrompt: (text: string) => void })
   return <SetupChecklist status={data} onPrompt={onPrompt} />;
 }
 
+/**
+ * The `› used system.status` line (design L209–212 / L241–292): a TOP RULE
+ * across the column, then the chevron FIRST and the mono line after it. One
+ * component for both places that says what a turn looked at — this checklist and
+ * an answer's folded tool disclosure (`MessageList`), so the two never drift
+ * apart again.
+ */
+export function ToolRuleLine({
+  as: Tag = "div",
+  children,
+  className = "",
+}: {
+  as?: "div" | "summary";
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <Tag
+      className={`flex items-center gap-[4px] border-t border-line pt-[4px] font-mono text-[10.5px] text-faint ${className}`}
+    >
+      <IconChevronRight size={11} stroke={2} aria-hidden className="shrink-0" />
+      <span className="min-w-0 truncate">{children}</span>
+    </Tag>
+  );
+}
+
 export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
   const rows = setupRowsOf(status);
   return (
@@ -191,14 +219,15 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
                 <IconCircle size={10} stroke={2} aria-hidden className="shrink-0" />
               )}
             </span>
-            {/* The label is WHOLE: it never truncates and never pushes the
-                action out of the card — the mono meta column (min-w-0 +
-                truncate) is what shrinks. The label only wraps when it alone
-                exceeds the row (default min-width: auto floors it at its
-                longest word). */}
+            {/* The label is WHOLE and stays ONE LINE (§3): it never wraps — a
+                two-line row leaves a blank second line and breaks the 28px row
+                rhythm — and never pushes the action out of the card. The mono
+                meta column (min-w-0 + truncate) is what shrinks; the label only
+                gives way when it alone exceeds the row (min-width: auto floors
+                it at its longest word). */}
             <span
               data-testid="assistant-setup-label"
-              className="text-[13px] leading-[1.4] text-ink"
+              className="text-[13px] leading-[1.4] whitespace-nowrap text-ink"
             >
               {row.label}
             </span>
@@ -233,16 +262,13 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
             type="button"
             data-testid="assistant-starter"
             onClick={() => onPrompt(text)}
-            className="cursor-pointer rounded-[4px] border border-line bg-surface px-[9px] py-[5px] text-left text-[12px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className={`cursor-pointer rounded-[4px] border border-line bg-surface px-[9px] py-[5px] text-left text-[12px] text-ink hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${KEEP_COMPOSER_SIZE_PX}`}
           >
             {text}
           </button>
         ))}
       </div>
-      <div className="flex items-center gap-[4px] border-t border-line pt-[4px] font-mono text-[10.5px] text-faint">
-        <IconChevronRight size={11} stroke={2} aria-hidden className="shrink-0" />
-        used system.status
-      </div>
+      <ToolRuleLine>used system.status</ToolRuleLine>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { IconMicrophone, IconPlayerStop } from "@tabler/icons-react";
+import { KEEP_COMPOSER_SIZE_PX } from "./ContextButton";
 import type { DictationPhase } from "./useDictation";
 
 /**
@@ -47,7 +48,7 @@ export default function MicButton({
       title={TITLES[phase]}
       disabled={disabled || waiting}
       onClick={onToggle}
-      className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[4px] border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+      className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[4px] border ${KEEP_COMPOSER_SIZE_PX} focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
         recording
           ? "border-st-failed-pale-fg bg-st-failed-strong text-st-failed-strong-fg"
           : waiting

@@ -6,7 +6,7 @@
  * API's own message inline on the popover.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -783,6 +783,19 @@ describe("the three sizes (handoff §1)", () => {
       expect(screen.queryByTestId("assistant-new-conversation")).toBeNull();
       // Handoff §1: a change row reads what it did and says it stays done.
       expect(side.querySelector('[data-testid="assistant-page-change"]')).toBeNull();
+    });
+
+    it("1300: the thread column leads with the open thread even before it is saved (§2)", async () => {
+      await openPageAt(1300);
+      const column = screen.getByTestId("assistant-page-threads");
+      // Nothing is persisted yet, and still the open thread is a row — the
+      // design's `threadRows` always contain it. No "No threads yet" sentence.
+      expect(column.textContent).toContain("New thread");
+      expect(column.textContent).toContain("now");
+      expect(column.textContent).not.toContain("No threads yet");
+      const items = within(column).getAllByTestId("assistant-history-item");
+      expect(items).toHaveLength(1);
+      expect(items[0].className).toContain("bg-accent-wash");
     });
 
     it("1100: the context column is gone, the thread list stays", async () => {

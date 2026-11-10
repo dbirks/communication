@@ -424,16 +424,33 @@ export function ThreadsMenu({
 export function AssistantThreadColumn({
   conversations,
   activeId,
+  currentThread = null,
   onSwitch,
   onNewConversation,
 }: {
   conversations: RecentConversation[];
   activeId: string | null;
+  /**
+   * The thread open RIGHT NOW, saved or not (handoff §1, §2 review fix: the
+   * prototype's `threadRows` always contains the current thread). A new thread
+   * with nothing persisted yet is the unsaved row `{ id: "" }`, which
+   * `ThreadRow` draws as the selected `New thread · now` — so the column never
+   * claims “no threads yet” while a thread is on screen. `null` = no thread
+   * open (the empty state then belongs to the column).
+   */
+  currentThread?: RecentConversation | null;
   onSwitch: (id: string) => void;
   onNewConversation: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const rows = filterThreads(conversations, query);
+  // The current thread leads the list; a saved one is never listed twice.
+  const rows = filterThreads(
+    currentThread
+      ? [currentThread, ...conversations.filter((row) => row.id !== currentThread.id)]
+      : conversations,
+    query,
+  );
+  const selectedId = currentThread ? currentThread.id : (activeId ?? "");
   return (
     <aside
       data-testid="assistant-page-threads"
@@ -456,19 +473,25 @@ export function AssistantThreadColumn({
         THREADS
       </span>
       <span className="flex min-h-0 flex-1 flex-col gap-[2px] overflow-y-auto">
-        {rows.length === 0 ? (
+        {rows.length === 0 &&
+        (query.trim().length > 0 || (currentThread === null && activeId === null)) ? (
           <p className="m-0 px-[6px] py-[4px] text-[12px] text-muted">
-            {conversations.length === 0
-              ? "No threads yet — the next answer starts one."
-              : "No thread matches that search."}
+            {query.trim().length > 0
+              ? "No thread matches that search."
+              : "No threads yet — the next answer starts one."}
           </p>
         ) : (
           rows.map((conversation) => (
             <ThreadRow
-              key={conversation.id}
+              key={conversation.id.length === 0 ? "current-unsaved" : conversation.id}
               conversation={conversation}
-              active={conversation.id === activeId}
-              onSelect={onSwitch}
+              active={conversation.id === selectedId}
+              onSelect={(id) => {
+                // The unsaved row IS the thread already open: selecting it
+                // switches to nothing.
+                if (id.length === 0) return;
+                onSwitch(id);
+              }}
             />
           ))
         )}

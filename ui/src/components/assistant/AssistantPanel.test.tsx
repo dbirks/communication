@@ -1028,6 +1028,87 @@ describe("the full page's height chain (walk-through finding 1)", () => {
 });
 
 /**
+ * Review §2 (handoff §1, mock L112–125 / L381–410): the prototype's
+ * `threadRows` ALWAYS contain the thread on screen. A new thread with nothing
+ * persisted yet was showing the empty-state sentence instead of itself.
+ */
+describe("the full page's THREADS column always lists the open thread", () => {
+  const column = (props: Omit<Parameters<typeof AssistantThreadColumn>[0], "onNewConversation">) =>
+    render(withQuery(<AssistantThreadColumn {...props} onNewConversation={() => {}} />));
+
+  const classes = (node: HTMLElement) => new Set(node.className.split(/\s+/));
+
+  it("leads with the unsaved thread as a selected “New thread · now” row, no empty state", () => {
+    const onSwitch = vi.fn();
+    column({
+      conversations: [],
+      activeId: null,
+      currentThread: { id: "", title: null, lastMessageAt: null },
+      onSwitch,
+    });
+    const items = screen.getAllByTestId("assistant-history-item");
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("New thread");
+    expect(items[0].textContent).toContain("now");
+    // Selected: the accent wash and the check column of the current row.
+    expect(classes(items[0]).has("bg-accent-wash")).toBe(true);
+    expect(items[0].querySelector("svg")?.getAttribute("class")).toContain("tabler-icon-check");
+    // “No threads yet” never appears while a thread is on screen.
+    expect(screen.queryByText("No threads yet — the next answer starts one.")).toBeNull();
+    // It IS the open thread: tapping it switches to nothing.
+    fireEvent.click(items[0]);
+    expect(onSwitch).not.toHaveBeenCalled();
+  });
+
+  it("lists a saved thread once, selected, with the others after it", () => {
+    const onSwitch = vi.fn();
+    column({
+      conversations: [
+        { id: "c1", title: "Fix the board", lastMessageAt: "2026-10-20T10:00:00Z" },
+        { id: "c2", title: "Add a reviewer", lastMessageAt: "2026-10-19T10:00:00Z" },
+      ],
+      activeId: "c1",
+      currentThread: { id: "c1", title: "Fix the board", lastMessageAt: "2026-10-20T10:00:00Z" },
+      onSwitch,
+    });
+    const items = screen.getAllByTestId("assistant-history-item");
+    expect(items.map((item) => item.getAttribute("data-conversation-id"))).toEqual(["c1", "c2"]);
+    expect(classes(items[0]).has("bg-accent-wash")).toBe(true);
+    // The other row only washes on hover — it is not the open thread.
+    expect(classes(items[1]).has("bg-accent-wash")).toBe(false);
+    expect(classes(items[1]).has("bg-transparent")).toBe(true);
+    fireEvent.click(items[1]);
+    expect(onSwitch).toHaveBeenCalledWith("c2");
+  });
+
+  it("keeps the empty state for a thread list with nothing open, and the search miss", () => {
+    const { rerender } = column({
+      conversations: [],
+      activeId: null,
+      onSwitch: () => {},
+    });
+    // Truly nothing: no rows and no open thread.
+    expect(screen.getByText("No threads yet — the next answer starts one.")).toBeTruthy();
+    rerender(
+      withQuery(
+        <AssistantThreadColumn
+          conversations={[{ id: "c1", title: "Fix the board", lastMessageAt: null }]}
+          activeId="c1"
+          currentThread={{ id: "c1", title: "Fix the board", lastMessageAt: null }}
+          onSwitch={() => {}}
+          onNewConversation={() => {}}
+        />,
+      ),
+    );
+    fireEvent.change(screen.getByTestId("assistant-history-search"), {
+      target: { value: "nothing matches this" },
+    });
+    expect(screen.getByText("No thread matches that search.")).toBeTruthy();
+    expect(screen.queryAllByTestId("assistant-history-item")).toHaveLength(0);
+  });
+});
+
+/**
  * Handoff §1 / the prototype's `componentDidUpdate`: the body follows the
  * transcript while the reader is AT the newest row, and holds their place when
  * they have climbed away to read (> ~80px off the bottom, the chat transcript's

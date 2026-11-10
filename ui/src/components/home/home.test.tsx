@@ -143,6 +143,40 @@ describe("RunningNow", () => {
     );
   });
 
+  it("lays the row out by CONTAINER width so nothing overlaps at ≥ 320px", () => {
+    const { wrapper } = harness([]);
+    render(<RunningNow runs={[runFixture]} />, { wrapper });
+    const link = screen.getByTestId("home-run-01987a9a44447") as HTMLElement;
+    const item = link.closest("li") as HTMLElement;
+    // Review §7: the old `sm:` breakpoint measured the VIEWPORT, so Today
+    // beside the assistant's side panel (~400px of content inside 1280px) drew
+    // the bar over the end of the run name. The row now measures its own
+    // container, and only goes to the five-column grid when it has the room.
+    expect(item.className).toContain("@container");
+    expect(link.className).toContain("@min-[35rem]:grid");
+    expect(link.className).toContain("flex-wrap");
+    expect(link.className).not.toMatch(/\bsm:/);
+    // Every track can shrink: no fixed 120/110px columns forcing overflow.
+    expect(link.className).toContain(
+      "@min-[35rem]:grid-cols-[92px_minmax(0,1fr)_minmax(48px,120px)_minmax(0,110px)_36px]",
+    );
+    // The name column shrinks and ellipsizes instead of running under the bar.
+    const name = screen.getByText("Feature Delivery").parentElement as HTMLElement;
+    expect(name.className).toContain("min-w-0");
+    expect(name.className).not.toContain("min-w-[160px]");
+    expect(Array.from(name.children).every((line) => line.className.includes("truncate"))).toBe(
+      true,
+    );
+    // The bar's own cell and the trailing cells shrink with it.
+    const progress = screen.getByTestId("home-run-progress-01987a9a44447")
+      .parentElement as HTMLElement;
+    expect(progress.className).toContain("min-w-0");
+    expect(progress.className).toContain("w-full");
+    expect((screen.getByTestId("home-run-step-01987a9a44447") as HTMLElement).className).toContain(
+      "min-w-0",
+    );
+  });
+
   it("shows an honest dash when the run carries no steps", () => {
     const { wrapper } = harness([]);
     render(<RunningNow runs={[{ ...runFixture, steps: [] }]} />, { wrapper });

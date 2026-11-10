@@ -43,6 +43,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
 import AssistantPanel, {
+  type RecentConversation,
   AssistantPageFrame,
   AssistantPageSideColumn,
   AssistantThreadColumn,
@@ -899,6 +900,17 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
   // the panel's header names the thread with it, never with the page section.
   const threadTitle = recentConversations.find((row) => row.id === conversationId)?.title ?? null;
   const contextLabel = contextLabelOf(askRoute);
+  /**
+   * The thread the page has open, in the form its THREADS column must LEAD with
+   * (§2 review fix — the prototype's `threadRows` always contain the current
+   * thread): the saved row when the threads read carries it, and for a new
+   * thread with nothing persisted yet the unsaved `{ id: "" }` row, which reads
+   * as the selected `New thread · now`. A saved thread whose row has not arrived
+   * yet is `null` — the column then draws no rows and no false empty state.
+   */
+  const currentThreadRow: RecentConversation | null =
+    recentConversations.find((row) => row.id === conversationId) ??
+    (conversationId === null ? { id: "", title: null, lastMessageAt: null } : null);
   const changes: AssistantChange[] = changesQuery.data?.changes ?? [];
 
   // Every size of the surface holds the same conversation, the same trust
@@ -947,6 +959,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
           <AssistantThreadColumn
             conversations={recentConversations}
             activeId={conversationId}
+            currentThread={currentThreadRow}
             onSwitch={switchConversation}
             onNewConversation={startNew}
           />

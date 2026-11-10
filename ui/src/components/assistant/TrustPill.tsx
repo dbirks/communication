@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { IconCheck, IconChevronDown } from "@tabler/icons-react";
-import { ComposerMenu } from "./ContextButton";
+import { ComposerMenu, KEEP_COMPOSER_SIZE_PX } from "./ContextButton";
 import { DEFAULT_TRUST_LEVEL, TRUST_LEVELS, trustPillLabel, type TrustLevel } from "./types";
 
 /**
@@ -20,6 +20,14 @@ import { DEFAULT_TRUST_LEVEL, TRUST_LEVELS, trustPillLabel, type TrustLevel } fr
  */
 /** The menu the design draws is 290px wide. */
 const TRUST_MENU_WIDTH_PX = 290;
+
+/** How far LEFT of the pill the menu starts (prototype: the pill sits at
+ * `base + 34`, its box at `base + 22`). */
+const TRUST_MENU_OFFSET_X_PX = -12;
+
+/** How far in from the pill's right edge its chevron sits — 7px of padding +
+ * half the 11px glyph — so the menu arrow points at the chevron area (§1). */
+const TRUST_ARROW_FROM_RIGHT_PX = 12.5;
 
 export interface TrustPillProps {
   value: TrustLevel;
@@ -90,16 +98,22 @@ export function TrustPill({ value, onChange, className = "" }: TrustPillProps) {
           // Open into the first item so arrow keys work immediately.
           requestAnimationFrame(() => itemRefs.current[0]?.focus());
         }}
-        className="inline-flex h-[26px] min-w-0 shrink-0 cursor-pointer items-center gap-[4px] overflow-hidden whitespace-nowrap rounded-[4px] border border-line bg-surface px-[7px] font-mono text-[11px] leading-none text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+        className={`inline-flex h-[26px] min-w-0 shrink-0 cursor-pointer items-center gap-[4px] overflow-hidden whitespace-nowrap rounded-[4px] border border-line px-[7px] font-mono text-[10.5px] leading-none text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${KEEP_COMPOSER_SIZE_PX} ${
+          // §1: while the menu is OPEN the pill stays white on a line border —
+          // no pressed/grey fill. The grey wash belongs to hover alone.
+          open ? "bg-surface" : "bg-surface hover:bg-fill"
+        }`}
       >
         {trustPillLabel(value)}
-        <IconChevronDown size={13} stroke={2} aria-hidden className="shrink-0" />
+        <IconChevronDown size={11} stroke={2} aria-hidden className="shrink-0" />
       </button>
       <ComposerMenu
         triggerRef={pillRef}
         open={open}
         onClose={() => close(true)}
         width={TRUST_MENU_WIDTH_PX}
+        offsetX={TRUST_MENU_OFFSET_X_PX}
+        arrowFromRight={TRUST_ARROW_FROM_RIGHT_PX}
         ariaLabel="Trust level"
         data-testid="assistant-pill-menu"
       >

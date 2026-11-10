@@ -26,6 +26,51 @@ describe("TrustPill", () => {
     expect(pill.querySelector("svg")).toBeTruthy();
     expect(pill.getAttribute("aria-expanded")).toBe("false");
     expect(pill.className).toContain("h-[26px]");
+    // §1: the design's pill label is mono 10.5px (prototype `font-size:10.5px`).
+    expect(pill.className).toContain("text-[10.5px]");
+  });
+
+  it("stays WHITE on a line border while its menu is open — no pressed fill", () => {
+    render(<TrustPill value="ask_risky" onChange={() => {}} />);
+    const pill = screen.getByTestId("assistant-pill");
+    // Closed: the grey wash is a HOVER state only.
+    expect(pill.className).toContain("bg-surface");
+    expect(pill.className).toContain("border-line");
+    expect(pill.className).toContain("hover:bg-fill");
+    openMenu();
+    expect(pill.getAttribute("aria-expanded")).toBe("true");
+    expect(pill.className).toContain("bg-surface");
+    expect(pill.className).toContain("border-line");
+    // §1: nothing paints the open pill grey — not a pressed style, not the
+    // hover wash held under the cursor while the menu is up.
+    expect(pill.className).not.toContain("bg-fill");
+    expect(pill.className).not.toContain("bg-line");
+  });
+
+  it("sits 12px LEFT of the pill with its arrow on the chevron", () => {
+    render(<TrustPill value="ask_risky" onChange={() => {}} />);
+    const pill = screen.getByTestId("assistant-pill");
+    // The design's geometry (prototype: pill at base+34, trustBox at base+22,
+    // arrow at base+90), measured from a pill 100px wide at x=240.
+    pill.getBoundingClientRect = () =>
+      ({
+        left: 240,
+        right: 340,
+        top: 600,
+        bottom: 626,
+        width: 100,
+        height: 26,
+        x: 240,
+        y: 600,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    fireEvent.click(pill);
+    const menu = screen.getByTestId("assistant-pill-menu") as HTMLElement;
+    expect(menu.style.left).toBe("228px");
+    const arrow = menu.querySelector('[data-testid="menu-arrow"]') as HTMLElement;
+    // The chevron's centre (right edge − 7px padding − half the 11px glyph),
+    // in the box's own coordinates: (340 − 12.5) − 228.
+    expect(arrow.style.left).toBe("99.5px");
   });
 
   it("labels every level the handoff way", () => {

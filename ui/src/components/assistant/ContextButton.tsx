@@ -32,6 +32,19 @@ const VIEWPORT_MARGIN_PX = 8;
 /** The box's size: the menu the design draws is 270px wide (ctx) / 290 (trust). */
 export const COMPOSER_MENU_WIDTH_PX = 270;
 
+/**
+ * The composer's controls under the phone touch-target floor
+ * (`APP-SHELL-PHONE` in `styles/tokens.css`: every `main button` is ≥ 44px
+ * tall below 560px). The popover and side panel live outside `<main>`, so
+ * there they keep the design's 26px ctx/pill and 30px square mic/send. The
+ * full page renders INSIDE `<main>`, so at phone width the floor makes them
+ * 44px tall — and this keeps them SQUARE at 44 instead of 26×44 slivers (the
+ * design review's call: a 44px touch height is right, the proportions must
+ * hold). The emulator's target check (e2e/emulator/reflow.ts) measures these
+ * real boxes, no pseudo-element band.
+ */
+export const KEEP_COMPOSER_SIZE_PX = "max-[559px]:min-w-[44px]";
+
 export interface ComposerMenuProps {
   /** The trigger the box is anchored above and the arrow points at. */
   triggerRef: RefObject<HTMLElement | null>;
@@ -42,6 +55,13 @@ export interface ComposerMenuProps {
   width: number;
   /** `aria-label` for the box. */
   ariaLabel: string;
+  /** Slide the box this many px from the trigger's left edge (negative =
+   * left). The design's trust menu starts 12px LEFT of the pill it belongs to
+   * (prototype: `trustBox.left = base + 22` against a pill at `base + 34`). */
+  offsetX?: number;
+  /** Point the arrow this many px in from the trigger's RIGHT edge instead of
+   * at its centre — where the trust menu aims at the pill's chevron. */
+  arrowFromRight?: number;
   children: ReactNode;
   "data-testid": string;
 }
@@ -52,12 +72,17 @@ interface Placement {
   arrowLeft: number;
 }
 
-function place(trigger: HTMLElement, width: number): Placement {
+function place(
+  trigger: HTMLElement,
+  width: number,
+  offsetX: number,
+  arrowFromRight: number | undefined,
+): Placement {
   const rect = trigger.getBoundingClientRect();
   const viewportWidth = typeof window === "undefined" ? 1024 : window.innerWidth;
   const viewportHeight = typeof window === "undefined" ? 768 : window.innerHeight;
   const left = Math.min(
-    Math.max(rect.left, VIEWPORT_MARGIN_PX),
+    Math.max(rect.left + offsetX, VIEWPORT_MARGIN_PX),
     Math.max(VIEWPORT_MARGIN_PX, viewportWidth - width - VIEWPORT_MARGIN_PX),
   );
   // The box grows up from the trigger's top edge — the composer lives at the
@@ -66,7 +91,9 @@ function place(trigger: HTMLElement, width: number): Placement {
     viewportHeight - rect.top + TRIGGER_GAP_PX,
     viewportHeight - VIEWPORT_MARGIN_PX,
   );
-  return { left, bottom, arrowLeft: rect.left + rect.width / 2 - left };
+  const arrowX =
+    arrowFromRight === undefined ? rect.left + rect.width / 2 : rect.right - arrowFromRight;
+  return { left, bottom, arrowLeft: arrowX - left };
 }
 
 /**
@@ -82,6 +109,8 @@ export function ComposerMenu({
   onClose,
   width,
   ariaLabel,
+  offsetX = 0,
+  arrowFromRight,
   children,
   "data-testid": dataTestid,
 }: ComposerMenuProps) {
@@ -90,8 +119,8 @@ export function ComposerMenu({
 
   const measure = useCallback(() => {
     const trigger = triggerRef.current;
-    if (trigger) setPlacement(place(trigger, width));
-  }, [triggerRef, width]);
+    if (trigger) setPlacement(place(trigger, width, offsetX, arrowFromRight));
+  }, [arrowFromRight, offsetX, triggerRef, width]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -187,7 +216,7 @@ export function ContextButton({ page, on, onToggle, className = "" }: ContextBut
         title={on ? `Page context: ${page.label}` : "Page context off"}
         aria-label={on ? `Page context: ${page.label}` : "Page context off"}
         onClick={() => setOpen((next) => !next)}
-        className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[4px] border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+        className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[4px] border ${KEEP_COMPOSER_SIZE_PX} focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
           // The menu's pressed state is the INK border (prototype ctxBtnStyle:
           // border #1e1d1a while the ctx menu is open), over the on/off fill.
           open ? "border-ink" : "border-line"

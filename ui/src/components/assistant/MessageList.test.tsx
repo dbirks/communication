@@ -144,6 +144,15 @@ describe("MessageList", () => {
     expect(details.querySelector("svg")?.getAttribute("class")).toContain(
       "tabler-icon-chevron-right",
     );
+    // Review §5: the design's line is a TOP RULE with the chevron FIRST
+    // (`› used repo.check, credential.list +1`), the same row
+    // `SetupChecklist` draws — not a trailing chevron with no rule.
+    const summary = details.querySelector("summary") as HTMLElement;
+    expect(summary.className).toContain("border-t");
+    expect(summary.className).toContain("border-line");
+    expect(summary.className).toContain("pt-[4px]");
+    expect(summary.firstElementChild?.getAttribute("class")).toContain("tabler-icon-chevron-right");
+    expect(summary.lastElementChild?.textContent).toBe("used run.nodes, palette.search");
     details.open = true;
     expect(details.textContent).toContain("run.nodes");
     expect(details.textContent).toContain("palette.search");

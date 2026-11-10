@@ -9,6 +9,10 @@
  * its short id; nothing is invented. The segmented bar is one 7px segment per
  * step of the pinned revision (never per execution: a loop collapses into its
  * step, ADR-0047 §4), and the state always carries its glyph and its word.
+ *
+ * The row lays itself out by CONTAINER width (`@container` + `@min-[35rem]`),
+ * because the Today page shrinks without the viewport shrinking: beside the
+ * assistant's side panel the panel is ~400px wide inside a 1280px viewport.
  */
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
@@ -77,14 +81,23 @@ function RunRow({ run }: { run: CrossProjectRunSummary }) {
       : `${current.node_id} · ${steps.indexOf(current) + 1}/${steps.length}`;
 
   return (
-    <li>
+    // Container query, not a media query: what decides this row's layout is the
+    // WIDTH IT IS GIVEN, not the viewport. The Today page beside the open side
+    // panel is ~400px wide inside a 1280px viewport, where the old `sm:` (640px
+    // VIEWPORT) grid painted five fixed tracks — 92 + 120 + 110 + 36 + gaps —
+    // over a 160px-minimum name column and the bar drew across the end of the
+    // run name (`@min-[35rem]` = 560px of container: the least the five tracks
+    // need beside a name that still reads). Below it the row wraps.
+    <li className="@container">
       <Link
         to={routes.run(run.id)}
         data-testid={`home-run-${testidOf(run.id)}`}
-        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[3px] border border-line px-3 py-[5px] hover:border-line-strong sm:grid sm:h-[38px] sm:grid-cols-[92px_minmax(0,1fr)_120px_110px_36px] sm:py-0"
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[3px] border border-line px-3 py-[5px] hover:border-line-strong @min-[35rem]:grid @min-[35rem]:h-[38px] @min-[35rem]:grid-cols-[92px_minmax(0,1fr)_minmax(48px,120px)_minmax(0,110px)_36px] @min-[35rem]:py-0"
       >
         <StatusChip state={state} label={RUN_CHIP_LABEL[run.status] ?? run.status} />
-        <span className="min-w-[160px] flex-1">
+        {/* `min-w-0` + truncate: without it this column floors itself at its
+            own min-width and runs UNDER the progress bar in a narrow container. */}
+        <span className="min-w-0 flex-1">
           <span
             className="block truncate text-[13px] font-semibold"
             title={run.title ?? run.pipeline_display_name}
@@ -95,16 +108,16 @@ function RunRow({ run }: { run: CrossProjectRunSummary }) {
             {run.pipeline_slug} #{shortId(run.id)} · {run.project_name}
           </span>
         </span>
-        <span className="w-full sm:w-[120px]">
+        <span className="w-full min-w-0 @min-[35rem]:w-[120px]">
           <StepSegments steps={steps} runId={run.id} />
         </span>
         <span
-          className="min-w-0 font-mono text-[10.5px] text-muted truncate sm:w-[110px]"
+          className="min-w-0 font-mono text-[10.5px] text-muted truncate @min-[35rem]:w-[110px]"
           data-testid={`home-run-step-${testidOf(run.id)}`}
         >
           {currentLabel}
         </span>
-        <span className="ml-auto font-mono text-[10.5px] text-faint sm:ml-0 sm:w-[36px] sm:text-right">
+        <span className="ml-auto min-w-0 truncate font-mono text-[10.5px] text-faint @min-[35rem]:ml-0 @min-[35rem]:w-[36px] @min-[35rem]:text-right">
           {formatAge(run.created_at)}
         </span>
       </Link>
