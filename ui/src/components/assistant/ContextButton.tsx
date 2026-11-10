@@ -43,7 +43,7 @@ export const COMPOSER_MENU_WIDTH_PX = 270;
  * hold). The emulator's target check (e2e/emulator/reflow.ts) measures these
  * real boxes, no pseudo-element band.
  */
-export const KEEP_COMPOSER_SIZE_PX = "max-[559px]:min-w-[44px]";
+export const KEEP_COMPOSER_SIZE_PX = "max-[559px]:[main_&]:min-w-[44px]";
 
 export interface ComposerMenuProps {
   /** The trigger the box is anchored above and the arrow points at. */

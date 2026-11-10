@@ -224,7 +224,7 @@ describe("the composer box (handoff §1)", () => {
       "mic-button",
       "assistant-send",
     ]) {
-      expect(screen.getByTestId(testid).className, testid).toContain("max-[559px]:min-w-[44px]");
+      expect(screen.getByTestId(testid).className, testid).toContain("max-[559px]:[main_&]:min-w-[44px]");
     }
     // Empty draft: Send is disabled, and it carries the disabled pair.
     expect(send.disabled).toBe(true);
