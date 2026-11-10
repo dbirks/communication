@@ -271,6 +271,22 @@ jobs:
           printf '%s' "$GH_READ_TOKEN" > "$d/github-read-token"
           chmod 600 "$d/github-read-token"
           echo "E2E_GITHUB_READ_TOKEN_FILE=$d/github-read-token" >> "$GITHUB_ENV"
+      - name: write the test-repo token file (assistant add-a-repo proof)
+        env:
+          # The fine-grained token for the throwaway dbirks/comms-test-repo-1
+          # (push + read). e2e/tests/assistant-handoff.spec.ts stores it as an
+          # org-scope secret through the secrets API, never through the
+          # assistant, so the assistant can repo.check and connect a REAL
+          # GitHub repository by credential NAME (Assistant handoff §6).
+          TEST_REPO_TOKEN: ${{ secrets.COMMUNICATION_TEST_REPO_TOKEN }}
+        run: |
+          set -eu
+          [ -n "$TEST_REPO_TOKEN" ] \
+            || { echo "::error::repository secret COMMUNICATION_TEST_REPO_TOKEN is missing"; exit 1; }
+          d="$RUNNER_TEMP/comm-secrets"; mkdir -p "$d"; chmod 700 "$d"
+          printf '%s' "$TEST_REPO_TOKEN" > "$d/test-repo-token"
+          chmod 600 "$d/test-repo-token"
+          echo "E2E_TEST_REPO_TOKEN_FILE=$d/test-repo-token" >> "$GITHUB_ENV"
       - name: bring the lab up
         run: bash scripts/lab-up.sh
       - name: seed (§ 7.0 contract)
