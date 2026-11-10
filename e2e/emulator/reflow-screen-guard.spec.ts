@@ -147,6 +147,31 @@ test.describe("the IA screen-guard (T1/T3)", () => {
     expect(clean.snippets, "a clean page has nothing to show around a word").toEqual([]);
   });
 
+  test("(g-asst) the assistant's own terms stay out of the scan, and only those", async ({ page }) => {
+    // Assistant handoff: the setup checklist's chat-model label, the tool
+    // registry name in a tool line, and a /threads row's last-line preview (the
+    // agent's own sentence) are not IA copy — but the same word anywhere else is.
+    await page.setContent(
+      DOC(
+        `<span data-testid="assistant-setup-label" data-row-id="chat-model">Chat model</span>` +
+          `<span>used chat.transcript, profile.list</span>` +
+          `<span data-testid="thread-last-line-01abc">verified in my sandbox (server, conversation 01a1c56f)</span>`,
+      ),
+    );
+    expect((await guard(page)).words, "the three assistant terms file nothing").toEqual([]);
+    await page.setContent(
+      DOC(
+        `<span data-testid="assistant-setup-label" data-row-id="speech-model">Chat model</span>` +
+          `<p>Description: draft a plan with a chat model.</p>` +
+          `<span data-testid="thread-title">conversation 01a1c56f</span>`,
+      ),
+    );
+    expect(
+      (await guard(page)).words.sort(),
+      "the same words outside those exact places still file",
+    ).toEqual(["chat", "conversation"]);
+  });
+
   test("(g6) a filed word carries its context, so the defect says WHERE it printed", async ({
     page,
   }) => {

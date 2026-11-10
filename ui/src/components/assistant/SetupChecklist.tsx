@@ -31,6 +31,9 @@ export interface SetupAction {
 
 export interface SetupRow {
   state: SetupRowState;
+  /** A stable key for a row whose label is a fixed configuration term
+   * (`chat-model`): the verification screen guard names it precisely. */
+  id?: string;
   label: string;
   meta?: string;
   action?: SetupAction;
@@ -62,8 +65,8 @@ export function setupRowsOf(status: AssistantSystemStatus): SetupRow[] {
 
   rows.push(
     status.chat_model.configured
-      ? { state: "ok", label: "Chat model", meta: status.chat_model.model }
-      : { state: "warn", label: "No chat model" },
+      ? { state: "ok", id: "chat-model", label: "Chat model", meta: status.chat_model.model }
+      : { state: "warn", id: "chat-model", label: "No chat model" },
   );
 
   rows.push(
@@ -231,6 +234,7 @@ export function SetupChecklist({ status, onPrompt }: SetupChecklistProps) {
                 it at its longest word). */}
             <span
               data-testid="assistant-setup-label"
+              data-row-id={row.id}
               className="text-[13px] leading-[1.4] whitespace-nowrap text-ink"
             >
               {row.label}

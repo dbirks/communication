@@ -113,6 +113,10 @@ const ALLOWED_PRODUCT_TOKENS = [
   "human.approval",
   "model.chat,",
   "agent.acp,",
+  // The assistant's tool registry names (internal/assistant/trust.go's closed
+  // table): the tool line prints "used <tool>" by design (Assistant handoff §6,
+  // prototype "used workflow.list") — served truth about the turn, not IA copy.
+  "chat.transcript",
 ];
 
 /** The page-owned content regions a MODEL or a PERSON wrote — the app is not
@@ -167,6 +171,11 @@ const WRITTEN_CONTENT_TESTIDS = [
  * about the work. The app-chrome words beside them ("Issue", "merged") come from
  * a closed vocabulary and are never the retired nouns, so nothing is lost. */
 const WRITTEN_CONTENT_TESTID_PREFIXES = [
+  // The /threads list row's preview line (ThreadListPane `thread-last-line-<id>`):
+  // the thread's last message, written by the agent or the person — content,
+  // like the transcript it previews (acceptance 42808462555: an agent's own
+  // sentence "…(server, conversation 01a1c56f)" filed as chrome).
+  "thread-last-line-",
   "catchup-row-",
   "catchup-card-",
   "catchup-item-stop-",
@@ -191,7 +200,18 @@ export interface ScreenGuardInput {
 
 /** Build the collector argument from this file's own lists. */
 export function screenGuardInput(): ScreenGuardInput {
-  const excludeSelectors = ["code", "pre", "textarea", "[role='textbox']"];
+  const excludeSelectors = [
+    "code",
+    "pre",
+    "textarea",
+    "[role='textbox']",
+    // The assistant setup checklist's chat-model row label ONLY (Assistant
+    // handoff §2: system.status reports the "chat model, speech model,
+    // decision model"): a configuration term naming the model the assistant
+    // talks to, not the retired "chat" surface noun. Scoped to that one label
+    // so "a chat model" anywhere else (a template description) still files.
+    '[data-testid="assistant-setup-label"][data-row-id="chat-model"]',
+  ];
   for (const testid of WRITTEN_CONTENT_TESTIDS) {
     excludeSelectors.push(`[data-testid="${testid}"]`);
   }

@@ -125,6 +125,26 @@ export interface ReflowAllowEntry {
  * that resolution.
  */
 export const REFLOW_ALLOWLIST: Record<string, ReflowAllowEntry> = {
+  // The assistant's full page (Assistant handoff §1, docs/design/assistant-handoff/
+  // HANDOFF.md): "below ~1000px the thread list hides and the thread buttons
+  // return to the header" — at 390 the THREADS column (search, rows, new
+  // thread) is one tap behind the header's Threads button, which opens the same
+  // list as a menu.
+  "assistant-page-threads": {
+    reason:
+      "Assistant handoff §1: below ~1000px the full page's thread list hides and the thread buttons return to the header (Threads opens the same list)",
+    reach: "assistant-history",
+    subtree: true,
+  },
+  // Same section: "below ~1240px the right column hides". Its LOOKING AT row is
+  // the composer's page-context button (whose menu names the same page), and the
+  // thread's changes stay listed by the change chip under the conversation.
+  "assistant-page-side": {
+    reason:
+      "Assistant handoff §1: below ~1240px the full page's right column (Looking at / Changes / Trust) hides; the page-context button's menu shows what it is looking at",
+    reach: "assistant-context-button",
+    subtree: true,
+  },
   "thread-list-pane": {
     reason:
       "phone master-detail: /threads/:id shows the open thread; the list is one tap behind the '← Threads' back link",
