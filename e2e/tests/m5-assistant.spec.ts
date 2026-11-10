@@ -71,9 +71,9 @@ const PROBE_QUESTION = 'Is the assistant configured? token="sk-abcdefghijklmnop0
  * internal/assistant/trust.go (ADR-0050 decision 4) — the names the
  * conversation runner registers there are refused outside that table
  * before any class question is asked, and the served `tool_calls` rows
- * carry exactly these registry names. The six v1 read names are
- * registered in internal/assistant/tools.go; the draft, navigation and
- * risky names in internal/assistant/runner.go (`registerTools`).
+ * carry exactly these registry names. The v1 read names are registered in
+ * internal/assistant/tools.go; the draft, navigation, setup and risky
+ * names in internal/assistant/runner.go (`registerTools`).
  *
  * THE DRIFT RULE: when a tool is added to internal/assistant/trust.go,
  * add its name HERE in the same change — the list failing on a newly
@@ -82,7 +82,8 @@ const PROBE_QUESTION = 'Is the assistant configured? token="sk-abcdefghijklmnop0
  * broker rendering an unregistered name.
  */
 const TOOL_NAMES = [
-  // ClassRead (internal/assistant/trust.go; registered in tools.go)
+  // ClassRead — the v1 registry plus draft/workflow lookups and `system.status`
+  // (assistant handoff §2).
   "project.list",
   "run.list",
   "run.nodes",
@@ -92,13 +93,28 @@ const TOOL_NAMES = [
   "draft.get",
   "workflow.draft",
   "chat.transcript",
+  "system.status",
+  // ClassRead — the setup reads (assistant handoff §6, CONTRACT §5).
+  "credential.list",
+  "docs.search",
+  "workflow.list",
+  "workflow.inspect",
+  "repo.check",
+  "issue.list",
+  "profile.list",
+  "schedule.list",
   // ClassNavigate (internal/assistant/runner.go)
   "ui.navigate",
   "ui.question",
   // ClassDraftEdit (internal/assistant/runner.go)
   "draft.apply",
   "workflow.create_draft",
-  // ClassRisky (internal/assistant/runner.go)
+  // ClassRisky — the five risky actions plus the setup writes (handoff §6).
+  "project.create",
+  "repo.add",
+  "assignment.set",
+  "run.cancel",
+  "schedule.create",
   "run.retry",
   "run.start",
   "approval.decide",
@@ -116,7 +132,14 @@ interface AssistantLinkServed {
 interface AssistantAnswerServed {
   answer_markdown: string;
   links: AssistantLinkServed[];
-  tool_calls: { name: string; ok: boolean; summary?: string; reason?: string }[];
+  tool_calls: {
+    name: string;
+    ok: boolean;
+    summary?: string;
+    reason?: string;
+    /** CONTRACT §3 (ADR-0079): absent when the trust level never consulted the judge. */
+    judge?: string;
+  }[];
 }
 
 /** A served transcript row (POST /assistant/conversations/{id}/messages). */
@@ -170,6 +193,43 @@ function renderedProseOf(line: string): string {
  */
 async function visibleProse(locator: import("@playwright/test").Locator): Promise<string> {
   return (await locator.innerText()).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The disclosure line the folded tool list is allowed to show — the spec-side
+ * reading of `toolDisclosureLine` in ui/src/components/assistant/MessageList.tsx
+ * (handoff A4 §4): the tool NAMES in call order, a name two calls repeated is
+ * named once, the first two are spelled out and the rest are counted, and one
+ * verdict covering the whole turn rides the line.
+ */
+const DISCLOSED_TOOL_NAMES = 2;
+
+/** CONTRACT §3's verdict words, as the component says them (the same table). */
+const JUDGE_WORD: Record<string, string> = {
+  allowed: "judge allowed",
+  asked: "judge asked",
+  unavailable: "judge unavailable",
+};
+
+/** The component's accessor: a blank or unknown member reads as no verdict. */
+function judgeOfCall(call: { judge?: string }): string | null {
+  return call.judge === "allowed" || call.judge === "asked" || call.judge === "unavailable"
+    ? call.judge
+    : null;
+}
+
+function toolDisclosureLineOf(calls: AssistantAnswerServed["tool_calls"]): string {
+  const names: string[] = [];
+  for (const call of calls) if (!names.includes(call.name)) names.push(call.name);
+  const shown = names.slice(0, DISCLOSED_TOOL_NAMES).join(", ");
+  const rest = names.length - DISCLOSED_TOOL_NAMES;
+  const verdicts: string[] = [];
+  for (const call of calls) {
+    const judge = judgeOfCall(call);
+    if (judge !== null && !verdicts.includes(judge)) verdicts.push(judge);
+  }
+  const tag = verdicts.length === 1 ? ` · ${JUDGE_WORD[verdicts[0]]}` : "";
+  return `used ${shown}${rest > 0 ? ` +${rest}` : ""}${tag}`;
 }
 
 /**
@@ -351,7 +411,8 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
       ).toBeGreaterThan(0);
       // The served prose, word by word: every character of it has to be on
       // screen in order, and only the whitespace between its words may differ
-      // (a flex step row can render `✓` and its text with or without a space).
+      // (a flex step row can render its status mark and its text with or
+      // without a space).
       const prosePattern = new RegExp(
         expected
           .split(" ")
@@ -375,24 +436,62 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
       const tools = lastRow.getByTestId("assistant-tools");
       if (answer.tool_calls.length > 0) {
         // Collapsed <details> by default: the component shows it only when
-        // the broker really looked things up ("used N tools ▸").
+        // the broker really looked things up. Handoff A4 §4 changed WHAT that
+        // folded line says: it names the TOOLS (`used workflow.list`,
+        // `used run.nodes, palette.search +2`) and never counts them, with a
+        // judge verdict riding the line when one verdict covered the turn; the
+        // `▸` of the old line is a Tabler chevron (handoff §1: no Unicode
+        // glyphs as icons). The expected line is re-derived from the served
+        // rows with the component's own rules, so a UI that went back to
+        // counting, invented a count, or dropped a name still fails here.
         await expect(tools).toBeVisible();
-        await expect(tools.locator("summary")).toContainText(
-          `used ${answer.tool_calls.length} tool`,
+        await expect(tools.locator("summary span").first()).toHaveText(
+          toolDisclosureLineOf(answer.tool_calls),
         );
         await tools.locator("summary").click();
-        const rows = tools.locator("li");
+        const rows = tools.getByTestId("assistant-tool-row");
         await expect(rows).toHaveCount(answer.tool_calls.length);
         for (let i = 0; i < answer.tool_calls.length; i++) {
           const call = answer.tool_calls[i];
           expect(TOOL_NAMES, `rendered a tool outside the closed registry: ${call.name}`).toContain(
             call.name,
           );
-          await expect(rows.nth(i)).toContainText(call.name);
-          // Status is glyph + text, never colour alone: ✓ ok / × failed.
-          await expect(rows.nth(i).locator("span[aria-hidden]").first()).toHaveText(
-            call.ok ? "✓" : "×",
+          const row = rows.nth(i);
+          await expect(row).toContainText(call.name);
+          // Status is never colour alone. Handoff §1 replaced the `✓`/`×`
+          // glyphs with Tabler icons, so the contract is now: an svg —
+          // `tabler-icon-check` when the call was ok, `tabler-icon-x` when it
+          // failed — inside the row's aria-hidden span. The mark carries no
+          // text (a glyph did), which is what forces the row's WORDS to carry
+          // the status: `used <tool>` always, and a failed call's stable
+          // reason code (`internal/assistant/assistant.go`: Reason is present
+          // exactly when OK is false). ToolRow renders no sr-only status
+          // sentence (unlike the step rows), so these words are the whole
+          // non-colour signal the component provides — asserted as such.
+          const mark = row.locator("span[aria-hidden='true']").first();
+          await expect(mark.locator("svg")).toHaveCount(1);
+          await expect(mark.locator("svg")).toHaveClass(
+            call.ok ? /(^|\s)tabler-icon-check(\s|$)/ : /(^|\s)tabler-icon-x(\s|$)/,
           );
+          await expect(mark).toHaveText("");
+          if (!call.ok) {
+            expect(
+              call.reason,
+              `a failed call (${call.name}) was served with no stable reason code`,
+            ).toBeTruthy();
+            await expect(row).toContainText(call.reason!);
+          }
+          // Each call's own judge verdict sits beside its name when the wire
+          // row carries one (CONTRACT §3).
+          const judge = judgeOfCall(call);
+          if (judge !== null) {
+            await expect(row.getByTestId("assistant-tool-judge")).toHaveText(
+              ` · ${JUDGE_WORD[judge]}`,
+            );
+          }
+          if (call.summary) {
+            await expect(row).toContainText(call.summary);
+          }
         }
       } else {
         // An empty transparency record renders no block at all — the DOM
@@ -408,8 +507,10 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
       await expect(buttons).toHaveCount(answerLinks.length);
       for (let i = 0; i < answerLinks.length; i++) {
         // Round-17: the row shows the served label minus any raw id the model
-        // pasted onto it, and it is never a step row — the step list's `●` (or
-        // ✓ / ·) does not lead it.
+        // pasted onto it, and it is never a step row. Handoff §1 turned the
+        // step list's `●`/`✓`/`·` marks into Tabler svgs, so the same check
+        // now reads: no glyph leads the label, and the only svg the row
+        // carries is its own trailing `Go` chevron.
         const expected = servedLabelWithoutIds(answerLinks[i].label);
         const row = buttons.nth(i);
         if (expected === "") {
@@ -417,7 +518,9 @@ test.describe("M5 assistant — Ctrl J asks the read-only broker", () => {
         } else {
           await expect(row).toContainText(expected);
         }
-        await expect(row).not.toContainText(/^\s*[\u2713\u25cf\u00b7]\s/);
+        await expect(row).not.toContainText(/^\s*[\u2713\u25cf\u00b7\u25b8\u2715\u00d7]\s/);
+        await expect(row.locator("svg")).toHaveCount(1);
+        await expect(row.locator("svg")).toHaveClass(/(^|\s)tabler-icon-chevron-right(\s|$)/);
       }
       await shot(alice, "m5-assistant-01-answer");
     });
