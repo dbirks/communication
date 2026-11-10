@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import ApprovalRequestCard from "./ApprovalRequestCard";
+import { mapAssistantMessage } from "../../api/assistant";
 import type { AssistantApprovalRequestPayload } from "./types";
 
 afterEach(() => {
@@ -82,5 +83,142 @@ describe("ApprovalRequestCard", () => {
     );
     expect(screen.getByTestId("assistant-approval-header").textContent).toContain("DISMISSED");
     expect(screen.getByText(/dismissed · nothing ran/)).toBeTruthy();
+  });
+});
+
+/**
+ * Handoff A5 + A7: the same card is the PROPOSAL card for the two creating
+ * tools, and every card now answers "why it asks" (CONTRACT §3's reason, or
+ * the fixed table's line when the row carries none). The rows below are built
+ * through the real mapper, because `reason` and `args` ride the wire payload —
+ * a hand-built object would test a shape the server never sends.
+ */
+const wireApproval = (payload: Record<string, unknown>): AssistantApprovalRequestPayload => {
+  const row = mapAssistantMessage({
+    id: "msg-7",
+    kind: "approval_request",
+    payload,
+    created_at: "2026-10-20T10:00:00Z",
+  });
+  if (row === null || row.payload.kind !== "approval_request") {
+    throw new Error("the mapper dropped the approval row under test");
+  }
+  return row.payload;
+};
+
+const proposal = (overrides: Record<string, unknown> = {}): AssistantApprovalRequestPayload =>
+  wireApproval({
+    kind: "approval_request",
+    action: "project.create",
+    summary: "Create project home-lab with the repo dbirks/home-lab",
+    state: "pending",
+    reason: "Creates real state.",
+    args: {
+      name: "home-lab",
+      repo_url: "https://github.com/dbirks/home-lab.git",
+      credential: "GITHUB_TOKEN",
+      default_branch: "main",
+    },
+    ...overrides,
+  });
+
+const renderCard = (
+  request: AssistantApprovalRequestPayload,
+  onConfirm = () => {},
+  onDismiss = () => {},
+) =>
+  render(
+    <ApprovalRequestCard
+      messageId="msg-7"
+      request={request}
+      onConfirm={onConfirm}
+      onDismiss={onDismiss}
+    />,
+  );
+
+describe("ApprovalRequestCard proposal (A7 §6)", () => {
+  it("renders project.create as the proposal: the banner, the five rows, Create project / Not now", () => {
+    const onConfirm = vi.fn();
+    const onDismiss = vi.fn();
+    renderCard(proposal(), onConfirm, onDismiss);
+    expect(screen.getByTestId("assistant-approval-header").textContent).toBe(
+      "NEEDS YOUR OK · CREATES REAL STATE",
+    );
+    expect(screen.getByTestId("assistant-proposal-project").textContent).toBe("home-lab (new)");
+    expect(screen.getByTestId("assistant-proposal-repository").textContent).toBe(
+      "dbirks/home-lab @ main",
+    );
+    expect(screen.getByTestId("assistant-proposal-credential").textContent).toBe("GITHUB_TOKEN");
+    expect(screen.getByTestId("assistant-proposal-workflow").textContent).toBe("none yet");
+    expect(screen.getByTestId("assistant-approval-reason").textContent).toBe("Creates real state.");
+    expect(screen.getByTestId("assistant-approval-confirm").textContent).toBe("Create project");
+    expect(screen.getByTestId("assistant-approval-dismiss").textContent).toBe("Not now");
+    fireEvent.click(screen.getByTestId("assistant-approval-confirm"));
+    expect(onConfirm).toHaveBeenCalledWith("msg-7");
+    fireEvent.click(screen.getByTestId("assistant-approval-dismiss"));
+    expect(onDismiss).toHaveBeenCalledWith("msg-7");
+  });
+
+  it("repo.add rides the same layout, and a bare repo url reads owner/repo", () => {
+    renderCard(
+      proposal({
+        action: "repo.add",
+        args: { project_id: "proj-1", repo_url: "github.com/dbirks/home-lab", credential: "GH" },
+      }),
+    );
+    expect(screen.getByTestId("assistant-proposal-project").textContent).toBe("proj-1 (new)");
+    expect(screen.getByTestId("assistant-proposal-repository").textContent).toBe("dbirks/home-lab");
+    expect(screen.getByTestId("assistant-proposal-credential").textContent).toBe("GH");
+  });
+
+  it("a confirmed proposal says what it did and offers nothing else", () => {
+    renderCard(proposal({ state: "confirmed" }));
+    expect(screen.getByTestId("assistant-approval-header").textContent).toBe("CONFIRMED");
+    expect(screen.getByTestId("assistant-approval").textContent).toContain(
+      "created · can't be undone from here",
+    );
+    expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
+    expect(screen.queryByTestId("assistant-approval-dismiss")).toBeNull();
+  });
+
+  it("a dismissed proposal says it created nothing", () => {
+    renderCard(proposal({ state: "dismissed" }));
+    expect(screen.getByTestId("assistant-approval-header").textContent).toBe("DISMISSED");
+    expect(screen.getByTestId("assistant-approval").textContent).toContain("not created");
+    expect(screen.queryByTestId("assistant-approval-confirm")).toBeNull();
+  });
+
+  it("falls back to the fixed table's reason when the row carries none", () => {
+    renderCard(proposal({ reason: undefined, args: undefined }));
+    // In the proposal grid the label is the row's own cell.
+    expect(screen.getByTestId("assistant-approval-reason").textContent).toBe("Creates real state.");
+    expect(screen.getByTestId("assistant-approval").textContent).toContain("Why it asks");
+    // no args, no invented rows: the summary the server wrote stays honest
+    expect(screen.getByTestId("assistant-proposal-credential").textContent).toBe("none");
+  });
+
+  it("prints the judge's own reason when that is what stopped the call", () => {
+    renderCard(proposal({ reason: "The decision model flagged a create outside your projects." }));
+    expect(screen.getByTestId("assistant-approval-reason").textContent).toBe(
+      "The decision model flagged a create outside your projects.",
+    );
+  });
+
+  it("every other gated tool keeps its own card and gains the Why it asks row", () => {
+    renderCard(
+      wireApproval({
+        kind: "approval_request",
+        action: "run.retry",
+        summary: "Retry node `test` on run 9c1e (attempt 2)",
+        state: "pending",
+        reason: "Your level asks before every change.",
+      }),
+    );
+    expect(screen.getByTestId("assistant-approval-header").textContent).toBe("! NEEDS APPROVAL");
+    expect(screen.getByTestId("assistant-approval-confirm").textContent).toBe("Retry");
+    expect(screen.queryByTestId("assistant-proposal-project")).toBeNull();
+    expect(screen.getByTestId("assistant-approval-reason").textContent).toBe(
+      "Why it asks · Your level asks before every change.",
+    );
   });
 });

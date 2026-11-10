@@ -15,6 +15,8 @@ import { ApiError, apiFetch } from "./client";
 import type { components } from "./schema";
 import { queryKeys } from "./queries";
 import type {
+  AssistantAnswerPayload,
+  AssistantApprovalRequestPayload,
   AssistantChangeList,
   AssistantMessageContext,
   AssistantLink as LocalLink,
@@ -22,6 +24,7 @@ import type {
   AssistantMessagePayload,
   AssistantQuestionOption as LocalOption,
   AssistantToolCall as LocalToolCall,
+  AssistantUserPayload,
   ChangeKind,
 } from "../components/assistant/types";
 
@@ -111,6 +114,105 @@ export const assistantUndoAllPath = (conversationId: string): string =>
   `${ASSISTANT_CONVERSATIONS_PATH}/${conversationId}/undo-all`;
 export const assistantUndoPath = (changeId: string): string =>
   "/api/v1/assistant/changes" + `/${changeId}/undo`;
+
+// ---------------------------------------------------------------------------
+// Assistant handoff A3 (§2): the setup read. `GET /api/v1/assistant/status`
+// answers the SAME object the `system.status` tool's payload carries, so the
+// checklist the person reads and the answer the model gives are built from one
+// read. The status is a snapshot of the server, not of one conversation, so it
+// lives under its own key and nothing else invalidates it — the popover simply
+// stops asking once the thread has anything in it.
+
+/** Generated (api/openapi.yaml): the setup object of CONTRACT §1. */
+export type AssistantSystemStatus = components["schemas"]["AssistantSystemStatus"];
+
+export const ASSISTANT_STATUS_PATH = "/api/v1/assistant/status";
+
+/**
+ * `GET /api/v1/assistant/status` as the caller. `enabled` lets the caller ask
+ * only when the checklist is on screen (an empty thread), and never on a
+ * server without the route — a 404/501 leaves the checklist unrendered rather
+ * than half-drawn.
+ */
+export function useSystemStatus(enabled = true) {
+  return useQuery<AssistantSystemStatus>({
+    queryKey: ["assistant", "status"] as const,
+    queryFn: () => apiFetch<AssistantSystemStatus>(ASSISTANT_STATUS_PATH),
+    enabled,
+    // The checklist is a first-open affordance: one read per open is enough,
+    // and a failed read must not retry itself into the rate limiter.
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Handoff A3–A7 wire extras. `components/assistant/types.ts` is the ADR-0050
+// transcript shape and is owned by another task of this handoff, so the NEW
+// optional payload fields the handoff adds ride extension interfaces HERE, at
+// the wire boundary: the mapper populates them, and the narrow accessors below
+// are the only place a component reads through them. Fold them into the base
+// interfaces when that file next opens.
+
+/** CONTRACT §3: what the judge made of one call (`absent` = not consulted). */
+export type AssistantToolCallJudge = "allowed" | "asked" | "unavailable";
+
+export interface AssistantToolCallWire extends LocalToolCall {
+  judge?: AssistantToolCallJudge;
+}
+
+/** CONTRACT §2: the item the answer used the page for, already stripped of its `Assumed:` line. */
+export interface AssistantAnswerPayloadWire extends Omit<AssistantAnswerPayload, "tool_calls"> {
+  assumed?: string | null;
+  tool_calls: AssistantToolCallWire[];
+}
+
+/** CONTRACT §4: the turn was dictated, not typed. */
+export interface AssistantUserPayloadWire extends AssistantUserPayload {
+  spoken?: boolean;
+}
+
+/** CONTRACT §3 + §5: why the gate stopped, and the bounded args it names. */
+export interface AssistantApprovalPayloadWire extends AssistantApprovalRequestPayload {
+  reason?: string | null;
+  args?: Record<string, string>;
+}
+
+/** The answer's assumed item (CONTRACT §2), or null when the answer used nothing. */
+export function assumedOf(payload: AssistantAnswerPayload): string | null {
+  const assumed = (payload as AssistantAnswerPayloadWire).assumed;
+  return typeof assumed === "string" && assumed.length > 0 ? assumed : null;
+}
+
+/** True when the person dictated this turn (CONTRACT §4). */
+export function spokenOf(payload: AssistantUserPayload): boolean {
+  return (payload as AssistantUserPayloadWire).spoken === true;
+}
+
+/** What the judge said about one call, or null when it was not consulted. */
+export function judgeOf(
+  call: AssistantToolCallWire | LocalToolCall,
+): AssistantToolCallJudge | null {
+  const judge = (call as AssistantToolCallWire).judge;
+  return judge === "allowed" || judge === "asked" || judge === "unavailable" ? judge : null;
+}
+
+/** The approval's own reason (CONTRACT §3), or null when the row carries none. */
+export function reasonOf(payload: AssistantApprovalRequestPayload): string | null {
+  const reason = (payload as AssistantApprovalPayloadWire).reason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+/** The bounded string args the gated call named (CONTRACT §5 proposal rows). */
+export function approvalArgsOf(payload: AssistantApprovalRequestPayload): Record<string, string> {
+  const args = (payload as AssistantApprovalPayloadWire).args;
+  if (!args || typeof args !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === "string" && value.length > 0) out[key] = value;
+  }
+  return out;
+}
 
 export const assistantQueryKeys = {
   conversations: (limit?: number) => ["assistant", "conversations", limit ?? 1] as const,
@@ -306,9 +408,9 @@ function linksOf(value: unknown): LocalLink[] {
   return links;
 }
 
-function toolCallsOf(value: unknown): LocalToolCall[] {
+function toolCallsOf(value: unknown): AssistantToolCallWire[] {
   if (!Array.isArray(value)) return [];
-  const calls: LocalToolCall[] = [];
+  const calls: AssistantToolCallWire[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as Record<string, unknown>;
@@ -317,12 +419,31 @@ function toolCallsOf(value: unknown): LocalToolCall[] {
     // ADR-0050: the server supplies the summary; tolerate a call that
     // lacks one (older turns) by falling back to the tool name so the
     // "used N tools" disclosure never drops a real call.
-    const call: LocalToolCall = { name, summary: strOrNone(entry.summary) ?? name, ok: entry.ok };
+    const call: AssistantToolCallWire = {
+      name,
+      summary: strOrNone(entry.summary) ?? name,
+      ok: entry.ok,
+    };
     const reason = strOrNone(entry.reason);
     if (reason !== null) call.reason = reason;
+    // CONTRACT §3: the judge's verdict on THIS call, absent when the trust
+    // level never consulted it.
+    if (entry.judge === "allowed" || entry.judge === "asked" || entry.judge === "unavailable") {
+      call.judge = entry.judge;
+    }
     calls.push(call);
   }
   return calls;
+}
+
+/** The approval row's bounded `args` object (CONTRACT §5), or null when it carries none. */
+function argsOf(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "string" && entry.length > 0) out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function optionsOf(value: unknown): LocalOption[] {
@@ -374,13 +495,20 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
     case "user": {
       const text = strOrNone(raw.text);
       if (text === null) return null;
-      payload = { kind: "user", text, context: contextOf(raw.context) };
+      const row: AssistantUserPayloadWire = {
+        kind: "user",
+        text,
+        context: contextOf(raw.context),
+      };
+      // CONTRACT §4: a dictated turn carries the mark the "spoken" tag reads.
+      if (raw.spoken === true) row.spoken = true;
+      payload = row;
       break;
     }
     case "assistant": {
       const answer = strOrNone(raw.answer_markdown);
       if (answer === null) return null;
-      payload = {
+      const row: AssistantAnswerPayloadWire = {
         kind: "assistant",
         turn_id: strOrNone(raw.turn_id),
         answer_markdown: answer,
@@ -388,6 +516,11 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
         tool_calls: toolCallsOf(raw.tool_calls),
         degraded: strOrNone(raw.degraded),
       };
+      // CONTRACT §2: the server stripped the answer's `Assumed:` line into
+      // this field; the quiet line under the answer names it.
+      const assumed = strOrNone(raw.assumed);
+      if (assumed !== null) row.assumed = assumed;
+      payload = row;
       break;
     }
     case "question": {
@@ -433,7 +566,7 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
       const state = strOrNone(raw.state);
       if (action === null || summary === null || state === null || !APPROVAL_STATES.includes(state))
         return null;
-      payload = {
+      const row: AssistantApprovalPayloadWire = {
         kind: "approval_request",
         turn_id: strOrNone(raw.turn_id),
         action,
@@ -441,6 +574,13 @@ export function mapAssistantMessage(message: WireMessage): LocalMessage | null {
         risk: strOrNone(raw.risk),
         state: state as "pending" | "confirmed" | "dismissed",
       };
+      // CONTRACT §3: why the gate stopped; CONTRACT §5: the args the proposal
+      // card rows are built from (the same strings Retry re-runs).
+      const reason = strOrNone(raw.reason);
+      if (reason !== null) row.reason = reason;
+      const args = argsOf(raw.args);
+      if (args !== null) row.args = args;
+      payload = row;
       break;
     }
     default:

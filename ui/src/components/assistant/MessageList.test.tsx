@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
-import MessageList from "./MessageList";
+import MessageList, { type MessageListProps } from "./MessageList";
+import { mapAssistantMessage } from "../../api/assistant";
+import type { AssistantSystemStatus } from "../../api/assistant";
 import type { AssistantMessage } from "./types";
 import { queryKeys } from "../../api/queries";
 import type { Draft } from "../../api/types";
@@ -1122,5 +1124,171 @@ describe("MessageList link rows (rcn-review17-2f)", () => {
     const rows = screen.getAllByTestId("assistant-link");
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain("Open draft");
+  });
+});
+
+/**
+ * Handoff A3–A6: the parts the transcript gains — the assumed line under an
+ * answer that used the page, the spoken tag on a dictated turn, the judge's
+ * verdict on each tool row, and the setup checklist as the empty thread's own
+ * message. Each rides the wire payload, so every case here runs the real
+ * mapper (`api/assistant.mapAssistantMessage`) rather than a hand-built row.
+ */
+const wireRow = (
+  kind: "user" | "assistant",
+  payload: Record<string, unknown>,
+): AssistantMessage => {
+  const row = mapAssistantMessage({
+    id: `m-${kind}`,
+    kind,
+    payload,
+    created_at: "2026-10-20T10:00:00Z",
+  });
+  if (row === null) throw new Error("the mapper dropped the row under test");
+  return row;
+};
+
+const answerRow = (payload: Record<string, unknown>): AssistantMessage =>
+  wireRow("assistant", {
+    kind: "assistant",
+    answer_markdown: "Run 9c1e waits on the review gate.",
+    links: [],
+    tool_calls: [],
+    ...payload,
+  });
+
+const renderMessages = (messages: AssistantMessage[], extra: Partial<MessageListProps> = {}) =>
+  render(
+    <MessageList
+      messages={messages}
+      onAnswerQuestion={() => {}}
+      onConfirmApproval={() => {}}
+      onDismissApproval={() => {}}
+      onGo={() => {}}
+      {...extra}
+    />,
+  );
+
+/** CONTRACT §1's object as a bare server answers it: a chat model and one
+ * worker, nothing else set up. */
+const SETUP_STATUS = {
+  chat_model: { configured: true, model: "qwen3-8-flash-next" },
+  speech_model: { configured: false, model: "" },
+  decision_model: { configured: false, model: "" },
+  workers: { online: 1, sandbox_mode: "required" },
+  execution_mode: "inprocess",
+  github_credentials: [{ name: "GITHUB_TOKEN", scope: "org", used_by: 0 }],
+  projects: { count: 0 },
+  workflows: { count: 3, samples: 2, assigned: 0 },
+} satisfies AssistantSystemStatus;
+
+describe("MessageList handoff parts (A3–A6)", () => {
+  it("prints the assumed item under the answer that used it (A4 §3)", () => {
+    renderMessages([answerRow({ assumed: "run 9c1e" })]);
+    const line = screen.getByTestId("assistant-assumed");
+    expect(line.textContent).toBe("assumed you meant run 9c1e (on screen)");
+    // the answer itself stays the answer: the line is under it, not in it
+    expect(screen.getByTestId("assistant-answer").textContent).toBe(
+      "Run 9c1e waits on the review gate.",
+    );
+  });
+
+  it("says nothing about an assumption the answer never made", () => {
+    renderMessages([answerRow({})]);
+    expect(screen.queryByTestId("assistant-assumed")).toBeNull();
+  });
+
+  it("tags a dictated turn as spoken, and a typed one as nothing (A6 §5)", () => {
+    renderMessages([wireRow("user", { kind: "user", text: "why is it stuck?", spoken: true })]);
+    const tag = screen.getByTestId("assistant-spoken");
+    expect(tag.textContent).toBe("spoken");
+    expect(screen.getByTestId("assistant-msg-user").textContent).toContain("why is it stuck?");
+    cleanup();
+    renderMessages([wireRow("user", { kind: "user", text: "why is it stuck?" })]);
+    expect(screen.queryByTestId("assistant-spoken")).toBeNull();
+  });
+
+  it("names each tool the turn used and what the judge made of it (A5 §4)", () => {
+    const details = ((): HTMLElement => {
+      renderMessages([
+        answerRow({
+          tool_calls: [
+            { name: "workflow.list", summary: "listed 3 workflows", ok: true, judge: "allowed" },
+            { name: "run.cancel", summary: "waits for you", ok: false, judge: "asked" },
+            { name: "repo.check", summary: "checked the repo", ok: true, judge: "unavailable" },
+            { name: "issue.list", summary: "listed 2 issues", ok: true },
+          ],
+        }),
+      ]);
+      return screen.getByTestId("assistant-tools");
+    })();
+    const rows = within(details).getAllByTestId("assistant-tool-row");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "✓used workflow.list · judge allowedlisted 3 workflows",
+      "×used run.cancel · judge askedwaits for you",
+      "✓used repo.check · judge unavailablechecked the repo",
+      "✓used issue.listlisted 2 issues",
+    ]);
+  });
+
+  it("shows the setup checklist as the empty thread's first message and sends its prompts (A3 §2)", async () => {
+    const { requests } = mockFetch([{ path: "/api/v1/assistant/status", body: SETUP_STATUS }]);
+    try {
+      const onSendPrompt = vi.fn();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MessageList
+            messages={[]}
+            onAnswerQuestion={() => {}}
+            onConfirmApproval={() => {}}
+            onDismissApproval={() => {}}
+            onGo={() => {}}
+            showSetup
+            onSendPrompt={onSendPrompt}
+          />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByTestId("assistant-setup")).toBeTruthy();
+      expect(requests.some((request) => request.url === "/api/v1/assistant/status")).toBe(true);
+      const action = screen
+        .getAllByTestId("assistant-setup-action")
+        .find((button) => button.textContent?.startsWith("Add one"));
+      expect(action).toBeDefined();
+      fireEvent.click(action!);
+      expect(onSendPrompt).toHaveBeenCalledWith("help me add my first project");
+      fireEvent.click(screen.getAllByTestId("assistant-starter")[2]);
+      expect(onSendPrompt).toHaveBeenCalledWith("Is anything stuck here?");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("makes no status request at all once the thread has messages (A3: the checklist is the empty thread's)", async () => {
+    const { requests } = mockFetch([{ path: "/api/v1/assistant/status", body: SETUP_STATUS }]);
+    try {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MessageList
+            messages={[answerRow({})]}
+            onAnswerQuestion={() => {}}
+            onConfirmApproval={() => {}}
+            onDismissApproval={() => {}}
+            onGo={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+      expect(screen.getByTestId("assistant-answer")).toBeTruthy();
+      await Promise.resolve();
+      expect(requests.map((request) => request.url)).toEqual([]);
+      expect(screen.queryByTestId("assistant-setup")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

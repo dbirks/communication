@@ -171,7 +171,10 @@ export function openAssistantWorkflowDraft(chat: { id: string; title?: string | 
 /** The "FOR THIS PAGE" suggestions, keyed by the page section. Every one is
  * something the assistant really can do today (a read or a navigation). */
 const SUGGESTIONS: Record<string, string[]> = {
-  home: [
+  // `sectionOf('/')` says "today" (the nav label) — the table used to key the
+  // same page "home", so the Today page never found its suggestions and fell
+  // back to the generic list (handoff A3 §2).
+  today: [
     "What needs me right now?",
     "Which of my runs are running or failed?",
     "Show the pending approvals.",

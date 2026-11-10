@@ -10,8 +10,12 @@ import { changeKindGlyph, type AssistantChange } from "./types";
  * kind glyph, the server-written summary, and `undo` where the row is
  * undoable — runs, approvals and navigations are logged but NOT undoable
  * ("Draft edits are reversible; runs and approvals are not (say so)"), so
- * their rows say so instead of offering a dead button. Presentational: the
- * undo calls and the server round-trip are the caller's job.
+ * their rows say so instead of offering a dead button. Handoff A5/A7 §4 makes
+ * that promise in the copy too: only a DRAFT EDIT ever offers Undo — a row of
+ * any other kind reads "can't be undone" whatever its `undoable` flag, because
+ * the reversible set is the drafts and nothing else the assistant can do.
+ * Presentational: the undo calls and the server round-trip are the caller's
+ * job.
  */
 export interface ChangeChipProps {
   changes: AssistantChange[];
@@ -27,6 +31,11 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
 
   const count = changes.length;
   const countText = `${count} change${count === 1 ? "" : "s"}`;
+  // Only draft edits are reversible (A5: "can be undone" is gone from the
+  // trust copy because nothing else is). A run, an approval or a navigation
+  // says so on its row even when the store kept an inverse op for it.
+  const undoableRow = (change: AssistantChange): boolean =>
+    change.kind === "draft_edit" && change.undoable && change.undone_at === null;
 
   return (
     <div
@@ -95,7 +104,7 @@ export function ChangeChip({ changes, onUndo, onUndoAll, defaultOpen = false }: 
                 >
                   ✓ undone
                 </span>
-              ) : change.undoable ? (
+              ) : undoableRow(change) ? (
                 <button
                   type="button"
                   data-testid="assistant-change-undo"

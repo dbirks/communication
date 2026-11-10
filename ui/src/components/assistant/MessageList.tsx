@@ -1,9 +1,12 @@
 import type { ReactElement } from "react";
+import { IconCurrentLocation, IconMicrophone } from "@tabler/icons-react";
 import { Button } from "../ds/Button";
 import { MarkdownBody } from "../../lib/markdown";
 import { useDraft } from "../../api/pipelines";
+import { assumedOf, judgeOf, spokenOf } from "../../api/assistant";
 import ApprovalRequestCard from "./ApprovalRequestCard";
 import QuestionCard from "./QuestionCard";
+import { SetupMessage } from "./SetupChecklist";
 import { draftStepRows, openDraftIdOf } from "./draftSteps";
 import { AnswerLinks } from "./links";
 import type { AssistantAnswerPayload, AssistantMessage, AssistantQuestionPayload } from "./types";
@@ -39,6 +42,14 @@ export interface MessageListProps {
    * render the line and the button.
    */
   onRetrySend?: (messageId: string) => void;
+  /**
+   * Handoff A3 §2: draw the setup checklist as the thread's first message.
+   * The caller turns it on for an EMPTY thread (first open, or a new thread);
+   * with it off the transcript makes no status request at all.
+   */
+  showSetup?: boolean;
+  /** Send a checklist action's or starter's prompt as the next message. */
+  onSendPrompt?: (text: string) => void;
 }
 
 export function MessageList({
@@ -50,6 +61,8 @@ export function MessageList({
   onGo,
   onRetrySend,
   openDraftHref = null,
+  showSetup = false,
+  onSendPrompt,
 }: MessageListProps) {
   // Design 2f numbers the question cards the transcript really holds:
   // the ordinal is the row's position among the conversation's question
@@ -98,6 +111,7 @@ export function MessageList({
   };
   return (
     <div data-testid="assistant-messages" className="flex flex-col gap-[8px]">
+      {showSetup ? <SetupMessage onPrompt={onSendPrompt ?? (() => undefined)} /> : null}
       {messages.map((message) => {
         switch (message.payload.kind) {
           case "user":
@@ -114,6 +128,18 @@ export function MessageList({
                 >
                   {message.payload.text}
                 </div>
+                {/* Handoff A6 §5: the turn was dictated. The mark rides under
+                    the person's own words so a spoken ask reads as what it
+                    was, without restating the text. */}
+                {spokenOf(message.payload) ? (
+                  <span
+                    data-testid="assistant-spoken"
+                    className="mt-[3px] inline-flex items-center gap-[4px] font-mono text-[10px] text-muted"
+                  >
+                    <IconMicrophone size={10} stroke={2} aria-hidden className="shrink-0" />
+                    spoken
+                  </span>
+                ) : null}
                 {/* Issue #63: a failed send keeps its bubble and answers it
                     in place — the honest line sits under the person's own
                     words, with the Retry that sends them again. */}
@@ -149,6 +175,18 @@ export function MessageList({
                   draftId={openDraftIdOf(message.payload.links)}
                   openQuestion={openQuestionFor(message.id)}
                 />
+                {/* Handoff A4 §3: the answer used the page, and says which
+                    item it took. Quiet, mono, under the answer — an
+                    observation about the model's guess, not part of it. */}
+                {assumedOf(message.payload) ? (
+                  <div
+                    data-testid="assistant-assumed"
+                    className="mt-[4px] flex items-center gap-[5px] font-mono text-[12px] text-faint"
+                  >
+                    <IconCurrentLocation size={11} stroke={2} aria-hidden className="shrink-0" />
+                    {`assumed you meant ${assumedOf(message.payload)} (on screen)`}
+                  </div>
+                ) : null}
                 <AnswerLinks
                   links={message.payload.links}
                   openDraftHref={openDraftHref}
@@ -563,8 +601,17 @@ function DraftStepList({
 /**
  * Transparency, not a replay log: what the turn looked at, collapsed by
  * default (2a "used 2 tools ▸"). Glyphs: ✓ ok / × failed, with the
- * server-supplied summary sentence.
+ * server-supplied summary sentence. Handoff A5 §4 appends the judge's own
+ * verdict per call when there was one — `used run.retry · judge asked` — so
+ * the person can see whether a fixed table or the decision model let a call
+ * through.
  */
+const JUDGE_WORD: Record<"allowed" | "asked" | "unavailable", string> = {
+  allowed: "judge allowed",
+  asked: "judge asked",
+  unavailable: "judge unavailable",
+};
+
 function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"] }) {
   if (calls.length === 0) return null;
   return (
@@ -579,10 +626,16 @@ function ToolDisclosure({ calls }: { calls: AssistantAnswerPayload["tool_calls"]
         {calls.map((call, index) => (
           <li
             key={`${call.name}-${index}`}
+            data-testid="assistant-tool-row"
             className="flex items-baseline gap-[6px] font-mono text-[10.5px] text-muted"
           >
             <span aria-hidden="true">{call.ok ? "✓" : "×"}</span>
-            <span className="flex-shrink-0 truncate">{call.name}</span>
+            <span className="flex-shrink-0 truncate">{`used ${call.name}`}</span>
+            {judgeOf(call) ? (
+              <span data-testid="assistant-tool-judge" className="flex-shrink-0 text-faint">
+                {` · ${JUDGE_WORD[judgeOf(call) as "allowed" | "asked" | "unavailable"]}`}
+              </span>
+            ) : null}
             <span style={{ flex: "1 1 auto", minWidth: 0 }}>{call.summary}</span>
             {!call.ok && call.reason ? (
               <span className="flex-shrink-0 text-st-failed-tag-fg">{call.reason}</span>

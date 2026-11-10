@@ -104,6 +104,19 @@ describe("ChangeChip", () => {
     expect(onUndo).not.toHaveBeenCalled();
   });
 
+  it("says a draft edit that kept no inverse op cannot be undone either", () => {
+    render(
+      <ChangeChip
+        changes={[change({ id: "chg-1", undoable: false })]}
+        onUndo={() => {}}
+        onUndoAll={() => {}}
+        defaultOpen
+      />,
+    );
+    expect(screen.queryAllByTestId("assistant-change-undo")).toEqual([]);
+    expect(screen.getByTestId("assistant-change-not-undoable").textContent).toBe("can't be undone");
+  });
+
   it("shows undone rows as resolved, without an undo button", () => {
     render(
       <ChangeChip
@@ -121,5 +134,58 @@ describe("ChangeChip", () => {
     );
     expect(screen.queryAllByTestId("assistant-change-undo")).toEqual([]);
     expect(screen.getByTestId("assistant-change-undone").textContent).toBe("✓ undone");
+  });
+  it("offers Undo on draft edits only: a run or approval row reads can't be undone even when the store kept an inverse op (A5)", () => {
+    const onUndo = vi.fn();
+    render(
+      <ChangeChip
+        changes={[
+          change({ id: "run-1", kind: "run_start", summary: "Started run 4f2a", undoable: true }),
+          change({
+            id: "pub-1",
+            kind: "publish",
+            summary: "Published revision 3 of feature-delivery",
+            undoable: true,
+          }),
+          change({ id: "nav-1", kind: "navigate", summary: "Opened run 4f2a", undoable: false }),
+          change({
+            id: "ap-1",
+            kind: "approval_decision",
+            summary: "Approved the gate",
+            undoable: true,
+          }),
+          change({
+            id: "retry-1",
+            kind: "run_retry",
+            summary: "Retried node `test`",
+            undoable: true,
+          }),
+          change({
+            id: "edit-1",
+            kind: "draft_edit",
+            summary: "Renamed node `plan`",
+            undoable: true,
+          }),
+        ]}
+        onUndo={onUndo}
+        onUndoAll={() => {}}
+        defaultOpen
+      />,
+    );
+    // exactly one row keeps the button, and it is the draft edit
+    const undos = screen.getAllByTestId("assistant-change-undo");
+    expect(undos).toHaveLength(1);
+    fireEvent.click(undos[0]);
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    expect(onUndo).toHaveBeenCalledWith("edit-1");
+    const notes = screen.getAllByTestId("assistant-change-not-undoable");
+    expect(notes).toHaveLength(5);
+    expect(notes.map((note) => note.textContent)).toEqual([
+      "can't be undone",
+      "can't be undone",
+      "can't be undone",
+      "can't be undone",
+      "can't be undone",
+    ]);
   });
 });
