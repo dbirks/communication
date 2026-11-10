@@ -1,0 +1,76 @@
+ 
+ C 
+ Communication 
+New thread 
+ Search ⌘K 
+ {{ n.label }} {{ n.count }} 
+ {{ n.label }} {{ n.count }} 
+ PROJECTS 
+no projects yet 
+ home-lab 
+ home-lab 
+ {{ n.label }} {{ n.count }} 
+ {{ n.label }} {{ n.count }} 
+{{ page.route }} 
+{{ page.title }} 
+{{ page.desc }} 
+{{ page.label }} page content · not part of this prototype 
+Ask ⌘J 
+ Assistant 
+ Search threads 
+ THREADS 
+ {{ t.title }} {{ t.age }} 
+ ASSISTANT 
+ {{ threadTitle }} 
+Checked this server. 
+ {{ c.label }} 
+ {{ c.meta }} 
+{{ c.action }} 
+{{ r.text }} 
+ {{ m.tool }} 
+{{ m.text }} 
+ spoken 
+{{ m.text }} 
+ {{ m.ctx }} 
+ {{ m.tool }} 
+You have three workflows. Two came with the install. None is assigned to a project yet. 
+ {{ w.name }} {{ w.meta }} Open 
+ used workflow.list 
+One. I can see that it exists and what it reaches, never its value. 
+ GITHUB_TOKEN org secret value hidden 
+ Reaches dbirks/* · contents read/write, issues read {{ credUse }} 
+Add a repo with it 
+ Open credentials 
+ used credential.list 
+ QUESTION 
+ {{ m.prompt }} 
+{{ o.label }} 
+ {{ m.banner }} 
+ Project {{ m.project }} (new) 
+ Repository {{ m.repo }} @ main 
+ Credential GITHUB_TOKEN 
+ Workflow none yet 
+ Why it asks {{ m.reason }} 
+Create project 
+Not now 
+ created · can't be undone from here 
+not created 
+{{ busy }} 
+{{ wave }} {{ micTime }} 
+ transcribing · qwen3-asr… 
+{{ trustLabel }} 
+ Search threads 
+ New thread 
+ {{ t.title }} {{ t.age }} 
+ PAGE CONTEXT 
+ {{ page.label }} {{ page.route }} 
+ Send with my messages 
+ {{ o.label }} default 
+ {{ o.blurb }} 
+ LOOKING AT 
+ {{ ctxSideLabel }} {{ ctxSideMeta }} 
+ CHANGES IN THIS THREAD 
+Nothing changed yet. 
+ {{ c.text }} {{ c.meta }} 
+ TRUST 
+{{ trustSummary }} 

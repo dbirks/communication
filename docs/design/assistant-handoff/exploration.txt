@@ -1,0 +1,216 @@
+ 
+TURN 1 · ASSISTANT, ROUND ONE 
+Making the assistant the front door 
+Goal: on a fresh home-server install you open Ask and set the whole thing up by talking to it — what workflows exist, add a project, check GitHub access, add a repo. Below: the current popover as-is, then options per topic. Reference any option by its id. Questions for you are at the end (Q1–Q8). 
+### BASELINE 
+Today, as built 
+Recreated from AssistantPanel.tsx / TrustPill.tsx / tokens.css. Numbered notes are what's wrong. 
+ 0a Popover, empty state on Today 
+ ASSISTANT 
+ ask for risky ▾ 
+ ▾ 
+ ⤢ 
+ esc 
+FOR THIS PAGE 
+ What needs me right now? 
+ Which of my runs are running or failed? 
+ Show the pending approvals. 
+ today 
+ Ask, or tell it what to change… 
+ Send 
+ 1 Corners clip. The panel has a 4px radius but no overflow: hidden , so the grey header's square corners paint over the rounded border. The trust menu looks clean because nothing inside it is full-bleed. 
+ 2 Glyphs as icons. Recent is a bare ▾ , expand is ⤢ (a font glyph). Neither says what it does. No close button, only an "esc" hint. 
+ 3 "today" chip is unexplained. It's the page section, sent as context, but reads like a filter or a date. 
+ 4 Mismatched controls. Mic is 36px, Send is 26px, input ~30px. 
+ 5 Suggestions miss on Today. The table is keyed home but the section is now today , so it falls back to generic ones. Nothing in them helps first-run setup. 
+ 6 Expanded view is the same narrow column stretched over a blank full-screen white sheet: no thread list, no page behind it. 
+### FRAME 
+A · Popover frame and icons 
+All three fix the corners (overflow hidden) and use lucide icons, which the app already ships. 
+ 1a Minimal fix 
+Same layout. Clip corners, real icons with tooltips, add ×, all controls 30px. 
+ ASSISTANT 
+ ask for risky 
+FOR THIS PAGE 
+ What needs me right now? 
+ Which runs failed? 
+ Today 
+ Ask anything… 
+ Send 
+ 1b Menu-style, like the trust pill menu 
+White all the way through, 8px inner padding, rounded rows. The thread title becomes the switcher. Composer is one box. 
+ New thread 
+TRY 
+What workflows do I have? 
+Help me add my first project 
+Can you reach GitHub? 
+ Ask anything, or hold the mic… 
+ Today × 
+ ask for risky 
+ 1c 1b with the thread switcher open 
+Replaces the "▾" Recent menu. Search, newest first, and a project/page tag per thread. 
+ Setting up the home server 
+Search threads 
+New thread 
+ ✓ Setting up the home server now 
+ Why did run 9c1e fail? 2h 
+ Add Codex reviewer to feature-delivery 1d 
+ Which workflows do I have? 3d 
+### EXPANDED 
+B · The bigger view (replaces today's full-screen sheet) 
+Shown at 1/2 scale of a 1440 × 900 window. 
+ 1d Side panel beside the page 
+The docked 450px mode already exists for thread → workflow. Make it the only "bigger" size. The page stays visible and the assistant can point at things on it. 
+Workflows 
+current page, narrowed 
+Setting up… ⊟ × 
+what workflows do I have? 
+You have 3 workflows. 2 are samples that came with the install. 
+ feature-delivery · v4 issue-triage · sample review-only · sample 
+ 1e Assistant as a page 
+A real route (/assistant) inside the shell: thread list on the left, the conversation at 720px, and a right column for what it's looking at and what it changed. 
+Threads 
+Search 
+Setting up the home server 
+Why did run 9c1e fail? 
+Add Codex reviewer 
+Which workflows… 
+how do I add a repo? 
+Paste a GitHub URL or pick one of the repos the connected credential can see. 
+ Paste a URL Pick from GitHub 
+LOOKING AT 
+Today 
+CHANGES 
+Created project home-lab 
+### FIRST RUN 
+C · First run: "what do I have, and how do I add things?" 
+Needs new read tools (system status, credentials by name, docs search) plus project/repo creation. See the tool list in F. 
+ 1f Setup checklist in the empty state 
+Read from real server state when the thread is empty. Each row is a question you can send. Disappears once everything is ✓. 
+THIS SERVER 
+ ✓ Chat model qwen3-8-flash-next 
+ ✓ Speech model qwen3-asr 
+ ✓ 1 worker online nono required 
+ ! No GitHub credential Set up › 
+ ○ No projects yet Add one › 
+ ○ 2 sample workflows, none assigned Show › 
+Ask anything, or hold the mic… 
+ 1g Honest capability answer 
+"Do you have access to any GitHub tokens?" It answers with credential names and scopes only, never values, and offers the next step. 
+do you have access to any github tokens? 
+One. I can see that it exists and what it reaches, not its value. 
+ GITHUB_TOKEN org secret •••••• 
+ Reaches dbirks/* · contents read/write, issues read Used by 0 projects 
+looked at 2 things ▸ 
+ Add a repo with it 
+ Open credentials › 
+ 1h "How do I add a repo?" → it just does it 
+Paste a URL; it checks access first, then proposes one create with everything filled in. You confirm once. 
+add github.com/dbirks/home-lab 
+GITHUB_TOKEN can read and push to it. Default branch is main . 
+NEEDS YOUR OK · CREATES REAL STATE 
+ Project home-lab (new) 
+ Repo dbirks/home-lab @ main 
+ Credential GITHUB_TOKEN 
+ Workflow none yet · ask after 
+ Create project 
+ Edit first 
+ Not now 
+### PAGE CONTEXT 
+D · Page context 
+Today it sends the route and project id with one line: "this run or this project means what is on screen." That reads as an instruction, not an observation. 
+ 1i Always sent, visible, removable 
+The chip names the actual thing ("Run 9c1e · failed"), not the section. Hover shows exactly what's sent. × drops it for the next message. 
+ why is it stuck? 
+ Run 9c1e · waiting × 
+ 1j Always sent, shown only when used 
+No chip in the composer. When the answer relied on the page, a quiet line says so under it. 
+why is it stuck? 
+It's waiting on the review gate since 14:02. You're one of two approvers. 
+assumed you meant run 9c1e (on screen) 
+ 1k Prompt block, either option 
+Sent as data inside the user turn, not in the system prompt. Richer than a route: title, status, project. 
+<page_context observational="true">
+page: Run 9c1e · status waiting
+project: feature-delivery
+route: /runs/9c1e…
+</page_context>
+This is the page the person has open. It is
+background, not the topic. Use it only when
+they refer to it ("this", "here", "it") or
+when the question makes no sense otherwise.
+Don't bring it up unprompted. If you used
+it, say which item you assumed. 
+### MIC 
+E · Mic first (server-side speech model) 
+Audio goes to serve, serve forwards to an OpenAI-compatible /audio/transcriptions endpoint (Qwen ASR by default). Browser speech becomes the fallback. 
+ 1l Mic is the primary button until you type 
+Empty composer → royal mic. Tap to record, tap to stop. Transcript lands editable; Send takes over. 
+ IDLE Ask anything… 
+ RECORDING 
+ 0:07 
+ SENDING transcribing · qwen3-asr… 
+ REVIEW how can I add a new project 
+ 1m Hold to talk, sends on release 
+Hold the mic (or hold ⌘J from anywhere): opens Ask and records. Release → transcribe → send. Your words appear as your bubble, editable after the fact. 
+hey what workflows do I have spoken · 0:03 · edit 
+Three. feature-delivery (v4, yours) and two samples from the install: issue-triage and review-only . None are assigned to a project yet. 
+ hold to talk · or type 
+ 1n Settings → Assistant → Speech 
+Env vars mirror the chat ones (COMMUNICATION_SPEECH_BASE_URL / _API_KEY_FILE / _MODEL). The page shows what's set; keys never display. 
+Speech input 
+ Endpoint llm-collective…/v1 · from env 
+ Model qwen3-asr 
+ Key set · never shown 
+ Status ✓ reachable 
+ Send after I stop talking (otherwise it waits in the box) 
+ Fall back to the browser's speech recognition when the endpoint is down 
+ Keep audio after transcription (default: discarded) 
+### TRUST 
+F · "Ask for risky": how it decides, and better copy 
+There's no classifier. internal/assistant/trust.go has a fixed table: every tool name is read , navigate , draft edit or risky , and an unknown tool is refused. The model can't relabel a tool. That's predictable and testable. The cost is that every new tool needs a class, which is why the list in G has one per row. Undo really exists only for draft edits (they store an inverse). Runs, approvals and publishes say "can't be undone" in the change list, but the menu copy promises otherwise. 
+ 1o Same menu, honest copy 
+ Ask before everything 
+It explains and proposes. You confirm every change, including draft edits. 
+ ✓ Ask for risky actions default 
+Reads, navigates and edits drafts on its own. Asks before creating projects, starting runs, approving or publishing. 
+ Don't ask 
+Does what you ask, including runs, approvals and publishing. Every action is listed in the thread. Most can't be reversed. 
+just for you · never reads secret values · never goes beyond your project role 
+ 1p Show the table itself 
+In Settings → Assistant, under the trust choice: exactly which actions ask at your level. No guessing. 
+ ACTION ALL RISKY NONE 
+ Read, search, navigate — — — 
+ Edit a draft asks — — 
+ Create project / add repo asks asks — 
+ Start or retry a run asks asks — 
+ Approve, grant permission asks asks — 
+ Publish a workflow asks asks — 
+ Credentials, members, delete never never never 
+### TOOLS 
+G · Tools to add 
+Today: project.list, run.list, run.nodes, approval.pending, pipeline.revisions, palette.search, draft.get/apply, workflow.draft/create_draft, chat.transcript, ui.navigate, ui.question, run.start/retry, approval.decide, permission.allow, pipeline.publish. Proposed below; each wraps a permission-checked service the UI also uses. 
+ TOOL CLASS ANSWERS NOTES 
+ system.status read "Is everything set up?" Models, workers, sandbox mode, GitHub app/credential presence. Powers the 1f checklist 
+ credential.list read "Do you have a GitHub token?" Names, kind, scope, which projects use each. Never values; reuses the SecretRef rows 
+ docs.search read "How do I add a project?" Answers from the app's own docs, not from guesses. Index a curated how-to set, not the whole spec 
+ workflow.list / .inspect read "What workflows do I have?" Direct, instead of via palette.search. Include sample vs authored, assignments 
+ repo.check read Given a URL: does a credential reach it, default branch, push rights. Egress to GitHub API only 
+ issue.list read "What's ready to work on?" Uses the existing read-only issue listing. Route exists (ADR-0031) 
+ profile.list / schedule.list read Agents and scheduled runs. 
+ project.create risky Creates the project from a confirmed proposal (1h). New class "create"? 
+ repo.add risky Binds a repo + credential to a project. Credential chosen by name 
+ assignment.set risky "Use feature-delivery on home-lab." Shows promotion preview first 
+ run.cancel · schedule.create risky Stop a run; set up a recurring run. 
+ credential.create not a tool It hands you a link to the credentials form instead. Secrets never pass through the model. Server already refuses secret-shaped prompts 
+### QUESTIONS 
+Questions for you 
+Answer in chat by number ("Q1: create for real"). Plus your picks per topic, e.g. "1b, 1e, 1f+1h, 1i, 1l". 
+ Q1 Should the assistant create projects and add repos itself (with one confirm, 1h), or only pre-fill the existing forms and send you there? 
+ Q2 Credentials: OK that it can never take a token in chat and always links to the form? Or do you want a one-time secure input field inside the thread? 
+ Q3 Speech endpoint: its own URL/key/model settings, or the chat base URL with just a different model name? What's the exact Qwen ASR model id on your collective? 
+ Q4 After you stop talking: send immediately (1m) or land in the box for a glance first (1l)? Or a setting, defaulting to which? 
+ Q5 Spoken replies too (text-to-speech), or is voice input-only for now? 
+ Q6 Bigger view: side panel (1d), its own page (1e), or both (panel by default, "open as page" for long sessions)? 
+ Q7 Keep three trust levels, or drop "Ask before everything"? Should undo stay on draft edits, or go away entirely so nothing implies reversibility? 
+ Q8 Answers arrive whole after the turn finishes. Worth streaming text and tool steps live ("checking GitHub…") as part of this pass? 
