@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"unicode"
 )
 
 // Caps for the conversation turn (ADR-0050 decisions 2–3): one message is
@@ -44,6 +45,61 @@ var contextEntityKinds = map[string]bool{
 	"conversation":  true,
 }
 
+// MaxPageFieldChars bounds one client-asserted page-context member
+// (CONTRACT §2). A page label, a status line and a project slug are data
+// about what is on screen, never instructions, and none of them needs more
+// room than a short line.
+const MaxPageFieldChars = 80
+
+// TurnContextPage is the page the person has open, as the client asserts it
+// (CONTRACT §2). CleanPageField bounds every member, so the rendered block is
+// short, single-line and free of the delimiters it sits inside.
+type TurnContextPage struct {
+	Label   string `json:"label,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Project string `json:"project,omitempty"`
+}
+
+// CleanPageField reduces one client-asserted page member to bounded data:
+// control characters and the angle brackets become a space (deleting them
+// outright would weld the words either side together, and a page label could
+// otherwise close the block or spoof a tag), runs of whitespace collapse, and
+// the result is clipped to MaxPageFieldChars characters on a rune boundary.
+// It is idempotent.
+func CleanPageField(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '<' || r == '>' || unicode.IsControl(r) || unicode.IsSpace(r) {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.Join(strings.Fields(b.String()), " ")
+	if r := []rune(out); len(r) > MaxPageFieldChars {
+		out = string(r[:MaxPageFieldChars])
+	}
+	return out
+}
+
+// cleanPageContext renders a client page in the one form both the stored
+// context and the prompt block use; nil when every member is empty.
+func cleanPageContext(p *TurnContextPage) *TurnContextPage {
+	if p == nil {
+		return nil
+	}
+	out := &TurnContextPage{Label: CleanPageField(p.Label), Status: CleanPageField(p.Status),
+		Project: CleanPageField(p.Project)}
+	if *out == (TurnContextPage{}) {
+		return nil
+	}
+	return out
+}
+
 // TurnContext is the per-message page context (ADR-0050 decision 6): the
 // page the user was on when the message was posted. Every member is
 // client-asserted; Route is validated against the route allowlist the
@@ -54,6 +110,10 @@ type TurnContext struct {
 	// Entity names the page's entity as {kind, id}; nil or an off-kind kind
 	// contributes nothing.
 	Entity *TurnContextEntity `json:"entity,omitempty"`
+	// Page is what the composer shows in the context chip (CONTRACT §2):
+	// label, status, project. Bounded and stripped of control characters and
+	// < >, it renders into the user turn as observational data.
+	Page *TurnContextPage `json:"page,omitempty"`
 }
 
 // TurnContextEntity is one entity reference (kind ∈ pipeline|draft|run|
@@ -161,13 +221,73 @@ func ValidateTurnContext(in TurnContext) TurnContext {
 	if in.Entity != nil && contextEntityKinds[in.Entity.Kind] && strings.TrimSpace(in.Entity.ID) != "" {
 		out.Entity = &TurnContextEntity{Kind: in.Entity.Kind, ID: strings.TrimSpace(in.Entity.ID)}
 	}
+	out.Page = cleanPageContext(in.Page)
 	return out
 }
+
+// PageContextBlock renders the observational page block (HANDOFF.md §3) that
+// replaces the old "On screen (app route, data): …" line: the page line, the
+// project line (the page's own project, else the project on screen) and the
+// allowlist-cleaned route, each line omitted when its value is empty. The
+// block is always followed by the handoff's guidance text, which ends by
+// telling the model to sign an answer that used the page with a final
+// `Assumed: <item>` line — the line SplitAssumedLine takes back off the
+// answer. It returns "" when nothing is on screen, and it belongs in the
+// USER turn, never the system prompt.
+func PageContextBlock(page *TurnContextPage, projectID, route string) string {
+	var lines []string
+	hasProject := false
+	if p := cleanPageContext(page); p != nil {
+		var parts []string
+		if p.Label != "" {
+			parts = append(parts, p.Label)
+		}
+		if p.Status != "" {
+			parts = append(parts, "status "+p.Status)
+		}
+		if len(parts) > 0 {
+			lines = append(lines, "page: "+strings.Join(parts, " · "))
+		}
+		if p.Project != "" {
+			lines = append(lines, "project: "+p.Project)
+			hasProject = true
+		}
+	}
+	if !hasProject {
+		if pid := bounded(strings.TrimSpace(projectID), 200); pid != "" {
+			lines = append(lines, "project: "+pid)
+		}
+	}
+	if r := strings.TrimSpace(route); r != "" {
+		lines = append(lines, "route: "+r)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("<page_context observational=\"true\">\n")
+	for _, l := range lines {
+		sb.WriteString(l)
+		sb.WriteByte('\n')
+	}
+	sb.WriteString("</page_context>\n")
+	sb.WriteString(pageContextGuidance)
+	return sb.String()
+}
+
+// pageContextGuidance is HANDOFF.md §3's guidance text verbatim, with the one
+// sentence CONTRACT §2 adds: an answer that used the page signs itself with a
+// final `Assumed: <item>` line, which the server reads back off the answer.
+const pageContextGuidance = "This is the page the person has open. It is background, not the topic.\n" +
+	"Use it only when they refer to it (\"this\", \"here\", \"it\") or when the\n" +
+	"question makes no sense otherwise. Don't bring it up unprompted. If you\n" +
+	"used it, say which item you assumed.\n" +
+	"If you used it, end your reply with one line \"Assumed: <the item>\" (for example \"Assumed: run 9c1e\")."
 
 // Empty reports whether a validated TurnContext contributes nothing (so
 // the stored user payload can omit it entirely).
 func (c TurnContext) Empty() bool {
-	return c.Route == "" && c.ProjectID == "" && c.Entity == nil
+	return c.Route == "" && c.ProjectID == "" && c.Entity == nil && c.Page == nil
 }
 
 // BrokerTurnRunner is part 1's TurnRunner: the transcript folded into

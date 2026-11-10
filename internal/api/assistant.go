@@ -226,7 +226,21 @@ func (h *asstHandlers) ask(w http.ResponseWriter, r *http.Request) {
 		writeAssistantProblem(w, bad.Status, bad.Code, bad.Detail)
 		return
 	}
-	WriteJSON(w, http.StatusOK, answer)
+	// A page-context sign-off (CONTRACT §2) is data for the UI's quiet
+	// "assumed you meant X (on screen)" line, not prose: the final
+	// `Assumed: …` line comes off the markdown and rides beside it.
+	markdown, assumed := assistant.SplitAssumedLine(answer.AnswerMarkdown)
+	answer.AnswerMarkdown = markdown
+	WriteJSON(w, http.StatusOK, assistantAskAnswer{Answer: answer, Assumed: assumed})
+}
+
+// assistantAskAnswer is the one-shot ask's 200 body: the broker's answer with
+// the optional `assumed` member the page context can earn. Embedding keeps
+// every existing member (and its nullability) exactly as assistant.Answer
+// renders it; `assumed` is absent on the answers that did not use the page.
+type assistantAskAnswer struct {
+	*assistant.Answer
+	Assumed string `json:"assumed,omitempty"`
 }
 
 // writeAssistantProblem is the problem+json answer with the one extra member the

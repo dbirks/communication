@@ -431,3 +431,66 @@ func TestAssistantAdapterMapsThe404Family(t *testing.T) {
 		t.Error("a datastore failure must not be reported as a permission answer")
 	}
 }
+
+// The one-shot ask answers with the page sign-off on its own member, not in
+// the markdown: the UI renders "assumed you meant {assumed} (on screen)" under
+// the answer, and the prose stays what the reader was told.
+func TestAssistantAskReturnsTheAssumedLineSeparately(t *testing.T) {
+	stores := &asstStores{projects: []ProjectView{{ID: "01JPROJECTA", Name: "Project A", MyRole: "member"}}}
+	model := &asstModel{steps: []asstStep{
+		{text: "That run failed on the build step.\nAssumed: run 9c1e"},
+	}}
+	s := asstMount(t, AssistantDeps{
+		Projects: stores, Runs: stores, Approvals: stores, Pipelines: stores, Profiles: stores,
+		Config: AssistantConfig{BaseURL: asstEndpoint(t, model), APIKey: "endpoint-key", Model: "qwen3-8-27b"},
+	}, principalAuth(testPrincipal(), nil))
+
+	rec := asstPost(t, s, map[string]any{"question": "why did it fail?",
+		"context": map[string]any{"route": "/projects/01JPROJECTA/runs/9c1e", "project_id": "01JPROJECTA"}}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		AnswerMarkdown string `json:"answer_markdown"`
+		Assumed        string `json:"assumed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if out.AnswerMarkdown != "That run failed on the build step." {
+		t.Fatalf("answer_markdown = %q, want the sign-off removed", out.AnswerMarkdown)
+	}
+	if out.Assumed != "run 9c1e" {
+		t.Fatalf("assumed = %q, want \"run 9c1e\"", out.Assumed)
+	}
+	// The page reached the model as the observational block inside the user
+	// turn — never as a system instruction.
+	if len(model.request) != 1 {
+		t.Fatalf("requests = %d, want 1", len(model.request))
+	}
+	var sent struct {
+		Messages []struct {
+			Role    string  `json:"role"`
+			Content *string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(model.request[0]), &sent); err != nil {
+		t.Fatalf("decode the sent envelope: %v", err)
+	}
+	if len(sent.Messages) < 2 || sent.Messages[0].Content == nil ||
+		strings.Contains(*sent.Messages[0].Content, "page_context") {
+		t.Fatalf("the page leaked into the system message: %+v", sent.Messages)
+	}
+	if sent.Messages[1].Content == nil ||
+		!strings.Contains(*sent.Messages[1].Content, "<page_context observational=\"true\">") ||
+		!strings.Contains(*sent.Messages[1].Content, "route: /projects/01JPROJECTA/runs/9c1e") {
+		t.Fatalf("the user turn carries no page block: %s", derefOrEmpty(sent.Messages[1].Content))
+	}
+}
+
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}

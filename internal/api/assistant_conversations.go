@@ -398,6 +398,10 @@ type AssistantMessagePost struct {
 	Context AssistantMessageContext `json:"context,omitempty"`
 	Confirm *string                 `json:"confirm,omitempty"`
 	Dismiss *string                 `json:"dismiss,omitempty"`
+	// Spoken says the text arrived from the microphone (CONTRACT §4). It is
+	// the caller's own statement about its message: the route stores it on the
+	// user row and reads nothing back from it.
+	Spoken bool `json:"spoken,omitempty"`
 }
 
 // AssistantMessageContext is the client's page context; every member is
@@ -406,6 +410,11 @@ type AssistantMessageContext struct {
 	Route     string                         `json:"route,omitempty"`
 	ProjectID string                         `json:"project_id,omitempty"`
 	Entity    *AssistantMessageContextEntity `json:"entity,omitempty"`
+	// Page names what is on screen (CONTRACT §2): each member is bounded to
+	// 80 characters with control characters and < > stripped by
+	// assistant.ValidateTurnContext, then reaches the model only inside the
+	// observational block.
+	Page *assistant.TurnContextPage `json:"page,omitempty"`
 }
 
 // AssistantMessageContextEntity is the page's entity reference.
@@ -415,11 +424,13 @@ type AssistantMessageContextEntity struct {
 }
 
 // userMessagePayload is the kind-"user" payload (ADR-0050 decision 3):
-// the text plus the validated page context (omitted when it is empty).
+// the text plus the validated page context (omitted when it is empty), and
+// `spoken` only on a message that came off the microphone.
 type userMessagePayload struct {
 	Kind    string                 `json:"kind"`
 	Text    string                 `json:"text"`
 	Context *assistant.TurnContext `json:"context,omitempty"`
+	Spoken  bool                   `json:"spoken,omitempty"`
 }
 
 // assistantMessagePayload is the kind-"assistant" payload: the broker's
@@ -434,6 +445,11 @@ type assistantMessagePayload struct {
 	Links          []assistant.MessageLink `json:"links"`
 	ToolCalls      []assistant.ToolCall    `json:"tool_calls"`
 	Degraded       *string                 `json:"degraded"`
+	// Assumed is the `Assumed: <item>` line taken off the answer when it
+	// relied on the page on screen (CONTRACT §2); the UI renders it as
+	// "assumed you meant {assumed} (on screen)". Absent on every answer that
+	// did not use the page.
+	Assumed string `json:"assumed,omitempty"`
 }
 
 // postMessage runs ONE server-side turn (ADR-0050 decision 2): the
@@ -507,11 +523,13 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 		Route:     body.Context.Route,
 		ProjectID: body.Context.ProjectID,
 		Entity:    entity,
+		Page:      body.Context.Page,
 	})
 	userPayload, err := json.Marshal(userMessagePayload{
 		Kind:    "user",
 		Text:    text,
 		Context: contextOrNil(ctx),
+		Spoken:  body.Spoken,
 	})
 	if err != nil {
 		WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
@@ -533,13 +551,18 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 	}
 	in := AppendTurnInput{User: &AssistantMessageInput{Kind: "user", Payload: userPayload}}
 	if result.Answer != nil {
+		// The answer's own page-context sign-off (CONTRACT §2) is data for the
+		// UI's quiet line, not prose to render: a final `Assumed: …` line comes
+		// off the markdown and onto the row beside it, bounded.
+		answerMarkdown, assumed := assistant.SplitAssumedLine(result.Answer.AnswerMarkdown)
 		assistantPayload, err := json.Marshal(assistantMessagePayload{
 			Kind:           "assistant",
 			TurnID:         result.Answer.TurnID,
-			AnswerMarkdown: result.Answer.AnswerMarkdown,
+			AnswerMarkdown: answerMarkdown,
 			Links:          assistant.MessageLinks(result.Answer.Links),
 			ToolCalls:      result.Answer.ToolCalls,
 			Degraded:       result.Answer.Degraded,
+			Assumed:        assumed,
 		})
 		if err != nil {
 			WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",

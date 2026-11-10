@@ -27,6 +27,7 @@ package assistant
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -197,4 +198,37 @@ func modelAnswerExcerpt(raw string) string {
 // plus the bounded excerpt of what the model actually sent.
 func malformedAnswerError(raw string, cause error) error {
 	return fmt.Errorf("%v (%s)", cause, modelAnswerExcerpt(raw))
+}
+
+// assumedLine is the sign-off line the page-context block asks for: one final
+// line naming the item the answer relied on. The markers it tolerates in front
+// (a bullet, a quote, emphasis) are markdown the model likes to add, not part
+// of the value; anything else on the line means it is prose, not the sign-off.
+var assumedLine = regexp.MustCompile(`(?i)^\s*(?:[-*>]\s+)?(?:\*\*|__)?\s*assumed\s*[:：]\s*(?:\*\*|__)?\s*(.*?)\s*(?:\*\*|__)?\s*$`)
+
+// SplitAssumedLine takes the page-context sign-off back off the answer
+// (HANDOFF.md §3, CONTRACT §2): the block tells the model that an answer which
+// used the page ends with one line `Assumed: <the item>`, and that line is
+// data for the UI's quiet "assumed you meant X (on screen)" row — not prose to
+// render. Only the LAST non-empty line qualifies: the same words mid-answer
+// are part of a sentence and stay put. The value is cleaned and bounded like
+// every other page-context field. An answer that is nothing but the sign-off
+// keeps it — dropping it would leave an empty answer, which no caller can
+// store or render anyway.
+func SplitAssumedLine(text string) (answer, assumed string) {
+	trimmed := strings.TrimRight(text, " \t\r\n")
+	if trimmed == "" {
+		return text, ""
+	}
+	cut := strings.LastIndexByte(trimmed, '\n')
+	last := trimmed
+	head := ""
+	if cut >= 0 {
+		last, head = trimmed[cut+1:], strings.TrimRight(trimmed[:cut], " \t\r\n")
+	}
+	m := assumedLine.FindStringSubmatch(last)
+	if m == nil || strings.TrimSpace(m[1]) == "" || head == "" {
+		return text, ""
+	}
+	return head, CleanPageField(m[1])
 }

@@ -121,6 +121,15 @@ var (
 // action logged; ErrActionDenied keeps the approval pending.
 type ActionExecutor func(ctx context.Context, c Caller, tool string, args map[string]string) (ack string, change *ChangeRecord, err error)
 
+// StatusReader answers the system.status tool: the CONTRACT §1 setup object
+// as the caller. The wiring builds it over internal/api's SystemStatus
+// service, which reads through the same caller-scoped store methods the
+// user's own routes use — this package performs no authz of its own and
+// never sees a secret value. A nil reader keeps the tool out of the
+// announced set (the honest-degradation rule), so the model is never told
+// about a setup read this deployment cannot serve.
+type StatusReader func(ctx context.Context, c Caller) (json.RawMessage, error)
+
 // --- the runner ---------------------------------------------------------
 
 // ConversationRunner is the ADR-0050 part-2 TurnRunner: the bounded model
@@ -143,6 +152,10 @@ type ConversationRunner struct {
 	// unannounced. It can only create drafts — publishing stays behind
 	// pipeline.publish, which the drafting rules forbid in that flow.
 	library LibraryDraftCreator
+	// status is the system.status face (the §2 setup checklist); nil keeps
+	// the tool unannounced, the same honest-degradation rule as every other
+	// injected service.
+	status StatusReader
 
 	wireToReg map[string]string
 	toolSpecs []toolSpec
@@ -162,6 +175,9 @@ type ConversationRunnerDeps struct {
 	// Each is optional; an absent one keeps its tool unannounced.
 	Chats   ChatTranscriptReader
 	Library LibraryDraftCreator
+	// Status is the system.status face behind the setup checklist (§2).
+	// Optional; nil keeps the tool unannounced.
+	Status StatusReader
 }
 
 // NewConversationRunner builds the runner over one broker.
@@ -172,6 +188,7 @@ func NewConversationRunner(d ConversationRunnerDeps) *ConversationRunner {
 		actions: d.Actions,
 		chats:   d.Chats,
 		library: d.Library,
+		status:  d.Status,
 	}
 	// The workflow.draft lookup rides on the wired draft service when it
 	// carries the locator face (the api wiring's draft service does);
@@ -275,6 +292,13 @@ func (r *ConversationRunner) registerTools() {
 				"conversation_id": stringProp("the thread's conversation id"),
 			},
 			require: []string{"conversation_id"},
+		})
+	}
+	if r.status != nil {
+		reg(runnerTool{
+			name:  "system.status",
+			desc:  "Check how this server is set up: models, workers, sandbox, GitHub credentials (names only), projects and workflows.",
+			props: map[string]any{},
 		})
 	}
 	if r.library != nil {
@@ -523,12 +547,12 @@ func (r *ConversationRunner) conversationEnvelope(req TurnRequest) []chatMessage
 	user += bounded(foldHistory(req.History), MaxHistoryBytes) + "\n\n"
 	user += "Current message from the user:\n" + strings.TrimSpace(req.Text)
 	c := req.Context
-	if route := CleanRoute(c.Route); route != "" {
-		user += "\n\nOn screen (app route, data): " + route +
-			" — \"this run\" or \"this project\" means what is on screen."
-	}
-	if pid := bounded(strings.TrimSpace(c.ProjectID), 200); pid != "" {
-		user += "\nProject on screen has id: " + pid
+	// The page the person is looking at (HANDOFF.md §3): a bounded,
+	// observational block inside the user turn. It goes nowhere near the
+	// system prompt — the refs are client-asserted data, and every tool still
+	// re-authorizes with the caller.
+	if block := PageContextBlock(c.Page, c.ProjectID, CleanRoute(c.Route)); block != "" {
+		user += "\n\n" + block
 	}
 	if e := c.Entity; e != nil {
 		user += "\nContext entity (a starting point, it authorizes nothing): " +
@@ -1001,6 +1025,24 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 		}
 		if name == "chat.transcript" {
 			return r.execChatTranscript(ctx, req.Caller, call, name)
+		}
+		if name == "system.status" {
+			// No arguments: the answer is the caller's whole setup view, and
+			// there is nothing to narrow it by. A reader that was never wired
+			// answers the stable `unavailable` refusal the same way every
+			// absent service does, and the payload is the store's own bytes —
+			// setup facts the model reads as data, never as an instruction.
+			if r.status == nil {
+				return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unavailable"}}
+			}
+			raw, err := r.status(ctx, req.Caller)
+			if err != nil {
+				return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "unavailable"}}
+			}
+			return execOutcome{
+				call:    ToolCall{Name: name, OK: true, Summary: "Read how this server is set up"},
+				payload: boundedJSON(raw),
+			}
 		}
 		// The v1 read registry: its own arg parsing, store call with the
 		// caller, links and 404 rule — unchanged.

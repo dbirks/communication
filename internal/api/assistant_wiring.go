@@ -26,6 +26,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -480,6 +481,27 @@ func NewAssistantActions(d AssistantActionsDeps) map[string]assistant.ActionExec
 		}
 	}
 	return out
+}
+
+// --- the system.status read (assistant handoff §2) ----------------------
+
+// NewAssistantStatusReader wires the runner's system.status tool to the
+// SystemStatus service: the same object GET /api/v1/assistant/status
+// answers, built with the caller's own identity through the caller-scoped
+// store reads the user's routes use. It returns nil for a nil service, so
+// an unwired deployment keeps the tool out of the announced set rather than
+// announcing a read that would only fail (the honest-degradation rule).
+func NewAssistantStatusReader(svc *SystemStatus) assistant.StatusReader {
+	if svc == nil {
+		return nil
+	}
+	return func(ctx context.Context, c assistant.Caller) (json.RawMessage, error) {
+		view, err := svc.Status(ctx, ac(c))
+		if err != nil {
+			return nil, err
+		}
+		return assistantStatusPayload(view)
+	}
 }
 
 // --- the trust level (ADR-0046/C2, ADR-0050 decision 4) -------------------

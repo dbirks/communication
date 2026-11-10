@@ -53,6 +53,7 @@ var toolClasses = map[string]ToolClass{
 	"draft.get":             ClassRead,
 	"workflow.draft":        ClassRead,
 	"chat.transcript":       ClassRead,
+	"system.status":         ClassRead,
 	"ui.navigate":           ClassNavigate,
 	"ui.question":           ClassNavigate,
 	"draft.apply":           ClassDraftEdit,

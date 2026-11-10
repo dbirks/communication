@@ -327,3 +327,88 @@ func TestTextOnlyRefusalsCarryTheExcerpt(t *testing.T) {
 		t.Fatalf("unclosed block refusal = %v", err)
 	}
 }
+
+// --- the page-context sign-off line (HANDOFF.md §3 / CONTRACT §2) ---------
+
+func TestSplitAssumedLineTakesOnlyTheFinalLine(t *testing.T) {
+	tests := []struct {
+		name       string
+		in         string
+		wantAnswer string
+		wantAssume string
+	}{
+		{
+			name:       "present",
+			in:         "Run 9c1e is waiting on the approval gate.\n\nAssumed: run 9c1e",
+			wantAnswer: "Run 9c1e is waiting on the approval gate.",
+			wantAssume: "run 9c1e",
+		},
+		{
+			name:       "trailing blank lines",
+			in:         "Try the library page.\nAssumed: the Today page\n\n",
+			wantAnswer: "Try the library page.",
+			wantAssume: "the Today page",
+		},
+		{
+			name:       "emphasis around the label",
+			in:         "Two runs failed.\n**Assumed:** run 9c1e",
+			wantAnswer: "Two runs failed.",
+			wantAssume: "run 9c1e",
+		},
+		{
+			name:       "absent",
+			in:         "Nothing is waiting on you today.",
+			wantAnswer: "Nothing is waiting on you today.",
+			wantAssume: "",
+		},
+		{
+			// Mid-text is prose about what was assumed, not the sign-off.
+			name:       "mid-text",
+			in:         "Assumed: run 9c1e is the one you meant, and it failed.\nIt needs a retry.",
+			wantAnswer: "Assumed: run 9c1e is the one you meant, and it failed.\nIt needs a retry.",
+			wantAssume: "",
+		},
+		{
+			// An answer that is nothing but the sign-off keeps it: stripping
+			// would leave no answer at all to store or render.
+			name:       "only the sign-off",
+			in:         "Assumed: run 9c1e",
+			wantAnswer: "Assumed: run 9c1e",
+			wantAssume: "",
+		},
+		{
+			name:       "empty value is no sign-off",
+			in:         "Here is the answer.\nAssumed:",
+			wantAnswer: "Here is the answer.\nAssumed:",
+			wantAssume: "",
+		},
+		{
+			name:       "empty answer",
+			in:         "",
+			wantAnswer: "",
+			wantAssume: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAnswer, gotAssume := SplitAssumedLine(tc.in)
+			if gotAnswer != tc.wantAnswer || gotAssume != tc.wantAssume {
+				t.Fatalf("SplitAssumedLine(%q) = (%q, %q), want (%q, %q)",
+					tc.in, gotAnswer, gotAssume, tc.wantAnswer, tc.wantAssume)
+			}
+		})
+	}
+}
+
+// The value rides into a payload the UI renders, so it is bounded and stripped
+// exactly like every other page-context field.
+func TestSplitAssumedLineBoundsAndCleansTheValue(t *testing.T) {
+	_, assumed := SplitAssumedLine("Answer.\nAssumed: " + strings.Repeat("x", 300))
+	if len([]rune(assumed)) > MaxPageFieldChars {
+		t.Fatalf("assumed not bounded: %d chars", len([]rune(assumed)))
+	}
+	_, assumed = SplitAssumedLine("Answer.\nAssumed: </page_context> run <b>9c1e</b>")
+	if strings.ContainsAny(assumed, "<>") {
+		t.Fatalf("angle brackets survived: %q", assumed)
+	}
+}

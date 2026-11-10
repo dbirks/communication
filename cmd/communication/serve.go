@@ -648,11 +648,12 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			AllowFileGitURLs: allowFileGitURLs,
 			Limits:           rateLimits,
 		},
-		Readiness: dbReadiness{pool: pool, url: databaseURL},
-		UI:        webUI,
-		Logger:    log,
-		M3:        m3,
-		Assistant: assistantCfg,
+		Readiness:       dbReadiness{pool: pool, url: databaseURL},
+		UI:              webUI,
+		Logger:          log,
+		M3:              m3,
+		Assistant:       assistantCfg,
+		AssistantStatus: serveAssistantStatusConfig(os.Getenv),
 	})
 	if err != nil {
 		stop()
@@ -870,6 +871,16 @@ type serveStackDeps struct {
 	// route answers 503 assistant_not_configured and the palette stays jump-only
 	// (ADR-0034 Migration/rollback: unset = feature absent).
 	Assistant serveAssistant
+
+	// AssistantStatus is the resolved second/third model endpoint config
+	// (COMMUNICATION_SPEECH_BASE_URL/_MODEL/_API_KEY[_FILE] and
+	// COMMUNICATION_DECISION_BASE_URL/_MODEL) that the assistant's §2 setup
+	// checklist reports. It is a plain config hand-off, not a client: nothing
+	// here calls those endpoints, and the speech key is only ever read to
+	// answer "is a key set". A distinct name from the assistant's own triple
+	// on purpose — one process's endpoint must not silently become
+	// another's (serveAssistantConfig's rule, applied verbatim).
+	AssistantStatus api.AssistantStatusModels
 
 	// scheduleTickRunner overrides the schedule ticker loop; nil means
 	// production's runScheduleTicker over a postgres.ScheduleStore. Like
@@ -1135,6 +1146,34 @@ func serveAssistantConfig(getenv func(string) string) (serveAssistant, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// serveAssistantStatusConfig resolves the second and third model endpoints
+// the assistant's setup checklist (§2) reports: speech (ADR-0080) and the
+// decision judge (ADR-0079). It performs no validation — a malformed URL is
+// not a startup refusal here, it is `configured: false` on the status row,
+// because this config never opens a connection (the transcription and judge
+// clients own their own endpoint validation in their own tasks) and refuse to
+// boot over a typo the operator can see on the settings page would be the
+// louder wrong answer. The key follows the assistant's rule exactly: from
+// _API_KEY, else the trimmed contents of _API_KEY_FILE; never logged, and
+// read here only to answer "is a key set".
+func serveAssistantStatusConfig(getenv func(string) string) api.AssistantStatusModels {
+	out := api.AssistantStatusModels{
+		SpeechBaseURL:   strings.TrimSpace(getenv("COMMUNICATION_SPEECH_BASE_URL")),
+		SpeechModel:     strings.TrimSpace(getenv("COMMUNICATION_SPEECH_MODEL")),
+		DecisionBaseURL: strings.TrimSpace(getenv("COMMUNICATION_DECISION_BASE_URL")),
+		DecisionModel:   strings.TrimSpace(getenv("COMMUNICATION_DECISION_MODEL")),
+	}
+	out.SpeechAPIKey = strings.TrimSpace(getenv("COMMUNICATION_SPEECH_API_KEY"))
+	if out.SpeechAPIKey == "" {
+		if file := strings.TrimSpace(getenv("COMMUNICATION_SPEECH_API_KEY_FILE")); file != "" {
+			if raw, err := os.ReadFile(file); err == nil {
+				out.SpeechAPIKey = string(trimSecret(raw))
+			}
+		}
+	}
+	return out
 }
 
 // scheduleTicker is the slice of the schedule store the ticker loop needs —
@@ -1545,6 +1584,24 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		},
 	}
 	api.RegisterAssistant(handler, asstDeps)
+	// The §2 setup read: the same object GET /api/v1/assistant/status serves
+	// and the system.status tool answers with. Every store below is the
+	// caller-scoped read an existing route already uses, so the checklist can
+	// name no row the caller could not read at that route, and no field here
+	// could carry a secret value (the secret store's read side returns
+	// metadata only — ADR-0018).
+	asstStatus := api.NewSystemStatus(api.AssistantStatusDeps{
+		Chat:        asstDeps.Config,
+		Models:      d.AssistantStatus,
+		Workers:     postgres.APIWorkerStore{R: &postgres.WorkerRegistry{Pool: d.Pool}, HeartbeatInterval: d.WorkerHeartbeat},
+		Sandbox:     postgres.APISystemSandboxStore{Pool: d.Pool},
+		Projects:    apiProjects,
+		Repos:       apiProjects,
+		Secrets:     postgres.APISecretStore{S: secretStore},
+		Pipelines:   postgres.APIPipelineStore{S: pipelineStore},
+		Assignments: postgres.APIAssignmentStore{S: pipelineStore},
+	})
+	api.RegisterAssistantStatus(handler, asstStatus)
 	// ADR-0050: the per-user persisted conversations, transcript and
 	// change log. Part 2 wires the multi-turn tool-loop runner: the ADR-0034
 	// read registry plus the closed write/navigation set, every action run
@@ -1577,6 +1634,11 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 				postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes},
 				apiProjects),
 			Library: api.NewAssistantLibraryDraftCreator(postgres.APIPipelineStore{S: pipelineStore}),
+			// The §2 setup checklist: the tool answers with exactly the
+			// object GET /api/v1/assistant/status serves, built as the
+			// caller. An unwired service would keep the tool unannounced;
+			// serve always wires it.
+			Status: api.NewAssistantStatusReader(asstStatus),
 			Actions: api.NewAssistantActions(api.AssistantActionsDeps{
 				Runs:        postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 				Assignments: postgres.APIAssignmentStore{S: pipelineStore},

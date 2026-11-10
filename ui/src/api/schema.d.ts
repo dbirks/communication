@@ -2723,6 +2723,44 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/assistant/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * How this server is set up (models, workers, credentials, projects, workflows)
+     * @description Assistant handoff §2: the setup read behind the empty-thread checklist. The same object the `system.status` tool answers with, so the UI's checklist and the model's answer cannot disagree.
+     *     * Every read authorizes as the caller: projects, workflows,
+     *       repositories and secrets are the caller's own list reads, so a row
+     *       the caller cannot read at its own route is not named here.
+     *     * Nothing sensitive is present by construction. A model endpoint is
+     *       reported as `configured` plus its model id and a bare
+     *       `endpoint_host`; a key is reported as the bool `key_set` and never
+     *       as a value; a GitHub credential is reported as its slug, its scope
+     *       and how many repositories name it. There is no field here that could
+     *       hold a value, and the secret read used to build it has no read path
+     *       that returns one (ADR-0018 D1/D3).
+     *     * `sandbox_mode` is the weakest enforcement the ONLINE workers report
+     *       (`required` > `optional` > `off`), so one unenforced worker cannot
+     *       be hidden by a green one; `unknown` means the fleet reported nothing
+     *       to fold. `execution_mode` is the handoff's Mode A: `inprocess`.
+     *     * `workflows.samples` counts the shipped sample workflows
+     *       (`issue-to-pr`, `plan-with-approval`, `security-review`) the caller
+     *       can see; `assigned` counts workflows with at least one project
+     *       assignment.
+     */
+    get: operations["getAssistantSystemStatus"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/assistant/conversations": {
     parameters: {
       query?: never;
@@ -5777,6 +5815,8 @@ export interface components {
       assistant_turn_id: string;
       /** @description Always null on a 200; the name of the failure on a 5xx problem document. */
       degraded?: string | null;
+      /** @description Present only when the answer said it leaned on the page on screen: the `Assumed: <item>` sign-off line, taken off `answer_markdown` server-side and bounded to 80 characters. The UI renders it as "assumed you meant {assumed} (on screen)". */
+      assumed?: string;
     };
     /** AssistantLink */
     AssistantLink: {
@@ -5816,6 +5856,60 @@ export interface components {
         | "forbidden"
         | "unavailable"
         | "tool_cap_exceeded";
+    };
+    /**
+     * AssistantSystemStatus
+     * @description Assistant handoff §2 (CONTRACT §1): how this server is set up, as the caller. The `system.status` tool's payload and this object are the same shape on purpose — the checklist the person reads and the answer the model gives are built from one read. `model` is the configured model id or `""`; `endpoint_host` is a bare hostname (never a URL that could carry credentials) and `key_set` is the whole truth about a key — no field here holds a value, and none may be added that could.
+     */
+    AssistantSystemStatus: {
+      chat_model: components["schemas"]["AssistantModelStatus"];
+      speech_model: components["schemas"]["AssistantModelStatus"];
+      decision_model: components["schemas"]["AssistantModelStatus"];
+      workers: {
+        /** @description Workers the registry reports `online` right now, with the same liveness rule as `GET /api/v1/workers` — a worker whose heartbeat went stale is not counted. */
+        online: number;
+        /**
+         * @description The weakest enforcement the online fleet reports. `optional` is the worker's `permissive-dev`, `off` is its `disabled` — the checklist's words, translated at the edge rather than invented in the store.
+         * @enum {string}
+         */
+        sandbox_mode: "required" | "optional" | "off" | "unknown";
+      };
+      /**
+       * @description Handoff §7 Mode A today: the worker launches each attempt as its own sandboxed child. Kubernetes pods (Mode B) are out of scope, so this is a statement of fact, not a knob.
+       * @enum {string}
+       */
+      execution_mode: "inprocess";
+      /** @description The git/GitHub credentials the caller can see, by name only — `name` is the secret's slug, `scope` is `project` or `org`, and `used_by` counts the repositories that name it as their credential (ADR-0061). Values are never included. */
+      github_credentials: {
+        name: string;
+        scope: string;
+        used_by: number;
+      }[];
+      projects: {
+        /** @description Projects the caller may read. */
+        count: number;
+      };
+      workflows: {
+        /** @description Workflows (pipelines) the caller may see. */
+        count: number;
+        /** @description Of those, how many are the shipped sample workflows — recognized by their sample slug, the only signal a pipeline row carries. */
+        samples: number;
+        /** @description Distinct workflows with at least one project assignment in the caller's projects; a workflow pinned in three projects counts once. */
+        assigned: number;
+      };
+    };
+    /**
+     * AssistantModelStatus
+     * @description One model endpoint of the setup object: the chat model, the speech model or the decision judge. `configured` is the deployment's answer, and a key is only ever a bool.
+     */
+    AssistantModelStatus: {
+      configured: boolean;
+      /** @description The configured model id, or `""` when there is none. */
+      model: string;
+      /** @description Host only, and absent on a row that is not configured. A URL's scheme, path, port and any userinfo are never served. */
+      endpoint_host?: string;
+      /** @description Whether an API key is configured. The value itself is never read by this surface — there is no method on the egress config that could return it to a client. */
+      key_set?: boolean;
     };
     /**
      * AssistantProblem
@@ -5875,14 +5969,25 @@ export interface components {
     };
     /**
      * AssistantMessagePost
-     * @description A new user message. `context` is the page context the turn runs in (decision 6): the client-asserted `route` is allowlist-validated and dropped when it fails, and `context.entity` names the entity the page is about (a starting point the turn's tools may use; the refs authorize nothing). `text` is 1..2000 characters and required UNLESS `confirm` or `dismiss` is set (the two are mutually exclusive, and `text` must be empty then). `confirm` re-runs the gated action exactly once; `dismiss` declines it (Not now).
+     * @description A new user message. `context` is the page context the turn runs in (decision 6): the client-asserted `route` is allowlist-validated and dropped when it fails, and `context.entity` names the entity the page is about (a starting point the turn's tools may use; the refs authorize nothing). `context.page` is what the composer's context chip shows: the server bounds every member to 80 characters, strips control characters and `<`/`>`, and appends the result to the user turn as an observational `<page_context>` block (never a system instruction). `spoken` marks a message that came off the microphone; the stored `user` row payload then carries `spoken: true`, and it is absent otherwise. `text` is 1..2000 characters and required UNLESS `confirm` or `dismiss` is set (the two are mutually exclusive, and `text` must be empty then). `confirm` re-runs the gated action exactly once; `dismiss` declines it (Not now).
      */
     AssistantMessagePost: {
       /** @description Required unless `confirm` or `dismiss` is set. */
       text?: string;
+      /** @description The text arrived by microphone. Stored verbatim on the `user` row payload as `spoken: true`; omitted when false. */
+      spoken?: boolean;
       context?: {
         route?: string;
         project_id?: string;
+        /** @description The page the person has open. Data, never instructions: each member is bounded to 80 characters with control characters and `<`/`>` stripped, and a line whose value comes out empty is left out of the block. */
+        page?: {
+          /** @description What the page calls itself, e.g. `Run 9c1e`. */
+          label?: string;
+          /** @description The page's status line, e.g. `waiting`. */
+          status?: string;
+          /** @description The project the page belongs to; the block's project line, else the on-screen project id. */
+          project?: string;
+        };
         entity?: {
           /** @enum {string} */
           kind: "pipeline" | "draft" | "run" | "node_template" | "profile";
@@ -11212,6 +11317,35 @@ export interface operations {
         content: {
           "application/problem+json": components["schemas"]["AssistantProblem"];
         };
+      };
+    };
+  };
+  getAssistantSystemStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The setup object, as the caller sees it. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantSystemStatus"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      /** @description The assistant throttle (ADR-0077): the checklist is a fleet-wide read, so it shares the assistant's per-principal budget. */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };

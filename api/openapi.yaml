@@ -6295,6 +6295,52 @@ paths:
               schema:
                 $ref: "#/components/schemas/AssistantProblem"
 
+  /api/v1/assistant/status:
+    get:
+      operationId: getAssistantSystemStatus
+      tags: [assistant]
+      summary: How this server is set up (models, workers, credentials, projects, workflows)
+      description: >
+        Assistant handoff §2: the setup read behind the empty-thread checklist.
+        The same object the `system.status` tool answers with, so the UI's
+        checklist and the model's answer cannot disagree.
+
+        * Every read authorizes as the caller: projects, workflows,
+          repositories and secrets are the caller's own list reads, so a row
+          the caller cannot read at its own route is not named here.
+        * Nothing sensitive is present by construction. A model endpoint is
+          reported as `configured` plus its model id and a bare
+          `endpoint_host`; a key is reported as the bool `key_set` and never
+          as a value; a GitHub credential is reported as its slug, its scope
+          and how many repositories name it. There is no field here that could
+          hold a value, and the secret read used to build it has no read path
+          that returns one (ADR-0018 D1/D3).
+        * `sandbox_mode` is the weakest enforcement the ONLINE workers report
+          (`required` > `optional` > `off`), so one unenforced worker cannot
+          be hidden by a green one; `unknown` means the fleet reported nothing
+          to fold. `execution_mode` is the handoff's Mode A: `inprocess`.
+        * `workflows.samples` counts the shipped sample workflows
+          (`issue-to-pr`, `plan-with-approval`, `security-review`) the caller
+          can see; `assigned` counts workflows with at least one project
+          assignment.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: "The setup object, as the caller sees it."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantSystemStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          description: >
+            The assistant throttle (ADR-0077): the checklist is a fleet-wide
+            read, so it shares the assistant's per-principal budget.
   /api/v1/assistant/conversations:
     post:
       operationId: createAssistantConversation
@@ -12831,6 +12877,14 @@ components:
         degraded:
           type: ["string", "null"]
           description: Always null on a 200; the name of the failure on a 5xx problem document.
+        assumed:
+          type: string
+          maxLength: 80
+          description: >
+            Present only when the answer said it leaned on the page on screen:
+            the `Assumed: <item>` sign-off line, taken off `answer_markdown`
+            server-side and bounded to 80 characters. The UI renders it as
+            "assumed you meant {assumed} (on screen)".
     AssistantLink:
       title: AssistantLink
       type: object
@@ -12877,6 +12931,125 @@ components:
             caller may not know the resource exists, and the refusal carries no
             name. `write_not_allowed` is a mutation the model asked for — v1 has
             no write tool at all.
+    AssistantSystemStatus:
+      title: AssistantSystemStatus
+      description: >
+        Assistant handoff §2 (CONTRACT §1): how this server is set up, as the
+        caller. The `system.status` tool's payload and this object are the same
+        shape on purpose — the checklist the person reads and the answer the
+        model gives are built from one read. `model` is the configured model id
+        or `""`; `endpoint_host` is a bare hostname (never a URL that could
+        carry credentials) and `key_set` is the whole truth about a key — no
+        field here holds a value, and none may be added that could.
+      type: object
+      required:
+        - chat_model
+        - speech_model
+        - decision_model
+        - workers
+        - execution_mode
+        - github_credentials
+        - projects
+        - workflows
+      properties:
+        chat_model:
+          $ref: "#/components/schemas/AssistantModelStatus"
+        speech_model:
+          $ref: "#/components/schemas/AssistantModelStatus"
+        decision_model:
+          $ref: "#/components/schemas/AssistantModelStatus"
+        workers:
+          type: object
+          required: [online, sandbox_mode]
+          properties:
+            online:
+              type: integer
+              description: >
+                Workers the registry reports `online` right now, with the same
+                liveness rule as `GET /api/v1/workers` — a worker whose
+                heartbeat went stale is not counted.
+            sandbox_mode:
+              type: string
+              enum: [required, optional, off, unknown]
+              description: >
+                The weakest enforcement the online fleet reports. `optional` is
+                the worker's `permissive-dev`, `off` is its `disabled` — the
+                checklist's words, translated at the edge rather than
+                invented in the store.
+        execution_mode:
+          type: string
+          enum: [inprocess]
+          description: >
+            Handoff §7 Mode A today: the worker launches each attempt as its
+            own sandboxed child. Kubernetes pods (Mode B) are out of scope, so
+            this is a statement of fact, not a knob.
+        github_credentials:
+          type: array
+          description: >
+            The git/GitHub credentials the caller can see, by name only —
+            `name` is the secret's slug, `scope` is `project` or `org`, and
+            `used_by` counts the repositories that name it as their
+            credential (ADR-0061). Values are never included.
+          items:
+            type: object
+            required: [name, scope, used_by]
+            properties:
+              name:
+                type: string
+              scope:
+                type: string
+              used_by:
+                type: integer
+        projects:
+          type: object
+          required: [count]
+          properties:
+            count:
+              type: integer
+              description: "Projects the caller may read."
+        workflows:
+          type: object
+          required: [count, samples, assigned]
+          properties:
+            count:
+              type: integer
+              description: "Workflows (pipelines) the caller may see."
+            samples:
+              type: integer
+              description: >
+                Of those, how many are the shipped sample workflows — recognized
+                by their sample slug, the only signal a pipeline row carries.
+            assigned:
+              type: integer
+              description: >
+                Distinct workflows with at least one project assignment in the
+                caller's projects; a workflow pinned in three projects counts
+                once.
+    AssistantModelStatus:
+      title: AssistantModelStatus
+      description: >
+        One model endpoint of the setup object: the chat model, the speech
+        model or the decision judge. `configured` is the deployment's answer,
+        and a key is only ever a bool.
+      type: object
+      required: [configured, model]
+      properties:
+        configured:
+          type: boolean
+        model:
+          type: string
+          description: "The configured model id, or `\"\"` when there is none."
+        endpoint_host:
+          type: string
+          description: >
+            Host only, and absent on a row that is not configured. A URL's
+            scheme, path, port and any userinfo are never served.
+        key_set:
+          type: boolean
+          description: >
+            Whether an API key is configured. The value itself is never read by
+            this surface — there is no method on the egress config that could
+            return it to a client.
     AssistantProblem:
       title: AssistantProblem
       description: >
@@ -12981,10 +13154,17 @@ components:
         (decision 6): the client-asserted `route` is allowlist-validated
         and dropped when it fails, and `context.entity` names the entity
         the page is about (a starting point the turn's tools may use; the
-        refs authorize nothing). `text` is 1..2000 characters and required
-        UNLESS `confirm` or `dismiss` is set (the two are mutually
-        exclusive, and `text` must be empty then). `confirm` re-runs the
-        gated action exactly once; `dismiss` declines it (Not now).
+        refs authorize nothing). `context.page` is what the composer's
+        context chip shows: the server bounds every member to 80
+        characters, strips control characters and `<`/`>`, and appends the
+        result to the user turn as an observational `<page_context>` block
+        (never a system instruction). `spoken` marks a message that came
+        off the microphone; the stored `user` row payload then carries
+        `spoken: true`, and it is absent otherwise. `text` is 1..2000
+        characters and required UNLESS `confirm` or `dismiss` is set (the
+        two are mutually exclusive, and `text` must be empty then).
+        `confirm` re-runs the gated action exactly once; `dismiss` declines
+        it (Not now).
       type: object
       properties:
         text:
@@ -12992,6 +13172,11 @@ components:
           minLength: 1
           maxLength: 2000
           description: "Required unless `confirm` or `dismiss` is set."
+        spoken:
+          type: boolean
+          description: >
+            The text arrived by microphone. Stored verbatim on the `user`
+            row payload as `spoken: true`; omitted when false.
         context:
           type: object
           properties:
@@ -13000,6 +13185,28 @@ components:
               maxLength: 2048
             project_id:
               type: string
+            page:
+              type: object
+              description: >
+                The page the person has open. Data, never instructions:
+                each member is bounded to 80 characters with control
+                characters and `<`/`>` stripped, and a line whose value
+                comes out empty is left out of the block.
+              properties:
+                label:
+                  type: string
+                  maxLength: 80
+                  description: "What the page calls itself, e.g. `Run 9c1e`."
+                status:
+                  type: string
+                  maxLength: 80
+                  description: "The page's status line, e.g. `waiting`."
+                project:
+                  type: string
+                  maxLength: 80
+                  description: >
+                    The project the page belongs to; the block's project
+                    line, else the on-screen project id.
             entity:
               type: object
               required: [kind, id]
