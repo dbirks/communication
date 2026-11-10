@@ -4,8 +4,8 @@
  *
  * The Unicode glyphs of `KIND_GLYPH` (lib/pipeline/definition.ts) render at
  * different metrics in every font and read inconsistently across platforms.
- * These are real lucide-react icons at a fixed 14px box with the design
- * system's 1.5 stroke and `currentColor`, so they sit on the text baseline
+ * These are real Tabler icons (`@tabler/icons-react`) at a fixed 14px box with the
+ * design system's 1.5 stroke and `currentColor`, so they sit on the text baseline
  * of the dense mono rows instead of floating in them.
  *
  * Contract (mirrors the glyph rule in `docs/design/handoff/graph-nodes.md`):
@@ -15,53 +15,53 @@
  * icon for a kind from a newer catalogue would be a claim.
  */
 import {
-  Bot,
-  Columns2,
-  Diamond,
-  FileUp,
-  GitCommitHorizontal,
-  Merge,
-  MessageSquare,
-  Repeat,
-  Search,
-  ShieldCheck,
-  Split,
-  Square,
-  SquareTerminal,
-  type LucideIcon,
-  Upload,
-  UserCheck,
-  Workflow,
-  Zap,
-} from "lucide-react";
+  IconArrowsJoin,
+  IconArrowsSplit2,
+  IconBolt,
+  IconColumns,
+  IconDiamond,
+  IconFileUpload,
+  IconGitCommit,
+  IconMessage,
+  IconRepeat,
+  IconRobot,
+  IconSearch,
+  IconShieldCheck,
+  IconSitemap,
+  IconSquare,
+  IconTerminal2,
+  IconUpload,
+  IconUserCheck,
+  type TablerIcon,
+} from "@tabler/icons-react";
 import { isNodeKind, type NodeKind } from "./pipeline/definition";
 
 /** The icon per catalogue kind. Each reads clearly at 14px. */
-export const STEP_KIND_ICONS: Record<NodeKind, LucideIcon> = {
-  "agent.acp": Bot,
-  "model.chat": MessageSquare,
-  "process.exec": SquareTerminal,
-  condition: Diamond,
-  gate: ShieldCheck,
-  "human.approval": UserCheck,
-  until: Repeat,
-  for_each: Split,
-  parallel: Columns2,
-  join: Merge,
-  "pipeline.invoke": Workflow,
-  "artifact.publish": FileUp,
-  "git.commit": GitCommitHorizontal,
-  "git.publish": Upload,
-  "integration.query": Search,
-  "integration.action": Zap,
+export const STEP_KIND_ICONS: Record<NodeKind, TablerIcon> = {
+  "agent.acp": IconRobot,
+  "model.chat": IconMessage,
+  "process.exec": IconTerminal2,
+  condition: IconDiamond,
+  gate: IconShieldCheck,
+  "human.approval": IconUserCheck,
+  until: IconRepeat,
+  for_each: IconArrowsSplit2,
+  parallel: IconColumns,
+  join: IconArrowsJoin,
+  "pipeline.invoke": IconSitemap,
+  "artifact.publish": IconFileUpload,
+  "git.commit": IconGitCommit,
+  "git.publish": IconUpload,
+  "integration.query": IconSearch,
+  "integration.action": IconBolt,
 };
 
 /** Neutral box for a kind outside this catalogue (same rule as the glyph
  * map's unknown `□`): the document may name a newer kind; we show a box,
  * never an invented icon. */
-export const UNKNOWN_STEP_ICON: LucideIcon = Square;
+export const UNKNOWN_STEP_ICON: TablerIcon = IconSquare;
 
-export function stepKindIcon(kind: string): LucideIcon {
+export function stepKindIcon(kind: string): TablerIcon {
   return isNodeKind(kind) ? STEP_KIND_ICONS[kind] : UNKNOWN_STEP_ICON;
 }
 
@@ -81,7 +81,7 @@ export function StepKindIcon({
   return (
     <Icon
       size={Math.min(size, 16)}
-      strokeWidth={1.5}
+      stroke={1.5}
       aria-hidden
       // Identifies which kind this icon stands for without adding a name.
       data-step-kind={kind}

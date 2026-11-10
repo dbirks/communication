@@ -1,13 +1,13 @@
 /**
  * stepIcons.test.tsx — the issue #65 contract for the one shared step-kind
- * icon map: every catalogue kind has a distinct lucide icon, the icon renders
+ * icon map: every catalogue kind has a distinct Tabler icon, the icon renders
  * at 14px (16px ceiling) with the design's 1.5 stroke and currentColor, it is
  * aria-hidden decoration (the kind's name is carried by the text beside it),
  * and an unknown kind gets the neutral square box — never an invented icon.
  */
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
-import { Square } from "lucide-react";
+import { IconSquare } from "@tabler/icons-react";
 import { NODE_KINDS } from "./pipeline/definition";
 import { STEP_KIND_ICONS, StepKindIcon, UNKNOWN_STEP_ICON, stepKindIcon } from "./stepIcons";
 
@@ -19,7 +19,7 @@ describe("STEP_KIND_ICONS", () => {
 
   it("gives an unknown kind the neutral square box", () => {
     expect(stepKindIcon("agent.future")).toBe(UNKNOWN_STEP_ICON);
-    expect(UNKNOWN_STEP_ICON).toBe(Square);
+    expect(UNKNOWN_STEP_ICON).toBe(IconSquare);
   });
 });
 
@@ -35,6 +35,8 @@ describe("StepKindIcon", () => {
       expect(svg!.getAttribute("height")).toBe("14");
       expect(svg!.getAttribute("stroke-width")).toBe("1.5");
       expect(svg!.getAttribute("stroke")).toBe("currentColor");
+      // The Tabler library, not a hand-drawn glyph: the class names it renders.
+      expect(svg!.getAttribute("class") ?? "").toContain("tabler-icon tabler-icon-");
     }
   });
 

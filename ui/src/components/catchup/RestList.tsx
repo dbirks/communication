@@ -13,7 +13,7 @@
  * summary) and the checkbox grows a 44px hit area (coarse pointers too)
  * without shifting the desktop grid.
  */
-import { CircleDot, GitCommitHorizontal, GitPullRequest } from "lucide-react";
+import { IconCircleDot, IconGitCommit, IconGitPullRequest } from "@tabler/icons-react";
 import { Link } from "react-router";
 import type { CatchUpListItem } from "../../api/catchup";
 import {
@@ -30,7 +30,7 @@ function ShapeLabel({ item }: { item: CatchUpListItem }) {
   if (item.shape === "issue") {
     return (
       <span className="flex items-center gap-[5px] font-mono text-[10.5px] whitespace-nowrap text-muted">
-        <CircleDot size={size} aria-hidden />
+        <IconCircleDot size={size} aria-hidden />
         Issue
       </span>
     );
@@ -38,14 +38,14 @@ function ShapeLabel({ item }: { item: CatchUpListItem }) {
   if (item.shape === "pr") {
     return (
       <span className="flex items-center gap-[5px] font-mono text-[10.5px] whitespace-nowrap text-muted">
-        <GitPullRequest size={size} aria-hidden />
+        <IconGitPullRequest size={size} aria-hidden />
         PR only
       </span>
     );
   }
   return (
     <span className="flex items-center gap-[5px] font-mono text-[10.5px] whitespace-nowrap text-muted">
-      <GitCommitHorizontal size={size} aria-hidden />
+      <IconGitCommit size={size} aria-hidden />
       Push to main
     </span>
   );

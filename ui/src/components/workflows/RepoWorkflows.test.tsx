@@ -857,7 +857,7 @@ describe("RepoWorkflows — adding a trigger through the 2c dialog", () => {
 });
 
 describe("RepoWorkflows — the trigger glyphs", () => {
-  it("renders the Lucide github mark, never a # or a ◷ glyph", async () => {
+  it("renders the Tabler github mark, never a # or a ◷ glyph", async () => {
     const { container } = render(
       <MemoryRouter>
         <GithubIcon size={14} strokeWidth={2} />

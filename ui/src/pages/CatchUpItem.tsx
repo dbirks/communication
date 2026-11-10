@@ -18,7 +18,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { Check, Copy, Play } from "lucide-react";
+import { IconCheck, IconCopy, IconPlayerPlay } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 import Page, { PAGE_BAND_PAD } from "../components/ds/Page";
 import { Button } from "../components/ds/Button";
@@ -171,7 +171,9 @@ function StopRow({
                 : "border-imp-routine-border bg-imp-routine-fill"
           }`}
         />
-        {stop.seen ? <Check size={13} aria-label="seen" className="text-st-done-tag-fg" /> : null}
+        {stop.seen ? (
+          <IconCheck size={13} aria-label="seen" className="text-st-done-tag-fg" />
+        ) : null}
       </span>
     </button>
   );
@@ -390,7 +392,7 @@ export default function CatchUpItem() {
               className="flex flex-wrap items-center gap-[8px] md:shrink-0 md:pt-[2px]"
             >
               <Button data-testid="catchup-item-copy" onClick={copyLink}>
-                <Copy size={13} aria-hidden />
+                <IconCopy size={13} aria-hidden />
                 {copied ? "Copied" : "Copy link"}
               </Button>
               <Link
@@ -398,7 +400,7 @@ export default function CatchUpItem() {
                 data-testid="catchup-item-play"
                 className="ds-btn ds-btn--primary"
               >
-                <Play size={13} aria-hidden />
+                <IconPlayerPlay size={13} aria-hidden />
                 Play tour · {stops.length} {stops.length === 1 ? "stop" : "stops"}
               </Link>
             </div>

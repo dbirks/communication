@@ -15,7 +15,7 @@
  */
 import { useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { X } from "lucide-react";
+import { IconX } from "@tabler/icons-react";
 
 export interface ChatDetailsSheetProps {
   /** Whether the sheet stands over the page. */
@@ -90,7 +90,7 @@ export function ChatDetailsSheet({ open, onClose, children }: ChatDetailsSheetPr
             onClick={onClose}
             className="inline-flex min-h-[24px] items-center gap-[4px] rounded-[3px] px-2 font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
           >
-            <X className="h-[13px] w-[13px]" aria-hidden="true" />
+            <IconX className="h-[13px] w-[13px]" aria-hidden="true" />
             Close
           </button>
         </div>

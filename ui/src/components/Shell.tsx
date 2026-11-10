@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
-import { Sparkles } from "lucide-react";
+import { IconSparkles } from "@tabler/icons-react";
 import { Mark } from "./ds/Mark";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
@@ -414,7 +414,7 @@ export default function Shell({ children }: ShellProps) {
       >
         {narrow ? (
           /* The round phone button carries the sparkle glyph alone. */
-          <Sparkles size={17} aria-hidden />
+          <IconSparkles size={17} aria-hidden />
         ) : (
           <>
             Ask

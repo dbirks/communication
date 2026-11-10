@@ -28,7 +28,7 @@ afterEach(() => {
 
 describe("the unique-key detector", () => {
   it("sees the warning for keyless icon nodes (the shape the bug had)", () => {
-    // Exactly lucide's `Icon` machinery with the keys stripped out.
+    // Exactly Tabler's `createReactComponent` machinery, keys stripped out.
     const iconNode: [tag: string, attrs: Record<string, string>][] = [
       ["path", { d: "M15 22v-4a4.8 4.8 0 0 0-1-3.5" }],
       ["path", { d: "M9 18c-4.51 2-5-2-7-2" }],

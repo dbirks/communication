@@ -119,7 +119,7 @@ export function StudioPalette({
       }}
     >
       <span aria-hidden="true" className="flex w-[14px] shrink-0 items-center text-ink-2">
-        {/* Issue #65: the catalogue glyph column is now the shared lucide icon. */}
+        {/* Issue #65: the catalogue glyph column is now the shared Tabler icon. */}
         <StepKindIcon kind={item.kind} />
       </span>
       <span className="truncate text-[13px] text-ink">{SHORT_LABELS[item.kind] ?? item.label}</span>

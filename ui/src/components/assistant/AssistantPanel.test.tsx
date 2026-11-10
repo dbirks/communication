@@ -461,7 +461,7 @@ describe("AssistantPanel header controls (ui-newconv)", () => {
     const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
     expect(button.className).toContain("ds-btn--ghost");
     expect(button.title).toBe("New thread");
-    // The narrow header's glyph is the lucide Plus (an SVG, so it adds no text
+    // The narrow header's glyph is the Tabler plus (an SVG, so it adds no text
     // to the name); the wording lives in the sr-only span and the tooltip
     // (rcn-6 review: the old fullwidth ＋ rendered as an unlabelled blue bar).
     expect(button.querySelector("svg")).toBeTruthy();

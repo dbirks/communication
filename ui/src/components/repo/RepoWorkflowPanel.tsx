@@ -26,7 +26,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { MoreHorizontal } from "lucide-react";
+import { IconDots } from "@tabler/icons-react";
 import type { Assignment, Project, Repository, RunSummary } from "../../api/types";
 import { useAssignments, usePipelines, useSchedules, type Schedule } from "../../api/pipelines";
 import { useIssueTriggers, type IssueTrigger } from "../../api/useIssueTriggers";
@@ -358,7 +358,7 @@ function RepoWorkflowSideRow({
                 className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${ROW_MENU_PHONE_HIT}`}
                 data-testid={`repo-workflow-menu-${key}`}
               >
-                <MoreHorizontal size={14} strokeWidth={2} aria-hidden />
+                <IconDots size={14} stroke={2} aria-hidden />
               </button>
             ) : null}
           </div>

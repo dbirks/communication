@@ -10,7 +10,7 @@
  * so there the row wraps: the text keeps `min-w-0` and breaks on its own
  * lines, and the buttons ride `w-full` onto a row below.
  */
-import { Info } from "lucide-react";
+import { IconInfoCircle } from "@tabler/icons-react";
 
 export const BACKLOG_BANNER_THRESHOLD = 12;
 
@@ -38,7 +38,7 @@ export function BacklogBanner({
       className="flex flex-wrap items-center gap-x-[10px] gap-y-[6px] rounded-panel border border-accent-ring bg-accent-wash px-[10px] py-[7px] md:h-[38px] md:flex-nowrap md:py-0"
       role="note"
     >
-      <Info size={13} className="shrink-0 text-accent-edge" aria-hidden />
+      <IconInfoCircle size={13} className="shrink-0 text-accent-edge" aria-hidden />
       <span className="min-w-0 flex-1 text-[13px] text-ink md:whitespace-nowrap">
         <b>
           {unseen} unseen over {days} {days === 1 ? "day" : "days"}.

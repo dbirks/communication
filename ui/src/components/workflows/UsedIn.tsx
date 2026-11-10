@@ -10,11 +10,11 @@
  *
  * The trigger sentences reuse the same assignment/schedule/issue-trigger
  * fan-out `Triggers.tsx` reads (shared query keys, read-only grouping in
- * `pages/workflow/useUsedIn.ts`) and the same Lucide 14px/stroke-2 icons the
- * trigger surfaces use — `GithubIcon` is the rebuilt brand glyph from
- * `TriggerDialog.tsx`, since lucide-react 1.x dropped brand icons.
+ * `pages/workflow/useUsedIn.ts`) and the same Tabler 14px/stroke-2 icons the
+ * trigger surfaces use — `GithubIcon` is the brand mark `TriggerDialog.tsx`
+ * exports over Tabler's own `IconBrandGithub`.
  */
-import { Clock, Play } from "lucide-react";
+import { IconClock, IconPlayerPlay } from "@tabler/icons-react";
 import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
 import { ProblemBanner } from "../Feedback";
@@ -106,7 +106,7 @@ export function TriggerSentences({ group }: { group: UsedInGroup }) {
         className="flex items-center gap-[6px] text-[12px] text-muted"
         data-testid={`used-in-manual-${group.assignment.id}`}
       >
-        <Play size={14} strokeWidth={2} aria-hidden className="shrink-0 opacity-60" />
+        <IconPlayerPlay size={14} stroke={2} aria-hidden className="shrink-0 opacity-60" />
         started by hand
       </span>
     );
@@ -119,7 +119,7 @@ export function TriggerSentences({ group }: { group: UsedInGroup }) {
           className="flex items-center gap-[6px] text-[12px]"
           data-testid={`used-in-issue-${trigger.id}`}
         >
-          <GithubIcon size={14} strokeWidth={2} aria-hidden className="shrink-0" />
+          <GithubIcon size={14} stroke={2} aria-hidden className="shrink-0" />
           {issueTriggerWords(trigger)}
           {trigger.labels.map((label) => (
             <span
@@ -138,7 +138,7 @@ export function TriggerSentences({ group }: { group: UsedInGroup }) {
           className="flex items-center gap-[6px] text-[12px]"
           data-testid={`used-in-schedule-${schedule.id}`}
         >
-          <Clock size={14} strokeWidth={2} aria-hidden className="shrink-0" />
+          <IconClock size={14} stroke={2} aria-hidden className="shrink-0" />
           {scheduleWords(schedule)}
           {!schedule.enabled ? (
             <em className="font-mono text-[10.5px] text-faint">paused</em>

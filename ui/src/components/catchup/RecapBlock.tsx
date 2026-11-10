@@ -14,7 +14,7 @@
  * and the window on screen); this component only draws its states.
  */
 import { Link } from "react-router";
-import { Play } from "lucide-react";
+import { IconPlayerPlay } from "@tabler/icons-react";
 import { firstSentence, type CatchUpRecap } from "../../api/catchup";
 import { clockOf } from "./importance";
 
@@ -96,7 +96,7 @@ export function RecapBlock({
           data-testid="catchup-start-tour"
           className="ds-btn ds-btn--primary inline-flex h-[32px] items-center gap-[6px] rounded-[4px]"
         >
-          <Play size={13} aria-hidden />
+          <IconPlayerPlay size={13} aria-hidden />
           Start the tour · {stops} stops · {minutes} min
         </Link>
         <span className="font-mono text-[10.5px] whitespace-nowrap text-muted">

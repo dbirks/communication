@@ -12,11 +12,11 @@
  * `THE RUN GETS` box (`bg-paper`), where the fixed repository is named
  * unquoted.
  *
- * Icons are Lucide at 14px / stroke 2 / `currentColor` (`Clock`, `Play`).
- * lucide-react 1.x dropped the brand glyphs, so the GitHub issue mark is the
- * official lucide `github` path rebuilt with `createLucideIcon` — the same
- * bytes the artboard's `lucide-static/icons/github.svg` carries. The `#` /
- * `◷` text glyphs are never used for trigger types.
+ * Icons are Tabler at 14px / stroke 2 / `currentColor` (`IconClock`,
+ * `IconPlayerPlay`). The GitHub issue mark is Tabler's own brand glyph
+ * (`IconBrandGithub`), exported here as `GithubIcon` so every trigger surface
+ * draws the one mark. The `#` / `◷` text glyphs are never used for trigger
+ * types.
  *
  * A write that came back refusing is said in the app's ONE failure treatment
  * (2026-11-01 review, pass-1 shot 2c-server-error): the plain sentence
@@ -58,7 +58,7 @@
  * route). A paused trigger keeps every other answer; pausing is not deleting.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Clock, createLucideIcon } from "lucide-react";
+import { IconBrandGithub, IconClock } from "@tabler/icons-react";
 import { Button } from "../ds/Button";
 import { Field, Input, Select, labelClass } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
@@ -88,28 +88,17 @@ const FOCUSABLE =
  * dialog refuses beyond it before a request leaves. */
 const MAX_ISSUE_TRIGGER_LABELS = 20;
 
-/** lucide's `github` glyph (lucide-static `icons/github.svg`): lucide-react
- * 1.x removed the brand icons from the package, so the mark is rebuilt from
- * the library's own path data and rendered by the same Lucide machinery.
+/** The GitHub mark: `@tabler/icons-react` ships the brand glyph, so nothing is
+ * rebuilt by hand any more (the icon package this file used before had
+ * dropped its brand glyphs, which is why it carried the path data itself).
  *
- * Every node carries the `key` lucide's own generated icons carry (`tonef` /
- * `9comsn`, the keys lucide shipped with `github` while the brand glyphs were
- * still in the package). `Icon` renders its nodes through an array, so a node
- * without a key is a keyed-array child without a key and React dev logs
- * “Each child in a list should have a unique ‘key’ prop … Check the render
- * method of `ForwardRef`” on every screen that shows the mark (the
- * pass-1-20261027044149 dev-server defect on 2e repo and 2c
- * schedule-trigger-saved). `GithubIcon.test.tsx` guards the keys. */
-export const GithubIcon = createLucideIcon("Github", [
-  [
-    "path",
-    {
-      d: "M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4",
-      key: "tonef",
-    },
-  ],
-  ["path", { d: "M9 18c-4.51 2-5-2-7-2", key: "9comsn" }],
-]);
+ * The nodes Tabler generates each carry a `key`, so the glyph renders through
+ * the library's array machinery without React's “Each child in a list should
+ * have a unique ‘key’ prop” dev warning — the defect the hand-built node array
+ * risked on every screen showing the mark (pass-1-20261027044149 dev-server
+ * defect on 2e repo and 2c schedule-trigger-saved). `GithubIcon.test.tsx`
+ * guards that, and the export name so the call sites stay unchanged. */
+export const GithubIcon = IconBrandGithub;
 
 /** The fire-time placeholders the ADR-0056 poller fills, in words — the
  * `THE RUN GETS` box reads the mapping, not the token soup. */
@@ -669,7 +658,7 @@ function TriggerDialogBody({
                   }`}
                   data-testid="trigger-dialog-mode-issue"
                 >
-                  <GithubIcon size={14} strokeWidth={2} aria-hidden />
+                  <GithubIcon size={14} stroke={2} aria-hidden />
                   A GitHub issue…
                 </button>
                 <button
@@ -683,7 +672,7 @@ function TriggerDialogBody({
                   }`}
                   data-testid="trigger-dialog-mode-schedule"
                 >
-                  <Clock size={14} strokeWidth={2} aria-hidden />
+                  <IconClock size={14} stroke={2} aria-hidden />
                   On a schedule
                 </button>
               </div>

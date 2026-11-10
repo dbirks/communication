@@ -41,7 +41,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
-import { Play } from "lucide-react";
+import { IconPlayerPlay } from "@tabler/icons-react";
 import { Panel } from "../../ds/Panel";
 import { StatusChip } from "../../ds/Row";
 import { ProblemBanner, Spinner } from "../../Feedback";
@@ -629,7 +629,7 @@ function ProjectWorkflowRow({
             </p>
           ) : null}
           <div className="flex items-center gap-[10px] border-t border-line-soft px-3 py-[9px] text-[12px] text-muted">
-            <Play size={14} strokeWidth={2} aria-hidden className="shrink-0 opacity-60" />
+            <IconPlayerPlay size={14} stroke={2} aria-hidden className="shrink-0 opacity-60" />
             <span>Or start it by hand from the project's Runs tab.</span>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import { PanelRight } from "lucide-react";
+import { IconLayoutSidebarRight } from "@tabler/icons-react";
 import { ApiError } from "../api/client";
 import { useConversations, useProject, useTurnSandbox, useWorkspaces } from "../api/queries";
 import {
@@ -864,7 +864,7 @@ export default function ConversationPage({
                   onClick={() => setDetailsOpen((open) => !open)}
                   className="inline-flex shrink-0 items-center gap-[6px] rounded-[3px] px-2 py-[3px] font-mono text-[11px] text-muted hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent lg:hidden"
                 >
-                  <PanelRight className="h-[14px] w-[14px]" aria-hidden="true" />
+                  <IconLayoutSidebarRight className="h-[14px] w-[14px]" aria-hidden="true" />
                   Details
                 </button>
               </div>

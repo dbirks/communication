@@ -19,7 +19,7 @@
  * server's words.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { IconChevronDown } from "@tabler/icons-react";
 import { useNavigate } from "react-router";
 import { useAgentProfiles, useCreateConversation } from "../../api/queries";
 import { FormError } from "../Feedback";
@@ -175,7 +175,7 @@ export function RepoChatBox({ projectId, repositoryName, prefill }: RepoChatBoxP
           data-testid="repo-chat-profile"
         >
           {chipLabel}
-          <ChevronDown size={12} strokeWidth={2} aria-hidden className="shrink-0" />
+          <IconChevronDown size={12} stroke={2} aria-hidden className="shrink-0" />
         </button>
         <Button
           variant="primary"

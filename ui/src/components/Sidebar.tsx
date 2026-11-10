@@ -54,18 +54,18 @@ import {
 } from "react";
 import { Link, NavLink, useLocation } from "react-router";
 import {
-  Bot,
-  CalendarDays,
-  ChevronDown,
-  ChevronsLeft,
-  ChevronsRight,
-  Folder,
-  Inbox,
-  MessageSquare,
-  Plus,
-  Search,
-  Workflow,
-} from "lucide-react";
+  IconCalendar,
+  IconChevronDown,
+  IconChevronsLeft,
+  IconChevronsRight,
+  IconFolder,
+  IconInbox,
+  IconMessage,
+  IconPlus,
+  IconRobot,
+  IconSearch,
+  IconSitemap,
+} from "@tabler/icons-react";
 import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import { usePipelines } from "../api/pipelines";
 import { useCatchUpItems } from "../api/catchup";
@@ -103,7 +103,7 @@ export function FlagBadge({ flag }: { flag: Flag }) {
 }
 
 /** The 12×12 chevron: down = open, rotated to point right = closed (issue #65:
- * real lucide icons, not a Unicode arrow). */
+ * real Tabler icons, not a Unicode arrow). */
 function Chevron({
   open,
   size = 16,
@@ -114,9 +114,9 @@ function Chevron({
   className?: string;
 }) {
   return (
-    <ChevronDown
+    <IconChevronDown
       size={size}
-      strokeWidth={1.6}
+      stroke={1.6}
       aria-hidden="true"
       className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"} ${className}`}
     />
@@ -729,7 +729,7 @@ function Rail({
         <RailTile
           testid="sidebar-expand"
           ariaLabel="Expand sidebar (⌘\)"
-          icon={<ChevronsRight size={16} strokeWidth={1.6} aria-hidden="true" />}
+          icon={<IconChevronsRight size={16} stroke={1.6} aria-hidden="true" />}
           onClick={onExpand}
           tip={tipProps("expand", "Expand sidebar", "⌘\\")}
         />
@@ -737,7 +737,7 @@ function Rail({
         <RailTile
           testid="rail-item-search"
           ariaLabel="Search (⌘K)"
-          icon={<Search size={18} strokeWidth={1.6} aria-hidden="true" />}
+          icon={<IconSearch size={18} stroke={1.6} aria-hidden="true" />}
           onClick={() => openPalette()}
           tip={tipProps("search", "Search", "⌘K")}
         />
@@ -748,7 +748,7 @@ function Rail({
           <RailTile
             testid="new-chat-rail"
             ariaLabel="New thread"
-            icon={<Plus size={17} strokeWidth={1.7} aria-hidden="true" />}
+            icon={<IconPlus size={17} stroke={1.7} aria-hidden="true" />}
             onClick={() => onNewChat()}
             tip={tipProps("new", "New thread")}
           />
@@ -762,7 +762,7 @@ function Rail({
             end
             testid="rail-item-today"
             ariaLabel={waiting > 0 ? `Today · ${waiting} waiting` : "Today"}
-            icon={<CalendarDays size={18} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<IconCalendar size={18} stroke={1.6} aria-hidden="true" />}
             badge={<RailBadge name="today" count={waiting} tone="waiting" />}
             tip={tipProps("today", "Today")}
           />
@@ -770,7 +770,7 @@ function Rail({
             to={CATCH_UP_PATH}
             testid="rail-item-catch-up"
             ariaLabel={unseenCatchUp > 0 ? `Catch up · ${unseenCatchUp} unseen` : "Catch up"}
-            icon={<Inbox size={18} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<IconInbox size={18} stroke={1.6} aria-hidden="true" />}
             badge={<RailBadge name="catch-up" count={unseenCatchUp} tone="accent" />}
             tip={tipProps("catch-up", "Catch up")}
           />
@@ -778,7 +778,7 @@ function Rail({
             to={routes.threads()}
             testid="rail-item-threads"
             ariaLabel={live > 0 ? `Threads · ${live} live` : "Threads"}
-            icon={<MessageSquare size={18} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<IconMessage size={18} stroke={1.6} aria-hidden="true" />}
             badge={<RailBadge name="threads" count={live} tone="running" />}
             tip={tipProps("threads", "Threads")}
           />
@@ -792,7 +792,7 @@ function Rail({
                 ? `Projects · ${projectsFlag.count} ${projectsWord}`
                 : "Projects"
             }
-            icon={<Folder size={18} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<IconFolder size={18} stroke={1.6} aria-hidden="true" />}
             active={activeProjectId !== null}
             badge={
               <RailBadge
@@ -814,14 +814,14 @@ function Rail({
             to={routes.workflows()}
             testid="rail-item-workflows"
             ariaLabel="Workflows"
-            icon={<Workflow size={18} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<IconSitemap size={18} stroke={1.6} aria-hidden="true" />}
             tip={tipProps("workflows", "Workflows")}
           />
           <RailTile
             to={routes.profiles()}
             testid="rail-item-agents"
             ariaLabel="Agents"
-            icon={<Bot size={18} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<IconRobot size={18} stroke={1.6} aria-hidden="true" />}
             tip={tipProps("agents", "Agents")}
           />
         </nav>
@@ -1071,7 +1071,7 @@ export default function Sidebar({
                 onClick={collapse}
                 className={`icon-hit grid size-[22px] shrink-0 place-items-center rounded-[3px] border border-fill-edge bg-surface p-0 text-ink hover:bg-fill ${FOCUS_RING}`}
               >
-                <ChevronsLeft size={14} strokeWidth={1.6} aria-hidden="true" />
+                <IconChevronsLeft size={14} stroke={1.6} aria-hidden="true" />
               </button>
             )}
           </div>

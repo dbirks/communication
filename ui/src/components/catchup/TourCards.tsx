@@ -18,7 +18,7 @@
  * the card surface must not hide the fact the rest row would print.
  */
 import { Link } from "react-router";
-import { CircleDot, GitCommitHorizontal, GitPullRequest, Plus } from "lucide-react";
+import { IconCircleDot, IconGitCommit, IconGitPullRequest, IconPlus } from "@tabler/icons-react";
 import type { CatchUpTourEntry } from "../../api/catchup";
 import { firstSentence } from "../../api/catchup";
 import { Evidence } from "./Evidence";
@@ -27,9 +27,9 @@ import { IMPORTANCE, projectColor, projectSquareClasses, refLabel } from "./impo
 /** The tour card's ref icon follows whichever ref the label was drawn from. */
 function RefGlyph({ entry }: { entry: CatchUpTourEntry }) {
   const size = 12;
-  if (entry.refs.issues?.length) return <CircleDot size={size} aria-hidden />;
-  if (entry.refs.pull_requests?.length) return <GitPullRequest size={size} aria-hidden />;
-  return <GitCommitHorizontal size={size} aria-hidden />;
+  if (entry.refs.issues?.length) return <IconCircleDot size={size} aria-hidden />;
+  if (entry.refs.pull_requests?.length) return <IconGitPullRequest size={size} aria-hidden />;
+  return <IconGitCommit size={size} aria-hidden />;
 }
 
 export function TourCards({
@@ -130,7 +130,7 @@ export function TourCards({
           className="flex w-[150px] shrink-0 flex-col items-start justify-center gap-[8px] rounded-panel border border-dashed border-project-quiet bg-st-queued-pale-body p-[12px] text-left disabled:opacity-60 max-md:w-[180px] max-md:min-w-[180px] max-md:snap-start"
         >
           <span className="grid h-[28px] w-[28px] place-items-center rounded-panel border border-ink bg-surface">
-            <Plus size={14} aria-hidden />
+            <IconPlus size={14} aria-hidden />
           </span>
           <span className="text-[13.5px] font-semibold">See more</span>
           <span className="text-[12px] leading-[1.4] text-ink-2">

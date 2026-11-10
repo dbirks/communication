@@ -8,7 +8,7 @@
  * page (8b) and the tour player (7b).
  */
 import type { ReactNode } from "react";
-import { CircleDot, GitCommitHorizontal, GitPullRequest } from "lucide-react";
+import { IconCircleDot, IconGitCommit, IconGitPullRequest } from "@tabler/icons-react";
 import type { CatchUpRefs } from "../../api/catchup";
 
 interface RefChip {
@@ -26,7 +26,7 @@ export function RefChips({ refs }: { refs: CatchUpRefs }) {
   for (const issue of refs.issues ?? []) {
     chips.push({
       key: `issue-${issue.number}`,
-      icon: <CircleDot size={12} aria-hidden />,
+      icon: <IconCircleDot size={12} aria-hidden />,
       label: `#${issue.number}`,
       href: issue.url,
     });
@@ -34,7 +34,7 @@ export function RefChips({ refs }: { refs: CatchUpRefs }) {
   for (const pr of refs.pull_requests ?? []) {
     chips.push({
       key: `pr-${pr.number}`,
-      icon: <GitPullRequest size={12} aria-hidden />,
+      icon: <IconGitPullRequest size={12} aria-hidden />,
       label: `PR #${pr.number}`,
       href: pr.url,
     });
@@ -42,7 +42,7 @@ export function RefChips({ refs }: { refs: CatchUpRefs }) {
   for (const commit of refs.commits ?? []) {
     chips.push({
       key: `commit-${commit.sha}`,
-      icon: <GitCommitHorizontal size={12} aria-hidden />,
+      icon: <IconGitCommit size={12} aria-hidden />,
       label: commit.sha.slice(0, 7),
       href: commit.url,
     });

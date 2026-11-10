@@ -406,7 +406,7 @@ function GraphNode({
           is no state to name at all: the kind word stands alone. */}
       <span className="flex min-w-0 items-center gap-[4px] font-mono text-[11px] leading-[14px] text-muted">
         <span aria-hidden className="inline-flex shrink-0 items-center text-ink-2">
-          {/* Issue #65: the shared lucide kind icon replaces the drawn glyph;
+          {/* Issue #65: the shared Tabler kind icon replaces the drawn glyph;
               the kind word beside it stays the accessible text. */}
           <StepKindIcon kind={node.kind} />
         </span>

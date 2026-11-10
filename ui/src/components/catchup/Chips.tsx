@@ -4,7 +4,7 @@
  * square and the mono name; the selected chip gets the ink border and the 2px
  * offset shadow every raised surface in the system wears.
  */
-import { Check } from "lucide-react";
+import { IconCheck } from "@tabler/icons-react";
 import { CATCH_UP_WINDOWS, type CatchUpWindow } from "../../api/catchup";
 import { projectColor, projectSquareClasses, type ProjectChip } from "./importance";
 
@@ -41,7 +41,7 @@ export function ProjectChips({
               }`}
               aria-hidden
             >
-              {isSelected ? <Check size={10} strokeWidth={3} /> : null}
+              {isSelected ? <IconCheck size={10} stroke={3} /> : null}
             </span>
             <span
               className={projectSquareClasses()}

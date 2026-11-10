@@ -32,7 +32,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams, Link } from "react-router";
-import { Check, Plus, X } from "lucide-react";
+import { IconCheck, IconPlus, IconX } from "@tabler/icons-react";
 import { Button } from "../components/ds/Button";
 import { ProblemBanner } from "../components/Feedback";
 import { Evidence } from "../components/catchup/Evidence";
@@ -486,7 +486,7 @@ export default function TourPlayer() {
                 </span>
               </span>
               {isSeen(entry.stop) ? (
-                <Check
+                <IconCheck
                   size={13}
                   aria-label="seen"
                   className="mt-[2px] shrink-0 text-st-done-tag-fg"
@@ -504,7 +504,7 @@ export default function TourPlayer() {
               disabled={tour.isFetching}
               className="inline-flex items-center gap-[6px] self-start text-[13px] font-semibold text-accent disabled:text-muted"
             >
-              <Plus size={13} aria-hidden />
+              <IconPlus size={13} aria-hidden />
               See more
             </button>
             <span className="text-[12px] leading-[1.4] text-muted">
@@ -676,7 +676,7 @@ export default function TourPlayer() {
           aria-label="Close the tour"
           className="grid h-[28px] w-[28px] shrink-0 place-items-center rounded-[3px] border border-fill-edge text-ink hover:bg-fill"
         >
-          <X size={14} aria-hidden />
+          <IconX size={14} aria-hidden />
         </button>
         <div className="min-w-0">
           <p className="text-[15px] font-semibold md:truncate">{heading}</p>

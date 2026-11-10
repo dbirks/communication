@@ -14,7 +14,7 @@
  * 2e draws for each kind (reflow-390 review, 2e item):
  * - collapsed: name · pinned-revision chip (`✓ r3`, the number the server's
  *   own revision summary carries) · trigger summary ("started by hand", or a
- *   Lucide icon + sentence per trigger) · `+ Add trigger` · `Run`, over the
+ *   Tabler icon + sentence per trigger) · `+ Add trigger` · `Run`, over the
  *   mono step chain of the PINNED revision (loop scopes shaded). The workflow's
  *   own name is the way to its library page: 2e draws no separate `Edit`;
  * - open: the `STARTS WHEN` box (indented 34px from 900px up, no indent on
@@ -46,7 +46,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
-import { Clock, Play } from "lucide-react";
+import { IconClock, IconPlayerPlay } from "@tabler/icons-react";
 import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
 import { StatusChip } from "../ds/Row";
@@ -565,7 +565,7 @@ function RepoWorkflowRow({
             </p>
           ) : null}
           <div className="flex items-center gap-[10px] border-t border-line-soft px-3 py-[9px] text-[12px] text-muted">
-            <Play size={14} strokeWidth={2} aria-hidden className="shrink-0 opacity-60" />
+            <IconPlayerPlay size={14} stroke={2} aria-hidden className="shrink-0 opacity-60" />
             <span>Or start it by hand with Run, or from an issue below.</span>
           </div>
         </div>
@@ -601,7 +601,7 @@ export function TriggerSummary({
   if (schedules.length === 0 && issueTriggers.length === 0) {
     return (
       <span className="flex items-center gap-[5px] text-[12px] text-muted" data-testid={testid}>
-        <Play size={14} strokeWidth={2} aria-hidden className="shrink-0 opacity-60" />
+        <IconPlayerPlay size={14} stroke={2} aria-hidden className="shrink-0 opacity-60" />
         <span>started by hand</span>
       </span>
     );
@@ -613,7 +613,7 @@ export function TriggerSummary({
     >
       {issueTriggers.map((trigger) => (
         <span key={trigger.id} className="flex items-center gap-[5px]">
-          <GithubIcon size={14} strokeWidth={2} aria-hidden className="shrink-0" />
+          <GithubIcon size={14} stroke={2} aria-hidden className="shrink-0" />
           {/* A paused trigger is muted, never struck through (2026-10-30 copy
               review, 2e item 5): the strike read as deleted text, when the row
               is a live trigger that is simply switched off. */}
@@ -624,7 +624,7 @@ export function TriggerSummary({
       ))}
       {schedules.map((schedule) => (
         <span key={schedule.id} className="flex items-center gap-[5px]">
-          <Clock size={14} strokeWidth={2} aria-hidden className="shrink-0" />
+          <IconClock size={14} stroke={2} aria-hidden className="shrink-0" />
           <span className={schedule.enabled ? "" : "text-faint"}>{scheduleSentence(schedule)}</span>
         </span>
       ))}
@@ -718,9 +718,9 @@ export function RepoScheduleRow({ projectId, schedule, canManage, onEdit }: Repo
   const inputs = Object.entries(schedule.inputs ?? {});
   return (
     <div className={TRIGGER_GRID} data-testid={`repo-workflow-trigger-${testidOf(schedule.id)}`}>
-      <Clock
+      <IconClock
         size={14}
-        strokeWidth={2}
+        stroke={2}
         aria-hidden
         className="col-start-1 row-start-1 shrink-0 self-center text-ink-2 min-[900px]:row-span-2"
       />
@@ -838,7 +838,7 @@ export function RepoIssueRow({
     <div className={TRIGGER_GRID} data-testid={`repo-workflow-trigger-${testidOf(trigger.id)}`}>
       <GithubIcon
         size={14}
-        strokeWidth={2}
+        stroke={2}
         aria-hidden
         className="col-start-1 row-start-1 shrink-0 self-center text-ink-2 min-[900px]:row-span-2"
       />

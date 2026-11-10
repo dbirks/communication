@@ -2,7 +2,7 @@ import { isSpeechRecognitionSupported } from "../../lib/speech";
 
 /**
  * Mic toggle for the assistant composer, Board drawer and thread composer
- * (handoff "Assistant popover", Assets: Lucide-style mic). 36px
+ * (handoff "Assistant popover", Assets: Tabler-style mic). 36px
  * secondary-style square. Renders nothing where the Web Speech API is
  * absent — callers also gate on `supported` for their own layout.
  */

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Minimize2, Plus } from "lucide-react";
+import { IconMinimize, IconPlus } from "@tabler/icons-react";
 import { Button } from "../ds/Button";
 import { MenuArrow } from "../ds/Menu";
 import { formatAge } from "../../lib/format";
@@ -604,16 +604,16 @@ export function AssistantPanel({
         onto two lines — the popover keeps just the ＋ on screen, with the
         wording in the accessible name and the tooltip. rcn-6 review: that ＋
         (a fullwidth character) rendered as an unlabelled blue bar in the
-        lab font, so it is the same lucide `Plus` icon the wide header uses —
+        lab font, so it is the same Tabler `IconPlus` the wide header uses —
         the tooltip (`title`) and the accessible name carry the meaning. */}
       {narrowHeader ? (
         <>
-          <Plus size={13} strokeWidth={2} aria-hidden className="shrink-0" />
+          <IconPlus size={13} stroke={2} aria-hidden className="shrink-0" />
           <span className="sr-only">New thread</span>
         </>
       ) : (
         <>
-          <Plus size={13} strokeWidth={2} aria-hidden className="shrink-0 min-[640px]:hidden" />
+          <IconPlus size={13} stroke={2} aria-hidden className="shrink-0 min-[640px]:hidden" />
           <span className="hidden min-[640px]:inline">New thread</span>
         </>
       )}
@@ -722,9 +722,9 @@ export function AssistantPanel({
               style={headerButtonStyle}
               onClick={onShrink}
             >
-              <Minimize2
+              <IconMinimize
                 size={13}
-                strokeWidth={2}
+                stroke={2}
                 aria-hidden
                 className={docked ? "shrink-0" : "shrink-0 min-[640px]:hidden"}
               />
