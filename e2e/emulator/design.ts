@@ -2024,6 +2024,176 @@ const TODAY_ASK_FAB: Landmark = {
   any: [{ testid: "ask-fab" }],
 };
 
+/* ------------------------------------ the Assistant handoff (as-popover / as-dock / as-page / as-settings)
+ * The Ask surface is the SHELL's, not the page's: `Shell.tsx` mounts the
+ * popover engine, so the 400px box and the 450px side panel stand OUTSIDE
+ * `<main>` (only their `/assistant` route portals its frame into the content
+ * column). Those two badges therefore read the whole document (`host: "page"`)
+ * like the app-shell screens; `as-page` and `as-settings` keep the strict
+ * main-plus-dialog reading.
+ *
+ * Structure, never data: which trust level the pill shows, the model ids the
+ * setup checklist reads and the thread titles in the left column are all
+ * served values, so they are never asked for. What IS claimed is the parts the
+ * design drew — 1f's checklist, the composer box with its context button, pill,
+ * mic and Send; §1's two sibling menus; 1e's two breakpoint columns; 1p's trust
+ * table and 1n's Speech section.
+ *
+ * The renders for these badges live in `docs/design/assistant-handoff/png/`,
+ * and the report pairs a screen with `EMU_DESIGN_DIRS`' file for its badge:
+ * with an `as-` prefix entry added there the expected paths are
+ * `…/assistant-handoff/png/popover.png`, `dock.png`, `page.png` and
+ * `settings.png` (the prefix is cut, the file is never renamed); with a
+ * prefix-less entry they are `as-popover.png`, `as-dock.png`, `as-page.png`,
+ * `as-settings.png`. Until the directory joins that map the badge simply has
+ * no render — the coverage rule calls that exempt, never failed — but the
+ * landmark lists below run (and file) on every capture regardless.
+ */
+/** The frame and the thread it holds. */
+const AS_FRAME: Landmark = {
+  id: "as-frame",
+  desc: "the Ask surface's panel (popover or side panel)",
+  host: "page",
+  any: [{ testid: "assistant-popover" }, { testid: "assistant-panel" }],
+};
+const AS_SETUP: Landmark = {
+  id: "as-setup",
+  desc: "the first-run setup checklist an empty thread answers with (1f)",
+  host: "page",
+  any: [{ testid: "assistant-setup" }, { text: /checked this server/i }],
+};
+/** The composer box (handoff §1: ONE box — the field over the control row). */
+const AS_COMPOSER: Landmark = {
+  id: "as-composer",
+  desc: "the composer box",
+  host: "page",
+  any: [{ testid: "assistant-composer" }, { testid: "assistant-composer-input" }],
+};
+/** The composer's control row, left to right: context · trust · mic · Send. */
+const AS_CONTEXT_BUTTON: Landmark = {
+  id: "as-context-button",
+  desc: "the page-context button (§3)",
+  host: "page",
+  any: [{ testid: "assistant-context-button" }],
+};
+const AS_PILL: Landmark = {
+  id: "as-trust-pill",
+  desc: "the trust pill (§4)",
+  host: "page",
+  any: [{ testid: "assistant-pill" }],
+};
+const AS_MIC: Landmark = {
+  id: "as-mic",
+  desc: "the mic button (A6: present whether or not the box holds text)",
+  host: "page",
+  any: [{ testid: "mic-button" }],
+};
+const AS_SEND: Landmark = {
+  id: "as-send",
+  desc: "the Send verb",
+  host: "page",
+  any: [{ testid: "assistant-send" }],
+};
+/* The two composer menus (handoff §1: SIBLINGS of the panel, so its
+ * `overflow: hidden` never clips them) and what each one draws. */
+const AS_TRUST_MENU: Landmark = {
+  id: "as-trust-menu",
+  desc: "the trust menu open above the pill (1o)",
+  host: "page",
+  any: [{ testid: "assistant-pill-menu" }, { role: "dialog", name: /trust level/i }],
+};
+const AS_TRUST_LEVELS: Landmark = {
+  id: "as-trust-levels",
+  desc: "the levels the menu offers, as radio rows (1o)",
+  host: "page",
+  any: [{ testid: "assistant-pill-option-*" }, { role: "menuitemradio" }],
+};
+const AS_CONTEXT_MENU: Landmark = {
+  id: "as-context-menu",
+  desc: "the page-context menu open above the context button (1i)",
+  host: "page",
+  any: [{ testid: "assistant-context-menu" }, { role: "dialog", name: /page context/i }],
+};
+const AS_CONTEXT_SWITCH: Landmark = {
+  id: "as-context-switch",
+  desc: "the menu's 'Send with my messages' switch (§3)",
+  host: "page",
+  any: [{ testid: "assistant-context-send" }, { text: /send with my messages/i }],
+};
+/** The header's two size verbs: popover ⇄ side panel ⇄ full page (§1). */
+const AS_SIZE_CONTROLS: Landmark = {
+  id: "as-size-controls",
+  desc: "the header's side-panel and full-page verbs (§1's three sizes)",
+  host: "page",
+  any: [{ testid: "assistant-dock" }, { testid: "assistant-expand" }],
+};
+/** 1e — `/assistant`. `assistant-page-threads` and `assistant-page-side` are
+ * the design's columns, and the page drops them below 1000px / 1240px; the
+ * phone path to the thread list is the header's own thread verbs, which
+ * AS_NEW_THREAD accepts as the second form. The context column has no phone
+ * twin — its two facts are the composer's context button and trust pill — so
+ * it is claimed at the width its render draws and nowhere else. */
+const AS_PAGE_FRAME: Landmark = {
+  id: "as-page-frame",
+  desc: "the assistant's full page (1e)",
+  any: [{ testid: "assistant-page" }, { testid: "assistant-page-column" }],
+};
+const AS_PAGE_THREADS: Landmark = {
+  id: "as-page-threads",
+  desc: "the left thread column, with its THREADS rows",
+  only: 1280,
+  any: [{ testid: "assistant-page-threads" }],
+};
+const AS_PAGE_SIDE: Landmark = {
+  id: "as-page-side",
+  desc: "the right LOOKING AT / CHANGES / TRUST column (1e, hidden below 1240px)",
+  only: 1280,
+  any: [{ testid: "assistant-page-side" }],
+};
+const AS_NEW_THREAD: Landmark = {
+  id: "as-new-thread",
+  desc: "the 'New thread' verb (the thread column's at 1280, the panel header's below 1000px)",
+  host: "page",
+  any: [{ testid: "assistant-page-new-thread" }, { testid: "assistant-new-conversation" }],
+};
+/** 1p + 1n — Settings → Assistant. */
+const AS_SETTINGS_PAGE: Landmark = {
+  id: "as-settings-page",
+  desc: "the Settings → Assistant body",
+  any: [{ testid: "settings-assistant" }, { testid: "settings-page" }],
+};
+const AS_TRUST_TABLE: Landmark = {
+  id: "as-trust-table",
+  desc: "the trust table — 'which actions ask at your level' (1p)",
+  any: [
+    { testid: "settings-assistant-trust-table" },
+    { role: "heading", name: /which actions ask at your level/i },
+  ],
+};
+const AS_TRUST_TABLE_ROWS: Landmark = {
+  id: "as-trust-table-rows",
+  desc: "the table's rows — one per action the tool table classes (1p)",
+  any: [{ testid: "settings-assistant-trust-table-row-*" }, { role: "row" }],
+};
+const AS_TRUST_RADIOS: Landmark = {
+  id: "as-trust-radios",
+  desc: "the trust level radios the pill's menu and this page share (§4)",
+  any: [{ testid: "settings-assistant-trust-level-option-*" }, { role: "radio" }],
+};
+const AS_SPEECH: Landmark = {
+  id: "as-speech",
+  desc: "the Speech section (1n)",
+  any: [{ testid: "settings-assistant-speech" }, { role: "heading", name: /^speech$/i }],
+};
+const AS_SPEECH_SWITCHES: Landmark = {
+  id: "as-speech-switches",
+  desc: "the two dictation switches (send after I stop / browser fallback) (1n)",
+  any: [
+    { testid: "settings-assistant-speech-auto-send" },
+    { testid: "settings-assistant-speech-browser-fallback" },
+  ],
+};
+
 /* ------------------------------------------------------------- the screens */
 
 /**
@@ -2780,6 +2950,59 @@ export const DESIGN_LANDMARKS: Record<string, Landmark[]> = {
   "cu-7b diff": [TOUR_PLAYER, TOUR_PROGRESS, TOUR_STOP_LIST, TOUR_CURRENT],
   "rail-3a rail": [RAIL_COLUMN, RAIL_TILES, RAIL_EXPAND, RAIL_BRAND],
   "today-ask today": [TODAY_PAGE, TODAY_GREETING, TODAY_ASK_FAB],
+
+  /* ---------------------------- the Assistant handoff: Ask at its three sizes, plus its settings */
+  // The popover as the design drew it (1f): the 400px clipped box, an empty
+  // thread answering with the setup checklist, the composer under it. No
+  // answer is claimed — the journey sends nothing, so what renders here is the
+  // frame and the server's own status read.
+  "as-popover setup": [
+    AS_FRAME,
+    AS_SETUP,
+    AS_COMPOSER,
+    AS_CONTEXT_BUTTON,
+    AS_PILL,
+    AS_MIC,
+    AS_SEND,
+  ],
+  // The trust menu open (1o): the box plus its radio rows — the level it names
+  // is a preference, never a landmark.
+  "as-popover trust": [AS_FRAME, AS_TRUST_MENU, AS_TRUST_LEVELS, AS_COMPOSER],
+  // The page-context menu open (§3/1i): the box, the switch, the composer.
+  "as-popover context": [AS_FRAME, AS_CONTEXT_MENU, AS_CONTEXT_SWITCH, AS_COMPOSER],
+  // The 450px side panel (1d). At 390 the sheet takes the screen (the
+  // documented reflow: a column would leave nothing of the page), so the same
+  // parts are claimed at either width.
+  "as-dock panel": [
+    AS_FRAME,
+    AS_SETUP,
+    AS_COMPOSER,
+    AS_CONTEXT_BUTTON,
+    AS_PILL,
+    AS_MIC,
+    AS_SEND,
+    AS_SIZE_CONTROLS,
+  ],
+  // The full page (1e): the thread column and the context column at their
+  // widths, the composer always, and the thread verb whichever header owns it.
+  "as-page page": [
+    AS_PAGE_FRAME,
+    AS_PAGE_THREADS,
+    AS_PAGE_SIDE,
+    AS_NEW_THREAD,
+    AS_COMPOSER,
+    AS_SIZE_CONTROLS,
+  ],
+  // Settings → Assistant (1p + 1n): the trust table the pill's copy comes from,
+  // and the Speech section built from the server's own speech read.
+  "as-settings speech": [
+    AS_SETTINGS_PAGE,
+    AS_TRUST_RADIOS,
+    AS_TRUST_TABLE,
+    AS_TRUST_TABLE_ROWS,
+    AS_SPEECH,
+    AS_SPEECH_SWITCHES,
+  ],
 };
 
 /**

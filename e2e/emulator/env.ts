@@ -58,6 +58,10 @@ export const EMU_DESIGN_DIRS: EmuDesignDir[] = [
   { dir: path.join(repoRoot, "docs", "design", "handoff-workflows", "png"), prefix: "" },
   { dir: path.join(repoRoot, "docs", "design", "handoff-projects", "png"), prefix: "" },
   { dir: path.join(repoRoot, "docs", "design", "handoff-repo-chat-nav", "png"), prefix: "rcn-" },
+  // The Assistant handoff (docs/design/assistant-handoff): popover.png,
+  // dock.png and page.png are the prototype's 1280 renders of as-popover,
+  // as-dock and as-page; as-settings has no render (exempt).
+  { dir: path.join(repoRoot, "docs", "design", "assistant-handoff", "png"), prefix: "as-" },
 ];
 
 /** Repo root, for reports. */

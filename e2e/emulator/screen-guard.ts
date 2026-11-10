@@ -130,6 +130,19 @@ const WRITTEN_CONTENT_TESTIDS = [
   "assistant-messages",
   "assistant-history",
   "assistant-history-item",
+  // The Assistant handoff's surfaces that sit OUTSIDE the transcript box
+  // (`assistant-messages`, already listed) but still speak with the server's —
+  // not the app's — words: the panel header's thread title (`conversation.title`,
+  // the name the assistant gave the thread), the composer's sr-only context chip
+  // when a draft ask named a chat (that IS the thread's own title), the change
+  // chip's row list and the full page's CHANGES rows — every one of those
+  // strings is model- or person-authored content (`assistant_changes.summary`,
+  // `RecentConversation.title`). The chrome beside them ("New thread", "undo
+  // all", "LOOKING AT", "TRUST") stays scanned: only the rows are excluded.
+  "assistant-thread-title",
+  "assistant-context-chip",
+  "assistant-change-list",
+  "assistant-page-change",
   "artifact-preview-prose",
   "artifact-preview-raw",
   "artifact-preview-markdown",
