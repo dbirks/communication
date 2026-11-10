@@ -1,68 +1,65 @@
-import { isSpeechRecognitionSupported } from "../../lib/speech";
+import { IconMicrophone, IconPlayerStop } from "@tabler/icons-react";
+import type { DictationPhase } from "./useDictation";
 
 /**
- * Mic toggle for the assistant composer, Board drawer and thread composer
- * (handoff "Assistant popover", Assets: Tabler-style mic). 36px
- * secondary-style square. Renders nothing where the Web Speech API is
- * absent — callers also gate on `supported` for their own layout.
+ * The composer's mic (handoff §1/§5; mock L341–380 and the MIC section of the
+ * exploration canvas): a 30px square that matches the send button beside it.
+ *
+ * It is ALWAYS present — including while the box holds text, because dictation
+ * appends to what the person typed (handoff §5). Three looks, one per phase:
+ *
+ *   idle         — the fill button: `fill` on a `fill-edge` border and shadow
+ *   recording    — `st-failed-strong` with the stop glyph: one tap ends it
+ *   transcribing — the disabled pair: the clip is at the server, wait
+ *
+ * Whether audio is recorded here or transcribed by the browser is
+ * `useDictation`'s business; this button only draws the phase and reports the
+ * tap.
  */
 export interface MicButtonProps {
-  listening: boolean;
+  phase: DictationPhase;
   onToggle: () => void;
+  /** A turn is in flight, or the clip is at the server: nothing to tap. */
   disabled?: boolean;
   className?: string;
 }
 
-export function MicIcon({ size = 18 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <rect x="9" y="3" width="6" height="11" rx="3" />
-      <path d="M5 11a7 7 0 0 0 14 0" />
-      <path d="M12 18v3" />
-    </svg>
-  );
-}
+const TITLES: Record<DictationPhase, string> = {
+  idle: "Dictate (adds to the end)",
+  recording: "Stop and transcribe",
+  transcribing: "Transcribing…",
+};
 
 export default function MicButton({
-  listening,
+  phase,
   onToggle,
   disabled = false,
   className = "",
 }: MicButtonProps) {
-  // A dead mic is worse than no mic: unsupported browsers (Firefox) get
-  // nothing rendered.
-  if (!isSpeechRecognitionSupported()) return null;
+  const recording = phase === "recording";
+  const waiting = phase === "transcribing";
   return (
     <button
       type="button"
       data-testid="mic-button"
-      aria-pressed={listening}
-      aria-label={listening ? "Stop dictation" : "Start dictation"}
-      title={listening ? "Stop dictation" : "Start dictation"}
-      disabled={disabled}
+      aria-pressed={recording}
+      aria-label={TITLES[phase]}
+      title={TITLES[phase]}
+      disabled={disabled || waiting}
       onClick={onToggle}
-      className={`ds-btn ds-btn--secondary ${className}`}
-      style={{
-        width: 36,
-        height: 36,
-        padding: 0,
-        display: "grid",
-        placeItems: "center",
-        flexShrink: 0,
-      }}
+      className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-[4px] border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring ${
+        recording
+          ? "border-st-failed-pale-fg bg-st-failed-strong text-st-failed-strong-fg"
+          : waiting
+            ? "cursor-default border-line bg-disabled-bg text-disabled-fg"
+            : "border-fill-edge bg-fill text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-disabled-bg"
+      } ${className}`}
     >
-      <MicIcon />
+      {recording ? (
+        <IconPlayerStop size={15} stroke={2} aria-hidden className="shrink-0" />
+      ) : (
+        <IconMicrophone size={15} stroke={2} aria-hidden className="shrink-0" />
+      )}
     </button>
   );
 }

@@ -8,9 +8,25 @@ describe("types (ADR-0050 mirror)", () => {
   });
 
   it("maps trust levels to the lowercase pill labels from the shots", () => {
-    expect(trustPillLabel("ask_all")).toBe("ask before everything");
-    expect(trustPillLabel("ask_risky")).toBe("ask for risky");
+    expect(trustPillLabel("ask_all")).toBe("ask every change");
+    expect(trustPillLabel("ask_risky")).toBe("ask when risky");
     expect(trustPillLabel("no_ask")).toBe("don't ask");
+  });
+
+  it("says what each level does, and promises no undo anywhere (§4)", () => {
+    expect(TRUST_LEVELS.map((level) => level.label)).toEqual([
+      "Ask before every change",
+      "Ask when it looks risky",
+      "Don't ask",
+    ]);
+    expect(TRUST_LEVELS.map((level) => level.blurb)).toEqual([
+      "You confirm every change.",
+      "A decision model checks each call. Flagged ones wait for you.",
+      "Everything runs. Each action is listed in the thread.",
+    ]);
+    for (const level of TRUST_LEVELS) {
+      expect(`${level.label} ${level.blurb}`.toLowerCase()).not.toContain("undon");
+    }
   });
 
   it("gives every change kind a glyph (none empty)", () => {

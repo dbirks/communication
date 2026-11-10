@@ -3,14 +3,10 @@ import { IconMinimize, IconPlus } from "@tabler/icons-react";
 import { Button } from "../ds/Button";
 import { MenuArrow } from "../ds/Menu";
 import { formatAge } from "../../lib/format";
-import { useIsNarrow } from "../Shell";
-import { useSpeechToText } from "../../lib/speech";
 import { ChangeChip } from "./ChangeChip";
+import Composer, { type ComposerSendOptions } from "./Composer";
 import { draftLinkOf } from "./draftSteps";
-import ListeningBar from "./ListeningBar";
 import MessageList from "./MessageList";
-import MicButton from "./MicButton";
-import { TrustPill } from "./TrustPill";
 import type { AssistantChange, AssistantMessage, TrustLevel } from "./types";
 
 /**
@@ -100,8 +96,11 @@ export interface AssistantPanelProps {
    * sends its text as a plain question through onSend.
    */
   suggestions?: string[];
-  /** Send one plain-text message (composer, free text, suggestion chip). */
-  onSend: (text: string) => SendResult;
+  /** Send one plain-text message (composer, free text, suggestion chip).
+   * `options` rides the composer's own extras: whether the text arrived by
+   * dictation, and the page context attached to it (CONTRACT §2). A caller
+   * that ignores it still receives the plain ask. */
+  onSend: (text: string, options?: ComposerSendOptions) => SendResult;
   /** Answer a follow-up question with the option's label verbatim. */
   onAnswerQuestion: (label: string) => SendResult;
   /**
@@ -150,31 +149,6 @@ const headerButtonStyle: React.CSSProperties = {
   cursor: "pointer",
   padding: "2px 4px",
 };
-
-function ContextChip({ label }: { label: string }) {
-  return (
-    <span
-      data-testid="assistant-context-chip"
-      title={label}
-      style={{
-        fontFamily: "var(--font-mono)",
-        fontSize: 10.5,
-        border: "1px solid var(--color-line-strong)",
-        borderRadius: 4,
-        background: "var(--color-fill)",
-        color: "var(--color-ink-2)",
-        padding: "2px 7px",
-        flexShrink: 0,
-        maxWidth: 140,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {label}
-    </span>
-  );
-}
 
 /**
  * The header's "Recent" menu (ui-newconv; ADR-0050 part 1): the caller's
@@ -431,12 +405,10 @@ export function AssistantPanel({
   busy = false,
 }: AssistantPanelProps) {
   const [draft, setDraft] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const speech = useSpeechToText();
-  const narrow = useIsNarrow();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // esc closes the panel. The trust pill's menu handles its own esc and
-  // stops propagation, so it closes the menu without closing the panel.
+  // esc closes the panel. The composer's menus handle their own esc and
+  // stop propagation, so they close without taking the panel with them.
   const handleClose = useCallback(() => onClose(), [onClose]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -446,31 +418,6 @@ export function AssistantPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [handleClose]);
-
-  // The dictation transcript stays editable text in the input (design:
-  // "edit before sending"): final fragments are appended to the draft as
-  // they arrive; the interim fragment is previewed by the ListeningBar.
-  const lastFinalRef = useRef("");
-  useEffect(() => {
-    if (!speech.listening) return;
-    const prev = lastFinalRef.current;
-    if (speech.final !== prev && speech.final.startsWith(prev)) {
-      const grown = speech.final.slice(prev.length).trim();
-      if (grown) setDraft((d) => (d ? `${d} ${grown}` : grown));
-    }
-    lastFinalRef.current = speech.final;
-  }, [speech.final, speech.listening]);
-
-  const startListening = () => {
-    speech.reset();
-    lastFinalRef.current = "";
-    speech.start();
-  };
-
-  const finishListening = () => {
-    speech.stop();
-    inputRef.current?.focus();
-  };
 
   /**
    * assistant-lost-ask: put an unsent ask back where it can be sent again —
@@ -493,18 +440,18 @@ export function AssistantPanel({
     [restoreDraft],
   );
 
-  /** The one send path: composer, Enter, and the suggestion chips. */
+  /** The one send path: composer, Enter, and the suggestion chips. The
+   * composer names its own extras (spoken, page context); the chips send a
+   * plain ask and the caller attaches the page context it already holds. */
   const submit = useCallback(
-    (text: string) => {
+    (text: string, options?: ComposerSendOptions) => {
       const trimmed = text.trim();
       if (!trimmed || busy) return;
       setDraft("");
-      watchSend(onSend(trimmed), trimmed);
+      watchSend(options ? onSend(trimmed, options) : onSend(trimmed), trimmed);
     },
     [busy, onSend, watchSend],
   );
-
-  const send = () => submit(draft);
 
   /**
    * Issue #63: `Retry` under a failed ask re-sends those SAME words. The
@@ -646,7 +593,9 @@ export function AssistantPanel({
           <span className="shrink-0 font-mono text-[10.5px] font-semibold tracking-wider text-ink whitespace-nowrap">
             ASSISTANT
           </span>
-          <TrustPill value={trustLevel} onChange={onTrustLevelChange} />
+          {/* Handoff §1: the trust pill lives in the composer box now (one box,
+              ctx button · trust pill · spacer · mic · send). A second copy
+              here would give the panel two `assistant-pill`s. */}
           <span style={{ flex: "1 1 auto" }} />
           {newConversationButton}
           {recentButton}
@@ -779,92 +728,41 @@ export function AssistantPanel({
           />
         </div>
       ) : null}
-      {speech.listening ? (
-        <div style={{ padding: "0 10px 6px" }}>
-          <ListeningBar interim={speech.interim} final={speech.final} onDone={finishListening} />
-        </div>
-      ) : null}
+      {/* Handoff §1: the composer is ONE box — textarea on top, then the
+          page-context button · trust pill · spacer · mic · Send. The box owns
+          dictation and the page-context payload; the draft stays HERE, because
+          a lost ask and a retry both come back into it. */}
       <div
-        data-testid="assistant-composer"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "8px 10px",
-          borderTop: "1px solid var(--color-line)",
-        }}
+        data-testid="assistant-composer-frame"
+        style={{ padding: "8px 10px", borderTop: "1px solid var(--color-line)" }}
       >
-        {/* The composer's context chip names what the ask is ABOUT: the thing
-            the surface was opened from when a caller has one (the tour
-            player's current stop, the 2f chat), else the page section. */}
-        {popover && (chatContext ?? contextLabel) ? (
-          <ContextChip label={chatContext ?? contextLabel} />
-        ) : null}
-        <input
-          ref={inputRef}
-          type="text"
-          data-testid="assistant-composer-input"
-          value={draft}
-          placeholder={
-            // The dock fills the width it is handed — at phone width the row
-            // also holds the mic and Send, and `Ask, or tell it what to
-            // change…` clipped mid-word (rcn-2f review item 2, 390px). The
-            // app's own narrow cut (useIsNarrow, the phone frame) answers
-            // with the shorter wording; the wide panels keep the full one.
-            narrow ? "Tell it what to change…" : "Ask, or tell it what to change…"
-          }
-          aria-label="Ask the assistant"
-          disabled={busy}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              send();
-            }
-          }}
-          style={{
-            flex: "1 1 auto",
-            minWidth: 0,
-            border: "1px solid var(--color-line-strong)",
-            borderRadius: 4,
-            padding: "6px 8px",
-            fontSize: 13,
-            background: "var(--color-surface)",
-            color: "var(--color-ink)",
-          }}
+        <Composer
+          draft={draft}
+          onDraftChange={setDraft}
+          onSend={(text, options) => submit(text, options)}
+          busy={busy}
+          trustLevel={trustLevel}
+          onTrustLevelChange={onTrustLevelChange}
+          inputRef={inputRef}
+          askLabel={popover ? (chatContext ?? contextLabel) : null}
         />
-        {speech.supported ? (
-          <MicButton
-            listening={speech.listening}
-            onToggle={() => (speech.listening ? finishListening() : startListening())}
-            disabled={busy}
-          />
-        ) : null}
-        {/* Design 2f: `Or tell me what to change…` sits beside `Open draft`.
-            The wide variants only — the popover's 400px row already holds
-            the context chip, the mic and Send, and the draft door stays
-            reachable in the transcript's `Go ›` link row while there. */}
+        {/* Design 2f: `Open draft` sits beside the composer — the wide
+            variants only. The draft door stays reachable in the transcript's
+            `Go` link row while the popover has no room for it. */}
         {!popover && draftLink ? (
-          <Button
-            variant="ghost"
-            compact
-            data-testid="assistant-open-draft"
-            title="Open the draft in the library"
-            className="shrink-0"
-            onClick={() => onGo(draftLink.route)}
-          >
-            Open draft
-          </Button>
+          <div style={{ padding: "6px 0 0" }}>
+            <Button
+              variant="ghost"
+              compact
+              data-testid="assistant-open-draft"
+              title="Open the draft in the library"
+              className="shrink-0"
+              onClick={() => onGo(draftLink.route)}
+            >
+              Open draft
+            </Button>
+          </div>
         ) : null}
-        <Button
-          variant="primary"
-          compact
-          data-testid="assistant-send"
-          onClick={send}
-          disabled={!draft.trim() || busy}
-        >
-          Send
-        </Button>
       </div>
     </>
   );

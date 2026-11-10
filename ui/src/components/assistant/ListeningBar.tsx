@@ -1,122 +1,98 @@
-import { useEffect, useState } from "react";
-import { Button } from "../ds/Button";
+import { IconWaveSine } from "@tabler/icons-react";
 
 /**
- * Listening row shown under the composer while dictation is in progress
- * (handoff "Assistant popover": royal waveform bars + timer + Done).
- * The transcript stays editable text in the caller's input; the caller
- * sends it — nothing is sent automatically.
+ * The dictation rows inside the composer box (handoff §5; exploration "MIC",
+ * mock L341–360). They are not a bar under the composer any more — recording
+ * happens IN the box, which is itself outlined in a dashed accent border while
+ * the mic is open.
  *
- * Mount it only while listening; the timer starts at mount. The royal
- * bars honour prefers-reduced-motion (static mid-height bars instead of
- * animating).
+ *   <ListeningBar seconds={7} />          — 28 accent bars + the `m:ss` clock
+ *   <TranscribingRow model="qwen3-asr" /> — `transcribing · qwen3-asr…`
+ *
+ * The bars animate on a staggered pulse and go static under
+ * `prefers-reduced-motion`. The clock is the caller's (the dictation hook owns
+ * it), so a stopped recorder never leaves a row still counting.
  */
-const BAR_COUNT = 24;
+const BAR_COUNT = 28;
 const BAR_DELAYS = Array.from({ length: BAR_COUNT }, (_, i) => i * 0.07);
 
 export interface ListeningBarProps {
-  /** Latest in-progress transcript fragment. */
-  interim: string;
-  /** Accumulated final transcript (editable text in the caller's input). */
-  final: string;
-  onDone: () => void;
+  /** Seconds of audio captured so far. */
+  seconds: number;
   className?: string;
 }
 
-function formatClock(totalSeconds: number): string {
+export function formatClock(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-export default function ListeningBar({
-  interim,
-  final,
-  onDone,
-  className = "",
-}: ListeningBarProps) {
-  const [seconds, setSeconds] = useState(0);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setSeconds((s) => s + 1), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  const transcript = [final, interim].filter((part) => part.trim() !== "").join(" ");
-
+export default function ListeningBar({ seconds, className = "" }: ListeningBarProps) {
   return (
-    <div
-      className={`speech-listening ${className}`}
-      data-testid="listening-bar"
-      role="status"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "6px 10px",
-        border: "1px dashed var(--color-accent-mid)",
-        borderRadius: 4,
-        background: "var(--color-accent-wash)",
-      }}
-    >
+    <>
       <style>{`
-        .speech-bars {
+        .composer-wave {
           display: flex;
           align-items: center;
           gap: 2px;
           height: 14px;
-          flex-shrink: 0;
+          flex: 1 1 auto;
+          min-width: 0;
         }
-        .speech-bars span {
+        .composer-wave span {
           width: 3px;
           height: 100%;
           border-radius: 1px;
           background: var(--color-accent);
-          animation: speech-bar-pulse 1.1s ease-in-out infinite;
+          animation: composer-wave-pulse 1.1s ease-in-out infinite;
         }
-        @keyframes speech-bar-pulse {
+        @keyframes composer-wave-pulse {
           0%, 100% { transform: scaleY(0.3); }
           50% { transform: scaleY(1); }
         }
         @media (prefers-reduced-motion: reduce) {
-          .speech-bars span {
+          .composer-wave span {
             animation: none;
             transform: scaleY(0.6);
           }
         }
       `}</style>
-      <span className="speech-bars" aria-hidden="true">
-        {BAR_DELAYS.map((delay) => (
-          <span key={delay} style={{ animationDelay: `${delay}s` }} />
-        ))}
-      </span>
-      <span
-        aria-live="polite"
-        style={{
-          flex: "1 1 auto",
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          color: "var(--color-accent-text)",
-        }}
+      <div
+        data-testid="listening-bar"
+        role="status"
+        aria-label={`Recording ${formatClock(seconds)}`}
+        className={`flex items-center gap-[10px] px-[2px] pt-[2px] ${className}`}
       >
-        {transcript || "Listening…"}
-      </span>
-      <span
-        style={{
-          flexShrink: 0,
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          fontVariantNumeric: "tabular-nums",
-          color: "var(--color-muted)",
-        }}
-      >
-        {formatClock(seconds)}
-      </span>
-      <Button compact data-testid="listening-done" onClick={onDone}>
-        Done
-      </Button>
+        <span className="composer-wave" aria-hidden="true">
+          {BAR_DELAYS.map((delay) => (
+            <span key={delay} style={{ animationDelay: `${delay}s` }} />
+          ))}
+        </span>
+        <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">
+          {formatClock(seconds)}
+        </span>
+      </div>
+    </>
+  );
+}
+
+export interface TranscribingRowProps {
+  /** The configured speech model's id, or "" when this server names none. */
+  model: string | null;
+  className?: string;
+}
+
+/** The clip is at `serve`; the mic and Send wait with it. */
+export function TranscribingRow({ model, className = "" }: TranscribingRowProps) {
+  return (
+    <div
+      data-testid="transcribing-row"
+      role="status"
+      className={`flex items-center gap-[6px] px-[2px] pt-[2px] font-mono text-[11px] text-accent-text ${className}`}
+    >
+      <IconWaveSine size={13} stroke={2} aria-hidden className="shrink-0" />
+      {model ? `transcribing · ${model}…` : "transcribing…"}
     </div>
   );
 }

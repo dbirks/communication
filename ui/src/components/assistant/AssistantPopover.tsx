@@ -51,6 +51,7 @@ import {
   useUndoAllAssistantChanges,
   useUndoAssistantChange,
 } from "../../api/assistant";
+import type { AssistantMessagePostBody } from "../../api/assistant";
 import type {
   AssistantChange,
   AssistantMessage,
@@ -58,6 +59,7 @@ import type {
   TrustLevel,
 } from "./types";
 import type { ComposerRestore } from "./AssistantPanel";
+import type { ComposerSendOptions } from "./Composer";
 
 /** The palette's Ask row opens the popover (and carries its question). */
 export const ASSISTANT_OPEN_EVENT = "communication:assistant-open";
@@ -455,6 +457,7 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       text: string,
       carriedOver = false,
       entity?: AssistantOpenRequest["entity"],
+      options?: ComposerSendOptions,
     ): Promise<boolean> => {
       const trimmed = text.trim();
       if (trimmed.length === 0) return Promise.resolve(false);
@@ -465,13 +468,29 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
       const optimistic: AssistantMessage = {
         id: localId,
         kind: "user",
-        payload: { kind: "user", text: trimmed },
+        payload: { kind: "user", text: trimmed, ...(options?.spoken ? { spoken: true } : {}) },
         created_at: new Date().toISOString(),
         local: { state: "pending" },
       };
       setMessages((current) => [...current, optimistic]);
-      const context: AssistantMessageContext = assistantContextOf(location.pathname);
-      if (entity) context.entity = entity;
+      // The composer owns what rides with the ask: its page context (with the
+      // handoff §3 `page` block) is the turn's context, and a turn sent with
+      // "Send with my messages" unchecked carries NONE at all (CONTRACT §2).
+      // A send with no options (a question's option label, a retry) names the
+      // route alone, exactly as it always did.
+      let context: AssistantMessageContext | undefined =
+        options === undefined
+          ? assistantContextOf(location.pathname)
+          : options.context
+            ? { ...options.context }
+            : undefined;
+      if (entity) {
+        // A draft ask names ITS subject even when page context is off — the
+        // conversation ref is structured context, not what is on screen.
+        const base = context ?? { route: location.pathname };
+        base.entity = entity;
+        context = base;
+      }
       return (async () => {
         try {
           let id = conversationId;
@@ -481,9 +500,12 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
             setConversationId(id);
             setAwaitingNew(false);
           }
+          const body: AssistantMessagePostBody & { spoken?: boolean } = { text: trimmed };
+          if (context) body.context = context;
+          if (options?.spoken) body.spoken = true;
           const result = await post.mutateAsync({
             conversationId: id,
-            body: { text: trimmed, context },
+            body,
           });
           setMessages((current) => {
             const rest = current.filter((message) => message.id !== localId);
@@ -726,7 +748,9 @@ export default function AssistantPopover({ askContext }: AssistantPopoverProps =
     onUndoChange: (changeId: string) => undoChange.mutate(changeId),
     onUndoAll: () => conversationId && undoAll.mutate({ conversationId }),
     suggestions: SUGGESTIONS[contextLabel] ?? GENERIC_SUGGESTIONS,
-    onSend: (text: string) => send(text),
+    // The composer's send names what came with the ask: whether the text
+    // arrived by dictation, and the page context attached to it (§2/§5).
+    onSend: (text: string, options?: ComposerSendOptions) => send(text, false, undefined, options),
     onAnswerQuestion: (label: string) => send(label),
     composerRestore,
     onConfirmApproval: (messageId: string) => answerApproval(messageId, true),

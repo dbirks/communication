@@ -71,7 +71,14 @@ describe("AssistantPanel (popover)", () => {
     const header = screen.getByTestId("assistant-panel-header");
     expect(header.textContent).toContain("ASSISTANT");
     expect(header.textContent).toContain("esc");
-    expect(screen.getByTestId("assistant-pill").textContent).toContain("ask for risky");
+    // Handoff §1: the trust pill lives in the composer box, not the header.
+    expect(screen.getByTestId("assistant-pill").textContent).toContain("ask when risky");
+    expect(
+      screen.getByTestId("assistant-panel-header").contains(screen.getByTestId("assistant-pill")),
+    ).toBe(false);
+    expect(
+      screen.getByTestId("assistant-composer").contains(screen.getByTestId("assistant-pill")),
+    ).toBe(true);
     fireEvent.click(screen.getByTestId("assistant-expand"));
     expect(onExpand).toHaveBeenCalledTimes(1);
   });
@@ -119,15 +126,22 @@ describe("AssistantPanel (popover)", () => {
     expect(screen.getByText("hi").closest('[data-testid="assistant-msg-user"]')).toBeTruthy();
     fireEvent.change(input, { target: { value: "  add a reviewer  " } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(onSend).toHaveBeenCalledWith("add a reviewer");
+    // The composer's send names what came with the ask (CONTRACT §2/§4).
+    expect(onSend).toHaveBeenCalledWith("add a reviewer", {
+      spoken: false,
+      context: { route: "/", page: { label: "Today" } },
+    });
     expect((input as HTMLInputElement).value).toBe("");
     expect((screen.getByTestId("assistant-send") as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("hides the mic where the Web Speech API is absent and shows the list while listening", () => {
-    // jsdom has no SpeechRecognition — the honest degradation is no button.
+  it("always offers the mic — the server reads the audio, not the browser", () => {
+    // jsdom has neither SpeechRecognition nor MediaRecorder. Handoff §5 still
+    // draws the mic (it is how dictation is attempted at all); the honest
+    // failure is the line under the box, not a missing control.
     renderPanel();
-    expect(screen.queryByTestId("mic-button")).toBeNull();
+    expect(screen.getByTestId("mic-button")).toBeTruthy();
+    expect(screen.getByTestId("mic-button").className).toContain("h-[30px]");
   });
 
   it("shows the change chip above the composer when the conversation has changes", () => {
@@ -171,7 +185,9 @@ describe("the composer placeholder fits the width (rcn-2f review item 2)", () =>
     try {
       renderPanel();
       const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
-      expect(input.placeholder).toBe("Ask, or tell it what to change…");
+      // The one-box composer gives the textarea the whole width, so the row
+      // cannot clip the wording any more: one placeholder at every width.
+      expect(input.placeholder).toBe("Ask anything, or use the mic…");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -182,7 +198,7 @@ describe("the composer placeholder fits the width (rcn-2f review item 2)", () =>
     try {
       renderPanel();
       const input = screen.getByTestId("assistant-composer-input") as HTMLInputElement;
-      expect(input.placeholder).toBe("Tell it what to change…");
+      expect(input.placeholder).toBe("Ask anything, or use the mic…");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -619,7 +635,10 @@ describe("a failed send puts the ask back (assistant-lost-ask)", () => {
     const input = screen.getByTestId("assistant-composer-input");
     fireEvent.change(input, { target: { value: "  add a reviewer step  " } });
     fireEvent.click(screen.getByTestId("assistant-send"));
-    expect(onSend).toHaveBeenCalledWith("add a reviewer step");
+    expect(onSend).toHaveBeenCalledWith(
+      "add a reviewer step",
+      expect.objectContaining({ spoken: false }),
+    );
     // Back in the composer, trimmed, and ready to send again.
     await waitFor(() => expect(composerValue()).toBe("add a reviewer step"));
     expect((screen.getByTestId("assistant-send") as HTMLButtonElement).disabled).toBe(false);

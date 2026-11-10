@@ -44,10 +44,19 @@ export type ChangeKind =
 
 export type ApprovalRequestState = "pending" | "confirmed" | "dismissed";
 
-/** Page context attached to a `user` message (ADR-0050 Decision 6). */
+/** Page context attached to a `user` message (ADR-0050 Decision 6; the
+ * `page` member is the handoff §3 addition, CONTRACT §2). */
 export interface AssistantMessageContext {
   route: string;
   project_id?: string | null;
+  /** What the person is looking at, as data: a label, an optional status and
+   * the project slug. The server bounds each member to 80 characters and
+   * strips control characters and `<` `>` — they are never instructions. */
+  page?: {
+    label: string;
+    status?: string;
+    project?: string;
+  };
   entity?: {
     /** `conversation` (thread → workflow, design 2f) names the chat the ask
      * is about: its id rides as structured context, never in the visible
@@ -82,6 +91,9 @@ export interface AssistantUserPayload {
   kind: "user";
   text: string;
   context?: AssistantMessageContext | null;
+  /** True when the text arrived by dictation (the bubble carries a small
+   * "spoken" tag); absent on a typed ask (CONTRACT §4). */
+  spoken?: boolean;
 }
 
 /** Payload for `kind: "assistant"`. */
@@ -184,7 +196,13 @@ export interface AssistantChangeList {
   changes: AssistantChange[];
 }
 
-/** The three trust levels, in the order the pill menu lists them (4d). */
+/**
+ * The three trust levels, in the order the pill menu lists them (handoff §4).
+ *
+ * The blurbs say what each level DOES — one line each. No level promises that
+ * an action can be undone: only draft edits are reversible, and the change
+ * list is where that is stated (with "can't be undone" on everything else).
+ */
 export const TRUST_LEVELS: ReadonlyArray<{
   value: TrustLevel;
   label: string;
@@ -192,33 +210,31 @@ export const TRUST_LEVELS: ReadonlyArray<{
 }> = [
   {
     value: "ask_all",
-    label: "Ask before everything",
-    blurb: "It explains and proposes. You click every action, including navigation.",
+    label: "Ask before every change",
+    blurb: "You confirm every change.",
   },
   {
     value: "ask_risky",
-    label: "Ask for risky actions",
-    blurb:
-      "Reads, navigates, gives tours and edits drafts on its own. Asks before starting or retrying runs, approving, allowing commands or publishing.",
+    label: "Ask when it looks risky",
+    blurb: "A decision model checks each call. Flagged ones wait for you.",
   },
   {
     value: "no_ask",
     label: "Don't ask",
-    blurb:
-      "Does what you ask, including runs, approvals and publishing. Each action is logged and can be undone where possible.",
+    blurb: "Everything runs. Each action is listed in the thread.",
   },
 ];
 
 /** Default trust level (ADR-0050 Decision 4: `ask_risky` is the default). */
 export const DEFAULT_TRUST_LEVEL: TrustLevel = "ask_risky";
 
-/** Lowercase label shown on the header-strip pill (`ask for risky ▾`). */
+/** Lowercase label shown on the composer pill (`ask when risky ▾`). */
 export function trustPillLabel(level: TrustLevel): string {
   switch (level) {
     case "ask_all":
-      return "ask before everything";
+      return "ask every change";
     case "ask_risky":
-      return "ask for risky";
+      return "ask when risky";
     case "no_ask":
       return "don't ask";
   }

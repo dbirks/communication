@@ -963,9 +963,12 @@ describe("the typed composer ask still posts (m5 ask path)", () => {
     // goes to ITS messages route, exactly as the e2e's response listener
     // (`POST …/assistant/conversations/<id>/messages`) expects.
     expect(stub.posted[0].conversationId).toBe(CONV);
+    // CONTRACT §2 changed this body: a composer ask now carries the page
+    // block (`page.label` is what the person is looking at) alongside the
+    // route. Everything else about the POST is the m5 e2e's expectation.
     expect(JSON.parse(stub.posted[0].body)).toEqual({
       text: QUESTION,
-      context: { route: "/" },
+      context: { route: "/", page: { label: "Today" } },
     });
   });
 });
